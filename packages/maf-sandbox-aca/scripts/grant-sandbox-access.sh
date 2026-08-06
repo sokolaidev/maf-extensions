@@ -60,12 +60,12 @@ Options:
 Examples:
   # Grant the app's managed identity access to the sandbox group
   $(basename "$0") \\
-      --group acas-ats-maf-swe-dev --resource-group acas-ats-maf-swe-rg \\
-      --identity ats-identity --identity-resource-group ats-maf-swe-rg
+      --group acas-swe-dev --resource-group acas-swe-rg \\
+      --identity app-identity --identity-resource-group app-swe-rg
 
   # Revoke it again
   $(basename "$0") \\
-      --group acas-ats-maf-swe-dev --resource-group acas-ats-maf-swe-rg \\
+      --group acas-swe-dev --resource-group acas-swe-rg \\
       --principal-id 00000000-0000-0000-0000-000000000000 --revoke
 EOF
 }

@@ -31,7 +31,7 @@ Egress comes from the **spec**, not from configuration: `default_action: Deny` p
 from maf_aca_sandboxes.bicep import make_bicep_tools
 
 tools = make_bicep_tools(router, workspace_store, "devops-engineer", context,
-                         image="myacr.azurecr.io/ats-bicep-sandbox:0.46.1")
+                         image="myacr.azurecr.io/bicep-sandbox:0.46.1")
 ```
 
 `bicep_validate` writes the agent's `.bicep` files into a sandbox, runs `bicep build` and `bicep lint`, and returns the compiler's SARIF diagnostics as structured text. Pass `router=None` — or a router with no backend — and you get `[]` back: an unconfigured host attaches no tool rather than one that fails when called.
@@ -62,10 +62,10 @@ It imports nothing from its host application — only `sandbox-router`, `agent-f
 
 Two things this `pyproject.toml` inherits from the workspace root today and would have to declare for itself: the ruff/pyright configuration, and `[tool.pytest.ini_options]`.
 
-What stays behind is the host's adapter — `src/ats/tools/bicep.py` — which maps the host's settings onto an `AcaConfig` and supplies the request context. Read it first if you want to know what integrating this package involves.
+What stays behind is the host's adapter — one module in the host application (today `tools/bicep.py`) that maps the host's settings onto an `AcaConfig` and supplies the request context. Read it first if you want to know what integrating this package involves.
 
-`TestNoHostDependency` is what keeps all of that true: it scans this package's sources for any `import ats` and fails with a pointer to the adapter. Nothing else would notice, because the tests run in a process where `ats` is importable.
+`TestNoHostDependency` is what keeps all of that true: it scans this package's sources for any import of the host package and fails with a pointer to the adapter. Nothing else would notice, because the tests run in a process where the host is importable. The host's name appears exactly once, as `_HOST_PACKAGE` in that test — extracting this repository is that one line plus a file move.
 
 ## Provenance
 
-Built for [ats](https://github.com/sokolaidev/ats-maf) issues #408 and #663. The security analysis that chose a VM-isolated sandbox over in-process execution — including the verified escalation chain that ruled in-process out, and why `--no-restore` alone was not enough — is in that repository under `docs/work-in-progress/issue-408-exec-surface-security.md`.
+Built for issues [#408](https://github.com/sokolaidev/ats-maf/issues/408) and [#663](https://github.com/sokolaidev/ats-maf/issues/663) of the application this currently ships inside. The security analysis that chose a VM-isolated sandbox over in-process execution — including the verified escalation chain that ruled in-process out, and why `--no-restore` alone was not enough — is in that repository under `docs/work-in-progress/issue-408-exec-surface-security.md`.

@@ -157,12 +157,12 @@ class TestQualifyImageReference:
     def test_prefixes_a_bare_repository_and_tag(self):
         from maf_aca_sandboxes._images import qualify_image_reference
 
-        assert qualify_image_reference("acr.azurecr.io", "ats-bicep-sandbox:0.46.1") == (
-            "acr.azurecr.io/ats-bicep-sandbox:0.46.1"
+        assert qualify_image_reference("acr.azurecr.io", "bicep-sandbox:0.46.1") == (
+            "acr.azurecr.io/bicep-sandbox:0.46.1"
         )
 
     def test_a_tag_colon_is_not_mistaken_for_a_port(self):
-        """`ats-bicep-sandbox:0.46.1` has a colon but no registry — the trap in this rule."""
+        """`bicep-sandbox:0.46.1` has a colon but no registry — the trap in this rule."""
         from maf_aca_sandboxes._images import qualify_image_reference
 
         assert qualify_image_reference("acr.azurecr.io", "img:1.2.3").startswith("acr.azurecr.io/")

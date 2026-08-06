@@ -335,7 +335,7 @@ class TestConfigDiscovery:
 
         distribution = pathlib.Path(maf_aca_sandboxes.__file__).parents[2]
         candidates = [
-            # In the ats repo, where images/ is a sibling of src/.
+            # In the host repo, where images/ is a sibling of src/.
             distribution.parents[1] / "images" / "bicep-sandbox" / "Dockerfile",
             # After extraction, where images/ comes along as a sibling of src/.
             distribution / "images" / "bicep-sandbox" / "Dockerfile",
@@ -655,15 +655,22 @@ class TestFormatDiagnostics:
 # Independence from the host application — the invariant the split exists for
 # ---------------------------------------------------------------------------
 
+#: The one place these distributions name the application they currently ship inside.  It
+#: is here because the guard below needs something to look for; everywhere else the host is
+#: referred to by role, so moving this tree to its own repository is a file move plus this
+#: single line.
+_HOST_PACKAGE = "ats"
+
 
 class TestNoHostDependency:
     """These packages must not import the application they currently ship inside.
 
-    Everything else here would keep passing if someone added ``from ats.config import
-    Settings`` to a module — the tests run in a process where ``ats`` is importable, so the
-    coupling would be invisible until the day someone tried to extract the package.  A
-    source scan suffices: the only imports here are stdlib, ``agent_framework``,
-    ``sandbox_router`` and ``azure.*``, so ``ats`` cannot arrive transitively.
+    Everything else here would keep passing if someone added ``from <host>.config import
+    Settings`` to a module — the tests run in a process where the host package is
+    importable, so the coupling would be invisible until the day someone tried to extract
+    the package.  A source scan suffices: the only imports here are stdlib,
+    ``agent_framework``, ``sandbox_router`` and ``azure.*``, so the host cannot arrive
+    transitively.
     """
 
     def _sources(self):
@@ -687,14 +694,15 @@ class TestNoHostDependency:
     def test_nothing_imports_the_host_application(self):
         import re
 
-        pattern = re.compile(r"(?m)^\s*(?:from\s+ats[.\s]|import\s+ats[.\s])")
+        host = re.escape(_HOST_PACKAGE)
+        pattern = re.compile(rf"(?m)^\s*(?:from\s+{host}[.\s]|import\s+{host}[.\s])")
         offenders = [
             str(p) for p in self._sources() if pattern.search(p.read_text(encoding="utf-8"))
         ]
         assert offenders == [], (
-            f"these files import the host application: {offenders}. "
-            "The dependency belongs in the host's adapter (src/ats/tools/bicep.py), "
-            "reaching these packages through SandboxConfig / WorkspaceContext."
+            f"these files import the host application ({_HOST_PACKAGE!r}): {offenders}. "
+            "The dependency belongs in the host's own adapter module, reaching these "
+            "packages through SandboxConfig / WorkspaceContext."
         )
 
     def test_the_workload_does_not_import_azure(self):

@@ -49,4 +49,4 @@ Both `dispose` methods are best-effort by contract: purge must never fail a dele
 
 ## Provenance
 
-Built for [ats](https://github.com/sokolaidev/ats-maf) issue #663, extracted from the first execution surface that shipped ([#408](https://github.com/sokolaidev/ats-maf/issues/408), `bicep_validate`). The reasoning behind the deployed-isolation rule is in that repository under `docs/work-in-progress/issue-408-exec-surface-security.md` — specifically §1, the escalation chain that a shared-kernel boundary does not close.
+Built for issue [#663](https://github.com/sokolaidev/ats-maf/issues/663) of the application this currently ships inside, extracted from the first execution surface that shipped ([#408](https://github.com/sokolaidev/ats-maf/issues/408), `bicep_validate`). The reasoning behind the deployed-isolation rule is in that repository under `docs/work-in-progress/issue-408-exec-surface-security.md` — specifically §1, the escalation chain that a shared-kernel boundary does not close.

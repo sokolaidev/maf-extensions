@@ -1,6 +1,6 @@
 """Import the bicep-sandbox OCI image into an ACA sandbox group as a disk image (issue #408).
 
-``deploy-bicep-sandbox.yml`` builds and pushes ``ats-bicep-sandbox:<version>`` to the sandbox
+``deploy-bicep-sandbox.yml`` builds and pushes ``bicep-sandbox:<version>`` to the sandbox
 stack's **own** registry, but a sandbox boots from a *disk image* registered in the sandbox
 group, which is a different namespace.  This script closes that gap: it imports the pushed
 image once, so the host application can then resolve it by reference at runtime
@@ -17,7 +17,7 @@ Usage::
         --subscription <sub-id> \\
         --resource-group <rg> \\
         --group <sandbox-group-name> \\
-        --image  myacr.azurecr.io/ats-bicep-sandbox:0.46.1
+        --image  myacr.azurecr.io/bicep-sandbox:0.46.1
 
 It is idempotent: an image already imported from the same reference is reported and reused
 rather than duplicated.  On success it prints the resolved disk-image id, so it can also be

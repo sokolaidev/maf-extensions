@@ -20,11 +20,11 @@ Idempotent: creating an assignment that already exists is a no-op.
 Requires: az, logged in, with permission to create role assignments on the sandbox group.
 
 .EXAMPLE
-./grant-sandbox-access.ps1 -Group acas-ats-maf-swe-dev -ResourceGroup acas-ats-maf-swe-rg `
-    -Identity ats-identity -IdentityResourceGroup ats-maf-swe-rg
+./grant-sandbox-access.ps1 -Group acas-swe-dev -ResourceGroup acas-swe-rg `
+    -Identity app-identity -IdentityResourceGroup app-swe-rg
 
 .EXAMPLE
-./grant-sandbox-access.ps1 -Group acas-ats-maf-swe-dev -ResourceGroup acas-ats-maf-swe-rg `
+./grant-sandbox-access.ps1 -Group acas-swe-dev -ResourceGroup acas-swe-rg `
     -PrincipalId 00000000-0000-0000-0000-000000000000 -Revoke
 #>
 [CmdletBinding()]
