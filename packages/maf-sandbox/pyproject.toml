@@ -1,0 +1,17 @@
+[project]
+name = "sandbox-router"
+version = "0.1.0"
+description = "One seam between an application and any sandbox provider: backend protocol, selection, and the rule that a weaker isolation boundary is never used in a deployed environment (issue #663)."
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+# No dependencies, deliberately. This layer is protocol and policy: giving it a backend
+# dependency — or a MAF one — would make it the thing it exists to keep apart.
+dependencies = []
+
+[tool.uv.build-backend]
+module-name = "sandbox_router"
+module-root = "src"
+
+[build-system]
+requires = ["uv_build>=0.11.24,<0.12.0"]
+build-backend = "uv_build"

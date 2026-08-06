@@ -1,0 +1,290 @@
+"""The ACA Sandboxes backend: :class:`~sandbox_router.SandboxBackend` on Azure (issue #408).
+
+Everything provider-specific lives here — the group client, disk-image resolution, the
+egress policy, the lifecycle policy, the sandbox registry and label-based purge.  A workload
+above the router sees only ``write_file`` and ``exec``.
+
+Isolation is :data:`~sandbox_router.Isolation.VM`: execution leaves the host process
+entirely, the host keeps the control-plane credential and never puts one inside, and egress
+is Deny-default with a per-spec allowlist.  That declaration is what the router checks
+before permitting this backend in a deployed environment.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from typing import Any
+
+from sandbox_router import ExecResult, Isolation, SandboxKey, SandboxSpec
+
+from ._config import AcaConfig
+from ._images import qualify_image_reference, resolve_disk_image_id
+
+logger = logging.getLogger(__name__)
+
+__all__ = ["AcaSandboxBackend"]
+
+# Sandbox labels.  Written at create time and read back on purge, so the *service* — not
+# this process's memory — is the durable record of which sandboxes belong to a thread.
+_LABEL_SCOPE = "scope"
+_LABEL_THREAD = "thread"
+_LABEL_AGENT = "agent"
+
+# How long to wait for a warm sandbox to come back from suspension before giving up on it
+# and creating a fresh one.
+#
+# 120 to match the value the lifecycle documentation uses in its own example
+# (`wait_for_running(timeout=120)`). It was 60, which is the wrong direction to be wrong in:
+# the timeout does not fail the call, it abandons a healthy suspended sandbox and pays a
+# cold create instead — slower for the user and more expensive, with nothing in the logs
+# saying why. Waiting longer costs only the wait.
+_RESUME_TIMEOUT_S = 120
+
+
+class _AcaSandbox:
+    """A running ACA sandbox, narrowed to what a workload is allowed to do with it."""
+
+    def __init__(self, sandbox_client: Any) -> None:
+        self._sc = sandbox_client
+
+    @property
+    def sandbox_id(self) -> str:
+        return self._sc.sandbox_id
+
+    async def write_file(self, path: str, content: str) -> None:
+        # `create_dirs=True` is the SDK's own default, and it is passed explicitly anyway.
+        # A workload may hand us a nested path — `infra/main.bicep` is the example in the
+        # bicep tool's own description — and without it every such write fails on a missing
+        # parent. The file API docs do not mention the behaviour at all, so it is the SDK
+        # signature that is load-bearing here; relying silently on a `0.1.0bN` default is how
+        # `DiskImage.image` got missed. Stating it costs nothing and pins the intent.
+        await self._sc.write_file(path, content, create_dirs=True)
+
+    async def exec(self, command: str, *, working_directory: str, timeout: float) -> ExecResult:
+        """Run ``command``, bounded by ``timeout``.
+
+        The bound is applied here rather than left to the SDK: a sandbox that stops
+        answering would otherwise hold the caller's turn open indefinitely.  ``TimeoutError``
+        propagates so the workload can report it as a diagnostic rather than as a hang.
+        """
+        result = await asyncio.wait_for(
+            self._sc.exec(command, working_directory=working_directory), timeout=timeout
+        )
+        return ExecResult(
+            stdout=getattr(result, "stdout", "") or "",
+            stderr=getattr(result, "stderr", "") or "",
+            exit_code=getattr(result, "exit_code", 0) or 0,
+        )
+
+
+class AcaSandboxBackend:
+    """Hands out VM-isolated sandboxes from an Azure Container Apps sandbox group."""
+
+    def __init__(self, config: AcaConfig) -> None:
+        self._config = config
+        # (scope, thread_id, agent_dir) -> sandbox_id, for this process only.
+        # Keyed on scope so sandboxes from one user's session cannot be reused or deleted by
+        # a request in another's.  `dispose_scope` treats this as a fast path, never as the
+        # source of truth — see its docstring.
+        self._registry: dict[tuple[str, str, str], str] = {}
+        # Group clients cached per event loop. An azure-core async client binds its transport
+        # to the loop that created it, and this host runs some work on a dedicated background
+        # loop, so one shared client would be a cross-loop hazard; one per call would leak a
+        # connection pool per tool invocation.
+        self._clients: dict[asyncio.AbstractEventLoop, tuple[Any, Any]] = {}
+
+    @property
+    def name(self) -> str:
+        return "aca"
+
+    @property
+    def isolation(self) -> str:
+        return Isolation.VM
+
+    # -- client -------------------------------------------------------------------
+
+    def _group_client(self) -> Any:
+        """The group client for the running loop, created on first use."""
+        from azure.containerapps.sandbox.aio import SandboxGroupClient
+        from azure.identity.aio import DefaultAzureCredential
+
+        loop = asyncio.get_running_loop()
+        existing = self._clients.get(loop)
+        if existing is not None:
+            return existing[0]
+
+        credential = DefaultAzureCredential()
+        cfg = self._config
+        client = SandboxGroupClient(
+            endpoint=cfg.endpoint,
+            credential=credential,
+            subscription_id=cfg.subscription_id,
+            resource_group=cfg.resource_group,
+            sandbox_group=cfg.sandbox_group,
+        )
+        self._clients[loop] = (client, credential)
+        return client
+
+    async def aclose(self) -> None:
+        """Close every cached client and credential. Errors are logged, never raised."""
+        for client, credential in list(self._clients.values()):
+            for closeable in (client, credential):
+                close = getattr(closeable, "close", None)
+                if close is None:
+                    continue
+                try:
+                    await close()
+                except Exception as exc:  # noqa: BLE001 - teardown must not raise
+                    logger.debug("aca backend: error closing %s: %s", type(closeable).__name__, exc)
+        self._clients.clear()
+
+    # -- SandboxBackend -----------------------------------------------------------
+
+    async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> _AcaSandbox:
+        """Return a running sandbox for ``key``, reusing a warm one when there is one."""
+        gc = self._group_client()
+        registry_key = (key.scope, key.thread_id, key.agent_dir)
+
+        sandbox_id = self._registry.get(registry_key)
+        if sandbox_id is not None:
+            try:
+                sc = gc.get_sandbox_client(sandbox_id)
+                await sc.ensure_running(timeout=_RESUME_TIMEOUT_S)
+                return _AcaSandbox(sc)
+            except Exception:  # noqa: BLE001 - a dead sandbox is replaced, not reported
+                pass
+            self._registry.pop(registry_key, None)
+
+        # The spec carries repository:tag; this backend knows which registry holds it.
+        image = qualify_image_reference(self._config.registry, spec.image or "")
+        disk_id = await resolve_disk_image_id(gc, spec.image_id, image or None)
+        poller = await gc.begin_create_sandbox(
+            disk_id=disk_id,
+            labels={
+                _LABEL_SCOPE: key.scope,
+                _LABEL_THREAD: key.thread_id,
+                _LABEL_AGENT: key.agent_dir,
+                **spec.labels,
+            },
+            egress_policy=self._egress_policy(spec),
+        )
+        sc = await poller.result()
+        # Register immediately, so the sandbox is reachable by purge even if configure fails.
+        self._registry[registry_key] = sc.sandbox_id
+        try:
+            await self._configure(sc)
+        except Exception:  # noqa: BLE001
+            # Non-fatal: the sandbox runs with SDK default policies. No best-effort delete —
+            # the auto-delete timer reclaims it, and failing the caller here would turn a
+            # policy hiccup into a lost turn.
+            logger.warning(
+                "aca backend: failed to configure lifecycle policy for sandbox %s; "
+                "it will be reclaimed by the auto-delete timer",
+                sc.sandbox_id,
+            )
+        return _AcaSandbox(sc)
+
+    async def dispose(self, key: SandboxKey) -> None:
+        """Delete the sandbox for ``key``, if this process knows of one."""
+        sandbox_id = self._registry.pop((key.scope, key.thread_id, key.agent_dir), None)
+        if sandbox_id is None:
+            return
+        await self._delete(self._group_client(), sandbox_id)
+
+    async def dispose_scope(self, scope: str, thread_id: str) -> int:
+        """Delete every sandbox labelled ``(scope, thread_id)``; returns how many.
+
+        The registry is consulted first but is **not** the source of truth: it only knows
+        what this process created, so a conversation delete served by another replica — or
+        by this one after a redeploy — would otherwise leave the sandbox running until the
+        auto-delete timer fires.  That is the shape of issue #375, and labels close it the
+        same way deriving from storage did there.
+
+        Registry entries are dropped up front whether or not the delete succeeds: a stale
+        entry pointing at a sandbox that may already be gone is worse than no entry, since
+        the next acquire would try to resume it.
+        """
+        known = [
+            (k, sandbox_id)
+            for k, sandbox_id in list(self._registry.items())
+            if k[0] == scope and k[1] == thread_id
+        ]
+        for k, _ in known:
+            self._registry.pop(k, None)
+
+        try:
+            gc = self._group_client()
+        except Exception as exc:  # noqa: BLE001 - purge must never fail
+            logger.warning("aca backend: could not reach the sandbox group: %s", exc)
+            return 0
+
+        ids = {sandbox_id for _, sandbox_id in known}
+        ids.update(await self._list_thread_sandbox_ids(gc, scope, thread_id))
+
+        count = 0
+        for sandbox_id in sorted(ids):
+            if await self._delete(gc, sandbox_id):
+                count += 1
+        return count
+
+    # -- internals ----------------------------------------------------------------
+
+    def _egress_policy(self, spec: SandboxSpec) -> Any:
+        """Deny by default, allow only the hosts the spec names."""
+        from azure.containerapps.sandbox import EgressHostRule, EgressPolicy
+
+        return EgressPolicy(
+            default_action="Deny",
+            traffic_inspection="Full",
+            host_rules=[EgressHostRule(pattern=host, action="Allow") for host in spec.egress_allow],
+        )
+
+    async def _configure(self, sandbox_client: Any) -> None:
+        """Apply the lifecycle policy to a freshly created sandbox."""
+        from azure.containerapps.sandbox import (
+            AutoDeletePolicy,
+            AutoSuspendPolicy,
+            LifecyclePolicy,
+        )
+
+        await sandbox_client.set_lifecycle_policy(
+            LifecyclePolicy(
+                auto_suspend=AutoSuspendPolicy(
+                    enabled=True,
+                    interval=self._config.auto_suspend_seconds,
+                    mode="Memory",
+                ),
+                auto_delete=AutoDeletePolicy(
+                    enabled=True,
+                    delete_interval_seconds=self._config.auto_delete_seconds,
+                ),
+            )
+        )
+
+    async def _delete(self, group_client: Any, sandbox_id: str) -> bool:
+        """Best-effort delete. Returns whether it succeeded; never raises."""
+        try:
+            await group_client.get_sandbox_client(sandbox_id).begin_delete()
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("aca backend: failed to delete sandbox %s: %s", sandbox_id, exc)
+            return False
+
+    async def _list_thread_sandbox_ids(
+        self, group_client: Any, scope: str, thread_id: str
+    ) -> list[str]:
+        """Sandbox ids labelled ``(scope, thread_id)``, read from the service."""
+        ids: list[str] = []
+        try:
+            async for sandbox in group_client.list_sandboxes(
+                labels={_LABEL_SCOPE: scope, _LABEL_THREAD: thread_id}
+            ):
+                sandbox_id = getattr(sandbox, "id", None)
+                if sandbox_id:
+                    ids.append(sandbox_id)
+        except Exception as exc:  # noqa: BLE001 - purge must never fail
+            logger.warning(
+                "aca backend: could not list sandboxes for thread %s: %s", thread_id, exc
+            )
+        return ids

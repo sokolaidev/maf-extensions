@@ -1,0 +1,38 @@
+[project]
+name = "maf-aca-sandboxes"
+version = "0.1.0"
+description = "Azure Container Apps Sandboxes as a sandbox backend for Microsoft Agent Framework agents, plus the sandbox kinds that run on it (Bicep validation today)."
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+    # The backend protocol and the router this backend registers with.
+    "sandbox-router",
+    # The `@tool` decorator and AgentFileStore, used by the sandbox kinds. MAF is a genuine
+    # dependency of the tools themselves, not of the host application.
+    "agent-framework-core",
+    # DefaultAzureCredential for the sandbox data plane.
+    "azure-identity>=1.25.1,<2",
+]
+
+[project.optional-dependencies]
+# The ACA Sandboxes data-plane SDK — still 0.1.0bN, and only needed once a sandbox group is
+# actually configured, so it stays optional and every entry point degrades without it. The
+# pin lives here and nowhere else; a host reaches it through its own extra.
+aca = [
+    "azure-containerapps-sandbox==0.1.0b3",
+]
+
+# agent-framework-core is a git dependency (not on PyPI yet). Keep this source in sync with
+# the root pyproject.toml's [tool.uv.sources] — the shared uv.lock pins both to the same
+# rev, so a MAF bump updates them together. Mirrors skills/foundry.
+[tool.uv.sources]
+agent-framework-core = { git = "https://github.com/microsoft/agent-framework.git", subdirectory = "python/packages/core", branch = "main" }
+sandbox-router = { workspace = true }
+
+[tool.uv.build-backend]
+module-name = "maf_aca_sandboxes"
+module-root = "src"
+
+[build-system]
+requires = ["uv_build>=0.11.24,<0.12.0"]
+build-backend = "uv_build"
