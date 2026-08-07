@@ -1,0 +1,48 @@
+"""``error_detail``: as much of a provider failure as a log can usefully carry (issue #697).
+
+``str()`` on an azure-core ``HttpResponseError`` is just
+``Operation returned an invalid status 'Bad Request'`` — the *reason* is in the response
+body, which that string drops.  A 400 that says only "Bad Request" cannot be acted on: it
+took a hand-written probe against the live service to discover that one such failure meant
+the app's identity had no role on the sandbox group.
+
+This started life inside the bicep kind, the only caller that needed it.  The ACA backend's
+own warning logs have the identical gap — a bare ``%s`` of the exception, dropping the same
+response body — so it moved here where every backend and every kind can reach it, rather than
+being copied.
+
+Duck-typed on purpose, and stdlib-only: it reads ``status_code`` and ``response.text()`` off
+whatever it is given, which is how it works against azure-core's ``HttpResponseError`` — or
+any other SDK's exception shaped the same way — without importing it.  This is a log-only
+utility; the caller decides separately what a model or end user is told, and that message
+must stay sanitized regardless of what this function returns.
+"""
+
+from __future__ import annotations
+
+__all__ = ["error_detail"]
+
+
+def error_detail(exc: Exception) -> str:
+    """As much of a failure as the log can usefully carry.
+
+    ``str()`` on an azure-core ``HttpResponseError`` is just
+    ``Operation returned an invalid status 'Bad Request'`` — the *reason* is in the response
+    body, which that string drops.  A 400 that says only "Bad Request" cannot be acted on:
+    it took a hand-written probe against the live service to discover that one such failure
+    meant the app's identity had no role on the sandbox group.  This is log-only; the model
+    still sees the sanitized message.
+    """
+    parts = [f"{type(exc).__name__}: {exc}"]
+    status = getattr(exc, "status_code", None)
+    if status is not None:
+        parts.append(f"status={status}")
+    response = getattr(exc, "response", None)
+    if response is not None:
+        try:
+            body = response.text()
+        except Exception:  # noqa: BLE001 - diagnostics must not raise
+            body = None
+        if body:
+            parts.append(f"body={body[:600]}")
+    return " | ".join(parts)

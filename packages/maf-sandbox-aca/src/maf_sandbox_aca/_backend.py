@@ -1,10 +1,10 @@
-"""The ACA Sandboxes backend: :class:`~sandbox_router.SandboxBackend` on Azure (issue #408).
+"""The ACA Sandboxes backend: :class:`~maf_sandbox.SandboxBackend` on Azure (issue #408).
 
 Everything provider-specific lives here — the group client, disk-image resolution, the
 egress policy, the lifecycle policy, the sandbox registry and label-based purge.  A workload
 above the router sees only ``write_file`` and ``exec``.
 
-Isolation is :data:`~sandbox_router.Isolation.VM`: execution leaves the host process
+Isolation is :data:`~maf_sandbox.Isolation.VM`: execution leaves the host process
 entirely, the host keeps the control-plane credential and never puts one inside, and egress
 is Deny-default with a per-spec allowlist.  That declaration is what the router checks
 before permitting this backend in a deployed environment.
@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shlex
+from collections.abc import Sequence
 from hashlib import sha256
 from typing import Any
 
-from sandbox_router import ExecResult, Isolation, SandboxKey, SandboxSpec
+from maf_sandbox import ExecResult, Isolation, SandboxKey, SandboxSpec, error_detail
 
 from ._config import AcaSandboxConfig
 from ._images import qualify_image_reference, resolve_disk_image_id
@@ -100,15 +102,22 @@ class _AcaSandbox:
         # `DiskImage.image` got missed. Stating it costs nothing and pins the intent.
         await self._sc.write_file(path, content, create_dirs=True)
 
-    async def exec(self, command: str, *, working_directory: str, timeout: float) -> ExecResult:
+    async def exec(
+        self, command: str | Sequence[str], *, working_directory: str, timeout: float
+    ) -> ExecResult:
         """Run ``command``, bounded by ``timeout``.
 
         The bound is applied here rather than left to the SDK: a sandbox that stops
         answering would otherwise hold the caller's turn open indefinitely.  ``TimeoutError``
         propagates so the workload can report it as a diagnostic rather than as a hang.
+
+        The SDK's own ``exec`` takes a string only, so a sequence is quoted into one with
+        :func:`shlex.join` first.  ``shlex.join`` produces POSIX quoting, which is correct
+        here because every sandbox this backend hands out is Linux.
         """
+        cmd = command if isinstance(command, str) else shlex.join(command)
         result = await asyncio.wait_for(
-            self._sc.exec(command, working_directory=working_directory), timeout=timeout
+            self._sc.exec(cmd, working_directory=working_directory), timeout=timeout
         )
         return ExecResult(
             stdout=getattr(result, "stdout", "") or "",
@@ -210,7 +219,9 @@ class AcaSandboxBackend:
                 # is the expected path, not a fault. But it does mean the next call pays for
                 # a cold create, so the reason is worth a line rather than a silent `pass`.
                 logger.info(
-                    "sandbox %s did not resume (%s); creating a replacement", sandbox_id, exc
+                    "sandbox %s did not resume (%s); creating a replacement",
+                    sandbox_id,
+                    error_detail(exc),
                 )
             self._registry.pop(registry_key, None)
 
@@ -338,7 +349,9 @@ class AcaSandboxBackend:
             await group_client.get_sandbox_client(sandbox_id).begin_delete()
             return True
         except Exception as exc:  # noqa: BLE001
-            logger.warning("aca backend: failed to delete sandbox %s: %s", sandbox_id, exc)
+            logger.warning(
+                "aca backend: failed to delete sandbox %s: %s", sandbox_id, error_detail(exc)
+            )
             return False
 
     async def _list_thread_sandbox_ids(
@@ -362,6 +375,8 @@ class AcaSandboxBackend:
                     ids.append(sandbox_id)
         except Exception as exc:  # noqa: BLE001 - purge must never fail
             logger.warning(
-                "aca backend: could not list sandboxes for thread %s: %s", thread_id, exc
+                "aca backend: could not list sandboxes for thread %s: %s",
+                thread_id,
+                error_detail(exc),
             )
         return ids

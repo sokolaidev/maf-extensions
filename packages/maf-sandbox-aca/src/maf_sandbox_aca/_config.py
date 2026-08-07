@@ -6,7 +6,7 @@ package avoids.  The host maps its settings onto this.
 
 Note what is *not* here.  The image's ``repository:tag``, the egress allowlist and the work
 directory are properties of a sandbox **kind**, not of the backend, so they travel in a
-:class:`~sandbox_router.SandboxSpec` — which is what lets a second kind (a Copilot agent, an
+:class:`~maf_sandbox.SandboxSpec` — which is what lets a second kind (a Copilot agent, an
 Azure CLI surface) arrive without touching this file.  The *registry* is the other way
 round: one registry serves the sandbox group and the group serves every kind, so it lives
 here and a kind never learns where its image is stored.
@@ -26,7 +26,7 @@ class AcaSandboxConfig:
     ``endpoint`` is the group's data-plane endpoint
     (``https://management.<region>.azuredevcompute.io``).  It has no default because a
     config without one cannot be used — a host with nothing configured should not build one
-    at all, and its router then reports :attr:`~sandbox_router.SandboxRouter.enabled` false.
+    at all, and its router then reports :attr:`~maf_sandbox.SandboxRouter.enabled` false.
 
     ``registry`` is the login server (FQDN) that holds the sandbox images, e.g.
     ``atsbicepsandbox.azurecr.io``.  A kind's spec carries only ``repository:tag`` and this

@@ -93,7 +93,7 @@ def format_diagnostics(
         return f"{phase}: no diagnostics"
     lines = [f"{phase}: {len(diagnostics)} diagnostic(s)"]
     for d in diagnostics:
-        loc_parts = []
+        loc_parts: list[str] = []
         for loc in d.get("locations", []):
             f = _relative_location(loc.get("file", ""), strip_prefix)
             ln = loc.get("line")

@@ -1,14 +1,27 @@
-# sandbox-router
+# maf-sandbox
 
-One seam between an application and any sandbox provider.
+> **Experimental.** This package is early-stage (`0.1.0`, `Development Status :: 4 - Beta`) — its API may change or be removed in a future release without notice. Importing it emits a one-time `MafSandboxExperimentalWarning`; suppress it with `warnings.filterwarnings("ignore", category=maf_sandbox.MafSandboxExperimentalWarning)` once you've read the notice.
 
+This package is not affiliated with, endorsed by, or a product of Microsoft — it is a third-party reference implementation of [microsoft/agent-framework#7568](https://github.com/microsoft/agent-framework/issues/7568), written for use with [Microsoft Agent Framework](https://aka.ms/AgentFramework) but with no dependency on it in its protocol layer.
+
+## Quickstart
+
+```bash
+pip install maf-sandbox
 ```
-app  ->  SandboxRouter  ->  backend  ->  the sandbox
+
+```python
+from maf_sandbox import Isolation, SandboxKey, SandboxRouter, SandboxSpec, WorkspaceContext
+
+# Implement SandboxBackend against your own provider — or install maf-sandbox-aca for a
+# ready-made Azure Container Apps Sandboxes backend — then wire it into a router:
+router = SandboxRouter([my_backend], deployed=False)
+sandbox = await router.acquire(SandboxKey(scope="tenant-1", thread_id="t-1", agent_dir="devops"), SandboxSpec(kind="bicep", image="bicep-sandbox:0.46.1", egress_allow=("mcr.microsoft.com",), work_dir="/workspace"))
 ```
 
-A **workload** asks for a sandbox and runs a command in it. A **backend** decides what actually boots. Neither knows about the other, which is what lets the same tool run against an Azure Container Apps Sandbox, a local Docker container, or an in-process fake without changing a line.
+## Threat model
 
-This package has **no dependencies** — not on a backend, not on an agent framework, not on a host application. It is protocol and policy; giving it a dependency would make it the thing it exists to keep apart.
+This package draws no isolation boundary itself — it is protocol and policy over whatever a `SandboxBackend` implementation actually provides. `Isolation` states three tiers a backend can declare, from strongest to weakest: `vm` (a VM boundary — the whole guest, not just a process, is untrusted), `container` (a shared-kernel boundary), and `process` (no boundary beyond the OS's own process isolation). `SandboxRouter` enforces the one rule below on top of that declaration; the package's job is to make an unsafe backend selection fail loudly at construction, not silently at first use. Beyond backend selection, this layer has nothing else to get wrong: it holds no credentials, executes nothing, and reaches no network — everything security-relevant about a *specific* sandbox lives in the backend that implements it.
 
 ## The vocabulary
 
@@ -50,3 +63,7 @@ Both `dispose` methods are best-effort by contract: purge must never fail a dele
 ## Provenance
 
 Built for issue [#663](https://github.com/sokolaidev/ats-maf/issues/663) of the application this currently ships inside, extracted from the first execution surface that shipped ([#408](https://github.com/sokolaidev/ats-maf/issues/408), `bicep_validate`). The reasoning behind the deployed-isolation rule is in that repository under `docs/work-in-progress/issue-408-exec-surface-security.md` — specifically §1, the escalation chain that a shared-kernel boundary does not close.
+
+---
+
+Maintained by [SOKOLAI BV](https://www.sokol.ai).

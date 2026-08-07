@@ -4,7 +4,7 @@
 stack's **own** registry, but a sandbox boots from a *disk image* registered in the sandbox
 group, which is a different namespace.  This script closes that gap: it imports the pushed
 image once, so the host application can then resolve it by reference at runtime
-(:func:`maf_aca_sandboxes.resolve_disk_image_id`).
+(:func:`maf_sandbox_aca.resolve_disk_image_id`).
 
 Importing is deliberately kept out of the request path — it is slow, it is a write against
 the group, and it needs registry credentials that the application itself has no reason to
@@ -14,14 +14,14 @@ The **deploy workflow no longer runs this**: it uses the vendor's ``aca`` CLI
 (``aca sandboxgroup disk create --identity …``), which needs no Python toolchain and nothing
 from this repository.  This script stays as the equivalent for anyone who would rather not
 install the CLI, and because its idempotency check shares
-:func:`~maf_aca_sandboxes.disk_image_base` with the runtime resolver — see below for why that
+:func:`~maf_sandbox_aca.disk_image_base` with the runtime resolver — see below for why that
 matters.
 
 Usage — ``--package`` keeps the environment to this distribution's own closure (34 packages)
 rather than the host workspace's (128), which matters because nothing here needs the host::
 
-    uv run --package maf-aca-sandboxes --extra aca \\
-        python src/maf-aca-sandboxes/scripts/import_disk_image.py \\
+    uv run --package maf-sandbox-aca \\
+        python src/maf-sandbox-aca/scripts/import_disk_image.py \\
         --endpoint   https://management.<region>.azuredevcompute.io \\
         --subscription <sub-id> \\
         --resource-group <rg> \\
@@ -45,6 +45,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+from typing import Any
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -79,8 +80,7 @@ async def _run(args: argparse.Namespace) -> int:
         from azure.identity.aio import DefaultAzureCredential
     except ImportError:
         print(
-            "azure-containerapps-sandbox is not installed. "
-            "Run: uv sync --package maf-aca-sandboxes --extra aca",
+            "azure-containerapps-sandbox is not installed. Run: uv sync --package maf-sandbox-aca",
             file=sys.stderr,
         )
         return 2
@@ -88,7 +88,7 @@ async def _run(args: argparse.Namespace) -> int:
     # The same accessor the runtime resolver uses.  `DiskImage.image` is a DiskImageSpec,
     # not a string, so comparing it directly to the reference never matches and the
     # idempotency check below would silently re-import on every run.
-    from maf_aca_sandboxes import disk_image_base
+    from maf_sandbox_aca import disk_image_base
 
     credential = DefaultAzureCredential()
     client = SandboxGroupClient(
@@ -109,12 +109,16 @@ async def _run(args: argparse.Namespace) -> int:
         # types, so a typo in a keyword — or a value of the wrong type — would only show
         # up as a service error during a slow LRO.  `managed_identity_resource_id=None` is
         # the SDK's own default, so passing it unconditionally changes nothing.
-        poller = await client.begin_create_disk_image(
+        # `Any`-annotated on purpose: azure-containerapps-sandbox is a 0.1.0bN preview that
+        # ships no type information, so a strict checker reports every value that comes back
+        # from it as unknown. Naming the type here says "untyped SDK boundary" once, instead
+        # of leaving five reportUnknown* findings for a reader to re-derive.
+        poller: Any = await client.begin_create_disk_image(  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
             args.image,
             name=args.name or _default_name(args.image),
             managed_identity_resource_id=args.identity or None,
         )
-        image = await poller.result()
+        image: Any = await poller.result()
         print(image.id)
         return 0
     finally:

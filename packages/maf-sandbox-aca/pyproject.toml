@@ -1,30 +1,90 @@
 [project]
-name = "maf-aca-sandboxes"
+name = "maf-sandbox-aca"
 version = "0.1.0"
-description = "Azure Container Apps Sandboxes as a sandbox backend for Microsoft Agent Framework agents (issue #408)."
+description = "Azure Container Apps Sandboxes as a sandbox backend for Microsoft Agent Framework agents — reference implementation of agent-framework#7568 (issue #408)."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
+authors = [{ name = "SOKOLAI BV", email = "info@sokolai.com" }]
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = [
+    "azure",
+    "container-apps",
+    "sandbox",
+    "agent-framework",
+    "microsoft-agent-framework",
+    "isolation",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Typing :: Typed",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Security",
+]
+# azure-containerapps-sandbox is now a HARD dependency (issue #697's dependency-honesty
+# flip): the old `[aca]` extra that gated it here is retired, and the host's own
+# optionality moved one layer up, to the `bicep-sandbox` extra in the root pyproject.toml
+# that pulls this whole package in. A host that installs maf-sandbox-aca at all wants it
+# to work; a host that does not configure a sandbox group should not install this package
+# in the first place, not install it crippled.
 dependencies = [
-    # The backend protocol and the router this backend registers with.
-    "sandbox-router",
+    # The backend protocol and the router this backend registers with. Floored like
+    # maf-sandbox-bicep's copy: unversioned, the published wheel would accept any
+    # maf-sandbox ever released, including one from before this protocol existed.
+    # Upper-bounded too: maf-sandbox has not yet reached a stable API, so every release
+    # before 1.0.0 may include breaking changes (see its CHANGELOG).
+    "maf-sandbox>=0.1.0,<0.2",
     # DefaultAzureCredential for the sandbox data plane.
     "azure-identity>=1.25.1,<2",
+    # The ACA Sandboxes data-plane SDK — still 0.1.0bN. The version pin lives here and
+    # nowhere else; a host reaches it by installing this package (or its `bicep-sandbox`
+    # extra), not by naming the SDK itself.
+    "azure-containerapps-sandbox>=0.1.0b3,<0.2",
 ]
 
-[project.optional-dependencies]
-# The ACA Sandboxes data-plane SDK — still 0.1.0bN, and only needed once a sandbox group is
-# actually configured, so it stays optional and every entry point degrades without it. The
-# pin lives here and nowhere else; a host reaches it through its own extra.
-aca = [
-    "azure-containerapps-sandbox==0.1.0b3",
-]
+[project.urls]
+Homepage = "https://www.sokol.ai"
+Source = "https://github.com/sokolaidev/ats-maf"
+Issues = "https://github.com/sokolaidev/ats-maf/issues"
 
 [tool.uv.sources]
-sandbox-router = { workspace = true }
+maf-sandbox = { workspace = true }
 
 [tool.uv.build-backend]
-module-name = "maf_aca_sandboxes"
+module-name = "maf_sandbox_aca"
 module-root = "src"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+extend-select = ["I", "UP", "D100", "D101", "D103", "D104"]
+ignore = ["UP037"]
+
+[tool.ruff.lint.per-file-ignores]
+# ruff resolves [tool.ruff] per file by the NEAREST ancestor pyproject.toml that has one —
+# once this package gained its own [tool.ruff] section, the root pyproject.toml's
+# "src/maf-sandbox-aca/tests/**" per-file-ignore entry stopped reaching these files, so this
+# package carries its own copy (issue #697).
+"tests/**" = ["D101", "D103"]
+
+# Self-contained type checking, scoped to this package (issue #697) — strict, unlike the
+# root config's basic mode over src/ats. `scripts` is included alongside `src` because
+# import_disk_image.py is a standalone operator script that ships beside the package, not
+# inside it — the root config includes it the same way. `tests/` stays out (fixtures and
+# hand-rolled Azure-SDK-shaped fakes, not signal for a strict checker).
+[tool.pyright]
+include = ["src", "scripts"]
+typeCheckingMode = "strict"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [build-system]
 requires = ["uv_build>=0.11.24,<0.12.0"]

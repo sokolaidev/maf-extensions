@@ -5,7 +5,7 @@ and returns the compiler's diagnostics — T2 (compiler truth) instead of T0 (th
 checking its own work).
 
 **This module contains no Azure import and no sandbox lifecycle code.**  It talks to a
-:class:`~sandbox_router.SandboxRouter` and gets back something with ``write_file`` and
+:class:`~maf_sandbox.SandboxRouter` and gets back something with ``write_file`` and
 ``exec``, so the same tool runs unchanged against ACA Sandboxes, a local Docker container or
 an in-process fake (issue #663's acceptance criterion).  What is Bicep-specific — the
 command templates, the accepted extensions, the SARIF parsing, the one host Bicep is allowed
@@ -19,18 +19,15 @@ from time import perf_counter
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from sandbox_router import (
-    NoSandboxBackend,
-    SandboxKey,
-    SandboxRouter,
-    SandboxSpec,
-    WorkspaceContext,
-)
+from maf_sandbox import SandboxRouter, SandboxSpec, WorkspaceContext, error_detail
+from maf_sandbox.maf import SandboxToolSession, sandboxed_tool
 
 from ._paths import safe_workspace_path
 from ._sarif import count_restore_failures, format_diagnostics, parse_sarif
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from agent_framework import AgentFileStore
 
 logger = logging.getLogger(__name__)
@@ -160,23 +157,38 @@ def make_bicep_tools(
         exec_timeout_seconds: Per-command bound. A sandbox that stops answering must not
             hold the caller's turn open.
     """
-    if router is None or not router.enabled:
-        return []
-
-    _router = router
-    _store = workspace_store
-    _agent_dir = agent_dir
-    _context = context
-    _spec = bicep_sandbox_spec(image, image_id)
-    _timeout = exec_timeout_seconds
-
-    from agent_framework import tool
-
-    @tool(
+    return sandboxed_tool(
+        lambda session: _bicep_validate_tool(session, workspace_store, exec_timeout_seconds),
+        router=router,
+        context=context,
+        agent_dir=agent_dir,
+        spec=bicep_sandbox_spec(image, image_id),
         name=BICEP_VALIDATE_TOOL_NAME,
         approval_mode="never_require",
-        additional_properties={"source_integrity": "trusted"},
+        # No `declarations=` and no `egress_max_confidentiality=`: the default derivation is
+        # exactly `{"source_integrity": "trusted"}`, which is what this tool has always
+        # declared. Trusted because the compiler's diagnostics are deterministic first-party
+        # output from a sandbox with no ambient identity and only `mcr.microsoft.com`
+        # reachable. No confidentiality key on purpose — a host's confidentiality tiers are
+        # the host's classification, and declaring one here can activate a policy leg a given
+        # host keeps dormant. `TestFidesDeclarations` pins the resulting dict.
+        logger=logger,
     )
+
+
+def _bicep_validate_tool(
+    session: SandboxToolSession,
+    store: "AgentFileStore",
+    timeout: int,
+) -> "Callable[..., Awaitable[str]]":
+    """Build the ``bicep_validate`` body for one attached tool.
+
+    Defined at module level rather than nested inside :func:`make_bicep_tools`, and that is
+    not a style choice: the function below's **docstring is the tool's description** — MAF
+    passes ``__doc__`` through verbatim, indentation and all — so nesting this one level
+    deeper would re-indent every line of what the model reads at call time.
+    """
+
     async def bicep_validate(
         files: list[str],
     ) -> str:
@@ -214,13 +226,11 @@ def make_bicep_tools(
         """
         # Scope and thread come from the host's request context — never from model input:
         # a model-supplied scope would let one conversation address another's sandbox.
-        thread_id = _context.current_thread_id()
-        if thread_id is None:
-            return (
-                "Error: no active thread context — bicep_validate must be called from "
-                "within a thread"
-            )
-        key = SandboxKey(scope=_context.current_scope(), thread_id=thread_id, agent_dir=_agent_dir)
+        # `session.key()` is where that rule lives; it answers with the message to return
+        # when no conversation is bound.
+        key = session.key()
+        if isinstance(key, str):
+            return key
 
         for name in files:
             if not name.endswith(_ACCEPTED_SUFFIXES):
@@ -230,10 +240,9 @@ def make_bicep_tools(
                 )
 
         # Enumerate the workspace so paths can be validated and content read.
-        try:
-            ws_files = await _context.list_files(_store)
-        except Exception as exc:  # noqa: BLE001
-            return f"Error: could not list workspace files: {exc}"
+        ws_files = await session.list_files(store)
+        if isinstance(ws_files, str):
+            return ws_files
 
         # Every call gets a fresh directory, because the sandbox is REUSED across fix rounds
         # and only the named files are written into it.
@@ -249,7 +258,7 @@ def make_bicep_tools(
         # defaults. Bicep finds that config by walking UP from the file, so a subdirectory
         # still picks it up — and the AVM module cache lives in ~/.bicep, untouched either
         # way. Staleness becomes impossible by construction instead of something to reconcile.
-        round_dir = f"{_spec.work_dir}/{uuid4().hex[:12]}"
+        round_dir = f"{session.spec.work_dir}/{uuid4().hex[:12]}"
 
         # Validate each name against that listing (the injection guard).
         validated: list[tuple[str, str]] = []  # (workspace_path, sandbox_path)
@@ -262,25 +271,12 @@ def make_bicep_tools(
                 )
             validated.append((name, sandbox_path))
 
-        try:
-            sandbox = await _router.acquire(key, _spec)
-        except ImportError as exc:
-            # The backend's SDK is not installed. Actionable, and carries no account detail.
-            logger.warning("bicep_validate: sandbox SDK unavailable: %s", exc)
-            return "Error: the sandbox backend is not installed — degrading to T0"
-        except NoSandboxBackend as exc:
-            logger.warning("bicep_validate: %s", exc)
-            return "Error: no sandbox backend is configured — degrading to T0"
-        except ValueError as exc:
-            # Raised by image resolution: a configuration message we author, safe to
-            # surface, and actionable for whoever is enabling the feature.
-            logger.warning("bicep_validate: %s", exc)
-            return f"Error: {exc}"
-        except Exception as exc:  # noqa: BLE001
-            # A provider/transport failure — its detail can carry endpoint, subscription and
-            # tenant ids, so it goes to the log and never into the model's context.
-            logger.warning("bicep_validate: sandbox unavailable: %s", _error_detail(exc))
-            return "Error: sandbox unavailable — degrading to T0 (LLM self-check only)"
+        # The four-branch degrade ladder — which failures may be named to the model and
+        # which may only reach the log — is `session.acquire`'s, and it writes its detail
+        # through this module's logger so those records keep this workload's logger name.
+        sandbox = await session.acquire(key)
+        if isinstance(sandbox, str):
+            return sandbox
 
         # Two passes, and the order is load-bearing: every file is written before ANY of them
         # is compiled.
@@ -300,7 +296,7 @@ def make_bicep_tools(
         written: list[tuple[str, str]] = []
         for name, sandbox_path in validated:
             try:
-                content = await _store.read(name)
+                content = await store.read(name)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("bicep_validate: could not read %r from workspace: %s", name, exc)
                 results.append(f"Error: could not read {name!r} from workspace")
@@ -321,7 +317,7 @@ def make_bicep_tools(
                 # distinguish "the directory already exists" from "the sandbox is suspending"
                 # — which is the difference between a bug and a retry.
                 logger.warning(
-                    "bicep_validate: could not write %r to sandbox: %s", name, _error_detail(exc)
+                    "bicep_validate: could not write %r to sandbox: %s", name, error_detail(exc)
                 )
                 results.append(f"Error: could not write {name!r} to sandbox")
                 continue
@@ -334,38 +330,13 @@ def make_bicep_tools(
             ):
                 results.append(
                     await _run_phase(
-                        sandbox, phase, template, name, sandbox_path, round_dir, _timeout
+                        sandbox, phase, template, name, sandbox_path, round_dir, timeout
                     )
                 )
 
         return "\n".join(results) if results else "No files validated."
 
-    return [bicep_validate]
-
-
-def _error_detail(exc: Exception) -> str:
-    """As much of a failure as the log can usefully carry.
-
-    ``str()`` on an azure-core ``HttpResponseError`` is just
-    ``Operation returned an invalid status 'Bad Request'`` — the *reason* is in the response
-    body, which that string drops.  A 400 that says only "Bad Request" cannot be acted on:
-    it took a hand-written probe against the live service to discover that one such failure
-    meant the app's identity had no role on the sandbox group.  This is log-only; the model
-    still sees the sanitized message.
-    """
-    parts = [f"{type(exc).__name__}: {exc}"]
-    status = getattr(exc, "status_code", None)
-    if status is not None:
-        parts.append(f"status={status}")
-    response = getattr(exc, "response", None)
-    if response is not None:
-        try:
-            body = response.text()
-        except Exception:  # noqa: BLE001 - diagnostics must not raise
-            body = None
-        if body:
-            parts.append(f"body={body[:600]}")
-    return " | ".join(parts)
+    return bicep_validate
 
 
 async def _run_phase(
@@ -393,7 +364,7 @@ async def _run_phase(
         logger.warning("bicep_validate: %s exec timed out for %r after %ss", phase, name, timeout)
         return f"{phase}({name}): Error: timed out after {timeout}s"
     except Exception as exc:  # noqa: BLE001
-        logger.warning("bicep_validate: %s exec failed for %r: %s", phase, name, _error_detail(exc))
+        logger.warning("bicep_validate: %s exec failed for %r: %s", phase, name, error_detail(exc))
         return f"{phase}({name}): Error: exec failed"
     elapsed_ms = int((perf_counter() - started) * 1000)
 

@@ -16,8 +16,8 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from sandbox_router import (
-    ExecResult,
+
+from maf_sandbox import (
     Isolation,
     NoSandboxBackend,
     SandboxBackend,
@@ -26,57 +26,13 @@ from sandbox_router import (
     SandboxRouter,
     SandboxSpec,
 )
+from maf_sandbox.testing import InProcessSandboxBackend
 
 _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
 _SPEC = SandboxSpec(kind="test")
 
 
-class _FakeSandbox:
-    def __init__(self) -> None:
-        self.files: dict[str, str] = {}
-        self.commands: list[str] = []
-
-    async def write_file(self, path: str, content: str) -> None:
-        self.files[path] = content
-
-    async def exec(self, command: str, *, working_directory: str, timeout: float) -> ExecResult:
-        self.commands.append(command)
-        return ExecResult(stdout="")
-
-
-class _FakeBackend:
-    """A backend whose isolation is whatever the test needs it to be."""
-
-    def __init__(self, name: str = "fake", isolation: str = Isolation.VM) -> None:
-        self._name = name
-        self._isolation = isolation
-        self.acquired: list[SandboxKey] = []
-        self.disposed: list[SandboxKey] = []
-        self.purged: list[tuple[str, str]] = []
-        self.purge_count = 1
-        self.sandbox = _FakeSandbox()
-
-    @property
-    def name(self) -> str:
-        return self._name
-
-    @property
-    def isolation(self) -> str:
-        return self._isolation
-
-    async def acquire(self, key, spec):
-        self.acquired.append(key)
-        return self.sandbox
-
-    async def dispose(self, key) -> None:
-        self.disposed.append(key)
-
-    async def dispose_scope(self, scope: str, thread_id: str) -> int:
-        self.purged.append((scope, thread_id))
-        return self.purge_count
-
-
-class _ExplodingBackend(_FakeBackend):
+class _ExplodingBackend(InProcessSandboxBackend):
     async def dispose_scope(self, scope: str, thread_id: str) -> int:
         raise RuntimeError("service unavailable")
 
@@ -87,7 +43,7 @@ class _ExplodingBackend(_FakeBackend):
 class TestProtocolConformance:
     def test_a_fake_backend_satisfies_the_protocol(self):
         """If this fails the fakes below have drifted from the contract they stand in for."""
-        assert isinstance(_FakeBackend(), SandboxBackend)
+        assert isinstance(InProcessSandboxBackend(), SandboxBackend)
 
 
 class TestSelection:
@@ -97,27 +53,36 @@ class TestSelection:
         assert router.backend is None
 
     def test_defaults_to_the_first_registered_backend(self):
-        first, second = _FakeBackend("first"), _FakeBackend("second")
+        first, second = (
+            InProcessSandboxBackend(name="first"),
+            InProcessSandboxBackend(name="second"),
+        )
         router = SandboxRouter([first, second])
         assert router.backend is first
         assert router.enabled is True
 
     def test_selects_by_name(self):
-        first, second = _FakeBackend("first"), _FakeBackend("second")
+        first, second = (
+            InProcessSandboxBackend(name="first"),
+            InProcessSandboxBackend(name="second"),
+        )
         assert SandboxRouter([first, second], selected="second").backend is second
 
     def test_unknown_name_raises_with_the_registered_ones_named(self):
         with pytest.raises(NoSandboxBackend, match="registered: aca, fake"):
-            SandboxRouter([_FakeBackend("fake"), _FakeBackend("aca")], selected="docker")
+            SandboxRouter(
+                [InProcessSandboxBackend(name="fake"), InProcessSandboxBackend(name="aca")],
+                selected="docker",
+            )
 
     def test_acquire_without_a_backend_raises(self):
         with pytest.raises(NoSandboxBackend):
             asyncio.run(SandboxRouter([]).acquire(_KEY, _SPEC))
 
     def test_acquire_delegates_to_the_selected_backend(self):
-        backend = _FakeBackend()
+        backend = InProcessSandboxBackend()
         sandbox = asyncio.run(SandboxRouter([backend]).acquire(_KEY, _SPEC))
-        assert backend.acquired == [_KEY]
+        assert backend.keys == [_KEY]
         assert sandbox is backend.sandbox
 
 
@@ -125,48 +90,60 @@ class TestDeployedIsolationRule:
     """`SANDBOX_BACKEND=docker` + deployed must fail closed — issue #663's hard constraint."""
 
     def test_vm_isolation_is_permitted_when_deployed(self):
-        router = SandboxRouter([_FakeBackend(isolation=Isolation.VM)], deployed=True)
+        router = SandboxRouter([InProcessSandboxBackend(isolation=Isolation.VM)], deployed=True)
         assert router.enabled is True
 
     @pytest.mark.parametrize("isolation", [Isolation.CONTAINER, Isolation.PROCESS])
     def test_weaker_isolation_is_refused_when_deployed(self, isolation):
         with pytest.raises(PermissionError, match="not permitted in a deployed environment"):
-            SandboxRouter([_FakeBackend("docker", isolation)], deployed=True)
+            SandboxRouter(
+                [InProcessSandboxBackend(name="docker", isolation=isolation)], deployed=True
+            )
 
     def test_the_refusal_happens_at_construction_not_at_first_use(self):
         """A misconfigured deployment must not start with the feature apparently enabled."""
         with pytest.raises(PermissionError):
-            SandboxRouter([_FakeBackend("docker", Isolation.CONTAINER)], deployed=True)
+            SandboxRouter(
+                [InProcessSandboxBackend(name="docker", isolation=Isolation.CONTAINER)],
+                deployed=True,
+            )
 
     def test_weaker_isolation_is_fine_locally(self):
-        router = SandboxRouter([_FakeBackend("docker", Isolation.CONTAINER)], deployed=False)
+        router = SandboxRouter(
+            [InProcessSandboxBackend(name="docker", isolation=Isolation.CONTAINER)], deployed=False
+        )
         assert router.enabled is True
 
     def test_it_refuses_rather_than_falling_back_to_a_stronger_backend(self):
         """Falling back would hide the misconfiguration — the whole reason this is an error."""
-        docker = _FakeBackend("docker", Isolation.CONTAINER)
-        aca = _FakeBackend("aca", Isolation.VM)
+        docker = InProcessSandboxBackend(name="docker", isolation=Isolation.CONTAINER)
+        aca = InProcessSandboxBackend(name="aca", isolation=Isolation.VM)
         with pytest.raises(PermissionError):
             SandboxRouter([docker, aca], deployed=True, selected="docker")
 
     def test_an_unselected_weak_backend_does_not_poison_a_valid_selection(self):
-        docker = _FakeBackend("docker", Isolation.CONTAINER)
-        aca = _FakeBackend("aca", Isolation.VM)
+        docker = InProcessSandboxBackend(name="docker", isolation=Isolation.CONTAINER)
+        aca = InProcessSandboxBackend(name="aca", isolation=Isolation.VM)
         assert SandboxRouter([aca, docker], deployed=True, selected="aca").backend is aca
 
 
 class TestPurge:
     def test_dispose_scope_asks_every_backend_not_only_the_selected_one(self):
         """A conversation may have been served while a different backend was configured."""
-        first, second = _FakeBackend("first"), _FakeBackend("second")
+        first, second = (
+            InProcessSandboxBackend(name="first"),
+            InProcessSandboxBackend(name="second"),
+        )
         total = asyncio.run(SandboxRouter([first, second]).dispose_scope("scope-a", "thread-1"))
         assert total == 2
         assert first.purged == second.purged == [("scope-a", "thread-1")]
 
     def test_a_failing_backend_does_not_stop_the_others(self):
-        good = _FakeBackend("good")
+        good = InProcessSandboxBackend(name="good")
         total = asyncio.run(
-            SandboxRouter([_ExplodingBackend("bad"), good]).dispose_scope("scope-a", "thread-1")
+            SandboxRouter([_ExplodingBackend(name="bad"), good]).dispose_scope(
+                "scope-a", "thread-1"
+            )
         )
         assert total == 1
         assert good.purged == [("scope-a", "thread-1")]
@@ -176,7 +153,7 @@ class TestPurge:
 
     def test_purger_is_duck_typed_on_purge_scoped_thread(self):
         """The host awaits this without importing the class, so the name is the contract."""
-        backend = _FakeBackend()
+        backend = InProcessSandboxBackend()
         purger = SandboxPurger(SandboxRouter([backend]))
         assert asyncio.run(purger.purge_scoped_thread("scope-a", "thread-1")) == 1
         assert backend.purged == [("scope-a", "thread-1")]
@@ -219,9 +196,9 @@ class TestNoHostDependency:
     def _sources(self):
         import pathlib
 
-        import sandbox_router
+        import maf_sandbox
 
-        root = pathlib.Path(sandbox_router.__file__).parent  # type: ignore[arg-type]
+        root = pathlib.Path(maf_sandbox.__file__).parent  # type: ignore[arg-type]
         distribution = root.parent.parent
         paths = []
         # `scripts` does not exist here today; the guarded leg keeps a future operator
@@ -234,7 +211,7 @@ class TestNoHostDependency:
 
     def test_sources_exist(self):
         """Guards the scan below against silently finding nothing."""
-        assert len(self._sources()) >= 5
+        assert len(self._sources()) >= 12
 
     def test_nothing_imports_the_host_application(self):
         import re
@@ -251,41 +228,158 @@ class TestNoHostDependency:
         )
 
 
-class TestZeroDependencies:
-    """`pyproject.toml` declares `dependencies = []` — this is what makes that claim true.
+#: The modules the stdlib-only claim covers, named one by one.  An **allowlist**, not a
+#: denylist of exemptions: a module added to this package is outside the claim until someone
+#: writes it in here, so widening the scan is a line in a diff rather than something that
+#: happens by omission.  `TestModuleInventory` pins the complement, so a new module cannot be
+#: quietly neither.
+_PROTOCOL_MODULES = frozenset({"_error_detail", "_protocol", "_purger", "_router", "testing"})
 
-    This layer is protocol and policy: giving it a backend dependency, or a MAF one, would
-    make it the thing it exists to keep apart (see the module docstring). Nothing else pins
-    that; a dependency added to a module without a matching `pyproject.toml` entry would
-    still import fine in this workspace, because every other member is already on the path.
+#: The modules deliberately OUTSIDE the stdlib-only claim (issue #697).  `maf` is the MAF-glue
+#: module, the one place `agent_framework` may be imported — see `TestMafIsTheOnlyMafImporter`
+#: for the other half of that rule.  `__init__` is here because it is not protocol either: it
+#: re-exports and carries the experimental notice.  Both are still covered by
+#: `TestNoHostDependency` above and by the `agent_framework` boundary below; what they are
+#: exempt from is only the "standard library and nothing else" claim.
+_NON_PROTOCOL_MODULES = frozenset({"__init__", "maf"})
+
+#: The one module allowed to import `agent_framework`.
+_MAF_GLUE_MODULE = "maf"
+
+
+def _package_modules():
+    """Every module in the installed `maf_sandbox`, as `{stem: path}`."""
+    import pathlib
+
+    import maf_sandbox
+
+    root = pathlib.Path(maf_sandbox.__file__).parent  # type: ignore[arg-type]
+    return {path.stem: path for path in root.rglob("*.py")}
+
+
+def _imported_top_levels(path):
+    """The absolute top-level module names imported by the file at `path`."""
+    import ast
+
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    names: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.extend(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level > 0:
+                continue  # relative import — within this package, not a dependency
+            top = (node.module or "").split(".")[0]
+            if top:
+                names.append(top)
+    return names
+
+
+class TestModuleInventory:
+    """Every module is either in the stdlib-only claim or explicitly outside it.
+
+    Without this, the allowlist above would decay into a snapshot: a module added later would
+    simply never be scanned, and the zero-dependency guarantee would erode silently rather
+    than fail. Adding a module has to be a decision — this is where it is recorded.
     """
 
-    def test_the_module_imports_nothing_outside_the_standard_library(self):
-        import ast
-        import pathlib
+    def test_every_module_is_classified(self):
+        assert set(_package_modules()) == _PROTOCOL_MODULES | _NON_PROTOCOL_MODULES, (
+            "a module was added to or removed from maf_sandbox without deciding whether the "
+            "stdlib-only claim covers it. Put it in _PROTOCOL_MODULES (and keep it importing "
+            "nothing but the standard library) or in _NON_PROTOCOL_MODULES (and say why here)."
+        )
+
+
+class TestZeroDependencies:
+    """The protocol modules import nothing but the standard library.
+
+    This layer is protocol and policy: giving THOSE modules a backend dependency, or a MAF
+    one, would make them the thing they exist to keep apart (see the package docstring).
+    Nothing else pins it; a dependency added to a module without a matching `pyproject.toml`
+    entry would still import fine in this workspace, because every other member is already on
+    the path.
+
+    The claim is scoped to :data:`_PROTOCOL_MODULES` rather than to the whole distribution
+    (issue #697): the dist now declares `agent-framework-core` for `maf_sandbox.maf`, and a
+    scan that kept asserting "nothing here imports anything" would have had to be deleted
+    outright — trading a precise, still-true invariant for none at all.
+    """
+
+    def test_the_protocol_modules_import_nothing_outside_the_standard_library(self):
         import sys
 
-        import sandbox_router
-
-        root = pathlib.Path(sandbox_router.__file__).parent  # type: ignore[arg-type]
         stdlib = set(sys.stdlib_module_names)
         offenders: list[str] = []
-        for path in root.rglob("*.py"):
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Import):
-                    for alias in node.names:
-                        top = alias.name.split(".")[0]
-                        if top != "__future__" and top not in stdlib:
-                            offenders.append(f"{path.name}: import {alias.name}")
-                elif isinstance(node, ast.ImportFrom):
-                    if node.level > 0:
-                        continue  # relative import — within this package, not a dependency
-                    top = (node.module or "").split(".")[0]
-                    if top and top != "__future__" and top not in stdlib:
-                        offenders.append(f"{path.name}: from {node.module} import ...")
+        for stem, path in sorted(_package_modules().items()):
+            if stem not in _PROTOCOL_MODULES:
+                continue
+            offenders.extend(
+                f"{path.name}: import {name}"
+                for name in _imported_top_levels(path)
+                if name != "__future__" and name not in stdlib
+            )
         assert offenders == [], (
-            f"sandbox_router imports outside the standard library: {offenders}. "
-            "Its entire reason to exist is zero dependencies — see pyproject.toml's "
-            "`dependencies = []` and the module docstring."
+            f"maf_sandbox's protocol modules import outside the standard library: "
+            f"{offenders}. Their entire reason to exist is zero dependencies — see the "
+            "package docstring and pyproject.toml's dependency comment."
+        )
+
+
+class TestMafIsTheOnlyMafImporter:
+    """`agent_framework` may be imported by `maf_sandbox.maf` and by nothing else (#697).
+
+    The distribution depends on MAF for that one glue module. The rule keeps that dependency
+    from spreading: a protocol module that reached for `agent_framework` would tie the
+    vocabulary a backend and a workload share to the framework a *host* happens to use, which
+    is the coupling this whole split exists to prevent — and it would do so invisibly, since
+    every module here imports fine in a workspace where MAF is installed anyway.
+    """
+
+    def test_only_the_glue_module_imports_agent_framework(self):
+        offenders = sorted(
+            f"{stem} ({path.name})"
+            for stem, path in _package_modules().items()
+            if stem != _MAF_GLUE_MODULE
+            and any(name == "agent_framework" for name in _imported_top_levels(path))
+        )
+        assert offenders == [], (
+            f"these maf_sandbox modules import agent_framework: {offenders}. Only "
+            f"{_MAF_GLUE_MODULE!r} may — everything else is the backend-neutral vocabulary a "
+            "provider and a workload share, and it must not require the host's framework."
+        )
+
+    def test_the_glue_module_really_is_the_importer(self):
+        """A boundary nobody is on the far side of would pass by accident forever."""
+        glue = _package_modules()[_MAF_GLUE_MODULE]
+        assert "agent_framework" in _imported_top_levels(glue), (
+            "maf.py no longer imports agent_framework, so the test above proves nothing. "
+            "If the glue moved, point _MAF_GLUE_MODULE at its new home."
+        )
+
+    def test_importing_the_package_does_not_reach_the_glue(self):
+        """`import maf_sandbox` must stay framework-free, which means `__init__` stays clean.
+
+        The glue module's own `agent_framework` import is lazy (inside `sandboxed_tool`, not
+        at module top), so importing `.maf` would not itself pull the framework in. The guard
+        exists anyway to keep `import maf_sandbox` from pulling in the glue module, full stop
+        — a consumer speaking only the protocol should not import code written against a host
+        framework it may not use.
+        """
+        import ast
+
+        source = _package_modules()["__init__"].read_text(encoding="utf-8")
+        relative_targets: set[str | None] = set()
+        for node in ast.walk(ast.parse(source)):
+            if not (isinstance(node, ast.ImportFrom) and node.level > 0):
+                continue
+            if node.module is not None:
+                relative_targets.add(node.module)
+            else:
+                # `from . import maf` — the target names live in the aliases, not `.module`.
+                relative_targets.update(alias.name for alias in node.names)
+        assert _MAF_GLUE_MODULE not in relative_targets, (
+            f"maf_sandbox/__init__.py imports .{_MAF_GLUE_MODULE}, which makes "
+            "`import maf_sandbox` import agent_framework. Consumers reach the glue by name: "
+            f"`from maf_sandbox.{_MAF_GLUE_MODULE} import ...`."
         )

@@ -7,6 +7,10 @@ so its absence is what several review rounds were spent compensating for by read
 
 Also covered: the path-safety guard, SARIF parsing, the command templates, and the fact that
 this package imports nothing from the application that hosts it.
+
+The fakes themselves live in :mod:`maf_sandbox.testing` (issue #697) rather than here — this
+module supplies only what is Bicep-specific: the empty-SARIF default and the per-test
+recording subclass.
 """
 
 from __future__ import annotations
@@ -16,7 +20,10 @@ import json
 import logging
 
 import pytest
-from sandbox_bicep import (
+from maf_sandbox import SandboxRouter, WorkspaceContext
+from maf_sandbox.testing import InMemoryStore, InProcessSandbox, InProcessSandboxBackend
+
+from maf_sandbox_bicep import (
     BICEP_TOOL_NAMES,
     BICEP_VALIDATE_TOOL_NAME,
     bicep_sandbox_spec,
@@ -25,8 +32,7 @@ from sandbox_bicep import (
     parse_sarif,
     safe_workspace_path,
 )
-from sandbox_bicep._tool import _BUILD_CMD, _LINT_CMD
-from sandbox_router import ExecResult, Isolation, SandboxRouter, WorkspaceContext
+from maf_sandbox_bicep._tool import _BUILD_CMD, _LINT_CMD
 
 # ---------------------------------------------------------------------------
 # Fakes: a backend that records what the workload asked it to do
@@ -64,79 +70,38 @@ def _sarif(rule: str = "no-unused-params", message: str = "Parameter 'foo' is un
 _EMPTY_SARIF = json.dumps({"version": "2.1.0", "runs": []})
 
 
-class _FakeSandbox:
-    def __init__(self, outputs: dict[str, str] | None = None, raises: BaseException | None = None):
-        self.files: dict[str, str] = {}
-        self.commands: list[tuple[str, str, float]] = []
-        self._outputs = outputs or {}
-        self._raises = raises
+def _fake_backend(
+    sandbox: InProcessSandbox | None = None, acquire_error: BaseException | None = None
+) -> InProcessSandboxBackend:
+    """A backend whose sandbox defaults to returning an empty-but-valid SARIF document.
 
-    async def write_file(self, path: str, content: str) -> None:
-        self.files[path] = content
-
-    async def exec(self, command: str, *, working_directory: str, timeout: float) -> ExecResult:
-        self.commands.append((command, working_directory, timeout))
-        if self._raises is not None:
-            raise self._raises
-        for marker, output in self._outputs.items():
-            if marker in command:
-                return ExecResult(stdout=output)
-        return ExecResult(stdout=_EMPTY_SARIF)
-
-
-class _FakeBackend:
-    """An in-process backend — issue #663's `fake`, in the shape the protocol asks for."""
-
-    def __init__(self, sandbox: _FakeSandbox | None = None, acquire_error=None) -> None:
-        self.sandbox = sandbox or _FakeSandbox()
-        self.acquire_error = acquire_error
-        self.specs: list = []
-        self.keys: list = []
-
-    @property
-    def name(self) -> str:
-        return "fake"
-
-    @property
-    def isolation(self) -> str:
-        return Isolation.PROCESS
-
-    async def acquire(self, key, spec):
-        if self.acquire_error is not None:
-            raise self.acquire_error
-        self.keys.append(key)
-        self.specs.append(spec)
-        return self.sandbox
-
-    async def dispose(self, key) -> None:
-        return None
-
-    async def dispose_scope(self, scope: str, thread_id: str) -> int:
-        return 0
-
-
-class _FakeStore:
-    """The slice of AgentFileStore the workload uses."""
-
-    def __init__(self, files: dict[str, str]) -> None:
-        self.files = dict(files)
-
-    async def read(self, name: str) -> str:
-        return self.files[name]
-
-
-def _context(store: _FakeStore, *, thread_id: str | None = "thread-1") -> WorkspaceContext:
-    async def _list(_s) -> list[str]:
-        return list(store.files)
-
-    return WorkspaceContext(
-        current_scope=lambda: "scope-a",
-        current_thread_id=lambda: thread_id,
-        list_files=_list,
+    :class:`~maf_sandbox.testing.InProcessSandbox` leaves what an unmatched command's stdout
+    is to the caller — deliberately, so no generic fake bakes in one kind's output shape.
+    Every test in this module wants an empty SARIF document there: a bare empty string fails
+    to parse and reads as a broken sandbox rather than a clean run, and that distinction is
+    exactly what :class:`TestExecutionIsVisible` depends on.
+    """
+    return InProcessSandboxBackend(
+        sandbox if sandbox is not None else InProcessSandbox(default_stdout=_EMPTY_SARIF),
+        acquire_error=acquire_error,
     )
 
 
-def _tool(store: _FakeStore, backend: _FakeBackend, *, thread_id: str | None = "thread-1", **kw):
+def _context(store: InMemoryStore, *, thread_id: str | None = "thread-1") -> WorkspaceContext:
+    return WorkspaceContext(
+        current_scope=lambda: "scope-a",
+        current_thread_id=lambda: thread_id,
+        list_files=InMemoryStore.list,
+    )
+
+
+def _tool(
+    store: InMemoryStore,
+    backend: InProcessSandboxBackend,
+    *,
+    thread_id: str | None = "thread-1",
+    **kw,
+):
     tools = make_bicep_tools(
         SandboxRouter([backend]),
         store,
@@ -151,7 +116,7 @@ def _tool(store: _FakeStore, backend: _FakeBackend, *, thread_id: str | None = "
 
 def _workspace_part(sandbox_path: str) -> str:
     """Strip `<work dir>/<per-call dir>/` off a sandbox path, leaving the workspace path."""
-    from sandbox_bicep._tool import _WORK_DIR
+    from maf_sandbox_bicep._tool import _WORK_DIR
 
     return sandbox_path.removeprefix(f"{_WORK_DIR}/").split("/", 1)[1]
 
@@ -177,8 +142,8 @@ class TestToolDescription:
     """
 
     def test_it_tells_the_caller_to_send_the_whole_set(self):
-        store = _FakeStore({"main.bicep": "x"})
-        tool = _tool(store, _FakeBackend())
+        store = InMemoryStore({"main.bicep": "x"})
+        tool = _tool(store, _fake_backend())
         fn = getattr(tool, "func", None) or getattr(tool, "__wrapped__", None) or tool
         doc = (fn.__doc__ or "").lower()
 
@@ -201,8 +166,8 @@ class TestWriteOrdering:
     happens to list it first.
     """
 
-    def _recording_sandbox(self, events: list[tuple[str, str]]) -> _FakeSandbox:
-        class _Recording(_FakeSandbox):
+    def _recording_sandbox(self, events: list[tuple[str, str]]) -> InProcessSandbox:
+        class _Recording(InProcessSandbox):
             async def write_file(self, path: str, content: str) -> None:
                 events.append(("write", path))
                 await super().write_file(path, content)
@@ -213,17 +178,17 @@ class TestWriteOrdering:
                     command, working_directory=working_directory, timeout=timeout
                 )
 
-        return _Recording()
+        return _Recording(default_stdout=_EMPTY_SARIF)
 
     def test_all_writes_precede_all_execs(self):
         events: list[tuple[str, str]] = []
-        store = _FakeStore(
+        store = InMemoryStore(
             {
                 "main.bicep": "module db 'modules/db.bicep' = {}",
                 "modules/db.bicep": "param name string",
             }
         )
-        backend = _FakeBackend(sandbox=self._recording_sandbox(events))
+        backend = _fake_backend(sandbox=self._recording_sandbox(events))
 
         _run(_tool(store, backend), ["main.bicep", "modules/db.bicep"])
 
@@ -235,10 +200,10 @@ class TestWriteOrdering:
 
     def test_a_parameter_file_listed_first_still_sees_its_template(self):
         events: list[tuple[str, str]] = []
-        store = _FakeStore(
+        store = InMemoryStore(
             {"main.bicepparam": "using 'main.bicep'", "main.bicep": "param x string"}
         )
-        backend = _FakeBackend(sandbox=self._recording_sandbox(events))
+        backend = _fake_backend(sandbox=self._recording_sandbox(events))
 
         # The parameter file first — the order that used to compile it against a sandbox
         # holding nothing but itself.
@@ -262,8 +227,8 @@ class TestParameterFiles:
     """
 
     def test_a_bicepparam_is_built_with_build_params(self):
-        store = _FakeStore({"main.bicepparam": "using 'main.bicep'"})
-        backend = _FakeBackend()
+        store = InMemoryStore({"main.bicepparam": "using 'main.bicep'"})
+        backend = _fake_backend()
         _run(_tool(store, backend), ["main.bicepparam"])
 
         commands = [c for c, _, _ in backend.sandbox.commands]
@@ -273,8 +238,8 @@ class TestParameterFiles:
         )
 
     def test_a_template_still_uses_plain_build(self):
-        store = _FakeStore({"main.bicep": "param x string"})
-        backend = _FakeBackend()
+        store = InMemoryStore({"main.bicep": "param x string"})
+        backend = _fake_backend()
         _run(_tool(store, backend), ["main.bicep"])
 
         commands = [c for c, _, _ in backend.sandbox.commands]
@@ -283,15 +248,15 @@ class TestParameterFiles:
 
     def test_both_kinds_still_get_linted(self):
         for filename, body in (("main.bicep", "param x string"), ("p.bicepparam", "using 'x'")):
-            store = _FakeStore({filename: body})
-            backend = _FakeBackend()
+            store = InMemoryStore({filename: body})
+            backend = _fake_backend()
             _run(_tool(store, backend), [filename])
             commands = [c for c, _, _ in backend.sandbox.commands]
             assert any(c.startswith("bicep lint ") for c in commands), (filename, commands)
 
     def test_the_build_command_keeps_the_stderr_merge(self):
         """Both build variants must keep `2>&1`; SARIF goes to stderr for each."""
-        from sandbox_bicep._tool import _BUILD_CMD, _BUILD_PARAMS_CMD
+        from maf_sandbox_bicep._tool import _BUILD_CMD, _BUILD_PARAMS_CMD
 
         assert "2>&1" in _BUILD_CMD
         assert "2>&1" in _BUILD_PARAMS_CMD
@@ -307,10 +272,10 @@ class TestExecutionIsVisible:
     """
 
     def test_a_clean_run_logs_the_phase_file_and_diagnostic_count(self, caplog):
-        store = _FakeStore({"main.bicep": "param unused string"})
-        backend = _FakeBackend()
+        store = InMemoryStore({"main.bicep": "param unused string"})
+        backend = _fake_backend()
 
-        with caplog.at_level(logging.INFO, logger="sandbox_bicep"):
+        with caplog.at_level(logging.INFO, logger="maf_sandbox_bicep"):
             _run(_tool(store, backend), ["main.bicep"])
 
         ok = [r.getMessage() for r in caplog.records if "bicep_validate: " in r.getMessage()]
@@ -321,15 +286,15 @@ class TestExecutionIsVisible:
         assert all("elapsed_ms=" in m for m in ok), ok
 
     def test_a_failed_exec_logs_no_success_line(self, caplog):
-        store = _FakeStore({"main.bicep": "x"})
-        backend = _FakeBackend()
+        store = InMemoryStore({"main.bicep": "x"})
+        backend = _fake_backend()
 
         async def _boom(command, *, working_directory, timeout):
             raise RuntimeError("exec blew up")
 
         backend.sandbox.exec = _boom  # type: ignore[method-assign]
 
-        with caplog.at_level(logging.INFO, logger="sandbox_bicep"):
+        with caplog.at_level(logging.INFO, logger="maf_sandbox_bicep"):
             out = _run(_tool(store, backend), ["main.bicep"])
 
         assert "Error: exec failed" in out
@@ -359,15 +324,15 @@ class TestFailureDetailIsLogged:
                 def text() -> str:
                     return '{"error":"principal lacks a role on sandbox group acas-x"}'
 
-        store = _FakeStore({"main.bicep": "x"})
-        backend = _FakeBackend()
+        store = InMemoryStore({"main.bicep": "x"})
+        backend = _fake_backend()
 
         async def _boom(key, spec):
             raise _HttpError()
 
         backend.acquire = _boom  # type: ignore[method-assign]
 
-        with caplog.at_level(logging.WARNING, logger="sandbox_bicep"):
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox_bicep"):
             out = _run(_tool(store, backend), ["main.bicep"])
 
         logged = caplog.text
@@ -381,8 +346,8 @@ class TestFailureDetailIsLogged:
 
 class TestEndToEnd:
     def test_writes_the_file_into_the_sandbox_and_reports_clean(self):
-        store = _FakeStore({"main.bicep": "param unused string"})
-        backend = _FakeBackend()
+        store = InMemoryStore({"main.bicep": "param unused string"})
+        backend = _fake_backend()
         out = _run(_tool(store, backend), ["main.bicep"])
 
         assert list(backend.sandbox.files.values()) == ["param unused string"]
@@ -392,8 +357,8 @@ class TestEndToEnd:
         assert "lint(main.bicep): no diagnostics" in out
 
     def test_runs_build_then_lint_with_the_fixed_templates(self):
-        store = _FakeStore({"main.bicep": "x"})
-        backend = _FakeBackend()
+        store = InMemoryStore({"main.bicep": "x"})
+        backend = _fake_backend()
         _run(_tool(store, backend), ["main.bicep"])
 
         (path,) = backend.sandbox.files
@@ -401,8 +366,10 @@ class TestEndToEnd:
         assert commands == [_BUILD_CMD.format(path=path), _LINT_CMD.format(path=path)]
 
     def test_renders_diagnostics_from_sarif(self):
-        store = _FakeStore({"main.bicep": "x"})
-        backend = _FakeBackend(_FakeSandbox(outputs={"bicep lint": _sarif()}))
+        store = InMemoryStore({"main.bicep": "x"})
+        backend = _fake_backend(
+            InProcessSandbox(outputs={"bicep lint": _sarif()}, default_stdout=_EMPTY_SARIF)
+        )
         out = _run(_tool(store, backend), ["main.bicep"])
 
         assert "lint(main.bicep): 1 diagnostic(s)" in out
@@ -410,30 +377,36 @@ class TestEndToEnd:
 
     def test_unparseable_output_is_an_error_not_a_clean_build(self):
         """A broken sandbox must never read as "no diagnostics"."""
-        store = _FakeStore({"main.bicep": "x"})
-        backend = _FakeBackend(_FakeSandbox(outputs={"bicep build": "Segmentation fault"}))
+        store = InMemoryStore({"main.bicep": "x"})
+        backend = _fake_backend(
+            InProcessSandbox(
+                outputs={"bicep build": "Segmentation fault"}, default_stdout=_EMPTY_SARIF
+            )
+        )
         out = _run(_tool(store, backend), ["main.bicep"])
 
         assert "build(main.bicep): Error: could not parse SARIF output" in out
 
     def test_the_exec_timeout_is_passed_through(self):
-        store = _FakeStore({"main.bicep": "x"})
-        backend = _FakeBackend()
+        store = InMemoryStore({"main.bicep": "x"})
+        backend = _fake_backend()
         _run(_tool(store, backend, exec_timeout_seconds=7), ["main.bicep"])
 
         assert {t for _, _, t in backend.sandbox.commands} == {7}
 
     def test_a_timeout_is_reported_per_phase_rather_than_hanging(self):
-        store = _FakeStore({"main.bicep": "x"})
-        backend = _FakeBackend(_FakeSandbox(raises=TimeoutError()))
+        store = InMemoryStore({"main.bicep": "x"})
+        backend = _fake_backend(
+            InProcessSandbox(raises=TimeoutError(), default_stdout=_EMPTY_SARIF)
+        )
         out = _run(_tool(store, backend, exec_timeout_seconds=3), ["main.bicep"])
 
         assert "build(main.bicep): Error: timed out after 3s" in out
         assert "lint(main.bicep): Error: timed out after 3s" in out
 
     def test_validates_every_file_it_is_given(self):
-        store = _FakeStore({"a.bicep": "1", "b.bicep": "2"})
-        backend = _FakeBackend()
+        store = InMemoryStore({"a.bicep": "1", "b.bicep": "2"})
+        backend = _fake_backend()
         out = _run(_tool(store, backend), ["a.bicep", "b.bicep"])
 
         # Paths are <work dir>/<per-call dir>/<workspace path>; assert the last part rather
@@ -442,8 +415,8 @@ class TestEndToEnd:
         assert out.count("no diagnostics") == 4  # build + lint, per file
 
     def test_the_key_carries_the_hosts_scope_and_thread_not_model_input(self):
-        store = _FakeStore({"main.bicep": "x"})
-        backend = _FakeBackend()
+        store = InMemoryStore({"main.bicep": "x"})
+        backend = _fake_backend()
         _run(_tool(store, backend), ["main.bicep"])
 
         key = backend.keys[0]
@@ -454,8 +427,8 @@ class TestEndToEnd:
         )
 
     def test_the_spec_it_asks_for_allows_only_mcr(self):
-        store = _FakeStore({"main.bicep": "x"})
-        backend = _FakeBackend()
+        store = InMemoryStore({"main.bicep": "x"})
+        backend = _fake_backend()
         _run(_tool(store, backend), ["main.bicep"])
 
         assert backend.specs[0].egress_allow == ("mcr.microsoft.com", "*.data.mcr.microsoft.com")
@@ -474,8 +447,8 @@ class TestStaleFilesAcrossRounds:
     """
 
     def test_each_call_writes_into_a_fresh_directory(self):
-        store = _FakeStore({"main.bicep": "x", "modules/storage.bicep": "y"})
-        backend = _FakeBackend()
+        store = InMemoryStore({"main.bicep": "x", "modules/storage.bicep": "y"})
+        backend = _fake_backend()
         tool = _tool(store, backend)
 
         _run(tool, ["main.bicep", "modules/storage.bicep"])
@@ -494,8 +467,8 @@ class TestStaleFilesAcrossRounds:
         assert {p.rsplit("/", 1)[0] for p in first}.isdisjoint({round_two_path.rsplit("/", 1)[0]})
 
     def test_the_stale_module_is_not_in_the_second_rounds_directory(self):
-        store = _FakeStore({"main.bicep": "x", "modules/storage.bicep": "y"})
-        backend = _FakeBackend()
+        store = InMemoryStore({"main.bicep": "x", "modules/storage.bicep": "y"})
+        backend = _fake_backend()
         tool = _tool(store, backend)
 
         _run(tool, ["main.bicep", "modules/storage.bicep"])
@@ -509,11 +482,11 @@ class TestStaleFilesAcrossRounds:
 
     def test_the_round_directory_sits_under_the_work_dir(self):
         """`bicepconfig.json` is at the work-dir root; Bicep finds it by walking up."""
-        store = _FakeStore({"main.bicep": "x"})
-        backend = _FakeBackend()
+        store = InMemoryStore({"main.bicep": "x"})
+        backend = _fake_backend()
         _run(_tool(store, backend), ["main.bicep"])
 
-        from sandbox_bicep._tool import _WORK_DIR
+        from maf_sandbox_bicep._tool import _WORK_DIR
 
         (path,) = backend.sandbox.files
         assert path.startswith(f"{_WORK_DIR}/")
@@ -521,8 +494,8 @@ class TestStaleFilesAcrossRounds:
         assert path != f"{_WORK_DIR}/main.bicep"
 
     def test_the_compiler_runs_in_the_round_directory(self):
-        store = _FakeStore({"main.bicep": "x"})
-        backend = _FakeBackend()
+        store = InMemoryStore({"main.bicep": "x"})
+        backend = _fake_backend()
         _run(_tool(store, backend), ["main.bicep"])
 
         (path,) = backend.sandbox.files
@@ -552,9 +525,9 @@ class TestDeployWorkflowStaysOffTheApplication:
     def _workflow(self):
         import pathlib
 
-        import sandbox_bicep
+        import maf_sandbox_bicep
 
-        distribution = pathlib.Path(sandbox_bicep.__file__).parents[2]
+        distribution = pathlib.Path(maf_sandbox_bicep.__file__).parents[2]
         for root in (distribution.parents[1], distribution):
             path = root / ".github" / "workflows" / "deploy-bicep-sandbox.yml"
             if path.is_file():
@@ -626,9 +599,9 @@ class TestConfigDiscovery:
     def _dockerfile(self):
         import pathlib
 
-        import sandbox_bicep
+        import maf_sandbox_bicep
 
-        distribution = pathlib.Path(sandbox_bicep.__file__).parents[2]
+        distribution = pathlib.Path(maf_sandbox_bicep.__file__).parents[2]
         candidates = [
             # In the host repo, where images/ is a sibling of src/.
             distribution.parents[1] / "images" / "bicep-sandbox" / "Dockerfile",
@@ -645,7 +618,7 @@ class TestConfigDiscovery:
         )
 
     def test_the_image_puts_bicepconfig_at_the_work_dir_root(self):
-        from sandbox_bicep._tool import _WORK_DIR
+        from maf_sandbox_bicep._tool import _WORK_DIR
 
         text = self._dockerfile().read_text(encoding="utf-8")
         assert f"COPY bicepconfig.json {_WORK_DIR}/bicepconfig.json" in text, (
@@ -655,29 +628,38 @@ class TestConfigDiscovery:
 
     def test_the_round_directory_is_a_child_of_that_root(self):
         """One level down, so the walk-up reaches the config in a single step."""
-        store = _FakeStore({"main.bicep": "x"})
-        backend = _FakeBackend()
+        store = InMemoryStore({"main.bicep": "x"})
+        backend = _fake_backend()
         _run(_tool(store, backend), ["main.bicep"])
 
-        from sandbox_bicep._tool import _WORK_DIR
+        from maf_sandbox_bicep._tool import _WORK_DIR
 
         (path,) = backend.sandbox.files
         assert path.startswith(f"{_WORK_DIR}/")
         assert path.count("/") == _WORK_DIR.count("/") + 2  # <root>/<round>/main.bicep
 
+    def test_the_compiler_runs_in_the_round_directory(self):
+        store = InMemoryStore({"main.bicep": "x"})
+        backend = _fake_backend()
+        _run(_tool(store, backend), ["main.bicep"])
+
+        (path,) = backend.sandbox.files
+        round_dir = path.rsplit("/", 1)[0]
+        assert {wd for _, wd, _ in backend.sandbox.commands} == {round_dir}
+
 
 class TestEndToEndRefusals:
     def test_rejects_a_non_bicep_extension_before_touching_the_sandbox(self):
-        store = _FakeStore({"main.tf": "x"})
-        backend = _FakeBackend()
+        store = InMemoryStore({"main.tf": "x"})
+        backend = _fake_backend()
         out = _run(_tool(store, backend), ["main.tf"])
 
         assert "only accepts .bicep and .bicepparam" in out
         assert backend.keys == []
 
     def test_rejects_a_file_that_is_not_in_the_workspace_listing(self):
-        store = _FakeStore({"main.bicep": "x"})
-        backend = _FakeBackend()
+        store = InMemoryStore({"main.bicep": "x"})
+        backend = _fake_backend()
         out = _run(_tool(store, backend), ["other.bicep"])
 
         assert "not in the workspace listing" in out
@@ -692,8 +674,8 @@ class TestEndToEndRefusals:
         first gate — otherwise it would pass without ever exercising the second.
         """
         malicious = "a;$(id).bicep"
-        store = _FakeStore({malicious: "x"})
-        backend = _FakeBackend()
+        store = InMemoryStore({malicious: "x"})
+        backend = _fake_backend()
         out = _run(_tool(store, backend), [malicious])
 
         assert "unsafe characters" in out
@@ -701,25 +683,25 @@ class TestEndToEndRefusals:
 
     def test_the_extension_gate_runs_before_the_path_guard(self):
         """Pins the ordering the test above depends on."""
-        store = _FakeStore({"main.bicep; rm -rf /": "x"})
-        backend = _FakeBackend()
+        store = InMemoryStore({"main.bicep; rm -rf /": "x"})
+        backend = _fake_backend()
         out = _run(_tool(store, backend), ["main.bicep; rm -rf /"])
 
         assert "only accepts .bicep and .bicepparam" in out
         assert backend.sandbox.commands == []
 
     def test_no_thread_context_is_refused(self):
-        store = _FakeStore({"main.bicep": "x"})
-        backend = _FakeBackend()
+        store = InMemoryStore({"main.bicep": "x"})
+        backend = _fake_backend()
         out = _run(_tool(store, backend, thread_id=None), ["main.bicep"])
 
         assert "no active thread context" in out
 
     def test_an_unavailable_sandbox_degrades_to_t0_without_leaking_sdk_detail(self):
         """SDK errors carry endpoint/subscription/tenant and tool results are persisted."""
-        store = _FakeStore({"main.bicep": "x"})
+        store = InMemoryStore({"main.bicep": "x"})
         secret = "https://management.eastus.azuredevcompute.io subscription 0000-1111"
-        backend = _FakeBackend(acquire_error=RuntimeError(secret))
+        backend = _fake_backend(acquire_error=RuntimeError(secret))
         out = _run(_tool(store, backend), ["main.bicep"])
 
         assert "degrading to T0" in out
@@ -727,8 +709,8 @@ class TestEndToEndRefusals:
         assert "0000-1111" not in out
 
     def test_a_configuration_error_is_surfaced_because_we_authored_it(self):
-        store = _FakeStore({"main.bicep": "x"})
-        backend = _FakeBackend(acquire_error=ValueError("No disk image ... was built from 'x'"))
+        store = InMemoryStore({"main.bicep": "x"})
+        backend = _fake_backend(acquire_error=ValueError("No disk image ... was built from 'x'"))
         out = _run(_tool(store, backend), ["main.bicep"])
 
         assert "No disk image" in out
@@ -744,18 +726,20 @@ class TestMakeBicepTools:
 
     def test_returns_empty_without_a_router(self):
         assert (
-            make_bicep_tools(None, _FakeStore({}), "devops-engineer", _context(_FakeStore({})))
+            make_bicep_tools(
+                None, InMemoryStore({}), "devops-engineer", _context(InMemoryStore({}))
+            )
             == []
         )
 
     def test_returns_empty_when_the_router_has_no_backend(self):
-        store = _FakeStore({})
+        store = InMemoryStore({})
         router = SandboxRouter([])
         assert make_bicep_tools(router, store, "devops-engineer", _context(store)) == []
 
     def test_tool_has_correct_name(self):
-        store = _FakeStore({})
-        tool = _tool(store, _FakeBackend())
+        store = InMemoryStore({})
+        tool = _tool(store, _fake_backend())
         name = getattr(tool, "name", None) or getattr(
             getattr(tool, "__tool_definition__", None), "name", None
         )
@@ -763,6 +747,34 @@ class TestMakeBicepTools:
 
     def test_tool_names_table_matches_the_tool(self):
         assert BICEP_TOOL_NAMES == frozenset({BICEP_VALIDATE_TOOL_NAME})
+
+
+class TestFidesDeclarations:
+    """`additional_properties` is read by a live policy engine, not filed as documentation.
+
+    MAF's information-flow module (`agent_framework.security`) reads these exact keys before
+    every call, and a host layers its own classification on top. So the set of keys is a
+    behavioural contract: adding a `confidentiality` or `max_allowed_confidentiality` key
+    here can start gating calls in a deployment whose confidentiality leg currently cannot
+    fire, and nothing in this suite — or in the host's — would report the change as a
+    failure. It would simply become a different policy.
+
+    The factory in :mod:`maf_sandbox.maf` CAN derive an egress cap; this kind deliberately
+    does not ask for one (see the comment at its `sandboxed_tool` call). This test is what
+    holds that decision in place.
+    """
+
+    def _properties(self):
+        store = InMemoryStore({})
+        return dict(_tool(store, _fake_backend()).additional_properties or {})
+
+    def test_the_tool_declares_exactly_trusted_source_integrity(self):
+        assert self._properties() == {"source_integrity": "trusted"}
+
+    def test_it_declares_nothing_about_confidentiality(self):
+        properties = self._properties()
+        assert "confidentiality" not in properties
+        assert "max_allowed_confidentiality" not in properties
 
 
 # ---------------------------------------------------------------------------
@@ -809,11 +821,12 @@ class TestRestoreFailureBanner:
 
     @pytest.mark.parametrize("rule", ["BCP190", "BCP191", "BCP192"])
     def test_a_restore_failure_gets_the_incomplete_validation_banner(self, rule):
-        store = _FakeStore({"main.bicep": "x"})
-        sandbox = _FakeSandbox(
-            outputs={"bicep build": _sarif(rule=rule, message="Unable to restore …: 403")}
+        store = InMemoryStore({"main.bicep": "x"})
+        sandbox = InProcessSandbox(
+            outputs={"bicep build": _sarif(rule=rule, message="Unable to restore …: 403")},
+            default_stdout=_EMPTY_SARIF,
         )
-        out = _run(_tool(store, _FakeBackend(sandbox=sandbox)), ["main.bicep"])
+        out = _run(_tool(store, _fake_backend(sandbox=sandbox)), ["main.bicep"])
 
         assert "MODULE RESTORE FAILED" in out
         assert "INCOMPLETE" in out
@@ -821,18 +834,19 @@ class TestRestoreFailureBanner:
         assert rule in out
 
     def test_a_clean_run_carries_no_banner(self):
-        store = _FakeStore({"main.bicep": "x"})
-        out = _run(_tool(store, _FakeBackend()), ["main.bicep"])
+        store = InMemoryStore({"main.bicep": "x"})
+        out = _run(_tool(store, _fake_backend()), ["main.bicep"])
 
         assert "MODULE RESTORE FAILED" not in out
 
     def test_ordinary_errors_do_not_trigger_it(self):
         """Real defects must arrive undecorated — the banner is about absent evidence."""
-        store = _FakeStore({"main.bicep": "x"})
-        sandbox = _FakeSandbox(
-            outputs={"bicep build": _sarif(rule="BCP035", message="Missing 'properties'.")}
+        store = InMemoryStore({"main.bicep": "x"})
+        sandbox = InProcessSandbox(
+            outputs={"bicep build": _sarif(rule="BCP035", message="Missing 'properties'.")},
+            default_stdout=_EMPTY_SARIF,
         )
-        out = _run(_tool(store, _FakeBackend(sandbox=sandbox)), ["main.bicep"])
+        out = _run(_tool(store, _fake_backend(sandbox=sandbox)), ["main.bicep"])
 
         assert "BCP035" in out
         assert "MODULE RESTORE FAILED" not in out
@@ -1020,7 +1034,7 @@ class TestNoHostDependency:
     Settings`` to a module — the tests run in a process where the host package is
     importable, so the coupling would be invisible until the day someone tried to extract
     the package.  A source scan suffices: the only imports here are stdlib,
-    ``agent_framework`` and ``sandbox_router``, so the host cannot arrive transitively.
+    ``agent_framework`` and ``maf_sandbox``, so the host cannot arrive transitively.
     Each sandbox distribution carries its own copy of this scan over its own sources, so
     extracting any one of them keeps its guard.
     """
@@ -1028,9 +1042,9 @@ class TestNoHostDependency:
     def _sources(self):
         import pathlib
 
-        import sandbox_bicep
+        import maf_sandbox_bicep
 
-        root = pathlib.Path(sandbox_bicep.__file__).parent  # type: ignore[arg-type]
+        root = pathlib.Path(maf_sandbox_bicep.__file__).parent  # type: ignore[arg-type]
         distribution = root.parent.parent
         paths = []
         # `scripts` does not exist here today; the guarded leg keeps a future operator
@@ -1043,7 +1057,7 @@ class TestNoHostDependency:
 
     def test_sources_exist(self):
         """Guards the scan below against silently finding nothing."""
-        assert len(self._sources()) >= 5
+        assert len(self._sources()) >= 6
 
     def test_nothing_imports_the_host_application(self):
         import re
@@ -1064,14 +1078,14 @@ class TestNoHostDependency:
         import pathlib
         import re
 
-        import sandbox_bicep
+        import maf_sandbox_bicep
 
-        root = pathlib.Path(sandbox_bicep.__file__).parent  # type: ignore[arg-type]
+        root = pathlib.Path(maf_sandbox_bicep.__file__).parent  # type: ignore[arg-type]
         pattern = re.compile(r"(?m)^\s*(?:from\s+azure[.\s]|import\s+azure[.\s])")
         offenders = [
             str(p) for p in root.rglob("*.py") if pattern.search(p.read_text(encoding="utf-8"))
         ]
         assert offenders == [], (
             f"the bicep workload imports Azure directly: {offenders}. "
-            "It must reach a sandbox through sandbox_router, or it stops being portable."
+            "It must reach a sandbox through maf_sandbox, or it stops being portable."
         )

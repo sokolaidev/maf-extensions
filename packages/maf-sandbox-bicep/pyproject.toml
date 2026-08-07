@@ -1,29 +1,83 @@
 [project]
-name = "sandbox-bicep"
+name = "maf-sandbox-bicep"
 version = "0.1.0"
-description = "Sandboxed Bicep validation (bicep build + bicep lint) as a Microsoft Agent Framework tool, written against sandbox-router so it runs on any sandbox backend (issue #408)."
+description = "Sandboxed Bicep validation (bicep build + bicep lint) as a Microsoft Agent Framework tool — reference implementation of agent-framework#7568 — written against maf-sandbox so it runs on any sandbox backend (issue #408)."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
+authors = [{ name = "SOKOLAI BV", email = "info@sokolai.com" }]
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = [
+    "bicep",
+    "azure",
+    "infrastructure-as-code",
+    "sandbox",
+    "agent-framework",
+    "microsoft-agent-framework",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Typing :: Typed",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Build Tools",
+]
 dependencies = [
     # The sandbox protocol this workload is written against — its ONLY infrastructure
     # dependency. No Azure import, no backend import; a test enforces both.
-    "sandbox-router",
+    # Upper-bounded too: maf-sandbox has not yet reached a stable API, so every release
+    # before 1.0.0 may include breaking changes (see its CHANGELOG).
+    "maf-sandbox>=0.1.0,<0.2",
     # The `@tool` decorator and AgentFileStore. MAF is a genuine dependency of the tool
     # itself, not of the host application.
-    "agent-framework-core",
+    "agent-framework-core>=1.13.0,<2",
 ]
 
+[project.urls]
+Homepage = "https://www.sokol.ai"
+Source = "https://github.com/sokolaidev/ats-maf"
+Issues = "https://github.com/sokolaidev/ats-maf/issues"
+
 # agent-framework-core is sourced from the monorepo `main` branch. Keep this in sync with
-# the root pyproject.toml's [tool.uv.sources] — the shared uv.lock pins both to the same
-# rev, so a MAF bump updates them together. Mirrors skills/foundry (maf-aca-sandboxes no
-# longer carries the MAF dependency at all).
+# the root pyproject.toml's and maf-sandbox's [tool.uv.sources] — the shared uv.lock pins
+# all three to the same rev, so a MAF bump updates them together. Mirrors skills/foundry
+# (maf-sandbox-aca no longer carries the MAF dependency at all).
 [tool.uv.sources]
 agent-framework-core = { git = "https://github.com/microsoft/agent-framework.git", subdirectory = "python/packages/core", branch = "main" }
-sandbox-router = { workspace = true }
+maf-sandbox = { workspace = true }
 
 [tool.uv.build-backend]
-module-name = "sandbox_bicep"
+module-name = "maf_sandbox_bicep"
 module-root = "src"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+extend-select = ["I", "UP", "D100", "D101", "D103", "D104"]
+ignore = ["UP037"]
+
+[tool.ruff.lint.per-file-ignores]
+# ruff resolves [tool.ruff] per file by the NEAREST ancestor pyproject.toml that has one —
+# once this package gained its own [tool.ruff] section, the root pyproject.toml's
+# "src/maf-sandbox-bicep/tests/**" per-file-ignore entry stopped reaching these files, so
+# this package carries its own copy (issue #697).
+"tests/**" = ["D101", "D103"]
+
+# Self-contained type checking, scoped to this package (issue #697) — strict, unlike the
+# root config's basic mode over src/ats. `tests/` stays out (fixtures, not signal for a
+# strict checker).
+[tool.pyright]
+include = ["src"]
+typeCheckingMode = "strict"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [build-system]
 requires = ["uv_build>=0.11.24,<0.12.0"]

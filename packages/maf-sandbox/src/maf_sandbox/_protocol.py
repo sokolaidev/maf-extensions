@@ -12,7 +12,7 @@ The split is what lets the same tool run against any of them unchanged, and it i
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
@@ -30,7 +30,7 @@ __all__ = [
 class Isolation:
     """How strong a backend's boundary is. Declared by the backend, checked by the router.
 
-    This is not documentation: :class:`~sandbox_router._router.SandboxRouter` refuses to
+    This is not documentation: :class:`~maf_sandbox._router.SandboxRouter` refuses to
     select anything below :data:`VM` in a deployed environment.  The #408 ruling put
     execution in a VM-isolated sandbox precisely because a container shares the host kernel
     and sits next to whatever credentials the host process holds, and the T3/T7 rows of the
@@ -83,7 +83,11 @@ class SandboxSpec:
     image_id: str | None = None
     egress_allow: tuple[str, ...] = ()
     work_dir: str = "/work"
-    labels: dict[str, str] = field(default_factory=dict)
+    # `dict[str, str]` rather than a bare `dict` as the factory: the bare builtin gives a
+    # strict type checker `dict[Unknown, Unknown]` to work with, and this package's own
+    # pyright config is strict (issue #697). The subscripted form is callable and constructs
+    # the identical empty dict.
+    labels: dict[str, str] = field(default_factory=dict[str, str])
 
 
 @dataclass(frozen=True)
@@ -103,8 +107,22 @@ class Sandbox(Protocol):
         """Write ``content`` to ``path`` inside the sandbox."""
         ...
 
-    async def exec(self, command: str, *, working_directory: str, timeout: float) -> ExecResult:
-        """Run ``command`` inside the sandbox, bounded by ``timeout`` seconds."""
+    async def exec(
+        self, command: str | Sequence[str], *, working_directory: str, timeout: float
+    ) -> ExecResult:
+        """Run ``command`` inside the sandbox, bounded by ``timeout`` seconds.
+
+        ``command`` accepts two shapes, and they are not interchangeable:
+
+        - A **sequence** (``["bicep", "build", path]``) is quoted for you before it reaches
+          a shell, and is the safe default whenever any element could contain whitespace or
+          a shell metacharacter — a workspace path, in particular, is not agent-controlled
+          but is still text neither side should have to prove is free of ``;`` or ``$()``.
+        - A **string** (``"bicep build … 2>&1 || true"``) is a shell command line, evaluated
+          by a shell inside the sandbox. Use it only when the command genuinely needs shell
+          features a sequence cannot express — redirection, ``||``, ``&&`` — and every part
+          of it is a fixed template with nothing but an already-validated path interpolated.
+        """
         ...
 
 
