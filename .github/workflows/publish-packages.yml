@@ -155,9 +155,53 @@ jobs:
           name: dist-${{ steps.resolve.outputs.package }}
           path: dist/
 
+  # Install the wheel that is about to be uploaded into a throwaway environment and use it.
+  # Everything above this job runs inside the workspace, where a package resolves whether or
+  # not its manifest declares it, a file is present whether or not the build backend
+  # included it, and a module imports whether or not it owns its dependency. None of that
+  # holds for the person running `pip install`, and the artifact is immutable once uploaded
+  # — so the last check before publishing is the first one a consumer would perform.
+  #
+  # No registry involved, deliberately: the wheel from `build` is byte-for-byte what would
+  # be uploaded, so this proves the artifact rather than the upload, and cannot fail for
+  # reasons belonging to a sandbox index.
+  smoke:
+    name: Install + use the built wheel
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-${{ needs.build.outputs.package }}
+          path: dist/
+
+      # Dependencies resolve from the real index, with NO local fallback — deliberately the
+      # opposite of the same gate in tests.yml. A consumer installing this package gets
+      # exactly this resolution, so if `maf-sandbox-aca` is about to ship while the
+      # `maf-sandbox` it requires is not published yet, this step fails and the release
+      # stops. That is the correct outcome: the alternative is a version on PyPI that
+      # nobody can install, and PyPI uploads cannot be withdrawn.
+      #
+      # It is also what makes the release order in RELEASING.md self-enforcing rather than
+      # a note someone has to remember.
+      - name: Install the wheel into a clean environment
+        run: |
+          set -euo pipefail
+          uv venv /tmp/smoke
+          uv pip install --python /tmp/smoke/bin/python dist/*.whl
+          uv pip list --python /tmp/smoke/bin/python
+
+      - name: Use it
+        run: /tmp/smoke/bin/python scripts/smoke_install.py ${{ needs.build.outputs.package }}
+
   publish:
     name: Publish to ${{ needs.build.outputs.target }}
-    needs: build
+    needs: [build, smoke]
     runs-on: ubuntu-latest
     # The environment is half of the trusted-publisher identity PyPI checks; it must match
     # what is registered there. It is also where a required reviewer can be configured, so
