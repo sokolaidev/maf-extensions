@@ -235,3 +235,66 @@ jobs:
               echo "- Install: \`pip install ${{ needs.build.outputs.package }}==${{ needs.build.outputs.version }}\`"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # A record of what shipped, created only after the upload succeeded — never before, so a
+  # failed publish cannot leave behind a Release announcing a version that does not exist.
+  #
+  # Downstream of the version, never its source: the version comes from the package's
+  # pyproject.toml, `build` checks the tag against it, and this job only reports what those
+  # two already agreed on. Taking a version from a Release title would take the most
+  # immutable identifier in the system from its most casually edited field.
+  release:
+    name: Record the release
+    needs: [build, publish]
+    # Tags only. A workflow_dispatch run is a TestPyPI rehearsal, and a rehearsal is not a
+    # release.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      # Scoped to this job alone; every other job in this workflow stays read-only.
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # The changelog entry is the release notes. A missing section fails the job rather
+      # than producing an empty Release — silence reads as "nothing changed", which is never
+      # true of a release and is worse than a red run.
+      - name: Extract the changelog section
+        id: notes
+        env:
+          PACKAGE: ${{ needs.build.outputs.package }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          changelog="packages/${PACKAGE}/CHANGELOG.md"
+          # From this version's heading up to (not including) the next one.
+          section="$(awk -v heading="## [${VERSION}]" '
+            index($0, heading) == 1 { capture = 1; next }
+            capture && /^## / { exit }
+            capture { print }
+          ' "$changelog")"
+          if [ -z "$(echo "$section" | tr -d '[:space:]')" ]; then
+            echo "::error::no '## [${VERSION}]' section in ${changelog} — add the entry before tagging"
+            exit 1
+          fi
+          {
+            echo "body<<CHANGELOG_EOF"
+            echo "$section"
+            echo "Install: \`pip install ${PACKAGE}==${VERSION}\`"
+            echo "PyPI: https://pypi.org/project/${PACKAGE}/${VERSION}/"
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          PACKAGE: ${{ needs.build.outputs.package }}
+          VERSION: ${{ needs.build.outputs.version }}
+          NOTES: ${{ steps.notes.outputs.body }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" \
+            --title "${PACKAGE} ${VERSION}" \
+            --notes "$NOTES" \
+            --verify-tag
