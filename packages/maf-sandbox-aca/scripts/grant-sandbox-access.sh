@@ -19,6 +19,13 @@
 
 set -euo pipefail
 
+# Git Bash on Windows rewrites any argument that looks like a POSIX path, so an ARM resource
+# id becomes `C:/Program Files/Git/subscriptions/…` before `az` ever sees it. Both the
+# existence check and the role assignment below pass full resource ids, so without this the
+# script reports "sandbox group not found" for a group that plainly exists — which is exactly
+# what it did the first time it was run on Windows. Harmless everywhere else.
+export MSYS_NO_PATHCONV=1
+
 # Container Apps SandboxGroup Data Owner. Read from the live tenant rather than copied:
 #   az role definition list --name "Container Apps SandboxGroup Data Owner" --query "[0].name" -o tsv
 #

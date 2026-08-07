@@ -10,9 +10,18 @@ Importing is deliberately kept out of the request path — it is slow, it is a w
 the group, and it needs registry credentials that the application itself has no reason to
 hold.
 
-Usage::
+The **deploy workflow no longer runs this**: it uses the vendor's ``aca`` CLI
+(``aca sandboxgroup disk create --identity …``), which needs no Python toolchain and nothing
+from this repository.  This script stays as the equivalent for anyone who would rather not
+install the CLI, and because its idempotency check shares
+:func:`~maf_aca_sandboxes.disk_image_base` with the runtime resolver — see below for why that
+matters.
 
-    uv run python src/maf-aca-sandboxes/scripts/import_disk_image.py \\
+Usage — ``--package`` keeps the environment to this distribution's own closure (34 packages)
+rather than the host workspace's (128), which matters because nothing here needs the host::
+
+    uv run --package maf-aca-sandboxes --extra aca \\
+        python src/maf-aca-sandboxes/scripts/import_disk_image.py \\
         --endpoint   https://management.<region>.azuredevcompute.io \\
         --subscription <sub-id> \\
         --resource-group <rg> \\
@@ -71,7 +80,7 @@ async def _run(args: argparse.Namespace) -> int:
     except ImportError:
         print(
             "azure-containerapps-sandbox is not installed. "
-            "Run: uv sync --all-packages --extra bicep-sandbox",
+            "Run: uv sync --package maf-aca-sandboxes --extra aca",
             file=sys.stderr,
         )
         return 2

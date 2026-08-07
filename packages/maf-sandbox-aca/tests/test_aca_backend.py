@@ -8,6 +8,7 @@ SDK's rather than one the code and the fake happen to agree on.
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import pytest
 from maf_aca_sandboxes import AcaConfig, AcaSandboxBackend, disk_image_base, resolve_disk_image_id
@@ -54,9 +55,14 @@ class _FakeSandboxClient:
     def __init__(self, sandbox_id: str) -> None:
         self.sandbox_id = sandbox_id
         self.deleted = False
+        self.resumed = False
 
     async def begin_delete(self) -> None:
         self.deleted = True
+
+    async def ensure_running(self, timeout: float | None = None) -> None:
+        """The resume path `acquire` takes when it finds a registered sandbox."""
+        self.resumed = True
 
 
 class _FakeGroupClient:
@@ -323,6 +329,121 @@ class TestDispose:
 
         asyncio.run(backend.dispose(key))
         assert client.deleted == []
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle visibility — a VM started or reclaimed must leave a record
+# ---------------------------------------------------------------------------
+
+
+class TestLabelValues:
+    """Label values must fit 63 characters, and mean the same thing on both sides.
+
+    A live create failed with `400 … Label value for key 'scope' exceeds 63 characters`:
+    an authenticated scope is `user-<base64url(provider:accountId)>`, which for an Entra id
+    is 79. Anonymous scopes are short UUIDs, so the whole feature worked until someone
+    signed in.
+    """
+
+    _LONG_SCOPE = "user-" + "bWljcm9zb2Z0LWVudHJhLWlkOjJiMWY5YTNjLTRkNWUtNGY2MC04YTcxLTlj"
+
+    def test_short_values_are_left_readable(self):
+        from maf_aca_sandboxes._backend import _label_value
+
+        assert _label_value("scope-a") == "scope-a"
+        assert _label_value("x" * 63) == "x" * 63
+
+    def test_long_values_are_digested_within_the_limit(self):
+        from maf_aca_sandboxes._backend import _LABEL_VALUE_MAX, _label_value
+
+        out = _label_value("y" * 200)
+        assert len(out) <= _LABEL_VALUE_MAX
+        assert out.startswith("sha256-")
+
+    def test_values_sharing_a_long_prefix_do_not_collide(self):
+        """Truncation would map these together; these labels gate one user's purge."""
+        from maf_aca_sandboxes._backend import _label_value
+
+        a = "user-" + "z" * 90 + "AAAA"
+        b = "user-" + "z" * 90 + "BBBB"
+        assert _label_value(a) != _label_value(b)
+
+    def test_create_and_purge_agree_on_the_label(self):
+        """The round trip: what acquire writes must be what dispose_scope queries.
+
+        Applying the mapping on one side only would not raise — the listing would simply
+        match nothing, and every sandbox for a deleted conversation would keep running.
+        """
+        from maf_aca_sandboxes._backend import _LABEL_SCOPE, _LABEL_THREAD, _sandbox_labels
+        from sandbox_router import SandboxSpec
+
+        key = SandboxKey(scope=self._LONG_SCOPE, thread_id="thread-1", agent_dir="devops")
+        written = _sandbox_labels(key, SandboxSpec(kind="bicep", image="i:1"))
+
+        client = _FakeGroupClient()
+        backend = _backend_with(client)
+        asyncio.run(backend.dispose_scope(self._LONG_SCOPE, "thread-1"))
+
+        assert client.last_labels is not None
+        assert client.last_labels[_LABEL_SCOPE] == written[_LABEL_SCOPE]
+        assert client.last_labels[_LABEL_THREAD] == written[_LABEL_THREAD]
+
+    def test_every_label_a_create_sends_is_within_the_limit(self):
+        from maf_aca_sandboxes._backend import _LABEL_VALUE_MAX, _sandbox_labels
+        from sandbox_router import SandboxSpec
+
+        key = SandboxKey(scope=self._LONG_SCOPE, thread_id="t" * 120, agent_dir="a" * 90)
+        labels = _sandbox_labels(key, SandboxSpec(kind="bicep", labels={"extra": "e" * 200}))
+
+        oversized = {k: len(v) for k, v in labels.items() if len(v) > _LABEL_VALUE_MAX}
+        assert oversized == {}, oversized
+
+
+class TestLifecycleLogging:
+    """Acquire and release must say what happened, at INFO.
+
+    None of it is inferable from the tool's output: `bicep_validate` returns the same
+    compiler diagnostics whether a warm sandbox was reused in a second or a cold VM was
+    created in a minute, and a sandbox that is never released is billable but silent.
+    The operator-facing question — was one created, was it used, was it released — has no
+    other answer, so these lines are load-bearing rather than decoration.
+    """
+
+    def test_reuse_is_logged(self, caplog):
+        client = _FakeGroupClient()
+        backend = _backend_with(client)
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+        backend._registry[(key.scope, key.thread_id, key.agent_dir)] = "sbx-warm"
+
+        from sandbox_router import SandboxSpec
+
+        with caplog.at_level(logging.INFO, logger="maf_aca_sandboxes"):
+            asyncio.run(backend.acquire(key, SandboxSpec(kind="bicep", image="img:1")))
+
+        assert any("sandbox reused" in r.getMessage() for r in caplog.records), caplog.text
+        assert any("sbx-warm" in r.getMessage() for r in caplog.records)
+
+    def test_release_is_logged(self, caplog):
+        client = _FakeGroupClient()
+        backend = _backend_with(client)
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+        backend._registry[(key.scope, key.thread_id, key.agent_dir)] = "sbx-1"
+
+        with caplog.at_level(logging.INFO, logger="maf_aca_sandboxes"):
+            asyncio.run(backend.dispose(key))
+
+        assert any("sandbox released" in r.getMessage() for r in caplog.records), caplog.text
+
+    def test_a_scope_purge_names_each_sandbox_it_deletes(self, caplog):
+        client = _FakeGroupClient(sandboxes=[_FakeSandbox("sbx-a"), _FakeSandbox("sbx-b")])
+        backend = _backend_with(client)
+
+        with caplog.at_level(logging.INFO, logger="maf_aca_sandboxes"):
+            count = asyncio.run(backend.dispose_scope("scope-a", "thread-1"))
+
+        assert count == 2
+        released = [r for r in caplog.records if "sandbox released" in r.getMessage()]
+        assert len(released) == 2, caplog.text
 
 
 # ---------------------------------------------------------------------------

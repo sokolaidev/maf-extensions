@@ -15,6 +15,7 @@ to reach — lives here and only here.
 from __future__ import annotations
 
 import logging
+from time import perf_counter
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -77,9 +78,29 @@ _WORK_DIR = "/acas/work"
 # Note: `bicep build` emits SARIF on stderr; `2>&1` merges it into stdout so both legs read
 # `.stdout` uniformly.  `bicep lint` emits SARIF on stdout natively.
 _BUILD_CMD = "bicep build {path} --diagnostics-format sarif 2>&1 || true"
+
+# `.bicepparam` is a parameter file, not a template, and `bicep build` refuses it outright:
+#   The specified input "…/main.bicepparam" was not recognized as a Bicep file.
+#   Bicep files must use the .bicep extension.
+# That sentence is not SARIF, so the phase died in the parser and reported "could not parse
+# SARIF output" for a file the tool advertises as supported — which is what it did against
+# the live service. `build-params` is the counterpart command; like `build` it writes SARIF
+# to stderr (hence the same `2>&1`), and `--outfile /dev/null` discards the compiled JSON
+# because only the diagnostics are wanted. `bicep lint` accepts both kinds, so only the
+# build half varies. All three behaviours were checked against the pinned CLI in the image.
+_BUILD_PARAMS_CMD = (
+    "bicep build-params {path} --diagnostics-format sarif --outfile /dev/null 2>&1 || true"
+)
+
 _LINT_CMD = "bicep lint {path} --diagnostics-format sarif || true"
 
-_ACCEPTED_SUFFIXES = (".bicep", ".bicepparam")
+_PARAM_SUFFIX = ".bicepparam"
+_ACCEPTED_SUFFIXES = (".bicep", _PARAM_SUFFIX)
+
+
+def _build_command_for(name: str) -> str:
+    """The build-phase command that matches the file kind."""
+    return _BUILD_PARAMS_CMD if name.endswith(_PARAM_SUFFIX) else _BUILD_CMD
 
 
 def bicep_sandbox_spec(image: str | None = None, image_id: str | None = None) -> SandboxSpec:
@@ -154,9 +175,24 @@ def make_bicep_tools(
         ``bicepconfig.json`` (T2 — compiler truth rather than LLM self-check).  Call this
         after writing the files with ``file_access_write`` and before reporting them.
 
+        **Pass every file of the set in ONE call, including modules in subfolders.**  The
+        sandbox starts empty and receives only the files you list, so a ``module`` or a
+        parameter file's ``using`` that points at a file you left out is reported as a
+        missing file — a diagnostic about your call, not about your IaC.  For a typical
+        template set that means all of them together::
+
+            ["infra/main.bicep",
+             "infra/main.bicepparam",
+             "infra/modules/storage.bicep",
+             "infra/modules/network.bicep"]
+
+        Validating one file at a time is the common mistake here and produces
+        ``BCP091 … could not find a part of the path`` for files that exist perfectly well
+        in the workspace.
+
         Args:
-            files: Workspace-relative paths of the ``.bicep`` files to validate
-                (e.g. ``["infra/main.bicep"]``).  Only ``.bicep`` and ``.bicepparam``
+            files: Workspace-relative paths to validate — the whole set that compiles
+                together, not just the entry point.  Only ``.bicep`` and ``.bicepparam``
                 extensions are accepted.
 
         Returns:
@@ -230,12 +266,27 @@ def make_bicep_tools(
             logger.warning("bicep_validate: %s", exc)
             return f"Error: {exc}"
         except Exception as exc:  # noqa: BLE001
-            # A provider/transport failure — its str() can carry endpoint, subscription and
-            # tenant detail, so it goes to the log and never into the model's context.
-            logger.warning("bicep_validate: sandbox unavailable: %s", exc)
+            # A provider/transport failure — its detail can carry endpoint, subscription and
+            # tenant ids, so it goes to the log and never into the model's context.
+            logger.warning("bicep_validate: sandbox unavailable: %s", _error_detail(exc))
             return "Error: sandbox unavailable — degrading to T0 (LLM self-check only)"
 
+        # Two passes, and the order is load-bearing: every file is written before ANY of them
+        # is compiled.
+        #
+        # Bicep resolves `module … '…/db.bicep'` and a parameter file's `using '…'` off the
+        # filesystem at compile time. Writing and compiling one file at a time means the first
+        # file is built against a sandbox where its siblings do not exist yet, so a perfectly
+        # good template reports "module not found" — a diagnostic that is an artefact of this
+        # loop rather than anything wrong with the IaC. It only looks correct when the model
+        # happens to list the files in dependency order, and for a `.bicepparam` (which always
+        # references a template) it is wrong roughly half the time.
+        #
+        # Writes stay sequential rather than gathered: the ordering requirement is satisfied
+        # either way, and a preview data plane has already produced one unexplained `Conflict`
+        # burst — concurrency is not what to add on top of that without a reason.
         results: list[str] = []
+        written: list[tuple[str, str]] = []
         for name, sandbox_path in validated:
             try:
                 content = await _store.read(name)
@@ -254,11 +305,22 @@ def make_bicep_tools(
             try:
                 await sandbox.write_file(sandbox_path, content)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("bicep_validate: could not write %r to sandbox: %s", name, exc)
+                # Detail, not just str(): a live run produced `Operation returned an invalid
+                # status 'Conflict'` for four files at once, and that sentence alone cannot
+                # distinguish "the directory already exists" from "the sandbox is suspending"
+                # — which is the difference between a bug and a retry.
+                logger.warning(
+                    "bicep_validate: could not write %r to sandbox: %s", name, _error_detail(exc)
+                )
                 results.append(f"Error: could not write {name!r} to sandbox")
                 continue
+            written.append((name, sandbox_path))
 
-            for phase, template in (("build", _BUILD_CMD), ("lint", _LINT_CMD)):
+        for name, sandbox_path in written:
+            for phase, template in (
+                ("build", _build_command_for(name)),
+                ("lint", _LINT_CMD),
+            ):
                 results.append(
                     await _run_phase(
                         sandbox, phase, template, name, sandbox_path, round_dir, _timeout
@@ -268,6 +330,31 @@ def make_bicep_tools(
         return "\n".join(results) if results else "No files validated."
 
     return [bicep_validate]
+
+
+def _error_detail(exc: Exception) -> str:
+    """As much of a failure as the log can usefully carry.
+
+    ``str()`` on an azure-core ``HttpResponseError`` is just
+    ``Operation returned an invalid status 'Bad Request'`` — the *reason* is in the response
+    body, which that string drops.  A 400 that says only "Bad Request" cannot be acted on:
+    it took a hand-written probe against the live service to discover that one such failure
+    meant the app's identity had no role on the sandbox group.  This is log-only; the model
+    still sees the sanitized message.
+    """
+    parts = [f"{type(exc).__name__}: {exc}"]
+    status = getattr(exc, "status_code", None)
+    if status is not None:
+        parts.append(f"status={status}")
+    response = getattr(exc, "response", None)
+    if response is not None:
+        try:
+            body = response.text()
+        except Exception:  # noqa: BLE001 - diagnostics must not raise
+            body = None
+        if body:
+            parts.append(f"body={body[:600]}")
+    return " | ".join(parts)
 
 
 async def _run_phase(
@@ -284,6 +371,7 @@ async def _run_phase(
     Both phases behave identically, so they share this rather than being written twice —
     which is how the build leg's ``2>&1`` came to be missing from one of them once already.
     """
+    started = perf_counter()
     try:
         result = await sandbox.exec(
             template.format(path=sandbox_path),
@@ -294,8 +382,9 @@ async def _run_phase(
         logger.warning("bicep_validate: %s exec timed out for %r after %ss", phase, name, timeout)
         return f"{phase}({name}): Error: timed out after {timeout}s"
     except Exception as exc:  # noqa: BLE001
-        logger.warning("bicep_validate: %s exec failed for %r: %s", phase, name, exc)
+        logger.warning("bicep_validate: %s exec failed for %r: %s", phase, name, _error_detail(exc))
         return f"{phase}({name}): Error: exec failed"
+    elapsed_ms = int((perf_counter() - started) * 1000)
 
     diagnostics = parse_sarif(result.stdout or "")
     if diagnostics is None:
@@ -303,4 +392,14 @@ async def _run_phase(
             "bicep_validate: could not parse SARIF for %r; raw: %.500r", name, result.stdout or ""
         )
         return f"{phase}({name}): Error: could not parse SARIF output"
+    # The one record that says the compiler actually ran. Everything else about a healthy
+    # call is silent: the tool's return value looks the same whether Bicep found nothing
+    # wrong or never executed, and "0 diagnostics" is the answer in both cases.
+    logger.info(
+        "bicep_validate: %s ok file=%r diagnostics=%d elapsed_ms=%d",
+        phase,
+        name,
+        len(diagnostics),
+        elapsed_ms,
+    )
     return format_diagnostics(diagnostics, f"{phase}({name})", strip_prefix=working_directory)

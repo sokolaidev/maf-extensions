@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 
 import pytest
 from maf_aca_sandboxes.bicep import (
@@ -166,6 +167,218 @@ def _run(tool, files: list[str]) -> str:
 # ---------------------------------------------------------------------------
 
 
+class TestToolDescription:
+    """The description is the only instruction the model reliably reads at call time.
+
+    Host prompts can be edited, truncated or replaced; the tool's own docstring travels with
+    the tool. Since passing one file at a time produces `BCP091 … could not find a part of
+    the path` for files that exist, "send the whole set" belongs here rather than only in a
+    skill file.
+    """
+
+    def test_it_tells_the_caller_to_send_the_whole_set(self):
+        store = _FakeStore({"main.bicep": "x"})
+        tool = _tool(store, _FakeBackend())
+        fn = getattr(tool, "func", None) or getattr(tool, "__wrapped__", None) or tool
+        doc = (fn.__doc__ or "").lower()
+
+        assert "subfolder" in doc, "the description must mention modules in subfolders"
+        assert "one call" in doc, "the description must ask for a single call"
+        assert "bcp091" in doc, (
+            "the description should name the diagnostic a partial call produces — it is what "
+            "makes the instruction concrete rather than advisory"
+        )
+
+
+class TestWriteOrdering:
+    """Every file must be in the sandbox before any of them is compiled.
+
+    Bicep resolves `module '…/db.bicep'` and a parameter file's `using '…'` off the
+    filesystem at compile time. Writing and compiling one file at a time builds the first
+    file against a sandbox where its siblings do not exist, producing "module not found"
+    diagnostics that are artefacts of the loop rather than defects in the IaC — and for a
+    `.bicepparam`, which always references a template, that is wrong whenever the model
+    happens to list it first.
+    """
+
+    def _recording_sandbox(self, events: list[tuple[str, str]]) -> _FakeSandbox:
+        class _Recording(_FakeSandbox):
+            async def write_file(self, path: str, content: str) -> None:
+                events.append(("write", path))
+                await super().write_file(path, content)
+
+            async def exec(self, command: str, *, working_directory: str, timeout: float):
+                events.append(("exec", command))
+                return await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+
+        return _Recording()
+
+    def test_all_writes_precede_all_execs(self):
+        events: list[tuple[str, str]] = []
+        store = _FakeStore(
+            {
+                "main.bicep": "module db 'modules/db.bicep' = {}",
+                "modules/db.bicep": "param name string",
+            }
+        )
+        backend = _FakeBackend(sandbox=self._recording_sandbox(events))
+
+        _run(_tool(store, backend), ["main.bicep", "modules/db.bicep"])
+
+        kinds = [kind for kind, _ in events]
+        assert kinds == ["write", "write"] + ["exec"] * 4, events
+        assert kinds.index("exec") == 2, (
+            f"a file was compiled before every file had been written: {events}"
+        )
+
+    def test_a_parameter_file_listed_first_still_sees_its_template(self):
+        events: list[tuple[str, str]] = []
+        store = _FakeStore(
+            {"main.bicepparam": "using 'main.bicep'", "main.bicep": "param x string"}
+        )
+        backend = _FakeBackend(sandbox=self._recording_sandbox(events))
+
+        # The parameter file first — the order that used to compile it against a sandbox
+        # holding nothing but itself.
+        _run(_tool(store, backend), ["main.bicepparam", "main.bicep"])
+
+        written_before_first_exec = [
+            path for kind, path in events[: [k for k, _ in events].index("exec")] if kind == "write"
+        ]
+        assert len(written_before_first_exec) == 2, events
+        assert any(p.endswith("main.bicep") for p in written_before_first_exec), events
+
+
+class TestParameterFiles:
+    """`.bicepparam` needs `build-params`, not `build`.
+
+    `bicep build` refuses a parameter file outright — "was not recognized as a Bicep file"
+    — and that sentence is not SARIF, so the phase died in the parser and the tool reported
+    "could not parse SARIF output" for an extension it advertises as supported. Verified
+    against the pinned CLI in the image: `build` rejects it, `build-params` and `lint` both
+    return valid SARIF, and both write it to stderr.
+    """
+
+    def test_a_bicepparam_is_built_with_build_params(self):
+        store = _FakeStore({"main.bicepparam": "using 'main.bicep'"})
+        backend = _FakeBackend()
+        _run(_tool(store, backend), ["main.bicepparam"])
+
+        commands = [c for c, _, _ in backend.sandbox.commands]
+        assert any("build-params" in c for c in commands), commands
+        assert not any(c.startswith("bicep build ") for c in commands), (
+            f"a parameter file must not go through `bicep build`: {commands}"
+        )
+
+    def test_a_template_still_uses_plain_build(self):
+        store = _FakeStore({"main.bicep": "param x string"})
+        backend = _FakeBackend()
+        _run(_tool(store, backend), ["main.bicep"])
+
+        commands = [c for c, _, _ in backend.sandbox.commands]
+        assert any(c.startswith("bicep build ") for c in commands), commands
+        assert not any("build-params" in c for c in commands), commands
+
+    def test_both_kinds_still_get_linted(self):
+        for filename, body in (("main.bicep", "param x string"), ("p.bicepparam", "using 'x'")):
+            store = _FakeStore({filename: body})
+            backend = _FakeBackend()
+            _run(_tool(store, backend), [filename])
+            commands = [c for c, _, _ in backend.sandbox.commands]
+            assert any(c.startswith("bicep lint ") for c in commands), (filename, commands)
+
+    def test_the_build_command_keeps_the_stderr_merge(self):
+        """Both build variants must keep `2>&1`; SARIF goes to stderr for each."""
+        from maf_aca_sandboxes.bicep._tool import _BUILD_CMD, _BUILD_PARAMS_CMD
+
+        assert "2>&1" in _BUILD_CMD
+        assert "2>&1" in _BUILD_PARAMS_CMD
+
+
+class TestExecutionIsVisible:
+    """A successful run must leave a record that the compiler actually executed.
+
+    The tool's own output cannot answer it: "no diagnostics" is what a clean file looks
+    like *and* what a call that never reached Bicep would look like if the SARIF happened
+    to parse empty.  Without this line the only observable difference between "validated,
+    all good" and "quietly did nothing" is latency.
+    """
+
+    def test_a_clean_run_logs_the_phase_file_and_diagnostic_count(self, caplog):
+        store = _FakeStore({"main.bicep": "param unused string"})
+        backend = _FakeBackend()
+
+        with caplog.at_level(logging.INFO, logger="maf_aca_sandboxes"):
+            _run(_tool(store, backend), ["main.bicep"])
+
+        ok = [r.getMessage() for r in caplog.records if "bicep_validate: " in r.getMessage()]
+        assert any(m.startswith("bicep_validate: build ok") for m in ok), ok
+        assert any(m.startswith("bicep_validate: lint ok") for m in ok), ok
+        assert all("file='main.bicep'" in m for m in ok), ok
+        assert all("diagnostics=0" in m for m in ok), ok
+        assert all("elapsed_ms=" in m for m in ok), ok
+
+    def test_a_failed_exec_logs_no_success_line(self, caplog):
+        store = _FakeStore({"main.bicep": "x"})
+        backend = _FakeBackend()
+
+        async def _boom(command, *, working_directory, timeout):
+            raise RuntimeError("exec blew up")
+
+        backend.sandbox.exec = _boom  # type: ignore[method-assign]
+
+        with caplog.at_level(logging.INFO, logger="maf_aca_sandboxes"):
+            out = _run(_tool(store, backend), ["main.bicep"])
+
+        assert "Error: exec failed" in out
+        assert not any("ok file=" in r.getMessage() for r in caplog.records), caplog.text
+
+
+class TestFailureDetailIsLogged:
+    """A provider failure must log enough to act on, while telling the model nothing.
+
+    `str()` on an azure-core error is "Operation returned an invalid status 'Bad Request'".
+    That sentence is unactionable — a live 400 meaning "this identity has no role on the
+    group" and one meaning "the disk image is gone" are indistinguishable — so the log takes
+    the status and the response body too. The model still gets the sanitized line, because
+    tool results are persisted into the transcript and the body carries endpoint,
+    subscription and tenant ids.
+    """
+
+    def test_the_log_carries_status_and_body_but_the_model_does_not(self, caplog):
+        class _HttpError(Exception):
+            status_code = 400
+
+            def __str__(self) -> str:
+                return "Operation returned an invalid status 'Bad Request'"
+
+            class response:  # noqa: N801 - mimics the SDK's attribute shape
+                @staticmethod
+                def text() -> str:
+                    return '{"error":"principal lacks a role on sandbox group acas-x"}'
+
+        store = _FakeStore({"main.bicep": "x"})
+        backend = _FakeBackend()
+
+        async def _boom(key, spec):
+            raise _HttpError()
+
+        backend.acquire = _boom  # type: ignore[method-assign]
+
+        with caplog.at_level(logging.WARNING, logger="maf_aca_sandboxes"):
+            out = _run(_tool(store, backend), ["main.bicep"])
+
+        logged = caplog.text
+        assert "status=400" in logged, logged
+        assert "principal lacks a role" in logged, logged
+        # The model is told it degraded, and nothing about the account.
+        assert out == "Error: sandbox unavailable — degrading to T0 (LLM self-check only)"
+        assert "principal lacks a role" not in out
+        assert "acas-x" not in out
+
+
 class TestEndToEnd:
     def test_writes_the_file_into_the_sandbox_and_reports_clean(self):
         store = _FakeStore({"main.bicep": "param unused string"})
@@ -315,6 +528,88 @@ class TestStaleFilesAcrossRounds:
         (path,) = backend.sandbox.files
         round_dir = path.rsplit("/", 1)[0]
         assert {wd for _, wd, _ in backend.sandbox.commands} == {round_dir}
+
+
+class TestDeployWorkflowStaysOffTheApplication:
+    """The sandbox deploy must not need the Python workspace at all.
+
+    It once ran `uv sync --extra bicep-sandbox` at the workspace root, which builds `ats`,
+    the TUI, the foundry skills, numpy and ruff — 128 packages and a git clone of
+    agent-framework — to run one import script whose own closure is 34 and which imports
+    nothing from the host.  Slow, and worse than slow: it made the sandbox deploy depend on
+    the application's dependency tree, which is precisely the property this stack's
+    separation is supposed to guarantee.
+
+    The import now runs through the vendor's `aca` CLI, so the deploy touches no Python
+    whatsoever — the separation is structural rather than a matter of passing the right
+    flag.  This test holds it there.
+
+    Nothing else would catch a regression.  The workflow would still succeed; it would just
+    quietly be building the app again, and the symptom is a doc going stale rather than
+    anything going red.
+    """
+
+    def _workflow(self):
+        import pathlib
+
+        import maf_aca_sandboxes
+
+        distribution = pathlib.Path(maf_aca_sandboxes.__file__).parents[2]
+        for root in (distribution.parents[1], distribution):
+            path = root / ".github" / "workflows" / "deploy-bicep-sandbox.yml"
+            if path.is_file():
+                return path
+        return None
+
+    def test_the_deploy_needs_no_python_at_all(self):
+        workflow = self._workflow()
+        if workflow is None:
+            # GitHub reads workflows only from the repository root, so an extracted copy of
+            # this package re-creates them rather than carrying them along.
+            pytest.skip("deploy-bicep-sandbox.yml is not present (extracted repository)")
+
+        text = workflow.read_text(encoding="utf-8")
+        offenders = [
+            line.strip()
+            for line in text.splitlines()
+            if not line.lstrip().startswith("#")
+            and any(marker in line for marker in ("uv sync", "uv run", "setup-uv", "setup-python"))
+        ]
+        assert offenders == [], (
+            f"the sandbox deploy reaches for the Python workspace: {offenders}. The import "
+            "runs through the `aca` CLI precisely so this deploy needs no toolchain and "
+            "nothing from this repository — a `uv sync` here installs the host application "
+            "(128 packages) and couples the stack to the app's dependency tree."
+        )
+
+    def test_the_registry_token_is_masked_before_it_is_used(self):
+        """The minted ACR access token must be masked in the same step that mints it.
+
+        A disk-image build from a private registry takes an explicit username/token pair
+        rather than a managed identity, so a real — if short-lived — pull credential exists
+        in the runner's environment, and `set -x`, a `--debug` flag or an `echo` added later
+        would put it in a public log.  `::add-mask::` costs one line and is the difference
+        between "it leaked" and "it didn't"; ordering matters, because a mask applied after
+        the fact does not retroactively scrub what was already printed.
+        """
+        workflow = self._workflow()
+        if workflow is None:
+            pytest.skip("deploy-bicep-sandbox.yml is not present (extracted repository)")
+
+        text = workflow.read_text(encoding="utf-8")
+        if "--expose-token" not in text:
+            pytest.skip("the deploy no longer mints a registry token")
+
+        minted = text.index("--expose-token")
+        masked = text.find("::add-mask::$ACR_TOKEN")
+        assert masked != -1, (
+            "the deploy mints an ACR access token but never masks it — add "
+            'echo "::add-mask::$ACR_TOKEN" immediately after minting it'
+        )
+        assert masked > minted, (
+            "the token is masked before it is minted, which masks nothing; the "
+            "::add-mask:: must follow the `az acr login --expose-token` that creates it"
+        )
 
 
 class TestConfigDiscovery:

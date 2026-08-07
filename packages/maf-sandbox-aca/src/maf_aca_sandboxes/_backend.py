@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from hashlib import sha256
 from typing import Any
 
 from sandbox_router import ExecResult, Isolation, SandboxKey, SandboxSpec
@@ -24,6 +25,44 @@ from ._images import qualify_image_reference, resolve_disk_image_id
 logger = logging.getLogger(__name__)
 
 __all__ = ["AcaSandboxBackend"]
+
+#: The service's limit on a label value. Exceeding it fails the whole create with
+#: ``400 … Label value for key 'scope' exceeds 63 characters``.
+_LABEL_VALUE_MAX = 63
+
+
+def _label_value(raw: str) -> str:
+    """A label value that fits the service's limit, deterministically.
+
+    An authenticated scope is ``user-<base64url(provider:accountId)>``, which for an Entra
+    id runs to 79 characters and fails the create outright.  Anonymous scopes are short
+    UUIDs, so this only appears once someone signs in — which is why it looked intermittent.
+
+    Short values pass through unchanged, because a readable label is worth having when
+    looking at the group; longer ones become a digest.  Truncation is deliberately **not**
+    used: two users whose scopes share a 63-character prefix would land on the same label,
+    and these labels are what :meth:`dispose_scope` selects on, so a collision would let one
+    conversation's purge delete another's sandboxes.  A 192-bit digest makes that
+    impossible in practice where a prefix makes it merely unlikely.
+
+    The mapping must stay identical on both sides: labels are written at create and matched
+    at list.  Transform one and not the other and purge quietly selects nothing — the
+    sandboxes keep running, billable, and nothing reports an error.
+    """
+    if len(raw) <= _LABEL_VALUE_MAX:
+        return raw
+    return "sha256-" + sha256(raw.encode("utf-8")).hexdigest()[:48]
+
+
+def _sandbox_labels(key: SandboxKey, spec: SandboxSpec) -> dict[str, str]:
+    """The labels a sandbox is created with — the same ones `dispose_scope` selects on."""
+    return {
+        _LABEL_SCOPE: _label_value(key.scope),
+        _LABEL_THREAD: _label_value(key.thread_id),
+        _LABEL_AGENT: _label_value(key.agent_dir),
+        **{k: _label_value(v) for k, v in spec.labels.items()},
+    }
+
 
 # Sandbox labels.  Written at create time and read back on purge, so the *service* — not
 # this process's memory — is the durable record of which sandboxes belong to a thread.
@@ -142,7 +181,14 @@ class AcaSandboxBackend:
     # -- SandboxBackend -----------------------------------------------------------
 
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> _AcaSandbox:
-        """Return a running sandbox for ``key``, reusing a warm one when there is one."""
+        """Return a running sandbox for ``key``, reusing a warm one when there is one.
+
+        The three outcomes — reused, replaced, created — are logged at INFO rather than
+        left to be inferred.  Whether a VM was started is the difference between a
+        seconds-long call and a minutes-long one, and between one billable sandbox and
+        several; none of that is visible in the tool's output, which reports compiler
+        diagnostics either way.
+        """
         gc = self._group_client()
         registry_key = (key.scope, key.thread_id, key.agent_dir)
 
@@ -151,9 +197,21 @@ class AcaSandboxBackend:
             try:
                 sc = gc.get_sandbox_client(sandbox_id)
                 await sc.ensure_running(timeout=_RESUME_TIMEOUT_S)
+                logger.info(
+                    "sandbox reused: id=%s kind=%s thread=%s agent=%s",
+                    sandbox_id,
+                    spec.kind,
+                    key.thread_id,
+                    key.agent_dir,
+                )
                 return _AcaSandbox(sc)
-            except Exception:  # noqa: BLE001 - a dead sandbox is replaced, not reported
-                pass
+            except Exception as exc:  # noqa: BLE001 - a dead sandbox is replaced, not reported
+                # Not a warning: a sandbox reclaimed by its auto-delete timer between rounds
+                # is the expected path, not a fault. But it does mean the next call pays for
+                # a cold create, so the reason is worth a line rather than a silent `pass`.
+                logger.info(
+                    "sandbox %s did not resume (%s); creating a replacement", sandbox_id, exc
+                )
             self._registry.pop(registry_key, None)
 
         # The spec carries repository:tag; this backend knows which registry holds it.
@@ -161,15 +219,18 @@ class AcaSandboxBackend:
         disk_id = await resolve_disk_image_id(gc, spec.image_id, image or None)
         poller = await gc.begin_create_sandbox(
             disk_id=disk_id,
-            labels={
-                _LABEL_SCOPE: key.scope,
-                _LABEL_THREAD: key.thread_id,
-                _LABEL_AGENT: key.agent_dir,
-                **spec.labels,
-            },
+            labels=_sandbox_labels(key, spec),
             egress_policy=self._egress_policy(spec),
         )
         sc = await poller.result()
+        logger.info(
+            "sandbox created: id=%s kind=%s disk_image=%s thread=%s agent=%s",
+            sc.sandbox_id,
+            spec.kind,
+            disk_id,
+            key.thread_id,
+            key.agent_dir,
+        )
         # Register immediately, so the sandbox is reachable by purge even if configure fails.
         self._registry[registry_key] = sc.sandbox_id
         try:
@@ -190,7 +251,13 @@ class AcaSandboxBackend:
         sandbox_id = self._registry.pop((key.scope, key.thread_id, key.agent_dir), None)
         if sandbox_id is None:
             return
-        await self._delete(self._group_client(), sandbox_id)
+        if await self._delete(self._group_client(), sandbox_id):
+            logger.info(
+                "sandbox released: id=%s thread=%s agent=%s",
+                sandbox_id,
+                key.thread_id,
+                key.agent_dir,
+            )
 
     async def dispose_scope(self, scope: str, thread_id: str) -> int:
         """Delete every sandbox labelled ``(scope, thread_id)``; returns how many.
@@ -225,6 +292,9 @@ class AcaSandboxBackend:
         count = 0
         for sandbox_id in sorted(ids):
             if await self._delete(gc, sandbox_id):
+                logger.info(
+                    "sandbox released: id=%s thread=%s (scope purge)", sandbox_id, thread_id
+                )
                 count += 1
         return count
 
@@ -277,8 +347,15 @@ class AcaSandboxBackend:
         """Sandbox ids labelled ``(scope, thread_id)``, read from the service."""
         ids: list[str] = []
         try:
+            # `_label_value` on both sides, always: these have to be the same strings the
+            # create wrote, or the query matches nothing and every sandbox for the deleted
+            # conversation keeps running until its auto-delete timer fires — silently, since
+            # "found none to delete" and "there were none" are the same result here.
             async for sandbox in group_client.list_sandboxes(
-                labels={_LABEL_SCOPE: scope, _LABEL_THREAD: thread_id}
+                labels={
+                    _LABEL_SCOPE: _label_value(scope),
+                    _LABEL_THREAD: _label_value(thread_id),
+                }
             ):
                 sandbox_id = getattr(sandbox, "id", None)
                 if sandbox_id:
