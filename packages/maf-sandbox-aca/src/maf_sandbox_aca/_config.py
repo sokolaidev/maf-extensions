@@ -1,4 +1,4 @@
-"""Configuration for the ACA Sandboxes backend (issue #408).
+"""Configuration for the ACA Sandboxes backend.
 
 A plain frozen dataclass rather than a settings model: a host already has its own
 configuration system, and requiring a particular one would be exactly the coupling this
@@ -29,7 +29,7 @@ class AcaSandboxConfig:
     at all, and its router then reports :attr:`~maf_sandbox.SandboxRouter.enabled` false.
 
     ``registry`` is the login server (FQDN) that holds the sandbox images, e.g.
-    ``atsbicepsandbox.azurecr.io``.  A kind's spec carries only ``repository:tag`` and this
+    ``myregistry.azurecr.io``.  A kind's spec carries only ``repository:tag`` and this
     is what qualifies it, so moving to a different registry is one setting rather than one
     per kind.  A spec that already names a registry is left alone.
 

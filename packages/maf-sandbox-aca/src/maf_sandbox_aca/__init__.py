@@ -1,4 +1,4 @@
-"""ACA Sandboxes as a sandbox backend for Microsoft Agent Framework agents (issue #408).
+"""ACA Sandboxes as a sandbox backend for Microsoft Agent Framework agents.
 
 ```
 app  ->  maf_sandbox  ->  maf_sandbox_aca  ->  the sandbox
@@ -34,7 +34,7 @@ __all__ = [
     "resolve_disk_image_id",
 ]
 
-# --- Experimental-package notice (issue #697) -------------------------------------------
+# --- Experimental-package notice ---------------------------------------------------------
 # This package is early-stage (0.1.0, "Development Status :: 4 - Beta"). Mirrors
 # `agent_framework`'s own experimental-feature idiom (see its `_feature_stage` module and
 # `ExperimentalWarning`, a `FutureWarning` subclass) but deliberately subclasses

@@ -67,8 +67,10 @@ $ErrorActionPreference = 'Stop'
 # Microsoft.App`) and the application calls about nine. Notably it also grants the group's
 # secrets — values included, via `secrets/peek/action` — and `sandboxes/egresspolicy/write`,
 # the very allowlist the sandbox is supposed to be subject to. A custom role would narrow it
-# to the nine; built-in roles only is a deliberate choice for now. See
-# docs/work-in-progress/issue-408-exec-surface-security.md for the full comparison.
+# to the nine; built-in roles only is a deliberate choice for now — a security review weighed
+# a custom role against this built-in one and accepted the wider control-plane grant, on the
+# grounds that what actually contains a sandboxed workload is the guest boundary (VM
+# isolation, no ambient identity, deny-default egress), not this role.
 $RoleName = 'Container Apps SandboxGroup Data Owner'
 
 if (-not $PrincipalId -and -not $Identity) {

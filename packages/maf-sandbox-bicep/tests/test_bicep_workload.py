@@ -1,16 +1,17 @@
-"""Offline tests for the Bicep sandbox workload (issue #408).
+"""Offline tests for the Bicep sandbox workload.
 
 The whole workload runs here against a **fake backend** — create, write, exec, parse — with
 no Azure, no Bicep binary and no host application.  That end-to-end path had no test at all
-until the router seam existed (issue #663 called this out as its own acceptance criterion),
-so its absence is what several review rounds were spent compensating for by reading.
+until the router seam existed, and covering it was called out as its own acceptance
+criterion, so its absence is what several review rounds were spent compensating for by
+reading.
 
 Also covered: the path-safety guard, SARIF parsing, the command templates, and the fact that
 this package imports nothing from the application that hosts it.
 
-The fakes themselves live in :mod:`maf_sandbox.testing` (issue #697) rather than here — this
-module supplies only what is Bicep-specific: the empty-SARIF default and the per-test
-recording subclass.
+The fakes themselves live in :mod:`maf_sandbox.testing` rather than here — this module
+supplies only what is Bicep-specific: the empty-SARIF default and the per-test recording
+subclass.
 """
 
 from __future__ import annotations
@@ -506,9 +507,9 @@ class TestStaleFilesAcrossRounds:
 class TestDeployWorkflowStaysOffTheApplication:
     """The sandbox deploy must not need the Python workspace at all.
 
-    It once ran `uv sync --extra bicep-sandbox` at the workspace root, which builds `ats`,
-    the TUI, the foundry skills, numpy and ruff — 128 packages and a git clone of
-    agent-framework — to run one import script whose own closure is 34 and which imports
+    It once ran `uv sync --extra bicep-sandbox` at the workspace root, which builds the host
+    application, its TUI, its foundry skills, numpy and ruff — 128 packages and a git clone
+    of agent-framework — to run one import script whose own closure is 34 and which imports
     nothing from the host.  Slow, and worse than slow: it made the sandbox deploy depend on
     the application's dependency tree, which is precisely the property this stack's
     separation is supposed to guarantee.
@@ -796,8 +797,8 @@ class TestBicepSandboxSpec:
 
         With only the first host, restore resolves the manifest and then 403s on the blob —
         BCP192 on every `br/public:` reference, so module types never load and module-input
-        type errors are invisible to the whole validation (issue #705). Anything beyond
-        these two Microsoft-operated artifact hosts widens containment and must not appear.
+        type errors are invisible to the whole validation. Anything beyond these two
+        Microsoft-operated artifact hosts widens containment and must not appear.
         """
         assert bicep_sandbox_spec().egress_allow == (
             "mcr.microsoft.com",
@@ -821,7 +822,7 @@ class TestRestoreFailureBanner:
     """BCP190/191/192 mean module types never loaded, so module-input checks did not run.
 
     Rendered as an ordinary diagnostic list, a restore-failed run invites exactly the
-    misreading that shipped broken Bicep (issue #705): an agent discounts the restore noise
+    misreading that shipped broken Bicep in production: an agent discounts the restore noise
     as environment failure, certifies the module inputs from READMEs, and reports PASS on
     files that do not compile.  The banner names the run incomplete so it cannot be read as
     evidence of health.
@@ -1082,7 +1083,7 @@ class TestNoHostDependency:
         )
 
     def test_the_workload_does_not_import_azure(self):
-        """Issue #663's acceptance criterion: the same tool must run on any backend."""
+        """Acceptance criterion for this split: the same tool must run on any backend."""
         import pathlib
         import re
 

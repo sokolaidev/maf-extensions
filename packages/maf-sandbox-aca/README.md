@@ -55,11 +55,11 @@ It imports nothing from its host application — only `maf-sandbox` and `azure-*
 
 `TestNoHostDependency` is what keeps that true: it scans this package's sources for any import of the host package and fails with a pointer to the adapter. Nothing else would notice, because the tests run in a process where the host is importable. The host's name appears exactly once, as `_HOST_PACKAGE` in that test — extracting this repository is that one line plus a file move.
 
-What stays behind is the host's adapter — one module in the host application (today `tools/bicep.py`) that maps the host's settings onto an `AcaSandboxConfig` and supplies the request context. Read it first if you want to know what integrating this package involves.
+What stays behind is the host's adapter — a single module in the host application that maps the host's settings onto an `AcaSandboxConfig` and supplies the request context. Read it first if you want to know what integrating this package involves.
 
 ## Provenance
 
-Built for issues [#408](https://github.com/sokolaidev/ats-maf/issues/408) and [#663](https://github.com/sokolaidev/ats-maf/issues/663) of the host application this was extracted from. The security analysis that chose a VM-isolated sandbox over in-process execution — including the verified escalation chain that ruled in-process out, and why `--no-restore` alone was not enough — is in that repository under `docs/work-in-progress/issue-408-exec-surface-security.md`.
+Extracted from a production agent application, where a security review chose a VM-isolated sandbox over running agent-authored code in the host process. Both halves of that conclusion are visible in this backend's design: the boundary it declares, and the fact that no credential of the host's ever travels inside it.
 
 ---
 

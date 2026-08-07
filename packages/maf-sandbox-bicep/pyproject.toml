@@ -1,7 +1,7 @@
 [project]
 name = "maf-sandbox-bicep"
 version = "0.1.0"
-description = "Sandboxed Bicep validation (bicep build + bicep lint) as a Microsoft Agent Framework tool — reference implementation of agent-framework#7568 — written against maf-sandbox so it runs on any sandbox backend (issue #408)."
+description = "Sandboxed Bicep validation (bicep build + bicep lint) as a Microsoft Agent Framework tool — reference implementation of agent-framework#7568 — written against maf-sandbox so it runs on any sandbox backend."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
 authors = [{ name = "SOKOLAI BV", email = "info@sokolai.com" }]
@@ -62,14 +62,14 @@ ignore = ["UP037"]
 
 [tool.ruff.lint.per-file-ignores]
 # ruff resolves [tool.ruff] per file by the NEAREST ancestor pyproject.toml that has one —
-# once this package gained its own [tool.ruff] section, the root pyproject.toml's
-# "src/maf-sandbox-bicep/tests/**" per-file-ignore entry stopped reaching these files, so
-# this package carries its own copy (issue #697).
+# once this package gained its own [tool.ruff] section, the host application's root
+# pyproject.toml per-file-ignore entry for this package's tests stopped reaching these
+# files, so this package carries its own copy.
 "tests/**" = ["D101", "D103"]
 
-# Self-contained type checking, scoped to this package (issue #697) — strict, unlike the
-# root config's basic mode over src/ats. `tests/` stays out (fixtures, not signal for a
-# strict checker).
+# Self-contained type checking, scoped to this package — strict, unlike the host
+# application's root config, which runs its own type checker in basic mode. `tests/` stays
+# out (fixtures, not signal for a strict checker).
 [tool.pyright]
 include = ["src"]
 typeCheckingMode = "strict"

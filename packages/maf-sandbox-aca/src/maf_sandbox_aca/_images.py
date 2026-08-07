@@ -1,4 +1,4 @@
-"""Resolving an OCI reference to an imported ACA disk image (issue #408).
+"""Resolving an OCI reference to an imported ACA disk image.
 
 An image in a registry and a *disk image* registered in a sandbox group are different
 namespaces: a sandbox boots from the latter, and the import is a provisioning step

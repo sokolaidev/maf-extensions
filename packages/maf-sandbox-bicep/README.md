@@ -35,11 +35,11 @@ Pass `router=None` — or a router with no backend — and you get `[]` back: an
 
 What is Bicep-specific — the command templates, the accepted extensions, the SARIF parsing, the one host Bicep is allowed to reach (`mcr.microsoft.com`, for AVM module restore) — lives here and only here. The spec pins the egress allowlist and work directory as properties of the workload, not of configuration: a deployment that could widen Bicep's egress could undo the containment the tool's design rests on.
 
-Its companion artefacts live in the host repository, because a container image and a registry are not Python: `images/bicep-sandbox/` (pinned Bicep on Azure Linux) and `infra/bicep-sandbox/` (the registry and pull identity that serve it). The hard-won behaviours of the pinned CLI — SARIF on stderr for `build` but stdout for `lint`, `build-params` for `.bicepparam`, config discovery only by walking up from the source file — are documented where they bite, in [`_tool.py`](https://github.com/sokolaidev/maf-extensions/blob/main/packages/maf-sandbox-bicep/src/maf_sandbox_bicep/_tool.py).
+Its companion artefacts live outside this package, because a container image and a registry are not Python: a pinned Bicep image on Azure Linux, and the registry and pull identity that serve it. The hard-won behaviours of the pinned CLI — SARIF on stderr for `build` but stdout for `lint`, `build-params` for `.bicepparam`, config discovery only by walking up from the source file — are documented where they bite, in [`_tool.py`](https://github.com/sokolaidev/maf-extensions/blob/main/packages/maf-sandbox-bicep/src/maf_sandbox_bicep/_tool.py).
 
 ## Provenance
 
-Split out of `maf-sandbox-aca` (which keeps the ACA backend and nothing else) so the workload's dependency set states its portability: `maf-sandbox` + `agent-framework-core`, nothing more. Built for issues [#408](https://github.com/sokolaidev/ats-maf/issues/408) and [#663](https://github.com/sokolaidev/ats-maf/issues/663); the security analysis is in the host repository under `docs/work-in-progress/issue-408-exec-surface-security.md`.
+Split out of `maf-sandbox-aca` (which keeps the ACA backend and nothing else) so this workload's dependency set states its portability: `maf-sandbox` + `agent-framework-core`, nothing more. Extracted from a production agent application, where it runs against real infrastructure code an agent wrote — which is where every behaviour documented above was learned.
 
 ---
 

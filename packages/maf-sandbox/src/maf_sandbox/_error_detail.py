@@ -1,4 +1,4 @@
-"""``error_detail``: as much of a provider failure as a log can usefully carry (issue #697).
+"""``error_detail``: as much of a provider failure as a log can usefully carry.
 
 ``str()`` on an azure-core ``HttpResponseError`` is just
 ``Operation returned an invalid status 'Bad Request'`` — the *reason* is in the response

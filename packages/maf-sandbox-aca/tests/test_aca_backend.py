@@ -1,4 +1,4 @@
-"""Offline tests for the ACA Sandboxes backend (issues #408, #663).
+"""Offline tests for the ACA Sandboxes backend.
 
 No live sandbox group and no host application: the group client is replaced by a fake, and
 the disk-image tests build the **real** SDK dataclasses so the shape they assert is the
@@ -256,7 +256,7 @@ class TestResolveDiskImageId:
 
 class TestDisposeScope:
     def test_reaches_sandboxes_this_process_never_created(self):
-        """The registry is a fast path; the service is the source of truth (issue #375)."""
+        """The registry is a fast path; the service is the source of truth."""
         client = _FakeGroupClient(sandboxes=[_FakeSandbox("sbx-remote")])
         backend = _backend_with(client)
 
@@ -515,7 +515,7 @@ class TestLifecycleLogging:
 
 
 # ---------------------------------------------------------------------------
-# error_detail adoption — the warning logs must carry status and body (issue #697)
+# error_detail adoption — the warning logs must carry status and body
 # ---------------------------------------------------------------------------
 
 
@@ -654,7 +654,7 @@ class TestErrorDetailAdoption:
 class TestEgressPolicy:
     def test_denies_by_default_and_allows_only_the_named_hosts(self):
         """Patterns pass through verbatim — including wildcards, which the Bicep spec's
-        `*.data.mcr.microsoft.com` (MCR's blob endpoint, issue #705) depends on."""
+        `*.data.mcr.microsoft.com` (MCR's blob endpoint) depends on."""
         from maf_sandbox import SandboxSpec
 
         backend = AcaSandboxBackend(_config())

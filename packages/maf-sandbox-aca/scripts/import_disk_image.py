@@ -1,4 +1,4 @@
-"""Import the bicep-sandbox OCI image into an ACA sandbox group as a disk image (issue #408).
+"""Import the bicep-sandbox OCI image into an ACA sandbox group as a disk image.
 
 ``deploy-bicep-sandbox.yml`` builds and pushes ``bicep-sandbox:<version>`` to the sandbox
 stack's **own** registry, but a sandbox boots from a *disk image* registered in the sandbox
@@ -21,7 +21,7 @@ Usage — ``--package`` keeps the environment to this distribution's own closure
 rather than the host workspace's (128), which matters because nothing here needs the host::
 
     uv run --package maf-sandbox-aca \\
-        python src/maf-sandbox-aca/scripts/import_disk_image.py \\
+        python packages/maf-sandbox-aca/scripts/import_disk_image.py \\
         --endpoint   https://management.<region>.azuredevcompute.io \\
         --subscription <sub-id> \\
         --resource-group <rg> \\
@@ -36,8 +36,8 @@ than let the app resolve the reference.
 Authentication uses ``DefaultAzureCredential`` — an ``az login`` session is enough for the
 one-off run.  The sandbox registry is private, so pass ``--identity`` with the resource id
 of a managed identity that (a) holds ``AcrPull`` on that registry and (b) is attached to the
-sandbox group.  ``infra/bicep-sandbox/main.bicep`` creates such an identity and outputs its
-resource id as ``pullIdentityResourceId``.
+sandbox group.  A host's own infrastructure-as-code for the sandbox group typically
+provisions such an identity and exposes its resource id as an output.
 """
 
 from __future__ import annotations

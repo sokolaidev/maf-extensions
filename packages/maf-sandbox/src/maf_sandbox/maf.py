@@ -1,4 +1,4 @@
-"""The MAF glue: wiring this sandbox stack into an ``agent_framework`` host (issue #697).
+"""The MAF glue: wiring this sandbox stack into an ``agent_framework`` host.
 
 Everything else in :mod:`maf_sandbox` is protocol and policy written against the standard
 library and nothing else — that is what lets a backend, a workload and a host application

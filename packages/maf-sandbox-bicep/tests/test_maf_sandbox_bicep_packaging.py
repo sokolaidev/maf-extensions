@@ -1,7 +1,7 @@
 """The publish-time experimental notice: emitted once, suppressible, `-W error`-safe.
 
 New file (not the existing `test_bicep_workload.py`) so this doesn't collide with that
-file's concurrent edits elsewhere in issue #697's phase 2. Covers only the notice added to
+file's concurrent edits elsewhere in the same release. Covers only the notice added to
 `maf_sandbox_bicep/__init__.py` — behavior of the tool itself is that file's job.
 """
 

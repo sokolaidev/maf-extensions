@@ -1,4 +1,4 @@
-"""``bicep_validate``: the first sandbox workload (issue #408).
+"""``bicep_validate``: the first sandbox workload.
 
 Runs ``bicep build`` and ``bicep lint`` on the files an agent authored, inside a sandbox,
 and returns the compiler's diagnostics — T2 (compiler truth) instead of T0 (the model
@@ -7,9 +7,9 @@ checking its own work).
 **This module contains no Azure import and no sandbox lifecycle code.**  It talks to a
 :class:`~maf_sandbox.SandboxRouter` and gets back something with ``write_file`` and
 ``exec``, so the same tool runs unchanged against ACA Sandboxes, a local Docker container or
-an in-process fake (issue #663's acceptance criterion).  What is Bicep-specific — the
-command templates, the accepted extensions, the SARIF parsing, the one host Bicep is allowed
-to reach — lives here and only here.
+an in-process fake — the acceptance criterion this split was built to satisfy.  What is
+Bicep-specific — the command templates, the accepted extensions, the SARIF parsing, the one
+host Bicep is allowed to reach — lives here and only here.
 """
 
 from __future__ import annotations
@@ -55,10 +55,10 @@ BICEP_KIND = "bicep"
 #: Microsoft egress-allowlist doc calls out).  With only the first host allowed, restore
 #: resolves the manifest and then 403s on the blob — BCP192 on every `br/public:` reference
 #: — so module types never load and type errors in module inputs are structurally invisible.
-#: That exact blind spot let a reviewer PASS Bicep that opens with compile errors in
-#: VS Code (issue #705): it discounted the restore noise and certified the module inputs
-#: from READMEs instead.  Both hosts are Microsoft-operated artifact CDNs; the containment
-#: posture (no ARM, no ambient identity) is unchanged.
+#: That exact blind spot once let a reviewer PASS Bicep that opens with compile errors in
+#: VS Code: it discounted the restore noise and certified the module inputs from READMEs
+#: instead.  Both hosts are Microsoft-operated artifact CDNs; the containment posture (no
+#: ARM, no ambient identity) is unchanged.
 _MCR_HOST = "mcr.microsoft.com"
 _MCR_DATA_HOST = "*.data.mcr.microsoft.com"
 
@@ -388,8 +388,8 @@ async def _run_phase(
     failed_restores = count_restore_failures(diagnostics)
     if failed_restores:
         # Without this banner a restore-failed run reads as an ordinary diagnostic list, and
-        # an agent can (and did — issue #705) discount it as environment noise and certify
-        # the module inputs from documentation instead of from the compiler.
+        # an agent can (and once did) discount it as environment noise and certify the
+        # module inputs from documentation instead of from the compiler.
         logger.warning(
             "bicep_validate: %s file=%r module restore FAILED for %d reference(s) — "
             "type checking of module inputs did not run",

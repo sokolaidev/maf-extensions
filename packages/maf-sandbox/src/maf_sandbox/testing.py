@@ -1,4 +1,4 @@
-"""In-process fakes for testing code that depends on this package (issue #697).
+"""In-process fakes for testing code that depends on this package.
 
 Two hand-rolled fakes had accumulated independently — one in the router's own test suite,
 shaped for policy tests (a configurable name and isolation, recording every call); one in the

@@ -1,14 +1,14 @@
-"""Tests for the sandbox router (issue #663).
+"""Tests for the sandbox router.
 
 The router has exactly two jobs, and both are tested here rather than inferred:
 
 - picking a backend from configuration;
 - refusing a backend weaker than a VM boundary when the host says it is deployed.
 
-The second is a security property. The #408 ruling put execution in a VM-isolated sandbox
+The second is a security property. A security review put execution in a VM-isolated sandbox
 because a shared-kernel container sits next to the host's credentials, and the security
-posture doc's T3/T7 rows now rest on that — so "the router would refuse" needs to be a test,
-not a comment.
+posture doc's threat-model rows now rest on that — so "the router would refuse" needs to be
+a test, not a comment.
 """
 
 from __future__ import annotations
@@ -87,7 +87,7 @@ class TestSelection:
 
 
 class TestDeployedIsolationRule:
-    """`SANDBOX_BACKEND=docker` + deployed must fail closed — issue #663's hard constraint."""
+    """`SANDBOX_BACKEND=docker` + deployed must fail closed — a hard constraint on the router."""
 
     def test_vm_isolation_is_permitted_when_deployed(self):
         router = SandboxRouter([InProcessSandboxBackend(isolation=Isolation.VM)], deployed=True)
@@ -235,7 +235,7 @@ class TestNoHostDependency:
 #: quietly neither.
 _PROTOCOL_MODULES = frozenset({"_error_detail", "_protocol", "_purger", "_router", "testing"})
 
-#: The modules deliberately OUTSIDE the stdlib-only claim (issue #697).  `maf` is the MAF-glue
+#: The modules deliberately OUTSIDE the stdlib-only claim.  `maf` is the MAF-glue
 #: module, the one place `agent_framework` may be imported — see `TestMafIsTheOnlyMafImporter`
 #: for the other half of that rule.  `__init__` is here because it is not protocol either: it
 #: re-exports and carries the experimental notice.  Both are still covered by
@@ -300,10 +300,10 @@ class TestZeroDependencies:
     entry would still import fine in this workspace, because every other member is already on
     the path.
 
-    The claim is scoped to :data:`_PROTOCOL_MODULES` rather than to the whole distribution
-    (issue #697): the dist now declares `agent-framework-core` for `maf_sandbox.maf`, and a
-    scan that kept asserting "nothing here imports anything" would have had to be deleted
-    outright — trading a precise, still-true invariant for none at all.
+    The claim is scoped to :data:`_PROTOCOL_MODULES` rather than to the whole distribution:
+    the dist now declares `agent-framework-core` for `maf_sandbox.maf`, and a scan that kept
+    asserting "nothing here imports anything" would have had to be deleted outright — trading
+    a precise, still-true invariant for none at all.
     """
 
     def test_the_protocol_modules_import_nothing_outside_the_standard_library(self):
@@ -327,7 +327,7 @@ class TestZeroDependencies:
 
 
 class TestMafIsTheOnlyMafImporter:
-    """`agent_framework` may be imported by `maf_sandbox.maf` and by nothing else (#697).
+    """`agent_framework` may be imported by `maf_sandbox.maf` and by nothing else.
 
     The distribution depends on MAF for that one glue module. The rule keeps that dependency
     from spreading: a protocol module that reached for `agent_framework` would tie the
