@@ -427,12 +427,17 @@ class TestEndToEnd:
             "devops-engineer",
         )
 
-    def test_the_spec_it_asks_for_allows_only_mcr(self):
+    def test_the_spec_it_asks_for_allows_only_the_restore_hosts(self):
         store = InMemoryStore({"main.bicep": "x"})
         backend = _fake_backend()
         _run(_tool(store, backend), ["main.bicep"])
 
-        assert backend.specs[0].egress_allow == ("mcr.microsoft.com", "*.data.mcr.microsoft.com")
+        assert backend.specs[0].egress_allow == (
+            "mcr.microsoft.com",
+            "*.data.mcr.microsoft.com",
+            "aka.ms",
+            "live-data.bicep.azure.com",
+        )
         assert backend.specs[0].image == "acr.io/bicep:1"
 
 
@@ -792,17 +797,28 @@ class TestFidesDeclarations:
 
 
 class TestBicepSandboxSpec:
-    def test_allows_exactly_the_two_mcr_hosts(self):
-        """Manifests come from mcr.microsoft.com; layer blobs from *.data.mcr.microsoft.com.
+    def test_allows_exactly_the_four_restore_hosts(self):
+        """Two pairs, and every one of them is load-bearing for a restore.
 
-        With only the first host, restore resolves the manifest and then 403s on the blob —
+        Manifests come from mcr.microsoft.com, layer blobs from *.data.mcr.microsoft.com:
+        with only the first, restore resolves the manifest and then 403s on the blob —
         BCP192 on every `br/public:` reference, so module types never load and module-input
-        type errors are invisible to the whole validation. Anything beyond these two
-        Microsoft-operated artifact hosts widens containment and must not appear.
+        type errors are invisible to the whole validation.
+
+        The public module index is requested from aka.ms and served from
+        live-data.bicep.azure.com: with only the redirector, the fetch ends at a `Location`
+        header pointing somewhere denied. Blocked entirely, `use-recent-module-versions`
+        reports a download error once per file instead of the outdated module pins it exists
+        to find.
+
+        Anything beyond these four Microsoft-operated hosts widens containment and must not
+        appear.
         """
         assert bicep_sandbox_spec().egress_allow == (
             "mcr.microsoft.com",
             "*.data.mcr.microsoft.com",
+            "aka.ms",
+            "live-data.bicep.azure.com",
         )
 
     def test_work_dir_is_a_dedicated_root(self):
