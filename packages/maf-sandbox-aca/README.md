@@ -53,7 +53,7 @@ Egress comes from the **spec**, not from configuration: `default_action: Deny` p
 
 It imports nothing from its host application — only `maf-sandbox` and `azure-*` — so moving it to its own repository is a file move plus a dependency line. `src/`, `tests/`, `scripts/` and `pyproject.toml` are already the future repo root.
 
-`TestNoHostDependency` is what keeps that true: it scans this package's sources for any import of the host package and fails with a pointer to the adapter. Nothing else would notice, because the tests run in a process where the host is importable. The host's name appears exactly once, as `_HOST_PACKAGE` in that test — extracting this repository is that one line plus a file move.
+`TestOnlyDeclaredDependencies` is what keeps that true: it scans this package's sources and fails on any import that is neither the standard library, this package itself, nor a distribution its own `pyproject.toml` declares. Nothing else would notice a stray one, because a workspace has every sibling already on the path — and an undeclared import is exactly what breaks a fresh `pip install` of the published wheel.
 
 What stays behind is the host's adapter — a single module in the host application that maps the host's settings onto an `AcaSandboxConfig` and supplies the request context. Read it first if you want to know what integrating this package involves.
 

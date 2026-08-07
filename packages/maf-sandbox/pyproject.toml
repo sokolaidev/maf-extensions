@@ -28,7 +28,7 @@ classifiers = [
 ]
 # The protocol modules (`_protocol`, `_router`, `_purger`) stay import-clean of everything
 # but the standard library — giving THEM a backend dependency, or a MAF one, would make this
-# layer the thing it exists to keep apart. `TestZeroDependencies` and `TestNoHostDependency`
+# layer the thing it exists to keep apart. `TestZeroDependencies` and `TestOnlyDeclaredDependencies`
 # (tests/test_sandbox_router.py) pin that at the source-scan level, which is a stronger and
 # more honest guarantee than a dependency list, since a stray import would still resolve
 # fine in this workspace with every other member already on the path.
