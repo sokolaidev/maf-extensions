@@ -1,0 +1,30 @@
+[project]
+name = "sandbox-bicep"
+version = "0.1.0"
+description = "Sandboxed Bicep validation (bicep build + bicep lint) as a Microsoft Agent Framework tool, written against sandbox-router so it runs on any sandbox backend (issue #408)."
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+dependencies = [
+    # The sandbox protocol this workload is written against — its ONLY infrastructure
+    # dependency. No Azure import, no backend import; a test enforces both.
+    "sandbox-router",
+    # The `@tool` decorator and AgentFileStore. MAF is a genuine dependency of the tool
+    # itself, not of the host application.
+    "agent-framework-core",
+]
+
+# agent-framework-core is sourced from the monorepo `main` branch. Keep this in sync with
+# the root pyproject.toml's [tool.uv.sources] — the shared uv.lock pins both to the same
+# rev, so a MAF bump updates them together. Mirrors skills/foundry (maf-aca-sandboxes no
+# longer carries the MAF dependency at all).
+[tool.uv.sources]
+agent-framework-core = { git = "https://github.com/microsoft/agent-framework.git", subdirectory = "python/packages/core", branch = "main" }
+sandbox-router = { workspace = true }
+
+[tool.uv.build-backend]
+module-name = "sandbox_bicep"
+module-root = "src"
+
+[build-system]
+requires = ["uv_build>=0.11.24,<0.12.0"]
+build-backend = "uv_build"

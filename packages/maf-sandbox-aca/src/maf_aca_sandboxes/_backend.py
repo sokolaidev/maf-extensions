@@ -19,7 +19,7 @@ from typing import Any
 
 from sandbox_router import ExecResult, Isolation, SandboxKey, SandboxSpec
 
-from ._config import AcaConfig
+from ._config import AcaSandboxConfig
 from ._images import qualify_image_reference, resolve_disk_image_id
 
 logger = logging.getLogger(__name__)
@@ -120,7 +120,7 @@ class _AcaSandbox:
 class AcaSandboxBackend:
     """Hands out VM-isolated sandboxes from an Azure Container Apps sandbox group."""
 
-    def __init__(self, config: AcaConfig) -> None:
+    def __init__(self, config: AcaSandboxConfig) -> None:
         self._config = config
         # (scope, thread_id, agent_dir) -> sandbox_id, for this process only.
         # Keyed on scope so sandboxes from one user's session cannot be reused or deleted by

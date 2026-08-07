@@ -191,3 +191,101 @@ class TestSpecDefaults:
         a, b = SandboxSpec(kind="a"), SandboxSpec(kind="b")
         a.labels["x"] = "1"
         assert b.labels == {}
+
+
+# ---------------------------------------------------------------------------
+# Independence from the host application — the invariant the split exists for
+# ---------------------------------------------------------------------------
+
+#: The one place this distribution names the application it currently ships inside.  It is
+#: here because the guard below needs something to look for; everywhere else the host is
+#: referred to by role, so moving this tree to its own repository is a file move plus this
+#: single line.
+_HOST_PACKAGE = "ats"
+
+
+class TestNoHostDependency:
+    """This package must not import the application it currently ships inside.
+
+    Everything else here would keep passing if someone added ``from <host>.config import
+    Settings`` to a module — the tests run in a process where the host package is
+    importable, so the coupling would be invisible until the day someone tried to extract
+    the package.  A source scan suffices: this module's only imports are the standard
+    library (see :class:`TestZeroDependencies` below), so the host cannot arrive
+    transitively.  Each sandbox distribution carries its own copy of this scan over its own
+    sources, so extracting any one of them keeps its guard.
+    """
+
+    def _sources(self):
+        import pathlib
+
+        import sandbox_router
+
+        root = pathlib.Path(sandbox_router.__file__).parent  # type: ignore[arg-type]
+        distribution = root.parent.parent
+        paths = []
+        # `scripts` does not exist here today; the guarded leg keeps a future operator
+        # script inside the scan instead of silently outside it (the backend has one).
+        for directory in (root, distribution / "tests", distribution / "scripts"):
+            if not directory.is_dir():
+                continue
+            paths.extend(directory.rglob("*.py"))
+        return paths
+
+    def test_sources_exist(self):
+        """Guards the scan below against silently finding nothing."""
+        assert len(self._sources()) >= 5
+
+    def test_nothing_imports_the_host_application(self):
+        import re
+
+        host = re.escape(_HOST_PACKAGE)
+        pattern = re.compile(rf"(?m)^\s*(?:from\s+{host}[.\s]|import\s+{host}[.\s])")
+        offenders = [
+            str(p) for p in self._sources() if pattern.search(p.read_text(encoding="utf-8"))
+        ]
+        assert offenders == [], (
+            f"these files import the host application ({_HOST_PACKAGE!r}): {offenders}. "
+            "The dependency belongs in the host's own adapter module, reaching this "
+            "package through WorkspaceContext and the router."
+        )
+
+
+class TestZeroDependencies:
+    """`pyproject.toml` declares `dependencies = []` — this is what makes that claim true.
+
+    This layer is protocol and policy: giving it a backend dependency, or a MAF one, would
+    make it the thing it exists to keep apart (see the module docstring). Nothing else pins
+    that; a dependency added to a module without a matching `pyproject.toml` entry would
+    still import fine in this workspace, because every other member is already on the path.
+    """
+
+    def test_the_module_imports_nothing_outside_the_standard_library(self):
+        import ast
+        import pathlib
+        import sys
+
+        import sandbox_router
+
+        root = pathlib.Path(sandbox_router.__file__).parent  # type: ignore[arg-type]
+        stdlib = set(sys.stdlib_module_names)
+        offenders: list[str] = []
+        for path in root.rglob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        top = alias.name.split(".")[0]
+                        if top != "__future__" and top not in stdlib:
+                            offenders.append(f"{path.name}: import {alias.name}")
+                elif isinstance(node, ast.ImportFrom):
+                    if node.level > 0:
+                        continue  # relative import — within this package, not a dependency
+                    top = (node.module or "").split(".")[0]
+                    if top and top != "__future__" and top not in stdlib:
+                        offenders.append(f"{path.name}: from {node.module} import ...")
+        assert offenders == [], (
+            f"sandbox_router imports outside the standard library: {offenders}. "
+            "Its entire reason to exist is zero dependencies — see pyproject.toml's "
+            "`dependencies = []` and the module docstring."
+        )

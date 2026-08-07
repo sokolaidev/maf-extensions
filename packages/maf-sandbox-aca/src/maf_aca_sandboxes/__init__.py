@@ -1,7 +1,7 @@
-"""ACA Sandboxes as a sandbox backend, plus the sandbox kinds that run on it (issue #408).
+"""ACA Sandboxes as a sandbox backend for Microsoft Agent Framework agents (issue #408).
 
 ```
-app  ->  sandbox_router  ->  maf_aca_sandboxes  ->  a sandbox kind (bicep today)
+app  ->  sandbox_router  ->  maf_aca_sandboxes  ->  the sandbox
 ```
 
 :class:`AcaSandboxBackend` implements :class:`sandbox_router.SandboxBackend` on
@@ -11,10 +11,11 @@ lifecycle policies that reclaim a billable VM after it goes idle.  It declares
 :data:`~sandbox_router.Isolation.VM`, which is what lets the router permit it in a deployed
 environment.
 
-The kinds live in subpackages — :mod:`maf_aca_sandboxes.bicep` today; a GitHub Copilot agent
-and an Azure CLI surface are the obvious next ones, and each arrives as a sibling rather than
-as changes to the backend.  A kind is written against the router's protocol, not against this
-backend, so it keeps working the day one runs somewhere else.
+This package is the backend only.  The sandbox kinds that run on it live in sibling
+packages under `src/` — :mod:`sandbox_bicep` first; a GitHub Copilot agent and an Azure CLI
+surface are the obvious next ones.  A kind is written against the router's protocol, not
+against this backend, so it keeps working the day one runs somewhere else, and it never
+imports this package directly.
 
 This package imports no host application.
 """
@@ -22,12 +23,12 @@ This package imports no host application.
 from __future__ import annotations
 
 from ._backend import AcaSandboxBackend
-from ._config import AcaConfig
+from ._config import AcaSandboxConfig
 from ._images import disk_image_base, resolve_disk_image_id
 
 __all__ = [
-    "AcaConfig",
     "AcaSandboxBackend",
+    "AcaSandboxConfig",
     "disk_image_base",
     "resolve_disk_image_id",
 ]

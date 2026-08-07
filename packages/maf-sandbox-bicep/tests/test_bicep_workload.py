@@ -16,7 +16,7 @@ import json
 import logging
 
 import pytest
-from maf_aca_sandboxes.bicep import (
+from sandbox_bicep import (
     BICEP_TOOL_NAMES,
     BICEP_VALIDATE_TOOL_NAME,
     bicep_sandbox_spec,
@@ -25,7 +25,7 @@ from maf_aca_sandboxes.bicep import (
     parse_sarif,
     safe_workspace_path,
 )
-from maf_aca_sandboxes.bicep._tool import _BUILD_CMD, _LINT_CMD
+from sandbox_bicep._tool import _BUILD_CMD, _LINT_CMD
 from sandbox_router import ExecResult, Isolation, SandboxRouter, WorkspaceContext
 
 # ---------------------------------------------------------------------------
@@ -151,7 +151,7 @@ def _tool(store: _FakeStore, backend: _FakeBackend, *, thread_id: str | None = "
 
 def _workspace_part(sandbox_path: str) -> str:
     """Strip `<work dir>/<per-call dir>/` off a sandbox path, leaving the workspace path."""
-    from maf_aca_sandboxes.bicep._tool import _WORK_DIR
+    from sandbox_bicep._tool import _WORK_DIR
 
     return sandbox_path.removeprefix(f"{_WORK_DIR}/").split("/", 1)[1]
 
@@ -291,7 +291,7 @@ class TestParameterFiles:
 
     def test_the_build_command_keeps_the_stderr_merge(self):
         """Both build variants must keep `2>&1`; SARIF goes to stderr for each."""
-        from maf_aca_sandboxes.bicep._tool import _BUILD_CMD, _BUILD_PARAMS_CMD
+        from sandbox_bicep._tool import _BUILD_CMD, _BUILD_PARAMS_CMD
 
         assert "2>&1" in _BUILD_CMD
         assert "2>&1" in _BUILD_PARAMS_CMD
@@ -310,7 +310,7 @@ class TestExecutionIsVisible:
         store = _FakeStore({"main.bicep": "param unused string"})
         backend = _FakeBackend()
 
-        with caplog.at_level(logging.INFO, logger="maf_aca_sandboxes"):
+        with caplog.at_level(logging.INFO, logger="sandbox_bicep"):
             _run(_tool(store, backend), ["main.bicep"])
 
         ok = [r.getMessage() for r in caplog.records if "bicep_validate: " in r.getMessage()]
@@ -329,7 +329,7 @@ class TestExecutionIsVisible:
 
         backend.sandbox.exec = _boom  # type: ignore[method-assign]
 
-        with caplog.at_level(logging.INFO, logger="maf_aca_sandboxes"):
+        with caplog.at_level(logging.INFO, logger="sandbox_bicep"):
             out = _run(_tool(store, backend), ["main.bicep"])
 
         assert "Error: exec failed" in out
@@ -367,7 +367,7 @@ class TestFailureDetailIsLogged:
 
         backend.acquire = _boom  # type: ignore[method-assign]
 
-        with caplog.at_level(logging.WARNING, logger="maf_aca_sandboxes"):
+        with caplog.at_level(logging.WARNING, logger="sandbox_bicep"):
             out = _run(_tool(store, backend), ["main.bicep"])
 
         logged = caplog.text
@@ -513,7 +513,7 @@ class TestStaleFilesAcrossRounds:
         backend = _FakeBackend()
         _run(_tool(store, backend), ["main.bicep"])
 
-        from maf_aca_sandboxes.bicep._tool import _WORK_DIR
+        from sandbox_bicep._tool import _WORK_DIR
 
         (path,) = backend.sandbox.files
         assert path.startswith(f"{_WORK_DIR}/")
@@ -552,9 +552,9 @@ class TestDeployWorkflowStaysOffTheApplication:
     def _workflow(self):
         import pathlib
 
-        import maf_aca_sandboxes
+        import sandbox_bicep
 
-        distribution = pathlib.Path(maf_aca_sandboxes.__file__).parents[2]
+        distribution = pathlib.Path(sandbox_bicep.__file__).parents[2]
         for root in (distribution.parents[1], distribution):
             path = root / ".github" / "workflows" / "deploy-bicep-sandbox.yml"
             if path.is_file():
@@ -626,9 +626,9 @@ class TestConfigDiscovery:
     def _dockerfile(self):
         import pathlib
 
-        import maf_aca_sandboxes
+        import sandbox_bicep
 
-        distribution = pathlib.Path(maf_aca_sandboxes.__file__).parents[2]
+        distribution = pathlib.Path(sandbox_bicep.__file__).parents[2]
         candidates = [
             # In the host repo, where images/ is a sibling of src/.
             distribution.parents[1] / "images" / "bicep-sandbox" / "Dockerfile",
@@ -645,7 +645,7 @@ class TestConfigDiscovery:
         )
 
     def test_the_image_puts_bicepconfig_at_the_work_dir_root(self):
-        from maf_aca_sandboxes.bicep._tool import _WORK_DIR
+        from sandbox_bicep._tool import _WORK_DIR
 
         text = self._dockerfile().read_text(encoding="utf-8")
         assert f"COPY bicepconfig.json {_WORK_DIR}/bicepconfig.json" in text, (
@@ -659,7 +659,7 @@ class TestConfigDiscovery:
         backend = _FakeBackend()
         _run(_tool(store, backend), ["main.bicep"])
 
-        from maf_aca_sandboxes.bicep._tool import _WORK_DIR
+        from sandbox_bicep._tool import _WORK_DIR
 
         (path,) = backend.sandbox.files
         assert path.startswith(f"{_WORK_DIR}/")
@@ -958,33 +958,36 @@ _HOST_PACKAGE = "ats"
 
 
 class TestNoHostDependency:
-    """These packages must not import the application they currently ship inside.
+    """This package must not import the application it currently ships inside.
 
     Everything else here would keep passing if someone added ``from <host>.config import
     Settings`` to a module — the tests run in a process where the host package is
     importable, so the coupling would be invisible until the day someone tried to extract
     the package.  A source scan suffices: the only imports here are stdlib,
-    ``agent_framework``, ``sandbox_router`` and ``azure.*``, so the host cannot arrive
-    transitively.
+    ``agent_framework`` and ``sandbox_router``, so the host cannot arrive transitively.
+    Each sandbox distribution carries its own copy of this scan over its own sources, so
+    extracting any one of them keeps its guard.
     """
 
     def _sources(self):
         import pathlib
 
-        import maf_aca_sandboxes
-        import sandbox_router
+        import sandbox_bicep
 
+        root = pathlib.Path(sandbox_bicep.__file__).parent  # type: ignore[arg-type]
+        distribution = root.parent.parent
         paths = []
-        for module in (maf_aca_sandboxes, sandbox_router):
-            root = pathlib.Path(module.__file__).parent  # type: ignore[arg-type]
-            distribution = root.parent.parent
-            for directory in (root, distribution / "tests", distribution / "scripts"):
-                paths.extend(directory.rglob("*.py"))
+        # `scripts` does not exist here today; the guarded leg keeps a future operator
+        # script inside the scan instead of silently outside it (the backend has one).
+        for directory in (root, distribution / "tests", distribution / "scripts"):
+            if not directory.is_dir():
+                continue
+            paths.extend(directory.rglob("*.py"))
         return paths
 
     def test_sources_exist(self):
         """Guards the scan below against silently finding nothing."""
-        assert len(self._sources()) >= 8
+        assert len(self._sources()) >= 5
 
     def test_nothing_imports_the_host_application(self):
         import re
@@ -996,8 +999,8 @@ class TestNoHostDependency:
         ]
         assert offenders == [], (
             f"these files import the host application ({_HOST_PACKAGE!r}): {offenders}. "
-            "The dependency belongs in the host's own adapter module, reaching these "
-            "packages through SandboxConfig / WorkspaceContext."
+            "The dependency belongs in the host's own adapter module, reaching this "
+            "package through WorkspaceContext and the router."
         )
 
     def test_the_workload_does_not_import_azure(self):
@@ -1005,9 +1008,9 @@ class TestNoHostDependency:
         import pathlib
         import re
 
-        import maf_aca_sandboxes.bicep as bicep_pkg
+        import sandbox_bicep
 
-        root = pathlib.Path(bicep_pkg.__file__).parent  # type: ignore[arg-type]
+        root = pathlib.Path(sandbox_bicep.__file__).parent  # type: ignore[arg-type]
         pattern = re.compile(r"(?m)^\s*(?:from\s+azure[.\s]|import\s+azure[.\s])")
         offenders = [
             str(p) for p in root.rglob("*.py") if pattern.search(p.read_text(encoding="utf-8"))

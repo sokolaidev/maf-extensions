@@ -11,14 +11,19 @@ import asyncio
 import logging
 
 import pytest
-from maf_aca_sandboxes import AcaConfig, AcaSandboxBackend, disk_image_base, resolve_disk_image_id
+from maf_aca_sandboxes import (
+    AcaSandboxBackend,
+    AcaSandboxConfig,
+    disk_image_base,
+    resolve_disk_image_id,
+)
 from sandbox_router import Isolation, SandboxBackend, SandboxKey
 
 _ENDPOINT = "https://management.example.azuredevcompute.io"
 
 
-def _config(**overrides) -> AcaConfig:
-    return AcaConfig(endpoint=_ENDPOINT, **overrides)
+def _config(**overrides) -> AcaSandboxConfig:
+    return AcaSandboxConfig(endpoint=_ENDPOINT, **overrides)
 
 
 def _disk_image(image_id: str, reference: str):
@@ -101,7 +106,7 @@ class _ExplodingGroupClient:
         raise RuntimeError("service unavailable")
 
 
-def _backend_with(group_client, config: AcaConfig | None = None) -> AcaSandboxBackend:
+def _backend_with(group_client, config: AcaSandboxConfig | None = None) -> AcaSandboxBackend:
     """A backend whose group client is the given fake.
 
     Injected by overriding the one protected accessor rather than by patching
@@ -470,3 +475,58 @@ class TestEgressPolicy:
 
         assert policy.default_action == "Deny"
         assert policy.host_rules == []
+
+
+# ---------------------------------------------------------------------------
+# Independence from the host application — the invariant the split exists for
+# ---------------------------------------------------------------------------
+
+#: The one place this distribution names the application it currently ships inside.  It is
+#: here because the guard below needs something to look for; everywhere else the host is
+#: referred to by role, so moving this tree to its own repository is a file move plus this
+#: single line.
+_HOST_PACKAGE = "ats"
+
+
+class TestNoHostDependency:
+    """This package must not import the application it currently ships inside.
+
+    Everything else here would keep passing if someone added ``from <host>.config import
+    Settings`` to a module — the tests run in a process where the host package is
+    importable, so the coupling would be invisible until the day someone tried to extract
+    the package.  A source scan suffices: this backend's own imports are stdlib,
+    ``sandbox_router`` and ``azure-*`` (see :mod:`maf_aca_sandboxes._backend`), so the host
+    cannot arrive transitively.  Each sandbox distribution carries its own copy of this scan
+    over its own sources, so extracting any one of them keeps its guard.
+    """
+
+    def _sources(self):
+        import pathlib
+
+        import maf_aca_sandboxes
+
+        root = pathlib.Path(maf_aca_sandboxes.__file__).parent  # type: ignore[arg-type]
+        distribution = root.parent.parent
+        paths = []
+        for directory in (root, distribution / "tests", distribution / "scripts"):
+            if directory.is_dir():
+                paths.extend(directory.rglob("*.py"))
+        return paths
+
+    def test_sources_exist(self):
+        """Guards the scan below against silently finding nothing."""
+        assert len(self._sources()) >= 6
+
+    def test_nothing_imports_the_host_application(self):
+        import re
+
+        host = re.escape(_HOST_PACKAGE)
+        pattern = re.compile(rf"(?m)^\s*(?:from\s+{host}[.\s]|import\s+{host}[.\s])")
+        offenders = [
+            str(p) for p in self._sources() if pattern.search(p.read_text(encoding="utf-8"))
+        ]
+        assert offenders == [], (
+            f"these files import the host application ({_HOST_PACKAGE!r}): {offenders}. "
+            "The dependency belongs in the host's own adapter module, reaching this "
+            "package through WorkspaceContext and the router."
+        )
