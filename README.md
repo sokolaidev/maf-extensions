@@ -28,6 +28,8 @@ uv run pyright -p packages/maf-sandbox && uv run pyright -p packages/maf-sandbox
 
 Each package is deliberately self-contained — building, testing and publishing need nothing from this root beyond the shared lock. New extensions arrive as sibling directories under `packages/`.
 
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the full workflow and what the boundary tests are protecting; [`RELEASING.md`](RELEASING.md) and [`docs/maintainers.md`](docs/maintainers.md) cover releases and the publishing setup.
+
 ## Provenance
 
-Extracted (with full history) from the host application that grew them, where the deployed production evidence lives: issues [#408](https://github.com/sokolaidev/ats-maf/issues/408), [#663](https://github.com/sokolaidev/ats-maf/issues/663) and the epic [#694](https://github.com/sokolaidev/ats-maf/issues/694).
+Extracted, with their history, from a production agent application where they run today: an advisor that delegates infrastructure work to sub-agents, and needed somewhere safe for those agents' code to execute. Everything here was shaped by that use — the deployed-isolation rule, the label-based purge that survives a multi-replica host, and the compiler-truth validation loop are all answers to problems that showed up in production rather than in design.
