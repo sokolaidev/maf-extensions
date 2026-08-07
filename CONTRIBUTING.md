@@ -33,9 +33,25 @@ Some tests exist to stop a specific mistake, and their failure messages say whic
 
 If a change genuinely needs to cross one of those lines, say so in the PR — the boundary may be wrong, but it should move deliberately.
 
+## PR titles
+
+This repository squash-merges, so a PR title becomes the commit subject on `main` — and that subject is what decides the next version. Titles follow [Conventional Commits](https://www.conventionalcommits.org/), which CI checks:
+
+```
+fix(aca): retry the label query when the control plane returns 429
+feat: accept a list of arguments to exec, and quote them
+docs: explain what the boundary tests protect
+```
+
+`fix:` releases a patch and `feat:` a minor; a `!` after the type, or a `BREAKING CHANGE:` footer, also releases a minor, since every package is still `0.x`. Everything else — `docs`, `test`, `refactor`, `chore`, `ci`, `build`, `perf`, `revert` — is recorded and releases nothing.
+
+The scope in parentheses is free-form and optional. Which package a change belongs to is worked out from the files it touches, not from the scope, so a PR touching two packages releases both.
+
 ## Changelogs
 
-Every user-visible change gets a line in that package's `CHANGELOG.md`, under the unreleased version's heading. Those entries become the GitHub Release notes verbatim, so write them for someone deciding whether to upgrade: what changed for them, and what they have to do about it. "Refactored internals" helps nobody; "`exec` now accepts a list of arguments, and quotes them for you" does.
+You do not edit `CHANGELOG.md` in an ordinary PR. [release-please](https://github.com/googleapis/release-please) keeps a Release PR open per package and writes the section there, generated from commit subjects — which is exactly why **that section is a draft to rewrite before the Release PR is merged**.
+
+Generated entries read like `* fix: correct the label digest (#42)`. What ships should read like something written for the person deciding whether to upgrade: what changed for them, and what they have to do about it. "Refactored internals" helps nobody; "`exec` now accepts a list of arguments, and quotes them for you" does. Those entries become the GitHub Release notes verbatim.
 
 ## Layering
 

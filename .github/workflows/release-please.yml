@@ -1,0 +1,54 @@
+name: Release Please
+
+# Keeps a Release PR open per package: version bump, changelog section, manifest. Merging it
+# drafts a GitHub Release; pushing the tag it names is what publishes (RELEASING.md).
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare releases
+    runs-on: ubuntu-latest
+    permissions:
+      # Opens and updates the Release PR, and drafts the GitHub Release on merge. Scoped to
+      # this job; the workflow default above stays read-only.
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Run release-please
+        # Pinned to the commit v4 resolves to: a moving tag is a supply-chain hole, and this
+        # job can write to the repository.
+        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+      # The tag is deliberately not pushed here: one pushed by GITHUB_TOKEN triggers no
+      # workflow, so publishing would silently never start. The maintainer pushes it.
+      - name: Say which tags to push
+        if: steps.release.outputs.releases_created == 'true'
+        env:
+          PATHS: ${{ steps.release.outputs.paths_released }}
+          OUTPUTS: ${{ toJSON(steps.release.outputs) }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Drafted — push the tag to publish"
+            echo
+            echo '```bash'
+            for path in $(echo "$PATHS" | jq -r '.[]'); do
+              tag="$(echo "$OUTPUTS" | jq -r --arg k "${path}--tag_name" '.[$k]')"
+              sha="$(echo "$OUTPUTS" | jq -r --arg k "${path}--sha" '.[$k]')"
+              echo "git tag ${tag} ${sha} && git push origin ${tag}"
+            done
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

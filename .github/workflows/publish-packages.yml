@@ -1,7 +1,7 @@
 name: Publish
 
 # One package per tag (`maf-sandbox-v0.1.0` -> packages/maf-sandbox), published with
-# Trusted Publishing — no token anywhere. Registration values: RELEASING.md.
+# Trusted Publishing — no token anywhere. Registration values: docs/maintainers.md.
 on:
   push:
     tags:
@@ -207,7 +207,7 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # Created only after the upload succeeds, never before — a failed publish can't leave
+  # Made public only after the upload succeeds, never before — a failed publish can't leave
   # behind a Release for a version that doesn't exist.
   release:
     name: Record the release
@@ -250,7 +250,9 @@ jobs:
             echo "CHANGELOG_EOF"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Create the GitHub Release
+      # release-please leaves a draft for this tag; flipping it public is the release. Absent
+      # one — a tag pushed by hand — create it outright, which is the same end state.
+      - name: Publish the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
@@ -259,7 +261,19 @@ jobs:
           NOTES: ${{ steps.notes.outputs.body }}
         run: |
           set -euo pipefail
-          gh release create "$TAG" \
-            --title "${PACKAGE} ${VERSION}" \
-            --notes "$NOTES" \
-            --verify-tag
+          # By id, not by tag: a draft has no tag yet, so the by-tag endpoint 404s on it.
+          ids="$(gh api "repos/${GITHUB_REPOSITORY}/releases" --paginate \
+            --jq '.[] | select(.draft and .tag_name == env.TAG) | .id')"
+          draft="${ids%%$'\n'*}"
+          if [ -n "$draft" ]; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${draft}" \
+              -F draft=false \
+              -f name="${PACKAGE} ${VERSION}" \
+              -f body="$NOTES" > /dev/null
+            echo "published draft release ${draft} as ${TAG}"
+          else
+            gh release create "$TAG" \
+              --title "${PACKAGE} ${VERSION}" \
+              --notes "$NOTES" \
+              --verify-tag
+          fi

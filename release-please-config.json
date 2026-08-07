@@ -1,0 +1,14 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "python",
+  "include-component-in-tag": true,
+  "separate-pull-requests": true,
+  "bump-minor-pre-major": true,
+  "draft": true,
+  "pull-request-header": ":robot: Release prepared from the commits below. **The generated changelog is a draft — rewrite it as prose before merging**, for someone deciding whether to upgrade. See CONTRIBUTING.md.",
+  "packages": {
+    "packages/maf-sandbox": {},
+    "packages/maf-sandbox-aca": {},
+    "packages/maf-sandbox-bicep": {}
+  }
+}
