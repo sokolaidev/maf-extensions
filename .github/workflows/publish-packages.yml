@@ -1,0 +1,193 @@
+name: Publish
+
+# Releases one package at a time, from a tag that names it.
+#
+#   maf-sandbox-v0.1.0        -> publishes packages/maf-sandbox
+#   maf-sandbox-aca-v0.1.0    -> publishes packages/maf-sandbox-aca
+#   maf-sandbox-bicep-v0.1.0  -> publishes packages/maf-sandbox-bicep
+#
+# The globs are unambiguous despite the shared prefix: `maf-sandbox-v*` cannot match
+# `maf-sandbox-aca-v0.1.0`, because the character after `maf-sandbox-` is `a`, not `v`.
+#
+# Publishing uses PyPI Trusted Publishing (OIDC): no API token exists anywhere in this
+# repository or its secrets. PyPI is told to trust *this repository, this workflow file,
+# this environment*, and the short-lived token is minted per run. That trust is registered
+# on PyPI's side — see RELEASING.md for the exact values, which must match this file's
+# name and the environment names below or the mint fails with a confusing 403.
+on:
+  push:
+    tags:
+      - "maf-sandbox-v*"
+      - "maf-sandbox-aca-v*"
+      - "maf-sandbox-bicep-v*"
+  # Rehearsal path: publish any package to TestPyPI without cutting a real tag.
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "Package to publish"
+        required: true
+        type: choice
+        options:
+          - maf-sandbox
+          - maf-sandbox-aca
+          - maf-sandbox-bicep
+      target:
+        description: "Registry"
+        required: true
+        default: testpypi
+        type: choice
+        options:
+          - testpypi
+          - pypi
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build + verify
+    runs-on: ubuntu-latest
+    outputs:
+      package: ${{ steps.resolve.outputs.package }}
+      version: ${{ steps.resolve.outputs.version }}
+      target: ${{ steps.resolve.outputs.target }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        # Pinned to the commit v5 resolves to: a moving tag is a supply-chain hole, and
+        # this workflow mints a publishing credential.
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      # Which package, which version, which registry — derived once so every later step
+      # agrees. A tag drives a real release; a manual run is a rehearsal.
+      - name: Resolve the release
+        id: resolve
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_PACKAGE: ${{ inputs.package }}
+          INPUT_TARGET: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            package="$INPUT_PACKAGE"
+            target="$INPUT_TARGET"
+            version="$(grep -m1 '^version = ' "packages/${package}/pyproject.toml" | cut -d'"' -f2)"
+          else
+            # Strip the trailing -v<version>; what remains is the package directory name.
+            package="${REF_NAME%-v*}"
+            version="${REF_NAME##*-v}"
+            target="pypi"
+          fi
+          if [ ! -f "packages/${package}/pyproject.toml" ]; then
+            echo "::error::tag '${REF_NAME}' resolves to package '${package}', which does not exist under packages/"
+            exit 1
+          fi
+          echo "package=${package}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "target=${target}" >> "$GITHUB_OUTPUT"
+          echo "publishing ${package} ${version} to ${target}"
+
+      # A tag that disagrees with the manifest publishes a version nobody can reproduce
+      # from this history, and PyPI releases are immutable — so this fails the run rather
+      # than the release.
+      - name: Check the tag matches the package version
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          declared="$(grep -m1 '^version = ' "packages/${{ steps.resolve.outputs.package }}/pyproject.toml" | cut -d'"' -f2)"
+          tagged="${{ steps.resolve.outputs.version }}"
+          if [ "$declared" != "$tagged" ]; then
+            echo "::error::tag says ${tagged} but packages/${{ steps.resolve.outputs.package }}/pyproject.toml says ${declared}"
+            exit 1
+          fi
+
+      # The full gate again, on the exact commit being released. The Tests workflow already
+      # ran it on the branch, but a tag can point anywhere.
+      - name: Sync workspace
+        run: uv sync
+
+      - name: Tests
+        run: uv run pytest -q
+
+      - name: Types
+        run: uv run pyright -p packages/${{ steps.resolve.outputs.package }}
+
+      - name: Build
+        run: uv build --package ${{ steps.resolve.outputs.package }} --out-dir dist
+
+      # Guards against a stale dist/ or a glob that swept up a sibling package: exactly one
+      # sdist and one wheel, both named for the package being released.
+      - name: Check the artifacts are this package's, and only this package's
+        run: |
+          set -euo pipefail
+          module="$(echo "${{ steps.resolve.outputs.package }}" | tr '-' '_')"
+          version="${{ steps.resolve.outputs.version }}"
+          ls -la dist/
+          count="$(ls dist | wc -l)"
+          if [ "$count" -ne 2 ]; then
+            echo "::error::expected exactly one sdist and one wheel in dist/, found ${count}"
+            exit 1
+          fi
+          test -f "dist/${module}-${version}.tar.gz"
+          test -f "dist/${module}-${version}-py3-none-any.whl"
+
+      - name: Check metadata
+        run: uv run twine check dist/*
+
+      # py.typed and the licence travel in the wheel or the package is broken for consumers
+      # in ways no test in this repository would notice.
+      - name: Check the wheel carries py.typed and the licence
+        run: |
+          set -euo pipefail
+          module="$(echo "${{ steps.resolve.outputs.package }}" | tr '-' '_')"
+          contents="$(unzip -Z1 dist/${module}-*.whl)"
+          echo "$contents"
+          echo "$contents" | grep -qx "${module}/py.typed"
+          echo "$contents" | grep -q "\.dist-info/licenses/LICENSE"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ steps.resolve.outputs.package }}
+          path: dist/
+
+  publish:
+    name: Publish to ${{ needs.build.outputs.target }}
+    needs: build
+    runs-on: ubuntu-latest
+    # The environment is half of the trusted-publisher identity PyPI checks; it must match
+    # what is registered there. It is also where a required reviewer can be configured, so
+    # a release waits for a human without any credential existing.
+    environment: ${{ needs.build.outputs.target }}
+    permissions:
+      # Mints the OIDC token that IS the credential. No secrets involved.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-${{ needs.build.outputs.package }}
+          path: dist/
+
+      - name: Publish
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          repository-url: ${{ needs.build.outputs.target == 'testpypi' && 'https://test.pypi.org/legacy/' || 'https://upload.pypi.org/legacy/' }}
+          print-hash: true
+
+      - name: Summary
+        run: |
+          {
+            echo "### Published \`${{ needs.build.outputs.package }}\` ${{ needs.build.outputs.version }}"
+            echo
+            if [ "${{ needs.build.outputs.target }}" = "testpypi" ]; then
+              echo "- https://test.pypi.org/project/${{ needs.build.outputs.package }}/${{ needs.build.outputs.version }}/"
+              echo "- Install: \`pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/ ${{ needs.build.outputs.package }}==${{ needs.build.outputs.version }}\`"
+            else
+              echo "- https://pypi.org/project/${{ needs.build.outputs.package }}/${{ needs.build.outputs.version }}/"
+              echo "- Install: \`pip install ${{ needs.build.outputs.package }}==${{ needs.build.outputs.version }}\`"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -14,10 +14,11 @@ keywords = [
     "isolation",
     "ai-agents",
 ]
+# No `License ::` classifier: PEP 639 deprecated them in favour of the `license`
+# expression above, and carrying both is the combination build tools are allowed to reject.
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Typing :: Typed",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
