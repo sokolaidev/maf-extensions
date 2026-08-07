@@ -1,0 +1,58 @@
+name: Tests
+
+# The whole gate for every push and PR: full test suite, lint, format, and each package's
+# own strict pyright config. Small enough to run unconditionally — no path filters, so a
+# root-config change can never silently skip the packages it governs.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Read-only by default: nothing here writes to the repository, and an unset block would
+# inherit whatever the org default is (often write).
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Python (pytest + ruff + pyright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        # Pinned to the commit v5 resolves to: a moving tag is a supply-chain hole, since
+        # whoever can move it can run code in this workflow.
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Sync workspace
+        # agent-framework-core resolves from PyPI at the released range — deliberately the
+        # same artifact every consumer of the published wheels gets, not a git pin.
+        run: uv sync
+
+      - name: Tests
+        run: uv run pytest -q
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Format
+        run: uv run ruff format --check .
+
+      - name: Types (per-package strict configs)
+        run: |
+          uv run pyright -p packages/maf-sandbox
+          uv run pyright -p packages/maf-sandbox-aca
+          uv run pyright -p packages/maf-sandbox-bicep
+
+      - name: Build + metadata check
+        run: |
+          uv build --package maf-sandbox
+          uv build --package maf-sandbox-aca
+          uv build --package maf-sandbox-bicep
+          uv run twine check dist/*

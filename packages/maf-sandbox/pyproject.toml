@@ -1,0 +1,87 @@
+[project]
+name = "maf-sandbox"
+version = "0.1.0"
+description = "One seam between an application and any sandbox provider, for Microsoft Agent Framework — reference implementation of agent-framework#7568: backend protocol, selection, and the rule that a weaker isolation boundary is never used in a deployed environment (issue #663)."
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+authors = [{ name = "SOKOLAI BV", email = "info@sokolai.com" }]
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = [
+    "agent-framework",
+    "microsoft-agent-framework",
+    "sandbox",
+    "isolation",
+    "ai-agents",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Typing :: Typed",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+# The protocol modules (`_protocol`, `_router`, `_purger`) stay import-clean of everything
+# but the standard library — giving THEM a backend dependency, or a MAF one, would make this
+# layer the thing it exists to keep apart. `TestZeroDependencies` and `TestNoHostDependency`
+# (tests/test_sandbox_router.py) pin that at the source-scan level, which is a stronger and
+# more honest guarantee than a dependency list, since a stray import would still resolve
+# fine in this workspace with every other member already on the path.
+#
+# The dist-level dependency below exists for a different module: `maf_sandbox.maf` (issue
+# #697, WP4), the MAF-glue module this package's dist ships alongside the protocol. Only that
+# module may import `agent_framework`; the boundary test's zero-dependency claim narrows to
+# name the protocol modules explicitly rather than the whole distribution once that module
+# lands.
+dependencies = [
+    "agent-framework-core>=1.13.0,<2",
+]
+
+[project.urls]
+Homepage = "https://www.sokol.ai"
+Source = "https://github.com/sokolaidev/maf-extensions"
+Issues = "https://github.com/sokolaidev/maf-extensions/issues"
+
+# No [tool.uv.sources] here, deliberately: this repository resolves agent-framework-core
+# from PyPI at the released range declared above — the same artifact every consumer of the
+# published wheel gets. (The ats-maf host application pins MAF from git `main` on its side;
+# that pin stayed there when the packages moved here.)
+
+[tool.uv.build-backend]
+module-name = "maf_sandbox"
+module-root = "src"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+extend-select = ["I", "UP", "D100", "D101", "D103", "D104"]
+ignore = ["UP037"]
+
+[tool.ruff.lint.per-file-ignores]
+# ruff resolves [tool.ruff] per file by the NEAREST ancestor pyproject.toml that has one —
+# once this package gained its own [tool.ruff] section, the root pyproject.toml's
+# "src/maf-sandbox/tests/**" per-file-ignore entry stopped reaching these files, so this
+# package carries its own copy (issue #697).
+"tests/**" = ["D101", "D103"]
+
+# Self-contained type checking, scoped to this package (issue #697) — strict, unlike the
+# root config's basic mode over src/ats: this is new, purpose-built code with no legacy
+# baseline to carry. `tests/` is out for the same reason the root config leaves tests out
+# everywhere else in this repo: fixtures and hand-rolled fakes are not where a strict
+# checker's objections are signal.
+[tool.pyright]
+include = ["src"]
+typeCheckingMode = "strict"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["uv_build>=0.11.24,<0.12.0"]
+build-backend = "uv_build"
