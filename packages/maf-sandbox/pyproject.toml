@@ -43,15 +43,13 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://www.sokol.ai"
-Source = "https://github.com/sokolaidev/ats-maf"
-Issues = "https://github.com/sokolaidev/ats-maf/issues"
+Source = "https://github.com/sokolaidev/maf-extensions"
+Issues = "https://github.com/sokolaidev/maf-extensions/issues"
 
-# agent-framework-core is sourced from the monorepo `main` branch — PyPI rejects git-URL
-# dependencies, so published metadata carries the range above while the workspace keeps
-# resolving off this pin. Keep this in sync with the root pyproject.toml's and
-# maf-sandbox-bicep's [tool.uv.sources] — the shared uv.lock pins all three to the same rev.
-[tool.uv.sources]
-agent-framework-core = { git = "https://github.com/microsoft/agent-framework.git", subdirectory = "python/packages/core", branch = "main" }
+# No [tool.uv.sources] here, deliberately: this repository resolves agent-framework-core
+# from PyPI at the released range declared above — the same artifact every consumer of the
+# published wheel gets. (The ats-maf host application pins MAF from git `main` on its side;
+# that pin stayed there when the packages moved here.)
 
 [tool.uv.build-backend]
 module-name = "maf_sandbox"

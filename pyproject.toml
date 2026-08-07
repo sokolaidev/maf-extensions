@@ -1,0 +1,31 @@
+# Workspace root for the maf-extensions monorepo — a *virtual* root: it is not itself a
+# distribution, it only binds the packages under packages/* into one uv workspace with one
+# lockfile and one dev toolchain. Each package is fully self-contained (its own metadata,
+# ruff/pyright/pytest configuration, LICENSE and CHANGELOG) so it can be built, published
+# and even extracted again without this file.
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8,<9",
+    # Pinned bands, not floors: an unpinned range resolves to whatever is newest at install
+    # time, and a new minor can drift findings across unrelated PRs. Same rationale and the
+    # same bands as the ats-maf host repository these packages were extracted from.
+    "ruff>=0.15.20,<0.16",
+    "pyright>=1.1.411,<1.2",
+    # Release checks (metadata validation of built sdists/wheels).
+    "twine>=6,<7",
+]
+
+# From-the-root test runs. Each package also carries its own [tool.pytest.ini_options] for
+# in-package runs; pytest binds exactly one rootdir per invocation, so running from here
+# uses this list and running inside a package uses that package's own configuration.
+[tool.pytest.ini_options]
+testpaths = [
+    "packages/maf-sandbox/tests",
+    "packages/maf-sandbox-aca/tests",
+    "packages/maf-sandbox-bicep/tests",
+]
+faulthandler_timeout = 90.0

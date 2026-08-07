@@ -39,15 +39,14 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://www.sokol.ai"
-Source = "https://github.com/sokolaidev/ats-maf"
-Issues = "https://github.com/sokolaidev/ats-maf/issues"
+Source = "https://github.com/sokolaidev/maf-extensions"
+Issues = "https://github.com/sokolaidev/maf-extensions/issues"
 
 # agent-framework-core is sourced from the monorepo `main` branch. Keep this in sync with
-# the root pyproject.toml's and maf-sandbox's [tool.uv.sources] — the shared uv.lock pins
-# all three to the same rev, so a MAF bump updates them together. Mirrors skills/foundry
-# (maf-sandbox-aca no longer carries the MAF dependency at all).
+# agent-framework-core resolves from PyPI at the released range declared above — no git
+# source in this repository, deliberately: the tests run against the same artifact every
+# consumer of the published wheel gets. (maf-sandbox-aca carries no MAF dependency at all.)
 [tool.uv.sources]
-agent-framework-core = { git = "https://github.com/microsoft/agent-framework.git", subdirectory = "python/packages/core", branch = "main" }
 maf-sandbox = { workspace = true }
 
 [tool.uv.build-backend]

@@ -10,7 +10,7 @@ app  ->  maf_sandbox  ->  maf_sandbox_aca  ->  the sandbox
 
 An agent that writes code should not be the thing that runs it. This package gives it somewhere else to run: a VM-isolated sandbox with Deny-default egress and no ambient identity, reached as an ordinary tool call so the agent framework's middleware still sees the call and classifies its result — only the *work* leaves the process.
 
-This package is the backend only, with no sandbox kind of its own. [`maf-sandbox-bicep`](https://github.com/sokolaidev/ats-maf/tree/main/src/maf-sandbox-bicep) is the first kind that runs on it, written against [`maf-sandbox`](https://github.com/sokolaidev/ats-maf/tree/main/src/maf-sandbox)'s protocol rather than against this backend.
+This package is the backend only, with no sandbox kind of its own. [`maf-sandbox-bicep`](https://github.com/sokolaidev/maf-extensions/tree/main/packages/maf-sandbox-bicep) is the first kind that runs on it, written against [`maf-sandbox`](https://github.com/sokolaidev/maf-extensions/tree/main/packages/maf-sandbox)'s protocol rather than against this backend.
 
 ## Quickstart
 
@@ -59,7 +59,7 @@ What stays behind is the host's adapter — one module in the host application (
 
 ## Provenance
 
-Built for issues [#408](https://github.com/sokolaidev/ats-maf/issues/408) and [#663](https://github.com/sokolaidev/ats-maf/issues/663) of the application this currently ships inside. The security analysis that chose a VM-isolated sandbox over in-process execution — including the verified escalation chain that ruled in-process out, and why `--no-restore` alone was not enough — is in that repository under `docs/work-in-progress/issue-408-exec-surface-security.md`.
+Built for issues [#408](https://github.com/sokolaidev/ats-maf/issues/408) and [#663](https://github.com/sokolaidev/ats-maf/issues/663) of the host application this was extracted from. The security analysis that chose a VM-isolated sandbox over in-process execution — including the verified escalation chain that ruled in-process out, and why `--no-restore` alone was not enough — is in that repository under `docs/work-in-progress/issue-408-exec-surface-security.md`.
 
 ---
 

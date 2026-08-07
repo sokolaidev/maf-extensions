@@ -49,8 +49,8 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://www.sokol.ai"
-Source = "https://github.com/sokolaidev/ats-maf"
-Issues = "https://github.com/sokolaidev/ats-maf/issues"
+Source = "https://github.com/sokolaidev/maf-extensions"
+Issues = "https://github.com/sokolaidev/maf-extensions/issues"
 
 [tool.uv.sources]
 maf-sandbox = { workspace = true }

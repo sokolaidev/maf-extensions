@@ -10,7 +10,7 @@ Sandboxed Bicep validation as a Microsoft Agent Framework tool: `bicep_validate`
 app  ->  maf_sandbox  ->  a backend (maf-sandbox-aca, ...)  ->  this workload
 ```
 
-This package is a sandbox **kind** in the sense of [`maf-sandbox`](https://github.com/sokolaidev/ats-maf/tree/main/src/maf-sandbox)'s protocol. It contains **no Azure import and no sandbox lifecycle code**; it asks a `SandboxRouter` for a sandbox and gets back `write_file` and `exec`, so the same tool runs unchanged against ACA Sandboxes, a local Docker container or an in-process fake. Tests enforce both boundaries (`TestNoHostDependency`).
+This package is a sandbox **kind** in the sense of [`maf-sandbox`](https://github.com/sokolaidev/maf-extensions/tree/main/packages/maf-sandbox)'s protocol. It contains **no Azure import and no sandbox lifecycle code**; it asks a `SandboxRouter` for a sandbox and gets back `write_file` and `exec`, so the same tool runs unchanged against ACA Sandboxes, a local Docker container or an in-process fake. Tests enforce both boundaries (`TestNoHostDependency`).
 
 ## Quickstart
 
@@ -35,7 +35,7 @@ Pass `router=None` — or a router with no backend — and you get `[]` back: an
 
 What is Bicep-specific — the command templates, the accepted extensions, the SARIF parsing, the one host Bicep is allowed to reach (`mcr.microsoft.com`, for AVM module restore) — lives here and only here. The spec pins the egress allowlist and work directory as properties of the workload, not of configuration: a deployment that could widen Bicep's egress could undo the containment the tool's design rests on.
 
-Its companion artefacts live in the host repository, because a container image and a registry are not Python: `images/bicep-sandbox/` (pinned Bicep on Azure Linux) and `infra/bicep-sandbox/` (the registry and pull identity that serve it). The hard-won behaviours of the pinned CLI — SARIF on stderr for `build` but stdout for `lint`, `build-params` for `.bicepparam`, config discovery only by walking up from the source file — are documented where they bite, in [`_tool.py`](https://github.com/sokolaidev/ats-maf/blob/main/src/maf-sandbox-bicep/src/maf_sandbox_bicep/_tool.py).
+Its companion artefacts live in the host repository, because a container image and a registry are not Python: `images/bicep-sandbox/` (pinned Bicep on Azure Linux) and `infra/bicep-sandbox/` (the registry and pull identity that serve it). The hard-won behaviours of the pinned CLI — SARIF on stderr for `build` but stdout for `lint`, `build-params` for `.bicepparam`, config discovery only by walking up from the source file — are documented where they bite, in [`_tool.py`](https://github.com/sokolaidev/maf-extensions/blob/main/packages/maf-sandbox-bicep/src/maf_sandbox_bicep/_tool.py).
 
 ## Provenance
 
