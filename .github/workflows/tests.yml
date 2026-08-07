@@ -1,8 +1,7 @@
 name: Tests
 
-# The whole gate for every push and PR: full test suite, lint, format, and each package's
-# own strict pyright config. Small enough to run unconditionally — no path filters, so a
-# root-config change can never silently skip the packages it governs.
+# The whole gate for every push and PR: tests, lint, format, and each package's own strict
+# pyright config — unconditionally, with no path filters.
 on:
   push:
     branches: [main]
@@ -57,16 +56,8 @@ jobs:
           uv build --package maf-sandbox-bicep
           uv run twine check dist/*
 
-      # The same gate the publish workflow runs before uploading, run here on every change,
-      # because a release is the worst possible moment to discover the wheel is wrong: the
-      # version is chosen, the tag is pushed, and PyPI uploads cannot be taken back. The
-      # suite above proves the code works in this workspace — this proves the artifact works
-      # outside it, which is a different claim and the one consumers depend on.
-      # `--find-links dist/` so the intra-family dependency resolves against the wheels just
-      # built rather than against whatever is (or is not yet) on PyPI. That is the right
-      # resolution here: this job asks "is the artifact from THIS commit installable and
-      # usable", and answering it must not depend on a release having happened. The publish
-      # workflow's copy of this gate deliberately does the opposite — see the comment there.
+      # `--find-links dist/` resolves intra-family deps against the wheels just built, not
+      # PyPI — deliberately opposite of publish-packages.yml's copy of this gate.
       - name: Install + use each wheel in a clean environment
         run: |
           set -euo pipefail

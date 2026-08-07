@@ -1,19 +1,7 @@
 name: Publish
 
-# Releases one package at a time, from a tag that names it.
-#
-#   maf-sandbox-v0.1.0        -> publishes packages/maf-sandbox
-#   maf-sandbox-aca-v0.1.0    -> publishes packages/maf-sandbox-aca
-#   maf-sandbox-bicep-v0.1.0  -> publishes packages/maf-sandbox-bicep
-#
-# The globs are unambiguous despite the shared prefix: `maf-sandbox-v*` cannot match
-# `maf-sandbox-aca-v0.1.0`, because the character after `maf-sandbox-` is `a`, not `v`.
-#
-# Publishing uses PyPI Trusted Publishing (OIDC): no API token exists anywhere in this
-# repository or its secrets. PyPI is told to trust *this repository, this workflow file,
-# this environment*, and the short-lived token is minted per run. That trust is registered
-# on PyPI's side — see RELEASING.md for the exact values, which must match this file's
-# name and the environment names below or the mint fails with a confusing 403.
+# One package per tag (`maf-sandbox-v0.1.0` -> packages/maf-sandbox), published with
+# Trusted Publishing — no token anywhere. Registration values: RELEASING.md.
 on:
   push:
     tags:
@@ -92,9 +80,8 @@ jobs:
           echo "target=${target}" >> "$GITHUB_OUTPUT"
           echo "publishing ${package} ${version} to ${target}"
 
-      # A tag that disagrees with the manifest publishes a version nobody can reproduce
-      # from this history, and PyPI releases are immutable — so this fails the run rather
-      # than the release.
+      # Fails the run rather than the release: PyPI uploads are immutable, so a mismatched
+      # tag can't be corrected after the fact.
       - name: Check the tag matches the package version
         if: github.event_name == 'push'
         run: |
@@ -155,16 +142,8 @@ jobs:
           name: dist-${{ steps.resolve.outputs.package }}
           path: dist/
 
-  # Install the wheel that is about to be uploaded into a throwaway environment and use it.
-  # Everything above this job runs inside the workspace, where a package resolves whether or
-  # not its manifest declares it, a file is present whether or not the build backend
-  # included it, and a module imports whether or not it owns its dependency. None of that
-  # holds for the person running `pip install`, and the artifact is immutable once uploaded
-  # — so the last check before publishing is the first one a consumer would perform.
-  #
-  # No registry involved, deliberately: the wheel from `build` is byte-for-byte what would
-  # be uploaded, so this proves the artifact rather than the upload, and cannot fail for
-  # reasons belonging to a sandbox index.
+  # Installs the built wheel into a throwaway environment and uses it — proving the
+  # artifact itself, deliberately with no registry involved.
   smoke:
     name: Install + use the built wheel
     needs: build
@@ -180,15 +159,8 @@ jobs:
           name: dist-${{ needs.build.outputs.package }}
           path: dist/
 
-      # Dependencies resolve from the real index, with NO local fallback — deliberately the
-      # opposite of the same gate in tests.yml. A consumer installing this package gets
-      # exactly this resolution, so if `maf-sandbox-aca` is about to ship while the
-      # `maf-sandbox` it requires is not published yet, this step fails and the release
-      # stops. That is the correct outcome: the alternative is a version on PyPI that
-      # nobody can install, and PyPI uploads cannot be withdrawn.
-      #
-      # It is also what makes the release order in RELEASING.md self-enforcing rather than
-      # a note someone has to remember.
+      # Resolves from the real index with NO local fallback — deliberately opposite of
+      # tests.yml's copy of this gate. Stops a release whose dependency isn't published yet.
       - name: Install the wheel into a clean environment
         run: |
           set -euo pipefail
@@ -203,9 +175,8 @@ jobs:
     name: Publish to ${{ needs.build.outputs.target }}
     needs: [build, smoke]
     runs-on: ubuntu-latest
-    # The environment is half of the trusted-publisher identity PyPI checks; it must match
-    # what is registered there. It is also where a required reviewer can be configured, so
-    # a release waits for a human without any credential existing.
+    # Half of the trusted-publisher identity PyPI checks; must match what's registered
+    # there. Also where a required reviewer can be configured.
     environment: ${{ needs.build.outputs.target }}
     permissions:
       # Mints the OIDC token that IS the credential. No secrets involved.
@@ -235,3 +206,60 @@ jobs:
               echo "- Install: \`pip install ${{ needs.build.outputs.package }}==${{ needs.build.outputs.version }}\`"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Created only after the upload succeeds, never before — a failed publish can't leave
+  # behind a Release for a version that doesn't exist.
+  release:
+    name: Record the release
+    needs: [build, publish]
+    # Tags only. A workflow_dispatch run is a TestPyPI rehearsal, and a rehearsal is not a
+    # release.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      # Scoped to this job alone; every other job in this workflow stays read-only.
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # The changelog entry is the release notes; a missing section fails the job rather
+      # than shipping a Release with no notes.
+      - name: Extract the changelog section
+        id: notes
+        env:
+          PACKAGE: ${{ needs.build.outputs.package }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          changelog="packages/${PACKAGE}/CHANGELOG.md"
+          # From this version's heading up to (not including) the next one.
+          section="$(awk -v heading="## [${VERSION}]" '
+            index($0, heading) == 1 { capture = 1; next }
+            capture && /^## / { exit }
+            capture { print }
+          ' "$changelog")"
+          if [ -z "$(echo "$section" | tr -d '[:space:]')" ]; then
+            echo "::error::no '## [${VERSION}]' section in ${changelog} — add the entry before tagging"
+            exit 1
+          fi
+          {
+            echo "body<<CHANGELOG_EOF"
+            echo "$section"
+            echo "Install: \`pip install ${PACKAGE}==${VERSION}\`"
+            echo "PyPI: https://pypi.org/project/${PACKAGE}/${VERSION}/"
+            echo "CHANGELOG_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          PACKAGE: ${{ needs.build.outputs.package }}
+          VERSION: ${{ needs.build.outputs.version }}
+          NOTES: ${{ steps.notes.outputs.body }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" \
+            --title "${PACKAGE} ${VERSION}" \
+            --notes "$NOTES" \
+            --verify-tag
