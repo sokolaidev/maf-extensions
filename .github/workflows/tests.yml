@@ -8,6 +8,11 @@ on:
     branches: [main]
   pull_request:
 
+# Read-only by default: nothing here writes to the repository, and an unset block would
+# inherit whatever the org default is (often write).
+permissions:
+  contents: read
+
 concurrency:
   group: tests-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -21,7 +26,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        # Pinned to the commit v5 resolves to: a moving tag is a supply-chain hole, since
+        # whoever can move it can run code in this workflow.
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
 
       - name: Sync workspace
         # agent-framework-core resolves from PyPI at the released range — deliberately the

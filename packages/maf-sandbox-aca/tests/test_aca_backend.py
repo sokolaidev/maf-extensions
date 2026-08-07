@@ -177,7 +177,10 @@ class TestQualifyImageReference:
         """`bicep-sandbox:0.46.1` has a colon but no registry — the trap in this rule."""
         from maf_sandbox_aca._images import qualify_image_reference
 
-        assert qualify_image_reference("acr.azurecr.io", "img:1.2.3").startswith("acr.azurecr.io/")
+        # Whole-string equality rather than a prefix check: `startswith` on something that
+        # looks like a URL is the shape of an incomplete-sanitization bug, and a scanner
+        # cannot tell an assertion from a security check. The full form is stricter anyway.
+        assert qualify_image_reference("acr.azurecr.io", "img:1.2.3") == "acr.azurecr.io/img:1.2.3"
 
     def test_leaves_an_already_qualified_reference_alone(self):
         """Double-prefixing surfaces only as "no disk image was built from …", far away."""
