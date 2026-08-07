@@ -8,8 +8,8 @@ checking its own work).
 :class:`~maf_sandbox.SandboxRouter` and gets back something with ``write_file`` and
 ``exec``, so the same tool runs unchanged against ACA Sandboxes, a local Docker container or
 an in-process fake — the acceptance criterion this split was built to satisfy.  What is
-Bicep-specific — the command templates, the accepted extensions, the SARIF parsing, the one
-host Bicep is allowed to reach — lives here and only here.
+Bicep-specific — the command templates, the accepted extensions, the SARIF parsing, the
+hosts Bicep is allowed to reach — lives here and only here.
 """
 
 from __future__ import annotations
@@ -50,17 +50,37 @@ BICEP_KIND = "bicep"
 #: Everything else — above all ARM, which a `ts:` reference would otherwise dial with the
 #: host's credentials — is denied by the spec's default.
 #:
-#: TWO hosts, not one.  MCR serves manifests from `mcr.microsoft.com` but layer blobs from
-#: the regional data endpoints under `*.data.mcr.microsoft.com` (the same split every
-#: Microsoft egress-allowlist doc calls out).  With only the first host allowed, restore
-#: resolves the manifest and then 403s on the blob — BCP192 on every `br/public:` reference
-#: — so module types never load and type errors in module inputs are structurally invisible.
-#: That exact blind spot once let a reviewer PASS Bicep that opens with compile errors in
-#: VS Code: it discounted the restore noise and certified the module inputs from READMEs
-#: instead.  Both hosts are Microsoft-operated artifact CDNs; the containment posture (no
-#: ARM, no ambient identity) is unchanged.
+#: FOUR hosts, in two pairs — a restore reads both the artifacts and the catalogue, and
+#: each of those is served from two names.
+#:
+#: The artifacts.  MCR serves manifests from `mcr.microsoft.com` but layer blobs from the
+#: regional data endpoints under `*.data.mcr.microsoft.com` (the same split every Microsoft
+#: egress-allowlist doc calls out).  With only the first host allowed, restore resolves the
+#: manifest and then 403s on the blob — BCP192 on every `br/public:` reference — so module
+#: types never load and type errors in module inputs are structurally invisible.  That exact
+#: blind spot once let a reviewer PASS Bicep that opens with compile errors in VS Code: it
+#: discounted the restore noise and certified the module inputs from READMEs instead.
+#:
+#: The catalogue.  Restore also pulls the public module *index* — which modules exist, at
+#: which versions — from `https://aka.ms/br-module-index-data`, the endpoint hard-coded in
+#: the CLI's `PublicModuleMetadataHttpClient`, which redirects to
+#: `live-data.bicep.azure.com/module-index`.  Both hops have to be allowed: the redirector
+#: on its own answers with a `Location` header pointing at a host that is still denied.
+#: The fetch belongs to `OciArtifactRegistry.OnRestoreArtifacts`, not to the analyzer —
+#: deliberately, so that lint rules never download during analysis — so it is attempted on
+#: every `bicep build` and every `bicep lint` regardless of which rules are enabled, and the
+#: only switch that stops it, `--no-restore`, is the one that would cost us module types.
+#: Blocked, the compiler does not go quiet: `use-recent-module-versions` reports "Could not
+#: download available module versions" once per file, a warning that reads like a finding
+#: about the source while the check it stands for — outdated `br/public:avm/...` pins —
+#: never runs.
+#:
+#: All four are Microsoft-operated; the containment posture (no ARM, no ambient identity,
+#: nothing reachable that could carry the host's credentials) is unchanged.
 _MCR_HOST = "mcr.microsoft.com"
 _MCR_DATA_HOST = "*.data.mcr.microsoft.com"
+_MODULE_INDEX_REDIRECT_HOST = "aka.ms"
+_MODULE_INDEX_HOST = "live-data.bicep.azure.com"
 
 #: Root for everything shared with the sandbox: `bicepconfig.json` at the top, and one
 #: subdirectory per validation beneath it.
@@ -123,7 +143,7 @@ def bicep_sandbox_spec(image: str | None = None, image_id: str | None = None) ->
         kind=BICEP_KIND,
         image=image,
         image_id=image_id,
-        egress_allow=(_MCR_HOST, _MCR_DATA_HOST),
+        egress_allow=(_MCR_HOST, _MCR_DATA_HOST, _MODULE_INDEX_REDIRECT_HOST, _MODULE_INDEX_HOST),
         work_dir=_WORK_DIR,
     )
 
@@ -168,8 +188,9 @@ def make_bicep_tools(
         # No `declarations=` and no `egress_max_confidentiality=`: the default derivation is
         # exactly `{"source_integrity": "trusted"}`, which is what this tool has always
         # declared. Trusted because the compiler's diagnostics are deterministic first-party
-        # output from a sandbox with no ambient identity and only `mcr.microsoft.com`
-        # reachable. No confidentiality key on purpose — a host's confidentiality tiers are
+        # output from a sandbox with no ambient identity and nothing reachable but the
+        # Microsoft-operated hosts a module restore reads from (see the allowlist above).
+        # No confidentiality key on purpose — a host's confidentiality tiers are
         # the host's classification, and declaring one here can activate a policy leg a given
         # host keeps dormant. `TestFidesDeclarations` pins the resulting dict.
         logger=logger,
