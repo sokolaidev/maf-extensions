@@ -28,7 +28,7 @@ from sandbox_router import (
 )
 
 from ._paths import safe_workspace_path
-from ._sarif import format_diagnostics, parse_sarif
+from ._sarif import count_restore_failures, format_diagnostics, parse_sarif
 
 if TYPE_CHECKING:
     from agent_framework import AgentFileStore
@@ -49,10 +49,21 @@ BICEP_TOOL_NAMES: frozenset[str] = frozenset({BICEP_VALIDATE_TOOL_NAME})
 #: The sandbox kind this workload asks for.
 BICEP_KIND = "bicep"
 
-#: The only host Bicep needs: module restore for AVM (`br/public:`) resolves here.
+#: The hosts Bicep needs for AVM (`br/public:`) module restore — and no others.
 #: Everything else — above all ARM, which a `ts:` reference would otherwise dial with the
 #: host's credentials — is denied by the spec's default.
+#:
+#: TWO hosts, not one.  MCR serves manifests from `mcr.microsoft.com` but layer blobs from
+#: the regional data endpoints under `*.data.mcr.microsoft.com` (the same split every
+#: Microsoft egress-allowlist doc calls out).  With only the first host allowed, restore
+#: resolves the manifest and then 403s on the blob — BCP192 on every `br/public:` reference
+#: — so module types never load and type errors in module inputs are structurally invisible.
+#: That exact blind spot let a reviewer PASS Bicep that opens with compile errors in
+#: VS Code (issue #705): it discounted the restore noise and certified the module inputs
+#: from READMEs instead.  Both hosts are Microsoft-operated artifact CDNs; the containment
+#: posture (no ARM, no ambient identity) is unchanged.
 _MCR_HOST = "mcr.microsoft.com"
+_MCR_DATA_HOST = "*.data.mcr.microsoft.com"
 
 #: Root for everything shared with the sandbox: `bicepconfig.json` at the top, and one
 #: subdirectory per validation beneath it.
@@ -115,7 +126,7 @@ def bicep_sandbox_spec(image: str | None = None, image_id: str | None = None) ->
         kind=BICEP_KIND,
         image=image,
         image_id=image_id,
-        egress_allow=(_MCR_HOST,),
+        egress_allow=(_MCR_HOST, _MCR_DATA_HOST),
         work_dir=_WORK_DIR,
     )
 
@@ -402,4 +413,25 @@ async def _run_phase(
         len(diagnostics),
         elapsed_ms,
     )
-    return format_diagnostics(diagnostics, f"{phase}({name})", strip_prefix=working_directory)
+    report = format_diagnostics(diagnostics, f"{phase}({name})", strip_prefix=working_directory)
+    failed_restores = count_restore_failures(diagnostics)
+    if failed_restores:
+        # Without this banner a restore-failed run reads as an ordinary diagnostic list, and
+        # an agent can (and did — issue #705) discount it as environment noise and certify
+        # the module inputs from documentation instead of from the compiler.
+        logger.warning(
+            "bicep_validate: %s file=%r module restore FAILED for %d reference(s) — "
+            "type checking of module inputs did not run",
+            phase,
+            name,
+            failed_restores,
+        )
+        return (
+            f"{phase}({name}): MODULE RESTORE FAILED for {failed_restores} module "
+            "reference(s) (BCP190/BCP191/BCP192). Module types were NOT loaded, so type "
+            "checking of module inputs DID NOT RUN — this validation is INCOMPLETE. Treat "
+            "it as a broken validation run, not as evidence the files are healthy: do not "
+            "report the files as clean, and a reviewer must not base a PASS on it.\n"
+            f"{report}"
+        )
+    return report

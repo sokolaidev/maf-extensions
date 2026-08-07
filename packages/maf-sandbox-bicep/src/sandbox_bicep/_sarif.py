@@ -10,10 +10,25 @@ from __future__ import annotations
 import json
 from typing import Any
 
-__all__ = ["format_diagnostics", "parse_sarif"]
+__all__ = ["RESTORE_FAILURE_RULES", "count_restore_failures", "format_diagnostics", "parse_sarif"]
 
 # Maximum characters from a SARIF blob fed into the parser.
 _SARIF_MAX_CHARS = 200_000
+
+#: Diagnostics that mean a module artifact never arrived: BCP190 (artifact not restored),
+#: BCP191 (restore failed), BCP192 (restore failed, with the transport's reason).  When any
+#: of these is present the compiler never loaded the module's types, so every check on that
+#: module's inputs and outputs silently did not run — the run's other diagnostics describe a
+#: DIFFERENT program than the one that would deploy.  Callers must surface that as "the
+#: validation is incomplete", never fold it into an ordinary diagnostic count (issue #705:
+#: a reviewer read exactly that soup, discounted it as environment noise, and PASSed files
+#: that do not compile).
+RESTORE_FAILURE_RULES = frozenset({"BCP190", "BCP191", "BCP192"})
+
+
+def count_restore_failures(diagnostics: list[dict[str, Any]]) -> int:
+    """How many of these diagnostics are module-restore failures."""
+    return sum(1 for d in diagnostics if d.get("rule") in RESTORE_FAILURE_RULES)
 
 
 def parse_sarif(text: str) -> list[dict[str, Any]] | None:

@@ -458,14 +458,21 @@ class TestLifecycleLogging:
 
 class TestEgressPolicy:
     def test_denies_by_default_and_allows_only_the_named_hosts(self):
+        """Patterns pass through verbatim — including wildcards, which the Bicep spec's
+        `*.data.mcr.microsoft.com` (MCR's blob endpoint, issue #705) depends on."""
         from sandbox_router import SandboxSpec
 
         backend = AcaSandboxBackend(_config())
-        policy = backend._egress_policy(SandboxSpec(kind="t", egress_allow=("mcr.microsoft.com",)))
+        policy = backend._egress_policy(
+            SandboxSpec(kind="t", egress_allow=("mcr.microsoft.com", "*.data.mcr.microsoft.com"))
+        )
 
         assert policy.default_action == "Deny"
-        assert [r.pattern for r in policy.host_rules] == ["mcr.microsoft.com"]
-        assert [r.action for r in policy.host_rules] == ["Allow"]
+        assert [r.pattern for r in policy.host_rules] == [
+            "mcr.microsoft.com",
+            "*.data.mcr.microsoft.com",
+        ]
+        assert [r.action for r in policy.host_rules] == ["Allow", "Allow"]
 
     def test_an_empty_allowlist_means_no_network(self):
         from sandbox_router import SandboxSpec

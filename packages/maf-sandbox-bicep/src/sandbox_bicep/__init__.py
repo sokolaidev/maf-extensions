@@ -13,7 +13,7 @@ The companion artefacts — the container image and the registry that serves it 
 from __future__ import annotations
 
 from ._paths import safe_workspace_path
-from ._sarif import format_diagnostics, parse_sarif
+from ._sarif import RESTORE_FAILURE_RULES, count_restore_failures, format_diagnostics, parse_sarif
 from ._tool import (
     BICEP_KIND,
     BICEP_TOOL_NAMES,
@@ -26,7 +26,9 @@ __all__ = [
     "BICEP_KIND",
     "BICEP_TOOL_NAMES",
     "BICEP_VALIDATE_TOOL_NAME",
+    "RESTORE_FAILURE_RULES",
     "bicep_sandbox_spec",
+    "count_restore_failures",
     "format_diagnostics",
     "make_bicep_tools",
     "parse_sarif",

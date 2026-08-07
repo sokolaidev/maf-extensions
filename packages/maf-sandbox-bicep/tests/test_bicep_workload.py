@@ -458,7 +458,7 @@ class TestEndToEnd:
         backend = _FakeBackend()
         _run(_tool(store, backend), ["main.bicep"])
 
-        assert backend.specs[0].egress_allow == ("mcr.microsoft.com",)
+        assert backend.specs[0].egress_allow == ("mcr.microsoft.com", "*.data.mcr.microsoft.com")
         assert backend.specs[0].image == "acr.io/bicep:1"
 
 
@@ -771,8 +771,18 @@ class TestMakeBicepTools:
 
 
 class TestBicepSandboxSpec:
-    def test_allows_exactly_one_host(self):
-        assert bicep_sandbox_spec().egress_allow == ("mcr.microsoft.com",)
+    def test_allows_exactly_the_two_mcr_hosts(self):
+        """Manifests come from mcr.microsoft.com; layer blobs from *.data.mcr.microsoft.com.
+
+        With only the first host, restore resolves the manifest and then 403s on the blob —
+        BCP192 on every `br/public:` reference, so module types never load and module-input
+        type errors are invisible to the whole validation (issue #705). Anything beyond
+        these two Microsoft-operated artifact hosts widens containment and must not appear.
+        """
+        assert bicep_sandbox_spec().egress_allow == (
+            "mcr.microsoft.com",
+            "*.data.mcr.microsoft.com",
+        )
 
     def test_work_dir_is_a_dedicated_root(self):
         """Everything shared with the sandbox lives here, on a path nothing else owns."""
@@ -780,6 +790,52 @@ class TestBicepSandboxSpec:
 
     def test_kind_is_bicep(self):
         assert bicep_sandbox_spec().kind == "bicep"
+
+
+# ---------------------------------------------------------------------------
+# Restore failure — a broken validation must not read as a diagnostic list
+# ---------------------------------------------------------------------------
+
+
+class TestRestoreFailureBanner:
+    """BCP190/191/192 mean module types never loaded, so module-input checks did not run.
+
+    Rendered as an ordinary diagnostic list, a restore-failed run invites exactly the
+    misreading that shipped broken Bicep (issue #705): an agent discounts the restore noise
+    as environment failure, certifies the module inputs from READMEs, and reports PASS on
+    files that do not compile.  The banner names the run incomplete so it cannot be read as
+    evidence of health.
+    """
+
+    @pytest.mark.parametrize("rule", ["BCP190", "BCP191", "BCP192"])
+    def test_a_restore_failure_gets_the_incomplete_validation_banner(self, rule):
+        store = _FakeStore({"main.bicep": "x"})
+        sandbox = _FakeSandbox(
+            outputs={"bicep build": _sarif(rule=rule, message="Unable to restore …: 403")}
+        )
+        out = _run(_tool(store, _FakeBackend(sandbox=sandbox)), ["main.bicep"])
+
+        assert "MODULE RESTORE FAILED" in out
+        assert "INCOMPLETE" in out
+        # The underlying diagnostics still follow the banner — evidence, not replacement.
+        assert rule in out
+
+    def test_a_clean_run_carries_no_banner(self):
+        store = _FakeStore({"main.bicep": "x"})
+        out = _run(_tool(store, _FakeBackend()), ["main.bicep"])
+
+        assert "MODULE RESTORE FAILED" not in out
+
+    def test_ordinary_errors_do_not_trigger_it(self):
+        """Real defects must arrive undecorated — the banner is about absent evidence."""
+        store = _FakeStore({"main.bicep": "x"})
+        sandbox = _FakeSandbox(
+            outputs={"bicep build": _sarif(rule="BCP035", message="Missing 'properties'.")}
+        )
+        out = _run(_tool(store, _FakeBackend(sandbox=sandbox)), ["main.bicep"])
+
+        assert "BCP035" in out
+        assert "MODULE RESTORE FAILED" not in out
 
 
 # ---------------------------------------------------------------------------
