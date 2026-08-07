@@ -66,6 +66,7 @@ Worth configuring on `pypi`: **required reviewers**. The build job runs unattend
 - **Publish without the full gate passing on the tagged commit.** The Tests workflow ran on the branch; a tag can point anywhere.
 - **Publish a stale or mixed `dist/`.** Exactly one sdist and one wheel, both named for the package being released.
 - **Publish a wheel missing `py.typed` or the licence.** Both are invisible to this repository's own tests and break consumers.
+- **Publish a package whose dependency isn't on PyPI yet.** The smoke-install step resolves from the real index only, with no local fallback — deliberately the opposite of `tests.yml`'s copy of the same step, which installs against the wheels just built. That is what makes the release order above self-enforcing: publishing `maf-sandbox-aca` before `maf-sandbox` is live fails this step instead of shipping a version nobody can install.
 
 ## Before the first public release
 
