@@ -91,8 +91,8 @@ class SandboxRouter:
                 f"sandbox backend {backend.name!r} has {backend.isolation!r} isolation, "
                 f"which is not permitted in a deployed environment "
                 f"(permitted: {', '.join(sorted(DEPLOYED_ISOLATION))}). "
-                "A shared-kernel boundary sits next to the host's credentials; see the "
-                "issue-408 exec-surface ruling."
+                "A shared-kernel boundary sits next to the host's credentials, which is "
+                "why it is not accepted here."
             )
         return backend
 

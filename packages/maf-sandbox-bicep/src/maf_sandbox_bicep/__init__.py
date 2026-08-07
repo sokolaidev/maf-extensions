@@ -1,4 +1,4 @@
-"""The Bicep sandbox: ``bicep build`` / ``bicep lint`` as a MAF tool (issue #408).
+"""The Bicep sandbox: ``bicep build`` / ``bicep lint`` as a MAF tool.
 
 The first sandbox kind of its own family — a GitHub Copilot agent and an Azure CLI surface
 are the obvious next ones, and each arrives as a sibling package here rather than as changes
@@ -6,8 +6,8 @@ to this one.
 
 Nothing in this subpackage imports Azure or knows what a sandbox is: it asks a
 :class:`~maf_sandbox.SandboxRouter` for one and gets back ``write_file`` and ``exec``.
-The companion artefacts — the container image and the registry that serves it — live at
-``images/bicep-sandbox/`` and ``infra/bicep-sandbox/`` in the host repository.
+The companion artefacts — the container image and the registry that serves it — live outside
+this package, because a container image and a registry are not Python.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ __all__ = [
     "safe_workspace_path",
 ]
 
-# --- Experimental-package notice (issue #697) -------------------------------------------
+# --- Experimental-package notice ---------------------------------------------------------
 # This package is early-stage (0.1.0, "Development Status :: 4 - Beta"). Mirrors
 # `agent_framework`'s own experimental-feature idiom (see its `_feature_stage` module and
 # `ExperimentalWarning`, a `FutureWarning` subclass) but deliberately subclasses

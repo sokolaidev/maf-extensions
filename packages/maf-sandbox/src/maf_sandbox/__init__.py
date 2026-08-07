@@ -1,4 +1,4 @@
-"""Sandbox router: one seam between a host application and any sandbox provider (issue #663).
+"""Sandbox router: one seam between a host application and any sandbox provider.
 
 ```
 app  ->  SandboxRouter  ->  backend  ->  the sandbox
@@ -14,9 +14,9 @@ The router exists for two things a backend cannot own:
 - **Which backend serves a request.** Configuration, not an import, decides.
 - **The deployed-isolation rule.** A backend weaker than a VM boundary is refused outright
   when the host reports it is running deployed — see
-  :class:`~maf_sandbox._router.SandboxBackendNotPermitted`.  This is the one part of
-  issue #663 that is a security property rather than a convenience, so it is enforced at
-  construction and pinned by tests.
+  :class:`~maf_sandbox._router.SandboxBackendNotPermitted`.  This is the router's one part
+  that is a security property rather than a convenience, so it is enforced at construction
+  and pinned by tests.
 
 This package imports no backend and no host application.
 
@@ -65,7 +65,7 @@ __all__ = [
     "error_detail",
 ]
 
-# --- Experimental-package notice (issue #697) -------------------------------------------
+# --- Experimental-package notice ---------------------------------------------------------
 # This package is early-stage (0.1.0, "Development Status :: 4 - Beta"). Mirrors
 # `agent_framework`'s own experimental-feature idiom (see its `_feature_stage` module and
 # `ExperimentalWarning`, a `FutureWarning` subclass) but deliberately subclasses

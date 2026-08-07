@@ -1,4 +1,4 @@
-"""Tests for `maf_sandbox.error_detail` (issue #697).
+"""Tests for `maf_sandbox.error_detail`.
 
 Moved here from the bicep kind, where it started life as `_tool.py`'s private
 ``_error_detail`` — the ACA backend has the identical gap (a bare ``%s`` of the exception,

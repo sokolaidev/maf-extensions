@@ -1,4 +1,4 @@
-"""The backend-neutral vocabulary every sandbox provider and workload speaks (issue #663).
+"""The backend-neutral vocabulary every sandbox provider and workload speaks.
 
 Nothing here knows what a sandbox *is* — that is the point.  A workload (``bicep_validate``
 today; a GitHub Copilot agent or an Azure CLI surface later) asks for a sandbox and runs a
@@ -31,11 +31,12 @@ class Isolation:
     """How strong a backend's boundary is. Declared by the backend, checked by the router.
 
     This is not documentation: :class:`~maf_sandbox._router.SandboxRouter` refuses to
-    select anything below :data:`VM` in a deployed environment.  The #408 ruling put
+    select anything below :data:`VM` in a deployed environment.  A security review put
     execution in a VM-isolated sandbox precisely because a container shares the host kernel
-    and sits next to whatever credentials the host process holds, and the T3/T7 rows of the
-    security-posture doc now rest on that.  A backend that lies here defeats the check, so
-    the value belongs with the backend that knows the truth about itself.
+    and sits next to whatever credentials the host process holds, and the security posture
+    the deployed-isolation rule enforces rests on that conclusion.  A backend that lies here
+    defeats the check, so the value belongs with the backend that knows the truth about
+    itself.
     """
 
     #: Hardware/hypervisor boundary, no ambient identity reachable from inside (ACA Sandboxes).
@@ -85,8 +86,8 @@ class SandboxSpec:
     work_dir: str = "/work"
     # `dict[str, str]` rather than a bare `dict` as the factory: the bare builtin gives a
     # strict type checker `dict[Unknown, Unknown]` to work with, and this package's own
-    # pyright config is strict (issue #697). The subscripted form is callable and constructs
-    # the identical empty dict.
+    # pyright config is strict. The subscripted form is callable and constructs the
+    # identical empty dict.
     labels: dict[str, str] = field(default_factory=dict[str, str])
 
 
@@ -137,7 +138,7 @@ class SandboxBackend(Protocol):
     ``dispose_scope`` exists separately from ``dispose`` because a conversation delete has to
     reach sandboxes this process never created — a multi-replica host serves the delete
     wherever it lands.  A backend that only consults its own memory there leaves billable
-    sandboxes running (the shape of issue #375).
+    sandboxes running.
     """
 
     @property

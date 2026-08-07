@@ -1,4 +1,4 @@
-"""Tests for the MAF-glue module (issue #697).
+"""Tests for the MAF-glue module.
 
 Everything here is about the three decisions :mod:`maf_sandbox.maf` exists to make once
 instead of once per workload: where a sandbox key comes from, what a provider failure is

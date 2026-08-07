@@ -1,7 +1,7 @@
 [project]
 name = "maf-sandbox-aca"
 version = "0.1.0"
-description = "Azure Container Apps Sandboxes as a sandbox backend for Microsoft Agent Framework agents — reference implementation of agent-framework#7568 (issue #408)."
+description = "Azure Container Apps Sandboxes as a sandbox backend for Microsoft Agent Framework agents — reference implementation of agent-framework#7568."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
 authors = [{ name = "SOKOLAI BV", email = "info@sokolai.com" }]
@@ -25,9 +25,9 @@ classifiers = [
     "Programming Language :: Python :: 3.14",
     "Topic :: Security",
 ]
-# azure-containerapps-sandbox is now a HARD dependency (issue #697's dependency-honesty
-# flip): the old `[aca]` extra that gated it here is retired, and the host's own
-# optionality moved one layer up, to the `bicep-sandbox` extra in the root pyproject.toml
+# azure-containerapps-sandbox is now a HARD dependency (a dependency-honesty flip): the old
+# `[aca]` extra that gated it here is retired, and the host's own optionality moved one
+# layer up, to a `bicep-sandbox` extra in the host application's own root pyproject.toml
 # that pulls this whole package in. A host that installs maf-sandbox-aca at all wants it
 # to work; a host that does not configure a sandbox group should not install this package
 # in the first place, not install it crippled.
@@ -68,16 +68,17 @@ ignore = ["UP037"]
 
 [tool.ruff.lint.per-file-ignores]
 # ruff resolves [tool.ruff] per file by the NEAREST ancestor pyproject.toml that has one —
-# once this package gained its own [tool.ruff] section, the root pyproject.toml's
-# "src/maf-sandbox-aca/tests/**" per-file-ignore entry stopped reaching these files, so this
-# package carries its own copy (issue #697).
+# once this package gained its own [tool.ruff] section, the host application's root
+# pyproject.toml per-file-ignore entry for this package's tests stopped reaching these
+# files, so this package carries its own copy.
 "tests/**" = ["D101", "D103"]
 
-# Self-contained type checking, scoped to this package (issue #697) — strict, unlike the
-# root config's basic mode over src/ats. `scripts` is included alongside `src` because
-# import_disk_image.py is a standalone operator script that ships beside the package, not
-# inside it — the root config includes it the same way. `tests/` stays out (fixtures and
-# hand-rolled Azure-SDK-shaped fakes, not signal for a strict checker).
+# Self-contained type checking, scoped to this package — strict, unlike the host
+# application's root config, which runs its own type checker in basic mode. `scripts` is
+# included alongside `src` because import_disk_image.py is a standalone operator script
+# that ships beside the package, not inside it — the host application's root config
+# includes it the same way. `tests/` stays out (fixtures and hand-rolled Azure-SDK-shaped
+# fakes, not signal for a strict checker).
 [tool.pyright]
 include = ["src", "scripts"]
 typeCheckingMode = "strict"

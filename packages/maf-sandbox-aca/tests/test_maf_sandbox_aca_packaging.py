@@ -1,7 +1,7 @@
 """The publish-time experimental notice: emitted once, suppressible, `-W error`-safe.
 
 New file (not the existing `test_aca_backend.py`) so this doesn't collide with that file's
-concurrent edits elsewhere in issue #697's phase 2. Covers only the notice added to
+concurrent edits elsewhere in the same release. Covers only the notice added to
 `maf_sandbox_aca/__init__.py` — behavior of the backend itself is that file's job.
 """
 

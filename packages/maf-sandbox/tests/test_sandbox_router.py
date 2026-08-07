@@ -1,14 +1,14 @@
-"""Tests for the sandbox router (issue #663).
+"""Tests for the sandbox router.
 
 The router has exactly two jobs, and both are tested here rather than inferred:
 
 - picking a backend from configuration;
 - refusing a backend weaker than a VM boundary when the host says it is deployed.
 
-The second is a security property. The #408 ruling put execution in a VM-isolated sandbox
+The second is a security property. A security review put execution in a VM-isolated sandbox
 because a shared-kernel container sits next to the host's credentials, and the security
-posture doc's T3/T7 rows now rest on that — so "the router would refuse" needs to be a test,
-not a comment.
+posture doc's threat-model rows now rest on that — so "the router would refuse" needs to be
+a test, not a comment.
 """
 
 from __future__ import annotations
@@ -87,7 +87,7 @@ class TestSelection:
 
 
 class TestDeployedIsolationRule:
-    """`SANDBOX_BACKEND=docker` + deployed must fail closed — issue #663's hard constraint."""
+    """`SANDBOX_BACKEND=docker` + deployed must fail closed — a hard constraint on the router."""
 
     def test_vm_isolation_is_permitted_when_deployed(self):
         router = SandboxRouter([InProcessSandboxBackend(isolation=Isolation.VM)], deployed=True)
@@ -170,64 +170,6 @@ class TestSpecDefaults:
         assert b.labels == {}
 
 
-# ---------------------------------------------------------------------------
-# Independence from the host application — the invariant the split exists for
-# ---------------------------------------------------------------------------
-
-#: The one place this distribution names the application it currently ships inside.  It is
-#: here because the guard below needs something to look for; everywhere else the host is
-#: referred to by role, so moving this tree to its own repository is a file move plus this
-#: single line.
-_HOST_PACKAGE = "ats"
-
-
-class TestNoHostDependency:
-    """This package must not import the application it currently ships inside.
-
-    Everything else here would keep passing if someone added ``from <host>.config import
-    Settings`` to a module — the tests run in a process where the host package is
-    importable, so the coupling would be invisible until the day someone tried to extract
-    the package.  A source scan suffices: this module's only imports are the standard
-    library (see :class:`TestZeroDependencies` below), so the host cannot arrive
-    transitively.  Each sandbox distribution carries its own copy of this scan over its own
-    sources, so extracting any one of them keeps its guard.
-    """
-
-    def _sources(self):
-        import pathlib
-
-        import maf_sandbox
-
-        root = pathlib.Path(maf_sandbox.__file__).parent  # type: ignore[arg-type]
-        distribution = root.parent.parent
-        paths = []
-        # `scripts` does not exist here today; the guarded leg keeps a future operator
-        # script inside the scan instead of silently outside it (the backend has one).
-        for directory in (root, distribution / "tests", distribution / "scripts"):
-            if not directory.is_dir():
-                continue
-            paths.extend(directory.rglob("*.py"))
-        return paths
-
-    def test_sources_exist(self):
-        """Guards the scan below against silently finding nothing."""
-        assert len(self._sources()) >= 12
-
-    def test_nothing_imports_the_host_application(self):
-        import re
-
-        host = re.escape(_HOST_PACKAGE)
-        pattern = re.compile(rf"(?m)^\s*(?:from\s+{host}[.\s]|import\s+{host}[.\s])")
-        offenders = [
-            str(p) for p in self._sources() if pattern.search(p.read_text(encoding="utf-8"))
-        ]
-        assert offenders == [], (
-            f"these files import the host application ({_HOST_PACKAGE!r}): {offenders}. "
-            "The dependency belongs in the host's own adapter module, reaching this "
-            "package through WorkspaceContext and the router."
-        )
-
-
 #: The modules the stdlib-only claim covers, named one by one.  An **allowlist**, not a
 #: denylist of exemptions: a module added to this package is outside the claim until someone
 #: writes it in here, so widening the scan is a line in a diff rather than something that
@@ -235,12 +177,12 @@ class TestNoHostDependency:
 #: quietly neither.
 _PROTOCOL_MODULES = frozenset({"_error_detail", "_protocol", "_purger", "_router", "testing"})
 
-#: The modules deliberately OUTSIDE the stdlib-only claim (issue #697).  `maf` is the MAF-glue
+#: The modules deliberately OUTSIDE the stdlib-only claim.  `maf` is the MAF-glue
 #: module, the one place `agent_framework` may be imported — see `TestMafIsTheOnlyMafImporter`
 #: for the other half of that rule.  `__init__` is here because it is not protocol either: it
 #: re-exports and carries the experimental notice.  Both are still covered by
-#: `TestNoHostDependency` above and by the `agent_framework` boundary below; what they are
-#: exempt from is only the "standard library and nothing else" claim.
+#: `TestOnlyDeclaredDependencies` below and by the `agent_framework` boundary below; what
+#: they are exempt from is only the "standard library and nothing else" claim.
 _NON_PROTOCOL_MODULES = frozenset({"__init__", "maf"})
 
 #: The one module allowed to import `agent_framework`.
@@ -300,10 +242,10 @@ class TestZeroDependencies:
     entry would still import fine in this workspace, because every other member is already on
     the path.
 
-    The claim is scoped to :data:`_PROTOCOL_MODULES` rather than to the whole distribution
-    (issue #697): the dist now declares `agent-framework-core` for `maf_sandbox.maf`, and a
-    scan that kept asserting "nothing here imports anything" would have had to be deleted
-    outright — trading a precise, still-true invariant for none at all.
+    The claim is scoped to :data:`_PROTOCOL_MODULES` rather than to the whole distribution:
+    the dist now declares `agent-framework-core` for `maf_sandbox.maf`, and a scan that kept
+    asserting "nothing here imports anything" would have had to be deleted outright — trading
+    a precise, still-true invariant for none at all.
     """
 
     def test_the_protocol_modules_import_nothing_outside_the_standard_library(self):
@@ -327,7 +269,7 @@ class TestZeroDependencies:
 
 
 class TestMafIsTheOnlyMafImporter:
-    """`agent_framework` may be imported by `maf_sandbox.maf` and by nothing else (#697).
+    """`agent_framework` may be imported by `maf_sandbox.maf` and by nothing else.
 
     The distribution depends on MAF for that one glue module. The rule keeps that dependency
     from spreading: a protocol module that reached for `agent_framework` would tie the
@@ -382,4 +324,100 @@ class TestMafIsTheOnlyMafImporter:
             f"maf_sandbox/__init__.py imports .{_MAF_GLUE_MODULE}, which makes "
             "`import maf_sandbox` import agent_framework. Consumers reach the glue by name: "
             f"`from maf_sandbox.{_MAF_GLUE_MODULE} import ...`."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Dependency discipline — every import must be traceable to a reason
+# ---------------------------------------------------------------------------
+
+#: A requirement string's distribution name is not always its import name: `pip install
+#: agent-framework-core` puts `agent_framework` on the path, and `azure-identity` and
+#: `azure-containerapps-sandbox` both extend the single `azure` namespace package rather
+#: than each owning a top-level name of their own. Anything not listed here is assumed to
+#: import under its distribution name with hyphens turned to underscores — true of every
+#: dependency any of the three maf-sandbox* packages declares today. A dependency where
+#: that guess is wrong fails the test below with a readable "imports X" message, which is
+#: the right place to notice a new exception belongs here.
+_DISTRIBUTION_TO_IMPORT_NAME = {
+    "agent-framework-core": "agent_framework",
+    "maf-sandbox": "maf_sandbox",
+    "azure-identity": "azure",
+    "azure-containerapps-sandbox": "azure",
+}
+
+
+def _declared_import_names():
+    """The import names `pyproject.toml` licenses `maf_sandbox` to reach for, or `None`.
+
+    `None` means there is no `pyproject.toml` next to the installed package — an
+    sdist/wheel-only install with no source tree alongside it — and the caller must skip
+    rather than let an empty dependency list pass the scan below vacuously.
+    """
+    import pathlib
+    import re
+    import tomllib
+
+    import maf_sandbox
+
+    root = pathlib.Path(maf_sandbox.__file__).parents[2]  # type: ignore[arg-type]
+    pyproject_path = root / "pyproject.toml"
+    if not pyproject_path.is_file():
+        return None
+
+    with pyproject_path.open("rb") as fh:
+        requirements = tomllib.load(fh)["project"]["dependencies"]
+
+    names: set[str] = set()
+    for requirement in requirements:
+        match = re.match(r"[A-Za-z0-9][A-Za-z0-9._-]*", requirement)
+        assert match is not None, f"unparseable dependency requirement: {requirement!r}"
+        distribution = match.group(0)
+        names.add(_DISTRIBUTION_TO_IMPORT_NAME.get(distribution, distribution.replace("-", "_")))
+    return names
+
+
+class TestOnlyDeclaredDependencies:
+    """Every module here imports only the standard library, itself, or a declared dependency.
+
+    This is the invariant that replaced ``TestNoHostDependency`` (a source scan for the name
+    of the private application these packages were extracted from, back when this package
+    lived inside it). That name was one instance of a broader risk: a module reaching for
+    anything not on *this package's own* dependency list. Nothing else here would notice —
+    the workspace running this suite has every sibling package, and everything a host
+    application needs, already importable, so a stray import resolves fine in this
+    environment regardless of what it names. The first sign of trouble is a downstream
+    consumer who installs the published wheel alone, and what they get is an
+    ``ImportError`` with no test pointing at the cause.
+
+    Reading ``pyproject.toml`` at test time, rather than hard-coding the allowed names, is
+    what keeps this from becoming a second list to update by hand alongside the first: the
+    two would drift, and a stale allowlist is a test that passes for the wrong reason.
+    """
+
+    def test_sources_exist(self):
+        """Guards the scan below against silently finding nothing."""
+        assert len(_package_modules()) >= 7
+
+    def test_every_module_only_imports_what_it_is_declared_to_need(self):
+        import sys
+
+        declared = _declared_import_names()
+        if declared is None:
+            pytest.skip(
+                "pyproject.toml is not next to the installed maf_sandbox package — this "
+                "check only runs against a source checkout, not an installed-only wheel"
+            )
+
+        allowed = set(sys.stdlib_module_names) | declared | {"maf_sandbox"}
+        offenders = [
+            f"{path.name}: import {name}"
+            for _, path in sorted(_package_modules().items())
+            for name in _imported_top_levels(path)
+            if name not in allowed
+        ]
+        assert offenders == [], (
+            f"these maf_sandbox modules import something outside the standard library, the "
+            f"package itself, and pyproject.toml's declared dependencies: {offenders}. "
+            "Either the import is a mistake, or the dependency belongs in pyproject.toml."
         )

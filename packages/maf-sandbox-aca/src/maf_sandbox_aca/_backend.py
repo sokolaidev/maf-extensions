@@ -1,4 +1,4 @@
-"""The ACA Sandboxes backend: :class:`~maf_sandbox.SandboxBackend` on Azure (issue #408).
+"""The ACA Sandboxes backend: :class:`~maf_sandbox.SandboxBackend` on Azure.
 
 Everything provider-specific lives here — the group client, disk-image resolution, the
 egress policy, the lifecycle policy, the sandbox registry and label-based purge.  A workload
@@ -276,8 +276,8 @@ class AcaSandboxBackend:
         The registry is consulted first but is **not** the source of truth: it only knows
         what this process created, so a conversation delete served by another replica — or
         by this one after a redeploy — would otherwise leave the sandbox running until the
-        auto-delete timer fires.  That is the shape of issue #375, and labels close it the
-        same way deriving from storage did there.
+        auto-delete timer fires.  Labels close that gap by making the service itself, not
+        this process's memory, the durable record of which sandboxes belong to a thread.
 
         Registry entries are dropped up front whether or not the delete succeeds: a stale
         entry pointing at a sandbox that may already be gone is worse than no entry, since

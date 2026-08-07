@@ -1,4 +1,4 @@
-"""Tests for `maf_sandbox.testing` (issue #697).
+"""Tests for `maf_sandbox.testing`.
 
 A fake nobody outside its own package tests is a fake that drifts silently — this pins the
 public testing surface's own contract, separately from the router and bicep-kind suites that
