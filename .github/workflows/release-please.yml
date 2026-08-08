@@ -5,6 +5,9 @@ name: Release Please
 on:
   push:
     branches: [main]
+  # Nothing else can start this: without it, recovering from a failed run means pushing to
+  # main or re-running a run from the UI.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -44,6 +47,9 @@ jobs:
         if: steps.release.outputs.releases_created == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          # This job checks nothing out, so gh cannot infer the repository from a git
+          # remote. Without this it fails with "not a git repository".
+          GH_REPO: ${{ github.repository }}
           PATHS: ${{ steps.release.outputs.paths_released }}
           OUTPUTS: ${{ toJSON(steps.release.outputs) }}
         run: |
@@ -62,6 +68,9 @@ jobs:
         if: steps.release.outputs.prs_created == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          # This job checks nothing out, so gh cannot infer the repository from a git
+          # remote. Without this it fails with "not a git repository".
+          GH_REPO: ${{ github.repository }}
           PRS: ${{ steps.release.outputs.prs }}
         run: |
           set -euo pipefail
