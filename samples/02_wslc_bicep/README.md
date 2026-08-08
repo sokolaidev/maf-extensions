@@ -24,7 +24,7 @@ Two things are genuinely weaker here, and neither is hidden.
   wslc build -t bicep-sandbox:local samples/02_wslc_bicep
   ```
 
-- **An OpenAI-compatible endpoint** — api.openai.com, or a local server that speaks the same protocol. The model needs to be able to call a tool; beyond that this sample asks nothing unusual of it.
+- **An OpenAI-compatible endpoint** — api.openai.com, or a local server that speaks the same protocol. The sample deliberately uses the chat-completions API, the one surface local servers implement well; their newer-API support is often partial in ways that surface as an empty final answer. The model needs to be able to call a tool; beyond that this sample asks nothing unusual of it.
 
 No Azure subscription, no preview enrolment, no billable VM. A run that is killed mid-turn leaves the container **running** — it was started with `sleep infinity` and nothing stops it on the way out — so plain `wslc container list` shows it, it holds WSL VM memory until it goes, and `wslc container remove -f <name>` reclaims it.
 

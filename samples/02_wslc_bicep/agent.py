@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from agent_framework import Agent, InMemoryAgentFileStore
-from agent_framework.openai import OpenAIChatClient
+from agent_framework.openai import OpenAIChatCompletionClient
 from maf_sandbox import SandboxRouter
 from maf_sandbox.maf import make_workspace_context
 from maf_sandbox_bicep import make_bicep_tools
@@ -133,7 +133,7 @@ async def run() -> int:
 
     try:
         agent = Agent(
-            client=OpenAIChatClient(
+            client=OpenAIChatCompletionClient(
                 model=env["OPENAI_CHAT_MODEL"],
                 api_key=env["OPENAI_API_KEY"],
                 base_url=os.environ.get("OPENAI_BASE_URL"),
