@@ -131,10 +131,23 @@ class TestDeployedIsolationRule:
 
 
 class _BackendWithoutEgress:
-    """A backend written before `egress` existed — the same shape, one property short."""
+    """A backend written before `egress` existed — the whole surface, one property short.
+
+    Written out rather than subclassed from the fake, which now always has the property: the
+    case under test is a real third-party backend that satisfied the protocol as it stood.
+    """
 
     name = "legacy"
     isolation = Isolation.VM
+
+    async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> object:
+        return object()
+
+    async def dispose(self, key: SandboxKey) -> None:
+        return None
+
+    async def dispose_scope(self, scope: str, thread_id: str) -> int:
+        return 0
 
 
 class TestEgressRule:

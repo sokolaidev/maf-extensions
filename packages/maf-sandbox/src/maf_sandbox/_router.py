@@ -139,8 +139,8 @@ class SandboxRouter:
         """
         if self._backend is None:
             return
-        # Absent rather than defaulted: a backend written before this property existed cannot
-        # have been enforcing an allowlist it never read, so the closed reading is the true one.
+        # Silence is read as enforcing nothing, not excused: a backend written before this
+        # property existed cannot have been enforcing an allowlist it never read.
         egress = getattr(self._backend, "egress", Egress.UNRESTRICTED)
         if egress == Egress.ALLOWLIST:
             return

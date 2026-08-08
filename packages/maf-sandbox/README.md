@@ -68,7 +68,7 @@ router.ensure_can_serve(bicep_sandbox_spec())
 
 Implement `name`, `isolation`, `egress`, `acquire`, `dispose`, `dispose_scope`. Three things worth knowing before you start:
 
-**Declare `egress` honestly.** It is read before any workload's tool is attached, and a backend that omits it is treated as `unrestricted` and refused — a backend written before the property existed cannot have been enforcing an allowlist it never read, so the closed reading is the true one.
+**Declare `egress` honestly.** It is read before any workload's tool is attached, and a backend that omits it is treated as `unrestricted` and refused: one written before the property existed cannot have been enforcing an allowlist it never read, so silence is read as enforcing nothing rather than excused.
 
 **`acquire` is get-or-create.** A workload's fix-round loop calls it every iteration; returning a cold sandbox each time turns a seconds-long loop into a minutes-long one.
 
