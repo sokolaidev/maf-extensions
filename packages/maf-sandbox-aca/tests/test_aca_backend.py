@@ -519,6 +519,137 @@ class TestLifecycleLogging:
 
 
 # ---------------------------------------------------------------------------
+# Concurrent acquire — two calls for one key
+# ---------------------------------------------------------------------------
+
+
+class _SlowCreateGroupClient:
+    """A group client whose create yields, so two acquires really do interleave.
+
+    ``peak_creates`` is how many creates were ever in flight together — the number that says
+    whether the two calls were serialised or overlapped, which a create count alone cannot.
+    """
+
+    def __init__(self) -> None:
+        self.create_calls = 0
+        self.in_flight = 0
+        self.peak_creates = 0
+        self.resumed: list[str] = []
+
+    def get_sandbox_client(self, sandbox_id: str):
+        self.resumed.append(sandbox_id)
+        return _ResumingSandboxClient(sandbox_id)
+
+    async def begin_create_sandbox(self, *, disk_id, labels, egress_policy):
+        self.create_calls += 1
+        created = f"sbx-{self.create_calls}"
+        client = self
+
+        class _Poller:
+            async def result(self):
+                client.in_flight += 1
+                client.peak_creates = max(client.peak_creates, client.in_flight)
+                await asyncio.sleep(0)
+                client.in_flight -= 1
+                return _CreatedSandbox(created)
+
+        return _Poller()
+
+
+class _ResumingSandboxClient(_FakeSandboxClient):
+    """Suspends while resuming, so a second acquire on a warm key waits on the lock."""
+
+    async def ensure_running(self, timeout: float | None = None) -> None:
+        await asyncio.sleep(0)
+        await super().ensure_running(timeout)
+
+
+class _CreatedSandbox:
+    def __init__(self, sandbox_id: str) -> None:
+        self.sandbox_id = sandbox_id
+
+    async def set_lifecycle_policy(self, policy) -> None:
+        await asyncio.sleep(0)
+
+
+def _spec():
+    from maf_sandbox import SandboxSpec
+
+    return SandboxSpec(kind="bicep", image_id="pinned-id")
+
+
+class TestConcurrentAcquire:
+    """Get-or-create is serialised per key, because a create cannot be made idempotent here.
+
+    ``begin_create_sandbox`` names no sandbox, so the service has nothing to recognise a
+    duplicate by. Two acquires that both miss the registry each get a running, billable VM,
+    and only the second one to finish stays registered — the first is left with no handle in
+    this process. The model reaching this is not exotic: the function calls in one assistant
+    message are executed concurrently, so one message naming a key twice runs the tool body
+    twice over.
+    """
+
+    def test_two_acquires_for_one_key_create_one_sandbox(self):
+        client = _SlowCreateGroupClient()
+        backend = _backend_with(client)
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+
+        async def both():
+            return await asyncio.gather(
+                backend.acquire(key, _spec()), backend.acquire(key, _spec())
+            )
+
+        first, second = asyncio.run(both())
+
+        assert client.create_calls == 1
+        assert client.peak_creates == 1
+        assert first.sandbox_id == second.sandbox_id == "sbx-1"
+        assert backend._registry == {("scope-a", "thread-1", "devops-engineer"): "sbx-1"}
+
+    def test_a_second_key_is_not_held_up_behind_the_first(self):
+        """Per key, not one lock for the backend — two conversations must not serialise."""
+        client = _SlowCreateGroupClient()
+        backend = _backend_with(client)
+
+        async def both():
+            return await asyncio.gather(
+                backend.acquire(
+                    SandboxKey(scope="s", thread_id="thread-1", agent_dir="devops"), _spec()
+                ),
+                backend.acquire(
+                    SandboxKey(scope="s", thread_id="thread-2", agent_dir="devops"), _spec()
+                ),
+            )
+
+        first, second = asyncio.run(both())
+
+        assert client.peak_creates == 2
+        assert {first.sandbox_id, second.sandbox_id} == {"sbx-1", "sbx-2"}
+
+    def test_a_second_event_loop_can_wait_on_the_same_key(self):
+        """An `asyncio.Lock` binds to the loop that first had to wait on it.
+
+        This backend is reachable from more than one loop — the same reason its group clients
+        are cached per loop — so a lock kept per key alone raises ``RuntimeError`` the first
+        time two calls contend on a second loop. `SandboxToolSession.acquire` reports that as
+        "sandbox unavailable", so the run degrades to T0 with nothing naming the cause.
+        """
+        client = _SlowCreateGroupClient()
+        backend = _backend_with(client)
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+
+        async def both():
+            return await asyncio.gather(
+                backend.acquire(key, _spec()), backend.acquire(key, _spec())
+            )
+
+        asyncio.run(both())
+        asyncio.run(both())
+
+        assert client.create_calls == 1
+
+
+# ---------------------------------------------------------------------------
 # error_detail adoption — the warning logs must carry status and body
 # ---------------------------------------------------------------------------
 
