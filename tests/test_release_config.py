@@ -70,8 +70,15 @@ def release_tag(package_path: str) -> str:
 
 
 def lock_jsonpath(distribution: str) -> str:
-    """Points an `extra-files` updater at one `[[package]]` entry in `uv.lock`."""
-    return f"$.package[?(@.name=='{distribution}')].version"
+    """Points an `extra-files` updater at one `[[package]]` entry in `uv.lock`.
+
+    `.value` rather than `name` itself: release-please parses TOML into position-annotated
+    nodes (`{start, end, value}`), so a filter comparing `@.name` to a string compares an
+    object and matches nothing. That shape is its internal parser's, not a documented
+    contract — if a release-please bump breaks it, the symptom is a Release PR whose
+    `uv sync --locked` check fails, and the fix is to re-check this expression.
+    """
+    return f"$.package[?(@.name.value=='{distribution}')].version"
 
 
 def locked_version(distribution: str) -> str | None:
@@ -158,11 +165,11 @@ class TestEveryPackageUpdatesTheLockWhenItReleases:
     def test_the_updater_targets_the_lockfile(self, package_path: str):
         entry = lock_updater(package_path)
         assert entry["type"] == "toml"
-        # Resolved rather than compared as text: the `../` depth is a property of where the
-        # package sits, and a wrong one would silently update nothing.
-        assert (
-            REPO_ROOT / package_path / entry["path"]
-        ).resolve() == LOCK_PATH.resolve()
+        # The leading slash is the whole mechanism: release-please resolves an extra-file
+        # path against the package directory, and rejects `../` outright rather than
+        # walking up. Without it this silently addresses a lockfile inside the package.
+        assert entry["path"].startswith("/")
+        assert REPO_ROOT / entry["path"].lstrip("/") == LOCK_PATH
 
     @pytest.mark.parametrize("package_path", PACKAGE_PATHS)
     def test_the_updater_selects_this_package_entry(self, package_path: str):

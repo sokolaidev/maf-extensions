@@ -87,7 +87,20 @@ Prefer either of those to a rule bypass. The bypass works, and is even defensibl
 
    `package-name` is not optional here, and its absence fails quietly rather than loudly: release-please's Python strategy reads `pyproject.toml` only to find version-bearing files, never to name the component. Leave it out and the component is the empty string, so the package tags as a bare `v<version>` — which collides with every other package and matches none of the publish workflow's globs.
 
-   The entry also needs its **`extra-files` updater for `uv.lock`**, copied from a sibling with the name changed in the `jsonpath`. The lock records a version for every workspace member and release-please knows nothing about it, so a package without one releases perfectly happily and leaves the lock a version behind — after which `uv sync --locked` fails for everyone, on a branch that changed none of this. The `../../` in the path is deliberate: `extra-files` paths are relative to the package directory, and this file is at the root.
+   The entry also needs its **`extra-files` updater for `uv.lock`**, copied from a sibling with the name changed in the `jsonpath`. The lock records a version for every workspace member and release-please knows nothing about it, so a package without one releases perfectly happily and leaves the lock a version behind — after which `uv sync --locked` fails for everyone, on a branch that changed none of this.
+
+   Two details in that entry are load-bearing, and both were arrived at the hard way:
+
+   - **The path is `/uv.lock`, with a leading slash.** `extra-files` paths are resolved against the package directory, and release-please rejects `../` outright — `illegal pathing characters in path` — failing the whole run, so no package gets a Release PR at all. A leading slash means repository-root-relative, which is the only way to reach this file.
+   - **The filter reads `@.name.value`, not `@.name`.** release-please parses TOML into position-annotated nodes (`{start, end, value}`), so comparing `@.name` to a string compares an object and matches nothing. That failure is quieter — a warning in the log and a Release PR with a stale lock — and what catches it is the `uv sync --locked` gate turning that PR's required check red.
+
+   The second is release-please's internal parser shape rather than a documented contract. Re-check it when bumping the action, and verify a config change before merging it rather than on `main`:
+
+   ```bash
+   npx release-please release-pr --repo-url=sokolaidev/maf-extensions \
+     --target-branch=<your-branch> --config-file=release-please-config.json \
+     --manifest-file=.release-please-manifest.json --dry-run --token="$(gh auth token)"
+   ```
 6. Register its pending publishers (see above), then release it.
 
 The tag globs do not overlap despite the shared prefix: in `maf-sandbox-aca-v0.1.0`, the character after `maf-sandbox-` is `a`, not `v`. Keep that true for any new name, or two packages will answer the same tag.
