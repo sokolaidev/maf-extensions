@@ -53,6 +53,8 @@ release-please creates the GitHub Release the moment its Release PR merges — b
 
 The obvious alternative, `"skip-github-release": true`, is a trap: it wedges release-please. The `autorelease: pending` label on the merged Release PR never flips to `autorelease: tagged`, and a pending label is what stops the *next* Release PR from being opened ([release-please#1561](https://github.com/googleapis/release-please/issues/1561)).
 
+Those two labels are the release state machine, not decoration — which is why the workflow grants `issues: write` alongside the permissions you would expect. Labels live on the Issues API even when they are on a pull request, and release-please creates its own pair the first time it runs. Trim that permission and every release wedges in the same way, for a different reason.
+
 ## Why the tag is pushed by hand
 
 The one manual step in a release is `git push origin <tag>`, and it is manual because of a GitHub rule with no configuration switch: **events triggered by a workflow's own `GITHUB_TOKEN` never start another workflow run.** release-please could create the tag itself, but that tag would start no publish — leaving a release that looks cut and was never uploaded, with nothing to say so.

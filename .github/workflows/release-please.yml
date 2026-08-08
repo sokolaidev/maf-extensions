@@ -22,6 +22,9 @@ jobs:
       # this job; the workflow default above stays read-only.
       contents: write
       pull-requests: write
+      # Labels are an Issues-API concept even on a PR, and release-please creates its own
+      # `autorelease:*` pair on first run. Without this it 403s and every release wedges.
+      issues: write
     steps:
       - name: Run release-please
         # Pinned to the commit v4 resolves to: a moving tag is a supply-chain hole, and this
