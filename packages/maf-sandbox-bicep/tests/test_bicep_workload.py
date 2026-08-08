@@ -683,6 +683,20 @@ class TestEndToEndRefusals:
         assert "unsafe" not in out, "a missing file must not be described as a refusal"
         assert backend.sandbox.files == {}
 
+    def test_a_dot_slash_name_reads_back_from_the_store(self):
+        """Validation normalises the name; the store is not normalised, so it must not.
+
+        `./main.bicep` matched the listing and was then read under the caller's spelling,
+        which a store keyed `main.bicep` does not have — reported as "listed but has no
+        content", about a file that is present and readable.
+        """
+        store = InMemoryStore({"main.bicep": "x"})
+        backend = _fake_backend()
+        out = _run(_tool(store, backend), ["./main.bicep"])
+
+        assert "no content" not in out
+        assert backend.sandbox.files, "the file should have reached the sandbox"
+
     def test_a_listing_miss_and_an_unsafe_name_do_not_share_a_message(self):
         """The whole point: a caller must be able to tell these two apart."""
         missing = _run(_tool(InMemoryStore({}), _fake_backend()), ["main.bicep"])

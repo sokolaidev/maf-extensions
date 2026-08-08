@@ -300,7 +300,7 @@ def _bicep_validate_tool(
         # Validate each name against that listing (the injection guard).
         validated: list[tuple[str, str]] = []  # (workspace_path, sandbox_path)
         for name in files:
-            sandbox_path, rejection = resolve_workspace_path(name, ws_files, round_dir)
+            sandbox_path, listing_key, rejection = resolve_workspace_path(name, ws_files, round_dir)
             if rejection == "unsafe":
                 # No listing echoed back: that would invite a retry with another spelling.
                 return (
@@ -308,8 +308,7 @@ def _bicep_validate_tool(
                     f"[A-Za-z0-9._/-] and no '..' segments."
                 )
             if rejection == "missing" or sandbox_path is None:
-                # Logged so hosts can count this; its silence is why the live occurrence
-                # was only found afterwards, from a model that had blamed the sandbox.
+                # Logged so hosts can count listing misses.
                 logger.warning(
                     "bicep_validate: %r is not in this tool's workspace listing (%d file(s) "
                     "visible) — the store wired here may be narrower than the agent's",
@@ -321,7 +320,9 @@ def _bicep_validate_tool(
                     f"validated. This listing can be narrower than the files you can read "
                     f"elsewhere. {_listing_hint(name, ws_files)}"
                 )
-            validated.append((name, sandbox_path))
+            # The listing's key, not the caller's spelling: "./main.bicep" validates but
+            # would not read back from a store keyed "main.bicep".
+            validated.append((listing_key or name, sandbox_path))
 
         # The four-branch degrade ladder — which failures may be named to the model and
         # which may only reach the log — is `session.acquire`'s, and it writes its detail

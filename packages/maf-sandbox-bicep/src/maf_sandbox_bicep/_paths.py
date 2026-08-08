@@ -38,38 +38,37 @@ def safe_workspace_path(name: str, workspace_files: list[str], work_dir: str) ->
     >>> safe_workspace_path("main.bicep; rm -rf /", ["main.bicep; rm -rf /"], "/work") is None
     True
     """
-    path, _ = resolve_workspace_path(name, workspace_files, work_dir)
+    path, _, _ = resolve_workspace_path(name, workspace_files, work_dir)
     return path
 
 
 def resolve_workspace_path(
     name: str, workspace_files: list[str], work_dir: str
-) -> tuple[str | None, PathRejection | None]:
-    """Resolve ``name``, or say *which* rule rejected it.
+) -> tuple[str | None, str | None, PathRejection | None]:
+    """Resolve ``name`` to ``(sandbox_path, listing_key, rejection)``.
 
-    Told only "not in the listing or unsafe" about a file it has already read, a model
-    concludes the sandbox is broken and reviews the file by eye instead — the outcome this
-    workload exists to prevent. So the caller needs the reason, not just a ``None``.
+    ``listing_key`` is the entry from ``workspace_files`` that matched, which is what the
+    store is keyed by — ``name`` may spell it differently and not read back.
 
-    Membership is still checked **as well as** the character class: a file can be created
-    with a hostile name. The character class runs first, so a hostile name reads as hostile
+    Membership is checked **as well as** the character class: a file can be created with a
+    hostile name. The character class runs first, so a hostile name reads as hostile
     whether or not it is listed.
 
-    >>> resolve_workspace_path("main.bicep", ["main.bicep"], "/work")
-    ('/work/main.bicep', None)
+    >>> resolve_workspace_path("./main.bicep", ["main.bicep"], "/work")
+    ('/work/main.bicep', 'main.bicep', None)
     >>> resolve_workspace_path("main.bicep", [], "/work")
-    (None, 'missing')
+    (None, None, 'missing')
     >>> resolve_workspace_path("main.bicep; rm -rf /", ["main.bicep; rm -rf /"], "/work")
-    (None, 'unsafe')
+    (None, None, 'unsafe')
     """
     if not name or _UNSAFE_CHARS.search(name):
-        return None, "unsafe"
-    # Normalise: strip leading / and ./ so "main.bicep" and "./main.bicep" both match.
+        return None, None, "unsafe"
+    # Strip leading / and ./ so "main.bicep" and "./main.bicep" both match.
     normalised = name.lstrip("/").removeprefix("./")
-    # Reject path traversal regardless of workspace membership.
     if ".." in normalised.split("/"):
-        return None, "unsafe"
-    workspace_normalised = {f.lstrip("/").removeprefix("./") for f in workspace_files}
-    if normalised not in workspace_normalised:
-        return None, "missing"
-    return f"{work_dir}/{normalised}", None
+        return None, None, "unsafe"
+    by_normalised = {f.lstrip("/").removeprefix("./"): f for f in workspace_files}
+    listing_key = by_normalised.get(normalised)
+    if listing_key is None:
+        return None, None, "missing"
+    return f"{work_dir}/{normalised}", listing_key, None
