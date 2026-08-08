@@ -152,8 +152,7 @@ class AcaSandboxBackend:
 
     @property
     def egress(self) -> str:
-        # `_egress_policy` builds a Deny-default policy with one Allow rule per host the spec
-        # names, so the allowlist is enforced by the service rather than trusted to the image.
+        # True because `_egress_policy` builds it: Deny default, one Allow per named host.
         return Egress.ALLOWLIST
 
     # -- client -------------------------------------------------------------------

@@ -51,13 +51,10 @@ class Isolation:
 class Egress:
     """How precisely a backend can confine what a sandbox reaches. Declared by the backend.
 
-    :attr:`SandboxSpec.egress_allow` states egress as a deny-default allowlist, and backends
-    differ in how much of that they can express — a container runtime typically offers "no
-    network" and "the network", with nothing in between.  Which direction a backend misses by
-    is what matters, and it is not symmetrical: one that confines **less** than the spec asks
-    silently widens what the workload was designed to reach, while one that confines **more**
-    only makes the workload fail, loudly, at whatever it could not fetch.  So only the first
-    is refused; see :meth:`~maf_sandbox.SandboxRouter.ensure_can_serve`.
+    Backends differ in how much of a spec's allowlist they can express, and the direction they
+    miss by is not symmetrical: confining **less** than the spec asks silently widens what the
+    workload was designed to reach, while confining **more** only makes the workload fail,
+    loudly, at whatever it could not fetch.  So only the first is refused.
     """
 
     #: Deny by default, allow exactly the hosts a spec names.
@@ -176,10 +173,7 @@ class SandboxBackend(Protocol):
     def egress(self) -> str:
         """One of the :class:`Egress` constants, read before a workload's tool is attached.
 
-        A backend that does not declare this is treated as :data:`Egress.UNRESTRICTED` and
-        refused, because the two are indistinguishable from the outside: a backend that
-        ignores ``egress_allow`` and one that enforces it have the same type, the same
-        methods and the same passing tests.
+        Not declaring it is read as :data:`Egress.UNRESTRICTED`, and refused.
         """
         ...
 

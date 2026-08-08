@@ -131,10 +131,9 @@ class TestDeployedIsolationRule:
 
 
 class _BackendWithoutEgress:
-    """A backend written before `egress` existed — the whole surface, one property short.
+    """A third-party backend that satisfied the protocol as it stood: one property short.
 
-    Written out rather than subclassed from the fake, which now always has the property: the
-    case under test is a real third-party backend that satisfied the protocol as it stood.
+    Written out rather than subclassed, because the fake now always has the property.
     """
 
     name = "legacy"
@@ -154,10 +153,8 @@ class TestEgressRule:
     """The security property nothing used to check.
 
     A backend that reads `egress_allow` and one that ignores it have the same type, the same
-    methods and the same passing tests, so the difference has to be declared and checked.
-    Which direction a backend misses by decides the outcome: wider than the spec is refused,
-    narrower is allowed and warned about — the sandbox reaches nothing it should not, and the
-    workload fails visibly at whatever it could not fetch. Both directions are pinned.
+    methods and the same passing tests, so the difference has to be declared — and both
+    directions of missing it pinned, since only one of them is refused.
     """
 
     _ALLOWLIST_SPEC = SandboxSpec(kind="bicep", egress_allow=("example.invalid",))
@@ -179,8 +176,7 @@ class TestEgressRule:
         with caplog.at_level("WARNING"):
             self._router(Egress.CLOSED).ensure_can_serve(self._ALLOWLIST_SPEC)
         (record,) = caplog.records
-        # Read off the spec rather than repeated as a literal: the warning is only useful if
-        # it names the hosts that will be unreachable, whichever those turn out to be.
+        # Off the spec, not a literal: the warning is useful only if it names the hosts.
         assert all(host in record.getMessage() for host in self._ALLOWLIST_SPEC.egress_allow)
 
     @pytest.mark.parametrize("spec", [_ALLOWLIST_SPEC, _CLOSED_SPEC])

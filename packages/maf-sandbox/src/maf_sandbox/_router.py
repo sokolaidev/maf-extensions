@@ -45,11 +45,9 @@ class SandboxBackendNotPermitted(PermissionError):
 class SandboxEgressNotEnforced(PermissionError):
     """The selected backend cannot confine egress to what the workload's spec allows.
 
-    Raised where a workload attaches its tool, which is the first moment a backend and a spec
-    are both in hand — the router is built before any workload exists.  Raised rather than
-    degraded for the same reason as :class:`SandboxBackendNotPermitted`: a spec's
-    ``egress_allow`` is the containment a workload was designed around, and a backend that
-    accepts it and ignores it turns that design into a comment.
+    Raised rather than degraded, like :class:`SandboxBackendNotPermitted`: a backend that
+    accepts ``egress_allow`` and ignores it turns the containment a workload was designed
+    around into a comment.
     """
 
 
@@ -121,21 +119,17 @@ class SandboxRouter:
     def ensure_can_serve(self, spec: SandboxSpec) -> None:
         """Raise unless the selected backend can confine egress to what ``spec`` allows.
 
-        Call this once, where a workload's tool is attached — :func:`maf_sandbox.maf.
-        sandboxed_tool` already does — and it is also the whole of a host's own wiring test::
+        Called for you by :func:`maf_sandbox.maf.sandboxed_tool`, and it is also the whole of
+        a host's own wiring test::
 
             router.ensure_can_serve(bicep_sandbox_spec())
 
-        A backend that confines *more* than the spec asks is permitted and warned about: the
-        sandbox reaches nothing it should not, and the workload fails visibly at whatever it
-        could not fetch.  A backend that confines less is refused.
-
-        With no backend configured this returns: nothing runs, so nothing reaches anything,
-        and the caller's tool is not attached either.
+        Confining more than the spec asks is permitted and warned about; confining less is
+        refused (see :class:`~maf_sandbox.Egress`).  With no backend configured this returns:
+        nothing runs, so nothing reaches anything.
 
         Raises:
-            SandboxEgressNotEnforced: when the backend does not declare an
-                :class:`~maf_sandbox.Egress` level it can meet for this spec.
+            SandboxEgressNotEnforced: when the backend cannot meet this spec.
         """
         if self._backend is None:
             return

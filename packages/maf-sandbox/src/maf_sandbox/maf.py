@@ -302,11 +302,10 @@ def sandboxed_tool(
        keeps its ungrounded behaviour with no half-attached error path, and the model is
        never shown a capability it does not have.
     2. **Refuse a backend that cannot confine egress** to what ``spec`` allows — see
-       :meth:`~maf_sandbox.SandboxRouter.ensure_can_serve`.  Note that this *raises* where the
-       point above returns ``[]``, and the difference is the point: nothing configured is a
-       choice the host made, while a backend that cannot honour the spec it was handed is a
-       misconfiguration, and degrading quietly would ship the workload with containment it
-       does not have.
+       :meth:`~maf_sandbox.SandboxRouter.ensure_can_serve`.  This *raises* where the point
+       above returns ``[]``: nothing configured is a choice the host made, while a backend
+       that cannot honour the spec is a misconfiguration, and the quiet degrade would ship
+       the workload with containment it does not have.
     3. **Key from the host, not from the model** — see :meth:`SandboxToolSession.key`.
     4. **Sanitized failure surfaces** — see :meth:`SandboxToolSession.acquire`.
     5. **Declared information flow** — see :func:`sandbox_tool_declarations`.

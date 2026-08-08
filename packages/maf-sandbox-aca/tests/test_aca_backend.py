@@ -133,11 +133,7 @@ class TestBackendIdentity:
         assert AcaSandboxBackend(_config()).isolation == Isolation.VM
 
     def test_declares_allowlist_egress(self):
-        """A workload's tool attaches at all because of this one, and the claim is real.
-
-        `TestEgressPolicy` below pins what makes it true: a Deny default with one Allow rule
-        per host the spec names, built by this backend rather than trusted to the image.
-        """
+        """A workload's tool attaches because of this; `TestEgressPolicy` pins that it is true."""
         assert AcaSandboxBackend(_config()).egress == Egress.ALLOWLIST
 
     def test_is_named_aca(self):

@@ -93,10 +93,9 @@ class InProcessSandboxBackend:
             router's deployed-isolation rule is exercised against fakes claiming every
             :class:`~maf_sandbox.Isolation` level, not only ``PROCESS``.
         egress: Returned by the :attr:`egress` property. Defaults to
-            :data:`~maf_sandbox.Egress.ALLOWLIST` so a workload under test attaches exactly as
-            it would against a live backend — this fake runs nothing and so reaches nothing,
-            but a default that made ``sandboxed_tool`` refuse it would make every consumer's
-            offline test a test of the refusal path.
+            :data:`~maf_sandbox.Egress.ALLOWLIST` so a workload under test attaches as it
+            would against a live backend, rather than every offline test becoming a test of
+            the attach refusal.
         acquire_error: When set, ``acquire`` raises this instead of returning the sandbox —
             for exercising a kind's "sandbox unavailable" degrade path.
 

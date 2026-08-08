@@ -119,8 +119,7 @@ class TestInProcessSandboxBackend:
         assert backend.isolation == Isolation.VM
 
     def test_egress_defaults_to_allowlist_so_a_workload_attaches(self):
-        """Not `CLOSED`, though this fake reaches nothing: the default decides whether every
-        consumer's offline test exercises their workload or the attach refusal."""
+        """Not `CLOSED`, or every consumer's offline test becomes a test of the refusal."""
         assert InProcessSandboxBackend().egress == Egress.ALLOWLIST
 
     def test_egress_is_configurable(self):

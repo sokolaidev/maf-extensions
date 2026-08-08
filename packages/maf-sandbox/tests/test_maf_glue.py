@@ -455,9 +455,8 @@ class TestAttachedToolRuns:
 class TestEgressIsCheckedWhereTheToolAttaches:
     """The attach gate answers "nothing configured" and "cannot honour this" differently.
 
-    Both are reasons a tool does not end up attached, and collapsing them would ship a
-    workload with containment it does not have: an empty list reads as a host that chose not
-    to enable the feature, which is not what a backend ignoring `egress_allow` means.
+    Collapsing them would ship a workload with containment it does not have, wearing the same
+    empty list as a host that simply left the feature off.
     """
 
     def test_a_backend_that_cannot_confine_egress_raises(self):
