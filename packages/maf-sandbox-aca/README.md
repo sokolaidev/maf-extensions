@@ -1,6 +1,6 @@
 # maf-sandbox-aca
 
-> **Experimental.** This package is early-stage (`0.1.0`, `Development Status :: 4 - Beta`) — its API may change or be removed in a future release without notice. Importing it emits a one-time `MafSandboxAcaExperimentalWarning`; suppress it with `warnings.filterwarnings("ignore", category=maf_sandbox_aca.MafSandboxAcaExperimentalWarning)` once you've read the notice.
+> **Experimental.** This package is early-stage (pre-1.0, `Development Status :: 4 - Beta`) — its API may change or be removed in a future release without notice. Importing it emits a one-time `MafSandboxAcaExperimentalWarning`; suppress it with `warnings.filterwarnings("ignore", category=maf_sandbox_aca.MafSandboxAcaExperimentalWarning)` once you've read the notice.
 
 This package is not affiliated with, endorsed by, or a product of Microsoft — it is a third-party reference implementation of [microsoft/agent-framework#7568](https://github.com/microsoft/agent-framework/issues/7568) for [Microsoft Agent Framework](https://aka.ms/AgentFramework), built on the [Azure Container Apps Sandboxes](https://learn.microsoft.com/azure/container-apps/sandboxes-overview) preview.
 
