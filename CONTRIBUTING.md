@@ -33,9 +33,29 @@ Some tests exist to stop a specific mistake, and their failure messages say whic
 
 If a change genuinely needs to cross one of those lines, say so in the PR — the boundary may be wrong, but it should move deliberately.
 
+## PR titles
+
+**Your PR title is the changelog entry.** This repository squash-merges, so it becomes the commit subject on `main`, and that subject both decides the next version and is what a reader sees in the release notes. Write it for the person deciding whether to upgrade — what changed for them, not what you did to the code. "Refactored internals" helps nobody; "accept a list of arguments to `exec`, and quote them" does.
+
+Titles follow [Conventional Commits](https://www.conventionalcommits.org/), which CI checks:
+
+```
+fix(aca): retry the label query when the control plane returns 429
+feat: accept a list of arguments to exec, and quote them
+docs: explain what the boundary tests protect
+```
+
+`feat:` releases a minor version, and `fix:`, `perf:`, `revert:` and `docs:` release a patch. A `!` after the type, or a `BREAKING CHANGE:` footer, releases a minor whatever the type, since every package is still `0.x`. `refactor`, `test`, `build`, `ci` and `chore` release nothing on their own — they are recorded, and ride along with whatever releases next.
+
+`docs:` sits in the releasing set deliberately: a package's `README.md` is its PyPI front page, and publishing a version is the only way to change what is shown there. The rule underneath is simply that anything appearing in a changelog cuts a release, which is `changelog-sections` in `release-please-config.json`.
+
+The scope in parentheses is free-form and optional. Which package a change belongs to is worked out from the files it touches, not from the scope, so a PR touching two packages releases both.
+
 ## Changelogs
 
-Every user-visible change gets a line in that package's `CHANGELOG.md`, under the unreleased version's heading. Those entries become the GitHub Release notes verbatim, so write them for someone deciding whether to upgrade: what changed for them, and what they have to do about it. "Refactored internals" helps nobody; "`exec` now accepts a list of arguments, and quotes them for you" does.
+Nobody writes one. `CHANGELOG.md` is assembled from the titles above by [release-please](https://github.com/googleapis/release-please), which keeps a Release PR open per package and files each entry under its type. That section becomes the GitHub Release notes verbatim — so the quality of a release's notes is decided when you name your PR, and nowhere else.
+
+The one thing a single line cannot carry is what a reader has to *do* about a change. That has its own slot: a `BREAKING CHANGE: …` footer, which release-please renders into its own `⚠ BREAKING CHANGES` section above everything else. Add it in GitHub's squash-commit message box when you merge — the body is blank by default, so the footer is all that ends up there.
 
 ## Layering
 

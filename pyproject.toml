@@ -24,6 +24,8 @@ dev = [
 # uses this list and running inside a package uses that package's own configuration.
 [tool.pytest.ini_options]
 testpaths = [
+    # Repository-level wiring (release registration) — belongs to no single package.
+    "tests",
     "packages/maf-sandbox/tests",
     "packages/maf-sandbox-aca/tests",
     "packages/maf-sandbox-bicep/tests",

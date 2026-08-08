@@ -6,6 +6,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Release PRs are opened by GITHUB_TOKEN, which starts no workflow run — so the required
+  # check never reports on them. Running this against that branch by hand supplies it.
+  workflow_dispatch:
 
 # Read-only by default: nothing here writes to the repository, and an unset block would
 # inherit whatever the org default is (often write).
@@ -22,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install uv
         # Pinned to the commit v5 resolves to: a moving tag is a supply-chain hole, since

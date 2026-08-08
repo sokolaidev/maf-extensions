@@ -4,30 +4,39 @@ Each package releases on its own, from a tag that names it. Publishing runs on [
 
 One-time setup — the PyPI organization, the trusted publishers, the GitHub environments — is done, and documented in [`docs/maintainers.md`](docs/maintainers.md). You need that only when adding a package.
 
+## What decides the version
+
+[release-please](https://github.com/googleapis/release-please) watches `main` and keeps a **Release PR** open for every package that has unreleased changes. It works out the bump from the merged commit subjects — which are PR titles here, since this repository squash-merges — and attributes each change to a package by the files it touched. `feat:` bumps the minor; `fix:`, `perf:`, `revert:` and `docs:` bump the patch; a `!` or a `BREAKING CHANGE:` footer bumps the minor whatever the type, because every package is still `0.x`. `refactor`, `test`, `build`, `ci` and `chore` release nothing on their own. The rule behind that list is that any commit which earns a changelog entry earns a release, so it is `changelog-sections` in `release-please-config.json` that decides it.
+
 ## Cutting a release
 
-1. **Bump `version`** in the package's `pyproject.toml`, and add a dated `## [<version>]` section to its `CHANGELOG.md`. The release job reads that section for the release notes and fails if it is missing.
-2. **Merge it through a PR.** `main` requires linear history and a green build.
-3. **Optionally rehearse on TestPyPI** — Actions → Publish → *Run workflow* → pick the package, target `testpypi`. Worth doing after a packaging change (a new dependency, a build-backend setting, a moved file); unnecessary for an ordinary code release, because the same install-and-use check runs on every PR and again before every publish.
-4. **Tag and push:**
+There are two steps, and the first one is the decision.
 
-   ```bash
-   git tag maf-sandbox-v0.1.1 && git push origin maf-sandbox-v0.1.1
-   ```
+1. **Review the Release PR, then merge it.** It carries the version bump, the `CHANGELOG.md` section assembled from the PR titles since the last release, and the manifest update. Nothing in it is meant to be edited by hand: the notes were written when those PRs were named ([`CONTRIBUTING.md`](CONTRIBUTING.md#pr-titles)), so reviewing it means reading the entries as a release rather than as a diff.
 
-   | Tag | Publishes |
-   |---|---|
-   | `maf-sandbox-v*` | `packages/maf-sandbox` |
-   | `maf-sandbox-aca-v*` | `packages/maf-sandbox-aca` |
-   | `maf-sandbox-bicep-v*` | `packages/maf-sandbox-bicep` |
+   Editing `CHANGELOG.md` here is an escape hatch rather than the process, for the entry that reads badly enough to be worth it. If you do, merge promptly: release-please regenerates this branch whenever `main` moves, and it will take your edit with it.
 
-5. **Approve the release.** The publish job runs in the `pypi` environment, which requires a reviewer — everything before it (tests, types, build, artifact checks, install smoke) runs unattended, and then the one irreversible step waits for a person.
+2. **Approve the publish.** Merging tags the release, creates the GitHub Release, and starts the publish against that tag — no command to run. It builds, re-runs the whole gate on the tagged commit, checks the artifacts, installs the wheel into a clean environment and uses it, and then waits in the `pypi` environment for a reviewer. Everything that can be checked has been by the time it asks; the one irreversible step is the only one with a person in front of it.
 
-The tag does the rest: publish to PyPI, then a GitHub Release carrying that changelog section.
+That is the whole flow. Nothing else needs doing, and nothing publishes without that approval.
+
+**Optionally, before merging: rehearse on TestPyPI** — Actions → Publish → *Run workflow* → pick the package, target `testpypi`. Worth doing after a packaging change (a new dependency, a build-backend setting, a moved file); unnecessary for an ordinary code release, because the same install-and-use check runs on every PR and again before every publish.
+
+**Releasing by hand** still works, for a release the automation cannot cut — push the tag and the same pipeline runs:
+
+| Tag | Publishes |
+|---|---|
+| `maf-sandbox-v*` | `packages/maf-sandbox` |
+| `maf-sandbox-aca-v*` | `packages/maf-sandbox-aca` |
+| `maf-sandbox-bicep-v*` | `packages/maf-sandbox-bicep` |
+
+Note the order this leaves you with: **the GitHub Release exists before PyPI has the package.** release-please creates it when its PR merges, and the alternatives that would delay it break release-please outright — see [`docs/maintainers.md`](docs/maintainers.md#why-a-release-exists-before-its-upload-does). If a publish fails, delete the Release and its tag; the version number is spent regardless.
 
 ## Release order
 
 `maf-sandbox` first, then the packages that depend on it. This is enforced rather than merely documented: the smoke gate installs the built wheel from the real index with no local fallback, so publishing `maf-sandbox-aca` against an unpublished `maf-sandbox` fails there instead of shipping a version nobody can install.
+
+Each package gets its own Release PR, so ordering is a matter of which you merge first — but merging now publishes, so **let one finish before merging the next**. Two merged back to back would have their publishes in flight together, and the dependent one fails at the smoke gate while `maf-sandbox` is still waiting for your approval. That failure is safe and re-runnable; it is just noise you can avoid by waiting.
 
 ## Versioning
 
@@ -48,5 +57,7 @@ Packages version independently. There is no lockstep release, and a fix in one i
 
 **A version cannot be replaced.** PyPI does not allow re-uploading a version, even after deleting it — deletion burns the number permanently. So:
 
-- **Bad metadata, correct code** (a broken README, a wrong URL): publish a `.postN` release. The project page renders the newest release, so the corrected text supersedes what is shown.
+- **Bad metadata, correct code** (a broken README, a wrong URL): ship it as an ordinary `docs:` change and let it cut a patch release. PyPI renders the newest release, so the corrected text supersedes what is shown. A PEP 440 `.postN` release is the traditional answer and is *not* available here — versions are generated, release-please parses them as SemVer, and hand-setting `0.1.0.post1` puts the manifest, the tag and the package's own metadata into three-way disagreement. That `docs:` releases at all is precisely so this route exists.
 - **Bad code**: publish the fix as a new patch version and [yank](https://pypi.org/help/#yanked) the bad one. Yanking keeps it installable for anyone who pinned it exactly while removing it from fresh resolutions — almost always better than deleting.
+- **Merging did not start a publish at all.** Look at the Release Please run: the *Publish each released package* step dispatches it, and a failure there leaves the tag and the Release in place with nothing running. Start it yourself against the tag that exists — `gh workflow run publish-packages.yml --ref maf-sandbox-v0.1.1 -f package=maf-sandbox -f target=pypi` — since re-pushing an existing tag does nothing.
+- **The publish failed after the Release was created.** Nothing reached PyPI unless the upload step itself ran, but the Release and tag exist and the manifest already counts the version as released. Re-run the failed jobs if the cause was transient. Otherwise delete the Release and the tag, and let the next Release PR propose the following number — the failed one is spent.

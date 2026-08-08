@@ -2,7 +2,7 @@
 
 Everything here is already done for the three published packages. You need it when **adding a package** to this repository, or when reconstructing the release plumbing somewhere else.
 
-Read it before touching PyPI settings: most of it is one-time configuration whose failure mode is a `403` at token-mint time that does not say which field was wrong.
+Read it before touching PyPI settings: much of it is one-time configuration whose failure mode is a `403` at token-mint time that does not say which field was wrong. The later sections are the reasoning behind two choices in the release flow that look like oversights until you know what was tried.
 
 ## Trusted publishing
 
@@ -45,12 +45,47 @@ Packages are published under the `sokolai` organization (SOKOLAI BV — a Compan
 
 Worth knowing if you rebuild this elsewhere: **the organization is not on the critical path.** Trusted publishers can be registered against a personal account and the projects transferred into an organization later. Organization approval is manual and can take days; a release does not have to wait for it.
 
+## Why a Release exists before its upload does
+
+release-please creates the GitHub Release the moment its Release PR merges — before anything has reached PyPI. That inverts the order this repository would prefer, where a Release is the record of an upload that *succeeded*. It is accepted knowingly, because both ways out are worse.
+
+`"draft": true` is the one that looks right and is a trap. **A draft carries no tag, and a tag is how release-please finds where the last release ended.** Its lookup runs releases → tags → manifest: the release iterator skips releases with no tag commit, the tag backfill has nothing to find, and the manifest fallback synthesises a release with `sha: ''`. An empty sha matches no commit, so `commitsAfterSha` returns the entire history. And since the action calls `createReleases()` and then `createPullRequests()` in a single invocation, the same run that drafted a release would immediately open a second Release PR replaying everything that had just shipped. `tests/test_release_config.py` asserts `draft` stays off for this reason.
+
+`"skip-github-release": true` is the other one, and it wedges release-please differently: the `autorelease: pending` label on the merged Release PR never flips to `autorelease: tagged`, and a pending label is what stops the *next* Release PR from being opened ([release-please#1561](https://github.com/googleapis/release-please/issues/1561)).
+
+Those two labels are the release state machine, not decoration — which is why the workflow grants `issues: write` alongside the permissions you would expect. Labels live on the Issues API even when they sit on a pull request, and release-please creates its own pair the first time it runs. Trim that permission and every release wedges in the same way, for a third reason.
+
+So: if a publish fails after its Release exists, delete the Release and the tag. The version number is spent either way — the manifest already records it as released, and the next Release PR will propose the one after it.
+
+Automating the publish does **not** on its own recover the ordering, which is easy to assume and wrong. release-please creates the Release the moment its PR merges no matter what starts the upload, and the only two settings that would stop it are the two broken ones above. Recovering the ordering means taking its release bookkeeping over entirely — `skip-github-release: true`, then creating the tag, relabelling the merged Release PR `autorelease: tagged` yourself so [#1561](https://github.com/googleapis/release-please/issues/1561) does not wedge the next one, and letting the publish run create the Release at the end. That works, and it is a hand-built state machine standing in for a known bug. Weigh it as such.
+
+## Why publishing is dispatched rather than triggered
+
+`publish-packages.yml` still declares `on: push: tags`, and in the automated path nothing uses it. That is because of a GitHub rule with no configuration switch: **events triggered by a workflow's own `GITHUB_TOKEN` do not start another workflow run**, which exists to stop a workflow that pushes a commit from triggering itself forever. release-please creates the tag, so the tag push is the robot's, so `on: push: tags` never fires.
+
+**`workflow_dispatch` and `repository_dispatch` are documented exceptions and always create a run**, even from `GITHUB_TOKEN`. So the release-please workflow dispatches the publish itself, at the tag, with no stored credential. Two details in that step are load-bearing: it targets the *tag* rather than `main`, because `main` may already have moved past the release commit, and it grants `actions: write` — which lets it start workflows and nothing else. It cannot approve one; the `pypi` environment's reviewer still stands between a dispatch and an upload.
+
+The same exception supplies the Release PR's checks, for the second half of the same rule: a pull request opened by this token starts no `pull_request` run, so its required check would never be *reported* and `main` would refuse the merge. The workflow dispatches `tests.yml` at the Release PR's branch, and that run reports against the same commit.
+
+Two roads not taken. **Calling the publish job as a reusable workflow** is closed outright: PyPI forbids it — *"Reusable workflows cannot currently be used as the workflow in a Trusted Publisher"* ([warehouse#11096](https://github.com/pypi/warehouse/issues/11096)) — because the job that mints the token must live in the file registered as the publisher. And **a personal access token or GitHub App**, the usual answer elsewhere, is now unnecessary: it would make these events a person's events, but dispatch already achieves that without a credential. If the dispatched check ever turns out not to satisfy the branch rule, an App via `actions/create-github-app-token` is the fallback — prefer it to a PAT, since it is scoped to this repository, has no expiry to forget, and does not inherit an admin's ruleset bypass. It would still not fix the ordering.
+
+## If a Release PR's check never arrives
+
+The dispatch above should supply it within a minute of the PR appearing. If it does not, the thing to know is that the check is *missing* rather than failing — `main` requires `Python (pytest + ruff + pyright)`, and a PR opened by this token starts no run of its own, so GitHub is waiting for a report that will never come.
+
+Check the release-please run for the *Run the checks on each Release PR* step: a warning there means the action's `prs` output did not carry a branch name, and the fix is **Actions → Tests → Run workflow** against the Release PR's branch by hand. If the run *was* dispatched and the rule still is not satisfied, then a dispatched check does not count toward a required check — in which case add a GitHub App token (see above) rather than living with the manual step.
+
+Prefer either of those to a rule bypass. The bypass works, and is even defensible here — a Release PR only edits a version, a changelog and the manifest, and `publish-packages.yml` re-runs the entire gate on the tagged commit before anything is uploaded — but a release that routinely bypasses branch protection trains you to click through branch protection.
+
 ## Adding a package to this repository
 
 1. Create `packages/<name>/` with its own `pyproject.toml`, `README.md`, `CHANGELOG.md`, `LICENSE`, and a `py.typed` beside the module.
-2. Give it its own `[tool.ruff]`, `[tool.pyright]` (strict) and `[tool.pytest.ini_options]` — the workspace root does not reach into packages, and an sdist has no root to inherit from.
+2. Give it its own `[tool.ruff]`, `[tool.pyright]` (strict) and `[tool.pytest.ini_options]` — the workspace root does not reach into packages, and an sdist has no root to inherit from. Add its `tests/` to the root `pyproject.toml`'s `testpaths` too, or repository-wide runs will skip them without saying so.
 3. Add a tag glob for it to `publish-packages.yml`'s `on.push.tags`, and to the `workflow_dispatch` package choices.
 4. Add it to the build/smoke loops in `tests.yml`, and to `scripts/smoke_install.py` — a package with no smoke can ship a broken wheel.
-5. Register its pending publishers (see above), then release it.
+5. Register it in `release-please-config.json` — **with its `package-name`** — and in `.release-please-manifest.json`, seeded with the version its `pyproject.toml` already declares. Unregistered, it simply never gets a Release PR — so `tests/test_release_config.py` fails until both files list it, its manifest version matches, and its tag glob resolves to it alone.
+
+   `package-name` is not optional here, and its absence fails quietly rather than loudly: release-please's Python strategy reads `pyproject.toml` only to find version-bearing files, never to name the component. Leave it out and the component is the empty string, so the package tags as a bare `v<version>` — which collides with every other package and matches none of the publish workflow's globs.
+6. Register its pending publishers (see above), then release it.
 
 The tag globs do not overlap despite the shared prefix: in `maf-sandbox-aca-v0.1.0`, the character after `maf-sandbox-` is `a`, not `v`. Keep that true for any new name, or two packages will answer the same tag.
