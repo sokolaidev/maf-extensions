@@ -158,11 +158,11 @@ class TestEveryPackageUpdatesTheLockWhenItReleases:
     def test_the_updater_targets_the_lockfile(self, package_path: str):
         entry = lock_updater(package_path)
         assert entry["type"] == "toml"
-        # Resolved rather than compared as text: the `../` depth is a property of where the
-        # package sits, and a wrong one would silently update nothing.
-        assert (
-            REPO_ROOT / package_path / entry["path"]
-        ).resolve() == LOCK_PATH.resolve()
+        # The leading slash is the whole mechanism: release-please resolves an extra-file
+        # path against the package directory, and rejects `../` outright rather than
+        # walking up. Without it this silently addresses a lockfile inside the package.
+        assert entry["path"].startswith("/")
+        assert REPO_ROOT / entry["path"].lstrip("/") == LOCK_PATH
 
     @pytest.mark.parametrize("package_path", PACKAGE_PATHS)
     def test_the_updater_selects_this_package_entry(self, package_path: str):

@@ -23,7 +23,7 @@
       "extra-files": [
         {
           "type": "toml",
-          "path": "../../uv.lock",
+          "path": "/uv.lock",
           "jsonpath": "$.package[?(@.name=='maf-sandbox')].version"
         }
       ]
@@ -33,7 +33,7 @@
       "extra-files": [
         {
           "type": "toml",
-          "path": "../../uv.lock",
+          "path": "/uv.lock",
           "jsonpath": "$.package[?(@.name=='maf-sandbox-aca')].version"
         }
       ]
@@ -43,7 +43,7 @@
       "extra-files": [
         {
           "type": "toml",
-          "path": "../../uv.lock",
+          "path": "/uv.lock",
           "jsonpath": "$.package[?(@.name=='maf-sandbox-bicep')].version"
         }
       ]
