@@ -40,7 +40,7 @@ This package draws no isolation boundary itself — it is protocol and policy ov
 
 `SandboxSpec.egress_allow` is an allowlist — everything not named is denied, so an empty tuple means no network. Stating it positively means a spec that forgets to mention egress gets the closed configuration rather than the open one.
 
-## The one rule that is not a convenience
+## The two rules that are not conveniences
 
 ```python
 DEPLOYED_ISOLATION = frozenset({Isolation.VM})
@@ -52,9 +52,23 @@ It refuses rather than degrades. Falling back to a stronger backend would hide a
 
 A hardened container runtime (gVisor, Kata, Firecracker) is deliberately *not* in the permitted set. Admitting one is a decision for whoever owns those posture claims, taken there first.
 
+The second rule is about egress, and it exists because `egress_allow` was a contract nothing checked. A backend that reads it and one that ignores it have the same type, the same methods and the same passing tests, so each one declares an `Egress` level — `allowlist` (deny by default, allow the named hosts), `closed` (all or nothing), or `unrestricted` (cannot confine egress at all) — and `SandboxRouter.ensure_can_serve(spec)` refuses the last one where a workload attaches its tool. That is the first moment a backend and a spec are both in hand; the router is built before any workload exists.
+
+Which direction a backend misses by decides the outcome, and it is not symmetrical. A backend that confines **less** than the spec asks silently widens what the workload was designed to reach. One that confines **more** is permitted, with a warning: the sandbox reaches nothing it should not, and the workload fails visibly at whatever it could not fetch.
+
+Note that the two rules answer to different owners. How strong the boundary must be is the *host's* policy, read from `deployed`. What a sandbox may reach is a property of the *workload*, stated in its spec. Merging them into one "required capabilities" list would let a workload ask for a weaker boundary than the deployment mandates.
+
+`ensure_can_serve` is also the whole of a wiring test, in your own repository, against your own backend choice:
+
+```python
+router.ensure_can_serve(bicep_sandbox_spec())
+```
+
 ## Writing a backend
 
-Implement `name`, `isolation`, `acquire`, `dispose`, `dispose_scope`. Two things worth knowing before you start:
+Implement `name`, `isolation`, `egress`, `acquire`, `dispose`, `dispose_scope`. Three things worth knowing before you start:
+
+**Declare `egress` honestly.** It is read before any workload's tool is attached, and a backend that omits it is treated as `unrestricted` and refused — a backend written before the property existed cannot have been enforcing an allowlist it never read, so the closed reading is the true one.
 
 **`acquire` is get-or-create.** A workload's fix-round loop calls it every iteration; returning a cold sandbox each time turns a seconds-long loop into a minutes-long one.
 

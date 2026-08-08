@@ -1,14 +1,15 @@
 """Tests for the sandbox router.
 
-The router has exactly two jobs, and both are tested here rather than inferred:
+The router has exactly three jobs, and all of them are tested here rather than inferred:
 
 - picking a backend from configuration;
-- refusing a backend weaker than a VM boundary when the host says it is deployed.
+- refusing a backend weaker than a VM boundary when the host says it is deployed;
+- refusing a backend that cannot confine egress to what a workload's spec allows.
 
-The second is a security property. A security review put execution in a VM-isolated sandbox
-because a shared-kernel container sits next to the host's credentials, and the security
-posture doc's threat-model rows now rest on that — so "the router would refuse" needs to be
-a test, not a comment.
+The last two are security properties. A security review put execution in a VM-isolated
+sandbox because a shared-kernel container sits next to the host's credentials, and the
+security posture doc's threat-model rows now rest on that — so "the router would refuse"
+needs to be a test, not a comment.
 """
 
 from __future__ import annotations
@@ -18,9 +19,11 @@ import asyncio
 import pytest
 
 from maf_sandbox import (
+    Egress,
     Isolation,
     NoSandboxBackend,
     SandboxBackend,
+    SandboxEgressNotEnforced,
     SandboxKey,
     SandboxPurger,
     SandboxRouter,
@@ -125,6 +128,59 @@ class TestDeployedIsolationRule:
         docker = InProcessSandboxBackend(name="docker", isolation=Isolation.CONTAINER)
         aca = InProcessSandboxBackend(name="aca", isolation=Isolation.VM)
         assert SandboxRouter([aca, docker], deployed=True, selected="aca").backend is aca
+
+
+class _BackendWithoutEgress:
+    """A backend written before `egress` existed — the same shape, one property short."""
+
+    name = "legacy"
+    isolation = Isolation.VM
+
+
+class TestEgressRule:
+    """The security property nothing used to check.
+
+    A backend that reads `egress_allow` and one that ignores it have the same type, the same
+    methods and the same passing tests, so the difference has to be declared and checked.
+    Which direction a backend misses by decides the outcome: wider than the spec is refused,
+    narrower is allowed and warned about — the sandbox reaches nothing it should not, and the
+    workload fails visibly at whatever it could not fetch. Both directions are pinned.
+    """
+
+    _ALLOWLIST_SPEC = SandboxSpec(kind="bicep", egress_allow=("mcr.microsoft.com",))
+    _CLOSED_SPEC = SandboxSpec(kind="bicep")
+
+    def _router(self, egress: str) -> SandboxRouter:
+        return SandboxRouter([InProcessSandboxBackend(egress=egress)])
+
+    @pytest.mark.parametrize("spec", [_ALLOWLIST_SPEC, _CLOSED_SPEC])
+    def test_an_allowlist_backend_serves_any_spec(self, spec: SandboxSpec):
+        self._router(Egress.ALLOWLIST).ensure_can_serve(spec)
+
+    def test_a_closed_backend_serves_a_spec_that_wants_no_network(self, caplog):
+        with caplog.at_level("WARNING"):
+            self._router(Egress.CLOSED).ensure_can_serve(self._CLOSED_SPEC)
+        assert caplog.records == []
+
+    def test_a_closed_backend_serves_an_allowlist_spec_but_says_so(self, caplog):
+        with caplog.at_level("WARNING"):
+            self._router(Egress.CLOSED).ensure_can_serve(self._ALLOWLIST_SPEC)
+        assert "mcr.microsoft.com" in caplog.text
+
+    @pytest.mark.parametrize("spec", [_ALLOWLIST_SPEC, _CLOSED_SPEC])
+    def test_an_unrestricted_backend_is_refused(self, spec: SandboxSpec):
+        with pytest.raises(SandboxEgressNotEnforced):
+            self._router(Egress.UNRESTRICTED).ensure_can_serve(spec)
+
+    def test_a_backend_that_declares_nothing_is_refused(self):
+        """Absent and unenforced are the same thing from the outside, so they land the same."""
+        router = SandboxRouter([_BackendWithoutEgress()])
+        with pytest.raises(SandboxEgressNotEnforced):
+            router.ensure_can_serve(self._ALLOWLIST_SPEC)
+
+    def test_no_backend_configured_is_not_an_egress_failure(self):
+        """Nothing runs, so nothing reaches anything — and no tool is attached either."""
+        SandboxRouter([]).ensure_can_serve(self._ALLOWLIST_SPEC)
 
 
 class TestPurge:

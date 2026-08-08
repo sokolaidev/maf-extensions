@@ -19,7 +19,7 @@ from collections.abc import Sequence
 from hashlib import sha256
 from typing import Any
 
-from maf_sandbox import ExecResult, Isolation, SandboxKey, SandboxSpec, error_detail
+from maf_sandbox import Egress, ExecResult, Isolation, SandboxKey, SandboxSpec, error_detail
 
 from ._config import AcaSandboxConfig
 from ._images import qualify_image_reference, resolve_disk_image_id
@@ -149,6 +149,12 @@ class AcaSandboxBackend:
     @property
     def isolation(self) -> str:
         return Isolation.VM
+
+    @property
+    def egress(self) -> str:
+        # `_egress_policy` builds a Deny-default policy with one Allow rule per host the spec
+        # names, so the allowlist is enforced by the service rather than trusted to the image.
+        return Egress.ALLOWLIST
 
     # -- client -------------------------------------------------------------------
 

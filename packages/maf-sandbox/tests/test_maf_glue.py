@@ -16,8 +16,10 @@ import logging
 import pytest
 
 from maf_sandbox import (
+    Egress,
     Isolation,
     NoSandboxBackend,
+    SandboxEgressNotEnforced,
     SandboxKey,
     SandboxRouter,
     SandboxSpec,
@@ -341,13 +343,13 @@ def _body(session: SandboxToolSession):
     return widget_run
 
 
-def _attach(router, *, context=None, **kw):
+def _attach(router, *, context=None, spec=_SPEC, **kw):
     return sandboxed_tool(
         _body,
         router=router,
         context=context if context is not None else _context(),
         agent_dir="agent-1",
-        spec=_SPEC,
+        spec=spec,
         name="widget_run",
         **kw,
     )
@@ -448,6 +450,25 @@ class TestAttachedToolRuns:
             "Error: no active thread context — widget_run must be called from within a thread"
         )
         assert backend.keys == []
+
+
+class TestEgressIsCheckedWhereTheToolAttaches:
+    """The attach gate answers "nothing configured" and "cannot honour this" differently.
+
+    Both are reasons a tool does not end up attached, and collapsing them would ship a
+    workload with containment it does not have: an empty list reads as a host that chose not
+    to enable the feature, which is not what a backend ignoring `egress_allow` means.
+    """
+
+    def test_a_backend_that_cannot_confine_egress_raises(self):
+        with pytest.raises(SandboxEgressNotEnforced):
+            _attach(SandboxRouter([InProcessSandboxBackend(egress=Egress.UNRESTRICTED)]))
+
+    def test_nothing_configured_still_returns_an_empty_list(self):
+        assert _attach(SandboxRouter([])) == []
+
+    def test_a_backend_that_can_confine_egress_attaches(self):
+        assert len(_attach(SandboxRouter([InProcessSandboxBackend()]))) == 1
 
 
 class TestDeployedIsolationStillApplies:

@@ -301,9 +301,15 @@ def sandboxed_tool(
        yields ``[]`` — not a tool that fails when called.  A host with nothing configured
        keeps its ungrounded behaviour with no half-attached error path, and the model is
        never shown a capability it does not have.
-    2. **Key from the host, not from the model** — see :meth:`SandboxToolSession.key`.
-    3. **Sanitized failure surfaces** — see :meth:`SandboxToolSession.acquire`.
-    4. **Declared information flow** — see :func:`sandbox_tool_declarations`.
+    2. **Refuse a backend that cannot confine egress** to what ``spec`` allows — see
+       :meth:`~maf_sandbox.SandboxRouter.ensure_can_serve`.  Note that this *raises* where the
+       point above returns ``[]``, and the difference is the point: nothing configured is a
+       choice the host made, while a backend that cannot honour the spec it was handed is a
+       misconfiguration, and degrading quietly would ship the workload with containment it
+       does not have.
+    3. **Key from the host, not from the model** — see :meth:`SandboxToolSession.key`.
+    4. **Sanitized failure surfaces** — see :meth:`SandboxToolSession.acquire`.
+    5. **Declared information flow** — see :func:`sandbox_tool_declarations`.
 
     ``build`` is a callback rather than a decorated function because the session does not
     exist until the attach gate has passed, and the tool body needs it in its closure.  Two
@@ -339,6 +345,7 @@ def sandboxed_tool(
     """
     if router is None or not router.enabled:
         return []
+    router.ensure_can_serve(spec)
 
     session = SandboxToolSession(
         router,

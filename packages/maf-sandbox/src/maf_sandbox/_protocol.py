@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 __all__ = [
+    "Egress",
     "ExecResult",
     "Isolation",
     "Sandbox",
@@ -45,6 +46,26 @@ class Isolation:
     CONTAINER = "container"
     #: Same process as the host. Tests only.
     PROCESS = "process"
+
+
+class Egress:
+    """How precisely a backend can confine what a sandbox reaches. Declared by the backend.
+
+    :attr:`SandboxSpec.egress_allow` states egress as a deny-default allowlist, and backends
+    differ in how much of that they can express — a container runtime typically offers "no
+    network" and "the network", with nothing in between.  Which direction a backend misses by
+    is what matters, and it is not symmetrical: one that confines **less** than the spec asks
+    silently widens what the workload was designed to reach, while one that confines **more**
+    only makes the workload fail, loudly, at whatever it could not fetch.  So only the first
+    is refused; see :meth:`~maf_sandbox.SandboxRouter.ensure_can_serve`.
+    """
+
+    #: Deny by default, allow exactly the hosts a spec names.
+    ALLOWLIST = "allowlist"
+    #: All or nothing: can deny everything, cannot allow one host and not another.
+    CLOSED = "closed"
+    #: Cannot confine egress at all — whatever the host can reach, the sandbox can reach.
+    UNRESTRICTED = "unrestricted"
 
 
 @dataclass(frozen=True)
@@ -149,6 +170,17 @@ class SandboxBackend(Protocol):
     @property
     def isolation(self) -> str:
         """One of the :class:`Isolation` constants. Read by the router's deployed check."""
+        ...
+
+    @property
+    def egress(self) -> str:
+        """One of the :class:`Egress` constants, read before a workload's tool is attached.
+
+        A backend that does not declare this is treated as :data:`Egress.UNRESTRICTED` and
+        refused, because the two are indistinguishable from the outside: a backend that
+        ignores ``egress_allow`` and one that enforces it have the same type, the same
+        methods and the same passing tests.
+        """
         ...
 
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> Sandbox:
