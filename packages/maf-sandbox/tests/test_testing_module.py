@@ -13,6 +13,7 @@ import shlex
 import pytest
 
 from maf_sandbox import (
+    Egress,
     ExecResult,
     Isolation,
     SandboxBackend,
@@ -116,6 +117,13 @@ class TestInProcessSandboxBackend:
         backend = InProcessSandboxBackend(name="fake", isolation=Isolation.VM)
         assert backend.name == "fake"
         assert backend.isolation == Isolation.VM
+
+    def test_egress_defaults_to_allowlist_so_a_workload_attaches(self):
+        """Not `CLOSED`, or every consumer's offline test becomes a test of the refusal."""
+        assert InProcessSandboxBackend().egress == Egress.ALLOWLIST
+
+    def test_egress_is_configurable(self):
+        assert InProcessSandboxBackend(egress=Egress.UNRESTRICTED).egress == Egress.UNRESTRICTED
 
     def test_acquire_records_the_key_and_spec_and_returns_the_sandbox(self):
         sandbox = InProcessSandbox()

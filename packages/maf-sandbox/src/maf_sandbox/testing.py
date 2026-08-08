@@ -17,7 +17,7 @@ from __future__ import annotations
 import shlex
 from collections.abc import Sequence
 
-from ._protocol import ExecResult, Isolation, SandboxKey, SandboxSpec
+from ._protocol import Egress, ExecResult, Isolation, SandboxKey, SandboxSpec
 
 __all__ = ["InMemoryStore", "InProcessSandbox", "InProcessSandboxBackend"]
 
@@ -92,6 +92,10 @@ class InProcessSandboxBackend:
         isolation: Returned by the :attr:`isolation` property — configurable because the
             router's deployed-isolation rule is exercised against fakes claiming every
             :class:`~maf_sandbox.Isolation` level, not only ``PROCESS``.
+        egress: Returned by the :attr:`egress` property. Defaults to
+            :data:`~maf_sandbox.Egress.ALLOWLIST` so a workload under test attaches as it
+            would against a live backend, rather than every offline test becoming a test of
+            the attach refusal.
         acquire_error: When set, ``acquire`` raises this instead of returning the sandbox —
             for exercising a kind's "sandbox unavailable" degrade path.
 
@@ -108,11 +112,13 @@ class InProcessSandboxBackend:
         *,
         name: str = "in-process",
         isolation: str = Isolation.PROCESS,
+        egress: str = Egress.ALLOWLIST,
         acquire_error: BaseException | None = None,
     ) -> None:
         self.sandbox = sandbox if sandbox is not None else InProcessSandbox()
         self._name = name
         self._isolation = isolation
+        self._egress = egress
         self.acquire_error = acquire_error
         self.keys: list[SandboxKey] = []
         self.specs: list[SandboxSpec] = []
@@ -127,6 +133,10 @@ class InProcessSandboxBackend:
     @property
     def isolation(self) -> str:
         return self._isolation
+
+    @property
+    def egress(self) -> str:
+        return self._egress
 
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> InProcessSandbox:
         if self.acquire_error is not None:

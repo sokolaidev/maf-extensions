@@ -128,6 +128,11 @@ async def run() -> int:
     # a misconfigured deployment cannot start with the feature apparently
     # enabled and quietly unsafe.  A shared-kernel boundary sits next to the
     # host's credentials, which is why it is not accepted.
+    #
+    # A swapped backend has a second way to be refused, one call further down:
+    # `make_bicep_tools` checks it can confine egress to the hosts the workload
+    # names.  Separate rules because they have separate owners — the boundary is
+    # this host's policy, what the sandbox may reach is the workload's.
     router = SandboxRouter([backend], deployed=True)
 
     # The agent's workspace.  A real host's store is usually backed by a disk or

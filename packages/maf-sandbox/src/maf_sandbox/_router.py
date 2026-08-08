@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 
-from ._protocol import Isolation, Sandbox, SandboxBackend, SandboxKey, SandboxSpec
+from ._protocol import Egress, Isolation, Sandbox, SandboxBackend, SandboxKey, SandboxSpec
 
 logger = logging.getLogger(__name__)
 
@@ -18,6 +18,7 @@ __all__ = [
     "DEPLOYED_ISOLATION",
     "NoSandboxBackend",
     "SandboxBackendNotPermitted",
+    "SandboxEgressNotEnforced",
     "SandboxRouter",
 ]
 
@@ -38,6 +39,15 @@ class SandboxBackendNotPermitted(PermissionError):
     Raised rather than degraded on purpose.  Silently falling back to a stronger backend
     would hide a misconfiguration, and silently proceeding with the weaker one would break
     the claim the posture doc makes about every execution surface.
+    """
+
+
+class SandboxEgressNotEnforced(PermissionError):
+    """The selected backend cannot confine egress to what the workload's spec allows.
+
+    Raised rather than degraded, like :class:`SandboxBackendNotPermitted`: a backend that
+    accepts ``egress_allow`` and ignores it turns the containment a workload was designed
+    around into a comment.
     """
 
 
@@ -105,6 +115,46 @@ class SandboxRouter:
     def enabled(self) -> bool:
         """Whether any backend is available. A host should attach no tools when ``False``."""
         return self._backend is not None
+
+    def ensure_can_serve(self, spec: SandboxSpec) -> None:
+        """Raise unless the selected backend can confine egress to what ``spec`` allows.
+
+        Called for you by :func:`maf_sandbox.maf.sandboxed_tool`, and it is also the whole of
+        a host's own wiring test::
+
+            router.ensure_can_serve(bicep_sandbox_spec())
+
+        Confining more than the spec asks is permitted and warned about; confining less is
+        refused (see :class:`~maf_sandbox.Egress`).  With no backend configured this returns:
+        nothing runs, so nothing reaches anything.
+
+        Raises:
+            SandboxEgressNotEnforced: when the backend cannot meet this spec.
+        """
+        if self._backend is None:
+            return
+        # Silence is read as enforcing nothing, not excused: a backend written before this
+        # property existed cannot have been enforcing an allowlist it never read.
+        egress = getattr(self._backend, "egress", Egress.UNRESTRICTED)
+        if egress == Egress.ALLOWLIST:
+            return
+        if egress == Egress.CLOSED:
+            if spec.egress_allow:
+                logger.warning(
+                    "sandbox backend %r cannot allow named hosts, so %s will be unreachable "
+                    "from a %r sandbox; expect the workload to report what it could not fetch",
+                    self._backend.name,
+                    ", ".join(spec.egress_allow),
+                    spec.kind,
+                )
+            return
+        raise SandboxEgressNotEnforced(
+            f"sandbox backend {self._backend.name!r} declares {egress!r} egress, which "
+            f"cannot enforce the {spec.kind!r} workload's allowlist "
+            f"({', '.join(spec.egress_allow) or 'no network at all'}). "
+            f"A backend must declare one of {Egress.ALLOWLIST!r} or {Egress.CLOSED!r} to "
+            "serve a workload at all — everything a spec does not name is meant to be denied."
+        )
 
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> Sandbox:
         """Return a running sandbox for ``key``, creating one if needed.

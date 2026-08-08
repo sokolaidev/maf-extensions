@@ -11,7 +11,7 @@ import asyncio
 import logging
 
 import pytest
-from maf_sandbox import Isolation, SandboxBackend, SandboxKey
+from maf_sandbox import Egress, Isolation, SandboxBackend, SandboxKey
 
 from maf_sandbox_aca import (
     AcaSandboxBackend,
@@ -131,6 +131,10 @@ class TestBackendIdentity:
     def test_declares_vm_isolation(self):
         """The router permits this backend in a deployed environment because of this value."""
         assert AcaSandboxBackend(_config()).isolation == Isolation.VM
+
+    def test_declares_allowlist_egress(self):
+        """A workload's tool attaches because of this; `TestEgressPolicy` pins that it is true."""
+        assert AcaSandboxBackend(_config()).egress == Egress.ALLOWLIST
 
     def test_is_named_aca(self):
         assert AcaSandboxBackend(_config()).name == "aca"

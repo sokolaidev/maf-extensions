@@ -42,6 +42,8 @@ Note the order this leaves you with: **the GitHub Release exists before PyPI has
 
 `maf-sandbox` first, then the packages that depend on it. This is enforced rather than merely documented: the smoke gate installs the built wheel from the real index with no local fallback, so publishing `maf-sandbox-aca` against an unpublished `maf-sandbox` fails there instead of shipping a version nobody can install.
 
+**A release of `maf-sandbox` that the dependents need takes three steps, not two**, because a version cannot be depended on before it exists. The dependents pin `maf-sandbox>=<floor>,<next-major>`, and that floor cannot be raised in the same pull request as the change that earns the new version: the smoke gate builds `maf-sandbox` at its current version and would fail to resolve a floor above it. So: merge `maf-sandbox`'s Release PR and let it publish, then raise the floor in an ordinary pull request, and only then merge the dependents' Release PRs. Getting this wrong is caught rather than shipped — a dependent released against a floor that is too low installs the older `maf-sandbox` in the smoke gate and fails on import, before anything is uploaded — but it costs a spent version number, so it is worth doing in the right order.
+
 Each package gets its own Release PR, so ordering is a matter of which you merge first — but merging now publishes, so **let one finish before merging the next**. Two merged back to back would have their publishes in flight together, and the dependent one fails at the smoke gate while `maf-sandbox` is still waiting for your approval. That failure is safe and re-runnable; it is just noise you can avoid by waiting.
 
 ## Versioning

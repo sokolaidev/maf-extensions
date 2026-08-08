@@ -9,14 +9,22 @@ boots — an ACA Sandbox (`maf-sandbox-aca`) today, a local Docker container or 
 in-process fake later.  Neither knows about the other, which is what lets the same tool run
 against all of them unchanged.
 
-The router exists for two things a backend cannot own:
+The router exists for three things a backend cannot own:
 
 - **Which backend serves a request.** Configuration, not an import, decides.
 - **The deployed-isolation rule.** A backend weaker than a VM boundary is refused outright
   when the host reports it is running deployed — see
-  :class:`~maf_sandbox._router.SandboxBackendNotPermitted`.  This is the router's one part
-  that is a security property rather than a convenience, so it is enforced at construction
-  and pinned by tests.
+  :class:`~maf_sandbox._router.SandboxBackendNotPermitted`.  Enforced at construction and
+  pinned by tests.
+- **The egress rule.** A backend that cannot confine a sandbox to the hosts a workload's spec
+  names is refused when that workload attaches its tool — see
+  :meth:`~maf_sandbox.SandboxRouter.ensure_can_serve`.
+
+The last two are security properties rather than conveniences, and they answer to different
+owners: how strong a boundary must be is the *host's* policy, read from ``deployed``, while
+what a sandbox may reach is a property of the *workload*, stated in its spec.  Keeping them
+apart is deliberate — merged into one "required capabilities" list, a workload could ask for
+a weaker boundary than the deployment mandates.
 
 This package imports no backend and no host application.
 
@@ -32,6 +40,7 @@ from __future__ import annotations
 
 from ._error_detail import error_detail
 from ._protocol import (
+    Egress,
     ExecResult,
     Isolation,
     Sandbox,
@@ -45,11 +54,13 @@ from ._router import (
     DEPLOYED_ISOLATION,
     NoSandboxBackend,
     SandboxBackendNotPermitted,
+    SandboxEgressNotEnforced,
     SandboxRouter,
 )
 
 __all__ = [
     "DEPLOYED_ISOLATION",
+    "Egress",
     "ExecResult",
     "Isolation",
     "MafSandboxExperimentalWarning",
@@ -57,6 +68,7 @@ __all__ = [
     "Sandbox",
     "SandboxBackend",
     "SandboxBackendNotPermitted",
+    "SandboxEgressNotEnforced",
     "SandboxKey",
     "SandboxPurger",
     "SandboxRouter",

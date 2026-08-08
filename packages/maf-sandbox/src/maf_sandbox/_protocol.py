@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 __all__ = [
+    "Egress",
     "ExecResult",
     "Isolation",
     "Sandbox",
@@ -45,6 +46,23 @@ class Isolation:
     CONTAINER = "container"
     #: Same process as the host. Tests only.
     PROCESS = "process"
+
+
+class Egress:
+    """How precisely a backend can confine what a sandbox reaches. Declared by the backend.
+
+    Backends differ in how much of a spec's allowlist they can express, and the direction they
+    miss by is not symmetrical: confining **less** than the spec asks silently widens what the
+    workload was designed to reach, while confining **more** only makes the workload fail,
+    loudly, at whatever it could not fetch.  So only the first is refused.
+    """
+
+    #: Deny by default, allow exactly the hosts a spec names.
+    ALLOWLIST = "allowlist"
+    #: All or nothing: can deny everything, cannot allow one host and not another.
+    CLOSED = "closed"
+    #: Cannot confine egress at all — whatever the host can reach, the sandbox can reach.
+    UNRESTRICTED = "unrestricted"
 
 
 @dataclass(frozen=True)
@@ -149,6 +167,14 @@ class SandboxBackend(Protocol):
     @property
     def isolation(self) -> str:
         """One of the :class:`Isolation` constants. Read by the router's deployed check."""
+        ...
+
+    @property
+    def egress(self) -> str:
+        """One of the :class:`Egress` constants, read before a workload's tool is attached.
+
+        Not declaring it is read as :data:`Egress.UNRESTRICTED`, and refused.
+        """
         ...
 
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> Sandbox:

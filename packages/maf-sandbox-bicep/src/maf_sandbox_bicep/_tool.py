@@ -180,6 +180,11 @@ def make_bicep_tools(
     nothing configured gets an empty list rather than a tool that fails at call time, so the
     agent keeps its unvalidated (T0) behaviour with no half-attached error path.
 
+    A backend that *is* configured but cannot confine egress to the two artifact hosts named
+    below raises :class:`~maf_sandbox.SandboxEgressNotEnforced` instead. One that can only run
+    fully closed is permitted, with a warning: module restore then fails, and this tool
+    reports that failure rather than hiding it.
+
     Args:
         router: The sandbox router, or ``None`` when sandboxing is not configured.
         workspace_store: The agent's workspace store; file content is read from here and
