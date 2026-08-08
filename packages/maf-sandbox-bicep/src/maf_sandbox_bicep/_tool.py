@@ -22,7 +22,7 @@ from uuid import uuid4
 from maf_sandbox import SandboxRouter, SandboxSpec, WorkspaceContext, error_detail
 from maf_sandbox.maf import SandboxToolSession, sandboxed_tool
 
-from ._paths import safe_workspace_path
+from ._paths import resolve_workspace_path
 from ._sarif import count_restore_failures, format_diagnostics, parse_sarif
 
 if TYPE_CHECKING:
@@ -31,6 +31,28 @@ if TYPE_CHECKING:
     from agent_framework import AgentFileStore
 
 logger = logging.getLogger(__name__)
+
+#: How many workspace files to quote back when a name is not found. Enough to let a typo
+#: self-correct in one round; small enough that a large workspace cannot flood the context.
+_LISTING_HINT_MAX = 20
+
+
+def _listing_hint(name: str, ws_files: list[str]) -> str:
+    """What the model should read instead of guessing: the listing, or its near misses.
+
+    A bare "not found" costs a round trip at best and a fabricated diagnosis at worst. The
+    listing itself is the one piece of information that resolves every version of this —
+    typo, wrong directory, or a store that genuinely does not hold the file.
+    """
+    if not ws_files:
+        return "This tool's listing is empty — no files were shared with it."
+    near = [f for f in ws_files if f.rsplit("/", 1)[-1] == name.rsplit("/", 1)[-1]]
+    if near and near != [name]:
+        return f"Did you mean: {', '.join(sorted(near)[:_LISTING_HINT_MAX])}?"
+    shown = sorted(ws_files)[:_LISTING_HINT_MAX]
+    more = f" (+{len(ws_files) - len(shown)} more)" if len(ws_files) > len(shown) else ""
+    return f"Files visible here: {', '.join(shown)}{more}."
+
 
 __all__ = [
     "BICEP_TOOL_NAMES",
@@ -284,11 +306,29 @@ def _bicep_validate_tool(
         # Validate each name against that listing (the injection guard).
         validated: list[tuple[str, str]] = []  # (workspace_path, sandbox_path)
         for name in files:
-            sandbox_path = safe_workspace_path(name, ws_files, round_dir)
-            if sandbox_path is None:
+            sandbox_path, rejection = resolve_workspace_path(name, ws_files, round_dir)
+            if rejection == "unsafe":
+                # Deliberately short, and the listing is NOT quoted back: this is the
+                # injection guard refusing a name, not a lookup that came up empty.
                 return (
-                    f"Error: {name!r} is not in the workspace listing or contains "
-                    f"unsafe characters — cannot validate"
+                    f"Error: {name!r} cannot be validated — file names may contain only "
+                    f"[A-Za-z0-9._/-] and no '..' segments."
+                )
+            if rejection == "missing" or sandbox_path is None:
+                # A wiring or typo problem, and it must not read as one. Told only that a
+                # file it can see is "not in the workspace listing", a model concludes the
+                # sandbox is broken and falls back to reviewing the file by eye — which is
+                # precisely the unverified answer this workload exists to replace.
+                logger.warning(
+                    "bicep_validate: %r is not in this tool's workspace listing (%d file(s) "
+                    "visible) — the store wired here may be narrower than the agent's",
+                    name,
+                    len(ws_files),
+                )
+                return (
+                    f"Error: {name!r} is not in this tool's file listing, so it was not "
+                    f"validated. This listing can be narrower than the files you can read "
+                    f"elsewhere. {_listing_hint(name, ws_files)}"
                 )
             validated.append((name, sandbox_path))
 

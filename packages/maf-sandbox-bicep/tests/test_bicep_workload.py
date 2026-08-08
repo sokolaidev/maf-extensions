@@ -672,12 +672,33 @@ class TestEndToEndRefusals:
         assert backend.keys == []
 
     def test_rejects_a_file_that_is_not_in_the_workspace_listing(self):
+        """A listing miss is a wiring problem, and must not read like a refusal.
+
+        The message it replaced said "not in the workspace listing or contains unsafe
+        characters". Against a host whose store was narrower than the agent's read tools,
+        a model was told that about a file it had just read, could not reconcile it, and
+        concluded the sandbox was broken — then reviewed the file by eye instead. So this
+        asserts the message says whose listing, and shows it.
+        """
         store = InMemoryStore({"main.bicep": "x"})
         backend = _fake_backend()
         out = _run(_tool(store, backend), ["other.bicep"])
 
-        assert "not in the workspace listing" in out
+        assert "not in this tool's file listing" in out
+        assert "narrower" in out
+        assert "main.bicep" in out, "the listing itself is what makes this self-correcting"
+        assert "unsafe" not in out, "a missing file must not be described as a refusal"
         assert backend.sandbox.files == {}
+
+    def test_a_listing_miss_and_an_unsafe_name_do_not_share_a_message(self):
+        """The whole point: a caller must be able to tell these two apart."""
+        missing = _run(_tool(InMemoryStore({}), _fake_backend()), ["main.bicep"])
+        unsafe = _run(
+            _tool(InMemoryStore({"a;$(id).bicep": "x"}), _fake_backend()), ["a;$(id).bicep"]
+        )
+
+        assert missing != unsafe
+        assert "listing" in missing and "listing" not in unsafe
 
     def test_rejects_an_injection_attempt_that_is_really_in_the_workspace(self):
         """Being in the listing is not evidence a name is safe to interpolate.
@@ -692,7 +713,11 @@ class TestEndToEndRefusals:
         backend = _fake_backend()
         out = _run(_tool(store, backend), [malicious])
 
-        assert "unsafe characters" in out
+        assert "[A-Za-z0-9._/-]" in out, "name the rule, so the refusal is actionable"
+        # The listing is deliberately NOT quoted back here: this is the guard refusing a
+        # name, not a lookup that came up empty, and echoing the workspace would invite a
+        # retry with a different hostile spelling.
+        assert "listing" not in out
         assert backend.sandbox.commands == []
 
     def test_the_extension_gate_runs_before_the_path_guard(self):
