@@ -85,6 +85,8 @@ Delete the unused parameter and add a `sku`, and what remains is the API-version
 
 **`SandboxBackendNotPermitted` at startup** — `SandboxRouter(..., deployed=True)` refuses anything weaker than a VM boundary. `AcaSandboxBackend` declares `Isolation.VM`, so this only appears if you swapped the backend for a container- or process-isolated one. It raises at construction rather than at first call, on purpose.
 
+**`SandboxEgressNotEnforced` at startup** — the other half of the same story, raised one call later by `make_bicep_tools`: the backend cannot confine the sandbox to the two artifact hosts this workload names, so everything else — ARM included — would be reachable from code an agent wrote. `AcaSandboxBackend` declares `Egress.ALLOWLIST` and builds a Deny-default policy, so this too only appears against a swapped backend. A backend that can only run fully *closed* is accepted instead, with a warning: module restore then fails and `bicep_validate` says so rather than reporting a clean file.
+
 **Every `br/public:` module reports `BCP192`** — module restore could not reach its hosts. The four it needs (`mcr.microsoft.com`, `*.data.mcr.microsoft.com`, `aka.ms`, `live-data.bicep.azure.com`) are fixed in `bicep_sandbox_spec`, so this points at something above the sandbox in your network path, not at configuration.
 
 **A disk image that cannot be resolved** — the image was pushed to the registry but never imported into the sandbox group. See the prerequisite above.
