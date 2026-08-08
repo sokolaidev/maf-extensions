@@ -18,6 +18,7 @@ it with a warning.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
 import json
 import logging
@@ -44,9 +45,13 @@ _LABEL_PREFIX = "maf-sandbox.label."
 
 _LABEL_VALUE_MAX = 63
 _LABEL_VALUE_SAFE = re.compile(r"[A-Za-z0-9._-]+")
+_LABEL_VALUE_DIGEST = re.compile(r"sha256-[0-9a-f]{48}")
 
 #: `wslc` exits non-zero for a container that is not there, so removal is judged by this.
 _NOT_FOUND = "WSLC_E_CONTAINER_NOT_FOUND"
+
+#: What `run --name` reports when the name is taken — the one create failure that is recoverable.
+_ALREADY_EXISTS = "ERROR_ALREADY_EXISTS"
 
 
 def _label_value(raw: str) -> str:
@@ -58,10 +63,18 @@ def _label_value(raw: str) -> str:
     these labels are what :meth:`WslcSandboxBackend.dispose_scope` selects on, so a collision
     would let one conversation's purge delete another's containers.
 
+    A value already shaped like a digest is digested too, rather than passed through: it is a
+    legal short plain value, so passing it through would let a caller name a scope that lands
+    on the label some other scope's digest produced — the same collision, hand-made.
+
     The mapping must stay identical on both sides.  Transform one and not the other and the
     purge quietly selects nothing.
     """
-    if len(raw) <= _LABEL_VALUE_MAX and _LABEL_VALUE_SAFE.fullmatch(raw):
+    if (
+        len(raw) <= _LABEL_VALUE_MAX
+        and _LABEL_VALUE_SAFE.fullmatch(raw)
+        and not _LABEL_VALUE_DIGEST.fullmatch(raw)
+    ):
         return raw
     return "sha256-" + sha256(raw.encode("utf-8")).hexdigest()[:48]
 
@@ -162,13 +175,25 @@ class _WslcSandbox:
 
         ``wslc exec`` takes argv natively, so a sequence goes through element for element with
         no shell and nothing to quote; a string is a shell command line and runs as ``sh -c``.
-        ``TimeoutError`` propagates so a workload can report a hang as a diagnostic rather
-        than as a stall.
+
+        ``timeout`` bounds the host-side call, not the command.  Killing the ``wslc exec``
+        process does not reach the process it started *inside* the container, and there is no
+        per-command handle to kill, so a timed-out call discards the whole sandbox before
+        ``TimeoutError`` propagates — a workload reports the hang as a diagnostic, and the next
+        acquire pays a fresh create.  A **cancelled** call gets no such treatment: the command
+        keeps running until the sandbox is disposed.
         """
         argv = ["sh", "-c", command] if isinstance(command, str) else list(command)
-        result = await self._run(
-            "container", "exec", "-w", working_directory, self._name, *argv, timeout=timeout
-        )
+        try:
+            result = await self._run(
+                "container", "exec", "-w", working_directory, self._name, *argv, timeout=timeout
+            )
+        except TimeoutError:
+            with contextlib.suppress(Exception):
+                await self._run(
+                    "container", "remove", "-f", self._name, timeout=self._command_timeout
+                )
+            raise
         return ExecResult(stdout=result.stdout, stderr=result.stderr, exit_code=result.returncode)
 
 
@@ -272,21 +297,31 @@ class WslcSandboxBackend:
     ) -> _WslcResult:
         """Run one ``wslc`` command — the single seam every invocation goes through.
 
-        On timeout the subprocess is killed before ``TimeoutError`` propagates, so a command
-        that stopped answering cannot outlive the call that made it.
+        Any abnormal end to the wait — a timeout, a cancelled caller — kills the subprocess and
+        reaps it before the exception propagates, so a command that stopped answering, or one
+        whose caller went away, cannot outlive the call that made it.
         """
-        process = await asyncio.create_subprocess_exec(
-            self._config.wslc_path,
-            *args,
-            stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        try:
+            process = await asyncio.create_subprocess_exec(
+                self._config.wslc_path,
+                *args,
+                stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        except NotImplementedError as exc:
+            # A selector loop on Windows raises this with no message at all.
+            raise ValueError(
+                "the wslc backend needs an event loop that can spawn subprocesses — on Windows "
+                "that is asyncio's default Proactor loop"
+            ) from exc
         try:
             stdout, stderr = await asyncio.wait_for(process.communicate(stdin), timeout=timeout)
-        except TimeoutError:
-            process.kill()
-            await process.wait()
+        except BaseException:
+            with contextlib.suppress(Exception):
+                process.kill()
+            with contextlib.suppress(Exception):
+                await process.wait()
             raise
         return _WslcResult(
             process.returncode or 0,
@@ -343,8 +378,23 @@ class WslcSandboxBackend:
 
         result = await self._wslc(*args, timeout=self._config.command_timeout_seconds)
         if result.returncode != 0:
+            if _ALREADY_EXISTS in result.stderr and await self._adopt(name):
+                logger.info("container %s already existed; adopted it instead of creating", name)
+                return image
             raise RuntimeError(f"wslc could not create container {name}: {result.stderr.strip()}")
         return image
+
+    async def _adopt(self, name: str) -> bool:
+        """Whether an existing ``name`` is running, or could be started — the reuse path again.
+
+        The listing that sent ``acquire`` down the create branch can be out of date by the time
+        ``run`` executes: two acquires for one key race, or a transient listing failure hides a
+        container that is right there.  Without this the name stays taken and every acquire for
+        that key fails from then on.
+        """
+        if await self._is_listed(name, all_states=False):
+            return True
+        return await self._is_listed(name, all_states=True) and await self._restart(name)
 
     async def _remove(self, target: str) -> bool:
         """Force-remove ``target``. Returns whether it removed one; never raises."""

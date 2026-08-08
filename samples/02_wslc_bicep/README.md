@@ -26,7 +26,7 @@ Two things are genuinely weaker here, and neither is hidden.
 
 - **An OpenAI-compatible endpoint** — api.openai.com, or a local server that speaks the same protocol. The model needs to be able to call a tool; beyond that this sample asks nothing unusual of it.
 
-No Azure subscription, no preview enrolment, no billable VM. A run that is killed mid-turn leaves a stopped container behind, which `wslc container list -a` will show you and `wslc container remove -f` reclaims.
+No Azure subscription, no preview enrolment, no billable VM. A run that is killed mid-turn leaves the container **running** — it was started with `sleep infinity` and nothing stops it on the way out — so plain `wslc container list` shows it, it holds WSL VM memory until it goes, and `wslc container remove -f <name>` reclaims it.
 
 ## Install
 

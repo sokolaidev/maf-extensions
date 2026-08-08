@@ -2,9 +2,11 @@
 
 No WSL and no container: the one seam every ``wslc`` invocation goes through is replaced by
 a fake that records argv and replays canned results, so what these tests pin is the command
-line this backend actually builds.  Two tests reach the real seam anyway — with
+line this backend actually builds.  Some tests reach the real seam anyway — with
 ``sys.executable`` standing in for ``wslc.exe`` — because the subprocess handling itself
-(decoding, exit codes, killing on timeout) is the one part a fake cannot prove.
+(decoding, exit codes, killing a real child on timeout and on cancellation) is the one part a
+fake cannot prove, and one reads a captured payload from a real ``wslc``, because a listing
+this file invented agrees with the code that reads it by construction.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ import json
 import logging
 import sys
 import tarfile
+import time
 from collections.abc import Sequence
 
 import pytest
@@ -253,6 +256,55 @@ class TestAcquireReuses:
         assert f"name={_NAME}" in args
 
 
+class TestAcquireRecoversFromANameConflict:
+    """The listing that sent `acquire` down the create branch can be stale by the time `run` runs.
+
+    Two acquires for one key race, or a transient listing failure hides a container that is
+    right there. The name is derived from the key, so it stays taken: without a fallback every
+    acquire for that key fails from here on, and the conversation loses its sandbox for good.
+    """
+
+    def _racing(self, *, running_after_the_conflict: bool):
+        """A machine where `run` loses the name to a container that appears just before it."""
+        present: list[str] = []
+
+        def respond(args: tuple[str, ...]) -> _WslcResult:
+            if args[:2] == ("container", "list"):
+                if "--format" in args:
+                    payload = [{"Id": f"id-{n}", "Name": n} for n in present]
+                    return _WslcResult(0, json.dumps(payload), "")
+                return _WslcResult(0, "".join(f"id-{n}\n" for n in present), "")
+            if args[:2] == ("container", "run"):
+                if running_after_the_conflict:
+                    present.append(_NAME)
+                return _WslcResult(1, "", "Error code: ERROR_ALREADY_EXISTS")
+            return _WslcResult(0, "", "")
+
+        return _backend_with(respond)
+
+    def test_the_existing_container_is_used_instead_of_failing(self):
+        backend, fake = self._racing(running_after_the_conflict=True)
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+
+        assert sandbox.container_name == _NAME
+        assert len(fake.matching("container", "run")) == 1
+
+    def test_the_fallback_is_tried_once_and_then_gives_up(self):
+        """A name conflict with nothing behind it is a real failure, not a retry loop."""
+        backend, fake = self._racing(running_after_the_conflict=False)
+
+        with pytest.raises(RuntimeError, match="ERROR_ALREADY_EXISTS"):
+            asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert len(fake.matching("container", "run")) == 1
+
+    def test_any_other_create_failure_still_raises(self):
+        overrides = {("container", "run"): _WslcResult(1, "", "WSLC_E_IMAGE_NOT_FOUND")}
+        backend, _ = _backend_with(_machine(overrides=overrides))
+
+        with pytest.raises(RuntimeError, match="WSLC_E_IMAGE_NOT_FOUND"):
+            asyncio.run(backend.acquire(_KEY, _SPEC))
+
+
 # ---------------------------------------------------------------------------
 # exec
 # ---------------------------------------------------------------------------
@@ -305,6 +357,56 @@ class TestExecResult:
         result = asyncio.run(sandbox.exec(["false"], working_directory="/w", timeout=5))
 
         assert result == ExecResult(stdout="out\n", stderr="err\n", exit_code=7)
+
+
+class TestExecDiscardsATimedOutSandbox:
+    """Killing `wslc exec` on the host does not reach the process it started in the container.
+
+    There is no per-command handle to kill either, so the command runs on — holding the work
+    directory and the CPU the next exec wants. Removing the container is the only reach there
+    is, and a fresh one costs about the half second a create costs anyway.
+    """
+
+    def _timing_out(self):
+        base = _machine(running=[_NAME])
+
+        def respond(args: tuple[str, ...]) -> _WslcResult:
+            if args[:2] == ("container", "exec"):
+                raise TimeoutError("wslc exec did not answer")
+            return base(args)
+
+        return _backend_with(respond)
+
+    def test_a_timed_out_exec_removes_the_container(self):
+        backend, fake = self._timing_out()
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+
+        with pytest.raises(TimeoutError):
+            asyncio.run(sandbox.exec(["sleep", "600"], working_directory="/w", timeout=1))
+
+        assert fake.only("container", "remove").args == ("container", "remove", "-f", _NAME)
+
+    def test_the_timeout_still_reaches_the_caller(self):
+        """The workload reports a hang as a diagnostic; swallowing it would report success."""
+        backend, _ = self._timing_out()
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+
+        with pytest.raises(TimeoutError):
+            asyncio.run(sandbox.exec("sleep 600", working_directory="/w", timeout=1))
+
+    def test_a_removal_that_also_fails_does_not_mask_the_timeout(self):
+        base = _machine(running=[_NAME])
+
+        def respond(args: tuple[str, ...]) -> _WslcResult:
+            if args[:2] in (("container", "exec"), ("container", "remove")):
+                raise TimeoutError("wslc is not answering at all")
+            return base(args)
+
+        backend, _ = _backend_with(respond)
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+
+        with pytest.raises(TimeoutError):
+            asyncio.run(sandbox.exec(["sleep", "600"], working_directory="/w", timeout=1))
 
 
 # ---------------------------------------------------------------------------
@@ -461,6 +563,16 @@ class TestLabelValues:
         for raw in ("a=b", "a b", "a\nb", "user@example.com", ""):
             assert _label_value(raw).startswith("sha256-"), raw
 
+    def test_a_value_already_shaped_like_a_digest_is_digested_too(self):
+        """It is a legal short plain value, so passing it through would let a caller pick a
+        scope that lands on the label some other scope's digest produced."""
+        from maf_sandbox_wslc._backend import _label_value
+
+        forged = _label_value("user-" + "z" * 90)
+        assert len(forged) == 55
+        assert _label_value(forged) != forged
+        assert _label_value(forged).startswith("sha256-")
+
     def test_values_sharing_a_long_prefix_do_not_collide(self):
         """Truncation would map these together; these labels gate one conversation's purge."""
         from maf_sandbox_wslc._backend import _label_value
@@ -545,6 +657,115 @@ class TestTheSeam:
         with pytest.raises(TimeoutError):
             asyncio.run(backend._wslc("container", "exec", timeout=0.01))
         assert process.killed
+
+    def test_a_loop_that_cannot_spawn_subprocesses_says_which_loop_is_needed(self, monkeypatch):
+        """A selector loop raises `NotImplementedError()` — no message, no cause, nothing a
+        log line or a model can act on. `ValueError` is the channel `maf_sandbox.maf` surfaces
+        verbatim, so the sentence reaches whoever is enabling the feature."""
+
+        async def _no_subprocess(*args, **kwargs):
+            raise NotImplementedError
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _no_subprocess)
+        backend = WslcSandboxBackend(WslcSandboxConfig())
+
+        with pytest.raises(ValueError, match="event loop"):
+            asyncio.run(backend.acquire(_KEY, _SPEC))
+
+
+#: Appends to `sys.argv[1]` forever. A one-liner, so it survives being one argv element.
+_HEARTBEAT = (
+    "import itertools, sys, time; p = sys.argv[1]; "
+    "[(open(p, 'a').write('.'), time.sleep(0.02)) for _ in itertools.count()]"
+)
+
+
+class TestTheSeamReapsARealChild:
+    """A real process, killed for real — the part both the fake above and a mock cannot show.
+
+    `wslc.exe` outliving the call that made it is invisible from inside the process that
+    abandoned it: the coroutine raises on time, the logs read correctly, and the container
+    keeps working. So these watch the child's own heartbeat file instead, and a leak shows up
+    as a file that goes on growing after the call has already raised.
+    """
+
+    def _stopped_growing(self, beat) -> bool:
+        first = beat.stat().st_size
+        time.sleep(0.5)
+        return beat.stat().st_size == first
+
+    def test_a_timeout_kills_the_child(self, tmp_path):
+        beat = tmp_path / "beat"
+        backend = WslcSandboxBackend(WslcSandboxConfig(wslc_path=sys.executable))
+
+        with pytest.raises(TimeoutError):
+            asyncio.run(backend._wslc("-c", _HEARTBEAT, str(beat), timeout=1.5))
+
+        assert beat.exists(), "the child never started, so this proves nothing"
+        assert self._stopped_growing(beat)
+
+    def test_a_cancelled_call_kills_the_child(self, tmp_path):
+        """Cancellation arrives at the same await a timeout does, and used to leave the child
+        running: the caller went away and nothing was left holding the handle."""
+        beat = tmp_path / "beat"
+        backend = WslcSandboxBackend(WslcSandboxConfig(wslc_path=sys.executable))
+
+        async def scenario() -> None:
+            task = asyncio.ensure_future(backend._wslc("-c", _HEARTBEAT, str(beat), timeout=60))
+            await asyncio.sleep(1.5)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        asyncio.run(scenario())
+
+        assert beat.exists(), "the child never started, so this proves nothing"
+        assert self._stopped_growing(beat)
+
+
+class TestAgainstRealWslcOutput:
+    """A verbatim ``container list --format json`` payload from wslc 2.9.4.0.
+
+    Every other listing in this file is invented, and an invented listing agrees with the code
+    that reads it — ``{"Id", "Name"}`` is a guess that happens to be right. Real output carries
+    ``CreatedAt``, ``Image``, ``Ports`` and an integer ``State`` too, and the name arrives
+    without the leading slash some container CLIs put there. Rename the field upstream and this
+    fails in CI rather than only on a machine with WSL. Regenerate with a throwaway container:
+
+        wslc container run -d --name maf-sandbox-wslc-<12 hex> --network none alpine:3 sleep infinity
+        wslc container list --format json --filter name=<that name>
+        wslc container remove -f <that name>
+    """
+
+    #: The name the captured container was created with — an exact match for the payload.
+    _CAPTURED = "maf-sandbox-wslc-c63d0bd23ebf"
+
+    def _payload(self) -> str:
+        import pathlib
+
+        fixture = pathlib.Path(__file__).parent / "fixtures" / "wslc-container-list-real.json"
+        return fixture.read_text(encoding="utf-8")
+
+    def _seam(self):
+        payload = self._payload()
+        return _backend_with(lambda args: _WslcResult(0, payload, ""))
+
+    def test_the_exact_name_is_found_in_real_output(self):
+        backend, _ = self._seam()
+        assert asyncio.run(backend._is_listed(self._CAPTURED, all_states=False)) is True
+
+    def test_a_name_the_payload_does_not_carry_is_not_found(self):
+        """`--filter name=` is a substring match, so a real payload can hold a longer name."""
+        backend, _ = self._seam()
+        assert asyncio.run(backend._is_listed(self._CAPTURED[:-4], all_states=True)) is False
+
+    def test_the_row_carries_the_container_id_a_listing_consumer_reads(self):
+        from maf_sandbox_wslc._backend import _listed_names
+
+        rows = json.loads(self._payload())
+        assert _listed_names(self._payload()) == [self._CAPTURED]
+        assert len(rows[0]["Id"]) == 64
+        assert rows[0]["Image"] == "alpine:3"
 
 
 # ---------------------------------------------------------------------------

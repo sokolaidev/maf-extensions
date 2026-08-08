@@ -27,7 +27,7 @@ router = SandboxRouter([WslcSandboxBackend(WslcSandboxConfig())])
 
 ## Requirements
 
-**Windows with WSL 2.9.3 or later.** `wslc` is part of WSL; `wsl --version` reports the version and `wsl --update` moves it forward. There is nothing else to install. The command-line contract this backend depends on — argv passed to `exec` natively, `cp` from a tar on stdin, label filters on `list`, `WSLC_E_*` codes on stderr — was verified against **wslc 2.9.4.0**.
+**Windows with WSL 2.9.3 or later.** `wslc` is part of WSL; `wsl --version` reports the version and `wsl --update` moves it forward. There is nothing else to install. The command-line contract this backend depends on — argv passed to `exec` natively, `cp` from a tar on stdin, label filters on `list`, `WSLC_E_*` codes on stderr — was verified against **wslc 2.9.4.0**. Every call spawns `wslc.exe`, so the host's event loop has to be one that can start subprocesses — asyncio's default Proactor loop on Windows does, and a host that installs `WindowsSelectorEventLoopPolicy` has to undo that first, or every acquire fails with a message saying so.
 
 ## What this backend declares
 
