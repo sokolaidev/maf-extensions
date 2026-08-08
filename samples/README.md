@@ -1,0 +1,33 @@
+# Samples
+
+Small, self-contained programs, each showing one wiring end to end. The package READMEs explain what a piece is; these show what you actually write.
+
+| Sample | What it wires | Needs |
+|---|---|---|
+| [`01_acas_bicep`](01_acas_bicep/) | A one-turn agent that validates a Bicep file: `maf-sandbox-aca` behind a `SandboxRouter`, `maf-sandbox-bicep`'s `bicep_validate` attached to a MAF agent | Azure (Container Apps Sandboxes preview + Azure OpenAI) |
+
+## How these are meant to be read
+
+**Numbered directories.** Reading order is a property of the set, so it is written down rather than implied. Later samples assume you have read the earlier ones and skip what they already showed.
+
+**Each sample installs from PyPI**, not from this workspace:
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install maf-sandbox-aca maf-sandbox-bicep agent-framework-openai
+python samples/01_acas_bicep/agent.py
+```
+
+That is deliberate. A sample that only runs inside this repository would be demonstrating something a consumer of the published wheels does not get — an import that resolved because every sibling package happened to be on the path.
+
+**No secrets in the tree.** Configuration comes from environment variables, and authentication is `DefaultAzureCredential`, which an `az login` session satisfies. Each sample's README lists the variables it reads.
+
+**They are not tests.** Samples are not uv workspace members and are not in the root `testpaths`, so `uv run pytest` does not collect them. They *are* covered by `uv run ruff check .` and `uv run ruff format --check .`, so they cannot rot into non-idiomatic code without CI noticing.
+
+CI does not run them. Sample 01 needs a real subscription and a preview service; gating every pull request on that would trade a great deal of flakiness for a little assurance. The planned sample on the in-process `testing` backend needs no Azure at all — that one can be run in CI, and the question is worth revisiting when it exists.
+
+## Planned
+
+- **`02`** — the same agent against the in-process `testing` backend, so it runs anywhere with no Azure.
+- A multi-turn author → validate → fix loop.
+- Wiring `SandboxPurger` into a host's thread-delete path.

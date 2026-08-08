@@ -4,6 +4,10 @@ All notable changes to `maf-sandbox-bicep` are documented here. The format follo
 
 ## [Unreleased]
 
+### Added
+
+- The Quickstart now links a runnable end-to-end sample, [`samples/01_acas_bicep`](https://github.com/sokolaidev/maf-extensions/tree/main/samples/01_acas_bicep) — a one-turn agent that validates a deliberately flawed Bicep file and prints the compiler's diagnostics. `router`, `workspace_store` and `context` arrive undefined in the Quickstart snippet; the sample builds all three.
+
 ### Fixed
 
 - `bicep_sandbox_spec()` now allows the two hosts Bicep's **public module index** is served from — `aka.ms`, the redirector the CLI hard-codes, and `live-data.bicep.azure.com`, where it lands — alongside the two MCR artifact hosts. That index fetch belongs to restore rather than to analysis, so it was attempted on every `bicep build` and `bicep lint` and denied every time; blocked, `use-recent-module-versions` reports "Could not download available module versions" once per file instead of the outdated `br/public:avm/...` pins it exists to find.

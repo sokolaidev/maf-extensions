@@ -19,6 +19,8 @@ router = SandboxRouter([my_backend], deployed=False)
 sandbox = await router.acquire(SandboxKey(scope="tenant-1", thread_id="t-1", agent_dir="devops"), SandboxSpec(kind="bicep", image="bicep-sandbox:0.46.1", egress_allow=("mcr.microsoft.com",), work_dir="/workspace"))
 ```
 
+[`samples/01_acas_bicep`](https://github.com/sokolaidev/maf-extensions/tree/main/samples/01_acas_bicep) is that wiring as a runnable program, including the part no snippet shows well: building the `WorkspaceContext` out of callables rather than values, which is what keeps a `SandboxKey` a property of the host's request.
+
 ## Threat model
 
 This package draws no isolation boundary itself — it is protocol and policy over whatever a `SandboxBackend` implementation actually provides. `Isolation` states three tiers a backend can declare, from strongest to weakest: `vm` (a VM boundary — the whole guest, not just a process, is untrusted), `container` (a shared-kernel boundary), and `process` (no boundary beyond the OS's own process isolation). `SandboxRouter` enforces the one rule below on top of that declaration; the package's job is to make an unsafe backend selection fail loudly at construction, not silently at first use. Beyond backend selection, this layer has nothing else to get wrong: it holds no credentials, executes nothing, and reaches no network — everything security-relevant about a *specific* sandbox lives in the backend that implements it.

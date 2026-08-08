@@ -17,6 +17,10 @@ app  ->  maf_sandbox (router)  ->  a backend (maf_sandbox_aca, testing, ...)  ->
               ^ a kind (maf_sandbox_bicep) calls the router; kinds and backends never import each other
 ```
 
+## Samples
+
+[`samples/`](samples/) holds small, self-contained programs that show the pieces wired together — the `app` box above, which the package READMEs describe but never show. [`01_acas_bicep`](samples/01_acas_bicep/) is a one-turn agent that validates a deliberately flawed Bicep file: an ACA backend behind a router, a workspace context built the way that keeps one conversation out of another's sandbox, and `bicep_validate` attached to a MAF agent. Samples install from PyPI rather than from this workspace, and are linted but not run in CI.
+
 ## Development
 
 ```bash

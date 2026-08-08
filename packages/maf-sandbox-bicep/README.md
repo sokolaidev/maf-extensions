@@ -27,6 +27,8 @@ tools = make_bicep_tools(router, workspace_store, "devops-engineer", context,
 
 Pass `router=None` — or a router with no backend — and you get `[]` back: an unconfigured host attaches no tool rather than one that fails when called.
 
+`router`, `workspace_store` and `context` are the host's, and this snippet shows none of them being built. [`samples/01_acas_bicep`](https://github.com/sokolaidev/maf-extensions/tree/main/samples/01_acas_bicep) is the whole wiring as a runnable program: a one-turn agent that validates a deliberately flawed Bicep file and prints the compiler's diagnostics.
+
 ## Threat model
 
 **Fixed command templates.** No agent-authored text is interpolated into a shell command — the only substitution is a filesystem path, and only after that path is validated against the sandbox's own workspace listing (the injection guard: a name that isn't in the listing, or that resolves outside the workspace, is rejected before it reaches a template). **Sanitized error surfaces.** Failures the sandbox reports are cleaned before the model sees them, so a compiler or shell error cannot smuggle sandbox-internal detail back into the conversation. **The egress allowlist.** The only hosts Bicep is allowed to reach are the four an AVM module restore reads from — `mcr.microsoft.com` and `*.data.mcr.microsoft.com` for the artifacts, `aka.ms` and `live-data.bicep.azure.com` for the public module index — stated as a property of the spec (`SandboxSpec.egress_allow`), not of runtime configuration, because a deployment that could widen Bicep's egress after the fact could undo the containment the tool's design rests on. Nothing else is reachable, ARM above all.
