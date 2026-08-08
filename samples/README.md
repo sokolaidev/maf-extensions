@@ -5,6 +5,7 @@ Small, self-contained programs, each showing one wiring end to end. The package 
 | Sample | What it wires | Needs |
 |---|---|---|
 | [`01_acas_bicep`](01_acas_bicep/) | A one-turn agent that validates a Bicep file: `maf-sandbox-aca` behind a `SandboxRouter`, `maf-sandbox-bicep`'s `bicep_validate` attached to a MAF agent | Azure (Container Apps Sandboxes preview + Azure OpenAI) |
+| [`02_wslc_bicep`](02_wslc_bicep/) | The same agent and the same `main.bicep`, one line lower: `maf-sandbox-wslc` in place of `maf-sandbox-aca`, so the workload runs unchanged against a second backend | Windows with WSL 2.9.3+ and any OpenAI-compatible endpoint |
 
 ## How these are meant to be read
 
@@ -20,14 +21,14 @@ python samples/01_acas_bicep/agent.py
 
 That is deliberate. A sample that only runs inside this repository would be demonstrating something a consumer of the published wheels does not get — an import that resolved because every sibling package happened to be on the path.
 
-**No secrets in the tree.** Configuration comes from environment variables, and authentication is `DefaultAzureCredential`, which an `az login` session satisfies. Each sample's README lists the variables it reads.
+**No secrets in the tree.** Configuration comes from environment variables, and authentication is whatever the sample's own stack uses — `DefaultAzureCredential`, which an `az login` session satisfies, wherever Azure is involved. Each sample's README lists the variables it reads.
 
 **They are not tests.** Samples are not uv workspace members and are not in the root `testpaths`, so `uv run pytest` does not collect them. They *are* covered by `uv run ruff check .` and `uv run ruff format --check .`, so they cannot rot into non-idiomatic code without CI noticing.
 
-CI does not run them. Sample 01 needs a real subscription and a preview service; gating every pull request on that would trade a great deal of flakiness for a little assurance. The planned sample on the in-process `testing` backend needs no Azure at all — that one can be run in CI, and the question is worth revisiting when it exists.
+CI does not run them. Sample 01 needs a real subscription and a preview service; gating every pull request on that would trade a great deal of flakiness for a little assurance. Sample 02 needs neither, but it does need Windows and a WSL that ships `wslc`, which the Linux runners these workflows use do not have. The planned sample on the in-process `testing` backend needs nothing at all — that one can be run in CI, and the question is worth revisiting when it exists.
 
 ## Planned
 
-- **`02`** — the same agent against the in-process `testing` backend, so it runs anywhere with no Azure.
+- The same agent against the in-process `testing` backend, so it runs anywhere — no cloud account and no container runtime.
 - A multi-turn author → validate → fix loop.
 - Wiring `SandboxPurger` into a host's thread-delete path.

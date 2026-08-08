@@ -1,0 +1,74 @@
+[project]
+name = "maf-sandbox-wslc"
+version = "0.0.1"
+description = "WSL containers (wslc) as a developer-machine sandbox backend for Microsoft Agent Framework agents — reference implementation of agent-framework#7568."
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+authors = [{ name = "SOKOLAI BV", email = "info@sokolai.com" }]
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = [
+    "wsl",
+    "containers",
+    "sandbox",
+    "agent-framework",
+    "microsoft-agent-framework",
+    "isolation",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Typing :: Typed",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Operating System :: Microsoft :: Windows",
+    "Topic :: Software Development :: Testing",
+]
+dependencies = [
+    # The backend protocol and the router this backend registers with — the only dependency
+    # there is. Everything else is the standard library driving `wslc.exe`. Upper-bounded
+    # because maf-sandbox has not yet reached a stable API, so every release before 1.0.0 may
+    # include breaking changes (see its CHANGELOG); moving either end of this range has an
+    # order to it — see RELEASING.md.
+    "maf-sandbox>=0.2.0,<0.3",
+]
+
+[project.urls]
+Homepage = "https://www.sokol.ai"
+Source = "https://github.com/sokolaidev/maf-extensions"
+Issues = "https://github.com/sokolaidev/maf-extensions/issues"
+
+[tool.uv.sources]
+maf-sandbox = { workspace = true }
+
+[tool.uv.build-backend]
+module-name = "maf_sandbox_wslc"
+module-root = "src"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+extend-select = ["I", "UP", "D100", "D101", "D103", "D104"]
+ignore = ["UP037"]
+
+[tool.ruff.lint.per-file-ignores]
+# ruff resolves [tool.ruff] per file by the NEAREST ancestor pyproject.toml that has one, so
+# this package carries its own copy rather than inheriting one from the workspace root.
+"tests/**" = ["D101", "D103"]
+
+# Self-contained type checking, scoped to this package — strict. `tests/` stays out (fakes
+# for the wslc seam, not signal for a strict checker).
+[tool.pyright]
+include = ["src"]
+typeCheckingMode = "strict"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["uv_build>=0.11.24,<0.12.0"]
+build-backend = "uv_build"

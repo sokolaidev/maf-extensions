@@ -1,0 +1,16 @@
+{
+  "analyzers": {
+    "core": {
+      "enabled": true,
+      "rules": {
+        "no-unused-params": {
+          "level": "error"
+        },
+        "use-recent-api-versions": {
+          "level": "warning",
+          "maxAgeInDays": 730
+        }
+      }
+    }
+  }
+}
