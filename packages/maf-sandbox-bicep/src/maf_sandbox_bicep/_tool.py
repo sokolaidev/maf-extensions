@@ -32,18 +32,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: How many workspace files to quote back when a name is not found. Enough to let a typo
-#: self-correct in one round; small enough that a large workspace cannot flood the context.
+#: Capped so a large workspace cannot flood the model's context.
 _LISTING_HINT_MAX = 20
 
 
 def _listing_hint(name: str, ws_files: list[str]) -> str:
-    """What the model should read instead of guessing: the listing, or its near misses.
-
-    A bare "not found" costs a round trip at best and a fabricated diagnosis at worst. The
-    listing itself is the one piece of information that resolves every version of this —
-    typo, wrong directory, or a store that genuinely does not hold the file.
-    """
+    """The listing, or its near misses — what resolves a typo without another round trip."""
     if not ws_files:
         return "This tool's listing is empty — no files were shared with it."
     near = [f for f in ws_files if f.rsplit("/", 1)[-1] == name.rsplit("/", 1)[-1]]
@@ -308,17 +302,14 @@ def _bicep_validate_tool(
         for name in files:
             sandbox_path, rejection = resolve_workspace_path(name, ws_files, round_dir)
             if rejection == "unsafe":
-                # Deliberately short, and the listing is NOT quoted back: this is the
-                # injection guard refusing a name, not a lookup that came up empty.
+                # No listing echoed back: that would invite a retry with another spelling.
                 return (
                     f"Error: {name!r} cannot be validated — file names may contain only "
                     f"[A-Za-z0-9._/-] and no '..' segments."
                 )
             if rejection == "missing" or sandbox_path is None:
-                # A wiring or typo problem, and it must not read as one. Told only that a
-                # file it can see is "not in the workspace listing", a model concludes the
-                # sandbox is broken and falls back to reviewing the file by eye — which is
-                # precisely the unverified answer this workload exists to replace.
+                # Logged so hosts can count this; its silence is why the live occurrence
+                # was only found afterwards, from a model that had blamed the sandbox.
                 logger.warning(
                     "bicep_validate: %r is not in this tool's workspace listing (%d file(s) "
                     "visible) — the store wired here may be narrower than the agent's",

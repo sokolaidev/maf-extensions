@@ -672,14 +672,7 @@ class TestEndToEndRefusals:
         assert backend.keys == []
 
     def test_rejects_a_file_that_is_not_in_the_workspace_listing(self):
-        """A listing miss is a wiring problem, and must not read like a refusal.
-
-        The message it replaced said "not in the workspace listing or contains unsafe
-        characters". Against a host whose store was narrower than the agent's read tools,
-        a model was told that about a file it had just read, could not reconcile it, and
-        concluded the sandbox was broken — then reviewed the file by eye instead. So this
-        asserts the message says whose listing, and shows it.
-        """
+        """A listing miss is a wiring problem, and must not read like a refusal."""
         store = InMemoryStore({"main.bicep": "x"})
         backend = _fake_backend()
         out = _run(_tool(store, backend), ["other.bicep"])
@@ -714,10 +707,7 @@ class TestEndToEndRefusals:
         out = _run(_tool(store, backend), [malicious])
 
         assert "[A-Za-z0-9._/-]" in out, "name the rule, so the refusal is actionable"
-        # The listing is deliberately NOT quoted back here: this is the guard refusing a
-        # name, not a lookup that came up empty, and echoing the workspace would invite a
-        # retry with a different hostile spelling.
-        assert "listing" not in out
+        assert "listing" not in out, "echoing it would invite a retry with another spelling"
         assert backend.sandbox.commands == []
 
     def test_the_extension_gate_runs_before_the_path_guard(self):

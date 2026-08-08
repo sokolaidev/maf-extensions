@@ -12,8 +12,7 @@ from typing import Literal
 
 __all__ = ["PathRejection", "resolve_workspace_path", "safe_workspace_path"]
 
-#: Why a name was refused. ``"unsafe"`` is the injection guard; ``"missing"`` is a name this
-#: tool's listing does not contain, which is a wiring problem rather than a security one.
+#: ``"unsafe"`` is the injection guard; ``"missing"`` is a wiring problem, not a security one.
 PathRejection = Literal["unsafe", "missing"]
 
 # Characters that must not appear in a workspace-relative file name used as a shell token.
@@ -31,9 +30,8 @@ def safe_workspace_path(name: str, workspace_files: list[str], work_dir: str) ->
     it: a file can be created with a hostile name, so "it is really in the workspace" is not
     evidence that it is safe to interpolate into a shell string.
 
-    Prefer :func:`resolve_workspace_path` in new code: this returns ``None`` for two
-    unrelated reasons, and a caller that cannot tell them apart can only describe the
-    failure in a way that is wrong half the time.
+    Prefer :func:`resolve_workspace_path`: this collapses two unrelated reasons into
+    ``None``, so a caller can only describe the failure in a way that is half wrong.
 
     >>> safe_workspace_path("main.bicep", ["main.bicep"], "/work")
     '/work/main.bicep'
@@ -49,19 +47,13 @@ def resolve_workspace_path(
 ) -> tuple[str | None, PathRejection | None]:
     """Resolve ``name``, or say *which* rule rejected it.
 
-    The two rejections are not variations of one another and must not be reported as one.
-    ``"unsafe"`` is the injection guard refusing a name; ``"missing"`` is a name this tool
-    cannot see, which is a wiring or typo problem — most often a host that wired the tool
-    over a narrower store than the agent's own read tools, so the agent is told it cannot
-    see a file it has already read. Given one message covering both, a model reasonably
-    concludes the sandbox is broken and falls back to reviewing the file by eye, which is
-    the exact outcome this workload exists to prevent.
+    Told only "not in the listing or unsafe" about a file it has already read, a model
+    concludes the sandbox is broken and reviews the file by eye instead — the outcome this
+    workload exists to prevent. So the caller needs the reason, not just a ``None``.
 
-    Membership in the listing is still checked **as well as** the character class, not
-    instead of it: a file can be created with a hostile name, so "it is really in the
-    workspace" is not evidence that it is safe to interpolate into a shell string. Note the
-    order below — the character class is applied first, so a hostile name is reported as
-    hostile whether or not it is in the listing, and the listing is never quoted back for it.
+    Membership is still checked **as well as** the character class: a file can be created
+    with a hostile name. The character class runs first, so a hostile name reads as hostile
+    whether or not it is listed.
 
     >>> resolve_workspace_path("main.bicep", ["main.bicep"], "/work")
     ('/work/main.bicep', None)
