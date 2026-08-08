@@ -147,7 +147,7 @@ class TestEgressRule:
     workload fails visibly at whatever it could not fetch. Both directions are pinned.
     """
 
-    _ALLOWLIST_SPEC = SandboxSpec(kind="bicep", egress_allow=("mcr.microsoft.com",))
+    _ALLOWLIST_SPEC = SandboxSpec(kind="bicep", egress_allow=("example.invalid",))
     _CLOSED_SPEC = SandboxSpec(kind="bicep")
 
     def _router(self, egress: str) -> SandboxRouter:
@@ -165,7 +165,10 @@ class TestEgressRule:
     def test_a_closed_backend_serves_an_allowlist_spec_but_says_so(self, caplog):
         with caplog.at_level("WARNING"):
             self._router(Egress.CLOSED).ensure_can_serve(self._ALLOWLIST_SPEC)
-        assert "mcr.microsoft.com" in caplog.text
+        (record,) = caplog.records
+        # Read off the spec rather than repeated as a literal: the warning is only useful if
+        # it names the hosts that will be unreachable, whichever those turn out to be.
+        assert all(host in record.getMessage() for host in self._ALLOWLIST_SPEC.egress_allow)
 
     @pytest.mark.parametrize("spec", [_ALLOWLIST_SPEC, _CLOSED_SPEC])
     def test_an_unrestricted_backend_is_refused(self, spec: SandboxSpec):
