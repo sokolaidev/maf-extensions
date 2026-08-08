@@ -180,8 +180,8 @@ class _WslcSandbox:
         process does not reach the process it started *inside* the container, and there is no
         per-command handle to kill, so a timed-out call discards the whole sandbox before
         ``TimeoutError`` propagates — a workload reports the hang as a diagnostic, and the next
-        acquire pays a fresh create.  A **cancelled** call gets no such treatment: the command
-        keeps running until the sandbox is disposed.
+        acquire pays a fresh create.  A **cancelled** call still reaps the host-side process
+        but keeps the sandbox: the in-container command runs on until the sandbox is disposed.
         """
         argv = ["sh", "-c", command] if isinstance(command, str) else list(command)
         try:

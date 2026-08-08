@@ -48,6 +48,7 @@ def _names_on_the_machine(name: str) -> list[str]:
         capture_output=True,
         text=True,
         timeout=60,
+        check=True,
     ).stdout
     rows = json.loads(listing) if listing.strip() else []
     return [row["Name"] for row in rows if row.get("Name") == name]
