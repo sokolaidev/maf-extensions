@@ -48,6 +48,16 @@
           "jsonpath": "$.package[?(@.name.value=='maf-sandbox-bicep')].version"
         }
       ]
+    },
+    "packages/maf-sandbox-wslc": {
+      "package-name": "maf-sandbox-wslc",
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "/uv.lock",
+          "jsonpath": "$.package[?(@.name.value=='maf-sandbox-wslc')].version"
+        }
+      ]
     }
   }
 }

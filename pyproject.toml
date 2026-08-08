@@ -29,5 +29,6 @@ testpaths = [
     "packages/maf-sandbox/tests",
     "packages/maf-sandbox-aca/tests",
     "packages/maf-sandbox-bicep/tests",
+    "packages/maf-sandbox-wslc/tests",
 ]
 faulthandler_timeout = 90.0

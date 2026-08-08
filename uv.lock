@@ -7,6 +7,7 @@ members = [
     "maf-sandbox",
     "maf-sandbox-aca",
     "maf-sandbox-bicep",
+    "maf-sandbox-wslc",
 ]
 
 [manifest.dependency-groups]
@@ -649,6 +650,17 @@ requires-dist = [
     { name = "agent-framework-core", specifier = ">=1.13.0,<2" },
     { name = "maf-sandbox", editable = "packages/maf-sandbox" },
 ]
+
+[[package]]
+name = "maf-sandbox-wslc"
+version = "0.0.1"
+source = { editable = "packages/maf-sandbox-wslc" }
+dependencies = [
+    { name = "maf-sandbox" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "maf-sandbox", editable = "packages/maf-sandbox" }]
 
 [[package]]
 name = "markdown-it-py"
