@@ -12,7 +12,7 @@ dev = [
     "pytest>=9.0.3,<10",
     # Pinned bands, not floors: an unpinned range resolves to whatever is newest at install
     # time, and a new minor can drift findings across unrelated PRs. Same rationale and the
-    # same bands as the ats-maf host repository these packages were extracted from.
+    # same bands as the application these packages were extracted from.
     "ruff>=0.15.20,<0.16",
     "pyright>=1.1.411,<1.2",
     # Release checks (metadata validation of built sdists/wheels).
