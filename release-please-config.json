@@ -6,9 +6,21 @@
   "bump-minor-pre-major": true,
   "draft": true,
   "pull-request-header": ":robot: Release prepared from the commits below. **The generated changelog is a draft — rewrite it as prose before merging**, for someone deciding whether to upgrade. See CONTRIBUTING.md.",
+  "changelog-sections": [
+    { "type": "feat", "section": "Features" },
+    { "type": "fix", "section": "Bug Fixes" },
+    { "type": "perf", "section": "Performance" },
+    { "type": "revert", "section": "Reverts" },
+    { "type": "docs", "section": "Documentation" },
+    { "type": "refactor", "section": "Code Refactoring", "hidden": true },
+    { "type": "test", "section": "Tests", "hidden": true },
+    { "type": "build", "section": "Build System", "hidden": true },
+    { "type": "ci", "section": "Continuous Integration", "hidden": true },
+    { "type": "chore", "section": "Miscellaneous", "hidden": true }
+  ],
   "packages": {
-    "packages/maf-sandbox": {},
-    "packages/maf-sandbox-aca": {},
-    "packages/maf-sandbox-bicep": {}
+    "packages/maf-sandbox": { "package-name": "maf-sandbox" },
+    "packages/maf-sandbox-aca": { "package-name": "maf-sandbox-aca" },
+    "packages/maf-sandbox-bicep": { "package-name": "maf-sandbox-bicep" }
   }
 }

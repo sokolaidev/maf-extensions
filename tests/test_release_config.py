@@ -1,13 +1,15 @@
 """Repository-level release wiring: every package registered, everywhere, consistently.
 
-These are not any one package's tests — they are about the three files that have to agree
-for a release to happen at all (`release-please-config.json`, `.release-please-manifest.json`
-and `publish-packages.yml`), which is why they live at the root rather than under a package.
+These are not any one package's tests — they are about the four files that have to agree for
+a release to happen at all (`release-please-config.json`, `.release-please-manifest.json`,
+`publish-packages.yml` and `pr-title.yml`), which is why they live at the root rather than
+under a package.
 
 Each failure here is one that is otherwise silent: a new package that release-please never
-proposes a release for, a manifest that has drifted from the version actually declared, or
-two packages whose tags collide. None of those break a test, a type check or a build — they
-break a release, at the one moment when the thing that went wrong is hardest to undo.
+proposes a release for, a manifest that has drifted from the version actually declared, a
+component that tags as something the publish workflow does not listen for, or two packages
+whose tags collide. None of those break a test, a type check or a build — they break a
+release, at the one moment when the thing that went wrong is hardest to undo.
 """
 
 from __future__ import annotations
@@ -23,7 +25,9 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = REPO_ROOT / "release-please-config.json"
 MANIFEST_PATH = REPO_ROOT / ".release-please-manifest.json"
-PUBLISH_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "publish-packages.yml"
+WORKFLOWS = REPO_ROOT / ".github" / "workflows"
+PUBLISH_WORKFLOW = WORKFLOWS / "publish-packages.yml"
+PR_TITLE_WORKFLOW = WORKFLOWS / "pr-title.yml"
 
 CONFIG = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
 MANIFEST = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
@@ -35,18 +39,32 @@ PACKAGE_PATHS = sorted(
 )
 
 
-def declared_version(package_path: str) -> str:
-    pyproject = tomllib.loads(
+def pyproject(package_path: str) -> dict:
+    return tomllib.loads(
         (REPO_ROOT / package_path / "pyproject.toml").read_text("utf-8")
     )
-    return pyproject["project"]["version"]
+
+
+def declared_version(package_path: str) -> str:
+    return pyproject(package_path)["project"]["version"]
 
 
 def declared_name(package_path: str) -> str:
-    pyproject = tomllib.loads(
-        (REPO_ROOT / package_path / "pyproject.toml").read_text("utf-8")
-    )
-    return pyproject["project"]["name"]
+    return pyproject(package_path)["project"]["name"]
+
+
+def configured_component(package_path: str) -> str:
+    """What release-please will actually put in the tag.
+
+    `package-name`, not the distribution name in `pyproject.toml`: the Python strategy reads
+    that file only to find version-bearing sources, never to name the component. An entry
+    without it leaves the component empty, and every package tags as a bare `v<version>`.
+    """
+    return CONFIG["packages"][package_path]["package-name"]
+
+
+def release_tag(package_path: str) -> str:
+    return f"{configured_component(package_path)}-v{declared_version(package_path)}"
 
 
 def publish_tag_globs() -> list[str]:
@@ -57,6 +75,14 @@ def publish_tag_globs() -> list[str]:
         f"no `on.push.tags` block found in {PUBLISH_WORKFLOW.name}"
     )
     return re.findall(r"\"([^\"]+)\"", block.group(1))
+
+
+def accepted_title_types() -> list[str]:
+    """The commit types the PR title check allows, from its `types: |` block scalar."""
+    workflow = PR_TITLE_WORKFLOW.read_text(encoding="utf-8")
+    block = re.search(r"^ *types: \|\n((?: +[a-z]+\n)+)", workflow, re.MULTILINE)
+    assert block is not None, f"no `types:` block found in {PR_TITLE_WORKFLOW.name}"
+    return block.group(1).split()
 
 
 class TestEveryPackageIsRegistered:
@@ -81,6 +107,19 @@ class TestManifestMatchesDeclaredVersions:
         assert MANIFEST[package_path] == declared_version(package_path)
 
 
+class TestComponentMatchesDistributionName:
+    """The tag's component is configuration, and nothing derives it from the package.
+
+    So it can drift from the name it is supposed to mirror — silently, because release-please
+    would go on tagging happily under the wrong component while the publish workflow, which
+    maps a tag back to a directory, listens for the right one and never fires.
+    """
+
+    @pytest.mark.parametrize("package_path", PACKAGE_PATHS)
+    def test_configured_component_is_the_distribution_name(self, package_path: str):
+        assert configured_component(package_path) == declared_name(package_path)
+
+
 class TestTagsResolveToExactlyOnePackage:
     """`maf-sandbox-v*` must not also swallow `maf-sandbox-aca-v0.1.0`.
 
@@ -91,23 +130,51 @@ class TestTagsResolveToExactlyOnePackage:
 
     @pytest.mark.parametrize("package_path", PACKAGE_PATHS)
     def test_each_package_tag_matches_exactly_one_glob(self, package_path: str):
-        # The tag release-please will produce: component (the distribution name), then -v.
-        tag = f"{declared_name(package_path)}-v{declared_version(package_path)}"
+        tag = release_tag(package_path)
         matched = [
             glob for glob in publish_tag_globs() if fnmatch.fnmatchcase(tag, glob)
         ]
-        assert matched == [f"{declared_name(package_path)}-v*"], (
+        assert matched == [f"{configured_component(package_path)}-v*"], (
             f"tag {tag} matched {matched}"
         )
 
     def test_no_glob_is_orphaned(self):
-        tags = [
-            f"{declared_name(path)}-v{declared_version(path)}" for path in PACKAGE_PATHS
-        ]
+        tags = [release_tag(path) for path in PACKAGE_PATHS]
         for glob in publish_tag_globs():
             assert any(fnmatch.fnmatchcase(tag, glob) for tag in tags), (
                 f"glob {glob} matches no package — a rename left it behind"
             )
+
+
+class TestAcceptedTitleTypesAreConfigured:
+    """A title type the check allows but the changelog config never mentions is a hole.
+
+    release-please treats an unconfigured type as hidden, so such a commit lands on `main`
+    with a green check and then releases nothing and appears nowhere — the one outcome
+    neither file claims. Keeping the two lists equal is what makes the documented table true.
+    """
+
+    def test_the_two_lists_are_the_same_set(self):
+        configured = {section["type"] for section in CONFIG["changelog-sections"]}
+        assert sorted(accepted_title_types()) == sorted(configured)
+
+
+class TestOnlyUserFacingTypesRelease:
+    """Which types cut a release is a decision, and it lives in `hidden`.
+
+    Every visible type releases: release-please bumps on any commit that produces a changelog
+    entry, patch unless it is a `feat` or breaking. So `docs` visible is deliberate — a
+    package's README is its PyPI front page, and publishing is the only way to change it —
+    and `refactor` hidden is too, since a refactor is by definition not user-facing.
+    """
+
+    def test_the_releasing_types_are_exactly_these(self):
+        visible = {
+            section["type"]
+            for section in CONFIG["changelog-sections"]
+            if not section.get("hidden", False)
+        }
+        assert visible == {"feat", "fix", "perf", "revert", "docs"}
 
 
 class TestReleasesAreDraftedNotAnnounced:

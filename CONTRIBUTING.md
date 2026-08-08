@@ -43,7 +43,9 @@ feat: accept a list of arguments to exec, and quote them
 docs: explain what the boundary tests protect
 ```
 
-`fix:` releases a patch and `feat:` a minor; a `!` after the type, or a `BREAKING CHANGE:` footer, also releases a minor, since every package is still `0.x`. Everything else — `docs`, `test`, `refactor`, `chore`, `ci`, `build`, `perf`, `revert` — is recorded and releases nothing.
+`feat:` releases a minor version, and `fix:`, `perf:`, `revert:` and `docs:` release a patch. A `!` after the type, or a `BREAKING CHANGE:` footer, releases a minor whatever the type, since every package is still `0.x`. `refactor`, `test`, `build`, `ci` and `chore` release nothing on their own — they are recorded, and ride along with whatever releases next.
+
+`docs:` sits in the releasing set deliberately: a package's `README.md` is its PyPI front page, and publishing a version is the only way to change what is shown there. The rule underneath is simply that anything appearing in a changelog cuts a release, which is `changelog-sections` in `release-please-config.json`.
 
 The scope in parentheses is free-form and optional. Which package a change belongs to is worked out from the files it touches, not from the scope, so a PR touching two packages releases both.
 

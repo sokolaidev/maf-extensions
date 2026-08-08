@@ -6,7 +6,7 @@ One-time setup — the PyPI organization, the trusted publishers, the GitHub env
 
 ## What decides the version
 
-[release-please](https://github.com/googleapis/release-please) watches `main` and keeps a **Release PR** open for every package that has unreleased changes. It works out the bump from the merged commit subjects — which are PR titles here, since this repository squash-merges — and attributes each change to a package by the files it touched. `fix:` bumps the patch; `feat:` bumps the minor; a `!` or a `BREAKING CHANGE:` footer also bumps the minor, because every package is still `0.x`. Anything else is recorded and releases nothing.
+[release-please](https://github.com/googleapis/release-please) watches `main` and keeps a **Release PR** open for every package that has unreleased changes. It works out the bump from the merged commit subjects — which are PR titles here, since this repository squash-merges — and attributes each change to a package by the files it touched. `feat:` bumps the minor; `fix:`, `perf:`, `revert:` and `docs:` bump the patch; a `!` or a `BREAKING CHANGE:` footer bumps the minor whatever the type, because every package is still `0.x`. `refactor`, `test`, `build`, `ci` and `chore` release nothing on their own. The rule behind that list is that any commit which earns a changelog entry earns a release, so it is `changelog-sections` in `release-please-config.json` that decides it.
 
 ## Cutting a release
 
