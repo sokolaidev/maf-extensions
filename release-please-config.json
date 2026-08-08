@@ -18,8 +18,35 @@
     { "type": "chore", "section": "Miscellaneous", "hidden": true }
   ],
   "packages": {
-    "packages/maf-sandbox": { "package-name": "maf-sandbox" },
-    "packages/maf-sandbox-aca": { "package-name": "maf-sandbox-aca" },
-    "packages/maf-sandbox-bicep": { "package-name": "maf-sandbox-bicep" }
+    "packages/maf-sandbox": {
+      "package-name": "maf-sandbox",
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "../../uv.lock",
+          "jsonpath": "$.package[?(@.name=='maf-sandbox')].version"
+        }
+      ]
+    },
+    "packages/maf-sandbox-aca": {
+      "package-name": "maf-sandbox-aca",
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "../../uv.lock",
+          "jsonpath": "$.package[?(@.name=='maf-sandbox-aca')].version"
+        }
+      ]
+    },
+    "packages/maf-sandbox-bicep": {
+      "package-name": "maf-sandbox-bicep",
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "../../uv.lock",
+          "jsonpath": "$.package[?(@.name=='maf-sandbox-bicep')].version"
+        }
+      ]
+    }
   }
 }

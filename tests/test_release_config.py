@@ -1,9 +1,9 @@
 """Repository-level release wiring: every package registered, everywhere, consistently.
 
-These are not any one package's tests — they are about the four files that have to agree for
+These are not any one package's tests — they are about the five files that have to agree for
 a release to happen at all (`release-please-config.json`, `.release-please-manifest.json`,
-`publish-packages.yml` and `pr-title.yml`), which is why they live at the root rather than
-under a package.
+`uv.lock`, `publish-packages.yml` and `pr-title.yml`), which is why they live at the root
+rather than under a package.
 
 Each failure here is one that is otherwise silent: a new package that release-please never
 proposes a release for, a manifest that has drifted from the version actually declared, a
@@ -25,12 +25,14 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = REPO_ROOT / "release-please-config.json"
 MANIFEST_PATH = REPO_ROOT / ".release-please-manifest.json"
+LOCK_PATH = REPO_ROOT / "uv.lock"
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 PUBLISH_WORKFLOW = WORKFLOWS / "publish-packages.yml"
 PR_TITLE_WORKFLOW = WORKFLOWS / "pr-title.yml"
 
 CONFIG = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
 MANIFEST = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
+LOCK = tomllib.loads(LOCK_PATH.read_text(encoding="utf-8"))
 
 # Every directory under packages/ that is actually a distribution.
 PACKAGE_PATHS = sorted(
@@ -65,6 +67,26 @@ def configured_component(package_path: str) -> str:
 
 def release_tag(package_path: str) -> str:
     return f"{configured_component(package_path)}-v{declared_version(package_path)}"
+
+
+def lock_jsonpath(distribution: str) -> str:
+    """Points an `extra-files` updater at one `[[package]]` entry in `uv.lock`."""
+    return f"$.package[?(@.name=='{distribution}')].version"
+
+
+def locked_version(distribution: str) -> str | None:
+    for entry in LOCK["package"]:
+        if entry.get("name") == distribution:
+            return entry.get("version")
+    return None
+
+
+def lock_updater(package_path: str) -> dict:
+    entries = CONFIG["packages"][package_path].get("extra-files", [])
+    assert len(entries) == 1, (
+        f"{package_path}: expected one extra-files entry, got {entries}"
+    )
+    return entries[0]
 
 
 def publish_tag_globs() -> list[str]:
@@ -105,6 +127,48 @@ class TestManifestMatchesDeclaredVersions:
     @pytest.mark.parametrize("package_path", PACKAGE_PATHS)
     def test_manifest_version_matches_pyproject(self, package_path: str):
         assert MANIFEST[package_path] == declared_version(package_path)
+
+
+class TestTheLockRecordsTheVersionEachPackageDeclares:
+    """`uv.lock` is a fifth file that has to agree, and the last one nothing updated.
+
+    A release bumps `pyproject.toml` and the lock keeps naming the previous version. Nothing
+    surfaces that on its own — a plain `uv sync` re-locks in the runner rather than failing —
+    so CI stays green while a contributor's first sync leaves an uncommitted change in a
+    generated file they never touched.
+    """
+
+    @pytest.mark.parametrize("package_path", PACKAGE_PATHS)
+    def test_locked_version_matches_pyproject(self, package_path: str):
+        distribution = declared_name(package_path)
+        assert locked_version(distribution) == declared_version(package_path), (
+            f"uv.lock is stale for {distribution} — run `uv lock`"
+        )
+
+
+class TestEveryPackageUpdatesTheLockWhenItReleases:
+    """What keeps the agreement above true at the one moment it breaks.
+
+    release-please knows nothing about `uv.lock`, so each package points an `extra-files`
+    updater at its own entry. A package without one releases perfectly happily and leaves the
+    lock a version behind, which is exactly how this was found.
+    """
+
+    @pytest.mark.parametrize("package_path", PACKAGE_PATHS)
+    def test_the_updater_targets_the_lockfile(self, package_path: str):
+        entry = lock_updater(package_path)
+        assert entry["type"] == "toml"
+        # Resolved rather than compared as text: the `../` depth is a property of where the
+        # package sits, and a wrong one would silently update nothing.
+        assert (
+            REPO_ROOT / package_path / entry["path"]
+        ).resolve() == LOCK_PATH.resolve()
+
+    @pytest.mark.parametrize("package_path", PACKAGE_PATHS)
+    def test_the_updater_selects_this_package_entry(self, package_path: str):
+        assert lock_updater(package_path)["jsonpath"] == lock_jsonpath(
+            declared_name(package_path)
+        )
 
 
 class TestComponentMatchesDistributionName:

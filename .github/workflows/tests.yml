@@ -35,7 +35,11 @@ jobs:
       - name: Sync workspace
         # agent-framework-core resolves from PyPI at the released range — deliberately the
         # same artifact every consumer of the published wheels gets, not a git pin.
-        run: uv sync
+        #
+        # `--locked` because a plain sync silently re-locks in the runner: a lockfile left
+        # behind by a version bump would keep CI green and hand every contributor a dirty
+        # tree on their first sync instead.
+        run: uv sync --locked
 
       - name: Tests
         run: uv run pytest -q

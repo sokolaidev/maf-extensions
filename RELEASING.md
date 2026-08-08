@@ -58,6 +58,7 @@ Packages version independently. There is no lockstep release, and a fix in one i
 - **Publish a wheel missing `py.typed` or the licence.** Both are invisible to this repository's own tests and break consumers.
 - **Publish a package whose dependency is not on PyPI yet** (see *Release order*).
 - **Publish a version with no changelog entry.** An empty release reads as "nothing changed", which is never true of a release.
+- **Publish against a stale `uv.lock`.** Both gates sync with `--locked`, so a lockfile that disagrees with the versions being released fails before anything is built.
 
 ## If a release goes wrong
 
