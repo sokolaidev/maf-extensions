@@ -101,7 +101,7 @@ jobs:
       # The full gate again, on the exact commit being released. The Tests workflow already
       # ran it on the branch, but a tag can point anywhere.
       - name: Sync workspace
-        run: uv sync
+        run: uv sync --locked
 
       - name: Tests
         run: uv run pytest -q
