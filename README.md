@@ -11,6 +11,7 @@ Sandboxed code execution for MAF agents — the reference implementation of [mic
 | [`maf-sandbox`](packages/maf-sandbox/) | The backend-neutral protocol (`Sandbox`, `SandboxBackend`, `SandboxSpec`, `SandboxKey`, `Isolation`), the router with its deployed-isolation policy, the thread-delete purge participant, a public in-process `testing` backend, and the optional MAF glue module | `agent-framework-core` (protocol modules are import-clean; the glue imports lazily) |
 | [`maf-sandbox-aca`](packages/maf-sandbox-aca/) | [Azure Container Apps Sandboxes](https://learn.microsoft.com/azure/container-apps/sandboxes-overview) as a backend: VM isolation, Deny-default egress, label-based lifecycle that survives multi-replica hosts | `maf-sandbox`, `azure-identity`, `azure-containerapps-sandbox` (preview) |
 | [`maf-sandbox-bicep`](packages/maf-sandbox-bicep/) | The first workload *kind*: `bicep_validate` — compiler-truth validation of agent-authored Bicep, on any backend | `maf-sandbox`, `agent-framework-core` |
+| [`maf-sandbox-wslc`](packages/maf-sandbox-wslc/) | `wslc` (the container CLI that ships with WSL) as a backend: container isolation, Closed egress, for validating on the developer's own machine | `maf-sandbox` |
 
 ```
 app  ->  maf_sandbox (router)  ->  a backend (maf_sandbox_aca, testing, ...)  ->  the sandbox
@@ -27,7 +28,7 @@ app  ->  maf_sandbox (router)  ->  a backend (maf_sandbox_aca, testing, ...)  ->
 uv sync                # one workspace, one lock; agent-framework-core comes from PyPI at the released range
 uv run pytest          # all packages' tests
 uv run ruff check .
-uv run pyright -p packages/maf-sandbox && uv run pyright -p packages/maf-sandbox-aca && uv run pyright -p packages/maf-sandbox-bicep
+uv run pyright -p packages/maf-sandbox && uv run pyright -p packages/maf-sandbox-aca && uv run pyright -p packages/maf-sandbox-bicep && uv run pyright -p packages/maf-sandbox-wslc
 ```
 
 Each package is deliberately self-contained — building, testing and publishing need nothing from this root beyond the shared lock. New extensions arrive as sibling directories under `packages/`.

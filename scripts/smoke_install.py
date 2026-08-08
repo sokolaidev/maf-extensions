@@ -24,6 +24,7 @@ _PACKAGES = {
     "maf-sandbox": "maf_sandbox",
     "maf-sandbox-aca": "maf_sandbox_aca",
     "maf-sandbox-bicep": "maf_sandbox_bicep",
+    "maf-sandbox-wslc": "maf_sandbox_wslc",
 }
 
 _SARIF = json.dumps(
@@ -151,10 +152,24 @@ def _smoke_maf_sandbox_bicep() -> str:
     return "bicep_validate wrote, ran both phases, and rendered diagnostics"
 
 
+def _smoke_maf_sandbox_wslc() -> str:
+    from maf_sandbox import Isolation
+    from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
+
+    # Constructed, not called: CI runners have no `wslc`, and reaching it would not test packaging.
+    backend = WslcSandboxBackend(WslcSandboxConfig())
+    if backend.isolation != Isolation.CONTAINER:
+        raise SystemExit(
+            f"FAIL: wslc backend declares {backend.isolation!r}, expected container"
+        )
+    return "backend constructs and declares container isolation"
+
+
 _SMOKES = {
     "maf-sandbox": _smoke_maf_sandbox,
     "maf-sandbox-aca": _smoke_maf_sandbox_aca,
     "maf-sandbox-bicep": _smoke_maf_sandbox_bicep,
+    "maf-sandbox-wslc": _smoke_maf_sandbox_wslc,
 }
 
 

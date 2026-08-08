@@ -1,0 +1,11 @@
+[
+  {
+    "CreatedAt": 1786228146,
+    "Id": "65d2ca6ec35c22f4db72c43d0e613dc13fe09ace6bc15061764cd9cabfadeee7",
+    "Image": "alpine:3",
+    "Name": "maf-sandbox-wslc-c63d0bd23ebf",
+    "Ports": [],
+    "State": 2,
+    "StateChangedAt": 1786228144
+  }
+]

@@ -16,7 +16,7 @@ uv run pytest -q   # the whole suite, about a second
 ```bash
 uv run pytest -q
 uv run ruff check . && uv run ruff format --check .
-uv run pyright -p packages/maf-sandbox        # and -aca, -bicep
+uv run pyright -p packages/maf-sandbox        # and -aca, -bicep, -wslc
 ```
 
 Type checking is **strict** and per package, and it covers `src/` only — fixtures and hand-rolled fakes are not where a strict checker's objections are signal.
