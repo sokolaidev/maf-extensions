@@ -1,7 +1,7 @@
 name: Release Please
 
-# Keeps a Release PR open per package: version bump, changelog section, manifest. Merging it
-# creates the GitHub Release and its tag; launching the publish is the manual step.
+# Keeps a Release PR open per package: version bump, changelog section, manifest. Merging one
+# releases it — tag, then publish — with no further step. Merging is the decision.
 on:
   push:
     branches: [main]
@@ -25,6 +25,9 @@ jobs:
       # Labels are an Issues-API concept even on a PR, and release-please creates its own
       # `autorelease:*` pair on first run. Without this it 403s and every release wedges.
       issues: write
+      # Dispatching the two workflows below. It cannot approve anything: publishing still
+      # waits on the `pypi` environment's reviewer.
+      actions: write
     steps:
       - name: Run release-please
         # Pinned to the commit v4 resolves to: a moving tag is a supply-chain hole, and this
@@ -35,22 +38,39 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-      # The tag exists by now, but one created by GITHUB_TOKEN starts no workflow — so the
-      # publish is launched by hand, against that tag. docs/maintainers.md has the why.
-      - name: Say how to publish
+      # A tag created by GITHUB_TOKEN starts no workflow, so `on: push: tags` never fires.
+      # Dispatch does fire — it is a documented exception — and needs no stored credential.
+      - name: Publish each released package
         if: steps.release.outputs.releases_created == 'true'
         env:
+          GH_TOKEN: ${{ github.token }}
           PATHS: ${{ steps.release.outputs.paths_released }}
           OUTPUTS: ${{ toJSON(steps.release.outputs) }}
         run: |
           set -euo pipefail
-          {
-            echo "### Released — run Publish to upload each one to PyPI"
-            echo
-            echo '```bash'
-            for path in $(echo "$PATHS" | jq -r '.[]'); do
-              tag="$(echo "$OUTPUTS" | jq -r --arg k "${path}--tag_name" '.[$k]')"
-              echo "gh workflow run publish-packages.yml --ref ${tag} -f package=${path##*/} -f target=pypi"
-            done
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          for path in $(echo "$PATHS" | jq -r '.[]'); do
+            tag="$(echo "$OUTPUTS" | jq -r --arg k "${path}--tag_name" '.[$k]')"
+            # At the tag, never at main: main may already have moved past the release commit.
+            gh workflow run publish-packages.yml --ref "$tag" \
+              -f package="${path##*/}" -f target=pypi
+            echo "dispatched publish for ${path##*/} at ${tag}" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      # A Release PR is opened by this token, so no `pull_request` run happens and its
+      # required check is never reported. Dispatching supplies it against the same commit.
+      - name: Run the checks on each Release PR
+        if: steps.release.outputs.prs_created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRS: ${{ steps.release.outputs.prs }}
+        run: |
+          set -euo pipefail
+          branches="$(echo "$PRS" | jq -r '.[].headBranchName // empty')"
+          if [ -z "$branches" ]; then
+            echo "::warning::no Release PR branches in the action's output; run Tests by hand"
+            exit 0
+          fi
+          for branch in $branches; do
+            gh workflow run tests.yml --ref "$branch"
+            echo "dispatched tests for ${branch}" >> "$GITHUB_STEP_SUMMARY"
+          done

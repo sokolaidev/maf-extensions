@@ -119,6 +119,16 @@ class TestComponentMatchesDistributionName:
     def test_configured_component_is_the_distribution_name(self, package_path: str):
         assert configured_component(package_path) == declared_name(package_path)
 
+    @pytest.mark.parametrize("package_path", PACKAGE_PATHS)
+    def test_directory_basename_is_the_distribution_name(self, package_path: str):
+        """release-please.yml dispatches the publish with `package=` the path's basename.
+
+        The publish workflow takes that as both the directory to build and the distribution
+        to upload, so a package whose directory and `[project] name` disagree would dispatch
+        a release of the wrong thing — or of nothing, since the input is a fixed choice list.
+        """
+        assert package_path.rsplit("/", 1)[-1] == declared_name(package_path)
+
 
 class TestTagsResolveToExactlyOnePackage:
     """`maf-sandbox-v*` must not also swallow `maf-sandbox-aca-v0.1.0`.

@@ -82,14 +82,19 @@ jobs:
 
       # Fails the run rather than the release: PyPI uploads are immutable, so a mismatched
       # tag can't be corrected after the fact.
+      # Covers a dispatch at a tag as well as a tag push — the automated path is the former,
+      # where package comes from the input and version from the manifest at that commit.
       - name: Check the tag matches the package version
-        if: github.event_name == 'push'
+        if: github.ref_type == 'tag'
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          PACKAGE: ${{ steps.resolve.outputs.package }}
+          VERSION: ${{ steps.resolve.outputs.version }}
         run: |
           set -euo pipefail
-          declared="$(grep -m1 '^version = ' "packages/${{ steps.resolve.outputs.package }}/pyproject.toml" | cut -d'"' -f2)"
-          tagged="${{ steps.resolve.outputs.version }}"
-          if [ "$declared" != "$tagged" ]; then
-            echo "::error::tag says ${tagged} but packages/${{ steps.resolve.outputs.package }}/pyproject.toml says ${declared}"
+          expected="${PACKAGE}-v${VERSION}"
+          if [ "$REF_NAME" != "$expected" ]; then
+            echo "::error::tag ${REF_NAME} disagrees with ${PACKAGE} ${VERSION}; expected ${expected}"
             exit 1
           fi
 
