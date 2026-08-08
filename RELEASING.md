@@ -20,6 +20,12 @@ There are two steps, and the first one is the decision.
 
 That is the whole flow. Nothing else needs doing, and nothing publishes without that approval.
 
+Three things a Release PR does need from you first, all of them because it is a generated branch that release-please stops maintaining once the content it would write settles.
+
+- **Its required check sits at "Approve and run"** rather than reporting on its own, because a bot-opened PR trips the outside-collaborator rule.
+- **If the branch is out of date**, update it with **rebase** rather than the default merge commit — `main` requires branches to be current, and the branch is release-please's, which assumes a single commit on it. The check resets and needs approving again afterwards.
+- **If it says merge conflicts, do not resolve them.** Delete the branch and let the next release-please run rebuild it. Rebasing will not help here: release-please rewrites a release branch only when the content it would write changes, so one left stale by other releases stays stale, conflict and all. Deleting is safe unless you used the changelog escape hatch on it, which goes with it.
+
 **Optionally, before merging: rehearse on TestPyPI** — Actions → Publish → *Run workflow* → pick the package, target `testpypi`. Worth doing after a packaging change (a new dependency, a build-backend setting, a moved file); unnecessary for an ordinary code release, because the same install-and-use check runs on every PR and again before every publish.
 
 **Releasing by hand** still works, for a release the automation cannot cut — push the tag and the same pipeline runs:

@@ -69,11 +69,11 @@ The same exception supplies the Release PR's checks, for the second half of the 
 
 Two roads not taken. **Calling the publish job as a reusable workflow** is closed outright: PyPI forbids it — *"Reusable workflows cannot currently be used as the workflow in a Trusted Publisher"* ([warehouse#11096](https://github.com/pypi/warehouse/issues/11096)) — because the job that mints the token must live in the file registered as the publisher. And **a personal access token or GitHub App**, the usual answer elsewhere, is now unnecessary: it would make these events a person's events, but dispatch already achieves that without a credential. If the dispatched check ever turns out not to satisfy the branch rule, an App via `actions/create-github-app-token` is the fallback — prefer it to a PAT, since it is scoped to this repository, has no expiry to forget, and does not inherit an admin's ruleset bypass. It would still not fix the ordering.
 
-## If a Release PR's check never arrives
+## A Release PR's checks wait for approval
 
-The dispatch above should supply it within a minute of the PR appearing. If it does not, the thing to know is that the check is *missing* rather than failing — `main` requires `Python (pytest + ruff + pyright)`, and a PR opened by this token starts no run of its own, so GitHub is waiting for a report that will never come.
+A Release PR arrives with `Python (pytest + ruff + pyright)` unreported, and `main` requires it. The run does exist: it is queued as `action_required`, because `github-actions[bot]` trips the *require approval for outside collaborators* setting. **Approve and run** on the run, and the check reports and passes.
 
-Check the release-please run for the *Run the checks on each Release PR* step: a warning there means the action's `prs` output did not carry a branch name, and the fix is **Actions → Tests → Run workflow** against the Release PR's branch by hand. If the run *was* dispatched and the rule still is not satisfied, then a dispatched check does not count toward a required check — in which case add a GitHub App token (see above) rather than living with the manual step.
+This was misdiagnosed at first as the event never firing — the `GITHUB_TOKEN` rule blocks tags from triggering workflows, so a PR seemed likely to be blocked the same way. It is not; the runs are created and held. Loosening that setting under Settings → Actions → General would make Release PRs self-checking, at the cost of applying to every contributor. A GitHub App token would too, by making the PR an ordinary one.
 
 Prefer either of those to a rule bypass. The bypass works, and is even defensible here — a Release PR only edits a version, a changelog and the manifest, and `publish-packages.yml` re-runs the entire gate on the tagged commit before anything is uploaded — but a release that routinely bypasses branch protection trains you to click through branch protection.
 

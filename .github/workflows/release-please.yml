@@ -61,25 +61,3 @@ jobs:
               -f package="${path##*/}" -f target=pypi
             echo "dispatched publish for ${path##*/} at ${tag}" >> "$GITHUB_STEP_SUMMARY"
           done
-
-      # A Release PR is opened by this token, so no `pull_request` run happens and its
-      # required check is never reported. Dispatching supplies it against the same commit.
-      - name: Run the checks on each Release PR
-        if: steps.release.outputs.prs_created == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          # This job checks nothing out, so gh cannot infer the repository from a git
-          # remote. Without this it fails with "not a git repository".
-          GH_REPO: ${{ github.repository }}
-          PRS: ${{ steps.release.outputs.prs }}
-        run: |
-          set -euo pipefail
-          branches="$(echo "$PRS" | jq -r '.[].headBranchName // empty')"
-          if [ -z "$branches" ]; then
-            echo "::warning::no Release PR branches in the action's output; run Tests by hand"
-            exit 0
-          fi
-          for branch in $branches; do
-            gh workflow run tests.yml --ref "$branch"
-            echo "dispatched tests for ${branch}" >> "$GITHUB_STEP_SUMMARY"
-          done
