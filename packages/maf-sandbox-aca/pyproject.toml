@@ -36,8 +36,9 @@ dependencies = [
     # maf-sandbox-bicep's copy: unversioned, the published wheel would accept any
     # maf-sandbox ever released, including one from before this protocol existed.
     # Upper-bounded too: maf-sandbox has not yet reached a stable API, so every release
-    # before 1.0.0 may include breaking changes (see its CHANGELOG).
-    "maf-sandbox>=0.1.0,<0.2",
+    # before 1.0.0 may include breaking changes (see its CHANGELOG). Moving either end of
+    # this range has an order to it — see RELEASING.md.
+    "maf-sandbox>=0.1.0,<0.3",
     # DefaultAzureCredential for the sandbox data plane.
     "azure-identity>=1.25.1,<2",
     # The ACA Sandboxes data-plane SDK — still 0.1.0bN. The version pin lives here and
