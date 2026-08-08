@@ -82,8 +82,9 @@ Prefer either of those to a rule bypass. The bypass works, and is even defensibl
 1. Create `packages/<name>/` with its own `pyproject.toml`, `README.md`, `CHANGELOG.md`, `LICENSE`, and a `py.typed` beside the module.
 2. Give it its own `[tool.ruff]`, `[tool.pyright]` (strict) and `[tool.pytest.ini_options]` — the workspace root does not reach into packages, and an sdist has no root to inherit from. Add its `tests/` to the root `pyproject.toml`'s `testpaths` too, or repository-wide runs will skip them without saying so.
 3. Add a tag glob for it to `publish-packages.yml`'s `on.push.tags`, and to the `workflow_dispatch` package choices.
-4. Add it to the build/smoke loops in `tests.yml`, and to `scripts/smoke_install.py` — a package with no smoke can ship a broken wheel.
-5. Register it in `release-please-config.json` — **with its `package-name`** — and in `.release-please-manifest.json`, seeded with the version its `pyproject.toml` already declares. Unregistered, it simply never gets a Release PR — so `tests/test_release_config.py` fails until both files list it, its manifest version matches, and its tag glob resolves to it alone.
+4. Allow its tag through the `pypi` environment: Settings → Environments → `pypi` → *Deployment branches and tags* → add `<name>-v*` as a tag rule (or `gh api -X POST repos/sokolaidev/maf-extensions/environments/pypi/deployment-branch-policies -f name="<name>-v*" -f type=tag`). The environment deploys only listed tag patterns, so without this the publish fails at the *Publish to pypi* job — after every gate has passed — with *"not allowed to deploy to pypi due to environment protection rules"*, and a green TestPyPI rehearsal proves nothing about it because `testpypi` carries no such restriction. The failed run is rerunnable once the pattern exists; this step is written down because it was found exactly that way.
+5. Add it to the build/smoke loops in `tests.yml`, and to `scripts/smoke_install.py` — a package with no smoke can ship a broken wheel.
+6. Register it in `release-please-config.json` — **with its `package-name`** — and in `.release-please-manifest.json`, seeded with the version its `pyproject.toml` already declares. Unregistered, it simply never gets a Release PR — so `tests/test_release_config.py` fails until both files list it, its manifest version matches, and its tag glob resolves to it alone.
 
    `package-name` is not optional here, and its absence fails quietly rather than loudly: release-please's Python strategy reads `pyproject.toml` only to find version-bearing files, never to name the component. Leave it out and the component is the empty string, so the package tags as a bare `v<version>` — which collides with every other package and matches none of the publish workflow's globs.
 
@@ -101,6 +102,6 @@ Prefer either of those to a rule bypass. The bypass works, and is even defensibl
      --target-branch=<your-branch> --config-file=release-please-config.json \
      --manifest-file=.release-please-manifest.json --dry-run --token="$(gh auth token)"
    ```
-6. Register its pending publishers (see above), then release it.
+7. Register its pending publishers (see above), then release it.
 
 The tag globs do not overlap despite the shared prefix: in `maf-sandbox-aca-v0.1.0`, the character after `maf-sandbox-` is `a`, not `v`. Keep that true for any new name, or two packages will answer the same tag.
