@@ -44,7 +44,7 @@ jobs:
       version: ${{ steps.resolve.outputs.version }}
       target: ${{ steps.resolve.outputs.target }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install uv
         # Pinned to the commit v5 resolves to: a moving tag is a supply-chain hole, and
@@ -137,7 +137,7 @@ jobs:
           echo "$contents" | grep -qx "${module}/py.typed"
           echo "$contents" | grep -q "\.dist-info/licenses/LICENSE"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: dist-${{ steps.resolve.outputs.package }}
           path: dist/
@@ -149,12 +149,12 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: dist-${{ needs.build.outputs.package }}
           path: dist/
@@ -182,7 +182,7 @@ jobs:
       # Mints the OIDC token that IS the credential. No secrets involved.
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: dist-${{ needs.build.outputs.package }}
           path: dist/
@@ -207,20 +207,20 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # Made public only after the upload succeeds, never before — a failed publish can't leave
-  # behind a Release for a version that doesn't exist.
+  # Only reached by a hand-pushed tag: an automated release already has its Release, made by
+  # release-please when its PR merged. See docs/maintainers.md for why that order is forced.
   release:
     name: Record the release
     needs: [build, publish]
-    # Tags only. A workflow_dispatch run is a TestPyPI rehearsal, and a rehearsal is not a
-    # release.
-    if: github.event_name == 'push'
+    # Real releases only, however they were started. A TestPyPI run is a rehearsal, and a
+    # rehearsal is not a release.
+    if: needs.build.outputs.target == 'pypi'
     runs-on: ubuntu-latest
     permissions:
       # Scoped to this job alone; every other job in this workflow stays read-only.
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # The changelog entry is the release notes; a missing section fails the job rather
       # than shipping a Release with no notes.
@@ -250,27 +250,22 @@ jobs:
             echo "CHANGELOG_EOF"
           } >> "$GITHUB_OUTPUT"
 
-      # release-please leaves a draft for this tag; flipping it public is the release. Absent
-      # one — a tag pushed by hand — create it outright, which is the same end state.
-      - name: Publish the GitHub Release
+      # Idempotent on purpose: create the Release if this tag has none, and otherwise bring
+      # its notes in line with the changelog rather than failing on the one that exists.
+      - name: Record the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          # Derived, not `github.ref_name`: this job also runs from a dispatch, where the ref
+          # is whatever was dispatched. `--verify-tag` still refuses a tag that isn't there.
+          TAG: ${{ needs.build.outputs.package }}-v${{ needs.build.outputs.version }}
           PACKAGE: ${{ needs.build.outputs.package }}
           VERSION: ${{ needs.build.outputs.version }}
           NOTES: ${{ steps.notes.outputs.body }}
         run: |
           set -euo pipefail
-          # By id, not by tag: a draft has no tag yet, so the by-tag endpoint 404s on it.
-          ids="$(gh api "repos/${GITHUB_REPOSITORY}/releases" --paginate \
-            --jq '.[] | select(.draft and .tag_name == env.TAG) | .id')"
-          draft="${ids%%$'\n'*}"
-          if [ -n "$draft" ]; then
-            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${draft}" \
-              -F draft=false \
-              -f name="${PACKAGE} ${VERSION}" \
-              -f body="$NOTES" > /dev/null
-            echo "published draft release ${draft} as ${TAG}"
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release edit "$TAG" --title "${PACKAGE} ${VERSION}" --notes "$NOTES"
+            echo "updated the existing release for ${TAG}"
           else
             gh release create "$TAG" \
               --title "${PACKAGE} ${VERSION}" \

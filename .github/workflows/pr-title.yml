@@ -19,13 +19,13 @@ jobs:
     name: Conventional commit format
     runs-on: ubuntu-latest
     steps:
-      # Pinned to the commit v5 resolves to, like every other action here.
+      # Pinned to the commit v5 resolves to: a moving tag is a supply-chain hole.
       - uses: amannn/action-semantic-pull-request@e32d7e603df1aa1ba07e981f2a23455dee596825 # v5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          # `feat` and `fix` move versions; the rest are recorded and release nothing. A `!`
-          # suffix or a BREAKING CHANGE footer bumps the minor, since every package is 0.x.
+          # Anything visible in a changelog releases: `feat` a minor, `fix`/`perf`/`revert`/
+          # `docs` a patch. A `!` or BREAKING CHANGE footer bumps the minor, every pkg being 0.x.
           types: |
             feat
             fix

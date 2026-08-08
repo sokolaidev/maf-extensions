@@ -1,7 +1,7 @@
 name: Release Please
 
 # Keeps a Release PR open per package: version bump, changelog section, manifest. Merging it
-# drafts a GitHub Release; pushing the tag it names is what publishes (RELEASING.md).
+# creates the GitHub Release and its tag; launching the publish is the manual step.
 on:
   push:
     branches: [main]
@@ -18,7 +18,7 @@ jobs:
     name: Prepare releases
     runs-on: ubuntu-latest
     permissions:
-      # Opens and updates the Release PR, and drafts the GitHub Release on merge. Scoped to
+      # Opens and updates the Release PR, and creates the Release and tag on merge. Scoped to
       # this job; the workflow default above stays read-only.
       contents: write
       pull-requests: write
@@ -35,9 +35,9 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-      # The tag is deliberately not pushed here: one pushed by GITHUB_TOKEN triggers no
-      # workflow, so publishing would silently never start. The maintainer pushes it.
-      - name: Say which tags to push
+      # The tag exists by now, but one created by GITHUB_TOKEN starts no workflow — so the
+      # publish is launched by hand, against that tag. docs/maintainers.md has the why.
+      - name: Say how to publish
         if: steps.release.outputs.releases_created == 'true'
         env:
           PATHS: ${{ steps.release.outputs.paths_released }}
@@ -45,13 +45,12 @@ jobs:
         run: |
           set -euo pipefail
           {
-            echo "### Drafted — push the tag to publish"
+            echo "### Released — run Publish to upload each one to PyPI"
             echo
             echo '```bash'
             for path in $(echo "$PATHS" | jq -r '.[]'); do
               tag="$(echo "$OUTPUTS" | jq -r --arg k "${path}--tag_name" '.[$k]')"
-              sha="$(echo "$OUTPUTS" | jq -r --arg k "${path}--sha" '.[$k]')"
-              echo "git tag ${tag} ${sha} && git push origin ${tag}"
+              echo "gh workflow run publish-packages.yml --ref ${tag} -f package=${path##*/} -f target=pypi"
             done
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

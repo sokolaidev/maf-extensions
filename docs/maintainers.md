@@ -45,26 +45,29 @@ Packages are published under the `sokolai` organization (SOKOLAI BV — a Compan
 
 Worth knowing if you rebuild this elsewhere: **the organization is not on the critical path.** Trusted publishers can be registered against a personal account and the projects transferred into an organization later. Organization approval is manual and can take days; a release does not have to wait for it.
 
-## Why releases are drafted
+## Why a Release exists before its upload does
 
-release-please creates the GitHub Release the moment its Release PR merges — before anything has reached PyPI. Left alone that inverts the ordering the publish workflow was built around, where a Release is the record of an upload that *succeeded*.
+release-please creates the GitHub Release the moment its Release PR merges — before anything has reached PyPI. That inverts the order this repository would prefer, where a Release is the record of an upload that *succeeded*. It is accepted knowingly, because both ways out are worse.
 
-`"draft": true` resolves it. A draft is invisible to anyone without push access, sends no notification, and creates no tag of its own; `publish-packages.yml` flips it public once the upload has gone through, and until then a failed release has announced nothing.
+`"draft": true` is the one that looks right and is a trap. **A draft carries no tag, and a tag is how release-please finds where the last release ended.** Its lookup runs releases → tags → manifest: the release iterator skips releases with no tag commit, the tag backfill has nothing to find, and the manifest fallback synthesises a release with `sha: ''`. An empty sha matches no commit, so `commitsAfterSha` returns the entire history. And since the action calls `createReleases()` and then `createPullRequests()` in a single invocation, the same run that drafted a release would immediately open a second Release PR replaying everything that had just shipped. `tests/test_release_config.py` asserts `draft` stays off for this reason.
 
-The obvious alternative, `"skip-github-release": true`, is a trap: it wedges release-please. The `autorelease: pending` label on the merged Release PR never flips to `autorelease: tagged`, and a pending label is what stops the *next* Release PR from being opened ([release-please#1561](https://github.com/googleapis/release-please/issues/1561)).
+`"skip-github-release": true` is the other one, and it wedges release-please differently: the `autorelease: pending` label on the merged Release PR never flips to `autorelease: tagged`, and a pending label is what stops the *next* Release PR from being opened ([release-please#1561](https://github.com/googleapis/release-please/issues/1561)).
 
-Those two labels are the release state machine, not decoration — which is why the workflow grants `issues: write` alongside the permissions you would expect. Labels live on the Issues API even when they are on a pull request, and release-please creates its own pair the first time it runs. Trim that permission and every release wedges in the same way, for a different reason.
+Those two labels are the release state machine, not decoration — which is why the workflow grants `issues: write` alongside the permissions you would expect. Labels live on the Issues API even when they sit on a pull request, and release-please creates its own pair the first time it runs. Trim that permission and every release wedges in the same way, for a third reason.
 
-## Why the tag is pushed by hand
+So: if a publish fails after its Release exists, delete the Release and the tag. The version number is spent either way — the manifest already records it as released, and the next Release PR will propose the one after it.
 
-The one manual step in a release is `git push origin <tag>`, and it is manual because of a GitHub rule with no configuration switch: **events triggered by a workflow's own `GITHUB_TOKEN` never start another workflow run.** release-please could create the tag itself, but that tag would start no publish — leaving a release that looks cut and was never uploaded, with nothing to say so.
+The ordering can be recovered, and it needs the same machinery as automating the publish: have this workflow create the tag itself and then *dispatch* `publish-packages.yml` at it, with the Release created at the end by the publish run rather than by release-please. `workflow_dispatch` and `repository_dispatch` are documented exceptions to the `GITHUB_TOKEN` rule below and always start a run, so no token is needed for it.
 
-Two ways around it were considered and rejected:
+## Why the publish is launched by hand
 
-- **Call the publish job as a reusable workflow** from the release-please run, skipping tags entirely. PyPI forbids it: *"Reusable workflows cannot currently be used as the workflow in a Trusted Publisher"* ([warehouse#11096](https://github.com/pypi/warehouse/issues/11096)). The job that mints the token has to live in the workflow file registered as the publisher.
-- **Give release-please a personal access token or a GitHub App**, so the tag push is not the robot's. This works, and it is the usual answer. It costs a stored credential in a repository whose entire publishing design is that there isn't one — to save a step from the same person who has to show up at the approval gate a minute later.
+release-please creates the tag, so nobody pushes one. What stays manual is *starting* the upload, and it is manual because of a GitHub rule with no configuration switch: **events triggered by a workflow's own `GITHUB_TOKEN` do not start another workflow run**, which exists to stop a workflow that pushes a commit from triggering itself forever. So release-please's tag lands and `publish-packages.yml`'s `on: push: tags` never fires.
 
-If that trade later looks worth making: add `token: ${{ secrets.RELEASE_PLEASE_TOKEN }}` to the action, drop `"draft": true` (a draft has no tag, so there would be nothing to trigger on), and delete the draft branch of the *Publish the GitHub Release* step. Be deliberate about what that gives up — with releases no longer drafted, a GitHub Release announces a version before PyPI has it.
+One way out was considered and is closed: **calling the publish job as a reusable workflow** from the release-please run. PyPI forbids it — *"Reusable workflows cannot currently be used as the workflow in a Trusted Publisher"* ([warehouse#11096](https://github.com/pypi/warehouse/issues/11096)) — because the job that mints the token has to live in the file registered as the publisher.
+
+The way out that is open, and not yet taken: **`workflow_dispatch` and `repository_dispatch` are documented exceptions and always create a run**, even from `GITHUB_TOKEN`. This workflow can therefore start the publish itself, with no credential. It is left as a follow-up rather than grown into the change that introduced everything above, and it is the same work that would restore the publish-then-Release ordering.
+
+**A personal access token or GitHub App** is the third option and the usual answer elsewhere: it makes the tag a person's tag, so the push triggers normally. Note what it does and does not buy here. It fixes the required check on Release PRs, which the dispatch route only probably fixes. It does *not* fix the ordering, since a real release still precedes the upload. And it is a stored credential in a repository whose publishing design is that there isn't one — though it is a GitHub credential, not a PyPI one: nothing holding it could publish a package, which still needs OIDC and an approval on the `pypi` environment. Prefer a GitHub App via `actions/create-github-app-token` over a PAT: scoped to this repository, no expiry to forget, and it does not inherit an admin's ruleset bypass.
 
 ## Release PRs and the required check
 

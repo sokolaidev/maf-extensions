@@ -25,11 +25,12 @@ release-please owns all four. Adding a changelog entry or bumping a version by h
 
 ## Opening a pull request
 
-1. Run the full gate first — CI runs exactly this, and a red PR wastes a review:
+1. Run the local checks first — a red PR wastes a review:
    ```bash
    uv sync && uv run pytest -q && uv run ruff check . && uv run ruff format --check .
    uv run pyright -p packages/maf-sandbox && uv run pyright -p packages/maf-sandbox-aca && uv run pyright -p packages/maf-sandbox-bicep
    ```
+   CI runs these **and more**: it builds every wheel, checks their metadata, and installs each one into a clean environment and uses it. Green locally is not the full gate — do not report it as one.
 2. Title it as above.
 3. Body: follow [`.github/pull_request_template.md`](.github/pull_request_template.md). Say what changed and why, and name anything a reviewer should look at first. Describe what the code does now — not what you did, and not a narrative of your process.
 4. State plainly what you did **not** verify. An unverified claim in a PR body is worse than an absent one.

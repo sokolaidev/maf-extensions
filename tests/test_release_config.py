@@ -177,17 +177,22 @@ class TestOnlyUserFacingTypesRelease:
         assert visible == {"feat", "fix", "perf", "revert", "docs"}
 
 
-class TestReleasesAreDraftedNotAnnounced:
-    """The ordering property #12 established, now enforced by configuration.
+class TestReleasesAreNotDrafted:
+    """`draft` looks like the way to keep a Release behind the upload it announces. It isn't.
 
-    A draft carries no tag and no notification, so the GitHub Release only becomes real once
-    `publish-packages.yml` flips it — after the upload to PyPI succeeded. Dropping `draft`
-    would silently restore the thing that job exists to prevent: a Release announcing a
-    version that PyPI does not have.
+    A draft carries no tag, and a tag is how release-please finds where the last release
+    ended: the release iterator skips releases with no tag commit, the tag backfill has
+    nothing to find, and the manifest fallback synthesises a release with `sha: ''`. An empty
+    sha matches no commit, so `commitsAfterSha` returns the whole history — and because the
+    action creates releases and then pull requests in one invocation, every release would
+    immediately open a second Release PR replaying what had just shipped.
+
+    So the Release exists before the upload does. That is a knowing trade, written up in
+    docs/maintainers.md, and re-adding `draft` to undo it breaks releases instead.
     """
 
-    def test_draft_is_on(self):
-        assert CONFIG["draft"] is True
+    def test_draft_is_off(self):
+        assert CONFIG.get("draft", False) is False
 
     def test_component_is_in_the_tag(self):
         # Without this, all three packages would tag as plain `v<version>` and collide.
