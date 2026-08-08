@@ -10,6 +10,7 @@ becomes a committed one; any Linux image with ``sh`` and ``sleep`` will do.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 import subprocess
@@ -37,14 +38,19 @@ def _key(scope: str) -> SandboxKey:
 
 
 def _names_on_the_machine(name: str) -> list[str]:
-    """Every container currently named ``name``, read with wslc rather than the backend."""
+    """Every container currently named ``name``, read with wslc rather than the backend.
+
+    Read as JSON: the table view truncates the NAME column, so scanning it can miss a
+    container that is still there and pass an emptiness assertion that should fail.
+    """
     listing = subprocess.run(
-        ["wslc", "container", "list", "-a", "--filter", f"name={name}"],
+        ["wslc", "container", "list", "-a", "--format", "json", "--filter", f"name={name}"],
         capture_output=True,
         text=True,
         timeout=60,
     ).stdout
-    return [line for line in listing.splitlines() if name in line]
+    rows = json.loads(listing) if listing.strip() else []
+    return [row["Name"] for row in rows if row.get("Name") == name]
 
 
 class TestALiveContainer:
