@@ -278,3 +278,16 @@ class TestReleasesAreNotDrafted:
     def test_component_is_in_the_tag(self):
         # Without this, all three packages would tag as plain `v<version>` and collide.
         assert CONFIG["include-component-in-tag"] is True
+
+
+class TestReleasePullRequestsKeepThemselvesCurrent:
+    """Off, merging one package's release strands the others.
+
+    release-please updates a release branch only when the notes it would write change, so
+    the packages that did not change stay pinned to an old `main` — and every release moves
+    the manifest and the lockfile, which is what they then conflict on. The recovery was to
+    delete those branches and rebuild them, which loses the approvals on their checks.
+    """
+
+    def test_always_update_is_on(self):
+        assert CONFIG["always-update"] is True
