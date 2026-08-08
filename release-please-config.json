@@ -24,7 +24,7 @@
         {
           "type": "toml",
           "path": "/uv.lock",
-          "jsonpath": "$.package[?(@.name=='maf-sandbox')].version"
+          "jsonpath": "$.package[?(@.name.value=='maf-sandbox')].version"
         }
       ]
     },
@@ -34,7 +34,7 @@
         {
           "type": "toml",
           "path": "/uv.lock",
-          "jsonpath": "$.package[?(@.name=='maf-sandbox-aca')].version"
+          "jsonpath": "$.package[?(@.name.value=='maf-sandbox-aca')].version"
         }
       ]
     },
@@ -44,7 +44,7 @@
         {
           "type": "toml",
           "path": "/uv.lock",
-          "jsonpath": "$.package[?(@.name=='maf-sandbox-bicep')].version"
+          "jsonpath": "$.package[?(@.name.value=='maf-sandbox-bicep')].version"
         }
       ]
     }

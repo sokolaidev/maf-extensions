@@ -70,8 +70,15 @@ def release_tag(package_path: str) -> str:
 
 
 def lock_jsonpath(distribution: str) -> str:
-    """Points an `extra-files` updater at one `[[package]]` entry in `uv.lock`."""
-    return f"$.package[?(@.name=='{distribution}')].version"
+    """Points an `extra-files` updater at one `[[package]]` entry in `uv.lock`.
+
+    `.value` rather than `name` itself: release-please parses TOML into position-annotated
+    nodes (`{start, end, value}`), so a filter comparing `@.name` to a string compares an
+    object and matches nothing. That shape is its internal parser's, not a documented
+    contract — if a release-please bump breaks it, the symptom is a Release PR whose
+    `uv sync --locked` check fails, and the fix is to re-check this expression.
+    """
+    return f"$.package[?(@.name.value=='{distribution}')].version"
 
 
 def locked_version(distribution: str) -> str | None:
