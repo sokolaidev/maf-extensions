@@ -5,7 +5,7 @@
   "separate-pull-requests": true,
   "bump-minor-pre-major": true,
   "draft": true,
-  "pull-request-header": ":robot: Release prepared from the commits below. **The generated changelog is a draft — rewrite it as prose before merging**, for someone deciding whether to upgrade. See CONTRIBUTING.md.",
+  "pull-request-header": ":robot: Release prepared from the commits below. The changelog is assembled from their PR titles, so it was written before it got here — read it as a release rather than as a diff. See CONTRIBUTING.md.",
   "changelog-sections": [
     { "type": "feat", "section": "Features" },
     { "type": "fix", "section": "Bug Fixes" },

@@ -10,7 +10,9 @@ One-time setup — the PyPI organization, the trusted publishers, the GitHub env
 
 ## Cutting a release
 
-1. **Edit the Release PR, then merge it.** It already carries the version bump, the `CHANGELOG.md` section and the manifest update. The generated changelog is a **draft to rewrite** — see [`CONTRIBUTING.md`](CONTRIBUTING.md#changelogs) for what a good entry says. Merging drafts a GitHub Release, which stays invisible and carries no tag until step 4 succeeds.
+1. **Review the Release PR, then merge it.** It carries the version bump, the `CHANGELOG.md` section assembled from the PR titles since the last release, and the manifest update. Nothing in it is meant to be edited by hand: the notes were written when those PRs were named ([`CONTRIBUTING.md`](CONTRIBUTING.md#pr-titles)), so reviewing it means reading the entries as a release rather than as a diff. Merging drafts a GitHub Release, which stays invisible and carries no tag until step 4 succeeds.
+
+   Editing `CHANGELOG.md` here is an escape hatch rather than the process, for the entry that reads badly enough to be worth it. If you do, merge promptly: release-please regenerates this branch whenever `main` moves, and it will take your edit with it.
 
    Its required check will be missing, because a pull request opened by a workflow's own token starts no workflow run. Supply it with **Actions → Tests → Run workflow**, pointed at the Release PR's branch; the run reports against the same commit, and the PR then merges on its own merits rather than on a bypass.
 2. **Optionally rehearse on TestPyPI** — Actions → Publish → *Run workflow* → pick the package, target `testpypi`. Worth doing after a packaging change (a new dependency, a build-backend setting, a moved file); unnecessary for an ordinary code release, because the same install-and-use check runs on every PR and again before every publish.

@@ -35,7 +35,9 @@ If a change genuinely needs to cross one of those lines, say so in the PR — th
 
 ## PR titles
 
-This repository squash-merges, so a PR title becomes the commit subject on `main` — and that subject is what decides the next version. Titles follow [Conventional Commits](https://www.conventionalcommits.org/), which CI checks:
+**Your PR title is the changelog entry.** This repository squash-merges, so it becomes the commit subject on `main`, and that subject both decides the next version and is what a reader sees in the release notes. Write it for the person deciding whether to upgrade — what changed for them, not what you did to the code. "Refactored internals" helps nobody; "accept a list of arguments to `exec`, and quote them" does.
+
+Titles follow [Conventional Commits](https://www.conventionalcommits.org/), which CI checks:
 
 ```
 fix(aca): retry the label query when the control plane returns 429
@@ -51,9 +53,9 @@ The scope in parentheses is free-form and optional. Which package a change belon
 
 ## Changelogs
 
-You do not edit `CHANGELOG.md` in an ordinary PR. [release-please](https://github.com/googleapis/release-please) keeps a Release PR open per package and writes the section there, generated from commit subjects — which is exactly why **that section is a draft to rewrite before the Release PR is merged**.
+Nobody writes one. `CHANGELOG.md` is assembled from the titles above by [release-please](https://github.com/googleapis/release-please), which keeps a Release PR open per package and files each entry under its type. That section becomes the GitHub Release notes verbatim — so the quality of a release's notes is decided when you name your PR, and nowhere else.
 
-Generated entries read like `* fix: correct the label digest (#42)`. What ships should read like something written for the person deciding whether to upgrade: what changed for them, and what they have to do about it. "Refactored internals" helps nobody; "`exec` now accepts a list of arguments, and quotes them for you" does. Those entries become the GitHub Release notes verbatim.
+The one thing a single line cannot carry is what a reader has to *do* about a change. That has its own slot: a `BREAKING CHANGE: …` footer, which release-please renders into its own `⚠ BREAKING CHANGES` section above everything else. Add it in GitHub's squash-commit message box when you merge — the body is blank by default, so the footer is all that ends up there.
 
 ## Layering
 
