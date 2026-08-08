@@ -60,4 +60,15 @@ Each package is self-contained: its own metadata, `ruff`/`pyright`/`pytest` conf
 
 - Pin every GitHub Action by commit SHA with the version in a trailing comment. This repository publishes to PyPI; a moving tag is a supply-chain hole.
 - Do not wrap lines in Markdown. One paragraph is one line.
-- Comments explain why, not what. Match the density of the file you are editing.
+
+## Comments and docstrings
+
+Comments explain **why**, never what — the code already says what. Match the density of the file you are editing rather than the density you would choose.
+
+Keep them short. Agents reliably overshoot here, and the tell is prose that outgrows the code it explains: a rationale several times the length of the branch below it, an incident retold in full at a call site, a docstring paragraph repeated as an inline comment a line later. Long is not thorough; it is the reader's problem.
+
+- **A docstring says what the function is for and what a caller must know.** One or two sentences for most. Reserve more for a genuine trap — an argument that must be a callable, an ordering that is load-bearing — and state the trap, not its history.
+- **Write the reason once, at the level it belongs to.** If the module docstring has it, the function does not repeat it; if the function has it, the inline comment does not.
+- **An incident belongs in the issue and the commit message, not in the source.** `Closes #22` reaches the whole story. A comment that re-tells it ages badly and is read a thousand times more often.
+- **Do not annotate the obvious.** No comment above an import, a `return`, or a well-named call.
+- **Delete a comment that has become a caption.** If it restates the line beneath it, the line is either clear enough already or should be renamed.

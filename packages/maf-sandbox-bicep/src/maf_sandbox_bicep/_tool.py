@@ -22,7 +22,7 @@ from uuid import uuid4
 from maf_sandbox import SandboxRouter, SandboxSpec, WorkspaceContext, error_detail
 from maf_sandbox.maf import SandboxToolSession, sandboxed_tool
 
-from ._paths import safe_workspace_path
+from ._paths import resolve_workspace_path
 from ._sarif import count_restore_failures, format_diagnostics, parse_sarif
 
 if TYPE_CHECKING:
@@ -31,6 +31,22 @@ if TYPE_CHECKING:
     from agent_framework import AgentFileStore
 
 logger = logging.getLogger(__name__)
+
+#: Capped so a large workspace cannot flood the model's context.
+_LISTING_HINT_MAX = 20
+
+
+def _listing_hint(name: str, ws_files: list[str]) -> str:
+    """The listing, or its near misses — what resolves a typo without another round trip."""
+    if not ws_files:
+        return "This tool's listing is empty — no files were shared with it."
+    near = [f for f in ws_files if f.rsplit("/", 1)[-1] == name.rsplit("/", 1)[-1]]
+    if near and near != [name]:
+        return f"Did you mean: {', '.join(sorted(near)[:_LISTING_HINT_MAX])}?"
+    shown = sorted(ws_files)[:_LISTING_HINT_MAX]
+    more = f" (+{len(ws_files) - len(shown)} more)" if len(ws_files) > len(shown) else ""
+    return f"Files visible here: {', '.join(shown)}{more}."
+
 
 __all__ = [
     "BICEP_TOOL_NAMES",
@@ -284,13 +300,29 @@ def _bicep_validate_tool(
         # Validate each name against that listing (the injection guard).
         validated: list[tuple[str, str]] = []  # (workspace_path, sandbox_path)
         for name in files:
-            sandbox_path = safe_workspace_path(name, ws_files, round_dir)
-            if sandbox_path is None:
+            sandbox_path, listing_key, rejection = resolve_workspace_path(name, ws_files, round_dir)
+            if rejection == "unsafe":
+                # No listing echoed back: that would invite a retry with another spelling.
                 return (
-                    f"Error: {name!r} is not in the workspace listing or contains "
-                    f"unsafe characters — cannot validate"
+                    f"Error: {name!r} cannot be validated — file names may contain only "
+                    f"[A-Za-z0-9._/-] and no '..' segments."
                 )
-            validated.append((name, sandbox_path))
+            if rejection == "missing" or sandbox_path is None:
+                # Logged so hosts can count listing misses.
+                logger.warning(
+                    "bicep_validate: %r is not in this tool's workspace listing (%d file(s) "
+                    "visible) — the store wired here may be narrower than the agent's",
+                    name,
+                    len(ws_files),
+                )
+                return (
+                    f"Error: {name!r} is not in this tool's file listing, so it was not "
+                    f"validated. This listing can be narrower than the files you can read "
+                    f"elsewhere. {_listing_hint(name, ws_files)}"
+                )
+            # The listing's key, not the caller's spelling: "./main.bicep" validates but
+            # would not read back from a store keyed "main.bicep".
+            validated.append((listing_key or name, sandbox_path))
 
         # The four-branch degrade ladder — which failures may be named to the model and
         # which may only reach the log — is `session.acquire`'s, and it writes its detail
