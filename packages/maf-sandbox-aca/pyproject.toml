@@ -36,13 +36,8 @@ dependencies = [
     # maf-sandbox-bicep's copy: unversioned, the published wheel would accept any
     # maf-sandbox ever released, including one from before this protocol existed.
     # Upper-bounded too: maf-sandbox has not yet reached a stable API, so every release
-    # before 1.0.0 may include breaking changes (see its CHANGELOG).
-    #
-    # The ceiling has to admit the version being released before that release can build:
-    # the smoke gate installs this wheel against dist/, and a ceiling excluding the
-    # maf-sandbox wheel sitting there resolves the older one off PyPI instead and fails on
-    # import. The floor is the half that cannot move yet — 0.2.0 is not on PyPI until this
-    # release finishes — so it follows in the pull request after it.
+    # before 1.0.0 may include breaking changes (see its CHANGELOG). Moving either end of
+    # this range has an order to it — see RELEASING.md.
     "maf-sandbox>=0.1.0,<0.3",
     # DefaultAzureCredential for the sandbox data plane.
     "azure-identity>=1.25.1,<2",

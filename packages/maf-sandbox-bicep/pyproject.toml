@@ -29,10 +29,8 @@ dependencies = [
     # The sandbox protocol this workload is written against — its ONLY infrastructure
     # dependency. No Azure import, no backend import; a test enforces both.
     # Upper-bounded too: maf-sandbox has not yet reached a stable API, so every release
-    # before 1.0.0 may include breaking changes (see its CHANGELOG).
-    #
-    # The ceiling has to admit the version being released before that release can build —
-    # see maf-sandbox-aca's copy of this comment. The floor follows once it is on PyPI.
+    # before 1.0.0 may include breaking changes (see its CHANGELOG). Moving either end of
+    # this range has an order to it — see RELEASING.md.
     "maf-sandbox>=0.1.0,<0.3",
     # The `@tool` decorator and AgentFileStore. MAF is a genuine dependency of the tool
     # itself, not of the host application.

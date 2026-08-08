@@ -49,9 +49,7 @@ Note the order this leaves you with: **the GitHub Release exists before PyPI has
 3. **Raise the floor**, now that the version exists to point at. It could not move in step 1 — the smoke gate would have had nothing to resolve.
 4. **Merge the dependents' Release PRs.**
 
-Between the two, the dependents' published constraint is briefly wider than the truth. That is unavoidable: no constraint is correct while the version the code needs is not yet on PyPI, and the alternative is a red `main`. Getting the order wrong is caught rather than shipped — a dependent released against a floor that is too low installs the older `maf-sandbox` in the publish smoke and fails on import, before anything is uploaded — but it costs a spent version number.
-
-Merging any Release PR also moves `uv.lock` on `main`, so the other two fall behind. Update them with **rebase**, as below.
+Between steps 1 and 3 the dependents' constraint is briefly wider than the truth, which is unavoidable while the version their code needs is not yet on PyPI. Getting the order wrong is caught rather than shipped — the publish smoke installs the older `maf-sandbox` and fails on import before anything is uploaded — but it spends a version number.
 
 Each package gets its own Release PR, so ordering is a matter of which you merge first — but merging now publishes, so **let one finish before merging the next**. Two merged back to back would have their publishes in flight together, and the dependent one fails at the smoke gate while `maf-sandbox` is still waiting for your approval. That failure is safe and re-runnable; it is just noise you can avoid by waiting.
 
