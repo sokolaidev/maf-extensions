@@ -14,30 +14,9 @@ The **deploy workflow no longer runs this**: it uses the vendor's ``aca`` CLI
 (``aca sandboxgroup disk create --identity …``), which needs no Python toolchain and nothing
 from this repository.  This script stays as the equivalent for anyone who would rather not
 install the CLI, and because its idempotency check shares
-:func:`~maf_sandbox_aca.disk_image_base` with the runtime resolver — see below for why that
-matters.
+:func:`~maf_sandbox_aca.disk_image_base` with the runtime resolver.
 
-Usage — ``--package`` keeps the environment to this distribution's own closure (34 packages)
-rather than the host workspace's (128), which matters because nothing here needs the host::
-
-    uv run --package maf-sandbox-aca \\
-        python packages/maf-sandbox-aca/scripts/import_disk_image.py \\
-        --endpoint   https://management.<region>.azuredevcompute.io \\
-        --subscription <sub-id> \\
-        --resource-group <rg> \\
-        --group <sandbox-group-name> \\
-        --image  myacr.azurecr.io/bicep-sandbox:0.46.1
-
-It is idempotent: an image already imported from the same reference is reported and reused
-rather than duplicated.  On success it prints the resolved disk-image id, so it can also be
-used to populate ``BICEP_ACA_SANDBOX_DISK_IMAGE_ID`` if you would rather pin the id explicitly
-than let the app resolve the reference.
-
-Authentication uses ``DefaultAzureCredential`` — an ``az login`` session is enough for the
-one-off run.  The sandbox registry is private, so pass ``--identity`` with the resource id
-of a managed identity that (a) holds ``AcrPull`` on that registry and (b) is attached to the
-sandbox group.  A host's own infrastructure-as-code for the sandbox group typically
-provisions such an identity and exposes its resource id as an output.
+See ``scripts/README.md`` for how to run it, the arguments, and authentication.
 """
 
 from __future__ import annotations
