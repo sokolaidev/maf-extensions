@@ -402,7 +402,7 @@ class TestDispose:
 
 
 # ---------------------------------------------------------------------------
-# Lifecycle visibility — a VM started or reclaimed must leave a record
+# Lifecycle visibility — a sandbox started or reclaimed must leave a record
 # ---------------------------------------------------------------------------
 
 
@@ -475,7 +475,7 @@ class TestLifecycleLogging:
     """Acquire and release must say what happened, at INFO.
 
     None of it is inferable from the tool's output: `bicep_validate` returns the same
-    compiler diagnostics whether a warm sandbox was reused in a second or a cold VM was
+    compiler diagnostics whether a warm sandbox was reused in a second or a cold sandbox was
     created in a minute, and a sandbox that is never released is billable but silent.
     The operator-facing question — was one created, was it used, was it released — has no
     other answer, so these lines are load-bearing rather than decoration.
@@ -582,7 +582,7 @@ class TestConcurrentAcquire:
     """Get-or-create is serialised per key, because a create cannot be made idempotent here.
 
     ``begin_create_sandbox`` names no sandbox, so the service has nothing to recognise a
-    duplicate by. Two acquires that both miss the registry each get a running, billable VM,
+    duplicate by. Two acquires that both miss the registry each get a running, billable sandbox,
     and only the second one to finish stays registered — the first is left with no handle in
     this process. The model reaching this is not exotic: the function calls in one assistant
     message are executed concurrently, so one message naming a key twice runs the tool body

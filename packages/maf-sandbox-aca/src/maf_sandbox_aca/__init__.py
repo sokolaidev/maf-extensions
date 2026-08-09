@@ -7,7 +7,7 @@ app  ->  maf_sandbox  ->  maf_sandbox_aca  ->  the sandbox
 :class:`AcaSandboxBackend` implements :class:`maf_sandbox.SandboxBackend` on
 `Azure Container Apps Sandboxes <https://learn.microsoft.com/azure/container-apps/sandboxes-overview>`_:
 VM isolation, Deny-default egress with a per-spec allowlist, no ambient identity inside, and
-lifecycle policies that reclaim a billable VM after it goes idle.  It declares
+lifecycle policies that reclaim a billable sandbox after it goes idle.  It declares
 :data:`~maf_sandbox.Isolation.VM`, which is what lets the router permit it in a deployed
 environment.
 

@@ -202,7 +202,7 @@ class AcaSandboxBackend:
         """Return a running sandbox for ``key``, reusing a warm one when there is one.
 
         The three outcomes — reused, replaced, created — are logged at INFO rather than
-        left to be inferred.  Whether a VM was started is the difference between a
+        left to be inferred.  Whether a sandbox was started is the difference between a
         seconds-long call and a minutes-long one, and between one billable sandbox and
         several; none of that is visible in the tool's output, which reports compiler
         diagnostics either way.
@@ -211,7 +211,7 @@ class AcaSandboxBackend:
         service therefore has nothing to recognise a duplicate by.  The function calls in one
         assistant message are executed concurrently, so two acquires for one key can be in
         flight at once; unserialised, both miss the registry and each is handed a running,
-        billable VM, of which only one stays registered.
+        billable sandbox, of which only one stays registered.
         """
         async with self._acquire_lock((key.scope, key.thread_id, key.agent_dir)):
             return await self._get_or_create(key, spec)

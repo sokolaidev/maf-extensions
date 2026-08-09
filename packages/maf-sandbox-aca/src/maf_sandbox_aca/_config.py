@@ -33,7 +33,7 @@ class AcaSandboxConfig:
     is what qualifies it, so moving to a different registry is one setting rather than one
     per kind.  A spec that already names a registry is left alone.
 
-    The two lifecycle bounds govern how long a billable VM survives: suspension after idle,
+    The two lifecycle bounds govern how long a billable sandbox survives: suspension after idle,
     then deletion after being stopped.  They are backend-level because they describe the
     sandbox rather than the work it does.
     """

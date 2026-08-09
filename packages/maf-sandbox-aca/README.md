@@ -47,7 +47,7 @@ router = SandboxRouter([backend], deployed=True)  # VM isolation is what makes `
 | `dispose_scope(scope, thread)` | delete every sandbox for a conversation — **from the service, by label**, not from process memory |
 | `isolation` | `vm` — which is what lets the router permit it in a deployed environment |
 
-That `dispose_scope` detail is the one worth reading twice. A multi-replica host serves a conversation delete wherever it lands, so the replica that created a sandbox is usually not the one deleting it. A backend that consults only its own registry leaves billable VMs running, and the bug is invisible on a single-replica dev box. Sandboxes are labelled at create time so the service can answer the question instead.
+That `dispose_scope` detail is the one worth reading twice. A multi-replica host serves a conversation delete wherever it lands, so the replica that created a sandbox is usually not the one deleting it. A backend that consults only its own registry leaves billable sandboxes running, and the bug is invisible on a single-replica dev box. Sandboxes are labelled at create time so the service can answer the question instead.
 
 Egress comes from the **spec**, not from configuration: `default_action: Deny` plus one `Allow` rule per host the kind declares. A deployment that could widen a kind's egress could undo the containment its design rests on.
 
