@@ -24,6 +24,7 @@ import json
 import logging
 import re
 import tarfile
+import weakref
 from collections.abc import Sequence
 from dataclasses import dataclass
 from hashlib import sha256
@@ -32,6 +33,7 @@ from typing import Protocol, cast
 from maf_sandbox import Egress, ExecResult, Isolation, SandboxKey, SandboxSpec
 
 from ._config import WslcSandboxConfig
+from ._proxy import build_context
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +53,20 @@ _LABEL_VALUE_DIGEST = re.compile(r"sha256-[0-9a-f]{48}")
 _NOT_FOUND = "WSLC_E_CONTAINER_NOT_FOUND"
 
 #: What `run --name` reports when the name is taken — the one create failure that is recoverable.
+#: `network create` reports the same code for a taken network name.
 _ALREADY_EXISTS = "ERROR_ALREADY_EXISTS"
+
+#: `network remove` says this when the network is already gone — a no-op, not a failure.
+_NETWORK_NOT_FOUND = "not found"
+
+#: Marks the egress proxy so a purge can tell it from the sandboxes it counts.
+_LABEL_ROLE = "maf-sandbox.role"
+
+_PROXY_PORT = 3128
+_ALLOW_ENV = "MAF_SANDBOX_ALLOW"
+_PROXY_READY_MARKER = "listening"
+_PROXY_READY_ATTEMPTS = 20
+_PROXY_READY_DELAY_S = 0.25
 
 
 def _label_value(raw: str) -> str:
@@ -89,10 +104,34 @@ def _sandbox_labels(key: SandboxKey, spec: SandboxSpec) -> dict[str, str]:
     }
 
 
-def _container_name(key: SandboxKey) -> str:
-    """The one container name a key maps to — derived, so acquire and dispose agree on it."""
-    digest = sha256("|".join((key.scope, key.thread_id, key.agent_dir)).encode("utf-8"))
+def _container_name(key: SandboxKey, egress_id: str = "") -> str:
+    """The container name a key maps to — derived, so acquire and dispose agree without a registry.
+
+    ``egress_id`` folds the egress configuration into the identity: a sandbox is reused only by
+    an acquire that wants the *same* egress, so a change of mode or of allowed hosts gets its
+    own container rather than silently keeping one whose network no longer matches what the
+    backend now declares.  It is empty for closed egress, so a closed sandbox keeps the name it
+    has always had.
+    """
+    parts = [key.scope, key.thread_id, key.agent_dir]
+    if egress_id:
+        parts.append(egress_id)
+    digest = sha256("|".join(parts).encode("utf-8"))
     return f"maf-sandbox-wslc-{digest.hexdigest()[:12]}"
+
+
+_NET_SUFFIX = "-net"
+_PROXY_SUFFIX = "-proxy"
+
+
+def _network_name(container: str) -> str:
+    """The internal network paired with a sandbox container, derived from its name."""
+    return f"{container}{_NET_SUFFIX}"
+
+
+def _proxy_name(container: str) -> str:
+    """The egress proxy paired with a sandbox container, derived from its name."""
+    return f"{container}{_PROXY_SUFFIX}"
 
 
 def _listed_names(payload: str) -> list[str]:
@@ -202,8 +241,17 @@ class WslcSandboxBackend:
 
     def __init__(self, config: WslcSandboxConfig) -> None:
         self._config = config
-        # (scope, thread_id, agent_dir) -> name: a `dispose_scope` fallback, never the truth.
+        # (scope, thread_id, agent_dir) -> name: a purge fallback for when the listing fails,
+        # never the truth. Holds the last name acquired for a key, which is enough to reclaim it.
         self._registry: dict[tuple[str, str, str], str] = {}
+        # Get-or-create serialised per (running loop, key): a create names no container until it
+        # returns, so two acquires racing one key would each build a network, a proxy and a
+        # sandbox. Per loop because an asyncio.Lock binds to the loop that first waits on it, and
+        # weak-keyed on the loop so a process that runs a loop per call (asyncio.run) does not
+        # accumulate a lock table for loops long dead.
+        self._acquire_locks: weakref.WeakKeyDictionary[
+            asyncio.AbstractEventLoop, dict[tuple[str, str, str], asyncio.Lock]
+        ] = weakref.WeakKeyDictionary()
 
     @property
     def name(self) -> str:
@@ -215,7 +263,10 @@ class WslcSandboxBackend:
 
     @property
     def egress(self) -> str:
-        # True because `_create` passes `--network none` and nothing can widen it.
+        # A capability, not a per-spec fact: the backend can enforce an allowlist iff it has a
+        # proxy image to do it with. `acquire` still closes a spec that allows nothing outright.
+        if self._config.egress_proxy_image:
+            return Egress.ALLOWLIST
         return Egress.CLOSED
 
     # -- SandboxBackend -----------------------------------------------------------
@@ -223,71 +274,119 @@ class WslcSandboxBackend:
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> _WslcSandbox:
         """Return a running container for ``key``, reusing a warm one when there is one.
 
-        Reused, restarted and created are logged at INFO rather than left to be inferred: a
-        workload returns the same output either way, and the difference between them is the
-        difference between a warm exec and a fresh image start.
+        The egress scaffolding is (re-)ensured on every acquire, not only on create: a proxy a
+        host reboot stopped, or one a crashed setup left half-connected, is rebuilt here rather
+        than leaving a sandbox that declares an allowlist and enforces nothing. Reused, restarted
+        and created are logged at INFO — the difference is a warm exec versus a fresh image start.
         """
-        name = _container_name(key)
-        if await self._is_listed(name, all_states=False):
-            logger.info(
-                "sandbox reused: container=%s kind=%s thread=%s agent=%s",
-                name,
-                spec.kind,
-                key.thread_id,
-                key.agent_dir,
-            )
-        elif await self._is_listed(name, all_states=True) and await self._restart(name):
-            logger.info(
-                "sandbox restarted: container=%s kind=%s thread=%s agent=%s",
-                name,
-                spec.kind,
-                key.thread_id,
-                key.agent_dir,
-            )
-        else:
-            image = await self._create(name, key, spec)
-            logger.info(
-                "sandbox created: container=%s kind=%s image=%s thread=%s agent=%s",
-                name,
-                spec.kind,
-                image,
-                key.thread_id,
-                key.agent_dir,
-            )
+        egress_id = self._egress_id(spec)
+        name = _container_name(key, egress_id)
+        async with self._acquire_lock(key):
+            running = await self._is_listed(name, all_states=False)
+            stopped = not running and await self._is_listed(name, all_states=True)
+            if egress_id:
+                await self._ensure_egress(name, key, spec, fresh=not running and not stopped)
 
-        self._registry[(key.scope, key.thread_id, key.agent_dir)] = name
-        return _WslcSandbox(self._wslc, name, self._config.command_timeout_seconds)
+            if running:
+                verb = "reused"
+            elif stopped and await self._restart(name):
+                verb = "restarted"
+            else:
+                image = await self._create_workload(name, key, spec, allowlisting=bool(egress_id))
+                logger.info(
+                    "sandbox created: container=%s kind=%s image=%s thread=%s agent=%s",
+                    name,
+                    spec.kind,
+                    image,
+                    key.thread_id,
+                    key.agent_dir,
+                )
+                verb = ""
+            if verb:
+                logger.info(
+                    "sandbox %s: container=%s kind=%s thread=%s agent=%s",
+                    verb,
+                    name,
+                    spec.kind,
+                    key.thread_id,
+                    key.agent_dir,
+                )
+
+            self._registry[(key.scope, key.thread_id, key.agent_dir)] = name
+            return _WslcSandbox(self._wslc, name, self._config.command_timeout_seconds)
 
     async def dispose(self, key: SandboxKey) -> None:
-        """Delete the container for ``key``. A container already gone is a silent no-op."""
-        self._registry.pop((key.scope, key.thread_id, key.agent_dir), None)
-        name = _container_name(key)
-        if await self._remove(name):
-            logger.info(
-                "sandbox released: container=%s thread=%s agent=%s",
-                name,
-                key.thread_id,
-                key.agent_dir,
-            )
+        """Delete every container for ``key`` — closed or allowlisted — with its proxy and network.
+
+        By label, so it reaches a sandbox created under an egress configuration this backend no
+        longer runs; the registry name is the fallback for when the listing itself fails. Never
+        raises.
+        """
+        remembered = self._registry.pop((key.scope, key.thread_id, key.agent_dir), None)
+        await self._purge(
+            [
+                (_LABEL_SCOPE, key.scope),
+                (_LABEL_THREAD, key.thread_id),
+                (_LABEL_AGENT, key.agent_dir),
+            ],
+            fallback=[remembered] if remembered else [],
+            thread_id=key.thread_id,
+        )
 
     async def dispose_scope(self, scope: str, thread_id: str) -> int:
-        """Delete every container labelled ``(scope, thread_id)``; returns how many.
+        """Delete every container labelled ``(scope, thread_id)``; returns how many sandboxes.
 
         The labels are the source of truth, because a conversation delete has to reach
-        containers this process never created.  The registry is what is left when the listing
-        itself fails, and its entries are dropped either way: an entry pointing at a container
-        that may already be gone is worse than no entry.
+        containers this process never created. The registry is the fallback for when the listing
+        fails, and its entries are dropped either way: an entry pointing at a container that may
+        already be gone is worse than no entry.
         """
         mine = [k for k in list(self._registry) if k[0] == scope and k[1] == thread_id]
         remembered = [self._registry.pop(k) for k in mine]
+        return await self._purge(
+            [(_LABEL_SCOPE, scope), (_LABEL_THREAD, thread_id)],
+            fallback=remembered,
+            thread_id=thread_id,
+        )
+
+    async def _purge(
+        self, label_filters: list[tuple[str, str]], fallback: list[str], thread_id: str
+    ) -> int:
+        """Remove the containers a label query returns, plus their proxies and networks.
+
+        A proxy carries its sandbox's labels, so it is listed and removed alongside it, but it is
+        not a sandbox and is not counted. Its network is removed after it, when it is free to go.
+        The ``fallback`` names cover the case the listing failed.
+
+        When this backend enforces allowlists, every workload's proxy and network are swept —
+        not only those whose proxy the listing returned — so a proxy a reuse failed to rebuild,
+        or one deleted by hand, does not strand its network. A closed backend does no such sweep:
+        its sandboxes never had a network, and a listed proxy from an earlier allowlisted run
+        still takes its own network with it below.
+        """
+        listed = await self._list_names_by_labels(label_filters)
+        listed_set = set(listed)
+        stranded = [n for n in fallback if n not in listed_set]
+        names = [*listed, *stranded]
 
         count = 0
-        for target in [*await self._scope_container_ids(scope, thread_id), *remembered]:
-            if await self._remove(target):
-                logger.info(
-                    "sandbox released: container=%s thread=%s (scope purge)", target, thread_id
-                )
+        for target in names:
+            if await self._remove(target) and not target.endswith(_PROXY_SUFFIX):
+                logger.info("sandbox released: container=%s thread=%s (purge)", target, thread_id)
                 count += 1
+
+        networks = {
+            _network_name(n.removesuffix(_PROXY_SUFFIX))
+            for n in listed
+            if n.endswith(_PROXY_SUFFIX)
+        }
+        if self._config.egress_proxy_image is not None:
+            for workload in (n for n in names if not n.endswith(_PROXY_SUFFIX)):
+                if _proxy_name(workload) not in listed_set:
+                    await self._remove(_proxy_name(workload))
+                networks.add(_network_name(workload))
+        for net in networks:
+            await self._remove_network(net)
         return count
 
     # -- internals ----------------------------------------------------------------
@@ -363,15 +462,49 @@ class WslcSandboxBackend:
         await self._remove(name)
         return False
 
-    async def _create(self, name: str, key: SandboxKey, spec: SandboxSpec) -> str:
-        """Create and start a closed container for ``key``; returns the image it ran."""
+    def _egress_id(self, spec: SandboxSpec) -> str:
+        """The egress folded into a sandbox's identity — empty when it has no allowlist to keep.
+
+        A proxy image plus a non-empty allowlist means allowlisted egress; either missing means
+        closed, and closed is the empty string so a closed sandbox keeps its historical name. An
+        allowlist of nothing is closed too — ``--network none`` denies everything for free,
+        without burning a network slot on a proxy that would allow the same nothing.
+        """
+        if self._config.egress_proxy_image is None or not spec.egress_allow:
+            return ""
+        return "allow:" + ",".join(sorted(spec.egress_allow))
+
+    def _acquire_lock(self, key: SandboxKey) -> asyncio.Lock:
+        """The get-or-create lock for one key on the running loop (see ``__init__``)."""
+        per_loop = self._acquire_locks.setdefault(asyncio.get_running_loop(), {})
+        registry_key = (key.scope, key.thread_id, key.agent_dir)
+        lock = per_loop.get(registry_key)
+        if lock is None:
+            lock = per_loop[registry_key] = asyncio.Lock()
+        return lock
+
+    async def _create_workload(
+        self, name: str, key: SandboxKey, spec: SandboxSpec, *, allowlisting: bool
+    ) -> str:
+        """Create and start the workload container; returns the image it ran.
+
+        The network and proxy already exist by now (``_ensure_egress`` ran first), so this only
+        places the workload: on ``--network none`` when closed, or on the internal network with
+        the proxy in its environment when allowlisting.
+        """
         image = spec.image_id or spec.image
         if not image:
             raise ValueError(
                 "No sandbox image is configured: the spec names neither image nor image_id."
             )
 
-        args = ["container", "run", "-d", "--name", name, "--network", "none"]
+        args = ["container", "run", "-d", "--name", name]
+        if allowlisting:
+            proxy_url = f"http://{_proxy_name(name)}:{_PROXY_PORT}"
+            args += ["--network", _network_name(name)]
+            args += ["-e", f"HTTPS_PROXY={proxy_url}", "-e", f"HTTP_PROXY={proxy_url}"]
+        else:
+            args += ["--network", "none"]
         for label, value in _sandbox_labels(key, spec).items():
             args += ["-l", f"{label}={value}"]
         args += [image, "sleep", "infinity"]
@@ -383,6 +516,87 @@ class WslcSandboxBackend:
                 return image
             raise RuntimeError(f"wslc could not create container {name}: {result.stderr.strip()}")
         return image
+
+    async def _ensure_egress(
+        self, name: str, key: SandboxKey, spec: SandboxSpec, *, fresh: bool
+    ) -> None:
+        """Build (or repair) the internal network and filtering proxy for an allowlisted sandbox.
+
+        ``fresh`` says no workload is attached yet, so if the proxy cannot be brought up the
+        network this just created is ours to reclaim rather than leak; once a warm workload is on
+        it, the network stays and the proxy failure surfaces to the caller instead.
+        """
+        net = _network_name(name)
+        await self._ensure_network(net, key, spec)
+        try:
+            await self._ensure_proxy(name, key, spec)
+        except BaseException:
+            if fresh:
+                await self._remove_network(net)
+            raise
+
+    async def _ensure_network(self, net: str, key: SandboxKey, spec: SandboxSpec) -> None:
+        """Create the sandbox's internal network, adopting one already there."""
+        args = ["network", "create", "--internal"]
+        for label, value in _sandbox_labels(key, spec).items():
+            args += ["-l", f"{label}={value}"]
+        args.append(net)
+        result = await self._wslc(*args, timeout=self._config.command_timeout_seconds)
+        if result.returncode != 0 and _ALREADY_EXISTS not in result.stderr:
+            raise RuntimeError(f"wslc could not create network {net}: {result.stderr.strip()}")
+
+    async def _ensure_proxy(self, name: str, key: SandboxKey, spec: SandboxSpec) -> None:
+        """Put a fresh filtering proxy on the sandbox's network, dual-homed and confirmed listening.
+
+        Recreated every acquire, not adopted: a fresh proxy always carries the current spec's
+        allowlist, always gets its outbound leg connected, and its log holds only this run's
+        readiness line — so a stale, half-connected or wrong-allowlist proxy is never mistaken
+        for a working one.
+        """
+        proxy_image = cast("str", self._config.egress_proxy_image)
+        proxy = _proxy_name(name)
+        await self._remove(proxy)
+
+        args = ["container", "run", "-d", "--name", proxy, "--network", _network_name(name)]
+        args += ["-e", f"{_ALLOW_ENV}={','.join(spec.egress_allow)}"]
+        for label, value in _sandbox_labels(key, spec).items():
+            args += ["-l", f"{label}={value}"]
+        args += ["-l", f"{_LABEL_ROLE}=proxy", proxy_image]
+
+        result = await self._wslc(*args, timeout=self._config.command_timeout_seconds)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"wslc could not start the egress proxy {proxy}: {result.stderr.strip()} — "
+                f"if the image is missing, build it: wslc build -t {proxy_image} {build_context()}"
+            )
+
+        connect = await self._wslc(
+            "network", "connect", "bridge", proxy, timeout=self._config.command_timeout_seconds
+        )
+        if connect.returncode != 0:
+            # A proxy without its egress leg would turn ALLOWLIST into CLOSED silently.
+            raise RuntimeError(
+                f"wslc could not give the egress proxy {proxy} its outbound leg: "
+                f"{connect.stderr.strip()}"
+            )
+        await self._await_listening(proxy)
+
+    async def _await_listening(self, proxy: str) -> None:
+        """Wait for the proxy's listening line; fail the acquire if it never comes.
+
+        A proxy that has not bound its port yet would let the workload's first request through to
+        nothing and read as a network error. Rather than hand back a sandbox whose egress is not
+        actually up, the acquire fails here and the caller can retry — the network is reclaimed on
+        the way out when this was a fresh create.
+        """
+        for _ in range(_PROXY_READY_ATTEMPTS):
+            result = await self._wslc(
+                "container", "logs", proxy, timeout=self._config.command_timeout_seconds
+            )
+            if result.returncode == 0 and _PROXY_READY_MARKER in result.stdout:
+                return
+            await asyncio.sleep(_PROXY_READY_DELAY_S)
+        raise RuntimeError(f"egress proxy {proxy} never reported listening")
 
     async def _adopt(self, name: str) -> bool:
         """Whether an existing ``name`` is running, or could be started — the reuse path again.
@@ -413,35 +627,47 @@ class WslcSandboxBackend:
             )
         return False
 
-    async def _scope_container_ids(self, scope: str, thread_id: str) -> list[str]:
-        """Container ids labelled ``(scope, thread_id)``, read from wslc. Never raises.
+    async def _list_names_by_labels(self, label_filters: list[tuple[str, str]]) -> list[str]:
+        """Container names matching every ``(label, value)`` filter, read from wslc. Never raises.
 
-        ``_label_value`` on both sides, always: these have to be the same strings the create
-        wrote, or the query matches nothing and every container for the deleted conversation
-        keeps running — silently, since "found none" and "there were none" are one result.
+        By name rather than id, because the proxy/network pairing is expressed in the names and
+        ``container list`` does not report labels back.  ``_label_value`` on both sides, always:
+        these have to be the same strings the create wrote, or the query matches nothing and
+        every container for the deleted conversation keeps running — silently, since "found
+        none" and "there were none" are one result.
         """
+        args = ["container", "list", "-a", "--format", "json"]
+        for label, value in label_filters:
+            args += ["--filter", f"label={label}={_label_value(value)}"]
         try:
-            result = await self._wslc(
-                "container",
-                "list",
-                "-a",
-                "-q",
-                "--filter",
-                f"label={_LABEL_SCOPE}={_label_value(scope)}",
-                "--filter",
-                f"label={_LABEL_THREAD}={_label_value(thread_id)}",
-                timeout=self._config.command_timeout_seconds,
-            )
+            result = await self._wslc(*args, timeout=self._config.command_timeout_seconds)
         except Exception as exc:  # noqa: BLE001 - purge must never fail
-            logger.warning(
-                "wslc backend: could not list containers for thread %s: %s", thread_id, exc
-            )
+            logger.warning("wslc backend: could not list containers to purge: %s", exc)
             return []
         if result.returncode != 0:
             logger.warning(
-                "wslc backend: could not list containers for thread %s: %s",
-                thread_id,
-                result.stderr.strip(),
+                "wslc backend: could not list containers to purge: %s", result.stderr.strip()
             )
             return []
-        return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        return _listed_names(result.stdout)
+
+    async def _remove_network(self, net: str) -> bool:
+        """Force-remove a network. Returns whether it removed one; never raises.
+
+        A network that was never there is a no-op, not a failure — an allowlisting backend's
+        purge tries a workload's network whether or not that workload turns out to have had one.
+        """
+        try:
+            result = await self._wslc(
+                "network", "remove", net, timeout=self._config.command_timeout_seconds
+            )
+        except Exception as exc:  # noqa: BLE001 - teardown must never raise
+            logger.warning("wslc backend: failed to remove network %s: %s", net, exc)
+            return False
+        if result.returncode == 0:
+            return True
+        if _NETWORK_NOT_FOUND not in result.stderr.lower():
+            logger.warning(
+                "wslc backend: failed to remove network %s: %s", net, result.stderr.strip()
+            )
+        return False

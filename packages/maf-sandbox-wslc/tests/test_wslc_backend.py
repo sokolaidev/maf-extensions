@@ -24,7 +24,12 @@ import pytest
 from maf_sandbox import Egress, ExecResult, Isolation, SandboxBackend, SandboxKey, SandboxSpec
 
 from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
-from maf_sandbox_wslc._backend import _container_name, _WslcResult
+from maf_sandbox_wslc._backend import (
+    _container_name,
+    _network_name,
+    _proxy_name,
+    _WslcResult,
+)
 
 _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
 _SPEC = SandboxSpec(kind="bicep", image="bicep-sandbox:local")
@@ -75,6 +80,8 @@ def _machine(
                 payload = [{"Id": f"id-{n}", "Name": n} for n in names]
                 return _WslcResult(0, json.dumps(payload), "")
             return _WslcResult(0, "".join(f"id-{n}\n" for n in names), "")
+        if args[:2] == ("container", "logs"):
+            return _WslcResult(0, "listening on 3128\n", "")
         return _WslcResult(0, "", "")
 
     return respond
@@ -496,19 +503,19 @@ class TestDisposeScope:
         asyncio.run(backend.dispose_scope("scope-a", "thread-1"))
 
         args = fake.only("container", "list").args
-        assert args[:4] == ("container", "list", "-a", "-q")
-        assert args[4:] == (
+        assert args[:5] == ("container", "list", "-a", "--format", "json")
+        assert args[5:] == (
             "--filter",
             "label=maf-sandbox.scope=scope-a",
             "--filter",
             "label=maf-sandbox.thread=thread-1",
         )
 
-    def test_removes_every_listed_id_and_returns_the_count(self):
+    def test_removes_every_listed_name_and_returns_the_count(self):
         backend, fake = _backend_with(_machine(stopped=["a", "b"]))
 
         assert asyncio.run(backend.dispose_scope("scope-a", "thread-1")) == 2
-        assert [c.args[-1] for c in fake.matching("container", "remove")] == ["id-a", "id-b"]
+        assert [c.args[-1] for c in fake.matching("container", "remove")] == ["a", "b"]
 
     def test_nothing_to_purge_is_zero_not_an_error(self):
         backend, _ = _backend_with(_machine())
@@ -596,7 +603,8 @@ class TestLabelValues:
 
         backend2, fake2 = _backend_with(_machine())
         asyncio.run(backend2.dispose_scope(long_scope, "thread-1"))
-        queried = fake2.only("container", "list").args[5]
+        list_args = fake2.only("container", "list").args
+        queried = list_args[list_args.index("--filter") + 1]
 
         assert queried == f"label={written}"
 
@@ -890,3 +898,278 @@ class TestNoMafImport:
             f"these maf_sandbox_wslc modules import agent_framework: {offenders}. A backend "
             "must be usable by a host that does not run Microsoft Agent Framework at all."
         )
+
+
+# ---------------------------------------------------------------------------
+# Allowlist egress — internal network + filtering proxy
+# ---------------------------------------------------------------------------
+
+_ALLOW_CONFIG = WslcSandboxConfig(egress_proxy_image="maf-egress-proxy:local")
+_ALLOW_SPEC = SandboxSpec(
+    kind="bicep",
+    image="bicep-sandbox:local",
+    egress_allow=("mcr.microsoft.com", "*.data.mcr.microsoft.com"),
+)
+# The allowlist folds into the name, so an allowlisted sandbox is a different container from a
+# closed one for the same key — which is what stops a reuse from crossing egress modes.
+_ALLOW_ID = "allow:" + ",".join(sorted(_ALLOW_SPEC.egress_allow))
+_AL = _container_name(_KEY, _ALLOW_ID)
+_AL_NET = _network_name(_AL)
+_AL_PROXY = _proxy_name(_AL)
+
+
+def _run_named(fake: _FakeWslc, name: str) -> _Recorded:
+    """The one `container run` call whose `--name` is `name`."""
+    found = [
+        c for c in fake.matching("container", "run") if c.args[c.args.index("--name") + 1] == name
+    ]
+    assert len(found) == 1, [c.args for c in fake.calls]
+    return found[0]
+
+
+class TestAllowlistTopology:
+    """With `egress_proxy_image` set, `--network none` becomes an internal net plus a proxy."""
+
+    def test_the_declaration_follows_the_configuration(self):
+        assert _backend_with()[0].egress == Egress.CLOSED
+        assert _backend_with(config=_ALLOW_CONFIG)[0].egress == Egress.ALLOWLIST
+
+    def test_create_builds_network_proxy_bridge_then_workload_in_order(self):
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+
+        order = [
+            fake.calls.index(fake.only("network", "create")),
+            fake.calls.index(_run_named(fake, _AL_PROXY)),
+            fake.calls.index(fake.only("network", "connect")),
+            fake.calls.index(_run_named(fake, _AL)),
+        ]
+        assert order == sorted(order)
+        assert fake.only("network", "connect").args == ("network", "connect", "bridge", _AL_PROXY)
+
+    def test_the_network_is_internal_and_labelled(self):
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+
+        args = fake.only("network", "create").args
+        assert args[:3] == ("network", "create", "--internal")
+        assert args[-1] == _AL_NET
+        labels = [args[i + 1] for i, a in enumerate(args) if a == "-l"]
+        assert "maf-sandbox.scope=scope-a" in labels
+        assert "maf-sandbox.thread=thread-1" in labels
+
+    def test_the_proxy_carries_the_allowlist_and_the_role_label(self):
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+
+        args = _run_named(fake, _AL_PROXY).args
+        assert args[args.index("--network") + 1] == _AL_NET
+        env = [args[i + 1] for i, a in enumerate(args) if a == "-e"]
+        assert "MAF_SANDBOX_ALLOW=mcr.microsoft.com,*.data.mcr.microsoft.com" in env
+        labels = [args[i + 1] for i, a in enumerate(args) if a == "-l"]
+        assert "maf-sandbox.role=proxy" in labels
+        assert args[-1] == "maf-egress-proxy:local"
+
+    def test_the_workload_joins_the_network_with_the_proxy_in_its_environment(self):
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+
+        args = _run_named(fake, _AL).args
+        assert args[args.index("--network") + 1] == _AL_NET
+        env = [args[i + 1] for i, a in enumerate(args) if a == "-e"]
+        assert f"HTTPS_PROXY=http://{_AL_PROXY}:3128" in env
+        assert f"HTTP_PROXY=http://{_AL_PROXY}:3128" in env
+        assert args[-3:] == ("bicep-sandbox:local", "sleep", "infinity")
+
+    def test_the_proxy_is_recreated_fresh_every_acquire(self):
+        """Never adopted: a fresh proxy has this spec's allowlist, its bridge leg, a clean log."""
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+
+        removed = fake.calls.index(fake.only("container", "remove"))
+        assert fake.only("container", "remove").args[-1] == _AL_PROXY
+        assert removed < fake.calls.index(_run_named(fake, _AL_PROXY))
+
+    def test_create_waits_until_the_proxy_listens(self):
+        logs_seen = 0
+
+        def respond(args):
+            nonlocal logs_seen
+            if args[:2] == ("container", "logs"):
+                logs_seen += 1
+                if logs_seen < 3:
+                    return _WslcResult(0, "", "")
+            return _machine()(args)
+
+        backend, fake = _backend_with(respond, config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+
+        assert logs_seen == 3
+        last_logs = max(i for i, c in enumerate(fake.calls) if c.args[:2] == ("container", "logs"))
+        assert fake.calls.index(_run_named(fake, _AL)) > last_logs
+
+    def test_an_existing_network_is_adopted(self):
+        overrides = {("network", "create"): _WslcResult(1, "", "Error code: ERROR_ALREADY_EXISTS")}
+        backend, fake = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+
+        assert _run_named(fake, _AL)
+
+    def test_a_missing_proxy_image_error_names_the_build_recipe(self):
+        def respond(args):
+            if args[:2] == ("container", "run") and _AL_PROXY in args:
+                return _WslcResult(1, "", "WSLC_E_IMAGE_NOT_FOUND")
+            return _machine()(args)
+
+        backend, fake = _backend_with(respond, config=_ALLOW_CONFIG)
+        with pytest.raises(RuntimeError, match="wslc build"):
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        # The network it just made must not be left behind when the proxy cannot come up.
+        assert fake.matching("network", "remove")[-1].args[-1] == _AL_NET
+
+    def test_a_proxy_without_its_bridge_leg_is_a_hard_failure(self):
+        """A proxy on the internal net but not bridged would silently enforce nothing."""
+
+        def respond(args):
+            if args[:3] == ("network", "connect", "bridge"):
+                return _WslcResult(1, "", "E_FAIL")
+            return _machine()(args)
+
+        backend, _ = _backend_with(respond, config=_ALLOW_CONFIG)
+        with pytest.raises(RuntimeError, match="outbound leg"):
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+
+    def test_a_proxy_that_never_listens_fails_the_acquire(self):
+        """Better to fail than hand back a sandbox whose egress is not actually up."""
+        import maf_sandbox_wslc._backend as backend_mod
+
+        def respond(args):
+            if args[:2] == ("container", "logs"):
+                return _WslcResult(0, "starting up\n", "")  # never the readiness marker
+            return _machine()(args)
+
+        backend, fake = _backend_with(respond, config=_ALLOW_CONFIG)
+        original = backend_mod._PROXY_READY_ATTEMPTS, backend_mod._PROXY_READY_DELAY_S
+        backend_mod._PROXY_READY_ATTEMPTS, backend_mod._PROXY_READY_DELAY_S = 2, 0.0
+        try:
+            with pytest.raises(RuntimeError, match="never reported listening"):
+                asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        finally:
+            backend_mod._PROXY_READY_ATTEMPTS, backend_mod._PROXY_READY_DELAY_S = original
+        # The network it created on the way in must be reclaimed on the failure.
+        assert fake.matching("network", "remove")[-1].args[-1] == _AL_NET
+
+    def test_closed_mode_issues_no_network_commands_at_all(self):
+        backend, fake = _backend_with(_machine())
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+
+        assert fake.matching("network") == []
+
+    def test_an_empty_allowlist_stays_closed(self):
+        """Allow nothing is `--network none`, not a proxy that would allow the same nothing."""
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        spec = SandboxSpec(kind="bicep", image="i:1", egress_allow=())
+        asyncio.run(backend.acquire(_KEY, spec))
+
+        assert fake.matching("network") == []
+        args = _run_named(fake, _NAME).args
+        assert args[args.index("--network") + 1] == "none"
+
+
+class TestAllowlistIdentity:
+    """The egress folds into the container name so a reuse cannot cross egress boundaries."""
+
+    def test_closed_and_allowlisted_names_differ(self):
+        assert _container_name(_KEY) != _container_name(_KEY, _ALLOW_ID)
+
+    def test_a_different_allowlist_is_a_different_sandbox(self):
+        wider = "allow:" + ",".join(sorted((*_ALLOW_SPEC.egress_allow, "aka.ms")))
+        assert _container_name(_KEY, _ALLOW_ID) != _container_name(_KEY, wider)
+
+    def test_an_allowlist_backend_does_not_reuse_a_closed_container(self):
+        # The closed container for this key is running; an allowlist acquire must still build
+        # its own, because reusing the closed one would declare an allowlist over no egress.
+        backend, fake = _backend_with(_machine(running=[_NAME]), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+
+        assert _run_named(fake, _AL)
+        assert fake.matching("container", "run")  # created, not reused
+
+
+class TestAllowlistReuseRepairsEgress:
+    """A warm workload does not mean a working proxy — a reboot stops the proxy, not the key."""
+
+    def test_reuse_rebuilds_the_proxy_but_not_the_workload(self):
+        backend, fake = _backend_with(_machine(running=[_AL]), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+
+        assert _run_named(fake, _AL_PROXY)  # proxy rebuilt
+        assert fake.matching("network", "connect")  # and reconnected to egress
+        with pytest.raises(AssertionError):
+            _run_named(fake, _AL)  # the workload itself was reused, not recreated
+
+    def test_restart_rebuilds_the_proxy_too(self):
+        backend, fake = _backend_with(_machine(stopped=[_AL]), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+
+        assert _run_named(fake, _AL_PROXY)
+        assert fake.matching("network", "connect")
+        assert fake.matching("container", "start")  # the workload was started, not recreated
+
+
+class TestAllowlistTeardown:
+    def test_dispose_removes_the_listed_workload_and_proxy_then_the_network(self):
+        backend, fake = _backend_with(_machine(stopped=[_AL, _AL_PROXY]), config=_ALLOW_CONFIG)
+        asyncio.run(backend.dispose(_KEY))
+
+        assert [c.args[-1] for c in fake.matching("container", "remove")] == [_AL, _AL_PROXY]
+        assert fake.only("network", "remove").args == ("network", "remove", _AL_NET)
+        containers_done = max(
+            i for i, c in enumerate(fake.calls) if c.args[:2] == ("container", "remove")
+        )
+        assert fake.calls.index(fake.only("network", "remove")) > containers_done
+
+    def test_dispose_sweeps_by_label_even_when_this_backend_is_closed(self):
+        # B2: a backend now in closed config must still reclaim an allowlisted sandbox — proxy
+        # and network included — that an earlier run left behind, found purely by its labels.
+        backend, fake = _backend_with(_machine(stopped=[_AL, _AL_PROXY]))
+        asyncio.run(backend.dispose(_KEY))
+
+        assert set(c.args[-1] for c in fake.matching("container", "remove")) == {_AL, _AL_PROXY}
+        assert [c.args[-1] for c in fake.matching("network", "remove")] == [_AL_NET]
+
+    def test_closed_mode_dispose_removes_the_container_and_no_network(self):
+        backend, fake = _backend_with(_machine(stopped=[_NAME]))
+        asyncio.run(backend.dispose(_KEY))
+
+        assert [c.args[-1] for c in fake.matching("container", "remove")] == [_NAME]
+        assert fake.matching("network") == []
+
+    def test_dispose_scope_counts_workloads_and_sweeps_their_proxies_networks(self):
+        other = "maf-sandbox-wslc-feedfeedfeed"
+        backend, fake = _backend_with(
+            _machine(stopped=[_AL, _AL_PROXY, other]), config=_ALLOW_CONFIG
+        )
+
+        assert asyncio.run(backend.dispose_scope("scope-a", "thread-1")) == 2
+
+        removed = [c.args[-1] for c in fake.matching("container", "remove")]
+        assert removed[:3] == [_AL, _AL_PROXY, other]
+        # `other` has no listed proxy, so its own proxy and network are still swept.
+        assert _proxy_name(other) in removed
+        assert set(c.args[-1] for c in fake.matching("network", "remove")) == {
+            _AL_NET,
+            _network_name(other),
+        }
+
+    def test_dispose_scope_registry_fallback_sweeps_the_proxy_and_network(self):
+        # H2: when the listing fails, the remembered workload name must still take its proxy
+        # and network with it, not just the workload.
+        overrides = {("container", "list"): _WslcResult(1, "", "WSLC_E_SERVICE_UNAVAILABLE")}
+        backend, fake = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
+        backend._registry[("scope-a", "thread-1", "devops")] = _AL
+
+        assert asyncio.run(backend.dispose_scope("scope-a", "thread-1")) == 1
+        removed = [c.args[-1] for c in fake.matching("container", "remove")]
+        assert _AL in removed and _AL_PROXY in removed
+        assert [c.args[-1] for c in fake.matching("network", "remove")] == [_AL_NET]

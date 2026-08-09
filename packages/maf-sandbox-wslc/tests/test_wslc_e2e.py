@@ -22,6 +22,7 @@ from maf_sandbox import SandboxKey, SandboxSpec
 from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
 
 _IMAGE = os.environ.get("MAF_SANDBOX_WSLC_E2E_IMAGE")
+_PROXY_IMAGE = os.environ.get("MAF_SANDBOX_WSLC_E2E_PROXY_IMAGE")
 
 pytestmark = pytest.mark.skipif(
     shutil.which("wslc") is None or not _IMAGE,
@@ -104,3 +105,66 @@ class TestALiveContainer:
             assert _names_on_the_machine(name) == []
         finally:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+
+def _network_present(name: str) -> bool:
+    """Whether a network named ``name`` exists, read with wslc (the JSON list, not the table)."""
+    listing = subprocess.run(
+        ["wslc", "network", "list", "--format", "json"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    ).stdout
+    rows = json.loads(listing) if listing.strip() else []
+    return any(row.get("Name") == name for row in rows)
+
+
+@pytest.mark.skipif(
+    not _PROXY_IMAGE,
+    # `curl` has to be in the *image*, which we cannot check from here; the Bicep sandbox has it.
+    reason="needs MAF_SANDBOX_WSLC_E2E_PROXY_IMAGE naming a built proxy image (and curl in the image)",
+)
+class TestAllowlistEgress:
+    """The whole point of ALLOWLIST: an allowed host is reachable and a denied one is not.
+
+    This exercises the topology the offline tests only assert the command lines for — an
+    internal network with no route out except through a filtering proxy — so it needs a real
+    ``wslc`` and an image with ``curl`` (the Bicep sandbox image has one).
+    """
+
+    def _config(self) -> WslcSandboxConfig:
+        return WslcSandboxConfig(egress_proxy_image=_PROXY_IMAGE)
+
+    def _curl_status(self, sandbox, url: str) -> tuple[int, str]:
+        result = asyncio.run(
+            sandbox.exec(
+                ["sh", "-c", f"curl -s -o /dev/null -w '%{{http_code}}' --max-time 25 {url}"],
+                working_directory="/acas/work",
+                timeout=45,
+            )
+        )
+        return result.exit_code, result.stdout.strip()
+
+    def test_an_allowed_host_answers_a_denied_one_does_not_and_teardown_leaves_nothing(self):
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = WslcSandboxBackend(self._config())
+        spec = SandboxSpec(kind="e2e", image=_IMAGE, egress_allow=("mcr.microsoft.com",))
+
+        # Acquire before the try so a failure here surfaces as itself, not as an
+        # `UnboundLocalError` from the teardown assertions that follow.
+        sandbox = asyncio.run(backend.acquire(_key(scope), spec))
+        net = sandbox.container_name + "-net"
+        try:
+            assert _network_present(net)
+            allowed_rc, allowed_status = self._curl_status(sandbox, "https://mcr.microsoft.com/v2/")
+            _, denied_status = self._curl_status(sandbox, "https://pypi.org/simple/")
+
+            assert allowed_rc == 0 and allowed_status.startswith("2"), allowed_status
+            # curl exits non-zero and reports 000 when the proxy refuses the tunnel.
+            assert denied_status == "000", denied_status
+        finally:
+            purged = asyncio.run(backend.dispose_scope(scope, "thread-1"))
+        assert purged == 1
+        assert _names_on_the_machine(sandbox.container_name) == []
+        assert not _network_present(net)
