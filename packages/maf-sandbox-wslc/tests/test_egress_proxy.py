@@ -170,7 +170,8 @@ class TestBuildContext:
         assert (context / "Dockerfile").is_file()
         assert (context / "proxy.py").is_file()
 
-    def test_the_dockerfile_pins_its_base_and_copies_the_script(self):
+    def test_the_dockerfile_pins_its_base_by_digest_and_copies_the_script(self):
         dockerfile = (build_context() / "Dockerfile").read_text(encoding="utf-8")
-        assert "mcr.microsoft.com/azurelinux/base/core:3.0" in dockerfile
+        from_line = next(li for li in dockerfile.splitlines() if li.startswith("FROM "))
+        assert "mcr.microsoft.com/azurelinux/base/core@sha256:" in from_line
         assert "COPY proxy.py" in dockerfile

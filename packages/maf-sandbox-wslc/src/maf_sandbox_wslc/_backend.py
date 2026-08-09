@@ -24,6 +24,7 @@ import json
 import logging
 import re
 import tarfile
+import weakref
 from collections.abc import Sequence
 from dataclasses import dataclass
 from hashlib import sha256
@@ -245,10 +246,12 @@ class WslcSandboxBackend:
         self._registry: dict[tuple[str, str, str], str] = {}
         # Get-or-create serialised per (running loop, key): a create names no container until it
         # returns, so two acquires racing one key would each build a network, a proxy and a
-        # sandbox. Per loop because an asyncio.Lock binds to the loop that first waits on it.
-        self._acquire_locks: dict[
-            tuple[asyncio.AbstractEventLoop, tuple[str, str, str]], asyncio.Lock
-        ] = {}
+        # sandbox. Per loop because an asyncio.Lock binds to the loop that first waits on it, and
+        # weak-keyed on the loop so a process that runs a loop per call (asyncio.run) does not
+        # accumulate a lock table for loops long dead.
+        self._acquire_locks: weakref.WeakKeyDictionary[
+            asyncio.AbstractEventLoop, dict[tuple[str, str, str], asyncio.Lock]
+        ] = weakref.WeakKeyDictionary()
 
     @property
     def name(self) -> str:
@@ -353,15 +356,21 @@ class WslcSandboxBackend:
 
         A proxy carries its sandbox's labels, so it is listed and removed alongside it, but it is
         not a sandbox and is not counted. Its network is removed after it, when it is free to go.
-        The ``fallback`` names cover the case the listing failed: they may be closed sandboxes
-        with no proxy or network, so an attempt to remove those is expected to find nothing.
+        The ``fallback`` names cover the case the listing failed.
+
+        When this backend enforces allowlists, every workload's proxy and network are swept —
+        not only those whose proxy the listing returned — so a proxy a reuse failed to rebuild,
+        or one deleted by hand, does not strand its network. A closed backend does no such sweep:
+        its sandboxes never had a network, and a listed proxy from an earlier allowlisted run
+        still takes its own network with it below.
         """
         listed = await self._list_names_by_labels(label_filters)
         listed_set = set(listed)
         stranded = [n for n in fallback if n not in listed_set]
+        names = [*listed, *stranded]
 
         count = 0
-        for target in [*listed, *stranded]:
+        for target in names:
             if await self._remove(target) and not target.endswith(_PROXY_SUFFIX):
                 logger.info("sandbox released: container=%s thread=%s (purge)", target, thread_id)
                 count += 1
@@ -371,11 +380,10 @@ class WslcSandboxBackend:
             for n in listed
             if n.endswith(_PROXY_SUFFIX)
         }
-        # A listing that failed hides the proxy too, so for a stranded workload try both — the
-        # attempt is a quiet no-op when it turns out to have been a closed sandbox.
         if self._config.egress_proxy_image is not None:
-            for workload in (n for n in stranded if not n.endswith(_PROXY_SUFFIX)):
-                await self._remove(_proxy_name(workload))
+            for workload in (n for n in names if not n.endswith(_PROXY_SUFFIX)):
+                if _proxy_name(workload) not in listed_set:
+                    await self._remove(_proxy_name(workload))
                 networks.add(_network_name(workload))
         for net in networks:
             await self._remove_network(net)
@@ -468,10 +476,11 @@ class WslcSandboxBackend:
 
     def _acquire_lock(self, key: SandboxKey) -> asyncio.Lock:
         """The get-or-create lock for one key on the running loop (see ``__init__``)."""
-        lock_key = (asyncio.get_running_loop(), (key.scope, key.thread_id, key.agent_dir))
-        lock = self._acquire_locks.get(lock_key)
+        per_loop = self._acquire_locks.setdefault(asyncio.get_running_loop(), {})
+        registry_key = (key.scope, key.thread_id, key.agent_dir)
+        lock = per_loop.get(registry_key)
         if lock is None:
-            lock = self._acquire_locks[lock_key] = asyncio.Lock()
+            lock = per_loop[registry_key] = asyncio.Lock()
         return lock
 
     async def _create_workload(
@@ -573,7 +582,13 @@ class WslcSandboxBackend:
         await self._await_listening(proxy)
 
     async def _await_listening(self, proxy: str) -> None:
-        """Wait for the proxy's listening line, briefly; proceed either way, loudly if not."""
+        """Wait for the proxy's listening line; fail the acquire if it never comes.
+
+        A proxy that has not bound its port yet would let the workload's first request through to
+        nothing and read as a network error. Rather than hand back a sandbox whose egress is not
+        actually up, the acquire fails here and the caller can retry — the network is reclaimed on
+        the way out when this was a fresh create.
+        """
         for _ in range(_PROXY_READY_ATTEMPTS):
             result = await self._wslc(
                 "container", "logs", proxy, timeout=self._config.command_timeout_seconds
@@ -581,7 +596,7 @@ class WslcSandboxBackend:
             if result.returncode == 0 and _PROXY_READY_MARKER in result.stdout:
                 return
             await asyncio.sleep(_PROXY_READY_DELAY_S)
-        logger.warning("egress proxy %s never reported listening; continuing anyway", proxy)
+        raise RuntimeError(f"egress proxy {proxy} never reported listening")
 
     async def _adopt(self, name: str) -> bool:
         """Whether an existing ``name`` is running, or could be started — the reuse path again.
@@ -639,8 +654,8 @@ class WslcSandboxBackend:
     async def _remove_network(self, net: str) -> bool:
         """Force-remove a network. Returns whether it removed one; never raises.
 
-        A network that was never there is a no-op, not a failure — the purge tries every
-        workload's network without first knowing which had one.
+        A network that was never there is a no-op, not a failure — an allowlisting backend's
+        purge tries a workload's network whether or not that workload turns out to have had one.
         """
         try:
             result = await self._wslc(

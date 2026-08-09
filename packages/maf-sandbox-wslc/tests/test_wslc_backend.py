@@ -1039,6 +1039,26 @@ class TestAllowlistTopology:
         with pytest.raises(RuntimeError, match="outbound leg"):
             asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
 
+    def test_a_proxy_that_never_listens_fails_the_acquire(self):
+        """Better to fail than hand back a sandbox whose egress is not actually up."""
+        import maf_sandbox_wslc._backend as backend_mod
+
+        def respond(args):
+            if args[:2] == ("container", "logs"):
+                return _WslcResult(0, "starting up\n", "")  # never the readiness marker
+            return _machine()(args)
+
+        backend, fake = _backend_with(respond, config=_ALLOW_CONFIG)
+        original = backend_mod._PROXY_READY_ATTEMPTS, backend_mod._PROXY_READY_DELAY_S
+        backend_mod._PROXY_READY_ATTEMPTS, backend_mod._PROXY_READY_DELAY_S = 2, 0.0
+        try:
+            with pytest.raises(RuntimeError, match="never reported listening"):
+                asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        finally:
+            backend_mod._PROXY_READY_ATTEMPTS, backend_mod._PROXY_READY_DELAY_S = original
+        # The network it created on the way in must be reclaimed on the failure.
+        assert fake.matching("network", "remove")[-1].args[-1] == _AL_NET
+
     def test_closed_mode_issues_no_network_commands_at_all(self):
         backend, fake = _backend_with(_machine())
         asyncio.run(backend.acquire(_KEY, _SPEC))
@@ -1126,13 +1146,21 @@ class TestAllowlistTeardown:
         assert fake.matching("network") == []
 
     def test_dispose_scope_counts_workloads_and_sweeps_their_proxies_networks(self):
-        listed = [_AL, _AL_PROXY, "maf-sandbox-wslc-feedfeedfeed"]
-        backend, fake = _backend_with(_machine(stopped=listed), config=_ALLOW_CONFIG)
+        other = "maf-sandbox-wslc-feedfeedfeed"
+        backend, fake = _backend_with(
+            _machine(stopped=[_AL, _AL_PROXY, other]), config=_ALLOW_CONFIG
+        )
 
         assert asyncio.run(backend.dispose_scope("scope-a", "thread-1")) == 2
 
-        assert [c.args[-1] for c in fake.matching("container", "remove")] == listed
-        assert [c.args[-1] for c in fake.matching("network", "remove")] == [_AL_NET]
+        removed = [c.args[-1] for c in fake.matching("container", "remove")]
+        assert removed[:3] == [_AL, _AL_PROXY, other]
+        # `other` has no listed proxy, so its own proxy and network are still swept.
+        assert _proxy_name(other) in removed
+        assert set(c.args[-1] for c in fake.matching("network", "remove")) == {
+            _AL_NET,
+            _network_name(other),
+        }
 
     def test_dispose_scope_registry_fallback_sweeps_the_proxy_and_network(self):
         # H2: when the listing fails, the remembered workload name must still take its proxy
