@@ -4,6 +4,17 @@ All notable changes to `maf-sandbox-acas` are documented here. The format follow
 
 Releases up to and including `0.2.3` were published as **`maf-sandbox-aca`**, and the entries below name it as it was — their tags and compare links point at real history and are left as they were written. `maf-sandbox-aca` is not maintained past `0.2.3`; PyPI names cannot be reused, so the rename is a new distribution rather than a continuation of that one.
 
+## [0.4.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.3.2...maf-sandbox-acas-v0.4.0) (2026-08-09)
+
+
+### ⚠ BREAKING CHANGES
+
+* a sandbox belongs to (key, kind) — two kinds on one agent never share one ([#87](https://github.com/sokolaidev/maf-extensions/issues/87))
+
+### Bug Fixes
+
+* a sandbox belongs to (key, kind) — two kinds on one agent never share one ([#87](https://github.com/sokolaidev/maf-extensions/issues/87)) ([fa321cf](https://github.com/sokolaidev/maf-extensions/commit/fa321cf53f643f9e30df910fc8e46c6a938d6605))
+
 ## [0.3.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.3.1...maf-sandbox-acas-v0.3.2) (2026-08-09)
 
 
