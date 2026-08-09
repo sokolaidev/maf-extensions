@@ -23,7 +23,9 @@ import sys
 from pathlib import Path
 
 _CONSTRAINT = re.compile(r"maf-sandbox>=(\d+(?:\.\d+)*),<(\d+(?:\.\d+)*)")
-_DEPENDENCY = re.compile(r'"maf-sandbox\b[^"]*"')
+# Exactly the base package: the negative lookahead is what keeps `maf-sandbox-aca` — a sibling a
+# package may depend on instead of, or as well as, the base — from being read as this dependency.
+_DEPENDENCY = re.compile(r'"maf-sandbox(?![-\w])')
 
 
 def _version(text: str) -> tuple[int, ...]:

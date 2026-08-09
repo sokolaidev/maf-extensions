@@ -101,3 +101,27 @@ class TestMain:
     def test_nothing_to_adopt_is_a_clean_no_op(self, tmp_path):
         self._write(tmp_path, "dep-a", "maf-sandbox>=0.2.0,<0.3")
         assert bump.run("0.2.1", tmp_path) == []
+
+    def test_a_dependent_on_only_a_sibling_is_not_mistaken_for_a_base_dependent(
+        self, tmp_path
+    ):
+        # maf-sandbox-aca is a sibling, not the base — this package must be skipped, not
+        # demanded to carry a maf-sandbox>=X,<Y constraint it has no reason to.
+        self._write(tmp_path, "dep-a", "maf-sandbox-aca>=0.2.0,<0.3")
+        assert bump.run("0.3.0", tmp_path) == []
+
+    def test_a_dependent_on_both_bumps_the_base_and_ignores_the_sibling(self, tmp_path):
+        pkg = tmp_path / "packages" / "dep-a"
+        pkg.mkdir(parents=True)
+        path = pkg / "pyproject.toml"
+        path.write_text(
+            '[project]\nname = "dep-a"\n'
+            'dependencies = ["maf-sandbox-aca>=0.1.0,<0.3", "maf-sandbox>=0.1.0,<0.3"]\n',
+            "utf-8",
+        )
+        assert bump.run("0.2.0", tmp_path) == [path]
+        text = path.read_text("utf-8")
+        assert "maf-sandbox>=0.2.0,<0.3" in text
+        assert (
+            "maf-sandbox-aca>=0.1.0,<0.3" in text
+        )  # the sibling is left exactly as it was

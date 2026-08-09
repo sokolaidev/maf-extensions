@@ -303,23 +303,23 @@ class TestDependentsPinMafSandboxInAShapeTheBumpScriptCanRead:
     """
 
     _MAF_SANDBOX = re.compile(r"maf-sandbox>=\d+(?:\.\d+)*,<\d+(?:\.\d+)*")
+    # The base package exactly — the lookahead keeps `maf-sandbox-aca` from being read as it.
+    _IS_BASE = re.compile(r"maf-sandbox(?![-\w])")
 
-    def _dependents(self) -> list[str]:
-        found = []
-        for package_path in PACKAGE_PATHS:
-            if declared_name(package_path) == "maf-sandbox":
-                continue
-            deps = pyproject(package_path)["project"].get("dependencies", [])
-            if any(dep.startswith("maf-sandbox") for dep in deps):
-                found.append(package_path)
-        return found
+    def _base_constraint(self, package_path: str) -> str | None:
+        if declared_name(package_path) == "maf-sandbox":
+            return None
+        deps = pyproject(package_path)["project"].get("dependencies", [])
+        return next((d for d in deps if self._IS_BASE.match(d)), None)
 
     def test_every_dependent_is_pinned_in_the_readable_shape(self):
-        dependents = self._dependents()
+        constraints = {
+            package_path: self._base_constraint(package_path)
+            for package_path in PACKAGE_PATHS
+        }
+        dependents = {p: c for p, c in constraints.items() if c is not None}
         assert dependents, "expected at least one package to depend on maf-sandbox"
-        for package_path in dependents:
-            deps = pyproject(package_path)["project"]["dependencies"]
-            constraint = next(d for d in deps if d.startswith("maf-sandbox"))
+        for package_path, constraint in dependents.items():
             assert self._MAF_SANDBOX.fullmatch(constraint), (
                 f"{package_path}: {constraint!r} is not the maf-sandbox>=X,<Y shape "
                 "scripts/bump_dependents_floor.py edits by pattern"

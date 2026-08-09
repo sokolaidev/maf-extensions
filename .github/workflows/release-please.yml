@@ -71,12 +71,6 @@ jobs:
           && contains(steps.release.outputs.paths_released, '"packages/maf-sandbox"')
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Install uv
-        if: >-
-          steps.release.outputs.releases_created == 'true'
-          && contains(steps.release.outputs.paths_released, '"packages/maf-sandbox"')
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
-
       - name: Propose the dependents' floor bump
         if: >-
           steps.release.outputs.releases_created == 'true'
@@ -87,19 +81,22 @@ jobs:
         run: |
           set -euo pipefail
           # Fails if a dependent's constraint has drifted from the shape it edits by pattern —
-          # a release step that quietly does nothing is worse than one that stops.
+          # a release step that quietly does nothing is worse than one that stops. Runs on the
+          # runner's own python3: the script is stdlib-only, and the floor lives in pyproject
+          # alone (uv.lock records the workspace edge without a specifier, so it does not move).
           python3 scripts/bump_dependents_floor.py "$VERSION"
           if git diff --quiet; then
             echo "no dependent has adopted maf-sandbox ${VERSION}; no floor bump" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           branch="chore/require-maf-sandbox-${VERSION}"
-          if git ls-remote --exit-code origin "refs/heads/${branch}" >/dev/null 2>&1; then
-            echo "branch ${branch} already exists; leaving it" >> "$GITHUB_STEP_SUMMARY"
+          # Skip only when the proposal is already open; a branch left behind by a create that
+          # failed after the push is rebuilt below rather than stranding the bump forever.
+          if [ -n "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ]; then
+            echo "a PR for ${branch} is already open; leaving it" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          # The lockfile records the constraint, so it moves with it or `uv sync --locked` fails.
-          uv lock
+          git push origin --delete "$branch" 2>/dev/null || true
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$branch"
@@ -115,7 +112,7 @@ jobs:
           - Retitle it feat:/breaking if adopting the version is more than a patch for a dependent — the title defaults to fix: so the bot does not choose the bump.
           - Close it if nothing actually needs ${VERSION}; pinning a newer floor than consumers require only over-constrains them.
 
-          The ceiling is deliberately untouched: widening it is the pre-release decision to adopt, and this step only follows through on it. Its required check arrives held as action_required, like a Release PR — approve and run it. Closes #41."
+          The ceiling is deliberately untouched: widening it is the pre-release decision to adopt, and this step only follows through on it. Supply its required check the way you do for a Release PR (approve the held run, or dispatch tests.yml at this branch). Closes #41."
           gh pr create --base main --head "$branch" \
             --title "fix: require maf-sandbox ${VERSION} in the packages that use it" \
             --body "$body"
