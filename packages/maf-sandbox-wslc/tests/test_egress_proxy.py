@@ -63,7 +63,7 @@ class TestConnectProxy:
     def test_an_allowed_connect_tunnels_bytes_both_ways(self):
         async def scenario() -> None:
             echo, echo_port = await _echo_server()
-            proxy = ProxyServer(("127.0.0.1",), ports=(echo_port,))
+            proxy = ProxyServer(("127.0.0.1",), ports=(echo_port,), allow_private=True)
             await proxy.start()
             reader, writer = await asyncio.open_connection("127.0.0.1", proxy.bound_port)
             writer.write(f"CONNECT 127.0.0.1:{echo_port} HTTP/1.1\r\n\r\n".encode())
@@ -128,6 +128,37 @@ class TestConnectProxy:
             await proxy.start()
             reply = await _request(proxy.bound_port, b"CONNECT 127.0.0.1:1 HTTP/1.1\r\n\r\n")
             assert reply.startswith(b"HTTP/1.1 502")
+            await proxy.aclose()
+
+        asyncio.run(scenario())
+
+    def test_an_allowed_name_resolving_to_a_private_address_is_refused(self):
+        """Defence in depth: even a listed host is denied if it lands on a non-global address."""
+
+        async def scenario() -> None:
+            echo, echo_port = await _echo_server()
+            proxy = ProxyServer(("127.0.0.1",), ports=(echo_port,))  # allow_private defaults off
+            await proxy.start()
+            reply = await _request(
+                proxy.bound_port, f"CONNECT 127.0.0.1:{echo_port} HTTP/1.1\r\n\r\n".encode()
+            )
+            assert reply.startswith(b"HTTP/1.1 403")
+            await proxy.aclose()
+            echo.close()
+
+        asyncio.run(scenario())
+
+    def test_a_client_that_sends_nothing_is_answered_and_released(self):
+        """A half-open client must not pin a handler forever — the header read is bounded."""
+
+        async def scenario() -> None:
+            proxy = ProxyServer(("allowed.example",), ports=(443,))
+            proxy._header_timeout = 0.2  # keep the test quick  # type: ignore[attr-defined]
+            await proxy.start()
+            reader, writer = await asyncio.open_connection("127.0.0.1", proxy.bound_port)
+            reply = await reader.read(4096)  # never send a request line
+            assert reply.startswith(b"HTTP/1.1 400")
+            writer.close()
             await proxy.aclose()
 
         asyncio.run(scenario())

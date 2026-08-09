@@ -14,12 +14,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ipaddress
 import os
 from collections.abc import Sequence
 from fnmatch import fnmatchcase
 
 _DEFAULT_PORT = 3128
 _CHUNK = 65536
+_HEADER_TIMEOUT = 10.0
+_DIAL_TIMEOUT = 20.0
 
 
 def host_allowed(host: str, allowlist: Sequence[str]) -> bool:
@@ -28,12 +31,32 @@ def host_allowed(host: str, allowlist: Sequence[str]) -> bool:
     return any(fnmatchcase(lowered, pattern.lower()) for pattern in allowlist)
 
 
+def _peer_is_global(writer: asyncio.StreamWriter) -> bool:
+    """Whether the connected peer's address is a public one, not private or link-local."""
+    peer = writer.get_extra_info("peername")
+    if not peer:
+        return False
+    try:
+        return ipaddress.ip_address(peer[0]).is_global
+    except ValueError:
+        return False
+
+
 class ProxyServer:
     """Accepts CONNECT to allowed ``host:port`` pairs and tunnels bytes; refuses the rest."""
 
-    def __init__(self, allowlist: Sequence[str], *, ports: Sequence[int] = (443,)) -> None:
+    def __init__(
+        self,
+        allowlist: Sequence[str],
+        *,
+        ports: Sequence[int] = (443,),
+        allow_private: bool = False,
+    ) -> None:
         self._allowlist = tuple(allowlist)
         self._ports = tuple(ports)
+        # Off in production; on only so the in-process tests can tunnel to a loopback stand-in.
+        self._allow_private = allow_private
+        self._header_timeout = _HEADER_TIMEOUT
         self._server: asyncio.Server | None = None
 
     @property
@@ -61,8 +84,16 @@ class ProxyServer:
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
-            head = await reader.readuntil(b"\r\n\r\n")
-        except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, ConnectionError):
+            head = await asyncio.wait_for(
+                reader.readuntil(b"\r\n\r\n"), timeout=self._header_timeout
+            )
+        except (
+            asyncio.IncompleteReadError,
+            asyncio.LimitOverrunError,
+            ConnectionError,
+            TimeoutError,
+        ):
+            # A client that opens the socket and sends nothing must not hold a handler forever.
             await self._respond(writer, "400 Bad Request")
             return
         parts = head.split(b"\r\n", 1)[0].decode("latin-1").split()
@@ -74,7 +105,7 @@ class ProxyServer:
             await self._respond(writer, "405 Method Not Allowed")
             return
         host, _, port_text = target.rpartition(":")
-        if not host or not port_text.isdigit():
+        if not host or not port_text.isascii() or not port_text.isdigit():
             await self._respond(writer, "400 Bad Request")
             return
         port = int(port_text)
@@ -83,10 +114,20 @@ class ProxyServer:
             await self._respond(writer, "403 Forbidden")
             return
         try:
-            target_reader, target_writer = await asyncio.open_connection(host, port)
-        except OSError:
+            target_reader, target_writer = await asyncio.wait_for(
+                asyncio.open_connection(host, port), timeout=_DIAL_TIMEOUT
+            )
+        except (OSError, TimeoutError):
             print(f"UNREACHABLE {host}:{port}", flush=True)
             await self._respond(writer, "502 Bad Gateway")
+            return
+        if not self._allow_private and not _peer_is_global(target_writer):
+            # An allowlisted name that resolves to a private or link-local address — via a
+            # corporate DNS search suffix, say — is not a tunnel this proxy will complete.
+            print(f"DENY-NONGLOBAL {host}:{port}", flush=True)
+            with contextlib.suppress(Exception):
+                target_writer.close()
+            await self._respond(writer, "403 Forbidden")
             return
         print(f"ALLOW {host}:{port}", flush=True)
         writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")

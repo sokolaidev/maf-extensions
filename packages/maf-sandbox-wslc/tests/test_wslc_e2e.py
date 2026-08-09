@@ -107,9 +107,23 @@ class TestALiveContainer:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
 
+def _network_present(name: str) -> bool:
+    """Whether a network named ``name`` exists, read with wslc (the JSON list, not the table)."""
+    listing = subprocess.run(
+        ["wslc", "network", "list", "--format", "json"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    ).stdout
+    rows = json.loads(listing) if listing.strip() else []
+    return any(row.get("Name") == name for row in rows)
+
+
 @pytest.mark.skipif(
-    _PROXY_IMAGE is None or not shutil.which("curl"),
-    reason="needs MAF_SANDBOX_WSLC_E2E_PROXY_IMAGE naming a built proxy image, and curl in the image",
+    _PROXY_IMAGE is None,
+    # `curl` has to be in the *image*, which we cannot check from here; the Bicep sandbox has it.
+    reason="needs MAF_SANDBOX_WSLC_E2E_PROXY_IMAGE naming a built proxy image (and curl in the image)",
 )
 class TestAllowlistEgress:
     """The whole point of ALLOWLIST: an allowed host is reachable and a denied one is not.
@@ -132,15 +146,17 @@ class TestAllowlistEgress:
         )
         return result.exit_code, result.stdout.strip()
 
-    def test_an_allowed_host_answers_and_a_denied_one_does_not(self):
+    def test_an_allowed_host_answers_a_denied_one_does_not_and_teardown_leaves_nothing(self):
         scope = f"e2e-{uuid.uuid4()}"
         backend = WslcSandboxBackend(self._config())
         spec = SandboxSpec(kind="e2e", image=_IMAGE, egress_allow=("mcr.microsoft.com",))
 
         try:
             sandbox = asyncio.run(backend.acquire(_key(scope), spec))
+            net = sandbox.container_name + "-net"
+            assert _network_present(net)
             allowed_rc, allowed_status = self._curl_status(sandbox, "https://mcr.microsoft.com/v2/")
-            denied_rc, denied_status = self._curl_status(sandbox, "https://pypi.org/simple/")
+            _, denied_status = self._curl_status(sandbox, "https://pypi.org/simple/")
 
             assert allowed_rc == 0 and allowed_status.startswith("2"), allowed_status
             # curl exits non-zero and reports 000 when the proxy refuses the tunnel.
@@ -148,3 +164,5 @@ class TestAllowlistEgress:
         finally:
             purged = asyncio.run(backend.dispose_scope(scope, "thread-1"))
             assert purged == 1
+        assert _names_on_the_machine(sandbox.container_name) == []
+        assert not _network_present(net)
