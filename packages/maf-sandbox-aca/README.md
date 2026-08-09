@@ -1,5 +1,13 @@
 # maf-sandbox-aca
 
+> **This package has moved to [`maf-sandbox-acas`](https://pypi.org/project/maf-sandbox-acas/).** `0.2.3` is the last `maf-sandbox-aca` release. ACA is Azure Container *Apps*, the broad service; this backend targets Azure Container Apps **Sandboxes**, so the distribution gained the `s` the rest of the project already used. PyPI names cannot be reused, so `maf-sandbox-acas` is a new project rather than a continuation of this one, and **there is no compatibility shim** — nothing here forwards to it.
+>
+> ```bash
+> pip install maf-sandbox-acas
+> ```
+>
+> The import package, the classes and the sample's environment variables gained the same `s`: `from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig`, and `ACA_SANDBOX_*` → `ACAS_SANDBOX_*`. The backend's own identifier — what `SandboxRouter(selected=…)` matches — is now `"acas"`. Nothing else about the backend changed. See [#68](https://github.com/sokolaidev/maf-extensions/issues/68).
+
 > **Experimental.** This package is early-stage (pre-1.0, `Development Status :: 4 - Beta`) — its API may change or be removed in a future release without notice. Importing it emits a one-time `MafSandboxAcaExperimentalWarning`; suppress it with `warnings.filterwarnings("ignore", category=maf_sandbox_aca.MafSandboxAcaExperimentalWarning)` once you've read the notice.
 
 This package is not affiliated with, endorsed by, or a product of Microsoft — it is a third-party reference implementation of [microsoft/agent-framework#7568](https://github.com/microsoft/agent-framework/issues/7568) for [Microsoft Agent Framework](https://aka.ms/AgentFramework), built on the [Azure Container Apps Sandboxes](https://learn.microsoft.com/azure/container-apps/sandboxes-overview) preview.
