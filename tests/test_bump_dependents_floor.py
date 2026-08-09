@@ -108,7 +108,8 @@ class TestMain:
         pkg.mkdir(parents=True)
         path = pkg / "pyproject.toml"
         path.write_text(
-            "[project]\nname = 'dep-a'\ndependencies = ['maf-sandbox>=0.1.0,<0.3']\n", "utf-8"
+            "[project]\nname = 'dep-a'\ndependencies = ['maf-sandbox>=0.1.0,<0.3']\n",
+            "utf-8",
         )
         assert bump.run("0.2.0", tmp_path) == [path]
         assert "maf-sandbox>=0.2.0,<0.3" in path.read_text("utf-8")
