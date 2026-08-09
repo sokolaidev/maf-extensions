@@ -20,12 +20,12 @@ from __future__ import annotations
 
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 _CONSTRAINT = re.compile(r"maf-sandbox>=(\d+(?:\.\d+)*),<(\d+(?:\.\d+)*)")
-# Exactly the base package: the negative lookahead is what keeps `maf-sandbox-aca` — a sibling a
-# package may depend on instead of, or as well as, the base — from being read as this dependency.
-_DEPENDENCY = re.compile(r'"maf-sandbox(?![-\w])')
+# The distribution name at the head of a dependency string, before any version operator.
+_DIST_NAME = re.compile(r"[A-Za-z0-9._-]+")
 
 
 def _version(text: str) -> tuple[int, ...]:
@@ -69,15 +69,33 @@ def bump_floor(text: str, released: tuple[int, ...]) -> tuple[str, bool]:
     return new_text, new_text != text
 
 
+def _base_dependency(dependencies: list[str]) -> str | None:
+    """The dependency on the base ``maf-sandbox`` distribution exactly, or ``None``.
+
+    Read from the parsed dependency string, not the file text, so it does not matter whether the
+    pyproject quotes with ``"`` or ``'`` — and the exact name match keeps a dependency on the
+    sibling ``maf-sandbox-aca`` from being taken for one on the base package.
+    """
+    for dep in dependencies:
+        name = _DIST_NAME.match(dep.strip())
+        if name is not None and name.group(0) == "maf-sandbox":
+            return dep
+    return None
+
+
 def run(released_text: str, repo_root: Path) -> list[Path]:
     """Bump every adopting dependent under ``repo_root``; return the files changed. May exit."""
     released = _version(released_text)
     changed: list[Path] = []
     for path in sorted(repo_root.glob("packages/*/pyproject.toml")):
         text = path.read_text("utf-8")
-        if path.parent.name == "maf-sandbox" or not _DEPENDENCY.search(text):
+        project = tomllib.loads(text).get("project", {})
+        if project.get("name") == "maf-sandbox":
             continue
-        if parse_constraint(text) is None:
+        base = _base_dependency(project.get("dependencies", []))
+        if base is None:
+            continue
+        if parse_constraint(base) is None:
             raise SystemExit(
                 f"{path}: depends on maf-sandbox but not as 'maf-sandbox>=X,<Y'; this script "
                 "cannot bump it, and failing beats silently skipping a release-time step."

@@ -102,6 +102,17 @@ class TestMain:
         self._write(tmp_path, "dep-a", "maf-sandbox>=0.2.0,<0.3")
         assert bump.run("0.2.1", tmp_path) == []
 
+    def test_single_quoted_toml_is_read_not_silently_skipped(self, tmp_path):
+        # Single quotes are valid TOML; a quote-specific matcher would skip this and pass green.
+        pkg = tmp_path / "packages" / "dep-a"
+        pkg.mkdir(parents=True)
+        path = pkg / "pyproject.toml"
+        path.write_text(
+            "[project]\nname = 'dep-a'\ndependencies = ['maf-sandbox>=0.1.0,<0.3']\n", "utf-8"
+        )
+        assert bump.run("0.2.0", tmp_path) == [path]
+        assert "maf-sandbox>=0.2.0,<0.3" in path.read_text("utf-8")
+
     def test_a_dependent_on_only_a_sibling_is_not_mistaken_for_a_base_dependent(
         self, tmp_path
     ):
