@@ -178,7 +178,14 @@ class SandboxBackend(Protocol):
         ...
 
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> Sandbox:
-        """Return a running sandbox for ``key``, creating one if needed."""
+        """Return a running sandbox for ``key``, creating one if needed.
+
+        Two acquires for one key can be in flight at once: the function calls in a single
+        assistant message are executed concurrently, so a workload's tool body runs twice
+        over.  An unguarded read-then-create then hands out two sandboxes where the caller
+        expects one, and only one of them is remembered.  Serialise the get-or-create, or
+        derive a name the provider will reject a duplicate of.
+        """
         ...
 
     async def dispose(self, key: SandboxKey) -> None:

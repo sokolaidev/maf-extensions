@@ -610,7 +610,7 @@ wheels = [
 
 [[package]]
 name = "maf-sandbox"
-version = "0.2.1"
+version = "0.2.2"
 source = { editable = "packages/maf-sandbox" }
 dependencies = [
     { name = "agent-framework-core" },
@@ -621,7 +621,7 @@ requires-dist = [{ name = "agent-framework-core", specifier = ">=1.13.0,<2" }]
 
 [[package]]
 name = "maf-sandbox-aca"
-version = "0.2.1"
+version = "0.2.2"
 source = { editable = "packages/maf-sandbox-aca" }
 dependencies = [
     { name = "azure-containerapps-sandbox" },
@@ -638,7 +638,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-bicep"
-version = "0.2.1"
+version = "0.2.2"
 source = { editable = "packages/maf-sandbox-bicep" }
 dependencies = [
     { name = "agent-framework-core" },

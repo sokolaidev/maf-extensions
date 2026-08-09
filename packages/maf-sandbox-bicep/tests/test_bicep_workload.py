@@ -122,10 +122,13 @@ def _workspace_part(sandbox_path: str) -> str:
     return sandbox_path.removeprefix(f"{_WORK_DIR}/").split("/", 1)[1]
 
 
+def _callable(tool):
+    """The tool body, off whichever attribute the MAF decorator carries it on."""
+    return getattr(tool, "func", None) or getattr(tool, "__wrapped__", None) or tool
+
+
 def _run(tool, files: list[str]) -> str:
-    """Invoke the MAF-decorated tool, whichever attribute carries the callable."""
-    fn = getattr(tool, "func", None) or getattr(tool, "__wrapped__", None) or tool
-    return asyncio.run(fn(files=files))
+    return asyncio.run(_callable(tool)(files=files))
 
 
 # ---------------------------------------------------------------------------
@@ -485,6 +488,71 @@ class TestStaleFilesAcrossRounds:
         build_cmd = [c for c, _, _ in backend.sandbox.commands if "bicep build" in c][-1]
         round_dir = build_cmd.split("bicep build ")[1].split("/main.bicep")[0]
         assert f"{round_dir}/modules/storage.bicep" not in backend.sandbox.files
+
+
+class _YieldingSandbox(InProcessSandbox):
+    """Suspends on every call, so two gathered tool bodies really do interleave.
+
+    The in-process fake awaits nothing, so without this two concurrent calls run one after
+    the other and a test of concurrency would pass against code that is not safe under it.
+    """
+
+    async def write_file(self, path: str, content: str) -> None:
+        await asyncio.sleep(0)
+        await super().write_file(path, content)
+
+    async def exec(self, command, *, working_directory: str, timeout: float):
+        await asyncio.sleep(0)
+        return await super().exec(command, working_directory=working_directory, timeout=timeout)
+
+
+class TestConcurrentRounds:
+    """Two calls for one key run at once, in one sandbox, and must not reach into each other.
+
+    Concurrency here is not hypothetical: the function calls in a single assistant message
+    are executed concurrently, so a message naming this tool twice runs the body twice over
+    against the same `(scope, thread, agent)` — and therefore the same sandbox.
+
+    Per-call directories are what keeps them apart, and that is a constraint on any future
+    cleanup of the work root rather than an incidental detail: a scheme that used one fixed
+    directory, or wiped its siblings on entry, would have the second call delete the first's
+    sources between its write and its compile.
+    """
+
+    def _both(self, tool, first: list[str], second: list[str]):
+        fn = _callable(tool)
+
+        async def run():
+            return await asyncio.gather(fn(files=first), fn(files=second))
+
+        return asyncio.run(run())
+
+    def test_each_call_compiles_only_its_own_files(self):
+        store = InMemoryStore({"a.bicep": "x", "b.bicep": "y"})
+        backend = _fake_backend(_YieldingSandbox(default_stdout=_EMPTY_SARIF))
+        tool = _tool(store, backend)
+
+        self._both(tool, ["a.bicep"], ["b.bicep"])
+
+        written = list(backend.sandbox.files)
+        assert sorted(_workspace_part(p) for p in written) == ["a.bicep", "b.bicep"]
+        assert len({p.rsplit("/", 1)[0] for p in written}) == 2
+        # Nothing compiled outside the directory it was written into, and both survived to
+        # be compiled — a sibling wipe would leave one of these commands with no source.
+        for command, working_directory, _ in backend.sandbox.commands:
+            compiled = command.split(" ")[2]
+            assert compiled.startswith(f"{working_directory}/")
+            assert compiled in backend.sandbox.files
+
+    def test_both_calls_report_their_own_diagnostics(self):
+        store = InMemoryStore({"a.bicep": "x", "b.bicep": "y"})
+        backend = _fake_backend(_YieldingSandbox(default_stdout=_EMPTY_SARIF))
+        tool = _tool(store, backend)
+
+        first, second = self._both(tool, ["a.bicep"], ["b.bicep"])
+
+        assert "a.bicep" in first and "b.bicep" not in first
+        assert "b.bicep" in second and "a.bicep" not in second
 
     def test_the_round_directory_sits_under_the_work_dir(self):
         """`bicepconfig.json` is at the work-dir root; Bicep finds it by walking up."""
