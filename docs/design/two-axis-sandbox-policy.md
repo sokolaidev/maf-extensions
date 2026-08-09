@@ -1,6 +1,6 @@
 # Two-axis sandbox policy: a minimum-isolation floor and a capability match
 
-> **Status: PROPOSED** — tracking issue [#85](https://github.com/sokolaidev/maf-extensions/issues/85). Prerequisite defect, filed separately: [#84](https://github.com/sokolaidev/maf-extensions/issues/84) (sandbox identity must incorporate the kind). Nothing in this document is implemented yet; code blocks are design sketches.
+> **Status: PROPOSED** — tracking issue [#85](https://github.com/sokolaidev/maf-extensions/issues/85). Prerequisite defect, filed separately: [#84](https://github.com/sokolaidev/maf-extensions/issues/84) (sandbox identity must incorporate the kind). Nothing in this document is implemented yet; code blocks are design sketches. The baseline this evolves — the architecture as it ships today — is [`sandbox-architecture.md`](sandbox-architecture.md).
 
 ## What this replaces
 
