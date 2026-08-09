@@ -271,7 +271,7 @@ class TestDisposeScope:
     def test_unions_the_registry_with_the_service_listing(self):
         client = _FakeGroupClient(sandboxes=[_FakeSandbox("sbx-remote")])
         backend = _backend_with(client)
-        backend._registry[("scope-a", "thread-1", "devops-engineer")] = "sbx-local"
+        backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = "sbx-local"
 
         assert asyncio.run(backend.dispose_scope("scope-a", "thread-1")) == 2
         assert sorted(client.deleted) == ["sbx-local", "sbx-remote"]
@@ -279,16 +279,16 @@ class TestDisposeScope:
     def test_does_not_delete_another_scopes_sandbox(self):
         client = _FakeGroupClient()
         backend = _backend_with(client)
-        backend._registry[("scope-b", "thread-1", "devops-engineer")] = "sbx-other"
+        backend._registry[("scope-b", "thread-1", "devops-engineer", "bicep")] = "sbx-other"
 
         assert asyncio.run(backend.dispose_scope("scope-a", "thread-1")) == 0
         assert client.deleted == []
-        assert ("scope-b", "thread-1", "devops-engineer") in backend._registry
+        assert ("scope-b", "thread-1", "devops-engineer", "bicep") in backend._registry
 
     def test_registry_entries_are_dropped_even_when_the_delete_fails(self):
         """A stale entry is worse than none — the next acquire would try to resume it."""
         backend = _backend_with(_ExplodingGroupClient())
-        backend._registry[("scope-a", "thread-1", "devops-engineer")] = "sbx-local"
+        backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = "sbx-local"
 
         asyncio.run(backend.dispose_scope("scope-a", "thread-1"))
         assert backend._registry == {}
@@ -386,7 +386,7 @@ class TestDispose:
         client = _FakeGroupClient()
         backend = _backend_with(client)
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir)] = "sbx-1"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
 
         asyncio.run(backend.dispose(key))
         assert client.deleted == ["sbx-1"]
@@ -485,7 +485,7 @@ class TestLifecycleLogging:
         client = _FakeGroupClient()
         backend = _backend_with(client)
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir)] = "sbx-warm"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-warm"
 
         from maf_sandbox import SandboxSpec
 
@@ -499,7 +499,7 @@ class TestLifecycleLogging:
         client = _FakeGroupClient()
         backend = _backend_with(client)
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir)] = "sbx-1"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
 
         with caplog.at_level(logging.INFO, logger="maf_sandbox_acas"):
             asyncio.run(backend.dispose(key))
@@ -604,7 +604,7 @@ class TestConcurrentAcquire:
         assert client.create_calls == 1
         assert client.peak_creates == 1
         assert first.sandbox_id == second.sandbox_id == "sbx-1"
-        assert backend._registry == {("scope-a", "thread-1", "devops-engineer"): "sbx-1"}
+        assert backend._registry == {("scope-a", "thread-1", "devops-engineer", "bicep"): "sbx-1"}
 
     def test_a_second_key_is_not_held_up_behind_the_first(self):
         """Per key, not one lock for the backend — two conversations must not serialise."""
@@ -647,6 +647,51 @@ class TestConcurrentAcquire:
         asyncio.run(both())
 
         assert client.create_calls == 1
+
+
+class TestKindIdentity:
+    """A sandbox belongs to (key, kind): two kinds on one agent never share one (#84)."""
+
+    def test_two_kinds_on_one_key_create_two_sandboxes(self):
+        from maf_sandbox import SandboxSpec
+
+        client = _SlowCreateGroupClient()
+        backend = _backend_with(client)
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+
+        async def one_after_the_other():
+            first = await backend.acquire(key, SandboxSpec(kind="bicep", image_id="pinned-id"))
+            second = await backend.acquire(key, SandboxSpec(kind="codeact", image_id="pinned-id"))
+            return first, second
+
+        first, second = asyncio.run(one_after_the_other())
+
+        assert client.create_calls == 2
+        assert first.sandbox_id != second.sandbox_id
+        assert ("scope-a", "thread-1", "devops-engineer", "bicep") in backend._registry
+        assert ("scope-a", "thread-1", "devops-engineer", "codeact") in backend._registry
+
+    def test_the_kind_label_is_written_at_create(self):
+        from maf_sandbox import SandboxSpec
+
+        from maf_sandbox_acas._backend import _LABEL_KIND, _sandbox_labels
+
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+        labels = _sandbox_labels(key, SandboxSpec(kind="bicep", image="i:1"))
+
+        assert labels[_LABEL_KIND] == "bicep"
+
+    def test_dispose_reclaims_every_kind_for_the_key(self):
+        client = _FakeGroupClient()
+        backend = _backend_with(client)
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-b"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "codeact")] = "sbx-c"
+
+        asyncio.run(backend.dispose(key))
+
+        assert sorted(client.deleted) == ["sbx-b", "sbx-c"]
+        assert backend._registry == {}
 
 
 # ---------------------------------------------------------------------------
@@ -708,7 +753,7 @@ class TestErrorDetailAdoption:
         client = _ResumeFailsGroupClient()
         backend = _backend_with(client)
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir)] = "sbx-warm"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-warm"
 
         from maf_sandbox import SandboxSpec
 
@@ -734,7 +779,7 @@ class TestErrorDetailAdoption:
 
         backend = _backend_with(_DeleteFailsGroupClient())
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
-        backend._registry[(key.scope, key.thread_id, key.agent_dir)] = "sbx-1"
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
 
         with caplog.at_level(logging.WARNING, logger="maf_sandbox_acas"):
             asyncio.run(backend.dispose(key))

@@ -104,6 +104,11 @@ class InProcessSandboxBackend:
     ``dispose`` records ``key`` into :attr:`disposed`. Every ``dispose_scope`` records
     ``(scope, thread_id)`` into :attr:`purged` and returns :attr:`purge_count`, settable per
     test to simulate more than one sandbox reclaimed.
+
+    A deliberate simplification: every ``acquire`` returns the same sandbox whatever the key
+    or the spec's kind, where a real backend keys sandboxes by ``(key, kind)``. Tests that
+    care which kind asked read :attr:`specs`; a test that needs two genuinely distinct
+    sandboxes registers two backends.
     """
 
     def __init__(

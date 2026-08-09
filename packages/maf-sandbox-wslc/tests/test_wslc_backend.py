@@ -33,7 +33,7 @@ from maf_sandbox_wslc._backend import (
 
 _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
 _SPEC = SandboxSpec(kind="bicep", image="bicep-sandbox:local")
-_NAME = _container_name(_KEY)
+_NAME = _container_name(_KEY, _SPEC.kind)
 
 
 class _Recorded:
@@ -141,13 +141,18 @@ class TestAcquireCreatesClosed:
         args = fake.only("container", "run").args
         assert args[:5] == ("container", "run", "-d", "--name", _NAME)
 
-    def test_the_name_is_derived_from_the_key_alone(self):
-        assert _container_name(_KEY) == _container_name(
-            SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+    def test_the_name_is_derived_from_the_key_and_the_kind(self):
+        assert _container_name(_KEY, "bicep") == _container_name(
+            SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer"), "bicep"
         )
-        assert _container_name(_KEY) != _container_name(
-            SandboxKey(scope="scope-b", thread_id="thread-1", agent_dir="devops-engineer")
+        assert _container_name(_KEY, "bicep") != _container_name(
+            SandboxKey(scope="scope-b", thread_id="thread-1", agent_dir="devops-engineer"), "bicep"
         )
+
+    def test_two_kinds_on_one_key_get_two_containers(self):
+        """A sandbox carries its spec's image and egress, so serving two kinds from one
+        container would run the second workload under the first one's network policy."""
+        assert _container_name(_KEY, "bicep") != _container_name(_KEY, "codeact")
 
     def test_the_keepalive_command_is_the_image_then_sleep_infinity(self):
         backend, fake = _backend_with(_machine())
@@ -182,6 +187,7 @@ class TestAcquireCreatesClosed:
             "maf-sandbox.scope=scope-a",
             "maf-sandbox.thread=thread-1",
             "maf-sandbox.agent=devops-engineer",
+            "maf-sandbox.kind=bicep",
             "maf-sandbox.label.kind=bicep",
         ]
 
@@ -496,6 +502,22 @@ class TestDispose:
         backend, _ = _backend_with(_explodes)
         asyncio.run(backend.dispose(_KEY))
 
+    def test_the_fallback_reaches_every_kind_this_process_remembers(self):
+        """One key may own one container per kind; a dispose with a failing listing must
+        reclaim all of them, not whichever one a single-slot registry kept last."""
+        overrides = {("container", "list"): _WslcResult(1, "", "WSLC_E_SERVICE_UNAVAILABLE")}
+        backend, fake = _backend_with(_machine(overrides=overrides))
+        backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = "name-bicep"
+        backend._registry[("scope-a", "thread-1", "devops-engineer", "codeact")] = "name-codeact"
+
+        asyncio.run(backend.dispose(_KEY))
+
+        assert sorted(c.args[-1] for c in fake.matching("container", "remove")) == [
+            "name-bicep",
+            "name-codeact",
+        ]
+        assert backend._registry == {}
+
 
 class TestDisposeScope:
     def test_selects_on_both_labels_and_on_stopped_containers_too(self):
@@ -525,18 +547,18 @@ class TestDisposeScope:
         """The labels are the source of truth; the registry is what is left when they fail."""
         overrides = {("container", "list"): _WslcResult(1, "", "WSLC_E_SERVICE_UNAVAILABLE")}
         backend, fake = _backend_with(_machine(overrides=overrides))
-        backend._registry[("scope-a", "thread-1", "devops")] = "name-x"
+        backend._registry[("scope-a", "thread-1", "devops", "bicep")] = "name-x"
 
         assert asyncio.run(backend.dispose_scope("scope-a", "thread-1")) == 1
         assert fake.only("container", "remove").args[-1] == "name-x"
 
     def test_another_scopes_container_is_left_alone(self):
         backend, fake = _backend_with(_machine())
-        backend._registry[("scope-b", "thread-1", "devops")] = "name-other"
+        backend._registry[("scope-b", "thread-1", "devops", "bicep")] = "name-other"
 
         assert asyncio.run(backend.dispose_scope("scope-a", "thread-1")) == 0
         assert fake.matching("container", "remove") == []
-        assert ("scope-b", "thread-1", "devops") in backend._registry
+        assert ("scope-b", "thread-1", "devops", "bicep") in backend._registry
 
     def test_a_failing_seam_degrades_to_zero_rather_than_raising(self):
         """A conversation delete must not fail because wslc is unavailable."""
@@ -913,7 +935,7 @@ _ALLOW_SPEC = SandboxSpec(
 # The allowlist folds into the name, so an allowlisted sandbox is a different container from a
 # closed one for the same key — which is what stops a reuse from crossing egress modes.
 _ALLOW_ID = "allow:" + ",".join(sorted(_ALLOW_SPEC.egress_allow))
-_AL = _container_name(_KEY, _ALLOW_ID)
+_AL = _container_name(_KEY, _ALLOW_SPEC.kind, _ALLOW_ID)
 _AL_NET = _network_name(_AL)
 _AL_PROXY = _proxy_name(_AL)
 
@@ -1080,11 +1102,15 @@ class TestAllowlistIdentity:
     """The egress folds into the container name so a reuse cannot cross egress boundaries."""
 
     def test_closed_and_allowlisted_names_differ(self):
-        assert _container_name(_KEY) != _container_name(_KEY, _ALLOW_ID)
+        assert _container_name(_KEY, _SPEC.kind) != _container_name(
+            _KEY, _ALLOW_SPEC.kind, _ALLOW_ID
+        )
 
     def test_a_different_allowlist_is_a_different_sandbox(self):
         wider = "allow:" + ",".join(sorted((*_ALLOW_SPEC.egress_allow, "aka.ms")))
-        assert _container_name(_KEY, _ALLOW_ID) != _container_name(_KEY, wider)
+        assert _container_name(_KEY, _ALLOW_SPEC.kind, _ALLOW_ID) != _container_name(
+            _KEY, _ALLOW_SPEC.kind, wider
+        )
 
     def test_an_allowlist_backend_does_not_reuse_a_closed_container(self):
         # The closed container for this key is running; an allowlist acquire must still build
@@ -1167,7 +1193,7 @@ class TestAllowlistTeardown:
         # and network with it, not just the workload.
         overrides = {("container", "list"): _WslcResult(1, "", "WSLC_E_SERVICE_UNAVAILABLE")}
         backend, fake = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
-        backend._registry[("scope-a", "thread-1", "devops")] = _AL
+        backend._registry[("scope-a", "thread-1", "devops", "bicep")] = _AL
 
         assert asyncio.run(backend.dispose_scope("scope-a", "thread-1")) == 1
         removed = [c.args[-1] for c in fake.matching("container", "remove")]

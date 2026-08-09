@@ -168,7 +168,7 @@ class SandboxRouter:
         return await self._backend.acquire(key, spec)
 
     async def dispose(self, key: SandboxKey) -> None:
-        """Delete the sandbox for ``key``. Best-effort across every registered backend."""
+        """Delete every kind's sandbox for ``key``. Best-effort across every registered backend."""
         for backend in self._backends:
             try:
                 await backend.dispose(key)

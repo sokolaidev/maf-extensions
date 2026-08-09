@@ -62,6 +62,7 @@ def _sandbox_labels(key: SandboxKey, spec: SandboxSpec) -> dict[str, str]:
         _LABEL_SCOPE: _label_value(key.scope),
         _LABEL_THREAD: _label_value(key.thread_id),
         _LABEL_AGENT: _label_value(key.agent_dir),
+        _LABEL_KIND: _label_value(spec.kind),
         **{k: _label_value(v) for k, v in spec.labels.items()},
     }
 
@@ -71,6 +72,7 @@ def _sandbox_labels(key: SandboxKey, spec: SandboxSpec) -> dict[str, str]:
 _LABEL_SCOPE = "scope"
 _LABEL_THREAD = "thread"
 _LABEL_AGENT = "agent"
+_LABEL_KIND = "kind"
 
 # How long to wait for a warm sandbox to come back from suspension before giving up on it
 # and creating a fresh one.
@@ -131,11 +133,13 @@ class AcasSandboxBackend:
 
     def __init__(self, config: AcasSandboxConfig) -> None:
         self._config = config
-        # (scope, thread_id, agent_dir) -> sandbox_id, for this process only.
+        # (scope, thread_id, agent_dir, kind) -> sandbox_id, for this process only.
         # Keyed on scope so sandboxes from one user's session cannot be reused or deleted by
-        # a request in another's.  `dispose_scope` treats this as a fast path, never as the
-        # source of truth — see its docstring.
-        self._registry: dict[tuple[str, str, str], str] = {}
+        # a request in another's, and on kind so two workloads on one agent never share a
+        # sandbox — the first spec to arrive would decide the image and egress for both.
+        # `dispose_scope` treats this as a fast path, never as the source of truth — see its
+        # docstring.
+        self._registry: dict[tuple[str, str, str, str], str] = {}
         # Group clients cached per event loop. An azure-core async client binds its transport
         # to the loop that created it, and this host runs some work on a dedicated background
         # loop, so one shared client would be a cross-loop hazard; one per call would leak a
@@ -143,7 +147,7 @@ class AcasSandboxBackend:
         self._clients: dict[asyncio.AbstractEventLoop, tuple[Any, Any]] = {}
         # One get-or-create lock per (loop, registry key) — see `_acquire_lock`.
         self._acquire_locks: dict[
-            tuple[asyncio.AbstractEventLoop, tuple[str, str, str]], asyncio.Lock
+            tuple[asyncio.AbstractEventLoop, tuple[str, str, str, str]], asyncio.Lock
         ] = {}
 
     @property
@@ -215,10 +219,10 @@ class AcasSandboxBackend:
         flight at once; unserialised, both miss the registry and each is handed a running,
         billable sandbox, of which only one stays registered.
         """
-        async with self._acquire_lock((key.scope, key.thread_id, key.agent_dir)):
+        async with self._acquire_lock((key.scope, key.thread_id, key.agent_dir, spec.kind)):
             return await self._get_or_create(key, spec)
 
-    def _acquire_lock(self, registry_key: tuple[str, str, str]) -> asyncio.Lock:
+    def _acquire_lock(self, registry_key: tuple[str, str, str, str]) -> asyncio.Lock:
         """The get-or-create lock for one key on the running loop.
 
         Per loop as well as per key: an :class:`asyncio.Lock` binds to the first loop a
@@ -235,7 +239,7 @@ class AcasSandboxBackend:
     async def _get_or_create(self, key: SandboxKey, spec: SandboxSpec) -> _AcasSandbox:
         """:meth:`acquire`'s body, run under that key's lock."""
         gc = self._group_client()
-        registry_key = (key.scope, key.thread_id, key.agent_dir)
+        registry_key = (key.scope, key.thread_id, key.agent_dir, spec.kind)
 
         sandbox_id = self._registry.get(registry_key)
         if sandbox_id is not None:
@@ -294,17 +298,27 @@ class AcasSandboxBackend:
         return _AcasSandbox(sc)
 
     async def dispose(self, key: SandboxKey) -> None:
-        """Delete the sandbox for ``key``, if this process knows of one."""
-        sandbox_id = self._registry.pop((key.scope, key.thread_id, key.agent_dir), None)
-        if sandbox_id is None:
+        """Delete every kind's sandbox for ``key`` that this process knows of.
+
+        Every kind's, because the key may own one sandbox per kind and this method takes no
+        kind — a caller releasing a key means all of it.
+        """
+        prefix = (key.scope, key.thread_id, key.agent_dir)
+        mine = [k for k in list(self._registry) if k[:3] == prefix]
+        if not mine:
             return
-        if await self._delete(self._group_client(), sandbox_id):
-            logger.info(
-                "sandbox released: id=%s thread=%s agent=%s",
-                sandbox_id,
-                key.thread_id,
-                key.agent_dir,
-            )
+        gc = self._group_client()
+        for registry_key in mine:
+            sandbox_id = self._registry.pop(registry_key, None)
+            if sandbox_id is None:
+                continue
+            if await self._delete(gc, sandbox_id):
+                logger.info(
+                    "sandbox released: id=%s thread=%s agent=%s",
+                    sandbox_id,
+                    key.thread_id,
+                    key.agent_dir,
+                )
 
     async def dispose_scope(self, scope: str, thread_id: str) -> int:
         """Delete every sandbox labelled ``(scope, thread_id)``; returns how many.
