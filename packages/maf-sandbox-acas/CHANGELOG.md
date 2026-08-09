@@ -4,6 +4,13 @@ All notable changes to `maf-sandbox-acas` are documented here. The format follow
 
 Releases up to and including `0.2.3` were published as **`maf-sandbox-aca`**, and the entries below name it as it was — their tags and compare links point at real history and are left as they were written. `maf-sandbox-aca` is not maintained past `0.2.3`; PyPI names cannot be reused, so the rename is a new distribution rather than a continuation of that one.
 
+## [0.3.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.3.1...maf-sandbox-acas-v0.3.2) (2026-08-09)
+
+
+### Documentation
+
+* ship the bicep-sandbox image and the commands that deploy it ([#82](https://github.com/sokolaidev/maf-extensions/issues/82)) ([5fa8829](https://github.com/sokolaidev/maf-extensions/commit/5fa88294a8e74b6eba7f1c9d061acd821d559887))
+
 ## [0.3.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.3.0...maf-sandbox-acas-v0.3.1) (2026-08-09)
 
 
