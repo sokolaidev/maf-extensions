@@ -85,7 +85,10 @@ class SandboxKey:
 class SandboxSpec:
     """What a sandbox of a given kind needs, in terms no backend is privileged by.
 
-    ``kind`` names the workload (``"bicep"`` today).  ``image`` is normally
+    ``kind`` names the workload (``"bicep"`` today), and it is **part of the sandbox's
+    identity, not a display label**: a backend must never serve two kinds from one sandbox,
+    because the first spec to arrive would decide the image and the egress policy for both —
+    see :meth:`SandboxBackend.acquire`.  ``image`` is normally
     ``repository:tag`` — *where* images live is a property of the deployment, so the backend
     qualifies it with its own registry; a fully-qualified reference is passed through
     untouched.  The ACAS backend then resolves the result to an imported disk image, while a
@@ -150,8 +153,11 @@ class SandboxBackend(Protocol):
     """A provider that can hand out sandboxes.
 
     ``acquire`` is get-or-create: a backend is expected to reuse a warm sandbox for the same
-    key across calls, because a workload's fix-round loop would otherwise pay a cold start
-    every iteration.
+    key **and kind** across calls, because a workload's fix-round loop would otherwise pay a
+    cold start every iteration.  A sandbox's identity is ``(key, spec.kind)`` — two specs
+    with different kinds must never share one, whatever their key: a sandbox created for one
+    kind carries that kind's image and egress policy, and handing it to another kind would
+    run the second workload under the first one's network policy.
 
     ``dispose_scope`` exists separately from ``dispose`` because a conversation delete has to
     reach sandboxes this process never created — a multi-replica host serves the delete
@@ -189,7 +195,11 @@ class SandboxBackend(Protocol):
         ...
 
     async def dispose(self, key: SandboxKey) -> None:
-        """Delete the sandbox for ``key``, if any. Best-effort: never raises."""
+        """Delete every kind's sandbox for ``key``, if any. Best-effort: never raises.
+
+        Every kind's, because a key may own one sandbox per kind and this method takes no
+        kind: a caller releasing a key means all of it.
+        """
         ...
 
     async def dispose_scope(self, scope: str, thread_id: str) -> int:

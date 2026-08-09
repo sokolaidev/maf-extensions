@@ -43,6 +43,7 @@ __all__ = ["WslcSandboxBackend"]
 _LABEL_SCOPE = "maf-sandbox.scope"
 _LABEL_THREAD = "maf-sandbox.thread"
 _LABEL_AGENT = "maf-sandbox.agent"
+_LABEL_KIND = "maf-sandbox.kind"
 _LABEL_PREFIX = "maf-sandbox.label."
 
 _LABEL_VALUE_MAX = 63
@@ -100,20 +101,23 @@ def _sandbox_labels(key: SandboxKey, spec: SandboxSpec) -> dict[str, str]:
         _LABEL_SCOPE: _label_value(key.scope),
         _LABEL_THREAD: _label_value(key.thread_id),
         _LABEL_AGENT: _label_value(key.agent_dir),
+        _LABEL_KIND: _label_value(spec.kind),
         **{f"{_LABEL_PREFIX}{k}": _label_value(v) for k, v in spec.labels.items()},
     }
 
 
-def _container_name(key: SandboxKey, egress_id: str = "") -> str:
-    """The container name a key maps to — derived, so acquire and dispose agree without a registry.
+def _container_name(key: SandboxKey, kind: str, egress_id: str = "") -> str:
+    """The container name a key and kind map to — derived, so acquire and dispose agree without a registry.
 
-    ``egress_id`` folds the egress configuration into the identity: a sandbox is reused only by
-    an acquire that wants the *same* egress, so a change of mode or of allowed hosts gets its
-    own container rather than silently keeping one whose network no longer matches what the
-    backend now declares.  It is empty for closed egress, so a closed sandbox keeps the name it
-    has always had.
+    ``kind`` is part of the identity, not decoration: a sandbox carries its spec's image and
+    egress, so serving two kinds from one container would run the second workload under the
+    first one's network policy — the collision the sandbox-identity invariant exists to
+    prevent.  ``egress_id`` folds the egress configuration in for the same reason: a sandbox
+    is reused only by an acquire that wants the *same* egress, so a change of mode or of
+    allowed hosts gets its own container rather than silently keeping one whose network no
+    longer matches what the backend now declares.  It is empty for closed egress.
     """
-    parts = [key.scope, key.thread_id, key.agent_dir]
+    parts = [key.scope, key.thread_id, key.agent_dir, kind]
     if egress_id:
         parts.append(egress_id)
     digest = sha256("|".join(parts).encode("utf-8"))
@@ -241,16 +245,17 @@ class WslcSandboxBackend:
 
     def __init__(self, config: WslcSandboxConfig) -> None:
         self._config = config
-        # (scope, thread_id, agent_dir) -> name: a purge fallback for when the listing fails,
-        # never the truth. Holds the last name acquired for a key, which is enough to reclaim it.
-        self._registry: dict[tuple[str, str, str], str] = {}
+        # (scope, thread_id, agent_dir, kind) -> name: a purge fallback for when the listing
+        # fails, never the truth. Holds the last name acquired per key and kind, which is
+        # enough to reclaim them.
+        self._registry: dict[tuple[str, str, str, str], str] = {}
         # Get-or-create serialised per (running loop, key): a create names no container until it
         # returns, so two acquires racing one key would each build a network, a proxy and a
         # sandbox. Per loop because an asyncio.Lock binds to the loop that first waits on it, and
         # weak-keyed on the loop so a process that runs a loop per call (asyncio.run) does not
         # accumulate a lock table for loops long dead.
         self._acquire_locks: weakref.WeakKeyDictionary[
-            asyncio.AbstractEventLoop, dict[tuple[str, str, str], asyncio.Lock]
+            asyncio.AbstractEventLoop, dict[tuple[str, str, str, str], asyncio.Lock]
         ] = weakref.WeakKeyDictionary()
 
     @property
@@ -280,8 +285,8 @@ class WslcSandboxBackend:
         and created are logged at INFO — the difference is a warm exec versus a fresh image start.
         """
         egress_id = self._egress_id(spec)
-        name = _container_name(key, egress_id)
-        async with self._acquire_lock(key):
+        name = _container_name(key, spec.kind, egress_id)
+        async with self._acquire_lock(key, spec.kind):
             running = await self._is_listed(name, all_states=False)
             stopped = not running and await self._is_listed(name, all_states=True)
             if egress_id:
@@ -312,24 +317,26 @@ class WslcSandboxBackend:
                     key.agent_dir,
                 )
 
-            self._registry[(key.scope, key.thread_id, key.agent_dir)] = name
+            self._registry[(key.scope, key.thread_id, key.agent_dir, spec.kind)] = name
             return _WslcSandbox(self._wslc, name, self._config.command_timeout_seconds)
 
     async def dispose(self, key: SandboxKey) -> None:
-        """Delete every container for ``key`` — closed or allowlisted — with its proxy and network.
+        """Delete every container for ``key`` — every kind, closed or allowlisted — with proxies and networks.
 
         By label, so it reaches a sandbox created under an egress configuration this backend no
         longer runs; the registry name is the fallback for when the listing itself fails. Never
         raises.
         """
-        remembered = self._registry.pop((key.scope, key.thread_id, key.agent_dir), None)
+        prefix = (key.scope, key.thread_id, key.agent_dir)
+        mine = [k for k in list(self._registry) if k[:3] == prefix]
+        remembered = [self._registry.pop(k) for k in mine]
         await self._purge(
             [
                 (_LABEL_SCOPE, key.scope),
                 (_LABEL_THREAD, key.thread_id),
                 (_LABEL_AGENT, key.agent_dir),
             ],
-            fallback=[remembered] if remembered else [],
+            fallback=remembered,
             thread_id=key.thread_id,
         )
 
@@ -474,10 +481,10 @@ class WslcSandboxBackend:
             return ""
         return "allow:" + ",".join(sorted(spec.egress_allow))
 
-    def _acquire_lock(self, key: SandboxKey) -> asyncio.Lock:
-        """The get-or-create lock for one key on the running loop (see ``__init__``)."""
+    def _acquire_lock(self, key: SandboxKey, kind: str) -> asyncio.Lock:
+        """The get-or-create lock for one key and kind on the running loop (see ``__init__``)."""
         per_loop = self._acquire_locks.setdefault(asyncio.get_running_loop(), {})
-        registry_key = (key.scope, key.thread_id, key.agent_dir)
+        registry_key = (key.scope, key.thread_id, key.agent_dir, kind)
         lock = per_loop.get(registry_key)
         if lock is None:
             lock = per_loop[registry_key] = asyncio.Lock()
