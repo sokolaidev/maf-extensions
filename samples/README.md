@@ -11,6 +11,8 @@ Small, self-contained programs, each showing one wiring end to end. The package 
 
 **Numbered directories.** Reading order is a property of the set, so it is written down rather than implied. Later samples assume you have read the earlier ones and skip what they already showed.
 
+**Both Bicep samples run the same sandbox image**, [`images/bicep-sandbox`](../images/bicep-sandbox/) — sample 01 imports it into an Azure sandbox group, sample 02 builds it on the machine you are sitting at. That is what makes their output comparable at all: one compiler, one lint rule set, a different backend underneath. Its README carries the build, push and import command lines.
+
 **Each sample installs from PyPI**, not from this workspace:
 
 ```bash
