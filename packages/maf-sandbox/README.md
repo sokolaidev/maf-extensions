@@ -13,7 +13,7 @@ pip install maf-sandbox
 ```python
 from maf_sandbox import Isolation, SandboxKey, SandboxRouter, SandboxSpec, WorkspaceContext
 
-# Implement SandboxBackend against your own provider — or install maf-sandbox-aca for a
+# Implement SandboxBackend against your own provider — or install maf-sandbox-acas for a
 # ready-made Azure Container Apps Sandboxes backend — then wire it into a router:
 router = SandboxRouter([my_backend], deployed=False)
 sandbox = await router.acquire(SandboxKey(scope="tenant-1", thread_id="t-1", agent_dir="devops"), SandboxSpec(kind="bicep", image="bicep-sandbox:0.46.1", egress_allow=("mcr.microsoft.com",), work_dir="/workspace"))

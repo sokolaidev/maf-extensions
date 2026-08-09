@@ -88,7 +88,7 @@ class SandboxSpec:
     ``kind`` names the workload (``"bicep"`` today).  ``image`` is normally
     ``repository:tag`` — *where* images live is a property of the deployment, so the backend
     qualifies it with its own registry; a fully-qualified reference is passed through
-    untouched.  The ACA backend then resolves the result to an imported disk image, while a
+    untouched.  The ACAS backend then resolves the result to an imported disk image, while a
     Docker backend would hand it to ``docker run``.  ``image_id`` is an escape hatch for a
     backend-native pinned id that skips resolution entirely.
 
@@ -161,7 +161,7 @@ class SandboxBackend(Protocol):
 
     @property
     def name(self) -> str:
-        """Short identifier used in configuration, e.g. ``"aca"``."""
+        """Short identifier used in configuration, e.g. ``"acas"``."""
         ...
 
     @property

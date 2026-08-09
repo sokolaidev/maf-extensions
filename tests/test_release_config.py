@@ -202,7 +202,7 @@ class TestComponentMatchesDistributionName:
 
 
 class TestTagsResolveToExactlyOnePackage:
-    """`maf-sandbox-v*` must not also swallow `maf-sandbox-aca-v0.1.0`.
+    """`maf-sandbox-v*` must not also swallow `maf-sandbox-acas-v0.1.0`.
 
     It does not, because the character after `maf-sandbox-` there is `a` rather than `v` —
     but that is a property of these particular names, not of the scheme, so a fourth package
@@ -303,7 +303,7 @@ class TestDependentsPinMafSandboxInAShapeTheBumpScriptCanRead:
     """
 
     _MAF_SANDBOX = re.compile(r"maf-sandbox>=\d+(?:\.\d+)*,<\d+(?:\.\d+)*")
-    # The base package exactly — the lookahead keeps `maf-sandbox-aca` from being read as it.
+    # The base package exactly — the lookahead keeps `maf-sandbox-acas` from being read as it.
     _IS_BASE = re.compile(r"maf-sandbox(?![-\w])")
 
     def _base_constraint(self, package_path: str) -> str | None:

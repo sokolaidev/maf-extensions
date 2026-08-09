@@ -16,11 +16,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-__all__ = ["AcaSandboxConfig"]
+__all__ = ["AcasSandboxConfig"]
 
 
 @dataclass(frozen=True)
-class AcaSandboxConfig:
+class AcasSandboxConfig:
     """Which sandbox group to talk to, and how long its sandboxes may linger.
 
     ``endpoint`` is the group's data-plane endpoint

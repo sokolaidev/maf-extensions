@@ -1,5 +1,5 @@
 [project]
-name = "maf-sandbox-aca"
+name = "maf-sandbox-acas"
 version = "0.2.3"
 description = "Azure Container Apps Sandboxes as a sandbox backend for Microsoft Agent Framework agents — reference implementation of agent-framework#7568."
 readme = "README.md"
@@ -28,7 +28,7 @@ classifiers = [
 # azure-containerapps-sandbox is now a HARD dependency (a dependency-honesty flip): the old
 # `[aca]` extra that gated it here is retired, and the host's own optionality moved one
 # layer up, to a `bicep-sandbox` extra in the host application's own root pyproject.toml
-# that pulls this whole package in. A host that installs maf-sandbox-aca at all wants it
+# that pulls this whole package in. A host that installs maf-sandbox-acas at all wants it
 # to work; a host that does not configure a sandbox group should not install this package
 # in the first place, not install it crippled.
 dependencies = [
@@ -56,7 +56,7 @@ Issues = "https://github.com/sokolaidev/maf-extensions/issues"
 maf-sandbox = { workspace = true }
 
 [tool.uv.build-backend]
-module-name = "maf_sandbox_aca"
+module-name = "maf_sandbox_acas"
 module-root = "src"
 
 [tool.ruff]

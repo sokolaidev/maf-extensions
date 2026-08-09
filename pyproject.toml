@@ -27,7 +27,7 @@ testpaths = [
     # Repository-level wiring (release registration) — belongs to no single package.
     "tests",
     "packages/maf-sandbox/tests",
-    "packages/maf-sandbox-aca/tests",
+    "packages/maf-sandbox-acas/tests",
     "packages/maf-sandbox-bicep/tests",
     "packages/maf-sandbox-wslc/tests",
 ]

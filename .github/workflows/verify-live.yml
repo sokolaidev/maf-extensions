@@ -49,7 +49,7 @@ jobs:
           set -euo pipefail
           uv venv /tmp/live
           uv pip install --python /tmp/live/bin/python \
-            maf-sandbox-aca maf-sandbox-bicep agent-framework-openai
+            maf-sandbox-acas maf-sandbox-bicep agent-framework-openai
           uv pip list --python /tmp/live/bin/python
 
       # Fail early and by name if the environment was never configured — azure/login's own
@@ -59,11 +59,11 @@ jobs:
           AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
           AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
           AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-          ACA_SANDBOX_ENDPOINT: ${{ vars.ACA_SANDBOX_ENDPOINT }}
-          ACA_SANDBOX_SUBSCRIPTION_ID: ${{ vars.ACA_SANDBOX_SUBSCRIPTION_ID }}
-          ACA_SANDBOX_RESOURCE_GROUP: ${{ vars.ACA_SANDBOX_RESOURCE_GROUP }}
-          ACA_SANDBOX_GROUP: ${{ vars.ACA_SANDBOX_GROUP }}
-          ACA_SANDBOX_REGISTRY: ${{ vars.ACA_SANDBOX_REGISTRY }}
+          ACAS_SANDBOX_ENDPOINT: ${{ vars.ACAS_SANDBOX_ENDPOINT }}
+          ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ vars.ACAS_SANDBOX_SUBSCRIPTION_ID }}
+          ACAS_SANDBOX_RESOURCE_GROUP: ${{ vars.ACAS_SANDBOX_RESOURCE_GROUP }}
+          ACAS_SANDBOX_GROUP: ${{ vars.ACAS_SANDBOX_GROUP }}
+          ACAS_SANDBOX_REGISTRY: ${{ vars.ACAS_SANDBOX_REGISTRY }}
           BICEP_SANDBOX_IMAGE: ${{ vars.BICEP_SANDBOX_IMAGE }}
           AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
@@ -71,8 +71,8 @@ jobs:
           set -euo pipefail
           missing=()
           for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
-            ACA_SANDBOX_ENDPOINT ACA_SANDBOX_SUBSCRIPTION_ID ACA_SANDBOX_RESOURCE_GROUP \
-            ACA_SANDBOX_GROUP ACA_SANDBOX_REGISTRY BICEP_SANDBOX_IMAGE \
+            ACAS_SANDBOX_ENDPOINT ACAS_SANDBOX_SUBSCRIPTION_ID ACAS_SANDBOX_RESOURCE_GROUP \
+            ACAS_SANDBOX_GROUP ACAS_SANDBOX_REGISTRY BICEP_SANDBOX_IMAGE \
             AZURE_OPENAI_ENDPOINT AZURE_OPENAI_CHAT_MODEL; do
             [ -n "${!name}" ] || missing+=("$name")
           done
@@ -95,11 +95,11 @@ jobs:
       # than a half-populated EnvironmentCredential.
       - name: Run sample 01 and assert the diagnostics came back
         env:
-          ACA_SANDBOX_ENDPOINT: ${{ vars.ACA_SANDBOX_ENDPOINT }}
-          ACA_SANDBOX_SUBSCRIPTION_ID: ${{ vars.ACA_SANDBOX_SUBSCRIPTION_ID }}
-          ACA_SANDBOX_RESOURCE_GROUP: ${{ vars.ACA_SANDBOX_RESOURCE_GROUP }}
-          ACA_SANDBOX_GROUP: ${{ vars.ACA_SANDBOX_GROUP }}
-          ACA_SANDBOX_REGISTRY: ${{ vars.ACA_SANDBOX_REGISTRY }}
+          ACAS_SANDBOX_ENDPOINT: ${{ vars.ACAS_SANDBOX_ENDPOINT }}
+          ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ vars.ACAS_SANDBOX_SUBSCRIPTION_ID }}
+          ACAS_SANDBOX_RESOURCE_GROUP: ${{ vars.ACAS_SANDBOX_RESOURCE_GROUP }}
+          ACAS_SANDBOX_GROUP: ${{ vars.ACAS_SANDBOX_GROUP }}
+          ACAS_SANDBOX_REGISTRY: ${{ vars.ACAS_SANDBOX_REGISTRY }}
           BICEP_SANDBOX_IMAGE: ${{ vars.BICEP_SANDBOX_IMAGE }}
           AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}

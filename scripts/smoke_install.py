@@ -22,7 +22,7 @@ import sys
 
 _PACKAGES = {
     "maf-sandbox": "maf_sandbox",
-    "maf-sandbox-aca": "maf_sandbox_aca",
+    "maf-sandbox-acas": "maf_sandbox_acas",
     "maf-sandbox-bicep": "maf_sandbox_bicep",
     "maf-sandbox-wslc": "maf_sandbox_wslc",
 }
@@ -95,17 +95,17 @@ def _smoke_maf_sandbox() -> str:
     return "router + in-process backend + deployed-isolation rule"
 
 
-def _smoke_maf_sandbox_aca() -> str:
+def _smoke_maf_sandbox_acas() -> str:
     from maf_sandbox import Isolation
-    from maf_sandbox_aca import AcaSandboxBackend, AcaSandboxConfig
+    from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
 
     # Constructed, not called: this asserts the package imports with its real preview SDK
     # resolved and still declares the boundary the router gates on. Reaching the service
     # would need credentials and would not test packaging.
-    backend = AcaSandboxBackend(AcaSandboxConfig(endpoint="https://example.invalid"))
+    backend = AcasSandboxBackend(AcasSandboxConfig(endpoint="https://example.invalid"))
     if backend.isolation != Isolation.VM:
         raise SystemExit(
-            f"FAIL: aca backend declares {backend.isolation!r}, expected vm"
+            f"FAIL: acas backend declares {backend.isolation!r}, expected vm"
         )
     return "backend constructs and declares vm isolation"
 
@@ -222,7 +222,7 @@ def _smoke_maf_sandbox_wslc() -> str:
 
 _SMOKES = {
     "maf-sandbox": _smoke_maf_sandbox,
-    "maf-sandbox-aca": _smoke_maf_sandbox_aca,
+    "maf-sandbox-acas": _smoke_maf_sandbox_acas,
     "maf-sandbox-bicep": _smoke_maf_sandbox_bicep,
     "maf-sandbox-wslc": _smoke_maf_sandbox_wslc,
 }

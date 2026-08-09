@@ -16,7 +16,7 @@ uv run pytest -q   # the whole suite, about a second
 ```bash
 uv run pytest -q
 uv run ruff check . && uv run ruff format --check .
-uv run pyright -p packages/maf-sandbox        # and -aca, -bicep, -wslc
+uv run pyright -p packages/maf-sandbox        # and -acas, -bicep, -wslc
 ```
 
 Type checking is **strict** and per package, and it covers `src/` only — fixtures and hand-rolled fakes are not where a strict checker's objections are signal.
@@ -40,7 +40,7 @@ If a change genuinely needs to cross one of those lines, say so in the PR — th
 Titles follow [Conventional Commits](https://www.conventionalcommits.org/), which CI checks:
 
 ```
-fix(aca): retry the label query when the control plane returns 429
+fix(acas): retry the label query when the control plane returns 429
 feat: accept a list of arguments to exec, and quote them
 docs: explain what the boundary tests protect
 ```

@@ -5,7 +5,7 @@ requires-python = ">=3.12, <3.15"
 [manifest]
 members = [
     "maf-sandbox",
-    "maf-sandbox-aca",
+    "maf-sandbox-acas",
     "maf-sandbox-bicep",
     "maf-sandbox-wslc",
 ]
@@ -620,9 +620,9 @@ dependencies = [
 requires-dist = [{ name = "agent-framework-core", specifier = ">=1.13.0,<2" }]
 
 [[package]]
-name = "maf-sandbox-aca"
+name = "maf-sandbox-acas"
 version = "0.2.3"
-source = { editable = "packages/maf-sandbox-aca" }
+source = { editable = "packages/maf-sandbox-acas" }
 dependencies = [
     { name = "azure-containerapps-sandbox" },
     { name = "azure-identity" },

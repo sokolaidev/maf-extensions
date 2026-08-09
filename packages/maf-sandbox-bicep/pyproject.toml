@@ -45,7 +45,7 @@ Issues = "https://github.com/sokolaidev/maf-extensions/issues"
 # agent-framework-core is sourced from the monorepo `main` branch. Keep this in sync with
 # agent-framework-core resolves from PyPI at the released range declared above — no git
 # source in this repository, deliberately: the tests run against the same artifact every
-# consumer of the published wheel gets. (maf-sandbox-aca carries no MAF dependency at all.)
+# consumer of the published wheel gets. (maf-sandbox-acas carries no MAF dependency at all.)
 [tool.uv.sources]
 maf-sandbox = { workspace = true }
 

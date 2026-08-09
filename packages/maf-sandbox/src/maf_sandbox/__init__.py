@@ -5,7 +5,7 @@ app  ->  SandboxRouter  ->  backend  ->  the sandbox
 ```
 
 A workload asks for a sandbox and runs a command in it.  A backend decides what actually
-boots — an ACA Sandbox (`maf-sandbox-aca`) today, a local Docker container or an
+boots — an ACA Sandbox (`maf-sandbox-acas`) today, a local Docker container or an
 in-process fake later.  Neither knows about the other, which is what lets the same tool run
 against all of them unchanged.
 

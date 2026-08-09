@@ -74,7 +74,7 @@ def _base_dependency(dependencies: list[str]) -> str | None:
 
     Read from the parsed dependency string, not the file text, so it does not matter whether the
     pyproject quotes with ``"`` or ``'`` — and the exact name match keeps a dependency on the
-    sibling ``maf-sandbox-aca`` from being taken for one on the base package.
+    sibling ``maf-sandbox-acas`` from being taken for one on the base package.
     """
     for dep in dependencies:
         name = _DIST_NAME.match(dep.strip())

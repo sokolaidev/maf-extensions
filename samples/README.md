@@ -4,8 +4,8 @@ Small, self-contained programs, each showing one wiring end to end. The package 
 
 | Sample | What it wires | Needs |
 |---|---|---|
-| [`01_acas_bicep`](01_acas_bicep/) | A one-turn agent that validates a Bicep file: `maf-sandbox-aca` behind a `SandboxRouter`, `maf-sandbox-bicep`'s `bicep_validate` attached to a MAF agent | Azure (Container Apps Sandboxes preview + Azure OpenAI) |
-| [`02_wslc_bicep`](02_wslc_bicep/) | The same agent and the same `main.bicep`, one line lower: `maf-sandbox-wslc` in place of `maf-sandbox-aca`, so the workload runs unchanged against a second backend | Windows with WSL 2.9.3+ and any OpenAI-compatible endpoint |
+| [`01_acas_bicep`](01_acas_bicep/) | A one-turn agent that validates a Bicep file: `maf-sandbox-acas` behind a `SandboxRouter`, `maf-sandbox-bicep`'s `bicep_validate` attached to a MAF agent | Azure (Container Apps Sandboxes preview + Azure OpenAI) |
+| [`02_wslc_bicep`](02_wslc_bicep/) | The same agent and the same `main.bicep`, one line lower: `maf-sandbox-wslc` in place of `maf-sandbox-acas`, so the workload runs unchanged against a second backend | Windows with WSL 2.9.3+ and any OpenAI-compatible endpoint |
 
 ## How these are meant to be read
 
@@ -15,7 +15,7 @@ Small, self-contained programs, each showing one wiring end to end. The package 
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install maf-sandbox-aca maf-sandbox-bicep agent-framework-openai
+pip install maf-sandbox-acas maf-sandbox-bicep agent-framework-openai
 python samples/01_acas_bicep/agent.py
 ```
 

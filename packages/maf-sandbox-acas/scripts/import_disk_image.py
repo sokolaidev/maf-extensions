@@ -4,7 +4,7 @@
 stack's **own** registry, but a sandbox boots from a *disk image* registered in the sandbox
 group, which is a different namespace.  This script closes that gap: it imports the pushed
 image once, so the host application can then resolve it by reference at runtime
-(:func:`maf_sandbox_aca.resolve_disk_image_id`).
+(:func:`maf_sandbox_acas.resolve_disk_image_id`).
 
 Importing is deliberately kept out of the request path — it is slow, it is a write against
 the group, and it needs registry credentials that the application itself has no reason to
@@ -14,7 +14,7 @@ The **deploy workflow no longer runs this**: it uses the vendor's ``aca`` CLI
 (``aca sandboxgroup disk create --identity …``), which needs no Python toolchain and nothing
 from this repository.  This script stays as the equivalent for anyone who would rather not
 install the CLI, and because its idempotency check shares
-:func:`~maf_sandbox_aca.disk_image_base` with the runtime resolver.
+:func:`~maf_sandbox_acas.disk_image_base` with the runtime resolver.
 
 See ``scripts/README.md`` for how to run it, the arguments, and authentication.
 """
@@ -59,7 +59,7 @@ async def _run(args: argparse.Namespace) -> int:
         from azure.identity.aio import DefaultAzureCredential
     except ImportError:
         print(
-            "azure-containerapps-sandbox is not installed. Run: uv sync --package maf-sandbox-aca",
+            "azure-containerapps-sandbox is not installed. Run: uv sync --package maf-sandbox-acas",
             file=sys.stderr,
         )
         return 2
@@ -67,7 +67,7 @@ async def _run(args: argparse.Namespace) -> int:
     # The same accessor the runtime resolver uses.  `DiskImage.image` is a DiskImageSpec,
     # not a string, so comparing it directly to the reference never matches and the
     # idempotency check below would silently re-import on every run.
-    from maf_sandbox_aca import disk_image_base
+    from maf_sandbox_acas import disk_image_base
 
     credential = DefaultAzureCredential()
     client = SandboxGroupClient(

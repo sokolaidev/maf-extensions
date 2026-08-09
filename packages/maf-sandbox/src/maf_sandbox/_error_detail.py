@@ -6,7 +6,7 @@ body, which that string drops.  A 400 that says only "Bad Request" cannot be act
 took a hand-written probe against the live service to discover that one such failure meant
 the app's identity had no role on the sandbox group.
 
-This started life inside the bicep kind, the only caller that needed it.  The ACA backend's
+This started life inside the bicep kind, the only caller that needed it.  The ACAS backend's
 own warning logs have the identical gap — a bare ``%s`` of the exception, dropping the same
 response body — so it moved here where every backend and every kind can reach it, rather than
 being copied.

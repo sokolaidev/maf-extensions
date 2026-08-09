@@ -3,7 +3,7 @@
 A one-turn agent. It puts `main.bicep` into a workspace store, hands the agent the `bicep_validate` tool, asks it to validate the file once, prints the answer, and deletes the sandbox.
 
 ```
-app  ->  maf_sandbox (router)  ->  maf_sandbox_aca  ->  the sandbox
+app  ->  maf_sandbox (router)  ->  maf_sandbox_acas  ->  the sandbox
               ^ maf_sandbox_bicep calls the router
 ```
 
@@ -16,7 +16,7 @@ app  ->  maf_sandbox (router)  ->  maf_sandbox_aca  ->  the sandbox
 Read these first; none of them is quick to arrange halfway through.
 
 - **An Azure subscription enrolled in the [Container Apps Sandboxes](https://learn.microsoft.com/azure/container-apps/sandboxes-overview) preview**, and a **sandbox group** in it.
-- **A registry serving the pinned Bicep sandbox image** (`bicep-sandbox:<version>`), with the image **imported into the sandbox group as a disk image** — a sandbox boots from a disk image, which is a different namespace from the registry it was pushed to. [`packages/maf-sandbox-aca/scripts/import_disk_image.py`](../../packages/maf-sandbox-aca/scripts/import_disk_image.py) does the import, and its docstring covers the managed identity that needs `AcrPull` on the registry. The image itself is not built in this repository.
+- **A registry serving the pinned Bicep sandbox image** (`bicep-sandbox:<version>`), with the image **imported into the sandbox group as a disk image** — a sandbox boots from a disk image, which is a different namespace from the registry it was pushed to. [`packages/maf-sandbox-acas/scripts/import_disk_image.py`](../../packages/maf-sandbox-acas/scripts/import_disk_image.py) does the import, and its docstring covers the managed identity that needs `AcrPull` on the registry. The image itself is not built in this repository.
 - **An Azure OpenAI deployment of a reasoning model** — `gpt-5.4` and its siblings work. This is not a preference: the framework's client asks for encrypted reasoning content, and a deployment that does not support it rejects the very first call with `400 — Encrypted content is not supported with this model` on `param: include`. That error names neither this sample nor the setting behind it, so it is worth choosing correctly rather than debugging later.
 - **`az login`**, or any other credential `DefaultAzureCredential` resolves. No API keys are read, and none belong in this tree.
 
@@ -28,7 +28,7 @@ From PyPI, not from this workspace:
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install maf-sandbox-aca maf-sandbox-bicep agent-framework-openai
+pip install maf-sandbox-acas maf-sandbox-bicep agent-framework-openai
 ```
 
 `azure-identity` and `agent-framework-core` arrive as dependencies. `agent-framework-openai` is separate because the framework's core ships no model connector.
@@ -37,11 +37,11 @@ pip install maf-sandbox-aca maf-sandbox-bicep agent-framework-openai
 
 | Variable | What it is |
 |---|---|
-| `ACA_SANDBOX_ENDPOINT` | Sandbox group data-plane endpoint, `https://management.<region>.azuredevcompute.io` |
-| `ACA_SANDBOX_SUBSCRIPTION_ID` | Subscription holding the group |
-| `ACA_SANDBOX_RESOURCE_GROUP` | Resource group holding the group |
-| `ACA_SANDBOX_GROUP` | Sandbox group name |
-| `ACA_SANDBOX_REGISTRY` | Registry login server, `<name>.azurecr.io`. Qualifies the bare image reference below |
+| `ACAS_SANDBOX_ENDPOINT` | Sandbox group data-plane endpoint, `https://management.<region>.azuredevcompute.io` |
+| `ACAS_SANDBOX_SUBSCRIPTION_ID` | Subscription holding the group |
+| `ACAS_SANDBOX_RESOURCE_GROUP` | Resource group holding the group |
+| `ACAS_SANDBOX_GROUP` | Sandbox group name |
+| `ACAS_SANDBOX_REGISTRY` | Registry login server, `<name>.azurecr.io`. Qualifies the bare image reference below |
 | `BICEP_SANDBOX_IMAGE` | `repository:tag` of the Bicep image, e.g. `bicep-sandbox:0.46.1` |
 | `AZURE_OPENAI_ENDPOINT` | `https://<resource>.openai.azure.com` |
 | `AZURE_OPENAI_CHAT_MODEL` | Deployment name of the chat model — a reasoning model, per the prerequisites |
@@ -81,11 +81,11 @@ Delete the unused parameter and add a `sku`, and what remains is the API-version
 
 ## Troubleshooting
 
-**`No sandbox backend: bicep_validate was not attached.`** — the router has no usable backend. Check the `ACA_SANDBOX_*` variables.
+**`No sandbox backend: bicep_validate was not attached.`** — the router has no usable backend. Check the `ACAS_SANDBOX_*` variables.
 
-**`SandboxBackendNotPermitted` at startup** — `SandboxRouter(..., deployed=True)` refuses anything weaker than a VM boundary. `AcaSandboxBackend` declares `Isolation.VM`, so this only appears if you swapped the backend for a container- or process-isolated one. It raises at construction rather than at first call, on purpose.
+**`SandboxBackendNotPermitted` at startup** — `SandboxRouter(..., deployed=True)` refuses anything weaker than a VM boundary. `AcasSandboxBackend` declares `Isolation.VM`, so this only appears if you swapped the backend for a container- or process-isolated one. It raises at construction rather than at first call, on purpose.
 
-**`SandboxEgressNotEnforced` at startup** — the other half of the same story, raised one call later by `make_bicep_tools`: the backend cannot confine the sandbox to the two artifact hosts this workload names, so everything else — ARM included — would be reachable from code an agent wrote. `AcaSandboxBackend` declares `Egress.ALLOWLIST` and builds a Deny-default policy, so this too only appears against a swapped backend. A backend that can only run fully *closed* is accepted instead, with a warning: module restore then fails and `bicep_validate` says so rather than reporting a clean file.
+**`SandboxEgressNotEnforced` at startup** — the other half of the same story, raised one call later by `make_bicep_tools`: the backend cannot confine the sandbox to the two artifact hosts this workload names, so everything else — ARM included — would be reachable from code an agent wrote. `AcasSandboxBackend` declares `Egress.ALLOWLIST` and builds a Deny-default policy, so this too only appears against a swapped backend. A backend that can only run fully *closed* is accepted instead, with a warning: module restore then fails and `bicep_validate` says so rather than reporting a clean file.
 
 **Every `br/public:` module reports `BCP192`** — module restore could not reach its hosts. The four it needs (`mcr.microsoft.com`, `*.data.mcr.microsoft.com`, `aka.ms`, `live-data.bicep.azure.com`) are fixed in `bicep_sandbox_spec`, so this points at something above the sandbox in your network path, not at configuration.
 

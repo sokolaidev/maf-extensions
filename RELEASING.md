@@ -20,7 +20,7 @@ There are two steps, and the first one is the decision.
 
 That is the whole flow. Nothing else needs doing, and nothing publishes without that approval.
 
-**After a real publish of `maf-sandbox`, `maf-sandbox-aca` or `maf-sandbox-bicep`, a live check runs on its own.** `verify-live.yml` installs the just-released wheels into a clean environment and runs `samples/01_acas_bicep` against a real Azure sandbox, asserting the compiler's diagnostics come back — the one thing CI cannot prove from the workspace, since the real backend, image and preview service are only exercised by a real run. It creates a billable sandbox and needs a subscription, so it is the one check here that does not run on pull requests; a failure means the released *set* does not agree end to end, not that the merge was wrong. Run it yourself any time from Actions → *Verify (live)* → *Run workflow*. Its one-time setup is in [`docs/maintainers.md`](docs/maintainers.md#verifying-a-release-against-a-live-sandbox).
+**After a real publish of `maf-sandbox`, `maf-sandbox-acas` or `maf-sandbox-bicep`, a live check runs on its own.** `verify-live.yml` installs the just-released wheels into a clean environment and runs `samples/01_acas_bicep` against a real Azure sandbox, asserting the compiler's diagnostics come back — the one thing CI cannot prove from the workspace, since the real backend, image and preview service are only exercised by a real run. It creates a billable sandbox and needs a subscription, so it is the one check here that does not run on pull requests; a failure means the released *set* does not agree end to end, not that the merge was wrong. Run it yourself any time from Actions → *Verify (live)* → *Run workflow*. Its one-time setup is in [`docs/maintainers.md`](docs/maintainers.md#verifying-a-release-against-a-live-sandbox).
 
 Three things a Release PR does need from you first, all of them because it is a generated branch that release-please stops maintaining once the content it would write settles.
 
@@ -36,7 +36,7 @@ Three things a Release PR does need from you first, all of them because it is a 
 | Tag | Publishes |
 |---|---|
 | `maf-sandbox-v*` | `packages/maf-sandbox` |
-| `maf-sandbox-aca-v*` | `packages/maf-sandbox-aca` |
+| `maf-sandbox-acas-v*` | `packages/maf-sandbox-acas` |
 | `maf-sandbox-bicep-v*` | `packages/maf-sandbox-bicep` |
 | `maf-sandbox-wslc-v*` | `packages/maf-sandbox-wslc` |
 
@@ -44,7 +44,7 @@ Note the order this leaves you with: **the GitHub Release exists before PyPI has
 
 ## Release order
 
-`maf-sandbox` first, then the packages that depend on it. This is enforced rather than merely documented: the smoke gate installs the built wheel from the real index with no local fallback, so publishing `maf-sandbox-aca` against an unpublished `maf-sandbox` fails there instead of shipping a version nobody can install.
+`maf-sandbox` first, then the packages that depend on it. This is enforced rather than merely documented: the smoke gate installs the built wheel from the real index with no local fallback, so publishing `maf-sandbox-acas` against an unpublished `maf-sandbox` fails there instead of shipping a version nobody can install.
 
 **A release of `maf-sandbox` that the dependents need takes four steps**, because their constraint on it cannot be correct at both ends at once. They pin `maf-sandbox>=<floor>,<ceiling>`, and the two halves move at different times:
 

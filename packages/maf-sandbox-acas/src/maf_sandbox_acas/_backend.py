@@ -21,12 +21,12 @@ from typing import Any
 
 from maf_sandbox import Egress, ExecResult, Isolation, SandboxKey, SandboxSpec, error_detail
 
-from ._config import AcaSandboxConfig
+from ._config import AcasSandboxConfig
 from ._images import qualify_image_reference, resolve_disk_image_id
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["AcaSandboxBackend"]
+__all__ = ["AcasSandboxBackend"]
 
 #: The service's limit on a label value. Exceeding it fails the whole create with
 #: ``400 … Label value for key 'scope' exceeds 63 characters``.
@@ -83,7 +83,7 @@ _LABEL_AGENT = "agent"
 _RESUME_TIMEOUT_S = 120
 
 
-class _AcaSandbox:
+class _AcasSandbox:
     """A running ACA sandbox, narrowed to what a workload is allowed to do with it."""
 
     def __init__(self, sandbox_client: Any) -> None:
@@ -126,10 +126,10 @@ class _AcaSandbox:
         )
 
 
-class AcaSandboxBackend:
+class AcasSandboxBackend:
     """Hands out VM-isolated sandboxes from an Azure Container Apps sandbox group."""
 
-    def __init__(self, config: AcaSandboxConfig) -> None:
+    def __init__(self, config: AcasSandboxConfig) -> None:
         self._config = config
         # (scope, thread_id, agent_dir) -> sandbox_id, for this process only.
         # Keyed on scope so sandboxes from one user's session cannot be reused or deleted by
@@ -148,7 +148,7 @@ class AcaSandboxBackend:
 
     @property
     def name(self) -> str:
-        return "aca"
+        return "acas"
 
     @property
     def isolation(self) -> str:
@@ -193,12 +193,14 @@ class AcaSandboxBackend:
                 try:
                     await close()
                 except Exception as exc:  # noqa: BLE001 - teardown must not raise
-                    logger.debug("aca backend: error closing %s: %s", type(closeable).__name__, exc)
+                    logger.debug(
+                        "acas backend: error closing %s: %s", type(closeable).__name__, exc
+                    )
         self._clients.clear()
 
     # -- SandboxBackend -----------------------------------------------------------
 
-    async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> _AcaSandbox:
+    async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> _AcasSandbox:
         """Return a running sandbox for ``key``, reusing a warm one when there is one.
 
         The three outcomes — reused, replaced, created — are logged at INFO rather than
@@ -230,7 +232,7 @@ class AcaSandboxBackend:
             lock = self._acquire_locks[lock_key] = asyncio.Lock()
         return lock
 
-    async def _get_or_create(self, key: SandboxKey, spec: SandboxSpec) -> _AcaSandbox:
+    async def _get_or_create(self, key: SandboxKey, spec: SandboxSpec) -> _AcasSandbox:
         """:meth:`acquire`'s body, run under that key's lock."""
         gc = self._group_client()
         registry_key = (key.scope, key.thread_id, key.agent_dir)
@@ -247,7 +249,7 @@ class AcaSandboxBackend:
                     key.thread_id,
                     key.agent_dir,
                 )
-                return _AcaSandbox(sc)
+                return _AcasSandbox(sc)
             except Exception as exc:  # noqa: BLE001 - a dead sandbox is replaced, not reported
                 # Not a warning: a sandbox reclaimed by its auto-delete timer between rounds
                 # is the expected path, not a fault. But it does mean the next call pays for
@@ -285,11 +287,11 @@ class AcaSandboxBackend:
             # the auto-delete timer reclaims it, and failing the caller here would turn a
             # policy hiccup into a lost turn.
             logger.warning(
-                "aca backend: failed to configure lifecycle policy for sandbox %s; "
+                "acas backend: failed to configure lifecycle policy for sandbox %s; "
                 "it will be reclaimed by the auto-delete timer",
                 sc.sandbox_id,
             )
-        return _AcaSandbox(sc)
+        return _AcasSandbox(sc)
 
     async def dispose(self, key: SandboxKey) -> None:
         """Delete the sandbox for ``key``, if this process knows of one."""
@@ -328,7 +330,7 @@ class AcaSandboxBackend:
         try:
             gc = self._group_client()
         except Exception as exc:  # noqa: BLE001 - purge must never fail
-            logger.warning("aca backend: could not reach the sandbox group: %s", exc)
+            logger.warning("acas backend: could not reach the sandbox group: %s", exc)
             return 0
 
         ids = {sandbox_id for _, sandbox_id in known}
@@ -384,7 +386,7 @@ class AcaSandboxBackend:
             return True
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "aca backend: failed to delete sandbox %s: %s", sandbox_id, error_detail(exc)
+                "acas backend: failed to delete sandbox %s: %s", sandbox_id, error_detail(exc)
             )
             return False
 
@@ -409,7 +411,7 @@ class AcaSandboxBackend:
                     ids.append(sandbox_id)
         except Exception as exc:  # noqa: BLE001 - purge must never fail
             logger.warning(
-                "aca backend: could not list sandboxes for thread %s: %s",
+                "acas backend: could not list sandboxes for thread %s: %s",
                 thread_id,
                 error_detail(exc),
             )
