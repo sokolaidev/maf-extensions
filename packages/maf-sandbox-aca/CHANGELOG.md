@@ -2,6 +2,14 @@
 
 All notable changes to `maf-sandbox-aca` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.2.3](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-aca-v0.2.2...maf-sandbox-aca-v0.2.3) (2026-08-09)
+
+
+### Documentation
+
+* **aca:** call the ACA sandbox a sandbox, not a VM ([#71](https://github.com/sokolaidev/maf-extensions/issues/71)) ([5ca6adf](https://github.com/sokolaidev/maf-extensions/commit/5ca6adfe4882b0cc1422fbda95c5a1948dd46449))
+* **aca:** point this package at maf-sandbox-acas ([#74](https://github.com/sokolaidev/maf-extensions/issues/74)) ([c785246](https://github.com/sokolaidev/maf-extensions/commit/c78524621c5049a18a14376fb15430a746b0f880))
+
 ## [0.2.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-aca-v0.2.1...maf-sandbox-aca-v0.2.2) (2026-08-09)
 
 
