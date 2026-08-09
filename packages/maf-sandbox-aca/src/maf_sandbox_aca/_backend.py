@@ -141,6 +141,10 @@ class AcaSandboxBackend:
         # loop, so one shared client would be a cross-loop hazard; one per call would leak a
         # connection pool per tool invocation.
         self._clients: dict[asyncio.AbstractEventLoop, tuple[Any, Any]] = {}
+        # One get-or-create lock per (loop, registry key) — see `_acquire_lock`.
+        self._acquire_locks: dict[
+            tuple[asyncio.AbstractEventLoop, tuple[str, str, str]], asyncio.Lock
+        ] = {}
 
     @property
     def name(self) -> str:
@@ -202,7 +206,32 @@ class AcaSandboxBackend:
         seconds-long call and a minutes-long one, and between one billable sandbox and
         several; none of that is visible in the tool's output, which reports compiler
         diagnostics either way.
+
+        Get-or-create is serialised per key, because a create names no sandbox and the
+        service therefore has nothing to recognise a duplicate by.  The function calls in one
+        assistant message are executed concurrently, so two acquires for one key can be in
+        flight at once; unserialised, both miss the registry and each is handed a running,
+        billable VM, of which only one stays registered.
         """
+        async with self._acquire_lock((key.scope, key.thread_id, key.agent_dir)):
+            return await self._get_or_create(key, spec)
+
+    def _acquire_lock(self, registry_key: tuple[str, str, str]) -> asyncio.Lock:
+        """The get-or-create lock for one key on the running loop.
+
+        Per loop as well as per key: an :class:`asyncio.Lock` binds to the first loop a
+        caller has to *wait* on it and raises on every other one after that, and this backend
+        is reachable from more than one loop (see ``_clients``).  Per key rather than one lock
+        for the backend, so a cold create for one conversation never queues behind another's.
+        """
+        lock_key = (asyncio.get_running_loop(), registry_key)
+        lock = self._acquire_locks.get(lock_key)
+        if lock is None:
+            lock = self._acquire_locks[lock_key] = asyncio.Lock()
+        return lock
+
+    async def _get_or_create(self, key: SandboxKey, spec: SandboxSpec) -> _AcaSandbox:
+        """:meth:`acquire`'s body, run under that key's lock."""
         gc = self._group_client()
         registry_key = (key.scope, key.thread_id, key.agent_dir)
 
