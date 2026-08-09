@@ -153,8 +153,12 @@ def _smoke_maf_sandbox_bicep() -> str:
 
 
 def _smoke_maf_sandbox_wslc() -> str:
-    from maf_sandbox import Isolation
-    from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
+    from maf_sandbox import Egress, Isolation
+    from maf_sandbox_wslc import (
+        WslcSandboxBackend,
+        WslcSandboxConfig,
+        proxy_build_context,
+    )
 
     # Constructed, not called: CI runners have no `wslc`, and reaching it would not test packaging.
     backend = WslcSandboxBackend(WslcSandboxConfig())
@@ -162,7 +166,16 @@ def _smoke_maf_sandbox_wslc() -> str:
         raise SystemExit(
             f"FAIL: wslc backend declares {backend.isolation!r}, expected container"
         )
-    return "backend constructs and declares container isolation"
+    allowlisting = WslcSandboxBackend(WslcSandboxConfig(egress_proxy_image="x:1"))
+    if backend.egress != Egress.CLOSED or allowlisting.egress != Egress.ALLOWLIST:
+        raise SystemExit(f"FAIL: egress {backend.egress!r}/{allowlisting.egress!r}")
+    # The proxy recipe is data, not code: a wheel that drops it breaks allowlist mode only here.
+    dockerfile = proxy_build_context() / "Dockerfile"
+    if not dockerfile.is_file():
+        raise SystemExit(
+            f"FAIL: the proxy build context is missing its Dockerfile ({dockerfile})"
+        )
+    return "backend constructs, declares its egress, and ships the proxy recipe"
 
 
 _SMOKES = {

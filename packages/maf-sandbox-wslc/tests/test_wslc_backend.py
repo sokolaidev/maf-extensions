@@ -75,6 +75,8 @@ def _machine(
                 payload = [{"Id": f"id-{n}", "Name": n} for n in names]
                 return _WslcResult(0, json.dumps(payload), "")
             return _WslcResult(0, "".join(f"id-{n}\n" for n in names), "")
+        if args[:2] == ("container", "logs"):
+            return _WslcResult(0, "listening on 3128\n", "")
         return _WslcResult(0, "", "")
 
     return respond
@@ -496,19 +498,19 @@ class TestDisposeScope:
         asyncio.run(backend.dispose_scope("scope-a", "thread-1"))
 
         args = fake.only("container", "list").args
-        assert args[:4] == ("container", "list", "-a", "-q")
-        assert args[4:] == (
+        assert args[:5] == ("container", "list", "-a", "--format", "json")
+        assert args[5:] == (
             "--filter",
             "label=maf-sandbox.scope=scope-a",
             "--filter",
             "label=maf-sandbox.thread=thread-1",
         )
 
-    def test_removes_every_listed_id_and_returns_the_count(self):
+    def test_removes_every_listed_name_and_returns_the_count(self):
         backend, fake = _backend_with(_machine(stopped=["a", "b"]))
 
         assert asyncio.run(backend.dispose_scope("scope-a", "thread-1")) == 2
-        assert [c.args[-1] for c in fake.matching("container", "remove")] == ["id-a", "id-b"]
+        assert [c.args[-1] for c in fake.matching("container", "remove")] == ["a", "b"]
 
     def test_nothing_to_purge_is_zero_not_an_error(self):
         backend, _ = _backend_with(_machine())
@@ -596,7 +598,8 @@ class TestLabelValues:
 
         backend2, fake2 = _backend_with(_machine())
         asyncio.run(backend2.dispose_scope(long_scope, "thread-1"))
-        queried = fake2.only("container", "list").args[5]
+        list_args = fake2.only("container", "list").args
+        queried = list_args[list_args.index("--filter") + 1]
 
         assert queried == f"label={written}"
 
@@ -890,3 +893,163 @@ class TestNoMafImport:
             f"these maf_sandbox_wslc modules import agent_framework: {offenders}. A backend "
             "must be usable by a host that does not run Microsoft Agent Framework at all."
         )
+
+
+# ---------------------------------------------------------------------------
+# Allowlist egress — internal network + filtering proxy
+# ---------------------------------------------------------------------------
+
+_ALLOW_CONFIG = WslcSandboxConfig(egress_proxy_image="maf-egress-proxy:local")
+_ALLOW_SPEC = SandboxSpec(
+    kind="bicep",
+    image="bicep-sandbox:local",
+    egress_allow=("mcr.microsoft.com", "*.data.mcr.microsoft.com"),
+)
+_NET = f"{_NAME}-net"
+_PROXY = f"{_NAME}-proxy"
+
+
+def _run_named(fake: _FakeWslc, name: str) -> _Recorded:
+    """The one `container run` call whose `--name` is `name`."""
+    found = [
+        c for c in fake.matching("container", "run") if c.args[c.args.index("--name") + 1] == name
+    ]
+    assert len(found) == 1, [c.args for c in fake.calls]
+    return found[0]
+
+
+class TestAllowlistTopology:
+    """With `egress_proxy_image` set, `--network none` becomes an internal net plus a proxy."""
+
+    def test_the_declaration_follows_the_configuration(self):
+        assert _backend_with()[0].egress == Egress.CLOSED
+        assert _backend_with(config=_ALLOW_CONFIG)[0].egress == Egress.ALLOWLIST
+
+    def test_create_builds_network_proxy_bridge_then_workload_in_order(self):
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+
+        order = [
+            fake.calls.index(fake.only("network", "create")),
+            fake.calls.index(_run_named(fake, _PROXY)),
+            fake.calls.index(fake.only("network", "connect")),
+            fake.calls.index(_run_named(fake, _NAME)),
+        ]
+        assert order == sorted(order)
+        assert fake.only("network", "connect").args == ("network", "connect", "bridge", _PROXY)
+
+    def test_the_network_is_internal_and_labelled(self):
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+
+        args = fake.only("network", "create").args
+        assert args[:3] == ("network", "create", "--internal")
+        assert args[-1] == _NET
+        labels = [args[i + 1] for i, a in enumerate(args) if a == "-l"]
+        assert "maf-sandbox.scope=scope-a" in labels
+        assert "maf-sandbox.thread=thread-1" in labels
+
+    def test_the_proxy_carries_the_allowlist_and_the_role_label(self):
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+
+        args = _run_named(fake, _PROXY).args
+        assert args[args.index("--network") + 1] == _NET
+        env = [args[i + 1] for i, a in enumerate(args) if a == "-e"]
+        assert "MAF_SANDBOX_ALLOW=mcr.microsoft.com,*.data.mcr.microsoft.com" in env
+        labels = [args[i + 1] for i, a in enumerate(args) if a == "-l"]
+        assert "maf-sandbox.role=proxy" in labels
+        assert args[-1] == "maf-egress-proxy:local"
+
+    def test_the_workload_joins_the_network_with_the_proxy_in_its_environment(self):
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+
+        args = _run_named(fake, _NAME).args
+        assert args[args.index("--network") + 1] == _NET
+        env = [args[i + 1] for i, a in enumerate(args) if a == "-e"]
+        assert f"HTTPS_PROXY=http://{_PROXY}:3128" in env
+        assert f"HTTP_PROXY=http://{_PROXY}:3128" in env
+        assert args[-3:] == ("bicep-sandbox:local", "sleep", "infinity")
+
+    def test_create_waits_until_the_proxy_listens(self):
+        logs_seen = 0
+
+        def respond(args):
+            nonlocal logs_seen
+            if args[:2] == ("container", "logs"):
+                logs_seen += 1
+                if logs_seen < 3:
+                    return _WslcResult(0, "", "")
+            return _machine()(args)
+
+        backend, fake = _backend_with(respond, config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+
+        assert logs_seen == 3
+        last_logs = max(i for i, c in enumerate(fake.calls) if c.args[:2] == ("container", "logs"))
+        assert fake.calls.index(_run_named(fake, _NAME)) > last_logs
+
+    def test_an_existing_network_is_adopted(self):
+        overrides = {("network", "create"): _WslcResult(1, "", "Error code: ERROR_ALREADY_EXISTS")}
+        backend, fake = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+
+        assert _run_named(fake, _NAME)
+
+    def test_an_existing_proxy_skips_the_bridge_connect(self):
+        def respond(args):
+            if args[:2] == ("container", "run") and _PROXY in args:
+                return _WslcResult(1, "", "Error code: ERROR_ALREADY_EXISTS")
+            return _machine(running=[_PROXY])(args)
+
+        backend, fake = _backend_with(respond, config=_ALLOW_CONFIG)
+        asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+
+        assert fake.matching("network", "connect") == []
+        assert _run_named(fake, _NAME)
+
+    def test_a_missing_proxy_image_error_names_the_build_recipe(self):
+        def respond(args):
+            if args[:2] == ("container", "run") and _PROXY in args:
+                return _WslcResult(1, "", "WSLC_E_IMAGE_NOT_FOUND")
+            return _machine()(args)
+
+        backend, _ = _backend_with(respond, config=_ALLOW_CONFIG)
+        with pytest.raises(RuntimeError, match="wslc build"):
+            asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+
+    def test_closed_mode_issues_no_network_commands_at_all(self):
+        backend, fake = _backend_with(_machine())
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+
+        assert fake.matching("network") == []
+
+
+class TestAllowlistTeardown:
+    def test_dispose_removes_workload_proxy_then_network(self):
+        backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
+        asyncio.run(backend.dispose(_KEY))
+
+        assert [c.args[-1] for c in fake.matching("container", "remove")] == [_NAME, _PROXY]
+        assert fake.only("network", "remove").args == ("network", "remove", _NET)
+        containers_done = max(
+            i for i, c in enumerate(fake.calls) if c.args[:2] == ("container", "remove")
+        )
+        assert fake.calls.index(fake.only("network", "remove")) > containers_done
+
+    def test_closed_mode_dispose_still_removes_only_the_container(self):
+        backend, fake = _backend_with(_machine())
+        asyncio.run(backend.dispose(_KEY))
+
+        assert [c.args[-1] for c in fake.matching("container", "remove")] == [_NAME]
+        assert fake.matching("network") == []
+
+    def test_dispose_scope_counts_workloads_and_sweeps_their_proxies_networks(self):
+        listed = [_NAME, _PROXY, "maf-sandbox-wslc-feedfeedfeed"]
+        backend, fake = _backend_with(_machine(stopped=listed), config=_ALLOW_CONFIG)
+
+        assert asyncio.run(backend.dispose_scope("scope-a", "thread-1")) == 2
+
+        assert [c.args[-1] for c in fake.matching("container", "remove")] == listed
+        assert [c.args[-1] for c in fake.matching("network", "remove")] == [_NET]

@@ -33,9 +33,17 @@ router = SandboxRouter([WslcSandboxBackend(WslcSandboxConfig())])
 
 **`Isolation.CONTAINER`.** A container shares the host kernel and sits next to whatever the host process holds, so `SandboxRouter(..., deployed=True)` refuses this backend outright, at construction. That refusal is the feature: this is a backend for the machine you are already sitting at, and the router will not be argued into treating it as anything else. Use a VM-isolated backend where a deployment's credentials are in the picture.
 
-**`Egress.CLOSED`.** Every container is created `--network none`, and nothing in the configuration can widen it. The CLI cannot allow one host and deny the rest, so a spec's allowlist is honoured by denying everything — confining *more* than a workload asked for, which the router permits with a warning precisely because the failure is loud: whatever the workload could not fetch, it could not fetch, and a workload built for this reports the shortfall rather than passing an incomplete result off as a clean one.
+**`Egress.CLOSED` by default, `Egress.ALLOWLIST` on request.** With no proxy configured every container is created `--network none`: the CLI cannot allow one host and deny the rest, so a spec's allowlist is honoured by denying everything — confining *more* than a workload asked for, which the router permits with a warning precisely because the failure is loud, and a workload built for this reports the shortfall rather than passing an incomplete result off as a clean one.
 
-Allowlisted egress is a known follow-up rather than an oversight. The topology is already verified — an internal network isolates a container from the internet, and a second container attached to both networks reaches it — so what is missing is an allowlisting proxy image to put on the dual-homed hop, not a mechanism.
+Set `egress_proxy_image` and the declaration becomes `ALLOWLIST`: each sandbox gets its own internal network and a dual-homed filtering proxy, and the spec's allowlist is enforced by topology — the container has no route out except the proxy, which opens a CONNECT tunnel only to the hosts the spec names. TLS is not decrypted, and the sandbox never resolves an external name itself. The proxy is shipped as source, not as an image you must trust: build it from the packaged recipe, whose only pinned dependency is its Azure Linux base.
+
+```python
+from pathlib import Path
+from maf_sandbox_wslc import proxy_build_context, WslcSandboxConfig
+
+print(f"wslc build -t maf-egress-proxy:local {proxy_build_context()}")  # run this once
+config = WslcSandboxConfig(egress_proxy_image="maf-egress-proxy:local")
+```
 
 ## The backend
 
@@ -48,6 +56,7 @@ Allowlisted egress is a known follow-up rather than an oversight. The topology i
 | `dispose(key)` | `remove -f` on the one container the key names |
 | `dispose_scope(scope, thread)` | delete every container for a conversation — **by label, read back from wslc**, not from process memory |
 | `isolation` | `container` — which is what makes the router refuse it in a deployed environment |
+| `egress` | `closed`, or `allowlist` when `egress_proxy_image` is set — an internal network behind a filtering proxy, torn down with the sandbox |
 
 Container names are derived from the key rather than remembered, so `acquire` and `dispose` agree on one without a registry to keep in sync. Labels are the durable record `dispose_scope` selects on, and their values are digested when they are long or carry a separator — the same mapping on both sides, because transforming one and not the other makes a purge quietly select nothing.
 

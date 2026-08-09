@@ -9,9 +9,12 @@ container CLI that ships with WSL 2.9.3 and later: a container on the developer'
 machine, created in about half a second, with no subscription, no daemon and no login.
 
 It declares :data:`~maf_sandbox.Isolation.CONTAINER`, which is what makes the router refuse
-it when the host reports it is running deployed, and :data:`~maf_sandbox.Egress.CLOSED`,
-which is ``--network none`` on every container.  Both are honest downgrades from a
-VM-isolated backend, and both are what this package is *for*: the same workload, run locally.
+it when the host reports it is running deployed.  Egress is :data:`~maf_sandbox.Egress.CLOSED`
+by default — ``--network none`` on every container — and becomes
+:data:`~maf_sandbox.Egress.ALLOWLIST` when the config names a
+:func:`proxy_build_context`-built image, which places each sandbox on its own internal
+network behind a filtering proxy.  These are honest downgrades from a VM-isolated backend, and
+they are what this package is *for*: the same workload, run locally.
 
 This package is the backend only.  The sandbox kinds that run on it live in sibling packages
 and are written against the router's protocol, not against this backend, so they never import
@@ -24,11 +27,13 @@ from __future__ import annotations
 
 from ._backend import WslcSandboxBackend
 from ._config import WslcSandboxConfig
+from ._proxy import build_context as proxy_build_context
 
 __all__ = [
     "MafSandboxWslcExperimentalWarning",
     "WslcSandboxBackend",
     "WslcSandboxConfig",
+    "proxy_build_context",
 ]
 
 # --- Experimental-package notice ---------------------------------------------------------
