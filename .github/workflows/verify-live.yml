@@ -1,0 +1,110 @@
+name: Verify (live)
+
+# Installs the PUBLISHED wheels into a clean environment and runs samples/01_acas_bicep against
+# a real Azure sandbox, then asserts the compiler's diagnostics came back. This is the half of
+# issue #33 that costs something: it creates a billable VM and needs a subscription, so it never
+# runs on a pull request. It runs on demand, and once after each release that could change what
+# the sample exercises (dispatched by publish-packages.yml).
+#
+# Authentication is OIDC federation to Azure — no stored secret, matching how publishing works.
+# Everything the sample reads is non-secret configuration (endpoints and ids), held as
+# environment variables on the `live-verify` environment. See docs/maintainers.md.
+on:
+  workflow_dispatch:
+  workflow_call:
+
+# One billable run at a time; let a run in flight finish and dispose its sandbox rather than
+# cancelling it half-way and leaving the VM to the backend's auto-delete timer.
+concurrency:
+  group: verify-live
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sample-01:
+    name: samples/01_acas_bicep against a live sandbox
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Half of the federated-credential subject Azure checks, and where the non-secret sandbox
+    # and model configuration lives. `live-verify` is deliberately ungated: the post-release
+    # call must not wait on a human, and there is no credential to protect while it does.
+    environment: live-verify
+    permissions:
+      # Mints the OIDC token azure/login exchanges. No secret is involved.
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      # From PyPI, no local fallback — the whole point is to exercise what a consumer installs,
+      # at the versions just released, not this checkout. The sample's own files (agent.py,
+      # main.bicep) come from the checkout; only the packages come from the index.
+      - name: Install the published wheels into a clean environment
+        run: |
+          set -euo pipefail
+          uv venv /tmp/live
+          uv pip install --python /tmp/live/bin/python \
+            maf-sandbox-aca maf-sandbox-bicep agent-framework-openai
+          uv pip list --python /tmp/live/bin/python
+
+      # Fail early and by name if the environment was never configured — azure/login's own
+      # error for an empty client-id does not say which field is missing.
+      - name: Check the live configuration is present
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          ACA_SANDBOX_ENDPOINT: ${{ vars.ACA_SANDBOX_ENDPOINT }}
+          ACA_SANDBOX_SUBSCRIPTION_ID: ${{ vars.ACA_SANDBOX_SUBSCRIPTION_ID }}
+          ACA_SANDBOX_RESOURCE_GROUP: ${{ vars.ACA_SANDBOX_RESOURCE_GROUP }}
+          ACA_SANDBOX_GROUP: ${{ vars.ACA_SANDBOX_GROUP }}
+          ACA_SANDBOX_REGISTRY: ${{ vars.ACA_SANDBOX_REGISTRY }}
+          BICEP_SANDBOX_IMAGE: ${{ vars.BICEP_SANDBOX_IMAGE }}
+          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
+            ACA_SANDBOX_ENDPOINT ACA_SANDBOX_SUBSCRIPTION_ID ACA_SANDBOX_RESOURCE_GROUP \
+            ACA_SANDBOX_GROUP ACA_SANDBOX_REGISTRY BICEP_SANDBOX_IMAGE \
+            AZURE_OPENAI_ENDPOINT AZURE_OPENAI_CHAT_MODEL; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::the live-verify environment is missing variables: ${missing[*]}. See docs/maintainers.md."
+            exit 1
+          fi
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # Runs the sample as a consumer would, then asserts loosely on its output. The sample
+      # authenticates with DefaultAzureCredential, which the az login above satisfies — the
+      # AZURE_CLIENT_ID/TENANT/SUBSCRIPTION values are login inputs only and are deliberately
+      # not exported here, so DefaultAzureCredential resolves cleanly through the CLI rather
+      # than a half-populated EnvironmentCredential.
+      - name: Run sample 01 and assert the diagnostics came back
+        env:
+          ACA_SANDBOX_ENDPOINT: ${{ vars.ACA_SANDBOX_ENDPOINT }}
+          ACA_SANDBOX_SUBSCRIPTION_ID: ${{ vars.ACA_SANDBOX_SUBSCRIPTION_ID }}
+          ACA_SANDBOX_RESOURCE_GROUP: ${{ vars.ACA_SANDBOX_RESOURCE_GROUP }}
+          ACA_SANDBOX_GROUP: ${{ vars.ACA_SANDBOX_GROUP }}
+          ACA_SANDBOX_REGISTRY: ${{ vars.ACA_SANDBOX_REGISTRY }}
+          BICEP_SANDBOX_IMAGE: ${{ vars.BICEP_SANDBOX_IMAGE }}
+          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+        run: |
+          set -euo pipefail
+          /tmp/live/bin/python samples/01_acas_bicep/agent.py | tee /tmp/sample-out.txt
+          # stdlib-only, so the runner's own python3 runs it — no dependency on the venv above.
+          python3 scripts/check_live_sample.py /tmp/sample-out.txt

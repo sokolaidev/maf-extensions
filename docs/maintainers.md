@@ -39,6 +39,28 @@ which happens to match the required release order anyway (a package before the o
 
 `pypi` carries a **required reviewer**. The publish job does nothing but exchange a token and upload; everything that can be verified has already run by then, so the reviewer is approving exactly one irreversible action, with no credential existing while it waits. `testpypi` is deliberately ungated — rehearsals should stay frictionless.
 
+## Verifying a release against a live sandbox
+
+`verify-live.yml` installs the *published* wheels into a clean environment and runs [`samples/01_acas_bicep`](../samples/01_acas_bicep/) against a real Azure sandbox, then asserts the compiler's diagnostics came back — the happy-path half of [#33](https://github.com/sokolaidev/maf-extensions/issues/33). It runs on demand (Actions → *Verify (live)* → *Run workflow*) and once after each real publish of `maf-sandbox`, `maf-sandbox-aca` or `maf-sandbox-bicep` (dispatched by `publish-packages.yml`, which is why those two files know each other). It creates a **billable VM**, so it never runs on a pull request.
+
+Authentication is OIDC federation to Azure — `azure/login`, no stored secret, the same principle as Trusted Publishing above. Everything the sample reads is non-secret configuration (endpoints and ids), so all of it lives as **environment variables**, none as secrets.
+
+Setting it up is a one-time job with four parts:
+
+1. **An Azure identity with a federated credential.** An app registration (or a user-assigned managed identity) whose federated credential has **entity type Environment**, environment name **`live-verify`** — which makes its subject `repo:sokolaidev/maf-extensions:environment:live-verify`, issuer `https://token.actions.githubusercontent.com`, audience `api://AzureADTokenExchange`. The `environment: live-verify` on the workflow's job is what puts that value in the token, so this must match it exactly, the same way the PyPI publisher matches on the environment name.
+2. **RBAC for that identity**, since it authenticates as itself with no key: rights to create sandboxes in the sandbox group, `AcrPull` on the registry serving the Bicep image, and `Cognitive Services OpenAI User` on the Azure OpenAI resource. Missing any one fails the sample with an SDK error the tool sanitises — the run log has the detail.
+3. **The Bicep disk image imported into the sandbox group** — the same prerequisite as running the sample by hand, since a sandbox boots from a disk image rather than the registry it was pushed to. See the sample README and [`packages/maf-sandbox-aca/scripts/import_disk_image.py`](../packages/maf-sandbox-aca/scripts/import_disk_image.py).
+4. **A GitHub environment `live-verify`**, under Settings → Environments. Leave it **ungated** — no required reviewer (the post-release run must not wait on a human, and no credential exists while it would) — and place **no deployment-branch restriction** on it, because it runs both at a release tag (the automated path) and at a branch (a dispatch). Set these variables on it (Settings → Environments → `live-verify` → *Environment variables*), all non-secret:
+
+   | Variable | For |
+   |---|---|
+   | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` | `azure/login` — the federated identity above |
+   | `ACA_SANDBOX_ENDPOINT`, `ACA_SANDBOX_SUBSCRIPTION_ID`, `ACA_SANDBOX_RESOURCE_GROUP`, `ACA_SANDBOX_GROUP`, `ACA_SANDBOX_REGISTRY` | the sandbox group the sample creates a VM in |
+   | `BICEP_SANDBOX_IMAGE` | `repository:tag` of the imported Bicep image |
+   | `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_CHAT_MODEL` | the chat model — a **reasoning** deployment, or the sample fails its first call with `400 — Encrypted content is not supported with this model` ([#21](https://github.com/sokolaidev/maf-extensions/issues/21)) |
+
+The assertion is deliberately loose — `scripts/check_live_sample.py` matches rule ids and severities, not whole strings, because the diagnostics carry a day count and an API-version list that climb on their own. Its matching logic is unit-tested on every PR (`tests/test_check_live_sample.py`); only the run that feeds it costs anything.
+
 ## The PyPI organization
 
 Packages are published under the `sokolai` organization (SOKOLAI BV — a Company organization, which is the paid tier; the Community tier is for non-commercial projects).

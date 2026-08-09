@@ -119,37 +119,79 @@ def _smoke_maf_sandbox_bicep() -> str:
     )
     from maf_sandbox_bicep import BICEP_VALIDATE_TOOL_NAME, make_bicep_tools
 
+    def _bicep_tool(store: InMemoryStore, backend: InProcessSandboxBackend):
+        context = WorkspaceContext(
+            current_scope=lambda: "smoke",
+            current_thread_id=lambda: "thread",
+            list_files=InMemoryStore.list,
+        )
+        tools = make_bicep_tools(
+            SandboxRouter([backend]),
+            store,
+            "devops-engineer",
+            context,
+            image="registry.invalid/bicep:1",
+        )
+        if (
+            len(tools) != 1
+            or getattr(tools[0], "name", None) != BICEP_VALIDATE_TOOL_NAME
+        ):
+            raise SystemExit(
+                f"FAIL: expected one {BICEP_VALIDATE_TOOL_NAME} tool, got {tools}"
+            )
+        tool = tools[0]
+        return getattr(tool, "func", None) or getattr(tool, "__wrapped__", None) or tool
+
+    # The happy path: the file reaches the sandbox, both phases run, diagnostics render.
     store = InMemoryStore(
         {"main.bicep": "param location string = resourceGroup().location"}
     )
-    sandbox = InProcessSandbox(
-        outputs={"bicep build": _SARIF}, default_stdout=_EMPTY_SARIF
+    backend = InProcessSandboxBackend(
+        InProcessSandbox(outputs={"bicep build": _SARIF}, default_stdout=_EMPTY_SARIF)
     )
-    context = WorkspaceContext(
-        current_scope=lambda: "smoke",
-        current_thread_id=lambda: "thread",
-        list_files=InMemoryStore.list,
-    )
-    tools = make_bicep_tools(
-        SandboxRouter([InProcessSandboxBackend(sandbox)]),
-        store,
-        "devops-engineer",
-        context,
-        image="registry.invalid/bicep:1",
-    )
-    if len(tools) != 1 or getattr(tools[0], "name", None) != BICEP_VALIDATE_TOOL_NAME:
-        raise SystemExit(
-            f"FAIL: expected one {BICEP_VALIDATE_TOOL_NAME} tool, got {tools}"
-        )
-
-    tool = tools[0]
-    fn = getattr(tool, "func", None) or getattr(tool, "__wrapped__", None) or tool
-    out = asyncio.run(fn(files=["main.bicep"]))
+    out = asyncio.run(_bicep_tool(store, backend)(files=["main.bicep"]))
     if "BCP035" not in out:
         raise SystemExit(f"FAIL: diagnostics missing from tool output: {out!r}")
-    if not sandbox.files:
+    if not backend.sandbox.files:
         raise SystemExit("FAIL: the workload never wrote the file into the sandbox")
-    return "bicep_validate wrote, ran both phases, and rendered diagnostics"
+    if len(backend.keys) != 1:
+        raise SystemExit(
+            f"FAIL: the happy path acquired {len(backend.keys)} sandbox(es), not 1"
+        )
+
+    # The failure paths (#22, #33): the message an agent receives is the whole product here,
+    # and both return before a sandbox is acquired — the free half of "verify the published
+    # package" that a workspace test cannot make, because in the workspace the wheel resolves
+    # whether or not its build included these modules.
+    miss_store = InMemoryStore({"main.bicep": "x"})
+    miss_backend = InProcessSandboxBackend(
+        InProcessSandbox(default_stdout=_EMPTY_SARIF)
+    )
+    miss = asyncio.run(_bicep_tool(miss_store, miss_backend)(files=["absent.bicep"]))
+    if "not in this tool's file listing" not in miss:
+        raise SystemExit(f"FAIL: a listing miss did not say so: {miss!r}")
+    if miss_backend.keys:
+        raise SystemExit("FAIL: a listing miss acquired a sandbox before refusing")
+
+    # A hostile name that is genuinely in the listing — being present is not evidence it is
+    # safe to interpolate into a shell command.
+    hostile = "a;$(id).bicep"
+    unsafe_store = InMemoryStore({hostile: "x"})
+    unsafe_backend = InProcessSandboxBackend(
+        InProcessSandbox(default_stdout=_EMPTY_SARIF)
+    )
+    unsafe = asyncio.run(_bicep_tool(unsafe_store, unsafe_backend)(files=[hostile]))
+    if "[A-Za-z0-9._/-]" not in unsafe:
+        raise SystemExit(f"FAIL: an unsafe name was not named as such: {unsafe!r}")
+    if unsafe_backend.keys or unsafe_backend.sandbox.commands:
+        raise SystemExit("FAIL: an unsafe name reached the sandbox")
+    if miss == unsafe:
+        raise SystemExit("FAIL: a listing miss and an unsafe name share one message")
+
+    return (
+        "bicep_validate rendered diagnostics on the happy path, and refused a listing miss "
+        "and an unsafe name — with distinct messages, before acquiring a sandbox"
+    )
 
 
 def _smoke_maf_sandbox_wslc() -> str:
