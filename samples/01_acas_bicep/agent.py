@@ -15,7 +15,7 @@ compiler running inside a VM-isolated sandbox (T2), not from the model reading
 its own output and agreeing with itself (T0).  Running this against a *valid*
 file would prove much less.
 
-Running it needs a real Azure subscription and **creates a billable VM** — see
+Running it needs a real Azure subscription and **creates a billable sandbox** — see
 this directory's README for the prerequisites and the environment variables.
 """
 
@@ -192,7 +192,7 @@ async def run() -> int:
     finally:
         # Delete the sandbox rather than leaving it to the lifecycle timers.
         # `auto_suspend_seconds` and `auto_delete_seconds` are the backstop, not
-        # the plan: a VM per agent per conversation, billable for ten minutes
+        # the plan: a sandbox per agent per conversation, billable for ten minutes
         # after the last call, adds up fast.  `dispose_scope` deletes by
         # service-side label, so it reclaims sandboxes this process never saw.
         deleted = await router.dispose_scope(SCOPE, THREAD_ID)

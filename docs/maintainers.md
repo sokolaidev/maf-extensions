@@ -39,9 +39,11 @@ which happens to match the required release order anyway (a package before the o
 
 `pypi` carries a **required reviewer**. The publish job does nothing but exchange a token and upload; everything that can be verified has already run by then, so the reviewer is approving exactly one irreversible action, with no credential existing while it waits. `testpypi` is deliberately ungated — rehearsals should stay frictionless.
 
+A third environment, `live-verify`, exists too, but it belongs to release verification rather than publishing — its setup is in [its own section](#verifying-a-release-against-a-live-sandbox) below.
+
 ## Verifying a release against a live sandbox
 
-`verify-live.yml` installs the *published* wheels into a clean environment and runs [`samples/01_acas_bicep`](../samples/01_acas_bicep/) against a real Azure sandbox, then asserts the compiler's diagnostics came back — the happy-path half of [#33](https://github.com/sokolaidev/maf-extensions/issues/33). It runs on demand (Actions → *Verify (live)* → *Run workflow*) and once after each real publish of `maf-sandbox`, `maf-sandbox-aca` or `maf-sandbox-bicep` (dispatched by `publish-packages.yml`, which is why those two files know each other). It creates a **billable VM**, so it never runs on a pull request.
+`verify-live.yml` installs the *published* wheels into a clean environment and runs [`samples/01_acas_bicep`](../samples/01_acas_bicep/) against a real Azure sandbox, then asserts the compiler's diagnostics came back — the happy-path half of [#33](https://github.com/sokolaidev/maf-extensions/issues/33). It runs on demand (Actions → *Verify (live)* → *Run workflow*) and once after each real publish of `maf-sandbox`, `maf-sandbox-aca` or `maf-sandbox-bicep` (dispatched by `publish-packages.yml`, which is why those two files know each other). It creates a **billable sandbox** — a PaaS container session, not a VM you provision — so it never runs on a pull request.
 
 Authentication is OIDC federation to Azure — `azure/login`, no stored secret, the same principle as Trusted Publishing above. Everything the sample reads is non-secret configuration (endpoints and ids), so all of it lives as **environment variables**, none as secrets.
 
@@ -55,7 +57,7 @@ Setting it up is a one-time job with four parts:
    | Variable | For |
    |---|---|
    | `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` | `azure/login` — the federated identity above |
-   | `ACA_SANDBOX_ENDPOINT`, `ACA_SANDBOX_SUBSCRIPTION_ID`, `ACA_SANDBOX_RESOURCE_GROUP`, `ACA_SANDBOX_GROUP`, `ACA_SANDBOX_REGISTRY` | the sandbox group the sample creates a VM in |
+   | `ACA_SANDBOX_ENDPOINT`, `ACA_SANDBOX_SUBSCRIPTION_ID`, `ACA_SANDBOX_RESOURCE_GROUP`, `ACA_SANDBOX_GROUP`, `ACA_SANDBOX_REGISTRY` | the sandbox group the sample runs its sandbox in |
    | `BICEP_SANDBOX_IMAGE` | `repository:tag` of the imported Bicep image |
    | `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_CHAT_MODEL` | the chat model — a **reasoning** deployment, or the sample fails its first call with `400 — Encrypted content is not supported with this model` ([#21](https://github.com/sokolaidev/maf-extensions/issues/21)) |
 

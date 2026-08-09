@@ -2,8 +2,8 @@ name: Verify (live)
 
 # Installs the PUBLISHED wheels into a clean environment and runs samples/01_acas_bicep against
 # a real Azure sandbox, then asserts the compiler's diagnostics came back. This is the half of
-# issue #33 that costs something: it creates a billable VM and needs a subscription, so it never
-# runs on a pull request. It runs on demand, and once after each release that could change what
+# issue #33 that costs something: it creates a billable sandbox and needs a subscription, so it
+# never runs on a pull request. It runs on demand, and once after each release that could change what
 # the sample exercises (dispatched by publish-packages.yml).
 #
 # Authentication is OIDC federation to Azure — no stored secret, matching how publishing works.
@@ -14,7 +14,7 @@ on:
   workflow_call:
 
 # One billable run at a time; let a run in flight finish and dispose its sandbox rather than
-# cancelling it half-way and leaving the VM to the backend's auto-delete timer.
+# cancelling it half-way and leaving the sandbox to the backend's auto-delete timer.
 concurrency:
   group: verify-live
   cancel-in-progress: false

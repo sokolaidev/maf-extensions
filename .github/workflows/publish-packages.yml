@@ -283,7 +283,7 @@ jobs:
   # The happy-path half of issue #33: once a real publish lands, run samples/01_acas_bicep
   # against a live sandbox at the just-released versions, proving router, backend, image and
   # workload agree. Gated to the packages that sample exercises — a maf-sandbox-wslc release
-  # does not touch it, so it creates no billable VM. A batch releasing more than one of these
+  # does not touch it, so it creates no billable sandbox. A batch releasing more than one of these
   # runs it once per package; each run is independent and safe.
   verify:
     name: Verify against a live sandbox
