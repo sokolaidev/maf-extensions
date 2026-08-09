@@ -2,6 +2,13 @@
 
 All notable changes to `maf-sandbox-aca` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.2.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-aca-v0.2.1...maf-sandbox-aca-v0.2.2) (2026-08-09)
+
+
+### Bug Fixes
+
+* **aca:** stop two concurrent calls for one key from creating two sandboxes ([#58](https://github.com/sokolaidev/maf-extensions/issues/58)) ([b3641ea](https://github.com/sokolaidev/maf-extensions/commit/b3641ea299e9805039cdbad3b3ab4745a6d40f39))
+
 ## [0.2.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-aca-v0.2.0...maf-sandbox-aca-v0.2.1) (2026-08-08)
 
 
