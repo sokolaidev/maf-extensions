@@ -121,7 +121,7 @@ def _network_present(name: str) -> bool:
 
 
 @pytest.mark.skipif(
-    _PROXY_IMAGE is None,
+    not _PROXY_IMAGE,
     # `curl` has to be in the *image*, which we cannot check from here; the Bicep sandbox has it.
     reason="needs MAF_SANDBOX_WSLC_E2E_PROXY_IMAGE naming a built proxy image (and curl in the image)",
 )
@@ -151,9 +151,11 @@ class TestAllowlistEgress:
         backend = WslcSandboxBackend(self._config())
         spec = SandboxSpec(kind="e2e", image=_IMAGE, egress_allow=("mcr.microsoft.com",))
 
+        # Acquire before the try so a failure here surfaces as itself, not as an
+        # `UnboundLocalError` from the teardown assertions that follow.
+        sandbox = asyncio.run(backend.acquire(_key(scope), spec))
+        net = sandbox.container_name + "-net"
         try:
-            sandbox = asyncio.run(backend.acquire(_key(scope), spec))
-            net = sandbox.container_name + "-net"
             assert _network_present(net)
             allowed_rc, allowed_status = self._curl_status(sandbox, "https://mcr.microsoft.com/v2/")
             _, denied_status = self._curl_status(sandbox, "https://pypi.org/simple/")
@@ -163,6 +165,6 @@ class TestAllowlistEgress:
             assert denied_status == "000", denied_status
         finally:
             purged = asyncio.run(backend.dispose_scope(scope, "thread-1"))
-            assert purged == 1
+        assert purged == 1
         assert _names_on_the_machine(sandbox.container_name) == []
         assert not _network_present(net)
