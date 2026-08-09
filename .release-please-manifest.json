@@ -1,6 +1,6 @@
 {
   "packages/maf-sandbox": "0.3.0",
   "packages/maf-sandbox-acas": "0.2.3",
-  "packages/maf-sandbox-bicep": "0.2.2",
+  "packages/maf-sandbox-bicep": "0.3.0",
   "packages/maf-sandbox-wslc": "0.2.0"
 }
