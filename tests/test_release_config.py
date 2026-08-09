@@ -291,3 +291,36 @@ class TestReleasePullRequestsKeepThemselvesCurrent:
 
     def test_always_update_is_on(self):
         assert CONFIG["always-update"] is True
+
+
+class TestDependentsPinMafSandboxInAShapeTheBumpScriptCanRead:
+    """`scripts/bump_dependents_floor.py` raises the floor after a release by pattern.
+
+    Editing by pattern silently no-ops when the string drifts, so a dependent that reformats
+    its maf-sandbox constraint would quietly stop being bumped while the release step still
+    reported success. This pins every dependent's constraint to the `maf-sandbox>=X,<Y` shape
+    the script parses, so the workflow and the files cannot drift apart unnoticed.
+    """
+
+    _MAF_SANDBOX = re.compile(r"maf-sandbox>=\d+(?:\.\d+)*,<\d+(?:\.\d+)*")
+
+    def _dependents(self) -> list[str]:
+        found = []
+        for package_path in PACKAGE_PATHS:
+            if declared_name(package_path) == "maf-sandbox":
+                continue
+            deps = pyproject(package_path)["project"].get("dependencies", [])
+            if any(dep.startswith("maf-sandbox") for dep in deps):
+                found.append(package_path)
+        return found
+
+    def test_every_dependent_is_pinned_in_the_readable_shape(self):
+        dependents = self._dependents()
+        assert dependents, "expected at least one package to depend on maf-sandbox"
+        for package_path in dependents:
+            deps = pyproject(package_path)["project"]["dependencies"]
+            constraint = next(d for d in deps if d.startswith("maf-sandbox"))
+            assert self._MAF_SANDBOX.fullmatch(constraint), (
+                f"{package_path}: {constraint!r} is not the maf-sandbox>=X,<Y shape "
+                "scripts/bump_dependents_floor.py edits by pattern"
+            )

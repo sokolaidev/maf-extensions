@@ -61,3 +61,62 @@ jobs:
               -f package="${path##*/}" -f target=pypi
             echo "dispatched publish for ${path##*/} at ${tag}" >> "$GITHUB_STEP_SUMMARY"
           done
+
+      # After maf-sandbox publishes, the dependents that already widened their ceiling to build
+      # against it can finally point their floor at it — the post-release step of RELEASING.md's
+      # release order, which lived only in prose until now.
+      - name: Check out to bump the dependents' floor
+        if: >-
+          steps.release.outputs.releases_created == 'true'
+          && contains(steps.release.outputs.paths_released, '"packages/maf-sandbox"')
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install uv
+        if: >-
+          steps.release.outputs.releases_created == 'true'
+          && contains(steps.release.outputs.paths_released, '"packages/maf-sandbox"')
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Propose the dependents' floor bump
+        if: >-
+          steps.release.outputs.releases_created == 'true'
+          && contains(steps.release.outputs.paths_released, '"packages/maf-sandbox"')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs['packages/maf-sandbox--version'] }}
+        run: |
+          set -euo pipefail
+          # Fails if a dependent's constraint has drifted from the shape it edits by pattern —
+          # a release step that quietly does nothing is worse than one that stops.
+          python3 scripts/bump_dependents_floor.py "$VERSION"
+          if git diff --quiet; then
+            echo "no dependent has adopted maf-sandbox ${VERSION}; no floor bump" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          branch="chore/require-maf-sandbox-${VERSION}"
+          if git ls-remote --exit-code origin "refs/heads/${branch}" >/dev/null 2>&1; then
+            echo "branch ${branch} already exists; leaving it" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # The lockfile records the constraint, so it moves with it or `uv sync --locked` fails.
+          uv lock
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          # `fix:` is the floor of what this is — the reviewer retitles if adopting the version
+          # is a bigger change for a dependent than a patch. A bot must not pick the bump.
+          git commit -am "fix: require maf-sandbox ${VERSION} in the packages that use it"
+          git push -u origin "$branch"
+          body="Automated by the release workflow after maf-sandbox ${VERSION} published. It raises the floor only in dependents whose ceiling already admits ${VERSION} — the ones that widened it in an earlier pull request to build against this release — so their metadata now requires the version their code needs.
+
+          This is a proposal, not a decision:
+
+          - Merge it if those dependents genuinely use ${VERSION}'s API (widening the ceiling is what said they do).
+          - Retitle it feat:/breaking if adopting the version is more than a patch for a dependent — the title defaults to fix: so the bot does not choose the bump.
+          - Close it if nothing actually needs ${VERSION}; pinning a newer floor than consumers require only over-constrains them.
+
+          The ceiling is deliberately untouched: widening it is the pre-release decision to adopt, and this step only follows through on it. Its required check arrives held as action_required, like a Release PR — approve and run it. Closes #41."
+          gh pr create --base main --head "$branch" \
+            --title "fix: require maf-sandbox ${VERSION} in the packages that use it" \
+            --body "$body"
+          echo "opened ${branch}" >> "$GITHUB_STEP_SUMMARY"
