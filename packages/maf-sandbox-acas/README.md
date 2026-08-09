@@ -1,19 +1,13 @@
-# maf-sandbox-aca
+# maf-sandbox-acas
 
-> **This package has moved to [`maf-sandbox-acas`](https://pypi.org/project/maf-sandbox-acas/).** `0.2.3` is the last `maf-sandbox-aca` release. ACA is Azure Container *Apps*, the broad service; this backend targets Azure Container Apps **Sandboxes**, so the distribution gained the `s` the rest of the project already used. PyPI names cannot be reused, so `maf-sandbox-acas` is a new project rather than a continuation of this one, and **there is no compatibility shim** — nothing here forwards to it.
->
-> ```bash
-> pip install maf-sandbox-acas
-> ```
->
-> The import package, the classes and the sample's environment variables gained the same `s`: `from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig`, and `ACA_SANDBOX_*` → `ACAS_SANDBOX_*`. The backend's own identifier — what `SandboxRouter(selected=…)` matches — is now `"acas"`. Nothing else about the backend changed. See [#68](https://github.com/sokolaidev/maf-extensions/issues/68).
+> **Renamed.** This package was published as `maf-sandbox-aca` up to `0.2.3`. ACA is Azure Container *Apps*, the broad service, while this backend targets Azure Container Apps **Sandboxes** — so it gained the `s` the rest of the project already used. PyPI names cannot be reused, so this is a new distribution rather than a continuation, and there is no compatibility shim: `maf_sandbox_aca` and the `Aca…` classes do not forward here. See [#68](https://github.com/sokolaidev/maf-extensions/issues/68).
 
-> **Experimental.** This package is early-stage (pre-1.0, `Development Status :: 4 - Beta`) — its API may change or be removed in a future release without notice. Importing it emits a one-time `MafSandboxAcaExperimentalWarning`; suppress it with `warnings.filterwarnings("ignore", category=maf_sandbox_aca.MafSandboxAcaExperimentalWarning)` once you've read the notice.
+> **Experimental.** This package is early-stage (pre-1.0, `Development Status :: 4 - Beta`) — its API may change or be removed in a future release without notice. Importing it emits a one-time `MafSandboxAcasExperimentalWarning`; suppress it with `warnings.filterwarnings("ignore", category=maf_sandbox_acas.MafSandboxAcasExperimentalWarning)` once you've read the notice.
 
 This package is not affiliated with, endorsed by, or a product of Microsoft — it is a third-party reference implementation of [microsoft/agent-framework#7568](https://github.com/microsoft/agent-framework/issues/7568) for [Microsoft Agent Framework](https://aka.ms/AgentFramework), built on the [Azure Container Apps Sandboxes](https://learn.microsoft.com/azure/container-apps/sandboxes-overview) preview.
 
 ```
-app  ->  maf_sandbox  ->  maf_sandbox_aca  ->  the sandbox
+app  ->  maf_sandbox  ->  maf_sandbox_acas  ->  the sandbox
 ```
 
 An agent that writes code should not be the thing that runs it. This package gives it somewhere else to run: a VM-isolated sandbox with Deny-default egress and no ambient identity, reached as an ordinary tool call so the agent framework's middleware still sees the call and classifies its result — only the *work* leaves the process.
@@ -23,14 +17,14 @@ This package is the backend only, with no sandbox kind of its own. [`maf-sandbox
 ## Quickstart
 
 ```bash
-pip install maf-sandbox-aca
+pip install maf-sandbox-acas
 ```
 
 ```python
-from maf_sandbox_aca import AcaSandboxBackend, AcaSandboxConfig
+from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
 from maf_sandbox import SandboxRouter
 
-backend = AcaSandboxBackend(AcaSandboxConfig(endpoint="https://management.<region>.azuredevcompute.io", subscription_id="<sub-id>", resource_group="<rg>", sandbox_group="<group>", registry="<acr>.azurecr.io"))
+backend = AcasSandboxBackend(AcasSandboxConfig(endpoint="https://management.<region>.azuredevcompute.io", subscription_id="<sub-id>", resource_group="<rg>", sandbox_group="<group>", registry="<acr>.azurecr.io"))
 router = SandboxRouter([backend], deployed=True)  # VM isolation is what makes `deployed=True` permitted here
 ```
 
@@ -40,13 +34,13 @@ router = SandboxRouter([backend], deployed=True)  # VM isolation is what makes `
 
 ## Threat model
 
-**The VM boundary.** `AcaSandboxBackend` declares `Isolation.VM`: execution happens in a hardware-isolated microVM, not a shared-kernel container, which is what lets `maf-sandbox`'s router permit this backend when a host reports it is running deployed (see that package's README). Everything below this line assumes that boundary holds; it is a property of the Azure Container Apps Sandboxes service, not of this package's code.
+**The VM boundary.** `AcasSandboxBackend` declares `Isolation.VM`: execution happens in a hardware-isolated microVM, not a shared-kernel container, which is what lets `maf-sandbox`'s router permit this backend when a host reports it is running deployed (see that package's README). Everything below this line assumes that boundary holds; it is a property of the Azure Container Apps Sandboxes service, not of this package's code.
 
 **What identity is reachable.** No ambient identity is placed inside the sandbox — the control-plane credential this package uses to create and manage sandboxes (`DefaultAzureCredential`) never travels into the guest. Code running inside a sandbox has no path back to the host's Azure identity, the host process's environment, or any other conversation's sandbox: `dispose_scope` deletes by service-side label, not by trusting the caller, and egress is Deny-default with a per-spec allowlist supplied by the *kind*, not by runtime configuration — a deployment that could widen a kind's egress after the fact could undo the containment its design rests on.
 
 ## The backend
 
-`AcaSandboxBackend` implements `maf_sandbox.SandboxBackend`:
+`AcasSandboxBackend` implements `maf_sandbox.SandboxBackend`:
 
 | | |
 |---|---|
@@ -65,7 +59,7 @@ It imports nothing from its host application — only `maf-sandbox` and `azure-*
 
 `TestOnlyDeclaredDependencies` is what keeps that true: it scans this package's sources and fails on any import that is neither the standard library, this package itself, nor a distribution its own `pyproject.toml` declares. Nothing else would notice a stray one, because a workspace has every sibling already on the path — and an undeclared import is exactly what breaks a fresh `pip install` of the published wheel.
 
-What stays behind is the host's adapter — a single module in the host application that maps the host's settings onto an `AcaSandboxConfig` and supplies the request context. Read it first if you want to know what integrating this package involves.
+What stays behind is the host's adapter — a single module in the host application that maps the host's settings onto an `AcasSandboxConfig` and supplies the request context. Read it first if you want to know what integrating this package involves.
 
 ## Provenance
 

@@ -1,6 +1,8 @@
 # Changelog
 
-All notable changes to `maf-sandbox-aca` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
+All notable changes to `maf-sandbox-acas` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
+
+Releases up to and including `0.2.3` were published as **`maf-sandbox-aca`**, and the entries below name it as it was — their tags and compare links point at real history and are left as they were written. `maf-sandbox-aca` is not maintained past `0.2.3`; PyPI names cannot be reused, so the rename is a new distribution rather than a continuation of that one.
 
 ## [0.2.3](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-aca-v0.2.2...maf-sandbox-aca-v0.2.3) (2026-08-09)
 

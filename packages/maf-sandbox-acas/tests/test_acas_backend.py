@@ -13,9 +13,9 @@ import logging
 import pytest
 from maf_sandbox import Egress, Isolation, SandboxBackend, SandboxKey
 
-from maf_sandbox_aca import (
-    AcaSandboxBackend,
-    AcaSandboxConfig,
+from maf_sandbox_acas import (
+    AcasSandboxBackend,
+    AcasSandboxConfig,
     disk_image_base,
     resolve_disk_image_id,
 )
@@ -23,8 +23,8 @@ from maf_sandbox_aca import (
 _ENDPOINT = "https://management.example.azuredevcompute.io"
 
 
-def _config(**overrides) -> AcaSandboxConfig:
-    return AcaSandboxConfig(endpoint=_ENDPOINT, **overrides)
+def _config(**overrides) -> AcasSandboxConfig:
+    return AcasSandboxConfig(endpoint=_ENDPOINT, **overrides)
 
 
 def _disk_image(image_id: str, reference: str):
@@ -107,14 +107,14 @@ class _ExplodingGroupClient:
         raise RuntimeError("service unavailable")
 
 
-def _backend_with(group_client, config: AcaSandboxConfig | None = None) -> AcaSandboxBackend:
+def _backend_with(group_client, config: AcasSandboxConfig | None = None) -> AcasSandboxBackend:
     """A backend whose group client is the given fake.
 
     Injected by overriding the one protected accessor rather than by patching
     ``sys.modules``: the seam exists precisely so the backend can be exercised without
     Azure, and using it here is what proves it is a real seam.
     """
-    backend = AcaSandboxBackend(config or _config())
+    backend = AcasSandboxBackend(config or _config())
     backend._group_client = lambda: group_client  # type: ignore[method-assign]
     return backend
 
@@ -126,18 +126,18 @@ def _backend_with(group_client, config: AcaSandboxConfig | None = None) -> AcaSa
 
 class TestBackendIdentity:
     def test_satisfies_the_backend_protocol(self):
-        assert isinstance(AcaSandboxBackend(_config()), SandboxBackend)
+        assert isinstance(AcasSandboxBackend(_config()), SandboxBackend)
 
     def test_declares_vm_isolation(self):
         """The router permits this backend in a deployed environment because of this value."""
-        assert AcaSandboxBackend(_config()).isolation == Isolation.VM
+        assert AcasSandboxBackend(_config()).isolation == Isolation.VM
 
     def test_declares_allowlist_egress(self):
         """A workload's tool attaches because of this; `TestEgressPolicy` pins that it is true."""
-        assert AcaSandboxBackend(_config()).egress == Egress.ALLOWLIST
+        assert AcasSandboxBackend(_config()).egress == Egress.ALLOWLIST
 
     def test_is_named_aca(self):
-        assert AcaSandboxBackend(_config()).name == "aca"
+        assert AcasSandboxBackend(_config()).name == "acas"
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +171,7 @@ class TestQualifyImageReference:
     """A kind declares `repository:tag`; the backend knows which registry holds it."""
 
     def test_prefixes_a_bare_repository_and_tag(self):
-        from maf_sandbox_aca._images import qualify_image_reference
+        from maf_sandbox_acas._images import qualify_image_reference
 
         assert qualify_image_reference("acr.azurecr.io", "bicep-sandbox:0.46.1") == (
             "acr.azurecr.io/bicep-sandbox:0.46.1"
@@ -179,7 +179,7 @@ class TestQualifyImageReference:
 
     def test_a_tag_colon_is_not_mistaken_for_a_port(self):
         """`bicep-sandbox:0.46.1` has a colon but no registry — the trap in this rule."""
-        from maf_sandbox_aca._images import qualify_image_reference
+        from maf_sandbox_acas._images import qualify_image_reference
 
         # Whole-string equality rather than a prefix check: `startswith` on something that
         # looks like a URL is the shape of an incomplete-sanitization bug, and a scanner
@@ -188,39 +188,39 @@ class TestQualifyImageReference:
 
     def test_leaves_an_already_qualified_reference_alone(self):
         """Double-prefixing surfaces only as "no disk image was built from …", far away."""
-        from maf_sandbox_aca._images import qualify_image_reference
+        from maf_sandbox_acas._images import qualify_image_reference
 
         assert qualify_image_reference("acr.azurecr.io", "other.azurecr.io/img:1") == (
             "other.azurecr.io/img:1"
         )
 
     def test_a_repository_path_is_not_a_registry(self):
-        from maf_sandbox_aca._images import qualify_image_reference
+        from maf_sandbox_acas._images import qualify_image_reference
 
         assert qualify_image_reference("acr.azurecr.io", "library/ubuntu:22.04") == (
             "acr.azurecr.io/library/ubuntu:22.04"
         )
 
     def test_localhost_and_ports_count_as_registries(self):
-        from maf_sandbox_aca._images import qualify_image_reference
+        from maf_sandbox_acas._images import qualify_image_reference
 
         assert qualify_image_reference("acr.io", "localhost/img:1") == "localhost/img:1"
         assert qualify_image_reference("acr.io", "reg:5000/img:1") == "reg:5000/img:1"
 
     def test_no_registry_configured_leaves_the_image_untouched(self):
-        from maf_sandbox_aca._images import qualify_image_reference
+        from maf_sandbox_acas._images import qualify_image_reference
 
         assert qualify_image_reference("", "img:1") == "img:1"
 
     def test_a_trailing_slash_on_the_registry_does_not_double_up(self):
-        from maf_sandbox_aca._images import qualify_image_reference
+        from maf_sandbox_acas._images import qualify_image_reference
 
         assert qualify_image_reference("acr.azurecr.io/", "img:1") == "acr.azurecr.io/img:1"
 
 
 class TestResolveDiskImageId:
     def setup_method(self):
-        from maf_sandbox_aca._images import _disk_image_cache
+        from maf_sandbox_acas._images import _disk_image_cache
 
         _disk_image_cache.clear()
 
@@ -309,7 +309,7 @@ class TestFileWrites:
     """
 
     def test_requests_parent_directory_creation(self):
-        from maf_sandbox_aca._backend import _AcaSandbox
+        from maf_sandbox_acas._backend import _AcasSandbox
 
         class _RecordingClient:
             def __init__(self) -> None:
@@ -319,13 +319,13 @@ class TestFileWrites:
                 self.calls.append((path, content, kwargs))
 
         client = _RecordingClient()
-        asyncio.run(_AcaSandbox(client).write_file("/work/infra/main.bicep", "param x string"))
+        asyncio.run(_AcasSandbox(client).write_file("/work/infra/main.bicep", "param x string"))
 
         assert client.calls == [("/work/infra/main.bicep", "param x string", {"create_dirs": True})]
 
 
 class TestExecArgv:
-    """`_AcaSandbox.exec` accepts a sequence and quotes it before the SDK's string-only exec.
+    """`_AcasSandbox.exec` accepts a sequence and quotes it before the SDK's string-only exec.
 
     The SDK's ``exec`` takes one string; a caller handing this an argv sequence must be able
     to trust that no element — however it is shaped — can be re-interpreted as more than one
@@ -348,20 +348,20 @@ class TestExecArgv:
             return _Result()
 
     def test_a_string_command_passes_through_unchanged(self):
-        from maf_sandbox_aca._backend import _AcaSandbox
+        from maf_sandbox_acas._backend import _AcasSandbox
 
         client = self._RecordingClient()
-        asyncio.run(_AcaSandbox(client).exec("echo hi", working_directory="/work", timeout=5))
+        asyncio.run(_AcasSandbox(client).exec("echo hi", working_directory="/work", timeout=5))
         assert client.calls == ["echo hi"]
 
     def test_a_sequence_is_quoted_with_shlex_join(self):
         import shlex
 
-        from maf_sandbox_aca._backend import _AcaSandbox
+        from maf_sandbox_acas._backend import _AcasSandbox
 
         client = self._RecordingClient()
         argv = ["echo", "a; rm -rf /", "$(id)", "`id`", "it's mine", 'say "hi"']
-        asyncio.run(_AcaSandbox(client).exec(argv, working_directory="/work", timeout=5))
+        asyncio.run(_AcasSandbox(client).exec(argv, working_directory="/work", timeout=5))
 
         assert client.calls == [shlex.join(argv)]
         # Round-tripping through shlex.split recovers the exact argv — proof the quoted
@@ -372,11 +372,11 @@ class TestExecArgv:
     def test_a_bare_space_separated_argv_stays_one_command(self):
         import shlex
 
-        from maf_sandbox_aca._backend import _AcaSandbox
+        from maf_sandbox_acas._backend import _AcasSandbox
 
         client = self._RecordingClient()
         argv = ["bicep", "build", "/acas/work/r1/main.bicep", "--diagnostics-format", "sarif"]
-        asyncio.run(_AcaSandbox(client).exec(argv, working_directory="/work", timeout=5))
+        asyncio.run(_AcasSandbox(client).exec(argv, working_directory="/work", timeout=5))
 
         assert shlex.split(client.calls[0]) == argv
 
@@ -418,13 +418,13 @@ class TestLabelValues:
     _LONG_SCOPE = "user-" + "bWljcm9zb2Z0LWVudHJhLWlkOjJiMWY5YTNjLTRkNWUtNGY2MC04YTcxLTlj"
 
     def test_short_values_are_left_readable(self):
-        from maf_sandbox_aca._backend import _label_value
+        from maf_sandbox_acas._backend import _label_value
 
         assert _label_value("scope-a") == "scope-a"
         assert _label_value("x" * 63) == "x" * 63
 
     def test_long_values_are_digested_within_the_limit(self):
-        from maf_sandbox_aca._backend import _LABEL_VALUE_MAX, _label_value
+        from maf_sandbox_acas._backend import _LABEL_VALUE_MAX, _label_value
 
         out = _label_value("y" * 200)
         assert len(out) <= _LABEL_VALUE_MAX
@@ -432,7 +432,7 @@ class TestLabelValues:
 
     def test_values_sharing_a_long_prefix_do_not_collide(self):
         """Truncation would map these together; these labels gate one user's purge."""
-        from maf_sandbox_aca._backend import _label_value
+        from maf_sandbox_acas._backend import _label_value
 
         a = "user-" + "z" * 90 + "AAAA"
         b = "user-" + "z" * 90 + "BBBB"
@@ -446,7 +446,7 @@ class TestLabelValues:
         """
         from maf_sandbox import SandboxSpec
 
-        from maf_sandbox_aca._backend import _LABEL_SCOPE, _LABEL_THREAD, _sandbox_labels
+        from maf_sandbox_acas._backend import _LABEL_SCOPE, _LABEL_THREAD, _sandbox_labels
 
         key = SandboxKey(scope=self._LONG_SCOPE, thread_id="thread-1", agent_dir="devops")
         written = _sandbox_labels(key, SandboxSpec(kind="bicep", image="i:1"))
@@ -462,7 +462,7 @@ class TestLabelValues:
     def test_every_label_a_create_sends_is_within_the_limit(self):
         from maf_sandbox import SandboxSpec
 
-        from maf_sandbox_aca._backend import _LABEL_VALUE_MAX, _sandbox_labels
+        from maf_sandbox_acas._backend import _LABEL_VALUE_MAX, _sandbox_labels
 
         key = SandboxKey(scope=self._LONG_SCOPE, thread_id="t" * 120, agent_dir="a" * 90)
         labels = _sandbox_labels(key, SandboxSpec(kind="bicep", labels={"extra": "e" * 200}))
@@ -489,7 +489,7 @@ class TestLifecycleLogging:
 
         from maf_sandbox import SandboxSpec
 
-        with caplog.at_level(logging.INFO, logger="maf_sandbox_aca"):
+        with caplog.at_level(logging.INFO, logger="maf_sandbox_acas"):
             asyncio.run(backend.acquire(key, SandboxSpec(kind="bicep", image="img:1")))
 
         assert any("sandbox reused" in r.getMessage() for r in caplog.records), caplog.text
@@ -501,7 +501,7 @@ class TestLifecycleLogging:
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
         backend._registry[(key.scope, key.thread_id, key.agent_dir)] = "sbx-1"
 
-        with caplog.at_level(logging.INFO, logger="maf_sandbox_aca"):
+        with caplog.at_level(logging.INFO, logger="maf_sandbox_acas"):
             asyncio.run(backend.dispose(key))
 
         assert any("sandbox released" in r.getMessage() for r in caplog.records), caplog.text
@@ -510,7 +510,7 @@ class TestLifecycleLogging:
         client = _FakeGroupClient(sandboxes=[_FakeSandbox("sbx-a"), _FakeSandbox("sbx-b")])
         backend = _backend_with(client)
 
-        with caplog.at_level(logging.INFO, logger="maf_sandbox_aca"):
+        with caplog.at_level(logging.INFO, logger="maf_sandbox_acas"):
             count = asyncio.run(backend.dispose_scope("scope-a", "thread-1"))
 
         assert count == 2
@@ -712,7 +712,7 @@ class TestErrorDetailAdoption:
 
         from maf_sandbox import SandboxSpec
 
-        with caplog.at_level(logging.INFO, logger="maf_sandbox_aca"):
+        with caplog.at_level(logging.INFO, logger="maf_sandbox_acas"):
             asyncio.run(backend.acquire(key, SandboxSpec(kind="bicep", image_id="pinned-id")))
 
         assert "status=400" in caplog.text, caplog.text
@@ -736,14 +736,14 @@ class TestErrorDetailAdoption:
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
         backend._registry[(key.scope, key.thread_id, key.agent_dir)] = "sbx-1"
 
-        with caplog.at_level(logging.WARNING, logger="maf_sandbox_aca"):
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox_acas"):
             asyncio.run(backend.dispose(key))
 
         assert "status=400" in caplog.text, caplog.text
         assert "principal lacks a role" in caplog.text, caplog.text
         failed = [r for r in caplog.records if "failed to delete sandbox" in r.getMessage()]
         assert len(failed) == 1
-        assert failed[0].msg == "aca backend: failed to delete sandbox %s: %s"
+        assert failed[0].msg == "acas backend: failed to delete sandbox %s: %s"
 
     def test_list_failure_logs_status_and_body(self, caplog):
         class _ListFailsGroupClient:
@@ -752,7 +752,7 @@ class TestErrorDetailAdoption:
 
         backend = _backend_with(_ListFailsGroupClient())
 
-        with caplog.at_level(logging.WARNING, logger="maf_sandbox_aca"):
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox_acas"):
             asyncio.run(backend.dispose_scope("scope-a", "thread-1"))
 
         assert "status=400" in caplog.text, caplog.text
@@ -761,7 +761,7 @@ class TestErrorDetailAdoption:
             r for r in caplog.records if "could not list sandboxes for thread" in r.getMessage()
         ]
         assert len(failed) == 1
-        assert failed[0].msg == "aca backend: could not list sandboxes for thread %s: %s"
+        assert failed[0].msg == "acas backend: could not list sandboxes for thread %s: %s"
 
     def test_the_model_facing_surface_is_unaffected(self):
         """This is a log-content-only change: `error_detail` never reaches a tool result.
@@ -772,7 +772,7 @@ class TestErrorDetailAdoption:
         """
         import inspect
 
-        from maf_sandbox_aca import _backend
+        from maf_sandbox_acas import _backend
 
         source = inspect.getsource(_backend)
         assert source.count("error_detail(") == 3, (
@@ -792,7 +792,7 @@ class TestEgressPolicy:
         `*.data.mcr.microsoft.com` (MCR's blob endpoint) depends on."""
         from maf_sandbox import SandboxSpec
 
-        backend = AcaSandboxBackend(_config())
+        backend = AcasSandboxBackend(_config())
         policy = backend._egress_policy(
             SandboxSpec(kind="t", egress_allow=("mcr.microsoft.com", "*.data.mcr.microsoft.com"))
         )
@@ -807,7 +807,7 @@ class TestEgressPolicy:
     def test_an_empty_allowlist_means_no_network(self):
         from maf_sandbox import SandboxSpec
 
-        backend = AcaSandboxBackend(_config())
+        backend = AcasSandboxBackend(_config())
         policy = backend._egress_policy(SandboxSpec(kind="t"))
 
         assert policy.default_action == "Deny"
@@ -836,12 +836,12 @@ _DISTRIBUTION_TO_IMPORT_NAME = {
 
 
 def _package_modules():
-    """Every module in the installed `maf_sandbox_aca`, as `{stem: path}`."""
+    """Every module in the installed `maf_sandbox_acas`, as `{stem: path}`."""
     import pathlib
 
-    import maf_sandbox_aca
+    import maf_sandbox_acas
 
-    root = pathlib.Path(maf_sandbox_aca.__file__).parent  # type: ignore[arg-type]
+    root = pathlib.Path(maf_sandbox_acas.__file__).parent  # type: ignore[arg-type]
     return {path.stem: path for path in root.rglob("*.py")}
 
 
@@ -864,7 +864,7 @@ def _imported_top_levels(path):
 
 
 def _declared_import_names():
-    """The import names `pyproject.toml` licenses `maf_sandbox_aca` to reach for, or `None`.
+    """The import names `pyproject.toml` licenses `maf_sandbox_acas` to reach for, or `None`.
 
     `None` means there is no `pyproject.toml` next to the installed package — an
     sdist/wheel-only install with no source tree alongside it — and the caller must skip
@@ -874,9 +874,9 @@ def _declared_import_names():
     import re
     import tomllib
 
-    import maf_sandbox_aca
+    import maf_sandbox_acas
 
-    root = pathlib.Path(maf_sandbox_aca.__file__).parents[2]  # type: ignore[arg-type]
+    root = pathlib.Path(maf_sandbox_acas.__file__).parents[2]  # type: ignore[arg-type]
     pyproject_path = root / "pyproject.toml"
     if not pyproject_path.is_file():
         return None
@@ -921,11 +921,11 @@ class TestOnlyDeclaredDependencies:
         declared = _declared_import_names()
         if declared is None:
             pytest.skip(
-                "pyproject.toml is not next to the installed maf_sandbox_aca package — "
+                "pyproject.toml is not next to the installed maf_sandbox_acas package — "
                 "this check only runs against a source checkout, not an installed-only wheel"
             )
 
-        allowed = set(sys.stdlib_module_names) | declared | {"maf_sandbox_aca"}
+        allowed = set(sys.stdlib_module_names) | declared | {"maf_sandbox_acas"}
         offenders = [
             f"{path.name}: import {name}"
             for _, path in sorted(_package_modules().items())
@@ -933,7 +933,7 @@ class TestOnlyDeclaredDependencies:
             if name not in allowed
         ]
         assert offenders == [], (
-            f"these maf_sandbox_aca modules import something outside the standard library, "
+            f"these maf_sandbox_acas modules import something outside the standard library, "
             f"the package itself, and pyproject.toml's declared dependencies: {offenders}. "
             "Either the import is a mistake, or the dependency belongs in pyproject.toml."
         )

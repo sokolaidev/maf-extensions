@@ -1,10 +1,10 @@
 """ACA Sandboxes as a sandbox backend for Microsoft Agent Framework agents.
 
 ```
-app  ->  maf_sandbox  ->  maf_sandbox_aca  ->  the sandbox
+app  ->  maf_sandbox  ->  maf_sandbox_acas  ->  the sandbox
 ```
 
-:class:`AcaSandboxBackend` implements :class:`maf_sandbox.SandboxBackend` on
+:class:`AcasSandboxBackend` implements :class:`maf_sandbox.SandboxBackend` on
 `Azure Container Apps Sandboxes <https://learn.microsoft.com/azure/container-apps/sandboxes-overview>`_:
 VM isolation, Deny-default egress with a per-spec allowlist, no ambient identity inside, and
 lifecycle policies that reclaim a billable sandbox after it goes idle.  It declares
@@ -22,14 +22,14 @@ This package imports no host application.
 
 from __future__ import annotations
 
-from ._backend import AcaSandboxBackend
-from ._config import AcaSandboxConfig
+from ._backend import AcasSandboxBackend
+from ._config import AcasSandboxConfig
 from ._images import disk_image_base, resolve_disk_image_id
 
 __all__ = [
-    "AcaSandboxBackend",
-    "AcaSandboxConfig",
-    "MafSandboxAcaExperimentalWarning",
+    "AcasSandboxBackend",
+    "AcasSandboxConfig",
+    "MafSandboxAcasExperimentalWarning",
     "disk_image_base",
     "resolve_disk_image_id",
 ]
@@ -50,18 +50,18 @@ __all__ = [
 import warnings as _warnings
 
 
-class MafSandboxAcaExperimentalWarning(UserWarning):
-    """Warning category for maf-sandbox-aca's experimental-package notice."""
+class MafSandboxAcasExperimentalWarning(UserWarning):
+    """Warning category for maf-sandbox-acas's experimental-package notice."""
 
 
 def _warn_experimental() -> None:
     message = (
-        "maf_sandbox_aca is experimental and may change or be removed in future versions "
+        "maf_sandbox_acas is experimental and may change or be removed in future versions "
         "without notice."
     )
     try:
-        _warnings.warn(message, category=MafSandboxAcaExperimentalWarning, stacklevel=2)
-    except MafSandboxAcaExperimentalWarning:
+        _warnings.warn(message, category=MafSandboxAcasExperimentalWarning, stacklevel=2)
+    except MafSandboxAcasExperimentalWarning:
         # A host running under `python -W error` (or with a blanket
         # `filterwarnings("error")` active) turns the warning above into an exception at
         # the call site. Importing a package must never fail because of an informational

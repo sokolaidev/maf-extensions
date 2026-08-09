@@ -1,8 +1,8 @@
-# `maf-sandbox-aca` scripts
+# `maf-sandbox-acas` scripts
 
 ## `import_disk_image.py`
 
-Imports the `bicep-sandbox` OCI image into an ACA sandbox group as a **disk image**. A sandbox boots from a disk image registered in the group, which is a different namespace from the registry the image was pushed to, so the image has to be imported once before the app can resolve it by reference at runtime (`maf_sandbox_aca.resolve_disk_image_id`). It is idempotent — an image already imported from the same reference is reported and reused, not duplicated — and on success it prints the resolved disk-image id, so you can also use it to populate `BICEP_ACA_SANDBOX_DISK_IMAGE_ID` if you would rather pin the id than resolve the reference.
+Imports the `bicep-sandbox` OCI image into an ACA sandbox group as a **disk image**. A sandbox boots from a disk image registered in the group, which is a different namespace from the registry the image was pushed to, so the image has to be imported once before the app can resolve it by reference at runtime (`maf_sandbox_acas.resolve_disk_image_id`). It is idempotent — an image already imported from the same reference is reported and reused, not duplicated — and on success it prints the resolved disk-image id, so you can also use it to populate `BICEP_ACAS_SANDBOX_DISK_IMAGE_ID` if you would rather pin the id than resolve the reference.
 
 The deploy workflow no longer runs this — it uses the vendor `aca` CLI (`aca sandboxgroup disk create --identity …`), which needs no Python toolchain and nothing from this repository. This script is the equivalent for anyone who would rather not install that CLI.
 
@@ -11,10 +11,10 @@ The deploy workflow no longer runs this — it uses the vendor `aca` CLI (`aca s
 One line, so it pastes cleanly into either shell (a wrapped form needs `\` per line in `bash` but a backtick `` ` `` in PowerShell — mixing them up is the usual cause of a "missing expression" or "failed to spawn" error):
 
 ```bash
-uv run --package maf-sandbox-aca python packages/maf-sandbox-aca/scripts/import_disk_image.py --endpoint https://management.<region>.azuredevcompute.io --subscription <sub-id> --resource-group <sandbox-group-rg> --group <sandbox-group-name> --image <name>.azurecr.io/bicep-sandbox:<tag> --identity <managed-identity-resource-id>
+uv run --package maf-sandbox-acas python packages/maf-sandbox-acas/scripts/import_disk_image.py --endpoint https://management.<region>.azuredevcompute.io --subscription <sub-id> --resource-group <sandbox-group-rg> --group <sandbox-group-name> --image <name>.azurecr.io/bicep-sandbox:<tag> --identity <managed-identity-resource-id>
 ```
 
-`--package maf-sandbox-aca` keeps the environment to this distribution's own closure rather than the host workspace's, because nothing here needs the host.
+`--package maf-sandbox-acas` keeps the environment to this distribution's own closure rather than the host workspace's, because nothing here needs the host.
 
 | Argument | What it is |
 |---|---|

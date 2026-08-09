@@ -7,7 +7,7 @@ This package is not affiliated with, endorsed by, or a product of Microsoft — 
 Sandboxed Bicep validation as a Microsoft Agent Framework tool: `bicep_validate` writes the files an agent authored into a sandbox, runs `bicep build` and `bicep lint` there, and returns the compiler's SARIF diagnostics as structured text — T2 (compiler truth) instead of T0 (the model checking its own work).
 
 ```
-app  ->  maf_sandbox  ->  a backend (maf-sandbox-aca, ...)  ->  this workload
+app  ->  maf_sandbox  ->  a backend (maf-sandbox-acas, ...)  ->  this workload
 ```
 
 This package is a sandbox **kind** in the sense of [`maf-sandbox`](https://github.com/sokolaidev/maf-extensions/tree/main/packages/maf-sandbox)'s protocol. It contains **no Azure import and no sandbox lifecycle code**; it asks a `SandboxRouter` for a sandbox and gets back `write_file` and `exec`, so the same tool runs unchanged against ACA Sandboxes, a local Docker container or an in-process fake. Tests enforce both boundaries: one scans this package's sources for any Azure import, the other for any import outside what its manifest declares.
@@ -41,7 +41,7 @@ Its companion artefacts live outside this package, because a container image and
 
 ## Provenance
 
-Split out of `maf-sandbox-aca` (which keeps the ACA backend and nothing else) so this workload's dependency set states its portability: `maf-sandbox` + `agent-framework-core`, nothing more. Extracted from a production agent application, where it runs against real infrastructure code an agent wrote — which is where every behaviour documented above was learned.
+Split out of `maf-sandbox-acas` (which keeps the ACAS backend and nothing else) so this workload's dependency set states its portability: `maf-sandbox` + `agent-framework-core`, nothing more. Extracted from a production agent application, where it runs against real infrastructure code an agent wrote — which is where every behaviour documented above was learned.
 
 ---
 

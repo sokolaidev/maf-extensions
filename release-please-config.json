@@ -29,13 +29,13 @@
         }
       ]
     },
-    "packages/maf-sandbox-aca": {
-      "package-name": "maf-sandbox-aca",
+    "packages/maf-sandbox-acas": {
+      "package-name": "maf-sandbox-acas",
       "extra-files": [
         {
           "type": "toml",
           "path": "/uv.lock",
-          "jsonpath": "$.package[?(@.name.value=='maf-sandbox-aca')].version"
+          "jsonpath": "$.package[?(@.name.value=='maf-sandbox-acas')].version"
         }
       ]
     },

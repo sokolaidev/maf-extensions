@@ -1,8 +1,8 @@
 """The publish-time experimental notice: emitted once, suppressible, `-W error`-safe.
 
-New file (not the existing `test_aca_backend.py`) so this doesn't collide with that file's
+New file (not the existing `test_acas_backend.py`) so this doesn't collide with that file's
 concurrent edits elsewhere in the same release. Covers only the notice added to
-`maf_sandbox_aca/__init__.py` — behavior of the backend itself is that file's job.
+`maf_sandbox_acas/__init__.py` — behavior of the backend itself is that file's job.
 """
 
 from __future__ import annotations
@@ -14,23 +14,25 @@ import warnings
 
 import pytest
 
-import maf_sandbox_aca
+import maf_sandbox_acas
 
 
 class TestExperimentalWarningCategory:
     """The category itself: a package-local `UserWarning` subclass, not shared."""
 
     def test_is_a_user_warning_not_a_future_or_deprecation_warning(self):
-        assert issubclass(maf_sandbox_aca.MafSandboxAcaExperimentalWarning, UserWarning)
-        assert not issubclass(maf_sandbox_aca.MafSandboxAcaExperimentalWarning, DeprecationWarning)
-        assert not issubclass(maf_sandbox_aca.MafSandboxAcaExperimentalWarning, FutureWarning)
+        assert issubclass(maf_sandbox_acas.MafSandboxAcasExperimentalWarning, UserWarning)
+        assert not issubclass(
+            maf_sandbox_acas.MafSandboxAcasExperimentalWarning, DeprecationWarning
+        )
+        assert not issubclass(maf_sandbox_acas.MafSandboxAcasExperimentalWarning, FutureWarning)
 
 
 class TestExperimentalWarningEmission:
     """`importlib.reload` re-runs the module body, forcing a fresh emission to test against.
 
     The category class is also redefined on every reload — a `class` statement always
-    builds a fresh type object — so a `maf_sandbox_aca.MafSandboxAcaExperimentalWarning`
+    builds a fresh type object — so a `maf_sandbox_acas.MafSandboxAcasExperimentalWarning`
     reference captured *before* `pytest.warns(...)` enters its block would already be stale
     by the time the reloaded module's `class` statement replaces the module attribute and
     the new class is what `warnings.warn` actually raises. Matching on the stable
@@ -38,8 +40,8 @@ class TestExperimentalWarningEmission:
     """
 
     def test_emitted_by_default_on_import(self):
-        with pytest.warns(UserWarning, match=r"maf_sandbox_aca is experimental"):
-            importlib.reload(maf_sandbox_aca)
+        with pytest.warns(UserWarning, match=r"maf_sandbox_acas is experimental"):
+            importlib.reload(maf_sandbox_acas)
 
     def test_suppressible_via_filterwarnings(self):
         """Exercises `filterwarnings(category=...)` directly, not through another reload.
@@ -51,12 +53,12 @@ class TestExperimentalWarningEmission:
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             warnings.filterwarnings(
-                "ignore", category=maf_sandbox_aca.MafSandboxAcaExperimentalWarning
+                "ignore", category=maf_sandbox_acas.MafSandboxAcasExperimentalWarning
             )
             warnings.warn(
-                "maf_sandbox_aca is experimental and may change or be removed in future "
+                "maf_sandbox_acas is experimental and may change or be removed in future "
                 "versions without notice.",
-                category=maf_sandbox_aca.MafSandboxAcaExperimentalWarning,
+                category=maf_sandbox_acas.MafSandboxAcasExperimentalWarning,
             )
         assert caught == []
 
@@ -66,7 +68,7 @@ class TestImportSurvivesDashWError:
 
     def test_import_exits_zero_under_dash_w_error(self):
         result = subprocess.run(
-            [sys.executable, "-W", "error", "-c", "import maf_sandbox_aca"],
+            [sys.executable, "-W", "error", "-c", "import maf_sandbox_acas"],
             capture_output=True,
             text=True,
             timeout=30,

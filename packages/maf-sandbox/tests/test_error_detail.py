@@ -1,7 +1,7 @@
 """Tests for `maf_sandbox.error_detail`.
 
 Moved here from the bicep kind, where it started life as `_tool.py`'s private
-``_error_detail`` — the ACA backend has the identical gap (a bare ``%s`` of the exception,
+``_error_detail`` — the ACAS backend has the identical gap (a bare ``%s`` of the exception,
 dropping the azure-core response body) and duck-typing means neither caller has to import
 Azure to use it.
 """

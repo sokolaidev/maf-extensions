@@ -2,7 +2,7 @@
 
 This is the `app` box of the layering the whole repository is organised around::
 
-    app  ->  maf_sandbox (router)  ->  maf_sandbox_aca  ->  the sandbox
+    app  ->  maf_sandbox (router)  ->  maf_sandbox_acas  ->  the sandbox
                   ^ maf_sandbox_bicep calls the router
 
 Deliberately the smallest thing that is still real: no chat loop, no multi-turn
@@ -32,7 +32,7 @@ from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
 from maf_sandbox import SandboxRouter
 from maf_sandbox.maf import make_workspace_context
-from maf_sandbox_aca import AcaSandboxBackend, AcaSandboxConfig
+from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
 from maf_sandbox_bicep import make_bicep_tools
 
 # A sandbox is keyed by (scope, thread_id, agent_dir).  A host reads the first two
@@ -50,11 +50,11 @@ BICEP_FILE = "main.bicep"
 #: `repository:tag` (for example `bicep-sandbox:0.46.1`); the registry above
 #: qualifies it into a full reference.
 SANDBOX_VARS = (
-    "ACA_SANDBOX_ENDPOINT",
-    "ACA_SANDBOX_SUBSCRIPTION_ID",
-    "ACA_SANDBOX_RESOURCE_GROUP",
-    "ACA_SANDBOX_GROUP",
-    "ACA_SANDBOX_REGISTRY",
+    "ACAS_SANDBOX_ENDPOINT",
+    "ACAS_SANDBOX_SUBSCRIPTION_ID",
+    "ACAS_SANDBOX_RESOURCE_GROUP",
+    "ACAS_SANDBOX_GROUP",
+    "ACAS_SANDBOX_REGISTRY",
     "BICEP_SANDBOX_IMAGE",
 )
 
@@ -111,17 +111,17 @@ async def run() -> int:
     if env is None:
         return 2
 
-    backend = AcaSandboxBackend(
-        AcaSandboxConfig(
-            endpoint=env["ACA_SANDBOX_ENDPOINT"],
-            subscription_id=env["ACA_SANDBOX_SUBSCRIPTION_ID"],
-            resource_group=env["ACA_SANDBOX_RESOURCE_GROUP"],
-            sandbox_group=env["ACA_SANDBOX_GROUP"],
-            registry=env["ACA_SANDBOX_REGISTRY"],
+    backend = AcasSandboxBackend(
+        AcasSandboxConfig(
+            endpoint=env["ACAS_SANDBOX_ENDPOINT"],
+            subscription_id=env["ACAS_SANDBOX_SUBSCRIPTION_ID"],
+            resource_group=env["ACAS_SANDBOX_RESOURCE_GROUP"],
+            sandbox_group=env["ACAS_SANDBOX_GROUP"],
+            registry=env["ACAS_SANDBOX_REGISTRY"],
         )
     )
 
-    # `deployed=True` is permitted here for one reason: `AcaSandboxBackend`
+    # `deployed=True` is permitted here for one reason: `AcasSandboxBackend`
     # declares `Isolation.VM`, and `DEPLOYED_ISOLATION` is exactly {VM}.  Swap in
     # a container- or process-isolated backend and this line raises
     # `SandboxBackendNotPermitted` — at construction, not at first tool call, so

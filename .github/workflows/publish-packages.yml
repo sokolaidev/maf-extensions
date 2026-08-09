@@ -6,7 +6,7 @@ on:
   push:
     tags:
       - "maf-sandbox-v*"
-      - "maf-sandbox-aca-v*"
+      - "maf-sandbox-acas-v*"
       - "maf-sandbox-bicep-v*"
       - "maf-sandbox-wslc-v*"
   # Rehearsal path: publish any package to TestPyPI without cutting a real tag.
@@ -18,7 +18,7 @@ on:
         type: choice
         options:
           - maf-sandbox
-          - maf-sandbox-aca
+          - maf-sandbox-acas
           - maf-sandbox-bicep
           - maf-sandbox-wslc
       target:
@@ -290,7 +290,7 @@ jobs:
     needs: [build, publish]
     if: >-
       needs.build.outputs.target == 'pypi'
-      && contains(fromJSON('["maf-sandbox", "maf-sandbox-aca", "maf-sandbox-bicep"]'), needs.build.outputs.package)
+      && contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-bicep"]'), needs.build.outputs.package)
     uses: ./.github/workflows/verify-live.yml
     permissions:
       # Passed down to the called workflow, which mints the Azure OIDC token.
