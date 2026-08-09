@@ -4,7 +4,7 @@
 
 Imports the `bicep-sandbox` OCI image into an ACA sandbox group as a **disk image**. A sandbox boots from a disk image registered in the group, which is a different namespace from the registry the image was pushed to, so the image has to be imported once before the app can resolve it by reference at runtime (`maf_sandbox_acas.resolve_disk_image_id`). It is idempotent — an image already imported from the same reference is reported and reused, not duplicated — and on success it prints the resolved disk-image id, so you can also use it to populate `BICEP_ACAS_SANDBOX_DISK_IMAGE_ID` if you would rather pin the id than resolve the reference.
 
-The deploy workflow no longer runs this — it uses the vendor `aca` CLI (`aca sandboxgroup disk create --identity …`), which needs no Python toolchain and nothing from this repository. This script is the equivalent for anyone who would rather not install that CLI.
+A CI deploy is better served by the vendor `aca` CLI (`aca sandboxgroup disk create --identity …`), which needs no Python toolchain and nothing from this repository — [`images/bicep-sandbox`](https://github.com/sokolaidev/maf-extensions/tree/main/images/bicep-sandbox) has that command line, alongside the build and push it follows. This script is the equivalent for anyone who would rather not install that CLI, and it takes its scope as explicit arguments rather than from the environment.
 
 ### Usage
 

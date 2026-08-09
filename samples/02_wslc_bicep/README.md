@@ -18,10 +18,10 @@ Two things are genuinely weaker here, and neither is hidden.
 ## Prerequisites
 
 - **Windows with WSL 2.9.3 or later.** `wslc` is WSL's container CLI and ships with it; `wsl --version` reports the version, `wslc --version` confirms the CLI is on `PATH`. Nothing else needs installing — no Docker, no daemon, no login.
-- **The sandbox image, built from this directory.** It is a two-layer image: the Bicep CLI, pinned, on `mcr.microsoft.com/azurelinux/base/core:3.0`, plus [`bicepconfig.json`](bicepconfig.json) at `/acas/work`.
+- **The sandbox image**, built from [`images/bicep-sandbox`](../../images/bicep-sandbox/) — the same image sample 01 runs in Azure, two layers on `mcr.microsoft.com/azurelinux/base/core:3.0`: the Bicep CLI, pinned, plus `bicepconfig.json` at `/acas/work`. Run this from the repository root:
 
   ```bash
-  wslc build -t bicep-sandbox:local samples/02_wslc_bicep
+  wslc build -t bicep-sandbox:local images/bicep-sandbox
   ```
 
 - **An OpenAI-compatible endpoint** — api.openai.com, or a local server that speaks the same protocol. The sample deliberately uses the chat-completions API, the one surface local servers implement well; their newer-API support is often partial in ways that surface as an empty final answer. The model needs to be able to call a tool; beyond that this sample asks nothing unusual of it.
@@ -71,14 +71,14 @@ Disposed 1 sandbox(es).
 
 Three diagnostics, the same three sample 01 gets from a microVM in Azure. Sample 01's README reads them closely and that reading applies here unchanged; the short version is that `no-unused-params` printing as `[error]` rather than its built-in `[warning]` is the visible proof that `bicepconfig.json` was discovered, `BCP035` really is a warning in current Bicep, and the day count in the last one climbs on its own.
 
-The only difference is where the config came from. Sample 01's image is built elsewhere; here it is [`bicepconfig.json`](bicepconfig.json) in this directory, copied by the [`Dockerfile`](Dockerfile) to `/acas/work` — the work-dir root `maf-sandbox-bicep` fixes in its spec, and the only place Bicep will find it, because Bicep resolves that file solely by walking up from the source it is compiling.
+There is not even a difference in where the config came from: both samples run [the same image](../../images/bicep-sandbox/), and its `bicepconfig.json` sits at `/acas/work` — the work-dir root `maf-sandbox-bicep` fixes in its spec, and the only place Bicep will find it, because Bicep resolves that file solely by walking up from the source it is compiling.
 
 ## Troubleshooting
 
 **The image is not found** — build it, from the repository root:
 
 ```bash
-wslc build -t bicep-sandbox:local samples/02_wslc_bicep
+wslc build -t bicep-sandbox:local images/bicep-sandbox
 ```
 
 **`wslc` is not found** — WSL is older than 2.9.3, or is not installed. `wsl --version` reports it; `wsl --update` moves it forward. There is no separate package to install: the CLI is part of WSL.

@@ -1,16 +1,16 @@
 """Import the bicep-sandbox OCI image into an ACA sandbox group as a disk image.
 
-``deploy-bicep-sandbox.yml`` builds and pushes ``bicep-sandbox:<version>`` to the sandbox
-stack's **own** registry, but a sandbox boots from a *disk image* registered in the sandbox
-group, which is a different namespace.  This script closes that gap: it imports the pushed
-image once, so the host application can then resolve it by reference at runtime
+A deploy builds and pushes ``bicep-sandbox:<version>`` to the sandbox stack's **own**
+registry, but a sandbox boots from a *disk image* registered in the sandbox group, which is
+a different namespace.  This script closes that gap: it imports the pushed image once, so
+the host application can then resolve it by reference at runtime
 (:func:`maf_sandbox_acas.resolve_disk_image_id`).
 
 Importing is deliberately kept out of the request path — it is slow, it is a write against
 the group, and it needs registry credentials that the application itself has no reason to
 hold.
 
-The **deploy workflow no longer runs this**: it uses the vendor's ``aca`` CLI
+A CI deploy is better served by the vendor's ``aca`` CLI
 (``aca sandboxgroup disk create --identity …``), which needs no Python toolchain and nothing
 from this repository.  This script stays as the equivalent for anyone who would rather not
 install the CLI, and because its idempotency check shares
@@ -42,7 +42,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--identity",
         default=None,
-        help="Managed identity resource id with AcrPull, for a private registry.",
+        help="Managed identity resource id that can pull the image, for a private registry.",
     )
     return parser.parse_args(argv)
 
