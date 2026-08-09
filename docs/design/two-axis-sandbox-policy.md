@@ -14,7 +14,7 @@ class Isolation(StrEnum):                     # str-valued: serializes and compa
     CONTAINER = "container"                   # shared-kernel namespaces/cgroups
     HARDENED_CONTAINER = "hardened_container" # userspace-kernel syscall interception (gVisor-class)
     MICROVM = "microvm"                       # hypervisor boundary, minimal or no guest OS, host-adjacent
-    VM = "vm"                                 # hypervisor boundary + no ambient identity reachable (remote/full guest)
+    VM = "vm"                                 # dedicated, full VM on remote infrastructure — stricter than the standard requires
 
 ISOLATION_RANK: Mapping[Isolation, int] = {
     level: rank
@@ -29,7 +29,7 @@ def meets_floor(declared: Isolation, floor: Isolation) -> bool:
 
 - `hardened_container` sits between `container` and `microvm`: syscall interception in a userspace kernel is genuinely stronger than namespaces and genuinely weaker than a hardware boundary, and giving it its own rung makes admitting it somewhere an explicit policy value rather than a backend rounding itself up.
 - `microvm` covers Kata, Firecracker, Hyperlight-class embedded VMMs, Docker Sandbox — a real hypervisor boundary with a minimal or absent guest OS. **This rung is the default floor, and it is a defined standard, not a self-assigned label — next section.**
-- `vm` stays above `microvm` as remote, dedicated infrastructure with a full guest: an escape lands on isolated infrastructure rather than on the machine (or in the very process) running the host application. Keeping it distinct keeps the ladder a total order, which `min` comparison needs, and preserves a stricter posture for hosts that want one.
+- `vm` stays above `microvm` as a dedicated, full VM on remote infrastructure — a guest provisioned per workload or per tenant, where an escape lands on machinery that exists only for that purpose. Keeping it distinct keeps the ladder a total order, which `min` comparison needs, and preserves a stricter posture for hosts that want one. **Classification note: ACA Sandboxes declare `microvm` on this ladder.** They are hardware-isolated micro-VMs; their current `Isolation.VM` declaration is an artifact of the three-rung ladder, where `vm` was the only hypervisor rung, and the reclassification rides the same `feat!` release that introduces the ladder.
 - Unknown values refuse, and the enum is the mechanism: backends declare `-> Isolation`, not `-> str`, and at every deserialization boundary the value crosses through `Isolation(raw)`, whose `ValueError` on an unknown *is* the refusal.
 
 ## The micro-VM standard
@@ -41,7 +41,7 @@ Production's floor is only as strong as the weakest backend allowed to claim the
 3. **Confinable egress**: declared `Egress.ALLOWLIST` or `Egress.CLOSED`. A backend that cannot confine egress is capped below `microvm` outright.
 4. **An explicit guest↔host surface.** The only channels are the declared ones — files in, results out, declared host tools. No host filesystem mounts beyond declared ones, no host socket passthrough, no shared writable state beyond the backend's own transport.
 
-Consequences: gVisor-class backends cap at `hardened_container` by definition — that is the standard working, not a gap; an in-process interpreter with no I/O stays a local-floor backend however honest its construction; Kata qualifies **only as configured** (per-pod VM runtime class plus the metadata/link-local block), so conformance is a property of a backend package, never of Kata in the abstract; ACA Sandboxes sit at `vm` and pass any `microvm` floor trivially.
+Consequences: gVisor-class backends cap at `hardened_container` by definition — that is the standard working, not a gap; an in-process interpreter with no I/O stays a local-floor backend however honest its construction; Kata qualifies **only as configured** (per-pod VM runtime class plus the metadata/link-local block), so conformance is a property of a backend package, never of Kata in the abstract; ACA Sandboxes are the reference conformant backend at `microvm` itself — a hardware virtualization boundary, no ambient identity (the control-plane credential never enters the guest), Deny-default allowlist egress, a declared surface — and remote into the bargain, which is more than the standard asks.
 
 Enforcement is layered: the standard is normative text, and the declarations (`isolation`, `egress`, `capabilities`) are the machine-readable claims the router checks. An in-sandbox conformance probe suite — attempting exactly what the standard forbids (metadata-endpoint fetch, link-local and private-range reach, host-path reads, host-socket presence, undeclared egress with an allowed-host positive control, plus authority probes) — is designed but **parked**; when picked up, its teeth are a release gate on packages claiming `microvm` and a host-runnable entry point for deploy-time verification.
 
@@ -49,14 +49,14 @@ Enforcement is layered: the standard is normative text, and the declarations (`i
 
 ```python
 router = SandboxRouter(backends)                                  # default floor: MICROVM — the production posture
-router = SandboxRouter(backends, min_isolation=Isolation.VM)      # stricter: remote dedicated infrastructure only
+router = SandboxRouter(backends, min_isolation=Isolation.VM)      # stricter: dedicated full-VM infrastructure only
 router = SandboxRouter(backends, min_isolation=Isolation.PROCESS) # local machine, opted all the way down
 ```
 
 - **The default is `MICROVM`.** A host that configures nothing gets the production posture; a developer machine *opts down explicitly*; there is nothing to forget. Strictly safer than the current default (`deployed=False`, everything permitted).
 - **A spec may raise the floor, never lower it**: `SandboxSpec.min_isolation` (default `None` = no opinion); effective floor = `max(host, spec)`. The two owners stay separate: how strong the boundary must be *here* is the host's policy; "this kind refuses to run below `microvm` anywhere" is a workload property.
 - **Refusal stays at construction/attach time** (`SandboxBackendNotPermitted`), same exception, same fail-loud rationale.
-- **Migration**: `deployed=True` maps to `min_isolation=Isolation.MICROVM` — a host using ACA Sandboxes behaves identically. The parameter is removed rather than deprecated (0.x, `feat!`).
+- **Migration**: `deployed=True` maps to `min_isolation=Isolation.MICROVM` — a host using ACA Sandboxes behaves identically, and in the same release the ACAS backend's declaration becomes `Isolation.MICROVM`, its truthful rung on the five-level ladder. The parameter is removed rather than deprecated (0.x, `feat!`).
 
 ## Axis 2 — capabilities, declared and matched
 
@@ -119,7 +119,7 @@ Every value the package accepts or emits is a `StrEnum` member or named constant
 
 | System | Fits as | Isolation | Capabilities | Egress |
 |---|---|---|---|---|
-| ACA Sandboxes (`maf-sandbox-acas`) | backend (shipped) | `vm` | `EXEC, FILES_IN` (+`FILES_OUT` when built; +`ATTACHED_IDENTITY`) | `allowlist` |
+| ACA Sandboxes (`maf-sandbox-acas`) | backend (shipped) | `microvm` (reclassified from the three-rung ladder's `vm`) | `EXEC, FILES_IN` (+`FILES_OUT` when built; +`ATTACHED_IDENTITY`) | `allowlist` |
 | `wslc` (`maf-sandbox-wslc`) | backend (shipped) | `container` | `EXEC, FILES_IN` | `allowlist` with proxy image, else `closed` |
 | `InProcessSandboxBackend` (`maf_sandbox.testing`) | backend (shipped) | `process` (overridable) | anything a test claims | overridable |
 | Monty (`agent-framework-monty`, re-seamed) | backend | `process` | `RUN_CODE, HOST_TOOLS` — no `EXEC`, no I/O by construction | `closed` |
@@ -168,7 +168,7 @@ def codeact_spec(image: str) -> SandboxSpec:
 **The router, per environment — the floor is the whole deployment story:**
 
 ```python
-prod  = SandboxRouter([acas_backend])                                    # default floor MICROVM; ACAS at VM passes
+prod  = SandboxRouter([acas_backend])                                    # default floor MICROVM; ACAS conforms at the floor
 local = SandboxRouter([wslc_backend], min_isolation=Isolation.CONTAINER) # a developer opting down, explicitly
 wired = SandboxRouter([wslc_backend])                                    # raises SandboxBackendNotPermitted at
                                                                          # construction: container < microvm floor
