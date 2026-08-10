@@ -41,7 +41,7 @@ One consequence decides the API shape: **globs require enumeration.** `*.png` ca
 | What a kind must know | The names of its outputs, in advance | Nothing |
 | ACAS | Native (`stat_file`, `read_file`) | Native (`list_files`) |
 | Docker | Native (`HEAD /archive`, `docker cp`) | Not without an in-image shell |
-| wslc | Native (tar-out; size and type from the tar header) | Not without an in-image shell |
+| wslc | **Not served** — `cp` has no container-to-stdout form, so there is no tar to read a header from ([#125](https://github.com/sokolaidev/maf-extensions/issues/125)) | Not without an in-image shell |
 | Who needs it | Every artifact-producing kind | Kinds whose output names are unpredictable — the CodeAct shape |
 
 ## The protocol
@@ -174,7 +174,7 @@ Only regular files are ever read. A symlink is refused whether or not its target
 | Backend | Mechanism | Strength |
 |---|---|---|
 | Docker | `HEAD /archive` returns a Go `ModeSymlink` bit **and** an explicit `linkTarget`; `docker cp` without `-L` additionally tars the link *entry* rather than the target's bytes | Strongest — two independent mechanisms, both verified against a live engine |
-| wslc | Tar-out: the entry type bit | Structural |
+| wslc | **None available.** `cp` reports success and writes a **0-byte file** for a symlink — neither preserved, nor followed, nor refused, and indistinguishable from a legitimately empty artifact | Cannot meet the rule; the backend does not serve `FILES_OUT` |
 | ACAS | `stat_file` returns `is_directory` (a two-way split) and `mode: str \| None`, so the type must be parsed out of the mode string | Weakest — **fail closed when `mode` is `None`** |
 
 The reference backend is the weak one, and its defence is a parse of an undocumented preview-SDK field. That is acceptable only stated plainly, and it should be raised upstream: `FileInfo` ought to carry the entry type as a field rather than leaving it in a mode string.
@@ -296,7 +296,7 @@ One further hazard, which is the same shape as the bug this section fixes: `sand
 - **Declare it honestly or not at all.** There is no router-side emulation and there must not be.
 - **Docker** implements stat as `HEAD /containers/{id}/archive` (`X-Docker-Container-Path-Stat`: name, size, Go-mode, mtime, `linkTarget`) and reads as `docker cp <name>:<path> -`, a tar on stdout that works against an image with no shell. It does **not** declare `FILES_LIST`.
 - **ACAS** reads natively and is the only backend that can serve `FILES_LIST`. Its obligation is the symlink `mode` parse above, failing closed on `None`.
-- **wslc** should do **tar-out**, the reverse of the one-entry tar on stdin it already writes. Note the prerequisite: its single runner seam returns `str` and decodes with `errors="replace"`, so a tar stream would come back **silently mangled**. `_WslcResult`, `_WslcRunner` and their fakes must be widened to bytes before tar-out is attempted.
+- **wslc does not serve `FILES_OUT`, and the tar-out plan this document used to describe does not exist.** `wslc container cp` has three forms — local→container, container→local, and stdin→container — and **no container→stdout form**, so there is no reverse of the one-entry tar it writes on the way in. Container→local writes a raw file to a host path, with no tar header and therefore no type or size ahead of the content. Worse, a symlink source exits 0, writes nothing to stderr, and produces a 0-byte file. Serving the capability here would mean an `exec`-based `stat` before every read, which requires the image to contain a shell — the dependency the `FILES_LIST` split exists to avoid. Deferred in [#125](https://github.com/sokolaidev/maf-extensions/issues/125); filed upstream as [microsoft/WSL#41309](https://github.com/microsoft/WSL/issues/41309) (the symlink bug) and [microsoft/WSL#41310](https://github.com/microsoft/WSL/issues/41310) (the missing stdout form), either of which would reopen the question.
 - **base64-over-exec is opt-in convenience, never the contract.** It depends on `base64` and a shell existing in the image, which the native copy paths do not. If it ships it is **one reviewed implementation in `maf_sandbox`**, never a parse per backend, and it carries its own lower maxima.
 - **The micro-VM standard gains a clause.** For a backend claiming `microvm` *and* `FILES_OUT`, the declared channel is reads confined to the working directory with non-regular entries refused.
 - **`maf_sandbox.testing` grows the same surface.** The in-process fake implements stat, read and list, and declares both capabilities configurably, or no kind can be tested.
@@ -320,7 +320,7 @@ def diagram_sandbox_spec(image: str | None = None) -> SandboxSpec:
     )
 ```
 
-The DOT source goes in through `FILES_IN` as file content, so no shell sees model text and the `exec` stays a fixed argv; `egress_allow=()` holds because rendering is computation; no `FILES_LIST`, because the kind names its own output — which is why it runs unchanged on ACAS, Docker and wslc; `max_files=1` is a workload property, since one invocation renders one graph; `required=False` because `dot` failing on malformed input is a diagnostic the model should act on, not a transport error.
+The DOT source goes in through `FILES_IN` as file content, so no shell sees model text and the `exec` stays a fixed argv; `egress_allow=()` holds because rendering is computation; no `FILES_LIST`, because the kind names its own output — which is why it runs unchanged on every backend that serves `FILES_OUT` at all, rather than only on the one with the richest file API; `max_files=1` is a workload property, since one invocation renders one graph; `required=False` because `dot` failing on malformed input is a diagnostic the model should act on, not a transport error.
 
 ## Rollout
 
@@ -329,7 +329,7 @@ The DOT source goes in through `FILES_IN` as file content, so no shell sees mode
 3. **Docker, first and as the acceptance gate.** The backend declares `FILES_OUT` from the day it exists, and its e2e is what proves the protocol: write, exec, stat, read back, cap refusal, symlink refusal. It goes first because it is the only suite that runs on a GitHub runner with no subscription, no login and no disk-image import — and the only backend a contributor can exercise on the machine in front of them.
 4. **ACAS** — natively, including the symlink `mode` parse. It remains the *reference* for shape, since it is the only backend that can serve `FILES_LIST`; it follows Docker because verifying it requires infrastructure a pull request cannot assume.
 5. **The diagram kind and `samples/07`** — end to end.
-6. **wslc** — the bytes seam first, then tar-out.
+6. ~~**wslc** — the bytes seam first, then tar-out.~~ **Deferred** ([#125](https://github.com/sokolaidev/maf-extensions/issues/125)): there is no tar-out to reach. See the backend section above; the two upstream gaps that would reopen it are [microsoft/WSL#41309](https://github.com/microsoft/WSL/issues/41309) and [microsoft/WSL#41310](https://github.com/microsoft/WSL/issues/41310).
 
 Reference and gate are deliberately different roles. ACAS defines what the surface should look like; Docker decides whether it actually works, because it is the one that runs everywhere. Splitting them keeps the richest backend from quietly setting requirements the portable ones cannot meet — the mistake the `FILES_LIST` split already corrected once.
 
