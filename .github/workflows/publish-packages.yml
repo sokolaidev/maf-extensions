@@ -282,17 +282,17 @@ jobs:
               --verify-tag
           fi
 
-  # The happy-path half of issue #33: once a real publish lands, run samples/01_acas_bicep
-  # against a live sandbox at the just-released versions, proving router, backend, image and
-  # workload agree. Gated to the packages that sample exercises — a maf-sandbox-wslc release
-  # does not touch it, so it creates no billable sandbox. A batch releasing more than one of these
-  # runs it once per package; each run is independent and safe.
+  # The happy-path half of issue #33: once a real publish lands, run samples/01_acas_bicep and
+  # samples/03_acas_codeact against a live sandbox at the just-released versions, proving
+  # router, backend, image and workload agree. Gated to the packages either sample exercises —
+  # a maf-sandbox-wslc release does not touch either, so it creates no billable sandbox. A batch
+  # releasing more than one of these runs it once per package; each run is independent and safe.
   verify:
     name: Verify against a live sandbox
     needs: [build, publish]
     if: >-
       needs.build.outputs.target == 'pypi'
-      && contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-bicep"]'), needs.build.outputs.package)
+      && contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-bicep", "maf-sandbox-codeact"]'), needs.build.outputs.package)
     uses: ./.github/workflows/verify-live.yml
     permissions:
       # Passed down to the called workflow, which mints the Azure OIDC token.
