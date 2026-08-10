@@ -4,6 +4,11 @@ All notable changes to `maf-sandbox-bicep` are documented here. The format follo
 
 ## [0.5.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.4.0...maf-sandbox-bicep-v0.5.0) (2026-08-10)
 
+> **Correction, added after the release.** This version contains **no functional change to `maf-sandbox-bicep`**. Its entire diff against 0.4.0 is a one-word comment: a parameter named in a code comment was renamed to match its new spelling. There is no breaking change and no feature here, and upgrading from 0.4.0 requires nothing.
+>
+> The entries below are accurate about the commit and misleading about this package. [#113](https://github.com/sokolaidev/maf-extensions/pull/113) implemented the `FILES_OUT` surface in **`maf-sandbox`**, and that is where its breaking change and its feature live — released as `maf-sandbox` 0.6.0. The comment fix rode along in the same commit, and release-please attributes a commit to every package whose files it touches, so this package inherited the commit's type and its changelog text.
+>
+> Left in place rather than deleted: the generated entries are the honest record of what release-please saw, and removing them would hide why this version exists at all.
 
 ### ⚠ BREAKING CHANGES
 
