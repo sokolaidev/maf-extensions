@@ -69,10 +69,12 @@ python agent.py
 The first call is slow — the sandbox is created and booted before the interpreter runs. `agent.py` prints only the model's reply and the disposal line — never `execute_code`'s own result — so what you see looks something like this:
 
 ```
-The program printed 354224848179261915075.
+354224848179261915075
 
 Disposed 1 sandbox(es).
 ```
+
+That block is one real run. This model answered with the number alone; another will wrap it in a sentence. What does not vary is the number and the disposal line.
 
 The wording around the number is the model's and varies run to run; the model is instructed to report the tool's answer verbatim, not to paraphrase, round, or recompute it. What tells you the number came from a real run rather than the model reciting a well-known sequence is the line below it: `Disposed 1 sandbox(es).` only prints once `execute_code` has actually created and torn down a sandbox — a `Disposed 0` would mean the model answered without running anything.
 
