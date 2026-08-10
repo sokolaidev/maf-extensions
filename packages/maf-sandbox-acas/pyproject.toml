@@ -39,7 +39,7 @@ dependencies = [
     # before 1.0.0 may include breaking changes (see its CHANGELOG). Moving either end of
     # this range has an order to it — see RELEASING.md.
     # Widened to admit the 0.5.0 this repo is about to release (RELEASING.md step 1); this package imports Capability at module scope, so a ceiling that excludes the in-tree wheel would resolve PyPI's older release in the clean-env wheel smoke and die on ImportError.
-    "maf-sandbox>=0.2.0,<0.6",
+    "maf-sandbox>=0.5.0,<0.6",
     # DefaultAzureCredential for the sandbox data plane.
     "azure-identity>=1.25.1,<2",
     # The ACA Sandboxes data-plane SDK — still 0.1.0bN. The version pin lives here and
