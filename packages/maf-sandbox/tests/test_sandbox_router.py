@@ -1,38 +1,49 @@
 """Tests for the sandbox router.
 
-The router has exactly four jobs, and all of them are tested here rather than inferred:
+The router has exactly five jobs, and all of them are tested here rather than inferred:
 
 - picking a backend from configuration;
 - refusing a backend below the minimum-isolation floor the host — or a spec — requires;
 - refusing a backend that cannot do what a workload's spec requires;
+- refusing a spec whose transfer caps sit above what the backend allows;
 - refusing a backend that cannot confine egress to what a workload's spec allows.
 
-The floor and the egress rule are security properties. A shared-kernel container sits next
-to the host's credentials, and the posture a deployment claims rests on the boundary it
-actually got — so "the router would refuse" needs to be a test, not a comment.
+The floor, the transfer ceilings and the egress rule are security properties. A shared-kernel
+container sits next to the host's credentials, and the posture a deployment claims rests on
+the boundary it actually got — so "the router would refuse" needs to be a test, not a comment.
 """
 
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 
 import pytest
 
 from maf_sandbox import (
     DEFAULT_CAPABILITIES,
+    DEFAULT_SANDBOX_LIMITS,
+    DEFAULT_TRANSFER_LIMITS,
     ISOLATION_RANK,
     Capability,
+    DeclaredOutput,
     Egress,
+    EntryKind,
     Isolation,
     NoSandboxBackend,
+    OutputDisposition,
     SandboxBackend,
     SandboxBackendNotPermitted,
     SandboxCapabilityNotSupported,
     SandboxEgressNotEnforced,
+    SandboxEntry,
     SandboxKey,
+    SandboxLimits,
     SandboxPurger,
     SandboxRouter,
     SandboxSpec,
+    SandboxTransferLimitsNotPermitted,
+    TransferLimits,
     meets_floor,
 )
 from maf_sandbox.testing import InProcessSandboxBackend
@@ -258,7 +269,9 @@ class TestSpecFloorRaise:
 class _BackendWithoutCapabilities:
     """A backend written before the capability axis existed: it declares what it had.
 
-    Written out rather than subclassed, because the fake now always has the property.
+    Written out rather than subclassed, because the fake now always has the property. It has no
+    ``limits`` either, which makes it the only fixture here that exercises *both* of the
+    router's `getattr` fallbacks — see `TestTransferLimitMatch`.
     """
 
     name = "legacy"
@@ -313,6 +326,229 @@ class TestCapabilityMatch:
             router.ensure_can_serve(
                 SandboxSpec(kind="codeact", requires=frozenset({Capability.FILES_OUT}))
             )
+
+
+class TestFileTransferVocabulary:
+    """The closed sets the pull surface speaks in, each member written out here on purpose.
+
+    Same shape as the `ISOLATION_RANK` exhaustiveness test above: a member added to either enum
+    fails this until someone says what it means, rather than reaching a backend as a value
+    nobody decided the handling of.
+    """
+
+    def test_every_entry_kind_is_accounted_for(self):
+        assert set(EntryKind) == {EntryKind.FILE, EntryKind.DIRECTORY, EntryKind.OTHER}
+
+    def test_every_disposition_is_accounted_for(self):
+        assert set(OutputDisposition) == {OutputDisposition.LAND, OutputDisposition.CONSUME}
+
+    @pytest.mark.parametrize(
+        ("member", "value"),
+        [
+            (EntryKind.FILE, "file"),
+            (EntryKind.DIRECTORY, "directory"),
+            (EntryKind.OTHER, "other"),
+            (OutputDisposition.LAND, "land"),
+            (OutputDisposition.CONSUME, "consume"),
+        ],
+    )
+    def test_a_member_compares_and_serializes_as_its_string_value(self, member, value: str):
+        """Backends outside this repository report strings; `StrEnum` keeps them matching."""
+        assert member == value
+        assert str(member) == value
+        assert type(member)(value) is member
+
+    @pytest.mark.parametrize("enum", [EntryKind, OutputDisposition])
+    def test_an_unknown_string_does_not_become_a_member(self, enum):
+        """The constructor's `ValueError` *is* the refuse-unknown policy."""
+        with pytest.raises(ValueError, match="junction"):
+            enum("junction")
+
+    def test_a_size_the_backend_could_not_determine_is_representable(self):
+        """`None`, not `0` — a cap that read an unmeasurable file as free would pass it."""
+        assert SandboxEntry(path="out.png", kind=EntryKind.FILE, size_bytes=None).size_bytes is None
+
+    def test_a_declared_output_lands_and_is_required_unless_said_otherwise(self):
+        """The safe defaults: an artifact goes to the sink, and a missing one is an error."""
+        output = DeclaredOutput(path="out.png")
+        assert output.disposition is OutputDisposition.LAND
+        assert output.required is True
+        assert output.media_type is None
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "DEFAULT_SANDBOX_LIMITS",
+            "DEFAULT_TRANSFER_LIMITS",
+            "DeclaredOutput",
+            "EntryKind",
+            "OutputDisposition",
+            "SandboxEntry",
+            "SandboxLimits",
+            "SandboxTransferLimitsNotPermitted",
+            "TransferLimits",
+        ],
+    )
+    def test_the_vocabulary_is_importable_from_the_package(self, name: str):
+        """A kind declares its outputs and a backend its ceilings — both need these names."""
+        import maf_sandbox
+
+        assert name in maf_sandbox.__all__
+        assert hasattr(maf_sandbox, name)
+
+
+#: Well under the silent default on every axis, so a spec asking for it is served everywhere.
+_TIGHT_LIMITS = TransferLimits(max_bytes_per_file=1024, max_total_bytes=4096, max_files=2)
+
+
+class TestTransferLimits:
+    """One constant on both sides of the match, and a `within` that checks every field."""
+
+    def test_the_default_is_within_itself(self):
+        """The invariant that keeps this axis inert: spec default and backend default are one.
+
+        Get it wrong in the other direction — a spec default above what a silent backend is
+        assumed to allow — and *every* spec fails at attach, the published wheel's smoke test
+        included.
+        """
+        assert DEFAULT_TRANSFER_LIMITS.within(DEFAULT_TRANSFER_LIMITS) is True
+
+    def test_a_backend_that_declares_nothing_is_read_as_that_same_constant(self):
+        assert DEFAULT_SANDBOX_LIMITS.files_in is DEFAULT_TRANSFER_LIMITS
+        assert DEFAULT_SANDBOX_LIMITS.files_out is DEFAULT_TRANSFER_LIMITS
+
+    def test_asking_for_less_than_the_ceiling_is_within_it(self):
+        assert _TIGHT_LIMITS.within(DEFAULT_TRANSFER_LIMITS) is True
+
+    @pytest.mark.parametrize("field_name", [f.name for f in dataclasses.fields(TransferLimits)])
+    def test_a_single_field_over_the_ceiling_is_enough_to_be_outside_it(self, field_name: str):
+        """Read off the dataclass, so a fourth cap cannot be added without being checked."""
+        over = dataclasses.replace(
+            DEFAULT_TRANSFER_LIMITS,
+            **{field_name: getattr(DEFAULT_TRANSFER_LIMITS, field_name) + 1},
+        )
+        assert over.within(DEFAULT_TRANSFER_LIMITS) is False
+
+
+#: The two ways a backend ends up on the default ceiling: declaring it, and declaring nothing
+#: at all.  The router's `getattr` fallback is the only thing that makes those the same, so
+#: every leg below that says "the default ceiling" runs against both — a fallback pointed at a
+#: different constant would pass the first and fail the second.  Classes, not instances, so the
+#: parametrized cases do not share one object.
+_DEFAULT_CEILING_BACKENDS = [
+    pytest.param(InProcessSandboxBackend, id="declares-the-default"),
+    pytest.param(_BackendWithoutCapabilities, id="declares-nothing"),
+]
+
+
+class TestTransferLimitMatch:
+    """A spec's caps against a backend's ceilings — the third declaration read by `getattr`.
+
+    Read like `egress` rather than like `capabilities`: a cap is a safety claim, so an
+    undeclared one resolves to the default ceiling and a bigger ask is refused, where an
+    undeclared capability set is read charitably.
+    """
+
+    _CEILING = SandboxLimits(files_in=_TIGHT_LIMITS, files_out=_TIGHT_LIMITS)
+
+    def _router(self, backend) -> SandboxRouter:
+        return SandboxRouter([backend], min_isolation=Isolation.PROCESS)
+
+    def test_the_two_fixtures_really_are_one_declared_and_one_silent(self):
+        """A `getattr` fallback nobody is on the far side of would pass by accident forever.
+
+        The shared fake grew a `limits` property, so it stopped being evidence about silence;
+        if the legacy fake ever grows one too, both parametrized cases below become the same
+        case and stop covering the fallback at all.
+        """
+        assert InProcessSandboxBackend().limits == DEFAULT_SANDBOX_LIMITS
+        assert not hasattr(_BackendWithoutCapabilities(), "limits")
+
+    @pytest.mark.parametrize("backend_class", _DEFAULT_CEILING_BACKENDS)
+    def test_the_default_ceiling_serves_every_existing_spec(self, backend_class):
+        """Including `SandboxSpec(kind="smoke")`, which `scripts/smoke_install.py` acquires."""
+        router = self._router(backend_class())
+        router.ensure_can_serve(_SPEC)
+        router.ensure_can_serve(SandboxSpec(kind="smoke"))
+
+    @pytest.mark.parametrize("backend_class", _DEFAULT_CEILING_BACKENDS)
+    def test_a_spec_the_default_ceiling_cannot_hold_is_refused(self, backend_class):
+        """An absent ceiling is the default one, not "no ceiling" — the `Egress` rule."""
+        huge = dataclasses.replace(
+            DEFAULT_TRANSFER_LIMITS, max_files=DEFAULT_TRANSFER_LIMITS.max_files + 1
+        )
+        with pytest.raises(SandboxTransferLimitsNotPermitted):
+            self._router(backend_class()).ensure_can_serve(
+                SandboxSpec(kind="diagram", files_out=huge)
+            )
+
+    def test_a_spec_within_the_declared_ceilings_is_served(self):
+        router = self._router(InProcessSandboxBackend(limits=self._CEILING))
+        router.ensure_can_serve(
+            SandboxSpec(kind="diagram", files_in=_TIGHT_LIMITS, files_out=_TIGHT_LIMITS)
+        )
+
+    @pytest.mark.parametrize("direction", ["files_in", "files_out"])
+    def test_a_spec_above_the_ceiling_is_refused_and_the_direction_named(self, direction: str):
+        router = self._router(InProcessSandboxBackend(limits=self._CEILING))
+        spec = dataclasses.replace(
+            SandboxSpec(kind="diagram", files_in=_TIGHT_LIMITS, files_out=_TIGHT_LIMITS),
+            **{direction: DEFAULT_TRANSFER_LIMITS},
+        )
+        with pytest.raises(SandboxTransferLimitsNotPermitted, match=direction):
+            router.ensure_can_serve(spec)
+
+    def test_acquire_refuses_it_too(self):
+        """`acquire` runs the same checks, so a caller that skips `ensure_can_serve` is caught."""
+        router = self._router(InProcessSandboxBackend(limits=self._CEILING))
+        spec = SandboxSpec(
+            kind="diagram", files_in=_TIGHT_LIMITS, files_out=DEFAULT_TRANSFER_LIMITS
+        )
+        with pytest.raises(SandboxTransferLimitsNotPermitted, match="files_out"):
+            asyncio.run(router.acquire(_KEY, spec))
+
+
+class _BackendDeclaringTheWrongLimits(InProcessSandboxBackend):
+    """A third party that reached for the adjacent type, or left the field unfilled."""
+
+    def __init__(self, declared, **kwargs):
+        super().__init__(**kwargs)
+        self._declared = declared
+
+    @property
+    def limits(self):
+        return self._declared
+
+
+class TestAMalformedLimitsDeclarationIsRefused:
+    """The same refuse-unknown policy `_declared_isolation` applies, for the same reason.
+
+    `TransferLimits` is one direction's caps and `SandboxLimits` is the pair; they are adjacent
+    in one module and both exported, so handing over the wrong one is the obvious third-party
+    mistake — and it used to surface as a bare `AttributeError` out of a host's agent factory,
+    which is where a host's own wiring test is least able to say what happened.
+    """
+
+    @pytest.mark.parametrize("declared", [_TIGHT_LIMITS, None], ids=["a-TransferLimits", "None"])
+    def test_a_declaration_that_is_not_a_sandbox_limits_is_refused_and_named(self, declared):
+        router = SandboxRouter(
+            [_BackendDeclaringTheWrongLimits(declared)], min_isolation=Isolation.PROCESS
+        )
+        with pytest.raises(SandboxTransferLimitsNotPermitted, match="SandboxLimits"):
+            router.ensure_can_serve(_SPEC)
+
+    def test_acquire_refuses_it_too(self):
+        router = SandboxRouter(
+            [_BackendDeclaringTheWrongLimits(None)], min_isolation=Isolation.PROCESS
+        )
+        with pytest.raises(SandboxTransferLimitsNotPermitted):
+            asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_the_default_ceilings_are_still_what_silence_means(self):
+        """The guard refuses a declaration it cannot read — it does not make one mandatory."""
+        SandboxRouter(
+            [_BackendWithoutCapabilities()], min_isolation=Isolation.PROCESS
+        ).ensure_can_serve(_SPEC)
 
 
 class _BackendWithoutEgress:
@@ -487,6 +723,15 @@ class TestSpecDefaults:
         """`None`, not `PROCESS` — the second would be an opinion, and the weakest one."""
         assert SandboxSpec(kind="test").min_isolation is None
 
+    def test_it_declares_no_outputs(self):
+        """A tuple, as `egress_allow` is: a spec that collects nothing declares nothing."""
+        assert SandboxSpec(kind="test").declared_outputs == ()
+
+    @pytest.mark.parametrize("direction", ["files_in", "files_out"])
+    def test_both_transfer_directions_ask_for_the_shared_default(self, direction: str):
+        """The same object the silent backend ceiling is, so the two cannot drift apart."""
+        assert getattr(SandboxSpec(kind="test"), direction) is DEFAULT_TRANSFER_LIMITS
+
 
 class TestPolicyVocabularyExports:
     """The package's public vocabulary — a name a host cannot import is a name it cannot use."""
@@ -521,7 +766,9 @@ class TestPolicyVocabularyExports:
 #: writes it in here, so widening the scan is a line in a diff rather than something that
 #: happens by omission.  `TestModuleInventory` pins the complement, so a new module cannot be
 #: quietly neither.
-_PROTOCOL_MODULES = frozenset({"_error_detail", "_protocol", "_purger", "_router", "testing"})
+_PROTOCOL_MODULES = frozenset(
+    {"_error_detail", "_outputs", "_protocol", "_purger", "_router", "testing"}
+)
 
 #: The modules deliberately OUTSIDE the stdlib-only claim.  `maf` is the MAF-glue
 #: module, the one place `agent_framework` may be imported — see `TestMafIsTheOnlyMafImporter`

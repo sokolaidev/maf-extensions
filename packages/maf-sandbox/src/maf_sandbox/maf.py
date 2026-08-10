@@ -30,7 +30,14 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Literal
 
 from ._error_detail import error_detail
-from ._protocol import Sandbox, SandboxKey, SandboxSpec, WorkspaceContext
+from ._outputs import OutputSink, landing_outputs, missing_sink_refusal
+from ._protocol import (
+    Capability,
+    Sandbox,
+    SandboxKey,
+    SandboxSpec,
+    WorkspaceContext,
+)
 from ._purger import SandboxPurger
 from ._router import NoSandboxBackend, SandboxRouter
 
@@ -100,7 +107,8 @@ def sandbox_tool_declarations(
     spec: SandboxSpec,
     *,
     source_integrity: str | None = "trusted",
-    egress_max_confidentiality: str | None = None,
+    outbound_max_confidentiality: str | None = None,
+    output_sink: OutputSink | None = None,
 ) -> dict[str, Any]:
     """The information-flow declarations a sandbox workload's tool carries.
 
@@ -117,28 +125,48 @@ def sandbox_tool_declarations(
     content, say): undeclared, the tracker's untrusted default applies and the result taints
     the conversation, which is the fail-safe direction.
 
-    ``egress_max_confidentiality`` is **opt-in, and off by default**, and the asymmetry is
+    ``outbound_max_confidentiality`` is **opt-in, and off by default**, and the asymmetry is
     deliberate.  A confidentiality key is not inert metadata: writing one participates in a
     policy leg that may be dormant in the host — a host whose tools never label anything
     above its own cap has a confidentiality check that cannot currently fire — so declaring
     it can change which calls are gated or refused.  That is the host's decision to make with
-    its own classification in hand, never a default a library picks.  When it *is* passed,
-    the key is written only if the spec actually permits egress (``egress_allow`` non-empty):
-    a sandbox with no network cannot carry anything out of the conversation, so capping it
-    would gate calls for a flow that does not exist.
+    its own classification in hand, never a default a library picks.  When it *is* passed, the
+    key is written only if this tool can carry something out at all: the spec permits egress
+    (``egress_allow`` non-empty), or the spec declares an output that **lands** in
+    ``output_sink``.  Capping a workload with neither would gate calls for a flow that does not
+    exist.
+
+    The sink half of that condition is not symmetry for its own sake.  The rule was once
+    ``egress_allow`` alone, on the premise that a sandbox with no network cannot carry anything
+    out of the conversation — and a landing sink falsifies exactly that premise: with closed
+    egress and a sink, guest bytes still reach host state, so the flow the cap gates is back.
+    It takes **both** halves, though: a sink is ordinarily one object handed to every sandbox
+    tool a host builds, so its mere presence says nothing about whether *this* workload sends
+    anything down it.  A spec that declares no output, or only ``CONSUME`` ones, carries
+    nothing to host state however many sinks it was given.
+
+    **One value, one source, no fold.**  The cap is an opaque string in the host's own
+    vocabulary with no ordering — this repository requires an ordering to be data with an
+    exhaustiveness test, as ``ISOLATION_RANK`` is — so nothing here ranks or combines two of
+    them, and :class:`~maf_sandbox.OutputSink` carries no cap of its own to be combined.
 
     Args:
-        spec: The sandbox this workload asks for; ``egress_allow`` is what is read.
+        spec: The sandbox this workload asks for; ``egress_allow`` and ``declared_outputs``
+            are what is read.
         source_integrity: Integrity tier for this tool's results, or ``None`` to declare
             none.
-        egress_max_confidentiality: The host's cap for outbound tools, in the host's own
+        outbound_max_confidentiality: The host's cap for outbound tools, in the host's own
             vocabulary, or ``None`` (the default) to declare none.
+        output_sink: Where this workload's artifacts land, if it lands any. Read together with
+            ``spec.declared_outputs``, never for its presence alone.
     """
     declarations: dict[str, Any] = {}
     if source_integrity is not None:
         declarations["source_integrity"] = source_integrity
-    if egress_max_confidentiality is not None and spec.egress_allow:
-        declarations["max_allowed_confidentiality"] = egress_max_confidentiality
+    lands_artifacts = output_sink is not None and bool(landing_outputs(spec))
+    carries_something_out = bool(spec.egress_allow) or lands_artifacts
+    if outbound_max_confidentiality is not None and carries_something_out:
+        declarations["max_allowed_confidentiality"] = outbound_max_confidentiality
     return declarations
 
 
@@ -289,13 +317,14 @@ def sandboxed_tool(
     name: str,
     approval_mode: Literal["always_require", "never_require"] = "never_require",
     declarations: Mapping[str, Any] | None = None,
-    egress_max_confidentiality: str | None = None,
+    outbound_max_confidentiality: str | None = None,
+    output_sink: OutputSink | None = None,
     logger: logging.Logger | None = None,
 ) -> list[Any]:
     """Return the one-tool list for a sandbox workload, or ``[]`` when no sandbox is available.
 
-    This is the shape a sandbox workload's factory has.  Four things about it are decisions
-    rather than plumbing, and a workload that re-derives them tends to get one of them wrong:
+    This is the shape a sandbox workload's factory has.  What follows are decisions rather
+    than plumbing, and a workload that re-derives them tends to get one of them wrong:
 
     1. **Attach nothing when unconfigured.**  ``router is None`` or a router with no backend
        yields ``[]`` — not a tool that fails when called.  A host with nothing configured
@@ -309,6 +338,13 @@ def sandboxed_tool(
     3. **Key from the host, not from the model** — see :meth:`SandboxToolSession.key`.
     4. **Sanitized failure surfaces** — see :meth:`SandboxToolSession.acquire`.
     5. **Declared information flow** — see :func:`sandbox_tool_declarations`.
+    6. **Three spec-consistency refusals**, all placed after the attach gate so that the first
+       point above keeps its promise.  ``output_sink`` may not be combined with an explicit
+       ``declarations=``, which wins verbatim and would leave the tool carrying a derivation
+       blind to its own sink; a ``spec`` declaring an output that lands is refused without a
+       sink, because such a tool cannot honour its own spec; and a ``spec`` declaring any
+       output without requiring :data:`~maf_sandbox.Capability.FILES_OUT` is refused, because
+       the capability match is what stands between it and a backend with no pull surface.
 
     ``build`` is a callback rather than a decorated function because the session does not
     exist until the attach gate has passed, and the tool body needs it in its closure.  Two
@@ -336,14 +372,38 @@ def sandboxed_tool(
         approval_mode: MAF's per-tool approval setting.
         declarations: ``additional_properties`` to write verbatim, for a workload that wants
             full control. Defaults to :func:`sandbox_tool_declarations` over ``spec``.
-        egress_max_confidentiality: Passed to :func:`sandbox_tool_declarations`; ignored when
+            Refused together with ``output_sink``.
+        outbound_max_confidentiality: Passed to :func:`sandbox_tool_declarations`; ignored when
             ``declarations`` is given. Read that function before setting it — it is off by
             default for a reason.
+        output_sink: Where this workload's landing artifacts go, threaded into the derivation
+            above and on to :func:`~maf_sandbox.collect_outputs` by the workload itself.
         logger: Where the failure ladder writes its detail. Defaults to this module's logger;
             pass the workload's own so its records keep the workload's logger name.
     """
     if router is None or not router.enabled:
         return []
+    if output_sink is not None and declarations is not None:
+        raise ValueError(
+            f"{name}: pass either output_sink or declarations=, never both. An explicit "
+            "mapping is written verbatim, so the pair would attach a tool whose declarations "
+            "know nothing about its sink — the confidentiality cap silently absent rather "
+            "than the one the host chose. Drop declarations= and pass "
+            "outbound_max_confidentiality, or write the cap into the mapping yourself."
+        )
+    landing = landing_outputs(spec)
+    if landing and output_sink is None:
+        raise missing_sink_refusal(spec, landing, asked_by=name)
+    if spec.declared_outputs and Capability.FILES_OUT not in spec.requires:
+        raise ValueError(
+            f"{name}: the {spec.kind!r} workload declares "
+            f"{', '.join(repr(declared.path) for declared in spec.declared_outputs)} as "
+            f"outputs and does not require {str(Capability.FILES_OUT)!r}. Grow `requires` from "
+            "what you declare: the pull surface is what reads those paths back, and without "
+            "the requirement the router's capability match never asks whether this backend has "
+            "one — leaving the failure to happen inside the sandbox, where the reason is "
+            "hardest to see."
+        )
     router.ensure_can_serve(spec)
 
     session = SandboxToolSession(
@@ -357,7 +417,11 @@ def sandboxed_tool(
     properties = (
         dict(declarations)
         if declarations is not None
-        else sandbox_tool_declarations(spec, egress_max_confidentiality=egress_max_confidentiality)
+        else sandbox_tool_declarations(
+            spec,
+            outbound_max_confidentiality=outbound_max_confidentiality,
+            output_sink=output_sink,
+        )
     )
 
     # Imported here rather than at module scope so that merely importing this module — which

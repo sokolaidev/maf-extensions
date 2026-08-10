@@ -9,7 +9,7 @@ boots — an ACA Sandbox (`maf-sandbox-acas`) today, a local Docker container or
 in-process fake later.  Neither knows about the other, which is what lets the same tool run
 against all of them unchanged.
 
-The router exists for four things a backend cannot own:
+The router exists for five things a backend cannot own:
 
 - **Which backend serves a request.** Configuration, not an import, decides.
 - **The minimum-isolation floor.** A backend declaring a rung below the one the host accepts
@@ -20,6 +20,9 @@ The router exists for four things a backend cannot own:
 - **The capability match.** A backend that cannot do what a workload's spec requires is
   refused when that workload attaches its tool — see
   :class:`~maf_sandbox._router.SandboxCapabilityNotSupported`.
+- **The transfer ceilings.** A spec declaring caps above what the backend allows in either
+  direction is refused at the same moment — see
+  :class:`~maf_sandbox._router.SandboxTransferLimitsNotPermitted`.
 - **The egress rule.** A backend that cannot confine a sandbox to the hosts a workload's spec
   names is refused at the same moment — see
   :meth:`~maf_sandbox.SandboxRouter.ensure_can_serve`.
@@ -30,6 +33,12 @@ from ``min_isolation``, while what a sandbox may reach is a property of the *wor
 in its spec.  Keeping the two axes apart is deliberate — merged into one required-capabilities
 list, a workload could ask for a weaker boundary than the deployment mandates.  A spec may
 raise the host's floor for itself, and never lower it.
+
+Alongside the router it owns the sink half of ``FILES_OUT``:
+:func:`~maf_sandbox.collect_outputs` pulls a spec's declared outputs, caps them, and hands each
+one to a host-supplied :class:`~maf_sandbox.OutputSink`.  The host does the writing — a
+workspace store, a blob container or a UI panel is a property of the application, and this
+package writes nothing anywhere.
 
 This package imports no backend and no host application.
 
@@ -44,17 +53,45 @@ a backend or a test that only speaks the protocol.  Reach it by name —
 from __future__ import annotations
 
 from ._error_detail import error_detail
+from ._outputs import (
+    MAX_ARTIFACT_NAME_BYTES,
+    Artifact,
+    LandedArtifact,
+    NameNormalization,
+    OutputSink,
+    SandboxArtifactNameCollision,
+    SandboxArtifactNameInvalid,
+    SandboxOutputError,
+    SandboxOutputMissing,
+    SandboxOutputNotConfined,
+    SandboxOutputNotRegular,
+    SandboxOutputSinkRequired,
+    SandboxOutputSizeUnknown,
+    SandboxOutputUnreachable,
+    SandboxTransferCapExceeded,
+    collect_outputs,
+    portable_name,
+    validate_artifact_name,
+)
 from ._protocol import (
     DEFAULT_CAPABILITIES,
+    DEFAULT_SANDBOX_LIMITS,
+    DEFAULT_TRANSFER_LIMITS,
     ISOLATION_RANK,
     Capability,
+    DeclaredOutput,
     Egress,
+    EntryKind,
     ExecResult,
     Isolation,
+    OutputDisposition,
     Sandbox,
     SandboxBackend,
+    SandboxEntry,
     SandboxKey,
+    SandboxLimits,
     SandboxSpec,
+    TransferLimits,
     WorkspaceContext,
     meets_floor,
 )
@@ -65,29 +102,57 @@ from ._router import (
     SandboxCapabilityNotSupported,
     SandboxEgressNotEnforced,
     SandboxRouter,
+    SandboxTransferLimitsNotPermitted,
 )
 
 __all__ = [
     "DEFAULT_CAPABILITIES",
+    "DEFAULT_SANDBOX_LIMITS",
+    "DEFAULT_TRANSFER_LIMITS",
     "ISOLATION_RANK",
+    "MAX_ARTIFACT_NAME_BYTES",
+    "Artifact",
     "Capability",
+    "DeclaredOutput",
     "Egress",
+    "EntryKind",
     "ExecResult",
     "Isolation",
+    "LandedArtifact",
     "MafSandboxExperimentalWarning",
+    "NameNormalization",
     "NoSandboxBackend",
+    "OutputDisposition",
+    "OutputSink",
     "Sandbox",
+    "SandboxArtifactNameCollision",
+    "SandboxArtifactNameInvalid",
     "SandboxBackend",
     "SandboxBackendNotPermitted",
     "SandboxCapabilityNotSupported",
     "SandboxEgressNotEnforced",
+    "SandboxEntry",
     "SandboxKey",
+    "SandboxLimits",
+    "SandboxOutputError",
+    "SandboxOutputMissing",
+    "SandboxOutputNotConfined",
+    "SandboxOutputNotRegular",
+    "SandboxOutputSinkRequired",
+    "SandboxOutputSizeUnknown",
+    "SandboxOutputUnreachable",
     "SandboxPurger",
     "SandboxRouter",
     "SandboxSpec",
+    "SandboxTransferCapExceeded",
+    "SandboxTransferLimitsNotPermitted",
+    "TransferLimits",
     "WorkspaceContext",
+    "collect_outputs",
     "error_detail",
     "meets_floor",
+    "portable_name",
+    "validate_artifact_name",
 ]
 
 # --- Experimental-package notice ---------------------------------------------------------

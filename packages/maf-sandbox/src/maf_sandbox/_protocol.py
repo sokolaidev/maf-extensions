@@ -19,15 +19,23 @@ from typing import Any, Protocol, runtime_checkable
 
 __all__ = [
     "DEFAULT_CAPABILITIES",
+    "DEFAULT_SANDBOX_LIMITS",
+    "DEFAULT_TRANSFER_LIMITS",
     "ISOLATION_RANK",
     "Capability",
+    "DeclaredOutput",
     "Egress",
+    "EntryKind",
     "ExecResult",
     "Isolation",
+    "OutputDisposition",
     "Sandbox",
     "SandboxBackend",
+    "SandboxEntry",
     "SandboxKey",
+    "SandboxLimits",
     "SandboxSpec",
+    "TransferLimits",
     "WorkspaceContext",
     "meets_floor",
 ]
@@ -110,8 +118,12 @@ class Capability(StrEnum):
     HOST_TOOLS = "host_tools"
     #: Write files into the sandbox before execution.
     FILES_IN = "files_in"
-    #: Read files back out after execution.
+    #: Stat and read files back out, at the paths a spec declared. Reading only, never
+    #: discovery.
     FILES_OUT = "files_out"
+    #: Enumerate a directory. Split from :data:`FILES_OUT` because Docker has no engine-level
+    #: primitive for it, which is also why a declared output is a literal path and not a glob.
+    FILES_LIST = "files_list"
     #: Any egress at all — how precisely it is confined stays in :class:`Egress`.
     NETWORK = "network"
     #: Snapshot and restore a sandbox for reuse.
@@ -122,6 +134,124 @@ class Capability(StrEnum):
 
 #: What every :class:`Sandbox` already obligates.
 DEFAULT_CAPABILITIES: frozenset[Capability] = frozenset({Capability.EXEC, Capability.FILES_IN})
+
+
+class EntryKind(StrEnum):
+    """What a path inside a sandbox is — a typed field rather than a mode string to parse.
+
+    No two backends report type the same way: ACAS carries ``is_directory``, a two-way split,
+    and leaves everything else in ``mode: str | None``, while Docker's stat carries a Go
+    ``ModeSymlink`` bit and an explicit link target.  :data:`OTHER` is what lets one vocabulary
+    cover both of those and a non-POSIX guest's junctions and reparse points besides.
+    """
+
+    #: A regular file — the only kind :meth:`Sandbox.read_file` will serve.
+    FILE = "file"
+    DIRECTORY = "directory"
+    #: A symlink, junction, reparse point, device, socket or fifo. Never read.
+    OTHER = "other"
+
+
+@dataclass(frozen=True)
+class SandboxEntry:
+    """One path inside a sandbox, as :meth:`Sandbox.stat_file` and :meth:`Sandbox.list_dir` see it.
+
+    ``path`` is relative to the working directory the call was made against.  ``size_bytes``
+    is ``None`` when the backend could not determine it, and **``None`` fails closed**: an
+    entry of unknown size is refused rather than read, because coercing it to ``0`` would make
+    every size cap read the one file it cannot measure as free.
+    """
+
+    path: str
+    kind: EntryKind
+    size_bytes: int | None
+
+
+class OutputDisposition(StrEnum):
+    """Where a declared output's bytes are meant to go. The two flows, kept apart in the spec.
+
+    They answer to different legs of a host's policy — landing is a *sink* and the question is
+    confidentiality, while an output the kind parses is a *source* and the question is
+    integrity — so the distinction is declared rather than left to convention.
+    """
+
+    #: Delivered to the host's output sink; the model gets a reference, never the bytes.
+    LAND = "land"
+    #: Parsed by the kind that asked for it, and never delivered anywhere.
+    CONSUME = "consume"
+
+
+@dataclass(frozen=True)
+class DeclaredOutput:
+    """One artifact a workload says it produces, named in the spec before the run.
+
+    ``path`` is **literal** and relative to the sandbox's working directory.  A glob would
+    have to be resolved by enumerating a directory, which is the primitive
+    :data:`Capability.FILES_LIST` exists to gate, so patterns belong to a kind that requires
+    that capability and nowhere else.
+
+    ``media_type`` is declared rather than sniffed: sniffing would let guest-produced content
+    decide how the host handles it, and a kind knows what it renders.  ``required=False`` is
+    how a workload says an absence is normal — a renderer exiting non-zero produces no file,
+    and the model needs that diagnostic rather than a transfer error stacked on top of it.
+    """
+
+    path: str
+    disposition: OutputDisposition = OutputDisposition.LAND
+    media_type: str | None = None
+    required: bool = True
+
+
+#: So the ceilings below read as sizes rather than as eight-digit literals.
+_MIB = 1024 * 1024
+
+
+@dataclass(frozen=True)
+class TransferLimits:
+    """How much may cross the boundary in one direction, for one collection.
+
+    All three fields are load-bearing: a byte ceiling alone does not bound a collection, since
+    ten thousand files one byte under the per-file cap cost exactly what the cap was written to
+    prevent.  ``max_total_bytes`` also bounds host memory as far as the backend allows it to:
+    a collection is pulled whole before any of it is delivered, so the cap is what the host
+    holds at once — but a backend whose SDK buffers a whole response internally has already
+    spent that memory before the bytes are handed over, and no caller-side ceiling can
+    retract it.  Over-cap bytes are never *delivered*; the memory bound is best-effort.
+    """
+
+    max_bytes_per_file: int
+    max_total_bytes: int
+    max_files: int
+
+    def within(self, ceiling: TransferLimits) -> bool:
+        """Whether every field sits at or below ``ceiling``'s — the match the router applies."""
+        return (
+            self.max_bytes_per_file <= ceiling.max_bytes_per_file
+            and self.max_total_bytes <= ceiling.max_total_bytes
+            and self.max_files <= ceiling.max_files
+        )
+
+
+#: One constant for both sides of the match — a spec that says nothing asks for exactly what a
+#: backend that says nothing allows, so :meth:`TransferLimits.within` holds by equality and no
+#: spec written before this axis existed starts being refused at attach.
+DEFAULT_TRANSFER_LIMITS: TransferLimits = TransferLimits(
+    max_bytes_per_file=8 * _MIB, max_total_bytes=32 * _MIB, max_files=64
+)
+
+
+@dataclass(frozen=True)
+class SandboxLimits:
+    """A backend's transfer ceilings, one :class:`TransferLimits` per direction."""
+
+    files_in: TransferLimits = DEFAULT_TRANSFER_LIMITS
+    files_out: TransferLimits = DEFAULT_TRANSFER_LIMITS
+
+
+#: What a backend declaring no ``limits`` is read as.  Silence here follows :class:`Egress`
+#: rather than :data:`DEFAULT_CAPABILITIES`: a cap is a safety claim, so a spec asking for more
+#: than this is refused rather than assumed to be fine.
+DEFAULT_SANDBOX_LIMITS: SandboxLimits = SandboxLimits()
 
 
 @dataclass(frozen=True)
@@ -162,6 +292,12 @@ class SandboxSpec:
     the weakest boundary it accepts anywhere.  A spec may **raise** the host's floor and never
     lower it, and ``None`` means no opinion — not the same as :data:`Isolation.PROCESS`, which
     would be the weakest opinion there is.
+
+    ``declared_outputs`` names the artifacts the workload produces, literally and in advance;
+    it is spelled long because ``outputs=`` already means marker-keyed scripted stdout on the
+    in-process fake, and the two would meet in one expression in every kind's tests.
+    ``files_in`` and ``files_out`` are the workload's own transfer caps per direction — a
+    backend declares its own ceilings, and the router refuses a spec asking above them.
     """
 
     kind: str
@@ -176,6 +312,9 @@ class SandboxSpec:
     labels: dict[str, str] = field(default_factory=dict[str, str])
     requires: frozenset[Capability] = DEFAULT_CAPABILITIES
     min_isolation: Isolation | None = None
+    declared_outputs: tuple[DeclaredOutput, ...] = ()
+    files_in: TransferLimits = DEFAULT_TRANSFER_LIMITS
+    files_out: TransferLimits = DEFAULT_TRANSFER_LIMITS
 
 
 @dataclass(frozen=True)
@@ -189,10 +328,29 @@ class ExecResult:
 
 @runtime_checkable
 class Sandbox(Protocol):
-    """A running sandbox a workload can put files into and run commands in."""
+    """A running sandbox a workload can put files into, run commands in, and read back out of.
 
-    async def write_file(self, path: str, content: str) -> None:
-        """Write ``content`` to ``path`` inside the sandbox."""
+    The pull surface — :meth:`stat_file`, :meth:`read_file`, :meth:`list_dir` — is gated by
+    :data:`Capability.FILES_OUT` and :data:`Capability.FILES_LIST`, and a backend declaring
+    neither may raise from all three.  The attach gate refuses such a spec before the workload
+    ever runs — ``sandboxed_tool`` refuses a spec that declares outputs without requiring
+    :data:`Capability.FILES_OUT`, and the router's capability match refuses a backend that
+    cannot serve it — so no kind has to feature-detect here.
+
+    ``working_directory`` is a parameter on those three exactly as it is on :meth:`exec`,
+    because no sandbox object knows the spec's ``work_dir``: it arrives per call or not at all,
+    and a pull surface without it would assign the confinement duty to a layer with no way to
+    discharge it.  Their ``path`` is POSIX-shaped and relative to it, and one resolving outside
+    it is refused.  :meth:`write_file` is the residual asymmetry — it takes an absolute guest
+    path and has no path grammar — and unifying the two is a larger change than this.
+    """
+
+    async def write_file(self, path: str, content: str | bytes) -> None:
+        """Write ``content`` to ``path`` inside the sandbox.
+
+        ``str`` means UTF-8 whatever the host's locale says; ``bytes`` is written as given, and
+        is what an in-door carrying a PNG or a spreadsheet needs.
+        """
         ...
 
     async def exec(
@@ -210,6 +368,43 @@ class Sandbox(Protocol):
           by a shell inside the sandbox. Use it only when the command genuinely needs shell
           features a sequence cannot express — redirection, ``||``, ``&&`` — and every part
           of it is a fixed template with nothing but an already-validated path interpolated.
+        """
+        ...
+
+    async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
+        """Describe ``path``, or return ``None`` when nothing is there.
+
+        Stat is the contract, not an optimisation: a caller stats, refuses anything over its
+        cap or whose ``size_bytes`` came back ``None``, and only then reads.  The alternative —
+        counting bytes as they stream — is unavailable on a backend whose SDK buffers the whole
+        response internally, which the reference one does.
+        """
+        ...
+
+    async def read_file(self, path: str, *, working_directory: str, max_bytes: int) -> bytes:
+        """Read the regular file at ``path``, refusing anything over ``max_bytes``.
+
+        Bytes, never text: decoding here would corrupt every artifact that is not text, and the
+        caller already declared the media type.  Only :data:`EntryKind.FILE` is served — a
+        symlink is refused whether or not its target would have resolved somewhere legitimate,
+        because that judgement is made with the guest's filesystem in view and answered with
+        whichever one the reader can actually see.
+
+        ``max_bytes`` is a **refusal, never a truncation**: half a PNG returned as success is
+        an artifact the host cannot tell from a whole one.  Refuse with
+        ``SandboxTransferCapExceeded``.  It is the caller's own ceiling handed down so a
+        backend that can stop early does — the stat-ed size clamped by what the collection has
+        left — and a backend whose SDK buffers the whole response before returning it can only
+        refuse after the fact, which is why the caller re-counts what actually arrived.
+        """
+        ...
+
+    async def list_dir(self, path: str, *, working_directory: str) -> tuple[SandboxEntry, ...]:
+        """Enumerate the entries directly under ``path``.
+
+        Named apart from :attr:`WorkspaceContext.list_files` on purpose: that is the host's
+        allowlist and the most trusted enumeration in the system, this is the least trusted
+        one, and both are in scope inside a kind's tool body.
         """
         ...
 
@@ -231,9 +426,12 @@ class SandboxBackend(Protocol):
     sandboxes running.
 
     A backend may also declare ``capabilities: frozenset[Capability]``, matched by the router
-    against a spec's ``requires``.  It is deliberately not a member of this Protocol:
-    :func:`~typing.runtime_checkable` enforces member *presence*, so declaring it here would
-    stop every backend written before it from being a ``SandboxBackend`` at all.
+    against a spec's ``requires``, and ``limits: SandboxLimits``, the transfer ceilings a spec
+    may not ask above.  Neither is a member of this Protocol, deliberately:
+    :func:`~typing.runtime_checkable` enforces member *presence*, so declaring them here would
+    stop every backend written before them from being a ``SandboxBackend`` at all.  With
+    :attr:`egress` that makes three optional declarations read by ``getattr``; a fourth is the
+    signal to collapse all of them into one declarations object.
     """
 
     @property

@@ -11,17 +11,26 @@ than left to the kinds' own suites.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 
 import pytest
 
 from maf_sandbox import (
+    DEFAULT_CAPABILITIES,
+    Artifact,
+    Capability,
+    DeclaredOutput,
     Egress,
     Isolation,
+    LandedArtifact,
     NoSandboxBackend,
+    OutputDisposition,
+    OutputSink,
     SandboxBackendNotPermitted,
     SandboxEgressNotEnforced,
     SandboxKey,
+    SandboxOutputSinkRequired,
     SandboxRouter,
     SandboxSpec,
     WorkspaceContext,
@@ -39,10 +48,45 @@ _SPEC = SandboxSpec(kind="test", egress_allow=("example.invalid",), work_dir="/w
 _NO_EGRESS_SPEC = SandboxSpec(kind="test", work_dir="/work")
 _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent-1")
 
+#: A spec that declares outputs must require the capability that reads them back — the pull
+#: surface is what `FILES_OUT` names, and `sandboxed_tool` refuses the pair without it.
+_PULLS = DEFAULT_CAPABILITIES | {Capability.FILES_OUT}
+
+#: A closed-egress workload whose product is an artifact: the shape the cap's old condition
+#: read as carrying nothing out of the conversation.
+_LANDING_SPEC = SandboxSpec(
+    kind="test",
+    work_dir="/work",
+    requires=_PULLS,
+    declared_outputs=(DeclaredOutput(path="out.png", media_type="image/png"),),
+)
+_CONSUME_SPEC = SandboxSpec(
+    kind="test",
+    work_dir="/work",
+    requires=_PULLS,
+    declared_outputs=(DeclaredOutput(path="report.sarif", disposition=OutputDisposition.CONSUME),),
+)
+
+
+async def _deliver(artifact: Artifact) -> LandedArtifact:
+    return LandedArtifact(name=artifact.name, display=artifact.name)
+
+
+_SINK = OutputSink(deliver=_deliver)
+
 
 def _router(*backends, **kwargs):
     """Every fake here declares `process` isolation, so these routers opt below the floor."""
     return SandboxRouter(list(backends), min_isolation=Isolation.PROCESS, **kwargs)
+
+
+def _pulling_backend():
+    """A backend with the pull surface, for the specs that declare outputs.
+
+    The fake defaults to what every `Sandbox` already owes, so a spec requiring `FILES_OUT`
+    would be refused by the capability match before any of the sink rules below were reached.
+    """
+    return InProcessSandboxBackend(capabilities=_PULLS)
 
 
 def _context(scope="scope-a", thread_id="thread-1", lister=None):
@@ -148,17 +192,39 @@ class TestSandboxToolDeclarations:
         """A workload whose sandbox fetches arbitrary content must be able to decline."""
         assert sandbox_tool_declarations(_SPEC, source_integrity=None) == {}
 
-    def test_an_egress_cap_is_written_only_when_asked_for(self):
-        assert sandbox_tool_declarations(_SPEC, egress_max_confidentiality="private") == {
+    def test_an_outbound_cap_is_written_only_when_asked_for(self):
+        assert sandbox_tool_declarations(_SPEC, outbound_max_confidentiality="private") == {
             "source_integrity": "trusted",
             "max_allowed_confidentiality": "private",
         }
 
     def test_a_sandbox_with_no_egress_gets_no_cap_even_when_asked(self):
         """Nothing can leave, so a cap would gate calls for a flow that does not exist."""
-        assert sandbox_tool_declarations(_NO_EGRESS_SPEC, egress_max_confidentiality="private") == {
+        assert sandbox_tool_declarations(
+            _NO_EGRESS_SPEC, outbound_max_confidentiality="private"
+        ) == {"source_integrity": "trusted"}
+
+    def test_a_landing_spec_and_a_sink_write_the_cap_with_egress_shut(self):
+        """The sink is the flow: guest bytes reach host state with the network still shut."""
+        assert sandbox_tool_declarations(
+            _LANDING_SPEC, outbound_max_confidentiality="private", output_sink=_SINK
+        ) == {"source_integrity": "trusted", "max_allowed_confidentiality": "private"}
+
+    def test_a_sink_writes_nothing_the_host_did_not_ask_for(self):
+        """Attaching a sink is not itself a request to activate the confidentiality leg."""
+        assert sandbox_tool_declarations(_LANDING_SPEC, output_sink=_SINK) == {
             "source_integrity": "trusted"
         }
+
+    @pytest.mark.parametrize("spec", [_NO_EGRESS_SPEC, _CONSUME_SPEC])
+    def test_a_sink_with_nothing_to_send_down_it_earns_no_cap(self, spec: SandboxSpec):
+        """One sink is ordinarily handed to every sandbox tool a host builds, so its presence
+        says nothing about *this* workload. A spec that declares no output — or only ones the
+        kind consumes itself — carries nothing to host state, and capping it would gate calls
+        for the flow this condition exists to avoid inventing."""
+        assert sandbox_tool_declarations(
+            spec, outbound_max_confidentiality="private", output_sink=_SINK
+        ) == {"source_integrity": "trusted"}
 
 
 # ---------------------------------------------------------------------------
@@ -426,8 +492,21 @@ class TestAttachedToolShape:
             "source_integrity": "untrusted"
         }
 
-    def test_an_egress_cap_reaches_the_tool_when_the_host_asks_for_one(self):
-        assert self._tool(egress_max_confidentiality="private").additional_properties == {
+    def test_an_outbound_cap_reaches_the_tool_when_the_host_asks_for_one(self):
+        assert self._tool(outbound_max_confidentiality="private").additional_properties == {
+            "source_integrity": "trusted",
+            "max_allowed_confidentiality": "private",
+        }
+
+    def test_the_sink_reaches_the_derivation_and_not_only_the_workload(self):
+        """A closed-egress spec earns the cap here only if the sink was threaded through."""
+        (tool,) = _attach(
+            _router(_pulling_backend()),
+            spec=_LANDING_SPEC,
+            outbound_max_confidentiality="private",
+            output_sink=_SINK,
+        )
+        assert tool.additional_properties == {
             "source_integrity": "trusted",
             "max_allowed_confidentiality": "private",
         }
@@ -491,6 +570,71 @@ class TestTheIsolationFloorStillApplies:
                 _router(InProcessSandboxBackend()),
                 spec=SandboxSpec(kind="test", min_isolation=Isolation.MICROVM),
             )
+
+
+# ---------------------------------------------------------------------------
+# output_sink — the two refusals, and where they sit relative to the attach gate
+# ---------------------------------------------------------------------------
+
+
+class TestTheSinkRefusals:
+    """Both refusals answer a question the caller got wrong, and both wait for the gate.
+
+    Placing either one ahead of the attach gate would turn a host that simply left sandboxing
+    off into a host whose agent factory raises — the one thing rule 1 of ``sandboxed_tool``
+    promises never happens.
+    """
+
+    def test_a_sink_with_an_explicit_declarations_mapping_is_refused(self):
+        """The mapping wins verbatim, so the pair would attach a tool blind to its own sink."""
+        with pytest.raises(ValueError, match="never both"):
+            _attach(
+                _router(InProcessSandboxBackend()),
+                declarations={"source_integrity": "untrusted"},
+                output_sink=_SINK,
+            )
+
+    def test_a_spec_that_lands_without_a_sink_is_refused(self):
+        with pytest.raises(SandboxOutputSinkRequired, match="out.png"):
+            _attach(_router(_pulling_backend()), spec=_LANDING_SPEC)
+
+    def test_an_unconfigured_host_gets_an_empty_list_from_either_refusal(self):
+        assert _attach(None, spec=_LANDING_SPEC) == []
+        assert _attach(SandboxRouter([]), spec=_LANDING_SPEC) == []
+        assert _attach(None, declarations={}, output_sink=_SINK) == []
+
+    def test_a_consume_only_spec_needs_no_sink(self):
+        """A SARIF file the kind parses itself is a source, and never reaches host state."""
+        assert len(_attach(_router(_pulling_backend()), spec=_CONSUME_SPEC)) == 1
+
+    def test_a_landing_spec_with_a_sink_attaches(self):
+        tools = _attach(_router(_pulling_backend()), spec=_LANDING_SPEC, output_sink=_SINK)
+        assert len(tools) == 1
+
+
+class TestDeclaredOutputsImplyTheCapability:
+    """`Sandbox` promises a kind never has to feature-detect the pull surface, and this is
+    what pays for it: a spec that declares outputs and does not require `FILES_OUT` skips the
+    capability match entirely, and fails inside the sandbox instead of at the factory."""
+
+    _UNDECLARED = dataclasses.replace(_LANDING_SPEC, requires=DEFAULT_CAPABILITIES)
+
+    def test_declaring_an_output_without_requiring_the_capability_is_refused(self):
+        with pytest.raises(ValueError, match="files_out"):
+            _attach(_router(_pulling_backend()), spec=self._UNDECLARED, output_sink=_SINK)
+
+    def test_a_consume_output_needs_it_just_the_same(self):
+        """It is read through the same surface; only where its bytes go afterwards differs."""
+        spec = dataclasses.replace(_CONSUME_SPEC, requires=DEFAULT_CAPABILITIES)
+        with pytest.raises(ValueError, match="files_out"):
+            _attach(_router(_pulling_backend()), spec=spec)
+
+    def test_a_spec_declaring_nothing_needs_nothing_new(self):
+        """Which is the other half of the rule: grow `requires` from what you declare."""
+        assert len(_attach(_router(InProcessSandboxBackend()), spec=_NO_EGRESS_SPEC)) == 1
+
+    def test_an_unconfigured_host_still_gets_an_empty_list(self):
+        assert _attach(None, spec=self._UNDECLARED, output_sink=_SINK) == []
 
 
 # ---------------------------------------------------------------------------

@@ -206,7 +206,7 @@ def make_bicep_tools(
         spec=bicep_sandbox_spec(image, image_id),
         name=BICEP_VALIDATE_TOOL_NAME,
         approval_mode="never_require",
-        # No `declarations=` and no `egress_max_confidentiality=`: the default derivation is
+        # No `declarations=` and no `outbound_max_confidentiality=`: the default derivation is
         # exactly `{"source_integrity": "trusted"}`, which is what this tool has always
         # declared. Trusted because the compiler's diagnostics are deterministic first-party
         # output from a sandbox with no ambient identity and nothing reachable but the
