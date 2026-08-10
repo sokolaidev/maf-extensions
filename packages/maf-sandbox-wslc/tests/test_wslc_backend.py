@@ -58,7 +58,7 @@ class _FakeWslc:
 
     def __init__(self, responder=None) -> None:
         self.calls: list[_Recorded] = []
-        self._responder = responder or (lambda args: _WslcResult(0, "", ""))
+        self._responder = responder or (lambda args: _WslcResult(0, b"", b""))
 
     async def __call__(self, *args: str, stdin=None, timeout=None) -> _WslcResult:
         self.calls.append(_Recorded(args, stdin, timeout))
@@ -88,11 +88,11 @@ def _machine(
             names = [*running, *stopped] if "-a" in args else list(running)
             if "--format" in args:
                 payload = [{"Id": f"id-{n}", "Name": n} for n in names]
-                return _WslcResult(0, json.dumps(payload), "")
-            return _WslcResult(0, "".join(f"id-{n}\n" for n in names), "")
+                return _WslcResult(0, json.dumps(payload).encode(), b"")
+            return _WslcResult(0, "".join(f"id-{n}\n" for n in names).encode(), b"")
         if args[:2] == ("container", "logs"):
-            return _WslcResult(0, "listening on 3128\n", "")
-        return _WslcResult(0, "", "")
+            return _WslcResult(0, b"listening on 3128\n", b"")
+        return _WslcResult(0, b"", b"")
 
     return respond
 
@@ -277,7 +277,7 @@ class TestAcquireReuses:
 
     def test_a_container_that_will_not_start_is_replaced(self):
         """The name is taken, so the replacement has to remove it before `run` can reuse it."""
-        overrides = {("container", "start"): _WslcResult(1, "", "WSLC_E_CONTAINER_CORRUPT")}
+        overrides = {("container", "start"): _WslcResult(1, b"", b"WSLC_E_CONTAINER_CORRUPT")}
         backend, fake = _backend_with(_machine(stopped=[_NAME], overrides=overrides))
         asyncio.run(backend.acquire(_KEY, _SPEC))
 
@@ -317,13 +317,13 @@ class TestAcquireRecoversFromANameConflict:
             if args[:2] == ("container", "list"):
                 if "--format" in args:
                     payload = [{"Id": f"id-{n}", "Name": n} for n in present]
-                    return _WslcResult(0, json.dumps(payload), "")
-                return _WslcResult(0, "".join(f"id-{n}\n" for n in present), "")
+                    return _WslcResult(0, json.dumps(payload).encode(), b"")
+                return _WslcResult(0, "".join(f"id-{n}\n" for n in present).encode(), b"")
             if args[:2] == ("container", "run"):
                 if running_after_the_conflict:
                     present.append(_NAME)
-                return _WslcResult(1, "", "Error code: ERROR_ALREADY_EXISTS")
-            return _WslcResult(0, "", "")
+                return _WslcResult(1, b"", b"Error code: ERROR_ALREADY_EXISTS")
+            return _WslcResult(0, b"", b"")
 
         return _backend_with(respond)
 
@@ -343,7 +343,7 @@ class TestAcquireRecoversFromANameConflict:
         assert len(fake.matching("container", "run")) == 1
 
     def test_any_other_create_failure_still_raises(self):
-        overrides = {("container", "run"): _WslcResult(1, "", "WSLC_E_IMAGE_NOT_FOUND")}
+        overrides = {("container", "run"): _WslcResult(1, b"", b"WSLC_E_IMAGE_NOT_FOUND")}
         backend, _ = _backend_with(_machine(overrides=overrides))
 
         with pytest.raises(RuntimeError, match="WSLC_E_IMAGE_NOT_FOUND"):
@@ -396,7 +396,7 @@ class TestExecArgv:
 
 class TestExecResult:
     def test_stdout_stderr_and_exit_code_are_mapped_verbatim(self):
-        overrides = {("container", "exec"): _WslcResult(7, "out\n", "err\n")}
+        overrides = {("container", "exec"): _WslcResult(7, b"out\n", b"err\n")}
         backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
         sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
         result = asyncio.run(sandbox.exec(["false"], working_directory="/w", timeout=5))
@@ -494,7 +494,7 @@ class TestWriteFile:
     def test_a_failed_copy_raises(self):
         """A write that silently did nothing would surface as a compiler error about a file
         the workload believes it just wrote."""
-        overrides = {("container", "cp"): _WslcResult(1, "", "WSLC_E_PATH_NOT_FOUND")}
+        overrides = {("container", "cp"): _WslcResult(1, b"", b"WSLC_E_PATH_NOT_FOUND")}
         backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
         sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
 
@@ -523,7 +523,7 @@ class TestDispose:
 
     def test_a_container_that_is_already_gone_is_not_an_error(self, caplog):
         """A `remove` of a missing container exits 1 — judged by stderr, not by the code."""
-        not_found = _WslcResult(1, "", "Error code: WSLC_E_CONTAINER_NOT_FOUND\n")
+        not_found = _WslcResult(1, b"", b"Error code: WSLC_E_CONTAINER_NOT_FOUND\n")
         backend, _ = _backend_with(_machine(overrides={("container", "remove"): not_found}))
 
         with caplog.at_level(logging.WARNING, logger="maf_sandbox_wslc"):
@@ -537,7 +537,7 @@ class TestDispose:
     def test_the_fallback_reaches_every_kind_this_process_remembers(self):
         """One key may own one container per kind; a dispose with a failing listing must
         reclaim all of them, not whichever one a single-slot registry kept last."""
-        overrides = {("container", "list"): _WslcResult(1, "", "WSLC_E_SERVICE_UNAVAILABLE")}
+        overrides = {("container", "list"): _WslcResult(1, b"", b"WSLC_E_SERVICE_UNAVAILABLE")}
         backend, fake = _backend_with(_machine(overrides=overrides))
         backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = "name-bicep"
         backend._registry[("scope-a", "thread-1", "devops-engineer", "codeact")] = "name-codeact"
@@ -577,7 +577,7 @@ class TestDisposeScope:
 
     def test_a_container_this_process_created_survives_a_failing_listing(self):
         """The labels are the source of truth; the registry is what is left when they fail."""
-        overrides = {("container", "list"): _WslcResult(1, "", "WSLC_E_SERVICE_UNAVAILABLE")}
+        overrides = {("container", "list"): _WslcResult(1, b"", b"WSLC_E_SERVICE_UNAVAILABLE")}
         backend, fake = _backend_with(_machine(overrides=overrides))
         backend._registry[("scope-a", "thread-1", "devops", "bicep")] = "name-x"
 
@@ -671,9 +671,8 @@ class TestLabelValues:
 class TestTheSeam:
     """`sys.executable` stands in for `wslc.exe`: same subprocess handling, no WSL needed."""
 
-    def test_stdout_stderr_and_exit_code_come_back_decoded(self):
-        """`wslc` pipes a container's own bytes through untouched, and they are UTF-8 — so the
-        child here writes bytes rather than text, which is what the seam actually receives."""
+    def test_stdout_stderr_and_exit_code_come_back_as_raw_bytes(self):
+        """The seam must not decode: a tar stream on stdout has to survive it untouched."""
         backend = WslcSandboxBackend(WslcSandboxConfig(wslc_path=sys.executable))
         script = (
             "import sys; sys.stdout.buffer.write('naïve'.encode()); "
@@ -681,14 +680,27 @@ class TestTheSeam:
         )
         result = asyncio.run(backend._wslc("-c", script, timeout=30))
 
-        assert (result.returncode, result.stdout, result.stderr) == (3, "naïve", "ünï")
+        assert (result.returncode, result.stdout, result.stderr) == (
+            3,
+            "naïve".encode(),
+            "ünï".encode(),
+        )
+
+    def test_stdout_text_decodes_leniently_rather_than_raising(self):
+        """A malformed byte in a diagnostic must reach a log, not raise past it."""
+        backend = WslcSandboxBackend(WslcSandboxConfig(wslc_path=sys.executable))
+        script = "import sys; sys.stdout.buffer.write(b'ok \\xff ok')"
+        result = asyncio.run(backend._wslc("-c", script, timeout=30))
+
+        assert result.stdout == b"ok \xff ok"
+        assert result.stdout_text == "ok � ok"
 
     def test_stdin_reaches_the_process(self):
         backend = WslcSandboxBackend(WslcSandboxConfig(wslc_path=sys.executable))
         script = "import sys; sys.stdout.write(sys.stdin.buffer.read().decode())"
         result = asyncio.run(backend._wslc("-c", script, stdin=b"tar bytes", timeout=30))
 
-        assert result.stdout == "tar bytes"
+        assert result.stdout == b"tar bytes"
 
     def test_a_timeout_kills_the_process_and_propagates(self, monkeypatch):
         """`TimeoutError` propagating is the workload's cue to report a hang as a diagnostic;
@@ -810,7 +822,7 @@ class TestAgainstRealWslcOutput:
 
     def _seam(self):
         payload = self._payload()
-        return _backend_with(lambda args: _WslcResult(0, payload, ""))
+        return _backend_with(lambda args: _WslcResult(0, payload.encode("utf-8"), b""))
 
     def test_the_exact_name_is_found_in_real_output(self):
         backend, _ = self._seam()
@@ -1052,7 +1064,7 @@ class TestAllowlistTopology:
             if args[:2] == ("container", "logs"):
                 logs_seen += 1
                 if logs_seen < 3:
-                    return _WslcResult(0, "", "")
+                    return _WslcResult(0, b"", b"")
             return _machine()(args)
 
         backend, fake = _backend_with(respond, config=_ALLOW_CONFIG)
@@ -1063,7 +1075,9 @@ class TestAllowlistTopology:
         assert fake.calls.index(_run_named(fake, _AL)) > last_logs
 
     def test_an_existing_network_is_adopted(self):
-        overrides = {("network", "create"): _WslcResult(1, "", "Error code: ERROR_ALREADY_EXISTS")}
+        overrides = {
+            ("network", "create"): _WslcResult(1, b"", b"Error code: ERROR_ALREADY_EXISTS")
+        }
         backend, fake = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
         asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
 
@@ -1072,7 +1086,7 @@ class TestAllowlistTopology:
     def test_a_missing_proxy_image_error_names_the_build_recipe(self):
         def respond(args):
             if args[:2] == ("container", "run") and _AL_PROXY in args:
-                return _WslcResult(1, "", "WSLC_E_IMAGE_NOT_FOUND")
+                return _WslcResult(1, b"", b"WSLC_E_IMAGE_NOT_FOUND")
             return _machine()(args)
 
         backend, fake = _backend_with(respond, config=_ALLOW_CONFIG)
@@ -1086,7 +1100,7 @@ class TestAllowlistTopology:
 
         def respond(args):
             if args[:3] == ("network", "connect", "bridge"):
-                return _WslcResult(1, "", "E_FAIL")
+                return _WslcResult(1, b"", b"E_FAIL")
             return _machine()(args)
 
         backend, _ = _backend_with(respond, config=_ALLOW_CONFIG)
@@ -1099,7 +1113,7 @@ class TestAllowlistTopology:
 
         def respond(args):
             if args[:2] == ("container", "logs"):
-                return _WslcResult(0, "starting up\n", "")  # never the readiness marker
+                return _WslcResult(0, b"starting up\n", b"")  # never the readiness marker
             return _machine()(args)
 
         backend, fake = _backend_with(respond, config=_ALLOW_CONFIG)
@@ -1223,7 +1237,7 @@ class TestAllowlistTeardown:
     def test_dispose_scope_registry_fallback_sweeps_the_proxy_and_network(self):
         # H2: when the listing fails, the remembered workload name must still take its proxy
         # and network with it, not just the workload.
-        overrides = {("container", "list"): _WslcResult(1, "", "WSLC_E_SERVICE_UNAVAILABLE")}
+        overrides = {("container", "list"): _WslcResult(1, b"", b"WSLC_E_SERVICE_UNAVAILABLE")}
         backend, fake = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
         backend._registry[("scope-a", "thread-1", "devops", "bicep")] = _AL
 
