@@ -1,15 +1,15 @@
 """Tests for the sandbox router.
 
-The router has exactly three jobs, and all of them are tested here rather than inferred:
+The router has exactly four jobs, and all of them are tested here rather than inferred:
 
 - picking a backend from configuration;
-- refusing a backend weaker than a VM boundary when the host says it is deployed;
+- refusing a backend below the minimum-isolation floor the host — or a spec — requires;
+- refusing a backend that cannot do what a workload's spec requires;
 - refusing a backend that cannot confine egress to what a workload's spec allows.
 
-The last two are security properties. A security review put execution in a VM-isolated
-sandbox because a shared-kernel container sits next to the host's credentials, and the
-security posture doc's threat-model rows now rest on that — so "the router would refuse"
-needs to be a test, not a comment.
+The floor and the egress rule are security properties. A shared-kernel container sits next
+to the host's credentials, and the posture a deployment claims rests on the boundary it
+actually got — so "the router would refuse" needs to be a test, not a comment.
 """
 
 from __future__ import annotations
@@ -19,15 +19,21 @@ import asyncio
 import pytest
 
 from maf_sandbox import (
+    DEFAULT_CAPABILITIES,
+    ISOLATION_RANK,
+    Capability,
     Egress,
     Isolation,
     NoSandboxBackend,
     SandboxBackend,
+    SandboxBackendNotPermitted,
+    SandboxCapabilityNotSupported,
     SandboxEgressNotEnforced,
     SandboxKey,
     SandboxPurger,
     SandboxRouter,
     SandboxSpec,
+    meets_floor,
 )
 from maf_sandbox.testing import InProcessSandboxBackend
 
@@ -50,6 +56,8 @@ class TestProtocolConformance:
 
 
 class TestSelection:
+    """Every fake here declares `process` isolation, so these routers opt below the floor."""
+
     def test_no_backends_means_not_enabled(self):
         router = SandboxRouter([])
         assert router.enabled is False
@@ -60,7 +68,7 @@ class TestSelection:
             InProcessSandboxBackend(name="first"),
             InProcessSandboxBackend(name="second"),
         )
-        router = SandboxRouter([first, second])
+        router = SandboxRouter([first, second], min_isolation=Isolation.PROCESS)
         assert router.backend is first
         assert router.enabled is True
 
@@ -69,12 +77,14 @@ class TestSelection:
             InProcessSandboxBackend(name="first"),
             InProcessSandboxBackend(name="second"),
         )
-        assert SandboxRouter([first, second], selected="second").backend is second
+        router = SandboxRouter([first, second], min_isolation=Isolation.PROCESS, selected="second")
+        assert router.backend is second
 
     def test_unknown_name_raises_with_the_registered_ones_named(self):
         with pytest.raises(NoSandboxBackend, match="registered: aca, fake"):
             SandboxRouter(
                 [InProcessSandboxBackend(name="fake"), InProcessSandboxBackend(name="aca")],
+                min_isolation=Isolation.PROCESS,
                 selected="docker",
             )
 
@@ -84,50 +94,208 @@ class TestSelection:
 
     def test_acquire_delegates_to_the_selected_backend(self):
         backend = InProcessSandboxBackend()
-        sandbox = asyncio.run(SandboxRouter([backend]).acquire(_KEY, _SPEC))
+        router = SandboxRouter([backend], min_isolation=Isolation.PROCESS)
+        sandbox = asyncio.run(router.acquire(_KEY, _SPEC))
         assert backend.keys == [_KEY]
         assert sandbox is backend.sandbox
 
 
-class TestDeployedIsolationRule:
-    """`SANDBOX_BACKEND=docker` + deployed must fail closed — a hard constraint on the router."""
+class TestIsolationLadder:
+    """The ladder is data, and its order is load-bearing: `meets_floor` is a rank comparison."""
 
-    def test_vm_isolation_is_permitted_when_deployed(self):
-        router = SandboxRouter([InProcessSandboxBackend(isolation=Isolation.VM)], deployed=True)
+    def test_every_member_is_ranked(self):
+        """An unranked rung would raise `KeyError` inside a policy check, at attach time."""
+        assert set(ISOLATION_RANK) == set(Isolation)
+
+    def test_the_ranks_are_dense_and_distinct(self):
+        assert sorted(ISOLATION_RANK.values()) == list(range(len(Isolation)))
+
+    def test_the_order_runs_from_no_boundary_to_the_strongest_one(self):
+        assert list(ISOLATION_RANK) == [
+            Isolation.PROCESS,
+            Isolation.RUNTIME,
+            Isolation.CONTAINER,
+            Isolation.HARDENED_CONTAINER,
+            Isolation.MICROVM,
+            Isolation.VM,
+        ]
+
+    def test_a_rung_compares_and_serializes_as_its_string_value(self):
+        """Declarations and configuration are plain strings; `StrEnum` keeps them working."""
+        assert Isolation.CONTAINER == "container"
+        assert str(Isolation.CONTAINER) == "container"
+        assert Isolation(str(Isolation.CONTAINER)) is Isolation.CONTAINER
+
+    def test_an_unknown_string_does_not_become_a_rung(self):
+        """The constructor's `ValueError` *is* the refuse-unknown policy."""
+        with pytest.raises(ValueError, match="quantum"):
+            Isolation("quantum")
+
+    @pytest.mark.parametrize(
+        ("declared", "permitted"),
+        [
+            (Isolation.CONTAINER, False),
+            (Isolation.HARDENED_CONTAINER, False),
+            (Isolation.MICROVM, True),
+            (Isolation.VM, True),
+        ],
+    )
+    def test_meets_floor_admits_the_floor_itself_and_everything_above_it(self, declared, permitted):
+        assert meets_floor(declared, Isolation.MICROVM) is permitted
+
+
+class TestIsolationFloor:
+    """Supersedes the deployed-isolation rule: the host declares a minimum-isolation floor.
+
+    (Two-axis sandbox policy, axis 1.) `deployed=True` was one boolean standing in for "at
+    least a hypervisor boundary". A floor says which rung, defaults to that rung, and makes a
+    developer machine opt down explicitly rather than depend on a flag nobody set.
+    """
+
+    def test_the_default_floor_is_a_micro_vm(self):
+        """A host that configures nothing gets the production posture."""
+        router = SandboxRouter([InProcessSandboxBackend(isolation=Isolation.MICROVM)])
         assert router.enabled is True
 
-    @pytest.mark.parametrize("isolation", [Isolation.CONTAINER, Isolation.PROCESS])
-    def test_weaker_isolation_is_refused_when_deployed(self, isolation):
-        with pytest.raises(PermissionError, match="not permitted in a deployed environment"):
-            SandboxRouter(
-                [InProcessSandboxBackend(name="docker", isolation=isolation)], deployed=True
-            )
+    @pytest.mark.parametrize(
+        "isolation",
+        [
+            Isolation.PROCESS,
+            Isolation.RUNTIME,
+            Isolation.CONTAINER,
+            Isolation.HARDENED_CONTAINER,
+        ],
+    )
+    def test_a_backend_below_the_default_floor_is_refused(self, isolation):
+        with pytest.raises(SandboxBackendNotPermitted, match="minimum-isolation floor"):
+            SandboxRouter([InProcessSandboxBackend(name="docker", isolation=isolation)])
 
     def test_the_refusal_happens_at_construction_not_at_first_use(self):
         """A misconfigured deployment must not start with the feature apparently enabled."""
-        with pytest.raises(PermissionError):
-            SandboxRouter(
-                [InProcessSandboxBackend(name="docker", isolation=Isolation.CONTAINER)],
-                deployed=True,
-            )
+        with pytest.raises(SandboxBackendNotPermitted):
+            SandboxRouter([InProcessSandboxBackend(name="docker", isolation=Isolation.CONTAINER)])
 
-    def test_weaker_isolation_is_fine_locally(self):
+    def test_a_host_opts_down_explicitly(self):
         router = SandboxRouter(
-            [InProcessSandboxBackend(name="docker", isolation=Isolation.CONTAINER)], deployed=False
+            [InProcessSandboxBackend(name="docker", isolation=Isolation.CONTAINER)],
+            min_isolation=Isolation.CONTAINER,
         )
         assert router.enabled is True
+
+    def test_a_stricter_floor_refuses_the_rung_below_it(self):
+        """A host that wants dedicated infrastructure raises the floor above `microvm`."""
+        with pytest.raises(SandboxBackendNotPermitted, match="minimum-isolation floor"):
+            SandboxRouter(
+                [InProcessSandboxBackend(isolation=Isolation.MICROVM)], min_isolation=Isolation.VM
+            )
+
+    def test_an_unknown_isolation_value_is_refused_at_any_floor(self):
+        """Refused, not guessed at: the router cannot rank a rung it has never heard of."""
+        with pytest.raises(SandboxBackendNotPermitted, match="not a rung"):
+            SandboxRouter(
+                [InProcessSandboxBackend(name="lab", isolation="quantum")],
+                min_isolation=Isolation.PROCESS,
+            )
 
     def test_it_refuses_rather_than_falling_back_to_a_stronger_backend(self):
         """Falling back would hide the misconfiguration — the whole reason this is an error."""
         docker = InProcessSandboxBackend(name="docker", isolation=Isolation.CONTAINER)
-        aca = InProcessSandboxBackend(name="aca", isolation=Isolation.VM)
-        with pytest.raises(PermissionError):
-            SandboxRouter([docker, aca], deployed=True, selected="docker")
+        aca = InProcessSandboxBackend(name="aca", isolation=Isolation.MICROVM)
+        with pytest.raises(SandboxBackendNotPermitted):
+            SandboxRouter([docker, aca], selected="docker")
 
     def test_an_unselected_weak_backend_does_not_poison_a_valid_selection(self):
         docker = InProcessSandboxBackend(name="docker", isolation=Isolation.CONTAINER)
-        aca = InProcessSandboxBackend(name="aca", isolation=Isolation.VM)
-        assert SandboxRouter([aca, docker], deployed=True, selected="aca").backend is aca
+        aca = InProcessSandboxBackend(name="aca", isolation=Isolation.MICROVM)
+        assert SandboxRouter([aca, docker], selected="aca").backend is aca
+
+
+class TestSpecFloorRaise:
+    """A spec may raise the host's floor and never lower it — the owners stay separate.
+
+    How strong the boundary must be *here* is the host's policy; "this kind refuses to run
+    below `microvm` anywhere" is a property of the workload.
+    """
+
+    def _router(self, isolation: Isolation, floor: Isolation) -> SandboxRouter:
+        return SandboxRouter([InProcessSandboxBackend(isolation=isolation)], min_isolation=floor)
+
+    def test_a_spec_asking_above_the_backends_rung_is_refused(self):
+        router = self._router(Isolation.CONTAINER, Isolation.CONTAINER)
+        with pytest.raises(SandboxBackendNotPermitted, match="requires at least"):
+            router.ensure_can_serve(SandboxSpec(kind="codeact", min_isolation=Isolation.MICROVM))
+
+    def test_a_spec_asking_for_exactly_the_backends_rung_is_served(self):
+        router = self._router(Isolation.CONTAINER, Isolation.CONTAINER)
+        router.ensure_can_serve(SandboxSpec(kind="codeact", min_isolation=Isolation.CONTAINER))
+
+    def test_a_spec_below_the_hosts_floor_leaves_it_where_it_was(self):
+        """The effective floor is the stricter of the two, so a lax spec changes nothing."""
+        router = self._router(Isolation.MICROVM, Isolation.MICROVM)
+        router.ensure_can_serve(SandboxSpec(kind="codeact", min_isolation=Isolation.PROCESS))
+
+    def test_a_spec_with_no_opinion_leaves_the_floor_to_the_host(self):
+        self._router(Isolation.PROCESS, Isolation.PROCESS).ensure_can_serve(_SPEC)
+
+
+class _BackendWithoutCapabilities:
+    """A backend written before the capability axis existed: it declares what it had.
+
+    Written out rather than subclassed, because the fake now always has the property.
+    """
+
+    name = "legacy"
+    isolation = Isolation.MICROVM
+    egress = Egress.ALLOWLIST
+
+    async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> object:
+        return object()
+
+    async def dispose(self, key: SandboxKey) -> None:
+        return None
+
+    async def dispose_scope(self, scope: str, thread_id: str) -> int:
+        return 0
+
+
+class TestCapabilityMatch:
+    """What a backend can *do*, matched against what a workload needs — axis 2.
+
+    Its own exception, because the fix is its own: register a backend that implements the
+    capability, or ask for less. Nothing here is a boundary claim.
+    """
+
+    def _router(self, **kwargs) -> SandboxRouter:
+        return SandboxRouter([InProcessSandboxBackend(**kwargs)], min_isolation=Isolation.PROCESS)
+
+    def test_a_capability_compares_as_its_string_value(self):
+        assert Capability.RUN_CODE == "run_code"
+
+    def test_the_default_set_is_what_every_sandbox_already_owes(self):
+        assert DEFAULT_CAPABILITIES == frozenset({Capability.EXEC, Capability.FILES_IN})
+
+    def test_a_backend_declaring_a_superset_serves_the_spec(self):
+        router = self._router(capabilities=DEFAULT_CAPABILITIES | {Capability.RUN_CODE})
+        router.ensure_can_serve(
+            SandboxSpec(kind="codeact", requires=frozenset({Capability.RUN_CODE}))
+        )
+
+    def test_a_missing_capability_is_refused_and_named(self):
+        with pytest.raises(SandboxCapabilityNotSupported, match="run_code"):
+            self._router().ensure_can_serve(
+                SandboxSpec(
+                    kind="codeact", requires=frozenset({Capability.EXEC, Capability.RUN_CODE})
+                )
+            )
+
+    def test_a_backend_that_declares_nothing_is_read_as_the_default_set(self):
+        """Silence is a functionality claim, not a safety one — `Sandbox` already owes both."""
+        router = SandboxRouter([_BackendWithoutCapabilities()])
+        router.ensure_can_serve(SandboxSpec(kind="test"))
+        with pytest.raises(SandboxCapabilityNotSupported):
+            router.ensure_can_serve(
+                SandboxSpec(kind="codeact", requires=frozenset({Capability.FILES_OUT}))
+            )
 
 
 class _BackendWithoutEgress:
@@ -161,11 +329,18 @@ class TestEgressRule:
     _CLOSED_SPEC = SandboxSpec(kind="bicep")
 
     def _router(self, egress: str) -> SandboxRouter:
-        return SandboxRouter([InProcessSandboxBackend(egress=egress)])
+        return SandboxRouter(
+            [InProcessSandboxBackend(egress=egress)], min_isolation=Isolation.PROCESS
+        )
 
     @pytest.mark.parametrize("spec", [_ALLOWLIST_SPEC, _CLOSED_SPEC])
     def test_an_allowlist_backend_serves_any_spec(self, spec: SandboxSpec):
         self._router(Egress.ALLOWLIST).ensure_can_serve(spec)
+
+    def test_a_declaration_still_matches_when_it_is_a_plain_string(self):
+        """Backends outside this repository declare strings; `StrEnum` keeps them matching."""
+        assert Egress.ALLOWLIST == "allowlist"
+        self._router("allowlist").ensure_can_serve(self._ALLOWLIST_SPEC)
 
     def test_a_closed_backend_serves_a_spec_that_wants_no_network(self, caplog):
         with caplog.at_level("WARNING"):
@@ -202,27 +377,28 @@ class TestPurge:
             InProcessSandboxBackend(name="first"),
             InProcessSandboxBackend(name="second"),
         )
-        total = asyncio.run(SandboxRouter([first, second]).dispose_scope("scope-a", "thread-1"))
+        router = SandboxRouter([first, second], min_isolation=Isolation.PROCESS)
+        total = asyncio.run(router.dispose_scope("scope-a", "thread-1"))
         assert total == 2
         assert first.purged == second.purged == [("scope-a", "thread-1")]
 
     def test_a_failing_backend_does_not_stop_the_others(self):
         good = InProcessSandboxBackend(name="good")
-        total = asyncio.run(
-            SandboxRouter([_ExplodingBackend(name="bad"), good]).dispose_scope(
-                "scope-a", "thread-1"
-            )
+        router = SandboxRouter(
+            [_ExplodingBackend(name="bad"), good], min_isolation=Isolation.PROCESS
         )
+        total = asyncio.run(router.dispose_scope("scope-a", "thread-1"))
         assert total == 1
         assert good.purged == [("scope-a", "thread-1")]
 
     def test_dispose_never_raises(self):
-        asyncio.run(SandboxRouter([_ExplodingBackend()]).dispose(_KEY))
+        router = SandboxRouter([_ExplodingBackend()], min_isolation=Isolation.PROCESS)
+        asyncio.run(router.dispose(_KEY))
 
     def test_purger_is_duck_typed_on_purge_scoped_thread(self):
         """The host awaits this without importing the class, so the name is the contract."""
         backend = InProcessSandboxBackend()
-        purger = SandboxPurger(SandboxRouter([backend]))
+        purger = SandboxPurger(SandboxRouter([backend], min_isolation=Isolation.PROCESS))
         assert asyncio.run(purger.purge_scoped_thread("scope-a", "thread-1")) == 1
         assert backend.purged == [("scope-a", "thread-1")]
 
@@ -236,6 +412,42 @@ class TestSpecDefaults:
         a, b = SandboxSpec(kind="a"), SandboxSpec(kind="b")
         a.labels["x"] = "1"
         assert b.labels == {}
+
+    def test_it_requires_only_what_every_sandbox_already_owes(self):
+        """So a spec written before the capability axis asks for nothing new."""
+        assert SandboxSpec(kind="test").requires == DEFAULT_CAPABILITIES
+
+    def test_it_states_no_isolation_opinion(self):
+        """`None`, not `PROCESS` — the second would be an opinion, and the weakest one."""
+        assert SandboxSpec(kind="test").min_isolation is None
+
+
+class TestPolicyVocabularyExports:
+    """The package's public vocabulary — a name a host cannot import is a name it cannot use."""
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Capability",
+            "DEFAULT_CAPABILITIES",
+            "ISOLATION_RANK",
+            "Isolation",
+            "SandboxCapabilityNotSupported",
+            "meets_floor",
+        ],
+    )
+    def test_the_two_axes_are_importable_from_the_package(self, name: str):
+        import maf_sandbox
+
+        assert name in maf_sandbox.__all__
+        assert hasattr(maf_sandbox, name)
+
+    def test_the_deployed_isolation_set_is_gone(self):
+        """Superseded by the minimum-isolation floor (two-axis sandbox policy, axis 1)."""
+        import maf_sandbox
+
+        assert not hasattr(maf_sandbox, "DEPLOYED_ISOLATION")
+        assert "DEPLOYED_ISOLATION" not in maf_sandbox.__all__
 
 
 #: The modules the stdlib-only claim covers, named one by one.  An **allowlist**, not a

@@ -1,8 +1,8 @@
 """Backend selection: the layer between a host application and any sandbox provider.
 
-``app -> SandboxRouter -> backend -> the sandbox itself``.  The router owns two things no
-individual backend can own: **which** backend serves a request, and the rule that a weaker
-boundary is never selected in a deployed environment.
+``app -> SandboxRouter -> backend -> the sandbox itself``.  The router owns what no
+individual backend can own: **which** backend serves a request, and the three rules that
+decide whether it may — a minimum-isolation floor, a capability match, and the egress rule.
 """
 
 from __future__ import annotations
@@ -10,23 +10,33 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 
-from ._protocol import Egress, Isolation, Sandbox, SandboxBackend, SandboxKey, SandboxSpec
+from ._protocol import (
+    DEFAULT_CAPABILITIES,
+    ISOLATION_RANK,
+    Capability,
+    Egress,
+    Isolation,
+    Sandbox,
+    SandboxBackend,
+    SandboxKey,
+    SandboxSpec,
+    meets_floor,
+)
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "DEPLOYED_ISOLATION",
     "NoSandboxBackend",
     "SandboxBackendNotPermitted",
+    "SandboxCapabilityNotSupported",
     "SandboxEgressNotEnforced",
     "SandboxRouter",
 ]
 
-#: The only isolation level permitted when the host reports it is running deployed.
-#: A hardened container runtime (gVisor, Kata, Firecracker) is deliberately NOT in this set:
-#: the security-posture doc's claims are written against a hypervisor boundary, so admitting
-#: anything else is a decision to be made there first, not here.
-DEPLOYED_ISOLATION = frozenset({Isolation.VM})
+
+#: The rungs, weakest first, rendered once for the refusal messages: a host that is refused
+#: needs to see what the ladder is, not only which rung it missed.
+_LADDER = ", ".join(map(str, ISOLATION_RANK))
 
 
 class NoSandboxBackend(LookupError):
@@ -34,11 +44,21 @@ class NoSandboxBackend(LookupError):
 
 
 class SandboxBackendNotPermitted(PermissionError):
-    """The selected backend's isolation is too weak for a deployed environment.
+    """The selected backend's boundary is below the floor the host — or a spec — requires.
 
     Raised rather than degraded on purpose.  Silently falling back to a stronger backend
     would hide a misconfiguration, and silently proceeding with the weaker one would break
-    the claim the posture doc makes about every execution surface.
+    the boundary every claim about the execution surface rests on.
+    """
+
+
+class SandboxCapabilityNotSupported(RuntimeError):
+    """The selected backend cannot do something the workload's spec requires.
+
+    A functionality mismatch rather than a safety one — its own exception because its fix is
+    its own: register a backend that implements the capability, or ask for less.  A workload
+    allowed to proceed without it fails inside the sandbox instead, where the reason is
+    hardest to see.
     """
 
 
@@ -51,33 +71,52 @@ class SandboxEgressNotEnforced(PermissionError):
     """
 
 
+def _declared_isolation(backend: SandboxBackend) -> Isolation:
+    """The rung ``backend`` claims, refusing any value this package does not recognise.
+
+    The enum constructor *is* the refuse-unknown policy: a value nobody ranked cannot be
+    compared against a floor, and guessing in either direction is worse than stopping.
+    """
+    raw = str(backend.isolation)
+    try:
+        return Isolation(raw)
+    except ValueError as exc:
+        raise SandboxBackendNotPermitted(
+            f"sandbox backend {backend.name!r} declares {raw!r} isolation, which is not a "
+            f"rung on the ladder ({_LADDER}). Refused rather than ranked: nothing here can "
+            "tell whether an unrecognised boundary is stronger or weaker than the floor."
+        ) from exc
+
+
 class SandboxRouter:
     """Routes a sandbox request to a backend.
 
     Args:
         backends: The registered backends, in preference order.
-        deployed: Whether the host is running deployed. The host decides this — it is the
-            same signal it already uses elsewhere — and the router treats it as ground truth.
+        min_isolation: The weakest boundary this host accepts. Defaults to
+            :data:`Isolation.MICROVM`, so a host that configures nothing gets the production
+            posture and a developer machine opts down explicitly — there is nothing to
+            forget.
         selected: Name of the backend to use. ``None`` picks the first registered one, which
             with a single backend is the whole selection story and stays correct when more
             arrive.
 
     Raises:
-        SandboxBackendNotPermitted: at construction, when a deployed host is configured with
-            a backend weaker than :data:`DEPLOYED_ISOLATION`. Failing here rather than at
-            first use means a misconfigured deployment cannot start with the feature
-            apparently enabled and quietly unsafe.
+        SandboxBackendNotPermitted: at construction, when the selected backend declares a
+            rung below ``min_isolation`` or one this package does not recognise. Failing
+            here rather than at first use means a misconfigured deployment cannot start with
+            the feature apparently enabled and quietly unsafe.
     """
 
     def __init__(
         self,
         backends: Sequence[SandboxBackend],
         *,
-        deployed: bool = False,
+        min_isolation: Isolation = Isolation.MICROVM,
         selected: str | None = None,
     ) -> None:
         self._backends = list(backends)
-        self._deployed = deployed
+        self._min_isolation = min_isolation
         self._selected_name = selected
         self._backend = self._resolve()
 
@@ -96,13 +135,15 @@ class SandboxRouter:
                 )
             backend = matches[0]
 
-        if self._deployed and backend.isolation not in DEPLOYED_ISOLATION:
+        declared = _declared_isolation(backend)
+        if not meets_floor(declared, self._min_isolation):
             raise SandboxBackendNotPermitted(
-                f"sandbox backend {backend.name!r} has {backend.isolation!r} isolation, "
-                f"which is not permitted in a deployed environment "
-                f"(permitted: {', '.join(sorted(DEPLOYED_ISOLATION))}). "
-                "A shared-kernel boundary sits next to the host's credentials, which is "
-                "why it is not accepted here."
+                f"sandbox backend {backend.name!r} declares {str(declared)!r} isolation, "
+                f"below this host's {str(self._min_isolation)!r} minimum-isolation floor "
+                f"(ladder, weakest first: {_LADDER}). Refused rather than degraded: falling "
+                "back to a stronger backend would hide the misconfiguration, and proceeding "
+                "with the weaker one would break the boundary the host asked for. A host "
+                "that means to run here lowers the floor explicitly with min_isolation."
             )
         return backend
 
@@ -116,23 +157,60 @@ class SandboxRouter:
         """Whether any backend is available. A host should attach no tools when ``False``."""
         return self._backend is not None
 
+    def _effective_floor(self, spec: SandboxSpec) -> Isolation:
+        """The stricter of the host's floor and the spec's — a spec may raise, never lower."""
+        if spec.min_isolation is None:
+            return self._min_isolation
+        return max(self._min_isolation, spec.min_isolation, key=ISOLATION_RANK.__getitem__)
+
     def ensure_can_serve(self, spec: SandboxSpec) -> None:
-        """Raise unless the selected backend can confine egress to what ``spec`` allows.
+        """Raise unless the selected backend can serve ``spec``: floor, capabilities, egress.
 
         Called for you by :func:`maf_sandbox.maf.sandboxed_tool`, and it is also the whole of
         a host's own wiring test::
 
             router.ensure_can_serve(bicep_sandbox_spec())
 
-        Confining more than the spec asks is permitted and warned about; confining less is
-        refused (see :class:`~maf_sandbox.Egress`).  With no backend configured this returns:
-        nothing runs, so nothing reaches anything.
+        Confining more egress than the spec asks is permitted and warned about; confining
+        less is refused (see :class:`~maf_sandbox.Egress`).  With no backend configured this
+        returns: nothing runs, so nothing reaches anything.
 
         Raises:
-            SandboxEgressNotEnforced: when the backend cannot meet this spec.
+            SandboxBackendNotPermitted: when the spec raises the floor above what the backend
+                declares.
+            SandboxCapabilityNotSupported: when the backend cannot do what the spec requires.
+            SandboxEgressNotEnforced: when the backend cannot confine egress to this spec.
         """
         if self._backend is None:
             return
+
+        floor = self._effective_floor(spec)
+        declared = _declared_isolation(self._backend)
+        if not meets_floor(declared, floor):
+            raise SandboxBackendNotPermitted(
+                f"the {spec.kind!r} workload requires at least {str(floor)!r} isolation, and "
+                f"sandbox backend {self._backend.name!r} declares {str(declared)!r} "
+                f"(ladder, weakest first: {_LADDER}). A spec may raise this host's floor and "
+                "never lower it, so the workload is refused here rather than served behind a "
+                "boundary it was written not to trust."
+            )
+
+        # Silence here is a functionality claim, not a safety one — unlike egress below: a
+        # backend written before this declaration existed still owes what `Sandbox` obliges.
+        capabilities: frozenset[Capability] = getattr(
+            self._backend, "capabilities", DEFAULT_CAPABILITIES
+        )
+        missing = spec.requires - capabilities
+        if missing:
+            raise SandboxCapabilityNotSupported(
+                f"sandbox backend {self._backend.name!r} does not support "
+                f"{', '.join(sorted(missing))}, which the {spec.kind!r} workload requires "
+                f"(it declares {', '.join(sorted(capabilities)) or 'nothing'}). Refused "
+                "rather than attempted: a workload that reaches for a capability the backend "
+                "never implemented fails inside the sandbox, where the reason is hardest to "
+                "see."
+            )
+
         # Silence is read as enforcing nothing, not excused: a backend written before this
         # property existed cannot have been enforcing an allowlist it never read.
         egress = getattr(self._backend, "egress", Egress.UNRESTRICTED)
@@ -149,11 +227,12 @@ class SandboxRouter:
                 )
             return
         raise SandboxEgressNotEnforced(
-            f"sandbox backend {self._backend.name!r} declares {egress!r} egress, which "
+            f"sandbox backend {self._backend.name!r} declares {str(egress)!r} egress, which "
             f"cannot enforce the {spec.kind!r} workload's allowlist "
             f"({', '.join(spec.egress_allow) or 'no network at all'}). "
-            f"A backend must declare one of {Egress.ALLOWLIST!r} or {Egress.CLOSED!r} to "
-            "serve a workload at all — everything a spec does not name is meant to be denied."
+            f"A backend must declare one of {str(Egress.ALLOWLIST)!r} or "
+            f"{str(Egress.CLOSED)!r} to serve a workload at all — everything a spec does not "
+            "name is meant to be denied."
         )
 
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> Sandbox:

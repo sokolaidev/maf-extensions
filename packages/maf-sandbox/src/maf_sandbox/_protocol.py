@@ -12,11 +12,15 @@ The split is what lets the same tool run against any of them unchanged, and it i
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
 __all__ = [
+    "DEFAULT_CAPABILITIES",
+    "ISOLATION_RANK",
+    "Capability",
     "Egress",
     "ExecResult",
     "Isolation",
@@ -25,30 +29,66 @@ __all__ = [
     "SandboxKey",
     "SandboxSpec",
     "WorkspaceContext",
+    "meets_floor",
 ]
 
 
-class Isolation:
+class Isolation(StrEnum):
     """How strong a backend's boundary is. Declared by the backend, checked by the router.
 
-    This is not documentation: :class:`~maf_sandbox._router.SandboxRouter` refuses to
-    select anything below :data:`VM` in a deployed environment.  A security review put
-    execution in a VM-isolated sandbox precisely because a container shares the host kernel
-    and sits next to whatever credentials the host process holds, and the security posture
-    the deployed-isolation rule enforces rests on that conclusion.  A backend that lies here
-    defeats the check, so the value belongs with the backend that knows the truth about
-    itself.
+    This is not documentation: the members are a ladder ordered by :data:`ISOLATION_RANK`, a
+    host declares the lowest rung it accepts, and
+    :class:`~maf_sandbox._router.SandboxRouter` refuses anything below it.  The ordering
+    ranks trust bases rather than implementations — what enforces the boundary, and where an
+    escape lands — and a backend that claims a rung it does not meet defeats the check, so
+    the value belongs with the backend that knows the truth about itself.
+
+    A :class:`~enum.StrEnum` because these values cross serialization boundaries as plain
+    strings: a member compares equal to its own value, and ``Isolation(raw)`` is where an
+    unknown one is refused rather than guessed at.
     """
 
-    #: Hardware/hypervisor boundary, no ambient identity reachable from inside (ACA Sandboxes).
-    VM = "vm"
-    #: Shared-kernel container. Fine on a developer machine, never in a deployed environment.
-    CONTAINER = "container"
-    #: Same process as the host. Tests only.
+    #: Same process as the host: no boundary at all. Tests and local fakes.
     PROCESS = "process"
+    #: A software boundary inside the host process — a restricted interpreter, a WASM
+    #: runtime's fault isolation. Real, but an escape lands beside the host's own memory.
+    RUNTIME = "runtime"
+    #: Shared-kernel namespaces and cgroups: the host kernel is in the attack surface.
+    CONTAINER = "container"
+    #: Syscall interception in a userspace kernel (gVisor-class) — stronger than namespaces,
+    #: weaker than hardware.
+    HARDENED_CONTAINER = "hardened_container"
+    #: A hypervisor boundary with a minimal or absent guest OS, and no ambient identity
+    #: reachable from inside (ACA Sandboxes, Firecracker, Kata as configured). The default
+    #: floor, and a conformance bar rather than a self-assigned label.
+    MICROVM = "microvm"
+    #: A dedicated, full VM provisioned for this workload on remote infrastructure.
+    VM = "vm"
 
 
-class Egress:
+#: The ladder's order, written down exactly once — every comparison of two rungs goes
+#: through it, and an exhaustiveness test pins that every member is ranked.
+ISOLATION_RANK: Mapping[Isolation, int] = {
+    level: rank
+    for rank, level in enumerate(
+        (
+            Isolation.PROCESS,
+            Isolation.RUNTIME,
+            Isolation.CONTAINER,
+            Isolation.HARDENED_CONTAINER,
+            Isolation.MICROVM,
+            Isolation.VM,
+        )
+    )
+}
+
+
+def meets_floor(declared: Isolation, floor: Isolation) -> bool:
+    """Whether ``declared`` sits at or above ``floor`` on the ladder."""
+    return ISOLATION_RANK[declared] >= ISOLATION_RANK[floor]
+
+
+class Egress(StrEnum):
     """How precisely a backend can confine what a sandbox reaches. Declared by the backend.
 
     Backends differ in how much of a spec's allowlist they can express, and the direction they
@@ -63,6 +103,38 @@ class Egress:
     CLOSED = "closed"
     #: Cannot confine egress at all — whatever the host can reach, the sandbox can reach.
     UNRESTRICTED = "unrestricted"
+
+
+class Capability(StrEnum):
+    """What a sandbox can *do* — declared by a backend, required by a spec, matched at attach.
+
+    The other axis from :class:`Isolation`, and independent of it: how strong the boundary
+    must be is one question, what has to be possible inside it is another.  Unlike
+    :class:`Egress`, silence is a functionality claim rather than a safety one — see
+    :data:`DEFAULT_CAPABILITIES`.
+    """
+
+    #: Run a command line or argv.
+    EXEC = "exec"
+    #: Evaluate code in a language runtime, without going through a shell.
+    RUN_CODE = "run_code"
+    #: Dispatch host-registered functions from inside the sandbox.
+    HOST_TOOLS = "host_tools"
+    #: Write files into the sandbox before execution.
+    FILES_IN = "files_in"
+    #: Read files back out after execution.
+    FILES_OUT = "files_out"
+    #: Any egress at all — how precisely it is confined stays in :class:`Egress`.
+    NETWORK = "network"
+    #: Snapshot and restore a sandbox for reuse.
+    SNAPSHOT = "snapshot"
+    #: A platform-attached identity scoped to the sandbox itself.
+    ATTACHED_IDENTITY = "attached_identity"
+
+
+#: What every :class:`Sandbox` already obligates, so a backend or a spec that says nothing
+#: about capabilities is read as claiming — and asking for — exactly these two.
+DEFAULT_CAPABILITIES: frozenset[Capability] = frozenset({Capability.EXEC, Capability.FILES_IN})
 
 
 @dataclass(frozen=True)
@@ -98,6 +170,13 @@ class SandboxSpec:
     ``egress_allow`` is an allowlist of hostnames — **everything not listed is denied**, so
     an empty tuple means no network at all.  Stating it positively is deliberate: a spec that
     forgets to mention egress gets the closed configuration, not the open one.
+
+    ``requires`` names the capabilities the workload cannot run without, and ``min_isolation``
+    the weakest boundary it accepts anywhere.  A spec may **raise** the host's floor and never
+    lower it, which is what keeps the two owners apart: how strong the boundary must be *here*
+    is the host's policy, while "this workload refuses to run below a micro-VM at all" is a
+    property of the workload.  ``None`` is no opinion, and is not the same as
+    :data:`Isolation.PROCESS`, which would be the weakest opinion there is.
     """
 
     kind: str
@@ -110,6 +189,8 @@ class SandboxSpec:
     # pyright config is strict. The subscripted form is callable and constructs the
     # identical empty dict.
     labels: dict[str, str] = field(default_factory=dict[str, str])
+    requires: frozenset[Capability] = DEFAULT_CAPABILITIES
+    min_isolation: Isolation | None = None
 
 
 @dataclass(frozen=True)
@@ -163,6 +244,13 @@ class SandboxBackend(Protocol):
     reach sandboxes this process never created — a multi-replica host serves the delete
     wherever it lands.  A backend that only consults its own memory there leaves billable
     sandboxes running.
+
+    A backend may also declare ``capabilities: frozenset[Capability]``, which the router
+    matches against a spec's ``requires``.  It is deliberately not a member of this Protocol:
+    :func:`~typing.runtime_checkable` enforces member *presence*, so declaring it here would
+    stop every backend written before it from being a ``SandboxBackend`` at all.  Silence is
+    read as :data:`DEFAULT_CAPABILITIES` — what this package's :class:`Sandbox` already
+    obligates, so no existing backend has to start lying to keep working.
     """
 
     @property
@@ -171,13 +259,17 @@ class SandboxBackend(Protocol):
         ...
 
     @property
-    def isolation(self) -> str:
-        """One of the :class:`Isolation` constants. Read by the router's deployed check."""
+    def isolation(self) -> Isolation:
+        """The rung this backend sits on, checked against the host's floor at construction.
+
+        A value outside :class:`Isolation` is refused rather than ranked: the router cannot
+        tell whether an unknown boundary is stronger or weaker than the one required.
+        """
         ...
 
     @property
-    def egress(self) -> str:
-        """One of the :class:`Egress` constants, read before a workload's tool is attached.
+    def egress(self) -> Egress:
+        """One of the :class:`Egress` members, read before a workload's tool is attached.
 
         Not declaring it is read as :data:`Egress.UNRESTRICTED`, and refused.
         """

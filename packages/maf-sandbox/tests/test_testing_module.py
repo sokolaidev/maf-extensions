@@ -13,6 +13,8 @@ import shlex
 import pytest
 
 from maf_sandbox import (
+    DEFAULT_CAPABILITIES,
+    Capability,
     Egress,
     ExecResult,
     Isolation,
@@ -124,6 +126,15 @@ class TestInProcessSandboxBackend:
 
     def test_egress_is_configurable(self):
         assert InProcessSandboxBackend(egress=Egress.UNRESTRICTED).egress == Egress.UNRESTRICTED
+
+    def test_capabilities_default_to_what_every_sandbox_owes(self):
+        """`write_file` and `exec` — the two the `Sandbox` protocol already obligates."""
+        assert InProcessSandboxBackend().capabilities == DEFAULT_CAPABILITIES
+
+    def test_capabilities_are_configurable(self):
+        """A kind's tests need a backend that claims more, and one that claims less."""
+        backend = InProcessSandboxBackend(capabilities=frozenset({Capability.RUN_CODE}))
+        assert backend.capabilities == frozenset({Capability.RUN_CODE})
 
     def test_acquire_records_the_key_and_spec_and_returns_the_sandbox(self):
         sandbox = InProcessSandbox()
