@@ -30,7 +30,7 @@ from typing import Any
 
 from agent_framework import Agent, InMemoryAgentFileStore
 from agent_framework.openai import OpenAIChatCompletionClient
-from maf_sandbox import SandboxRouter
+from maf_sandbox import Isolation, SandboxRouter
 from maf_sandbox.maf import make_workspace_context
 from maf_sandbox_bicep import make_bicep_tools
 from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
@@ -106,10 +106,10 @@ async def run() -> int:
 
     backend = WslcSandboxBackend(WslcSandboxConfig())
 
-    # `deployed=True` is absent by necessity, not oversight: `Isolation.CONTAINER`
-    # is not in `DEPLOYED_ISOLATION`, so adding it raises
-    # `SandboxBackendNotPermitted` here at construction.
-    router = SandboxRouter([backend])
+    # `Isolation.CONTAINER` sits below the router's default `microvm` floor, so
+    # this sample opts the floor down explicitly. Leave `min_isolation` at its
+    # default and construction raises `SandboxBackendNotPermitted` instead.
+    router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
 
     store = InMemoryAgentFileStore()
     await store.write(BICEP_FILE, (Path(__file__).parent / BICEP_FILE).read_text())

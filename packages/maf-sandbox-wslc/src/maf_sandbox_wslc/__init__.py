@@ -8,9 +8,11 @@ app  ->  maf_sandbox  ->  maf_sandbox_wslc  ->  the container
 container CLI that ships with WSL 2.9.3 and later: a container on the developer's own
 machine, created in about half a second, with no subscription, no daemon and no login.
 
-It declares :data:`~maf_sandbox.Isolation.CONTAINER`, which is what makes the router refuse
-it when the host reports it is running deployed.  Egress is :data:`~maf_sandbox.Egress.CLOSED`
-by default — ``--network none`` on every container — and becomes
+It declares :data:`~maf_sandbox.Isolation.CONTAINER`, below the router's default
+:data:`~maf_sandbox.Isolation.MICROVM` floor — a host opts down explicitly with
+``min_isolation=Isolation.CONTAINER``, and with nothing passed construction refuses this
+backend.  Egress is :data:`~maf_sandbox.Egress.CLOSED` by default — ``--network none`` on
+every container — and becomes
 :data:`~maf_sandbox.Egress.ALLOWLIST` when the config names a
 :func:`proxy_build_context`-built image, which places each sandbox on its own internal
 network behind a filtering proxy.  These are honest downgrades from a VM-isolated backend, and

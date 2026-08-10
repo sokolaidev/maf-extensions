@@ -83,7 +83,7 @@ Delete the unused parameter and add a `sku`, and what remains is the API-version
 
 **`No sandbox backend: bicep_validate was not attached.`** — the router has no usable backend. Check the `ACAS_SANDBOX_*` variables.
 
-**`SandboxBackendNotPermitted` at startup** — `SandboxRouter(..., deployed=True)` refuses anything weaker than a VM boundary. `AcasSandboxBackend` declares `Isolation.VM`, so this only appears if you swapped the backend for a container- or process-isolated one. It raises at construction rather than at first call, on purpose.
+**`SandboxBackendNotPermitted` at startup** — `SandboxRouter`'s default minimum-isolation floor is `Isolation.MICROVM`, and it refuses any backend below that. `AcasSandboxBackend` declares `Isolation.MICROVM`, exactly the floor, so this only appears if you swapped the backend for a container- or process-isolated one — and it means the swapped-in backend needs `min_isolation` lowered explicitly, not left implicit. It raises at construction rather than at first call, on purpose.
 
 **`SandboxEgressNotEnforced` at startup** — the other half of the same story, raised one call later by `make_bicep_tools`: the backend cannot confine the sandbox to the two artifact hosts this workload names, so everything else — ARM included — would be reachable from code an agent wrote. `AcasSandboxBackend` declares `Egress.ALLOWLIST` and builds a Deny-default policy, so this too only appears against a swapped backend. A backend that can only run fully *closed* is accepted instead, with a warning: module restore then fails and `bicep_validate` says so rather than reporting a clean file.
 

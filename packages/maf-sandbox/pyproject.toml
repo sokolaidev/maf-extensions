@@ -1,7 +1,7 @@
 [project]
 name = "maf-sandbox"
 version = "0.4.0"
-description = "One seam between an application and any sandbox provider, for Microsoft Agent Framework — reference implementation of agent-framework#7568: backend protocol, selection, and the rule that a weaker isolation boundary is never used in a deployed environment."
+description = "One seam between an application and any sandbox provider, for Microsoft Agent Framework — reference implementation of agent-framework#7568: backend protocol, selection against a minimum-isolation floor, and a match against the capabilities a workload declares it needs."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
 authors = [{ name = "SOKOLAI BV", email = "info@sokolai.com" }]
