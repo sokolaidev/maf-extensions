@@ -72,8 +72,7 @@ def _smoke_maf_sandbox() -> str:
     )
 
     backend = InProcessSandboxBackend(InProcessSandbox(default_stdout="ok"))
-    # Process isolation, opted below the router's default microvm floor — this part of the
-    # smoke proves acquire/exec, not the floor.
+    # Below the default microvm floor: this part proves acquire/exec, not the floor.
     router = SandboxRouter([backend], min_isolation=Isolation.PROCESS)
     key = SandboxKey(scope="s", thread_id="t", agent_dir="a")
     sandbox = asyncio.run(router.acquire(key, SandboxSpec(kind="smoke")))
@@ -81,9 +80,6 @@ def _smoke_maf_sandbox() -> str:
     if result.stdout != "ok":
         raise SystemExit(f"FAIL: in-process sandbox returned {result.stdout!r}")
 
-    # The default floor is a security property, not a convenience: a router built with no
-    # min_isolation at all must still refuse a process-isolated backend. Unlike the old
-    # deployed flag, there is no setting to forget here — silence itself refuses.
     from maf_sandbox import SandboxBackendNotPermitted
 
     try:
@@ -107,8 +103,6 @@ def _smoke_maf_sandbox_acas() -> str:
     # resolved and still declares the boundary the router gates on. Reaching the service
     # would need credentials and would not test packaging.
     backend = AcasSandboxBackend(AcasSandboxConfig(endpoint="https://example.invalid"))
-    # What a consumer actually depends on: this backend meets the router's default floor,
-    # unconfigured, with nothing to opt into.
     if not meets_floor(backend.isolation, Isolation.MICROVM):
         raise SystemExit(
             f"FAIL: acas backend declares {backend.isolation!r}, "
@@ -133,8 +127,7 @@ def _smoke_maf_sandbox_bicep() -> str:
             list_files=InMemoryStore.list,
         )
         tools = make_bicep_tools(
-            # process isolation, opted below the default microvm floor: this smoke exercises
-            # the workload, not the floor (covered in _smoke_maf_sandbox).
+            # Below the default floor, as in _smoke_maf_sandbox: exercises the workload.
             SandboxRouter([backend], min_isolation=Isolation.PROCESS),
             store,
             "devops-engineer",

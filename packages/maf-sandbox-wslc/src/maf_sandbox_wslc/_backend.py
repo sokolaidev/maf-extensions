@@ -278,7 +278,6 @@ class WslcSandboxBackend:
 
     @property
     def capabilities(self) -> frozenset[Capability]:
-        # Only what this backend actually does today: `exec` and `write_file`.
         return frozenset({Capability.EXEC, Capability.FILES_IN})
 
     # -- SandboxBackend -----------------------------------------------------------

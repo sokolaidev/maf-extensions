@@ -4,12 +4,8 @@ Everything provider-specific lives here — the group client, disk-image resolut
 egress policy, the lifecycle policy, the sandbox registry and label-based purge.  A workload
 above the router sees only ``write_file`` and ``exec``.
 
-Isolation is :data:`~maf_sandbox.Isolation.MICROVM`: a hardware virtualization boundary, no
-ambient identity reachable from inside, confinable egress, and an explicit guest↔host
-surface — the micro-VM standard's conformance bar, and the router's default floor, so a host
-that configures nothing already permits this backend.  This is a reclassification, not a
-downgrade: the old three-rung ladder had ``vm`` as its only hypervisor rung, and ``microvm``
-is this backend's truthful rung on the current six-rung one.
+Isolation is :data:`~maf_sandbox.Isolation.MICROVM` — the router's default floor, so a host
+that configures nothing already permits this backend.
 """
 
 from __future__ import annotations
@@ -175,8 +171,6 @@ class AcasSandboxBackend:
 
     @property
     def capabilities(self) -> frozenset[Capability]:
-        # Only what `acquire`/`write_file`/`exec` actually do today — FILES_OUT,
-        # ATTACHED_IDENTITY and SNAPSHOT are unimplemented, and this axis must never lie.
         return frozenset({Capability.EXEC, Capability.FILES_IN})
 
     # -- client -------------------------------------------------------------------

@@ -104,8 +104,7 @@ def _tool(
     **kw,
 ):
     tools = make_bicep_tools(
-        # process isolation, opted below the router's default microvm floor: this suite
-        # exercises the fake backend, not the floor check.
+        # Below the default floor: this suite exercises the fake backend, not the floor.
         SandboxRouter([backend], min_isolation=Isolation.PROCESS),
         store,
         "devops-engineer",

@@ -106,9 +106,7 @@ async def run() -> int:
 
     backend = WslcSandboxBackend(WslcSandboxConfig())
 
-    # `Isolation.CONTAINER` sits below the router's default `microvm` floor, so
-    # this sample opts the floor down explicitly. Leave `min_isolation` at its
-    # default and construction raises `SandboxBackendNotPermitted` instead.
+    # Below the router's default `microvm` floor; opted down explicitly.
     router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
 
     store = InMemoryAgentFileStore()

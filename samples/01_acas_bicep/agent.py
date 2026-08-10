@@ -121,14 +121,10 @@ async def run() -> int:
         )
     )
 
-    # No `min_isolation` here is not an oversight: the router's default floor is
-    # `Isolation.MICROVM`, and `AcasSandboxBackend` declares exactly that, so this
-    # sample configures nothing and still gets the production posture.  Swap in a
-    # container- or process-isolated backend and this line raises
+    # A backend below `Isolation.MICROVM` here raises
     # `SandboxBackendNotPermitted` — at construction, not at first tool call, so
     # a misconfigured deployment cannot start with the feature apparently
-    # enabled and quietly unsafe.  A host that means to run one of those anyway
-    # has to say so, by lowering `min_isolation` explicitly.
+    # enabled and quietly unsafe.
     #
     # A swapped backend has a second way to be refused, one call further down:
     # `make_bicep_tools` checks it can confine egress to the hosts the workload

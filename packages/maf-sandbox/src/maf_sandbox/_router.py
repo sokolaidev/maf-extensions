@@ -34,8 +34,7 @@ __all__ = [
 ]
 
 
-#: The rungs, weakest first, rendered once for the refusal messages: a host that is refused
-#: needs to see what the ladder is, not only which rung it missed.
+#: The rungs, weakest first, rendered once for the refusal messages.
 _LADDER = ", ".join(map(str, ISOLATION_RANK))
 
 
@@ -55,10 +54,8 @@ class SandboxBackendNotPermitted(PermissionError):
 class SandboxCapabilityNotSupported(RuntimeError):
     """The selected backend cannot do something the workload's spec requires.
 
-    A functionality mismatch rather than a safety one — its own exception because its fix is
-    its own: register a backend that implements the capability, or ask for less.  A workload
-    allowed to proceed without it fails inside the sandbox instead, where the reason is
-    hardest to see.
+    A functionality mismatch rather than a safety one — register a backend that implements
+    the capability, or ask for less.
     """
 
 
@@ -94,9 +91,7 @@ class SandboxRouter:
     Args:
         backends: The registered backends, in preference order.
         min_isolation: The weakest boundary this host accepts. Defaults to
-            :data:`Isolation.MICROVM`, so a host that configures nothing gets the production
-            posture and a developer machine opts down explicitly — there is nothing to
-            forget.
+            :data:`Isolation.MICROVM`.
         selected: Name of the backend to use. ``None`` picks the first registered one, which
             with a single backend is the whole selection story and stays correct when more
             arrive.
@@ -190,8 +185,6 @@ class SandboxRouter:
                 "boundary it was written not to trust."
             )
 
-        # Silence here is a functionality claim, not a safety one — unlike egress below: a
-        # backend written before this declaration existed still owes what `Sandbox` obliges.
         capabilities: frozenset[Capability] = getattr(
             self._backend, "capabilities", DEFAULT_CAPABILITIES
         )

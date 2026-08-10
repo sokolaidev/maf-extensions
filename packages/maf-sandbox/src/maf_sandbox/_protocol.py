@@ -36,38 +36,28 @@ __all__ = [
 class Isolation(StrEnum):
     """How strong a backend's boundary is. Declared by the backend, checked by the router.
 
-    This is not documentation: the members are a ladder ordered by :data:`ISOLATION_RANK`, a
-    host declares the lowest rung it accepts, and
-    :class:`~maf_sandbox._router.SandboxRouter` refuses anything below it.  The ordering
-    ranks trust bases rather than implementations — what enforces the boundary, and where an
-    escape lands — and a backend that claims a rung it does not meet defeats the check, so
-    the value belongs with the backend that knows the truth about itself.
-
-    A :class:`~enum.StrEnum` because these values cross serialization boundaries as plain
-    strings: a member compares equal to its own value, and ``Isolation(raw)`` is where an
-    unknown one is refused rather than guessed at.
+    This is not documentation: the members are a ladder ordered by :data:`ISOLATION_RANK`,
+    and :class:`~maf_sandbox._router.SandboxRouter` refuses anything below the declared floor.
     """
 
     #: Same process as the host: no boundary at all. Tests and local fakes.
     PROCESS = "process"
     #: A software boundary inside the host process — a restricted interpreter, a WASM
-    #: runtime's fault isolation. Real, but an escape lands beside the host's own memory.
+    #: runtime's fault isolation.
     RUNTIME = "runtime"
     #: Shared-kernel namespaces and cgroups: the host kernel is in the attack surface.
     CONTAINER = "container"
-    #: Syscall interception in a userspace kernel (gVisor-class) — stronger than namespaces,
-    #: weaker than hardware.
+    #: Syscall interception in a userspace kernel (gVisor-class), between namespaces and hardware.
     HARDENED_CONTAINER = "hardened_container"
     #: A hypervisor boundary with a minimal or absent guest OS, and no ambient identity
-    #: reachable from inside (ACA Sandboxes, Firecracker, Kata as configured). The default
-    #: floor, and a conformance bar rather than a self-assigned label.
+    #: reachable from inside (ACA Sandboxes, Firecracker, Kata as configured).
     MICROVM = "microvm"
     #: A dedicated, full VM provisioned for this workload on remote infrastructure.
     VM = "vm"
 
 
 #: The ladder's order, written down exactly once — every comparison of two rungs goes
-#: through it, and an exhaustiveness test pins that every member is ranked.
+#: through it.
 ISOLATION_RANK: Mapping[Isolation, int] = {
     level: rank
     for rank, level in enumerate(
@@ -108,10 +98,8 @@ class Egress(StrEnum):
 class Capability(StrEnum):
     """What a sandbox can *do* — declared by a backend, required by a spec, matched at attach.
 
-    The other axis from :class:`Isolation`, and independent of it: how strong the boundary
-    must be is one question, what has to be possible inside it is another.  Unlike
-    :class:`Egress`, silence is a functionality claim rather than a safety one — see
-    :data:`DEFAULT_CAPABILITIES`.
+    Unlike :class:`Egress`, silence here is a functionality claim rather than a safety one —
+    see :data:`DEFAULT_CAPABILITIES`.
     """
 
     #: Run a command line or argv.
@@ -132,8 +120,7 @@ class Capability(StrEnum):
     ATTACHED_IDENTITY = "attached_identity"
 
 
-#: What every :class:`Sandbox` already obligates, so a backend or a spec that says nothing
-#: about capabilities is read as claiming — and asking for — exactly these two.
+#: What every :class:`Sandbox` already obligates.
 DEFAULT_CAPABILITIES: frozenset[Capability] = frozenset({Capability.EXEC, Capability.FILES_IN})
 
 
@@ -173,10 +160,8 @@ class SandboxSpec:
 
     ``requires`` names the capabilities the workload cannot run without, and ``min_isolation``
     the weakest boundary it accepts anywhere.  A spec may **raise** the host's floor and never
-    lower it, which is what keeps the two owners apart: how strong the boundary must be *here*
-    is the host's policy, while "this workload refuses to run below a micro-VM at all" is a
-    property of the workload.  ``None`` is no opinion, and is not the same as
-    :data:`Isolation.PROCESS`, which would be the weakest opinion there is.
+    lower it, and ``None`` means no opinion — not the same as :data:`Isolation.PROCESS`, which
+    would be the weakest opinion there is.
     """
 
     kind: str
@@ -245,12 +230,10 @@ class SandboxBackend(Protocol):
     wherever it lands.  A backend that only consults its own memory there leaves billable
     sandboxes running.
 
-    A backend may also declare ``capabilities: frozenset[Capability]``, which the router
-    matches against a spec's ``requires``.  It is deliberately not a member of this Protocol:
+    A backend may also declare ``capabilities: frozenset[Capability]``, matched by the router
+    against a spec's ``requires``.  It is deliberately not a member of this Protocol:
     :func:`~typing.runtime_checkable` enforces member *presence*, so declaring it here would
-    stop every backend written before it from being a ``SandboxBackend`` at all.  Silence is
-    read as :data:`DEFAULT_CAPABILITIES` — what this package's :class:`Sandbox` already
-    obligates, so no existing backend has to start lying to keep working.
+    stop every backend written before it from being a ``SandboxBackend`` at all.
     """
 
     @property
