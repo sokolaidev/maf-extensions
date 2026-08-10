@@ -34,6 +34,12 @@ in its spec.  Keeping the two axes apart is deliberate — merged into one requi
 list, a workload could ask for a weaker boundary than the deployment mandates.  A spec may
 raise the host's floor for itself, and never lower it.
 
+Alongside the router it owns the sink half of ``FILES_OUT``:
+:func:`~maf_sandbox.collect_outputs` pulls a spec's declared outputs, caps them, and hands each
+one to a host-supplied :class:`~maf_sandbox.OutputSink`.  The host does the writing — a
+workspace store, a blob container or a UI panel is a property of the application, and this
+package writes nothing anywhere.
+
 This package imports no backend and no host application.
 
 One module sits deliberately outside that claim and is deliberately not re-exported here:
@@ -47,6 +53,24 @@ a backend or a test that only speaks the protocol.  Reach it by name —
 from __future__ import annotations
 
 from ._error_detail import error_detail
+from ._outputs import (
+    MAX_ARTIFACT_NAME_BYTES,
+    Artifact,
+    LandedArtifact,
+    NameNormalization,
+    OutputSink,
+    SandboxArtifactNameCollision,
+    SandboxArtifactNameInvalid,
+    SandboxOutputError,
+    SandboxOutputMissing,
+    SandboxOutputNotRegular,
+    SandboxOutputSinkRequired,
+    SandboxOutputSizeUnknown,
+    SandboxTransferCapExceeded,
+    collect_outputs,
+    portable_name,
+    validate_artifact_name,
+)
 from ._protocol import (
     DEFAULT_CAPABILITIES,
     DEFAULT_SANDBOX_LIMITS,
@@ -84,16 +108,23 @@ __all__ = [
     "DEFAULT_SANDBOX_LIMITS",
     "DEFAULT_TRANSFER_LIMITS",
     "ISOLATION_RANK",
+    "MAX_ARTIFACT_NAME_BYTES",
+    "Artifact",
     "Capability",
     "DeclaredOutput",
     "Egress",
     "EntryKind",
     "ExecResult",
     "Isolation",
+    "LandedArtifact",
     "MafSandboxExperimentalWarning",
+    "NameNormalization",
     "NoSandboxBackend",
     "OutputDisposition",
+    "OutputSink",
     "Sandbox",
+    "SandboxArtifactNameCollision",
+    "SandboxArtifactNameInvalid",
     "SandboxBackend",
     "SandboxBackendNotPermitted",
     "SandboxCapabilityNotSupported",
@@ -101,14 +132,23 @@ __all__ = [
     "SandboxEntry",
     "SandboxKey",
     "SandboxLimits",
+    "SandboxOutputError",
+    "SandboxOutputMissing",
+    "SandboxOutputNotRegular",
+    "SandboxOutputSinkRequired",
+    "SandboxOutputSizeUnknown",
     "SandboxPurger",
     "SandboxRouter",
     "SandboxSpec",
+    "SandboxTransferCapExceeded",
     "SandboxTransferLimitsNotPermitted",
     "TransferLimits",
     "WorkspaceContext",
+    "collect_outputs",
     "error_detail",
     "meets_floor",
+    "portable_name",
+    "validate_artifact_name",
 ]
 
 # --- Experimental-package notice ---------------------------------------------------------

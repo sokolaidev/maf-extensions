@@ -723,7 +723,9 @@ class TestPolicyVocabularyExports:
 #: writes it in here, so widening the scan is a line in a diff rather than something that
 #: happens by omission.  `TestModuleInventory` pins the complement, so a new module cannot be
 #: quietly neither.
-_PROTOCOL_MODULES = frozenset({"_error_detail", "_protocol", "_purger", "_router", "testing"})
+_PROTOCOL_MODULES = frozenset(
+    {"_error_detail", "_outputs", "_protocol", "_purger", "_router", "testing"}
+)
 
 #: The modules deliberately OUTSIDE the stdlib-only claim.  `maf` is the MAF-glue
 #: module, the one place `agent_framework` may be imported — see `TestMafIsTheOnlyMafImporter`
