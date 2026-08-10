@@ -50,16 +50,15 @@ With either of the first two unset the program says which and exits non-zero, ra
 python agent.py
 ```
 
-The first call pays for pulling the image, if it is not already local, plus creating and starting the container — a few seconds, against the minutes a microVM-isolated sandbox needs. The model writes its own prose around it, but the answer it is reporting looks like this:
+The first call pays for pulling the image, if it is not already local, plus creating and starting the container — a few seconds, against the minutes a microVM-isolated sandbox needs. `agent.py` prints only the model's reply and the disposal line — never `execute_code`'s own result — so what you see looks something like this:
 
 ```
-stdout:
-354224848179261915075
+The program printed 354224848179261915075.
 
 Disposed 1 sandbox(es).
 ```
 
-The same number sample 03 gets from a microVM in Azure, in the same `stdout:\n<value>` shape `_format_result` in `maf-sandbox-codeact` renders unchanged for either backend — no stderr, no exit code, because the program printed one line and exited cleanly.
+The same number sample 03 gets from a microVM in Azure, computed by the same program in the same way — only the backend underneath differs. The wording around it is the model's and varies run to run; `Disposed 1 sandbox(es).` is what tells you a container was really created and torn down, rather than the model reciting a well-known sequence.
 
 ## Troubleshooting
 
