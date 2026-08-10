@@ -160,11 +160,27 @@ def _listed_names(payload: str) -> list[str]:
 
 @dataclass(frozen=True)
 class _WslcResult:
-    """What one ``wslc`` invocation returned."""
+    """What one ``wslc`` invocation returned.
+
+    ``stdout``/``stderr`` are the raw bytes the process wrote.  Decoding used to happen here,
+    unconditionally and with ``errors="replace"``, which silently substituted characters in
+    any output that was not text — a command whose stdout is binary came back corrupted with
+    no exception raised.  Callers that want text ask for it, via :attr:`stdout_text`.
+    """
 
     returncode: int
-    stdout: str
-    stderr: str
+    stdout: bytes
+    stderr: bytes
+
+    @property
+    def stdout_text(self) -> str:
+        """``stdout`` decoded leniently — a diagnostic should never raise on a stray byte."""
+        return self.stdout.decode("utf-8", errors="replace")
+
+    @property
+    def stderr_text(self) -> str:
+        """``stderr`` decoded leniently — a diagnostic should never raise on a stray byte."""
+        return self.stderr.decode("utf-8", errors="replace")
 
 
 class _WslcRunner(Protocol):
@@ -211,7 +227,7 @@ class _WslcSandbox:
             timeout=self._command_timeout,
         )
         if result.returncode != 0:
-            raise RuntimeError(f"wslc could not write {path}: {result.stderr.strip()}")
+            raise RuntimeError(f"wslc could not write {path}: {result.stderr_text.strip()}")
 
     async def exec(
         self, command: str | Sequence[str], *, working_directory: str, timeout: float
@@ -239,7 +255,9 @@ class _WslcSandbox:
                     "container", "remove", "-f", self._name, timeout=self._command_timeout
                 )
             raise
-        return ExecResult(stdout=result.stdout, stderr=result.stderr, exit_code=result.returncode)
+        return ExecResult(
+            stdout=result.stdout_text, stderr=result.stderr_text, exit_code=result.returncode
+        )
 
 
 class WslcSandboxBackend:
@@ -435,11 +453,7 @@ class WslcSandboxBackend:
             with contextlib.suppress(Exception):
                 await process.wait()
             raise
-        return _WslcResult(
-            process.returncode or 0,
-            stdout.decode("utf-8", errors="replace"),
-            stderr.decode("utf-8", errors="replace"),
-        )
+        return _WslcResult(process.returncode or 0, stdout, stderr)
 
     async def _is_listed(self, name: str, *, all_states: bool) -> bool:
         """Whether ``name`` is listed — running only, or in any state.
@@ -454,7 +468,7 @@ class WslcSandboxBackend:
         args += ["--format", "json", "--filter", f"name={name}"]
 
         result = await self._wslc(*args, timeout=self._config.command_timeout_seconds)
-        return result.returncode == 0 and name in _listed_names(result.stdout)
+        return result.returncode == 0 and name in _listed_names(result.stdout_text)
 
     async def _restart(self, name: str) -> bool:
         """Start an existing container, removing it if it will not start.
@@ -470,7 +484,7 @@ class WslcSandboxBackend:
         logger.info(
             "container %s did not start (%s); creating a replacement",
             name,
-            result.stderr.strip(),
+            result.stderr_text.strip(),
         )
         await self._remove(name)
         return False
@@ -524,10 +538,12 @@ class WslcSandboxBackend:
 
         result = await self._wslc(*args, timeout=self._config.command_timeout_seconds)
         if result.returncode != 0:
-            if _ALREADY_EXISTS in result.stderr and await self._adopt(name):
+            if _ALREADY_EXISTS in result.stderr_text and await self._adopt(name):
                 logger.info("container %s already existed; adopted it instead of creating", name)
                 return image
-            raise RuntimeError(f"wslc could not create container {name}: {result.stderr.strip()}")
+            raise RuntimeError(
+                f"wslc could not create container {name}: {result.stderr_text.strip()}"
+            )
         return image
 
     async def _ensure_egress(
@@ -555,8 +571,8 @@ class WslcSandboxBackend:
             args += ["-l", f"{label}={value}"]
         args.append(net)
         result = await self._wslc(*args, timeout=self._config.command_timeout_seconds)
-        if result.returncode != 0 and _ALREADY_EXISTS not in result.stderr:
-            raise RuntimeError(f"wslc could not create network {net}: {result.stderr.strip()}")
+        if result.returncode != 0 and _ALREADY_EXISTS not in result.stderr_text:
+            raise RuntimeError(f"wslc could not create network {net}: {result.stderr_text.strip()}")
 
     async def _ensure_proxy(self, name: str, key: SandboxKey, spec: SandboxSpec) -> None:
         """Put a fresh filtering proxy on the sandbox's network, dual-homed and confirmed listening.
@@ -579,7 +595,7 @@ class WslcSandboxBackend:
         result = await self._wslc(*args, timeout=self._config.command_timeout_seconds)
         if result.returncode != 0:
             raise RuntimeError(
-                f"wslc could not start the egress proxy {proxy}: {result.stderr.strip()} — "
+                f"wslc could not start the egress proxy {proxy}: {result.stderr_text.strip()} — "
                 f"if the image is missing, build it: wslc build -t {proxy_image} {build_context()}"
             )
 
@@ -590,7 +606,7 @@ class WslcSandboxBackend:
             # A proxy without its egress leg would turn ALLOWLIST into CLOSED silently.
             raise RuntimeError(
                 f"wslc could not give the egress proxy {proxy} its outbound leg: "
-                f"{connect.stderr.strip()}"
+                f"{connect.stderr_text.strip()}"
             )
         await self._await_listening(proxy)
 
@@ -606,7 +622,7 @@ class WslcSandboxBackend:
             result = await self._wslc(
                 "container", "logs", proxy, timeout=self._config.command_timeout_seconds
             )
-            if result.returncode == 0 and _PROXY_READY_MARKER in result.stdout:
+            if result.returncode == 0 and _PROXY_READY_MARKER in result.stdout_text:
                 return
             await asyncio.sleep(_PROXY_READY_DELAY_S)
         raise RuntimeError(f"egress proxy {proxy} never reported listening")
@@ -634,9 +650,11 @@ class WslcSandboxBackend:
             return False
         if result.returncode == 0:
             return True
-        if _NOT_FOUND not in result.stderr:
+        if _NOT_FOUND not in result.stderr_text:
             logger.warning(
-                "wslc backend: failed to remove container %s: %s", target, result.stderr.strip()
+                "wslc backend: failed to remove container %s: %s",
+                target,
+                result.stderr_text.strip(),
             )
         return False
 
@@ -659,10 +677,10 @@ class WslcSandboxBackend:
             return []
         if result.returncode != 0:
             logger.warning(
-                "wslc backend: could not list containers to purge: %s", result.stderr.strip()
+                "wslc backend: could not list containers to purge: %s", result.stderr_text.strip()
             )
             return []
-        return _listed_names(result.stdout)
+        return _listed_names(result.stdout_text)
 
     async def _remove_network(self, net: str) -> bool:
         """Force-remove a network. Returns whether it removed one; never raises.
@@ -679,8 +697,8 @@ class WslcSandboxBackend:
             return False
         if result.returncode == 0:
             return True
-        if _NETWORK_NOT_FOUND not in result.stderr.lower():
+        if _NETWORK_NOT_FOUND not in result.stderr_text.lower():
             logger.warning(
-                "wslc backend: failed to remove network %s: %s", net, result.stderr.strip()
+                "wslc backend: failed to remove network %s: %s", net, result.stderr_text.strip()
             )
         return False
