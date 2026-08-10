@@ -43,6 +43,7 @@ def _warn_experimental() -> None:
     try:
         _warnings.warn(message, category=MafSandboxCodeactExperimentalWarning, stacklevel=2)
     except MafSandboxCodeactExperimentalWarning:
+        # Deliberate: under `-W error` an informational notice must not fail the import.
         pass
 
 
