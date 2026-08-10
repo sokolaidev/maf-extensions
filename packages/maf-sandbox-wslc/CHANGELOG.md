@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.3.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.2.1...maf-sandbox-wslc-v0.3.0) (2026-08-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* a sandbox belongs to (key, kind) — two kinds on one agent never share one ([#87](https://github.com/sokolaidev/maf-extensions/issues/87))
+
+### Bug Fixes
+
+* a sandbox belongs to (key, kind) — two kinds on one agent never share one ([#87](https://github.com/sokolaidev/maf-extensions/issues/87)) ([fa321cf](https://github.com/sokolaidev/maf-extensions/commit/fa321cf53f643f9e30df910fc8e46c6a938d6605))
+
 ## [0.2.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.2.0...maf-sandbox-wslc-v0.2.1) (2026-08-09)
 
 
