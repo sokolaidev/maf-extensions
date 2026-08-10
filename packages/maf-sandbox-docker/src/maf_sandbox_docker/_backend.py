@@ -639,7 +639,10 @@ class DockerSandboxBackend:
             process.kill()
         try:
             stderr = await asyncio.wait_for(err_stream.read(), timeout=timeout)
-        except BaseException:
+        except Exception:
+            # Best-effort diagnostics only. `Exception`, not `BaseException`: this branch
+            # swallows rather than re-raising (unlike the stdout read above, which cleans up and
+            # re-raises), so it must let `CancelledError` and `KeyboardInterrupt` through.
             stderr = b""
         with contextlib.suppress(Exception):
             await process.wait()
