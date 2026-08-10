@@ -14,6 +14,8 @@ chore: update exec                                            ← says nothing
 
 Titles must be [Conventional Commits](https://www.conventionalcommits.org/); CI rejects anything else. `feat:` releases a minor, `fix:`/`perf:`/`revert:`/`docs:` a patch, and `refactor:`/`test:`/`build:`/`ci:`/`chore:` release nothing. Scope is optional and free-form — a change is attributed to a package by the files it touches, not by the scope.
 
+**So a drive-by fix in another package inherits your commit's type.** Correcting a stale comment in `maf-sandbox-bicep` inside a `feat!:` commit about `maf-sandbox` released bicep 0.5.0, with a changelog announcing a breaking change that package never received. Commit a touch outside the package you are working on **separately**, as `chore:`, which releases nothing.
+
 ## Never edit these — they are generated
 
 - `packages/*/CHANGELOG.md`
@@ -22,6 +24,8 @@ Titles must be [Conventional Commits](https://www.conventionalcommits.org/); CI 
 - any `chore(main): release …` pull request
 
 release-please owns all four. Adding a changelog entry or bumping a version by hand is the most common mistake an agent makes here: it desynchronises the manifest from the package, which `tests/test_release_config.py` fails on, and it competes with a branch that gets regenerated anyway. A change gets released by merging a Release PR, never by editing a version.
+
+**One exception, and only this one:** correcting the prose of an **already-released** changelog section — a note saying an entry misattributes a change, as `maf-sandbox-bicep` 0.5.0 carries. It touches no version and no manifest entry, so nothing desynchronises, and release-please regenerates only the *unreleased* section, so nothing competes with it. Add a note; never delete the generated entries, which are the honest record of what release-please saw. Commit it as `chore:` — `docs:` releases a patch, so a note about a bad release would ship a release of its own.
 
 ## Opening a pull request
 
