@@ -56,7 +56,7 @@ With any of the first three unset the program says which and exits non-zero, rat
 python agent.py
 ```
 
-The first call pays for creating and starting the container — a few hundred milliseconds, against the minutes a VM-isolated sandbox needs. The model writes its own prose around them, but the diagnostics it is reporting look like this:
+The first call pays for creating and starting the container — a few hundred milliseconds, against the minutes a microVM-isolated sandbox needs. The model writes its own prose around them, but the diagnostics it is reporting look like this:
 
 ```
   [error]   no-unused-params @ main.bicep:21: Parameter "environmentName" is

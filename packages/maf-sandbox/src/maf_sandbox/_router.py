@@ -106,6 +106,10 @@ class SandboxRouter:
             rung below ``min_isolation`` or one this package does not recognise. Failing
             here rather than at first use means a misconfigured deployment cannot start with
             the feature apparently enabled and quietly unsafe.
+        ValueError: at construction, when ``min_isolation`` is not a rung this package
+            recognises — raised by :class:`Isolation` itself rather than surfacing later as a
+            bare ``KeyError`` out of a rank comparison, which would only happen once a backend
+            was registered and a floor was actually compared against.
     """
 
     def __init__(
@@ -116,7 +120,7 @@ class SandboxRouter:
         selected: str | None = None,
     ) -> None:
         self._backends = list(backends)
-        self._min_isolation = min_isolation
+        self._min_isolation = Isolation(str(min_isolation))
         self._selected_name = selected
         self._backend = self._resolve()
 
@@ -163,23 +167,14 @@ class SandboxRouter:
             return self._min_isolation
         return max(self._min_isolation, spec.min_isolation, key=ISOLATION_RANK.__getitem__)
 
-    def ensure_can_serve(self, spec: SandboxSpec) -> None:
+    def _refuse_unless_backend_can_serve(self, spec: SandboxSpec) -> None:
         """Raise unless the selected backend can serve ``spec``: floor, capabilities, egress.
 
-        Called for you by :func:`maf_sandbox.maf.sandboxed_tool`, and it is also the whole of
-        a host's own wiring test::
-
-            router.ensure_can_serve(bicep_sandbox_spec())
-
-        Confining more egress than the spec asks is permitted and warned about; confining
-        less is refused (see :class:`~maf_sandbox.Egress`).  With no backend configured this
-        returns: nothing runs, so nothing reaches anything.
-
-        Raises:
-            SandboxBackendNotPermitted: when the spec raises the floor above what the backend
-                declares.
-            SandboxCapabilityNotSupported: when the backend cannot do what the spec requires.
-            SandboxEgressNotEnforced: when the backend cannot confine egress to this spec.
+        The REFUSING half of the policy, shared by :meth:`ensure_can_serve` and
+        :meth:`acquire`. It never logs: the closed-egress-vs-allowlist-spec WARNING is
+        :meth:`ensure_can_serve`'s alone, because :meth:`acquire` is called every iteration of
+        a warm fix-round loop and must not repeat it. With no backend configured this returns:
+        nothing runs, so nothing reaches anything.
         """
         if self._backend is None:
             return
@@ -214,17 +209,7 @@ class SandboxRouter:
         # Silence is read as enforcing nothing, not excused: a backend written before this
         # property existed cannot have been enforcing an allowlist it never read.
         egress = getattr(self._backend, "egress", Egress.UNRESTRICTED)
-        if egress == Egress.ALLOWLIST:
-            return
-        if egress == Egress.CLOSED:
-            if spec.egress_allow:
-                logger.warning(
-                    "sandbox backend %r cannot allow named hosts, so %s will be unreachable "
-                    "from a %r sandbox; expect the workload to report what it could not fetch",
-                    self._backend.name,
-                    ", ".join(spec.egress_allow),
-                    spec.kind,
-                )
+        if egress in (Egress.ALLOWLIST, Egress.CLOSED):
             return
         raise SandboxEgressNotEnforced(
             f"sandbox backend {self._backend.name!r} declares {str(egress)!r} egress, which "
@@ -235,15 +220,57 @@ class SandboxRouter:
             "name is meant to be denied."
         )
 
+    def ensure_can_serve(self, spec: SandboxSpec) -> None:
+        """Raise unless the selected backend can serve ``spec``: floor, capabilities, egress.
+
+        Called for you by :func:`maf_sandbox.maf.sandboxed_tool`, and it is also the whole of
+        a host's own wiring test::
+
+            router.ensure_can_serve(bicep_sandbox_spec())
+
+        Confining more egress than the spec asks is permitted and warned about; confining
+        less is refused (see :class:`~maf_sandbox.Egress`).  With no backend configured this
+        returns: nothing runs, so nothing reaches anything.
+
+        Raises:
+            SandboxBackendNotPermitted: when the spec raises the floor above what the backend
+                declares.
+            SandboxCapabilityNotSupported: when the backend cannot do what the spec requires.
+            SandboxEgressNotEnforced: when the backend cannot confine egress to this spec.
+        """
+        self._refuse_unless_backend_can_serve(spec)
+        if self._backend is None:
+            return
+
+        egress = getattr(self._backend, "egress", Egress.UNRESTRICTED)
+        if egress == Egress.CLOSED and spec.egress_allow:
+            logger.warning(
+                "sandbox backend %r cannot allow named hosts, so %s will be unreachable "
+                "from a %r sandbox; expect the workload to report what it could not fetch",
+                self._backend.name,
+                ", ".join(spec.egress_allow),
+                spec.kind,
+            )
+
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> Sandbox:
         """Return a running sandbox for ``key``, creating one if needed.
+
+        Runs the same floor, capability and egress checks as :meth:`ensure_can_serve` — minus
+        its WARNING, which stays there — before ever reaching the backend, so a caller that
+        skips :meth:`ensure_can_serve` is still refused rather than served behind a boundary
+        or capability set the spec did not agree to.
 
         Raises:
             NoSandboxBackend: when no backend is configured. Callers that check
                 :attr:`enabled` before attaching a tool never reach this.
+            SandboxBackendNotPermitted: when the spec raises the floor above what the backend
+                declares.
+            SandboxCapabilityNotSupported: when the backend cannot do what the spec requires.
+            SandboxEgressNotEnforced: when the backend cannot confine egress to this spec.
         """
         if self._backend is None:
             raise NoSandboxBackend("no sandbox backend is configured")
+        self._refuse_unless_backend_can_serve(spec)
         return await self._backend.acquire(key, spec)
 
     async def dispose(self, key: SandboxKey) -> None:

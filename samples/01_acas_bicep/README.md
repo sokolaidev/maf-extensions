@@ -9,7 +9,7 @@ app  ->  maf_sandbox (router)  ->  maf_sandbox_acas  ->  the sandbox
 
 [`agent.py`](agent.py) is the `app` box — the one the package READMEs describe but never show.
 
-`main.bicep` has a mistake in it on purpose, and that is what makes the run worth watching. The diagnostics you see come from the Bicep compiler running inside a VM-isolated sandbox (**T2**), not from the model reading its own output and agreeing with itself (**T0**). Against a valid file the two are indistinguishable.
+`main.bicep` has a mistake in it on purpose, and that is what makes the run worth watching. The diagnostics you see come from the Bicep compiler running inside a microVM-isolated sandbox (**T2**), not from the model reading its own output and agreeing with itself (**T0**). Against a valid file the two are indistinguishable.
 
 ## Prerequisites
 

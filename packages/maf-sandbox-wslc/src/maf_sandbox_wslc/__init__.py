@@ -15,7 +15,7 @@ backend.  Egress is :data:`~maf_sandbox.Egress.CLOSED` by default — ``--networ
 every container — and becomes
 :data:`~maf_sandbox.Egress.ALLOWLIST` when the config names a
 :func:`proxy_build_context`-built image, which places each sandbox on its own internal
-network behind a filtering proxy.  These are honest downgrades from a VM-isolated backend, and
+network behind a filtering proxy.  These are honest downgrades from a microVM-isolated backend, and
 they are what this package is *for*: the same workload, run locally.
 
 This package is the backend only.  The sandbox kinds that run on it live in sibling packages

@@ -197,6 +197,16 @@ class TestIsolationFloor:
                 min_isolation=Isolation.PROCESS,
             )
 
+    @pytest.mark.parametrize("bad", ["MICROVM", "micro-vm"])
+    def test_a_malformed_floor_string_raises_valueerror_not_keyerror(self, bad):
+        """Coerced through `Isolation()` at construction, not left for `meets_floor` to `KeyError` on later.
+
+        With no backend registered, nothing else in `__init__` would ever have looked at
+        `min_isolation` to catch it.
+        """
+        with pytest.raises(ValueError, match="not a valid Isolation"):
+            SandboxRouter([], min_isolation=bad)
+
     def test_it_refuses_rather_than_falling_back_to_a_stronger_backend(self):
         """Falling back would hide the misconfiguration — the whole reason this is an error."""
         docker = InProcessSandboxBackend(name="docker", isolation=Isolation.CONTAINER)
@@ -229,8 +239,15 @@ class TestSpecFloorRaise:
         router = self._router(Isolation.CONTAINER, Isolation.CONTAINER)
         router.ensure_can_serve(SandboxSpec(kind="codeact", min_isolation=Isolation.CONTAINER))
 
-    def test_a_spec_below_the_hosts_floor_leaves_it_where_it_was(self):
-        """The effective floor is the stricter of the two, so a lax spec changes nothing."""
+    def test_a_lax_spec_is_served_by_a_backend_already_at_the_hosts_floor(self):
+        """Not a live check of "never lower" — that property is structural, not behavioural.
+
+        `SandboxRouter.__init__` already refuses any backend below `min_isolation`, so by the
+        time `ensure_can_serve` runs, the selected backend already meets the host's floor; a
+        spec asking for less than that can only ever be served. `_effective_floor`'s `max`
+        only ever raises the floor, never lowers it — the leg that actually exercises a raise
+        is `test_a_spec_asking_above_the_backends_rung_is_refused`, above.
+        """
         router = self._router(Isolation.MICROVM, Isolation.MICROVM)
         router.ensure_can_serve(SandboxSpec(kind="codeact", min_isolation=Isolation.PROCESS))
 
@@ -368,6 +385,55 @@ class TestEgressRule:
     def test_no_backend_configured_is_not_an_egress_failure(self):
         """Nothing runs, so nothing reaches anything — and no tool is attached either."""
         SandboxRouter([]).ensure_can_serve(self._ALLOWLIST_SPEC)
+
+
+class TestAcquireEnforcesPolicy:
+    """`acquire` refuses on the same three grounds as `ensure_can_serve`, minus its warning.
+
+    Before this, `acquire` delegated straight to the backend: a caller who never called
+    `ensure_can_serve` first got no floor, capability or egress check at all. The
+    closed-egress-vs-allowlist-spec WARNING stays `ensure_can_serve`-only, because a warm
+    fix-round loop calls `acquire` every iteration and would otherwise log it every time.
+    """
+
+    def test_acquire_refuses_a_spec_above_the_backends_rung(self):
+        router = SandboxRouter(
+            [InProcessSandboxBackend(isolation=Isolation.CONTAINER)],
+            min_isolation=Isolation.CONTAINER,
+        )
+        spec = SandboxSpec(kind="codeact", min_isolation=Isolation.MICROVM)
+        with pytest.raises(SandboxBackendNotPermitted, match="requires at least"):
+            asyncio.run(router.acquire(_KEY, spec))
+
+    def test_acquire_refuses_a_missing_capability(self):
+        router = SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.PROCESS)
+        spec = SandboxSpec(
+            kind="codeact", requires=frozenset({Capability.EXEC, Capability.RUN_CODE})
+        )
+        with pytest.raises(SandboxCapabilityNotSupported, match="run_code"):
+            asyncio.run(router.acquire(_KEY, spec))
+
+    def test_acquire_refuses_an_unrestricted_egress_backend(self):
+        router = SandboxRouter(
+            [InProcessSandboxBackend(egress=Egress.UNRESTRICTED)], min_isolation=Isolation.PROCESS
+        )
+        with pytest.raises(SandboxEgressNotEnforced):
+            asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_a_closed_backend_warns_on_ensure_can_serve_but_not_on_acquire(self, caplog):
+        router = SandboxRouter(
+            [InProcessSandboxBackend(egress=Egress.CLOSED)], min_isolation=Isolation.PROCESS
+        )
+        spec = SandboxSpec(kind="bicep", egress_allow=("example.invalid",))
+
+        with caplog.at_level("WARNING"):
+            router.ensure_can_serve(spec)
+        assert len(caplog.records) == 1
+
+        caplog.clear()
+        with caplog.at_level("WARNING"):
+            asyncio.run(router.acquire(_KEY, spec))
+        assert caplog.records == []
 
 
 class TestPurge:

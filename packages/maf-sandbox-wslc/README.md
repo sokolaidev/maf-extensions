@@ -23,7 +23,7 @@ from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
 router = SandboxRouter([WslcSandboxBackend(WslcSandboxConfig())], min_isolation=Isolation.CONTAINER)
 ```
 
-[`samples/02_wslc_bicep`](https://github.com/sokolaidev/maf-extensions/tree/main/samples/02_wslc_bicep) runs those two lines end to end: a one-turn agent that validates a Bicep file against the compiler and takes the container down afterwards. Its sibling `samples/01_acas_bicep` is the same program on a VM-isolated Azure backend, and the diff between them is two imports and one constructor.
+[`samples/02_wslc_bicep`](https://github.com/sokolaidev/maf-extensions/tree/main/samples/02_wslc_bicep) runs those two lines end to end: a one-turn agent that validates a Bicep file against the compiler and takes the container down afterwards. Its sibling `samples/01_acas_bicep` is the same program on a microVM-isolated Azure backend, and the diff between them is two imports and one constructor.
 
 ## Requirements
 
@@ -31,7 +31,7 @@ router = SandboxRouter([WslcSandboxBackend(WslcSandboxConfig())], min_isolation=
 
 ## What this backend declares
 
-**`Isolation.CONTAINER`.** A container shares the host kernel and sits next to whatever the host process holds, below `SandboxRouter`'s default `min_isolation=Isolation.MICROVM` floor — construct the router with `min_isolation=Isolation.CONTAINER` and it admits this backend; leave the floor at its default and construction raises `SandboxBackendNotPermitted`. That refusal is the feature: this is a backend for the machine you are already sitting at, and opting the floor down is the one thing that lets you use it — there is no flag left to forget. Use a VM-isolated backend where a deployment's credentials are in the picture.
+**`Isolation.CONTAINER`.** A container shares the host kernel and sits next to whatever the host process holds, below `SandboxRouter`'s default `min_isolation=Isolation.MICROVM` floor — construct the router with `min_isolation=Isolation.CONTAINER` and it admits this backend; leave the floor at its default and construction raises `SandboxBackendNotPermitted`. That refusal is the feature: this is a backend for the machine you are already sitting at, and opting the floor down is the one thing that lets you use it — there is no flag left to forget. Use a microVM-isolated backend where a deployment's credentials are in the picture.
 
 **`Egress.CLOSED` by default, `Egress.ALLOWLIST` on request.** With no proxy configured every container is created `--network none`: the CLI cannot allow one host and deny the rest, so a spec's allowlist is honoured by denying everything — confining *more* than a workload asked for, which the router permits with a warning precisely because the failure is loud, and a workload built for this reports the shortfall rather than passing an incomplete result off as a clean one.
 

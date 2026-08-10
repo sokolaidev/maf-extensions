@@ -11,7 +11,7 @@ in it on purpose — into a workspace store, hands the agent the `bicep_validate
 tool, runs exactly one turn, prints what came back, and deletes the sandbox.
 
 What the printed diagnostics prove is the point.  They come from the Bicep
-compiler running inside a VM-isolated sandbox (T2), not from the model reading
+compiler running inside a microVM-isolated sandbox (T2), not from the model reading
 its own output and agreeing with itself (T0).  Running this against a *valid*
 file would prove much less.
 
