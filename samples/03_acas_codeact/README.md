@@ -66,16 +66,15 @@ With any of these unset the program says which and exits non-zero, rather than r
 python agent.py
 ```
 
-The first call is slow — the sandbox is created and booted before the interpreter runs. The model writes its own prose around it, but the answer it is reporting looks like this:
+The first call is slow — the sandbox is created and booted before the interpreter runs. `agent.py` prints only the model's reply and the disposal line — never `execute_code`'s own result — so what you see looks something like this:
 
 ```
-stdout:
-354224848179261915075
+The program printed 354224848179261915075.
 
 Disposed 1 sandbox(es).
 ```
 
-Only the surrounding prose is the model's. `stdout:\n354224848179261915075` is `execute_code`'s own result format, unmodified — no stderr and no exit code because the program printed exactly one line and exited cleanly. `_format_result` in `maf-sandbox-codeact` is what renders it, and the two-line shape is the same whatever the program did.
+The wording around the number is the model's and varies run to run; the model is instructed to report the tool's answer verbatim, not to paraphrase, round, or recompute it. What tells you the number came from a real run rather than the model reciting a well-known sequence is the line below it: `Disposed 1 sandbox(es).` only prints once `execute_code` has actually created and torn down a sandbox — a `Disposed 0` would mean the model answered without running anything.
 
 ## Troubleshooting
 

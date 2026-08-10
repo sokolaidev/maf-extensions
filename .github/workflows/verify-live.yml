@@ -13,7 +13,19 @@ name: Verify (live)
 # environment variables on the `live-verify` environment. See docs/maintainers.md.
 on:
   workflow_dispatch:
+    inputs:
+      package:
+        description: "Package whose release to verify (empty runs every sample)"
+        required: false
+        type: string
+        default: ""
   workflow_call:
+    inputs:
+      package:
+        description: "Package whose release to verify (empty runs every sample)"
+        required: false
+        type: string
+        default: ""
 
 # One billable run at a time; let a run in flight finish and dispose its sandbox rather than
 # cancelling it half-way and leaving the sandbox to the backend's auto-delete timer.
@@ -27,6 +39,13 @@ permissions:
 jobs:
   sample-01:
     name: samples/01_acas_bicep against a live sandbox
+    # Empty input (verify-everything) or a package sample-01 actually exercises: the router
+    # (maf-sandbox) and the backend it runs on (maf-sandbox-acas) both affect it, and so does
+    # its own package (maf-sandbox-bicep); a maf-sandbox-codeact or maf-sandbox-wslc release
+    # cannot change anything this sample does.
+    if: >-
+      inputs.package == ''
+      || contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-bicep"]'), inputs.package)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # Half of the federated-credential subject Azure checks, and where the non-secret sandbox
@@ -113,10 +132,21 @@ jobs:
 
   sample-03:
     name: samples/03_acas_codeact against a live sandbox
-    # Not a data dependency — sample 01 and sample 03 each create their own sandbox and read
-    # disjoint configuration. This keeps the two billable runs from overlapping inside the
-    # `verify-live` concurrency group above, and a failure still names which sample broke.
-    needs: sample-01
+    # No `needs: sample-01` — the two never had a data dependency (each creates its own
+    # sandbox and reads disjoint configuration); the `needs` edge existed only to keep this
+    # run's two billable sandboxes from being up at the same time. That trade is deliberately
+    # flipped now: the jobs run concurrently, so for the few minutes both samples are live
+    # there are two billable sandboxes at once, in exchange for the run taking one sample's
+    # time instead of two. The workflow-level `concurrency` block above still serialises whole
+    # RUNS of this workflow, so at most one *run* is ever in flight. A failure still names
+    # which sample broke.
+    # Empty input (verify-everything) or a package sample-03 actually exercises: the router
+    # (maf-sandbox) and the backend it runs on (maf-sandbox-acas) both affect it, and so does
+    # its own package (maf-sandbox-codeact); a maf-sandbox-bicep or maf-sandbox-wslc release
+    # cannot change anything this sample does.
+    if: >-
+      inputs.package == ''
+      || contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-codeact"]'), inputs.package)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # Half of the federated-credential subject Azure checks, and where the non-secret sandbox
