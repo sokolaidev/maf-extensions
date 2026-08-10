@@ -1,0 +1,279 @@
+# `maf-sandbox-docker`: the design for a plain-Docker backend
+
+> **Status: PROPOSED — nothing in this document is implemented.** No package, module, class, config field, test, sample or workflow change described here exists. This is the normative half of a pair; the analysis it rests on — the host gap, the driver comparison, the egress reasoning and the isolation-rung argument — is [`docker-backend-exploration.md`](docker-backend-exploration.md), and this document does not re-argue any of it. The vocabulary both are written in ships today and is described in [`sandbox-architecture.md`](sandbox-architecture.md), with its proposed evolution in [`two-axis-sandbox-policy.md`](two-axis-sandbox-policy.md).
+
+We propose a sixth package, `maf-sandbox-docker`, that implements `maf_sandbox.SandboxBackend` by driving the `docker` command-line client as a subprocess — declaring `Isolation.CONTAINER` unconditionally, `{Capability.EXEC, Capability.FILES_IN}`, and `Egress.CLOSED` or `Egress.ALLOWLIST` depending on whether a proxy image is configured. It adds no runtime dependency beyond `maf-sandbox` itself, it is the first backend that works on macOS and Linux at all, and it is the first backend whose live end-to-end tests can run on this repository's own CI runners. It is deliberately *not* Docker's "Docker Sandboxes" micro-VM product, which we reserve a separate package name for and argue belongs at a different rung.
+
+## Names
+
+The family already has a naming convention, and this package follows it exactly rather than negotiating with it.
+
+| Thing | Value | Convention it follows |
+|---|---|---|
+| Distribution | `maf-sandbox-docker` | `maf-sandbox-acas`, `maf-sandbox-wslc` |
+| Import package | `maf_sandbox_docker` | `maf_sandbox_acas`, `maf_sandbox_wslc` |
+| `SandboxBackend.name` | `"docker"` | `"acas"`, `"wslc"` — the value `selected=` matches on |
+| Backend class | `DockerSandboxBackend` | `AcasSandboxBackend`, `WslcSandboxBackend` |
+| Config class | `DockerSandboxConfig` | `AcasSandboxConfig`, `WslcSandboxConfig` |
+| Warning category | `MafSandboxDockerExperimentalWarning` | `MafSandboxWslcExperimentalWarning` (a `UserWarning` subclass, duplicated per package on purpose) |
+
+`name = "docker"` is not a land-grab on the word; it is the word the socket contract is called, and the repository's own test vocabulary has been using it for a container-rung backend for as long as the ladder has existed — `packages/maf-sandbox/tests/test_sandbox_router.py` constructs `InProcessSandboxBackend(name="docker", isolation=Isolation.CONTAINER)` in its floor and `selected=` tests, and `InProcessSandboxBackend`'s own docstring in `packages/maf-sandbox/src/maf_sandbox/testing.py` offers `"docker"` as an example name. A host reading `selected="docker"` should get plain containers, because that is what `docker run` means.
+
+**We reserve `maf-sandbox-sbx` for the Docker Sandboxes product.** Distribution `maf-sandbox-sbx`, import `maf_sandbox_sbx`, `name = "sbx"` — after Docker's own `sbx` CLI — at the `microvm` rung, which is where `two-axis-sandbox-policy.md`'s design map already places "Docker Sandbox". Naming it now is the point: the two are different isolation rungs behind the same protocol, and reserving the second name up front is what stops the first backend from later growing a flag whose value changes what `isolation` returns. The precedent for picking the specific name early rather than the generic one is the `maf-sandbox-aca` → `maf-sandbox-acas` rename, which cost a `feat!` release to correct.
+
+The tag globs do not collide, which `docs/maintainers.md` closes with as a standing rule for any new name: in `maf-sandbox-docker-v0.1.0` the character after `maf-sandbox-` is `d`, and in `maf-sandbox-sbx-v0.1.0` it is `s` — neither is `v`, so `maf-sandbox-v*` does not swallow either, and `d` ≠ `s` keeps them apart from each other. Both are equally distinct from `acas`, `bicep`, `codeact` and `wslc`.
+
+Rejected names, briefly: `maf-sandbox-dockerc` (the `c` bought nothing and read as a typo) and `maf-sandbox-oci` (technically broader and practically unfindable — nobody searching for a way to run sandboxes in containers on their laptop types "OCI").
+
+## What the backend declares
+
+Three properties, read by `SandboxRouter` before a workload's tool is ever attached. Each is a claim the router acts on, so each has to be exactly true.
+
+**`isolation` returns `Isolation.CONTAINER`, unconditionally, with no configuration that raises it.** The exploration document argues this at length and we do not repeat it: shared-kernel namespaces are the rung's definition in `packages/maf-sandbox/src/maf_sandbox/_protocol.py`, a Docker Desktop or Colima VM does not lift a container off it any more than the WSL 2 utility VM lifts a `wslc` one, and plain Docker fails the micro-VM standard's first leg categorically. The normative consequence is the one that matters here: **the property is a constant, not a function of the config.** No field in `DockerSandboxConfig` may change what `isolation` returns, in this version or any later one — a runtime string a backend cannot verify must never become a security guarantee the router repeats.
+
+**`capabilities` returns `frozenset({Capability.EXEC, Capability.FILES_IN})`** — identical to both shipped backends, and identical to `maf_sandbox.DEFAULT_CAPABILITIES`. Two omissions are deliberate and neither is an oversight:
+
+- **Not `FILES_OUT`.** The `Capability.FILES_OUT` enum member is the entire implementation of that idea in the repository today. The `Sandbox` protocol has `write_file` and `exec` and nothing else — no `read_file`, no `list_files`, no `collect_outputs`, no byte-cap fields on `SandboxSpec` — and `sandbox-architecture.md` says so plainly under its known limits. A backend declaring `FILES_OUT` would pass `SandboxRouter.ensure_can_serve` and then have nothing to call. If the pull pair described in `two-axis-sandbox-policy.md` ever lands, this backend implements it and *then* declares it.
+- **Not `NETWORK`.** No shipped backend declares it, including `AcasSandboxBackend`, whose egress is a Deny-default allowlist. Its meaning is still a mapping exercise rather than a checked contract, and a container-rung backend is not the place to settle it.
+
+**`egress` is config-derived, exactly as `WslcSandboxBackend.egress` is**: `Egress.ALLOWLIST` if and only if `egress_proxy_image` is set, `Egress.CLOSED` otherwise. The semantics are worth stating precisely because they are easy to misread. The property is a statement about **what this backend can enforce**, not about what any one sandbox got: a backend configured with a proxy image still creates a `--network none` container for a spec whose `egress_allow` is empty, because denying everything for free is better than burning a network and a proxy on allowing the same nothing. That asymmetry is why the router permits confining *more* than a spec asked for and refuses confining less, and it is why the declaration and the behaviour cannot drift apart: the one setting that changes the topology changes the declared capability with it.
+
+A container-rung backend sits below the router's default `Isolation.MICROVM` floor, so a host opts down explicitly, with the same single line `wslc` users already write and `samples/04_wslc_codeact/agent.py` already contains:
+
+```python
+router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
+```
+
+There is one knob. `min_isolation` is the whole mechanism — no environment detection, no development-versus-production profile, nothing that lowers the floor on a host's behalf. Registering this backend alongside an ACAS one does not buy per-workload routing either: `SandboxRouter._resolve` picks `self._backends[0]` or the backend whose `name` matches `selected=`, and checks only the floor against that one choice.
+
+## Configuration
+
+```python
+"""Configuration for the docker backend.
+
+A plain frozen dataclass rather than a settings model, and it reads no environment: a host
+already has its own configuration system, and requiring a particular one would be exactly
+the coupling this package avoids.
+
+Note what is *not* here.  The image, the work directory and the egress allowlist are
+properties of a sandbox **kind** and travel in a :class:`~maf_sandbox.SandboxSpec`.  The
+network mode is not independently configurable: ``--network none`` is what
+:data:`~maf_sandbox.Egress.CLOSED` means, and the one setting that changes it —
+``egress_proxy_image`` — changes the declared capability with it.  Nothing here changes what
+:attr:`DockerSandboxBackend.isolation` returns, and nothing ever should.
+"""
+
+_DEFAULT_DOCKER_PATH = "docker"
+_DEFAULT_COMMAND_TIMEOUT_S = 60.0
+_DEFAULT_PIDS_LIMIT = 512
+
+
+@dataclass(frozen=True)
+class DockerSandboxConfig:
+    """Where the client is, how long its lifecycle commands may take, and how tight the box is.
+
+    ``docker_path`` is the client binary, not a socket: point it at ``"podman"`` and the
+    backend drives Podman's docker-compatible surface instead.  ``DOCKER_HOST``, the active
+    Docker context and every other lookup the real client implements are inherited, because
+    the subprocess inherits this process's environment.
+
+    ``command_timeout_seconds`` bounds the container-lifecycle commands — run, start, list,
+    remove and the file copy.  It does **not** bound ``exec``: a workload states its own
+    timeout per call, and that is the one that governs the work.
+
+    ``egress_proxy_image`` opts in to :data:`~maf_sandbox.Egress.ALLOWLIST`.  It names a
+    locally built image of the packaged proxy; when set, every sandbox gets its own internal
+    network and a dual-homed filtering proxy enforcing the spec's allowlist by topology.
+    Left ``None``, the backend stays ``CLOSED`` and containers get ``--network none``.
+
+    ``pids_limit``, ``memory``, ``cpus`` and ``cap_drop_all`` are hardening applied on the
+    create command line, where their effect is verifiable.  ``memory`` and ``cpus`` are unset
+    by default because a sensible ceiling is a property of the workload and the machine, not
+    of this package; ``cap_drop_all`` is off by default only until real workloads have been
+    measured under it — see the open questions.
+    """
+
+    docker_path: str = _DEFAULT_DOCKER_PATH
+    egress_proxy_image: str | None = None
+    command_timeout_seconds: float = _DEFAULT_COMMAND_TIMEOUT_S
+    pids_limit: int = _DEFAULT_PIDS_LIMIT
+    memory: str | None = None
+    cpus: float | None = None
+    cap_drop_all: bool = False
+```
+
+Seven fields, and the shape mirrors `WslcSandboxConfig` in `packages/maf-sandbox-wslc/src/maf_sandbox_wslc/_config.py` deliberately: frozen, no environment reading, no image, no work directory, no network mode. `memory` is a string because `--memory` takes a unit suffix (`"512m"`, `"2g"`); `cpus` is a float because `--cpus` takes a decimal. The defaults are module-level named constants rather than literals in the field list — `wslc` writes its two as literals, and naming them is the small tightening this package would rather ship with, since `_DEFAULT_PIDS_LIMIT` is also the number the hardening section argues about and it should exist in one place.
+
+## Lifecycle
+
+The shape is `WslcSandboxBackend`'s, because the acquire contract in `SandboxBackend.acquire`'s docstring is the same contract and the wslc backend is where this repository worked out how to satisfy it. Docker's primitives are better in two specific places, and the design takes both.
+
+**Naming is derived, so acquire and dispose agree without a registry.** `maf-sandbox-docker-<sha256(scope|thread_id|agent_dir|kind[|egress_id])[:12]>`, mirroring `_container_name` in `packages/maf-sandbox-wslc/src/maf_sandbox_wslc/_backend.py`. Docker's container name charset is `[a-zA-Z0-9][a-zA-Z0-9_.-]*` with a 255-character maximum ([moby#3138](https://github.com/moby/moby/issues/3138)), which this satisfies with room to spare. `kind` is in the identity because a sandbox carries its spec's image and egress policy and must never serve two kinds; `egress_id` — empty when closed, else `"allow:"` plus the sorted allowlist, as `_egress_id` builds it — is in the identity because a sandbox is only reusable by an acquire that wants the *same* egress.
+
+**Labels are the durable truth.** The same four keys the wslc backend writes (`maf-sandbox.scope`, `.thread`, `.agent`, `.kind`, plus `maf-sandbox.label.<k>` for a spec's own labels), through the same `_label_value` discipline: a short, safe value passes through so a listing stays readable, and anything longer, empty, digest-shaped or carrying a character that would split the argument becomes a `sha256-` digest — never a truncation, because two scopes sharing a prefix would land on the same label and one conversation's purge would delete another's containers. The mapping must be identical on write and on query or the purge silently selects nothing.
+
+**The create command line**, with the optional parts in brackets:
+
+```
+docker run -d --name maf-sandbox-docker-<12 hex>
+  --security-opt no-new-privileges --pids-limit <pids_limit>
+  [--cap-drop ALL] [--memory <memory>] [--cpus <cpus>]
+  ( --network none | --network <name>-net -e HTTP_PROXY=http://<name>-proxy:3128 -e HTTPS_PROXY=http://<name>-proxy:3128 )
+  -l maf-sandbox.scope=<v> -l maf-sandbox.thread=<v> -l maf-sandbox.agent=<v> -l maf-sandbox.kind=<v> [-l maf-sandbox.label.<k>=<v> ...]
+  <image> sleep infinity
+```
+
+No bind mounts, no host paths, no `/var/run/docker.sock`, and no environment variables beyond the two proxy ones. `sleep infinity` is the standard keep-alive idiom for a container that exists to be `exec`'d into, and it costs essentially nothing.
+
+**Reuse, restart, adopt.** Every acquire takes the lock, asks what is there, and lands in exactly one of four states:
+
+| What the engine reports | What `acquire` does | Why |
+|---|---|---|
+| Running under that name | Reuse it | Warm reuse is the contract: a fix-round loop must not pay a cold create per iteration |
+| Present but stopped | `docker start`; if it will not start, remove and create | A broken container squatting the name would fail every future acquire for that key |
+| Absent | Create | The ordinary path |
+| Create fails with a name conflict | Adopt — re-check running, else restart | The listing that sent us down the create branch can be stale: two acquires racing one key, or a transient listing failure hiding a container that is right there |
+
+Docker gives the existence probe a cleaner primitive than wslc has. `wslc`'s `--filter name=` is a substring match and its JSON state is an undocumented integer, which is why `_is_listed` runs two narrow queries; `docker inspect -f '{{.State.Running}}' <name>` should answer both questions in one call, erroring for a container that is not there — that it does so identically across engines and across Podman's compat surface is one of the things the live suite below exists to confirm, and until it has, the two-query fallback stays available. The listing still has to be parsed defensively — `docker ps --format '{{json .}}'` emits newline-delimited JSON rather than an array, field shapes have drifted across engine versions, Podman's docker-compat output is not byte-identical, and some surfaces report a name with a leading `/` and some without.
+
+**Locking.** A per-`(running event loop, key, kind)` `asyncio.Lock`, held for the whole get-or-create, held in a `weakref.WeakKeyDictionary` keyed on the loop — exactly `WslcSandboxBackend._acquire_lock`. Per loop because a lock binds to the loop that first waits on it; weak-keyed so a process that runs a loop per call does not accumulate a lock table for loops long dead. The name-conflict adopt path above is the second line of defence, for races the lock cannot see because they are in another process.
+
+**Egress scaffolding is re-ensured on every acquire**, not only on create. A proxy a host reboot stopped, or one a crashed setup left half-connected, is rebuilt here — the alternative is handing back a sandbox that declares an allowlist and enforces nothing.
+
+**Purge.** `dispose(key)` removes every kind's container for that key, because the method takes no kind and a caller releasing a key means all of it. `dispose_scope(scope, thread_id)` removes everything labelled with that pair and returns how many sandboxes it removed, because a conversation delete has to reach containers this process never created — a multi-replica host serves the delete wherever it lands. Both go through one sweep that removes the matching containers, then their proxies, then their networks; proxies carry their sandbox's labels plus a role label so they are removed alongside but not counted; the in-process registry of last-known names is a fallback for when the listing itself fails, never the truth. **Teardown never raises** — every removal is best-effort and logs rather than propagating, per the protocol's docstrings on both methods.
+
+This is where Docker's second improvement lands. `wslc container list` does not report labels back, so the wslc backend encodes the proxy-and-network pairing in the container *names* and selects on those. `docker ps -a --filter label=maf-sandbox.scope=<v> --filter label=maf-sandbox.thread=<v>` filters on labels directly, so the query can select what it actually means. We keep the derived `-net` and `-proxy` name suffixes anyway, as belt and braces: they let a sweep reclaim a network whose proxy was deleted by hand, which a label query alone would miss.
+
+## Files in, and exec
+
+**Files in is a one-entry tar on stdin.** `docker cp - <name>:/`, with the tar entry name carrying the whole path and no leading slash. This is `_WslcSandbox.write_file`'s trick and it transfers: a `cp` destination must already exist, `/` is the only path that always does, and the engine creates the intermediate directories from the entry name. It is also why the design does not need bind mounts, which is what makes the Windows host-path translation problem, the CRLF problem and the cross-filesystem performance problem all not exist here.
+
+**Exec is `docker exec -w <working_directory> <name> <argv...>`.** A `Sequence` command goes through element for element with no shell and nothing to quote; a string is a shell command line and runs as `sh -c`, matching `Sandbox.exec`'s documented two shapes. Exit code, stdout and stderr come from the exec subprocess directly.
+
+**A timed-out exec discards the sandbox**, and this is wslc parity rather than a Docker limitation we could design around. `timeout` bounds the host-side call; killing the `docker exec` client does not reach the process it started inside the container, and there is no per-command handle to kill, so the backend force-removes the container before `TimeoutError` propagates. A workload reports the hang as a diagnostic and the next acquire pays a fresh create. A **cancelled** call is different and stays different: the host-side child is still reaped, but the sandbox survives and the in-container command runs on until disposal.
+
+**There is no `env` channel and this backend does not invent one.** `Sandbox.exec` takes `command`, `working_directory` and `timeout`. A per-exec `env=` is described in `two-axis-sandbox-policy.md` as a protocol addition that does not exist, and the only environment variables this backend has business setting are `HTTP_PROXY` and `HTTPS_PROXY`, which exist to make its own topology usable.
+
+## Hardening
+
+The wslc backend ships no hardening flags, because the `wslc` surface offers few and the ones it offers are not uniform. Docker's are cheap, kernel-enforced, and behave the same inside a Desktop VM as on bare metal, so this backend applies them.
+
+| Flag | Default | Why |
+|---|---|---|
+| `--security-opt no-new-privileges` | **on**, not configurable | Blocks setuid-binary privilege escalation inside the container. No workload we can imagine needs it off, so it is not a knob ([capabilities and security context](https://oneuptime.com/blog/post/2026-01-30-docker-security-context/view)). |
+| `--pids-limit <pids_limit>` | **on**, `512` | Fork-bomb defence. A limit is the point; 512 is generous for the compile-and-run workloads these kinds actually are, and it is a config field so a workload that needs more can say so. |
+| `--cap-drop ALL` | **off** (`cap_drop_all=False`) | Docker's default grant includes `NET_RAW`, `SYS_CHROOT` and `SETUID` among others ([dropping capabilities](https://oneuptime.com/blog/post/2026-01-16-docker-drop-capabilities/view)). Dropping all of them is almost certainly right and we do not yet know it does not break the Bicep CLI or a dev-container image's entrypoint. Off in v0, and an open question below. |
+| `--memory`, `--cpus` | unset | A ceiling is a property of the workload and the machine. Unset means the engine's default, which is unlimited; a host that cares sets them. |
+
+The default seccomp profile applies whether or not we ask for it, and is the one hardening this backend gets for free ([seccomp](https://docs.docker.com/engine/security/seccomp/)).
+
+What we deliberately do **not** do: nothing here reads or promises anything about rootless mode or user-namespace remapping. Both change a container's security properties materially, both are properties of how the engine was installed, and a backend can neither detect nor guarantee either — so the package makes no claim that depends on them, and every hardening statement it does make is a flag on a command line whose effect can be checked.
+
+Three self-imposed constraints round it out, and the proposal is explicit that they are self-imposed: **no bind mounts, no host-path sharing, and never `/var/run/docker.sock` passthrough.** They are what the micro-VM standard's fourth leg — an explicit guest↔host surface — asks for, and they cost nothing here because `docker cp` covers the only file transfer the protocol has. But the router does not enforce leg 4 on a container-rung backend; nothing checks that a backend declaring `container` refrained from mounting the host filesystem, and the conformance probe suite that would give the standard teeth is designed but parked. These constraints hold because this package chooses to hold them.
+
+## Egress topology
+
+Closed mode is `--network none`: a network namespace with nothing but loopback, enforced by whichever kernel runs the container, identical on Docker Desktop, Colima, OrbStack, native Engine, rootless Engine and Podman ([the `none` driver](https://docs.docker.com/engine/network/drivers/none/)).
+
+Allowlist mode is the topology `WslcSandboxBackend._ensure_egress`, `_ensure_network` and `_ensure_proxy` already build, transposed verb for verb:
+
+1. `docker network create --internal <name>-net`, labelled with the sandbox's labels — internal, so nothing on it has a route off it.
+2. `docker run -d --name <name>-proxy --network <name>-net -e MAF_SANDBOX_ALLOW=<comma-joined allowlist> -l ... -l maf-sandbox.role=proxy <egress_proxy_image>`.
+3. `docker network connect bridge <name>-proxy` — the outbound leg. If this fails the acquire fails, because a proxy without its egress leg would turn `ALLOWLIST` into `CLOSED` silently.
+4. Poll `docker logs <name>-proxy` for the readiness marker before returning; a proxy that has not bound its port yet would let the workload's first request read as a network error.
+5. Create the workload on `<name>-net` with `HTTP_PROXY` and `HTTPS_PROXY` pointing at `http://<name>-proxy:3128`.
+
+The proxy is recreated on every acquire rather than adopted — a fresh proxy always carries the current spec's allowlist, always gets its outbound leg connected, and its log holds only this run's readiness line, so a stale or half-connected one is never mistaken for a working one.
+
+**The proxy itself already exists in this repository, as source.** `packages/maf-sandbox-wslc/src/maf_sandbox_wslc/_proxy/proxy.py` is a stdlib-only CONNECT proxy that never decrypts TLS, resolves target hostnames on the egress side rather than inside the sandbox, and refuses to complete a tunnel to an allowlisted *name* that resolves to a private or link-local address — which is what keeps a cloud metadata endpoint out of reach. Its `Dockerfile` pins `mcr.microsoft.com/azurelinux/base/core` by digest rather than by tag, because the image is a security boundary. It is shipped as a build context (`maf_sandbox_wslc.proxy_build_context()`) and built by the user, so the pin they trust is the base image named in the Dockerfile. **A Docker backend needs exactly this component, and where it should live is the first open question below.**
+
+Two honesty limits carry over unchanged, and any README for this package must state both. `HTTP_PROXY` and `HTTPS_PROXY` are **advisory** — conventions well-behaved clients read, which a binary that ignores them or model-written code opening a raw socket is not constrained by in the slightest. What enforces the allowlist is the **topology**: the workload sits on an internal network with no route off it, so the proxy is not the polite way out, it is the only way out. And host-level `iptables` allowlisting is not part of the portable contract and cannot be made so — under rootless Docker the rules land in the wrong namespace, and on macOS and Windows the daemon lives in a VM whose namespaces the host firewall cannot address at all.
+
+## Testing and CI
+
+The offline half is settled by precedent. Every provider interaction goes through one private coroutine, `_docker()`, of the same shape as `WslcSandboxBackend._wslc` — build an `asyncio.create_subprocess_exec` call from an argv list, bound it with `asyncio.wait_for`, and kill and reap the child on any abnormal end. The unit suite replaces exactly that seam with a fake, so every command line the backend emits is asserted with no engine present and the tests run on every platform. Two wslc test shapes come along with it: a test that drives the *real* seam with `sys.executable` standing in for the client, proving a timed-out or cancelled call actually reaps its child (`TestTheSeamReapsARealChild`), and a fixture of verbatim captured engine output so a listing-format change fails in CI rather than on one maintainer's machine (`tests/fixtures/wslc-container-list-real.json`, read by `TestAgainstRealWslcOutput`).
+
+The live half is the strategic payoff, and it is **a new capability we are arguing for, not a precedent we are citing**. There is no live-backend end-to-end test in this repository's CI today, on any backend: `packages/maf-sandbox-wslc/tests/test_wslc_e2e.py` skips in full on Ubuntu because it needs `wslc` on `PATH`, and `verify-live.yml` runs real ACAS samples only on demand and after a release because each run creates billable compute.
+
+We propose `packages/maf-sandbox-docker/tests/test_docker_e2e.py`, patterned on the wslc module — a `pytestmark` skipping unless `shutil.which("docker")` finds the client *and* `MAF_SANDBOX_DOCKER_E2E_IMAGE` names a runnable image, with an allowlist class gated additionally on `MAF_SANDBOX_DOCKER_E2E_PROXY_IMAGE` — except that on `ubuntu-latest` those gates are satisfiable, so `tests.yml` sets the variables and the module runs **on every pull request**. What that proves, and no offline test can:
+
+- That a one-entry tar written to `docker cp - <name>:/` really does create the intermediate directories.
+- That an argv passed to `docker exec -w <dir>` reaches the process without a shell, and that the exit code and the stdout/stderr split come back as the backend believes.
+- That warm reuse, restart-after-stop and adopt-on-name-conflict behave against a real engine — which is where the acquire-race invariant actually lives.
+- That `--network none` denies what it claims to, and that the allowlist topology reaches an allowed host and fails a denied one — a positive *and* a negative control, which is the only way a network test is worth anything.
+- That the label filters return the containers a purge needs.
+
+Two operational choices go with it. **Images come from `mcr.microsoft.com`, not Docker Hub**, whose anonymous limit of [100 pulls per six hours per IP address](https://deverrors.com/errors/docker-rate-limit-exceeded-anonymous) is a flake waiting to happen on shared runner addresses; MCR is the registry this repository already pins the proxy base image against, though its own rate-limit policy is not documented in a form we could confirm, so this is a mitigation rather than a guarantee, and GHCR's [unlimited public-image pulls with automatic authentication in Actions](https://www.gecko.security/blog/ghcr-github-container-registry-guide) is the better-documented fallback. **The allowlist leg needs an HTTP client inside the workload image**; the same `azurelinux/base/core` plus `python3` layer the proxy image already builds is the cheapest way to have one, and which exact image the e2e uses is a detail for the implementing PR to settle rather than for this document to fix.
+
+**The de-facto backend test contract**, assembled from what `maf-sandbox-wslc` and `maf-sandbox-acas` are actually held to. `maf_sandbox.testing` is a set of fakes, not a conformance suite, and backends do not import it — each fakes its own provider seam. So a new backend package owes:
+
+1. `isinstance(backend, SandboxBackend)` — the protocol is `runtime_checkable` and this is the cheapest possible regression test for a renamed method.
+2. Declaration assertions, including the router interaction in both directions: `SandboxRouter([backend])` raises `SandboxBackendNotPermitted`, `SandboxRouter([backend], min_isolation=Isolation.CONTAINER)` does not, and `egress` is `CLOSED` with no proxy image and `ALLOWLIST` with one.
+3. `TestOnlyDeclaredDependencies` — every top-level import in every module of the package is in the standard library, the package itself, or `pyproject.toml`'s declared dependencies. This is the test that keeps "zero new runtime dependencies" true rather than aspirational.
+4. `TestNoMafImport` — no module imports `agent_framework`. A backend must be usable by a host that does not run Microsoft Agent Framework at all.
+5. A packaging test (`tests/test_maf_sandbox_docker_packaging.py`) covering the experimental warning's category, its emission, its suppressibility, and the hard one: `python -W error -c "import maf_sandbox_docker"` exits 0.
+6. A `_smoke_maf_sandbox_docker()` entry in `scripts/smoke_install.py` that constructs the backend without a client present, asserts `Isolation.CONTAINER`, asserts both egress modes, and — if the proxy hoist below does not happen — asserts the proxy build context shipped in the wheel.
+
+## Packaging checklist
+
+`docs/maintainers.md` has a seven-step "Adding a package to this repository" section. This is that list, resolved against the specific files, so the implementing PR has nothing to rediscover.
+
+1. **`packages/maf-sandbox-docker/`** with its own `pyproject.toml`, `README.md`, `CHANGELOG.md`, `LICENSE`, and `py.typed` beside the module at `src/maf_sandbox_docker/py.typed`. Dependencies: `maf-sandbox` at the current range and nothing else. The README follows the wslc one's order — title, experimental admonition, non-affiliation disclaimer, layering diagram, pitch, Quickstart, Requirements, "What this backend declares", the method table, and the maintainer line.
+2. **Its own `[tool.ruff]`, `[tool.pyright]` (strict) and `[tool.pytest.ini_options]`** — the workspace root does not reach into packages and an sdist has no root to inherit from — **and its `tests/` added to the root `pyproject.toml`'s `testpaths`**, which currently lists five packages plus `tests`. Miss that last one and repository-wide runs skip the whole package without saying so.
+3. **A tag glob `maf-sandbox-docker-v*`** in `publish-packages.yml`'s `on.push.tags`, and `maf-sandbox-docker` added to its `workflow_dispatch` package choices.
+4. **The `pypi` environment's deployment tag rule**: Settings → Environments → `pypi` → *Deployment branches and tags* → add `maf-sandbox-docker-v*`. Without it the publish fails after every gate has passed, and a green TestPyPI rehearsal proves nothing about it because `testpypi` carries no such restriction.
+5. **`tests.yml` — three hardcoded lists in one file**, none of which is derived from the workspace: the `pyright -p packages/...` block, the `uv build --package ...` block, and the `for package in maf-sandbox maf-sandbox-acas ... ; do` smoke loop. **And `scripts/smoke_install.py` — two dicts**, `_PACKAGES` (distribution → module) and `_SMOKES` (distribution → smoke function), plus the function itself.
+6. **`release-please-config.json`** — an entry under `packages/maf-sandbox-docker` **with its `package-name`**, which is not optional: release-please's Python strategy never reads `pyproject.toml` to name the component, so leaving it out makes the component the empty string and the package tags as a bare `v<version>` that collides with everything and matches no publish glob. The entry also needs the `uv.lock` updater copied from a sibling with the name changed — `{"type": "toml", "path": "/uv.lock", "jsonpath": "$.package[?(@.name.value=='maf-sandbox-docker')].version"}` — with the leading slash (paths resolve against the package directory and `../` is rejected outright) and `@.name.value` rather than `@.name` (release-please parses TOML into position-annotated nodes). **And `.release-please-manifest.json`**, seeded with the version the new `pyproject.toml` declares. `tests/test_release_config.py` fails until both files list it, the manifest version matches, and the tag glob resolves to it alone.
+7. **Register the PyPI pending trusted publisher** — owner `sokolaidev`, repository `maf-extensions`, workflow file `publish-packages.yml`, environment `pypi` (and `testpypi` for the rehearsal) — remembering that pending publishers are unique per `(owner, repository, workflow, environment)`, so this happens one package at a time, register-then-publish.
+
+Outside that list, two more edits: **the root `README.md` package table** gains a row (`maf-sandbox-docker` | Docker containers as a backend: container isolation, closed or allowlisted egress, for a sandbox on any machine with a Docker-compatible socket | `maf-sandbox`), and **`samples/README.md`** gains its rows for the two samples below.
+
+## Samples
+
+Two, mirroring the "one line lower" pattern samples 02 and 04 established — the same agent and the same task as an existing sample with exactly one thing changed, which is how the protocol's central claim gets shown rather than asserted.
+
+- **`samples/05_docker_bicep`** — sample 01's agent and its `main.bicep`, with `DockerSandboxBackend` in place of `AcasSandboxBackend` and `min_isolation=Isolation.CONTAINER`. Like sample 02 it runs the repository's own `images/bicep-sandbox`, built locally — `docker build` where sample 02 says `wslc build` — so the two Bicep samples' output stays comparable: one compiler, one lint rule set, a different backend underneath.
+- **`samples/06_docker_codeact`** — sample 03's agent and its Fibonacci task, with the Docker backend and the same `mcr.microsoft.com/devcontainers/python:3.13-bookworm` image samples 03 and 04 already name.
+
+Sample 06 is the interesting one, because it is the first sample in this repository whose live verification needs **no Azure subscription, no preview enrolment and no billable compute** — `ubuntu-latest` has an engine, and the sandbox costs nothing. It is not free of all configuration: it still needs an OpenAI-compatible endpoint and a key, and this repository holds no model secret today (`verify-live.yml` reaches Azure OpenAI through OIDC with non-secret configuration on the `live-verify` environment). Whether that is solved with a secret, a local model server in the job, or by leaving sample 06 to the same on-demand path as the others is a maintainer decision, not something this document should pre-empt. If it *is* wired in, `publish-packages.yml`'s post-release verification gate — the `contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-bicep", "maf-sandbox-codeact"]'), ...)` list, from which `maf-sandbox-wslc` is deliberately absent — is where `maf-sandbox-docker` would join.
+
+## Rollout
+
+Four pull requests, in this order. The ordering is load-bearing in one place only — the first one, if it happens, changes a shipped package.
+
+1. **Hoist the egress proxy into `maf_sandbox` (only if the maintainers accept open question 1).** Move the `_proxy` build context — `Dockerfile` and `proxy.py` — into `maf-sandbox`, expose `proxy_build_context()` there, and have `maf_sandbox_wslc.proxy_build_context` re-export it so no consumer breaks. This is a `feat` on `maf-sandbox` and a `refactor` on `maf-sandbox-wslc`, it adds no dependency to core (the proxy is stdlib-only), and it has to land *before* the package PR or the Docker backend ships a second copy of a security component that then has to be kept in step. `packages/maf-sandbox-wslc/tests/test_egress_proxy.py` moves with it. If the answer is no, this PR does not exist and the package PR carries its own copy — a decision, not a default.
+2. **The package.** `packages/maf-sandbox-docker/` complete: backend, config, warning, README, CHANGELOG, LICENSE, `py.typed`, the offline test suite against the faked `_docker()` seam, the e2e module (skipping everywhere until the next PR turns it on), and checklist steps 1, 2, 5 and 6 above. Reviewable on its own, and green on every runner without an engine.
+3. **Samples and CI.** `samples/05_docker_bicep`, `samples/06_docker_codeact`, their `samples/README.md` rows, the root README row, and the `tests.yml` change that sets `MAF_SANDBOX_DOCKER_E2E_IMAGE` (and the proxy image) so the e2e module actually runs. Separate from the package PR because this one is the first time a pull request in this repository starts real containers, and a first should be reviewable by itself — including its effect on job duration.
+4. **Release.** Checklist steps 3, 4 and 7 — the tag glob, the `pypi` environment tag rule, the pending trusted publisher — are the manual `docs/maintainers.md` work, and only step 3 is a code change. Then release-please opens the Release PR from the `docs`/`feat` commits, its merge creates the tag, and `release-please.yml` dispatches `publish-packages.yml` at that tag, where the `pypi` environment's required reviewer stands between the dispatch and the upload.
+
+## Open questions
+
+Four, explicitly for a maintainer ruling. Each carries our recommendation; none is decided by this document.
+
+**1. Where does the egress proxy live?** The filtering CONNECT proxy is currently a private subpackage of `maf-sandbox-wslc`. A Docker backend needs the identical component. **We recommend hoisting it into `maf-sandbox`** and re-exporting from `maf_sandbox_wslc.proxy_build_context()` for compatibility: it is stdlib-only, so core gains no dependency; it is a security component, so one source of truth beats two copies that drift; and the alternative — each backend shipping its own — means a fix to the private-address refusal has to be made, released and adopted twice. The argument against is that core is currently the protocol and the router and nothing operational, and this puts a Dockerfile in it. If that objection wins, the second-best answer is a copy with a test asserting the two files are byte-identical.
+
+**2. Should `cap_drop_all` default to `True`?** We recommend shipping `False` in v0 and revisiting immediately. `--cap-drop ALL` is almost certainly correct for both kinds this family ships, and we have not run either under it — the Bicep image's compiler and a dev-container image's entrypoint are exactly the sort of thing that turns out to want one capability nobody predicted. The e2e suite proposed above is what makes the answer cheap to get: run both sample images with the flag, and if they pass, flip the default in a `feat!` release with the finding written down.
+
+**3. Should a configured hardened runtime raise the declared rung?** On Linux, `docker run --runtime=runsc` swaps in gVisor's userspace kernel, which the ladder ranks at `hardened_container`. We recommend **not in v0, and not without a verification story**. `isolation` is read at router construction and is the basis of every posture claim a deployment makes; returning `HARDENED_CONTAINER` because someone typed `runsc` into a config field would launder an unchecked string into a security guarantee. gVisor is also [Linux-only and wants KVM](https://gvisor.dev/docs/user_guide/quick_start/docker/), so the field would do nothing on two of three platforms while reading as though it did. If it is ever taken up, it needs to verify the runtime is actually in effect from inside the sandbox — which is the parked conformance probe suite, arriving first.
+
+**4. Confirm `name = "docker"` for plain containers.** `two-axis-sandbox-policy.md`'s design map earmarks a row called "Docker Sandbox" at the `microvm` rung, so the word "Docker" in this family already points at the product. We recommend the split this document takes — `"docker"` for plain containers, `"sbx"` reserved for the product, after Docker's own CLI — because `docker` is what the socket contract is called and because the repository's router tests already use `name="docker"` for a container-rung backend. It is surfaced here rather than assumed because it is the one naming decision that is hard to reverse cheaply once a distribution exists on PyPI.
+
+## Rejected alternatives
+
+- **docker-py.** The most-used option and actively maintained, but `requests`-based and synchronous, so every call in an entirely async package would need `asyncio.to_thread`. Its `exec` has [no timeout support](https://github.com/docker/docker-py/issues/2651), with known [exit-code](https://github.com/docker/docker-py/issues/2450) and [stdout/stderr separation](https://github.com/docker/docker-py/issues/704) problems, and `put_archive` has long-standing failures on [larger payloads](https://github.com/docker/docker-py/issues/1808) — which is to say, the two operations a sandbox backend performs most.
+- **aiodocker.** Genuinely async and the closest fit on paper. It pulls `aiohttp` into a package whose only dependency is `maf-sandbox`, which would make `TestOnlyDeclaredDependencies` pass while the point of it quietly weakens, and its release cadence is low. It also speaks the API directly, so socket discovery, context handling and version negotiation become ours to keep current.
+- **python-on-whales.** Rejected as redundant rather than wrong: it is sync, and it is a wrapper around exactly the subprocess calls this backend would make itself. Worth citing rather than dismissing — its authors argue in [a Docker guest post](https://www.docker.com/blog/guest-post-calling-the-docker-cli-from-python-with-python-on-whales/) that shelling out to the real binary is what keeps a wrapper feature-complete and compatible, which is the philosophy this design adopts.
+- **Bind mounts for file transfer.** Faster on paper and much worse in practice: host path translation differs by Docker Desktop backend and has a [documented corruption failure mode](https://github.com/docker/for-win/issues/5888), CRLF line endings break Linux tools inside the container, cross-filesystem access is genuinely slow on Windows and macOS, and a host filesystem in the guest is exactly what the micro-VM standard's fourth leg asks a backend not to do. `docker cp` is backend- and host-path-agnostic and costs nothing at these payload sizes.
+- **Declaring `Capability.NETWORK` in allowlist mode.** No shipped backend declares it, its meaning is not yet a checked contract, and adding the first declaration from a container-rung backend would settle a vocabulary question by accident.
+- **Auto-raising to `hardened_container`.** Covered in open question 3: a declaration derived from an unverifiable config string is worse than no declaration, because the router repeats it verbatim to everyone downstream.
+- **`maf-sandbox-oci` as the distribution name.** More technically accurate and less findable. The contract this backend depends on is universally called the Docker socket even by the projects that reimplement it, and a developer looking for a way to run these sandboxes locally searches for "docker".
+
+## Compatibility notes
+
+**Podman.** `DockerSandboxConfig(docker_path="podman")` and the backend drives Podman's docker-compatible surface instead — [rootless by default](https://codersera.com/blog/podman-vs-docker-2026/) and now the [default engine on RHEL 10, Fedora and AlmaLinux](https://www.alekseialeinikov.com/en/blog/topics/devops/podman-2026-rootless-daemonless-containers-without-docker). This is the same seam `WslcSandboxConfig.wslc_path` provides, and the reason it is a client path rather than a socket URL: the client is what implements the lookup.
+
+**`DOCKER_HOST`, contexts and socket overrides are inherited, not reimplemented.** `asyncio.create_subprocess_exec` passes the parent's environment through unless told otherwise, and the backend does not tell it otherwise, so `DOCKER_HOST`, the active Docker context from `~/.docker/config.json`, `DOCKER_TLS_VERIFY` and everything else the real client honours work without this package knowing they exist. That is a concrete advantage of the subprocess driver over an in-process API client, and it is the mechanism by which Colima, OrbStack, Rancher Desktop and a remote engine all just work.
+
+**Parity is claimed, not measured.** Docker Desktop, Colima, OrbStack, Rancher Desktop and Podman all advertise Docker compatibility, and the specific verbs this design depends on — `cp` from a tar on stdin, `--format` output shapes, `network create --internal`, `network connect`, label filters, `--pids-limit` — have not been checked across all five by us. A smoke matrix is the mitigation; the realistic risk is not "it will not work" but "it will work on four of five and a user will tell us about the fifth".
+
+**Hosts this backend does not serve.** Windows without WSL is Docker Desktop's Hyper-V backend only, which needs Pro or Enterprise and which Docker steers users away from; Windows Home has no path at all. GitHub Actions' `windows-latest` runs Windows containers only, and `macos-latest` ships no Docker and cannot start a Linux VM. The exploration document's host and runner matrices are the detail; the design consequence is that this package's README should state the unsupported cases rather than leave them to be discovered, and that `maf-sandbox-sbx` — Docker Sandboxes uses the Windows Hypervisor Platform, not WSL — is the eventual answer for the user this one cannot reach.
