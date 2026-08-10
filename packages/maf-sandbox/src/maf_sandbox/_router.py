@@ -8,6 +8,7 @@ and the egress rule.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from collections.abc import Sequence
 
@@ -23,6 +24,7 @@ from ._protocol import (
     SandboxKey,
     SandboxLimits,
     SandboxSpec,
+    TransferLimits,
     meets_floor,
 )
 
@@ -40,6 +42,10 @@ __all__ = [
 
 #: The rungs, weakest first, rendered once for the refusal messages.
 _LADDER = ", ".join(map(str, ISOLATION_RANK))
+
+#: The directions a `SandboxLimits` carries, read off the dataclass so a message naming them
+#: cannot drift from the type a backend is being asked for.
+_DIRECTION_FIELDS = tuple(field.name for field in dataclasses.fields(SandboxLimits))
 
 
 class NoSandboxBackend(LookupError):
@@ -77,7 +83,8 @@ class SandboxTransferLimitsNotPermitted(PermissionError):
 
     A safety claim rather than a functionality one, which is why an undeclared ``limits`` is
     read as :data:`~maf_sandbox.DEFAULT_SANDBOX_LIMITS` and a bigger ask refused, where an
-    undeclared ``capabilities`` is read charitably.
+    undeclared ``capabilities`` is read charitably.  Also raised for a ``limits`` this package
+    cannot read at all — a declaration nobody can compare against is refused, not guessed at.
     """
 
 
@@ -96,6 +103,27 @@ def _declared_isolation(backend: SandboxBackend) -> Isolation:
             f"rung on the ladder ({_LADDER}). Refused rather than ranked: nothing here can "
             "tell whether an unrecognised boundary is stronger or weaker than the floor."
         ) from exc
+
+
+def _declared_limits(backend: SandboxBackend) -> SandboxLimits:
+    """The ceilings ``backend`` claims, refusing a declaration that is not the right shape.
+
+    Same policy as :func:`_declared_isolation`, for the same reason: a declaration this package
+    cannot read is refused rather than guessed at.  The mistake worth naming is the adjacent
+    one — :class:`~maf_sandbox.TransferLimits` is a cap for **one** direction and
+    :class:`~maf_sandbox.SandboxLimits` is the pair, both exported from one module, and the
+    wrong one here used to surface as a bare ``AttributeError`` out of a host's agent factory.
+    """
+    declared = getattr(backend, "limits", DEFAULT_SANDBOX_LIMITS)
+    if isinstance(declared, SandboxLimits):
+        return declared
+    raise SandboxTransferLimitsNotPermitted(
+        f"sandbox backend {backend.name!r} declares limits as {type(declared).__name__}, and "
+        f"only {SandboxLimits.__name__} can be read as one — it carries a "
+        f"{TransferLimits.__name__} per direction ({', '.join(_DIRECTION_FIELDS)}), where a "
+        f"bare {TransferLimits.__name__} is one direction's caps and says nothing about the "
+        "other. Declare nothing at all to accept the default ceilings."
+    )
 
 
 class SandboxRouter:
@@ -214,7 +242,7 @@ class SandboxRouter:
 
         # Silence is a safety claim here, not a functionality one: an undeclared ceiling is
         # the default ceiling, and a spec asking above it is refused rather than believed.
-        limits: SandboxLimits = getattr(self._backend, "limits", DEFAULT_SANDBOX_LIMITS)
+        limits = _declared_limits(self._backend)
         for direction, asked, ceiling in (
             (Capability.FILES_IN, spec.files_in, limits.files_in),
             (Capability.FILES_OUT, spec.files_out, limits.files_out),
@@ -259,7 +287,9 @@ class SandboxRouter:
             SandboxBackendNotPermitted: when the spec raises the floor above what the backend
                 declares.
             SandboxCapabilityNotSupported: when the backend cannot do what the spec requires.
-            SandboxTransferLimitsNotPermitted: when the spec's caps exceed the backend's.
+            SandboxTransferLimitsNotPermitted: when the spec's caps exceed the backend's,
+                or when the backend declares its ceilings as something other than a
+                ``SandboxLimits``.
             SandboxEgressNotEnforced: when the backend cannot confine egress to this spec.
         """
         self._refuse_unless_backend_can_serve(spec)
@@ -290,7 +320,9 @@ class SandboxRouter:
             SandboxBackendNotPermitted: when the spec raises the floor above what the backend
                 declares.
             SandboxCapabilityNotSupported: when the backend cannot do what the spec requires.
-            SandboxTransferLimitsNotPermitted: when the spec's caps exceed the backend's.
+            SandboxTransferLimitsNotPermitted: when the spec's caps exceed the backend's,
+                or when the backend declares its ceilings as something other than a
+                ``SandboxLimits``.
             SandboxEgressNotEnforced: when the backend cannot confine egress to this spec.
         """
         if self._backend is None:

@@ -6,19 +6,24 @@ module decides only *what* reaches it and *when*.  Two of those decisions are lo
 
 - **Nothing is delivered until the whole collection is in hand.**  A push callback cannot be
   un-called, so a cap breach or an absent required output is refusable as a whole only while
-  nothing has been delivered yet.  ``max_total_bytes`` is therefore the peak host memory one
-  collection costs, and there is no streaming to the sink.
+  nothing has been delivered yet.  There is therefore no streaming to the sink, and
+  ``max_total_bytes`` bounds host memory as far as the backend lets it: over-cap bytes are
+  never delivered, but a backend that buffers a whole response internally has already spent
+  the memory by the time this module sees a byte.
 - **Both the name and the bytes are the guest's.**  This is the first channel where either
-  reaches host state, so a landing name is held to a narrow invariant and case-only collisions
-  within one collection are refused before the host sees either half.  What is *legal* at the
-  destination stays the host's own rule — :func:`portable_name` helps with the Windows part of
-  it, and is never applied for you.
+  reaches host state, so every declared name is held to a narrow invariant — checked in the
+  spelling that will actually be delivered — and case-only collisions within one collection
+  are refused before the host sees either half.  What is *legal* at the destination stays the
+  host's own rule — :func:`portable_name` helps with the Windows part of it, and is never
+  applied for you.
 """
 
 from __future__ import annotations
 
+import contextlib
+import posixpath
 import unicodedata
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Generator
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -41,9 +46,11 @@ __all__ = [
     "SandboxArtifactNameInvalid",
     "SandboxOutputError",
     "SandboxOutputMissing",
+    "SandboxOutputNotConfined",
     "SandboxOutputNotRegular",
     "SandboxOutputSinkRequired",
     "SandboxOutputSizeUnknown",
+    "SandboxOutputUnreachable",
     "SandboxTransferCapExceeded",
     "collect_outputs",
     "portable_name",
@@ -54,7 +61,13 @@ __all__ = [
 #: The protocol's one path grammar, POSIX-shaped whatever the guest and the host each run.
 _SEPARATOR = "/"
 _TRAVERSAL = ".."
+_CURRENT_DIRECTORY = "."
 _BACKSLASH = "\\"
+
+#: Segments naming no directory of their own. ``a//b`` and ``a/./b`` are the same file as
+#: ``a/b`` to every filesystem, so a declaration spelling it either way would deliver a second
+#: name for one file.
+_NON_NAMING_SEGMENTS: frozenset[str] = frozenset({"", _CURRENT_DIRECTORY})
 
 #: The bound the narrow invariant enforces, counted in UTF-8 bytes rather than in characters
 #: because the destinations that impose a limit count bytes.
@@ -77,6 +90,11 @@ _RESERVED_STEMS: frozenset[str] = frozenset(
     }
 )
 _FORBIDDEN_CHARACTERS = '<>:"|?*'
+#: ASCII 0-31. Microsoft's naming rules list them in the same breath as the punctuation above,
+#: and no filesystem anywhere accepts one — which is why these are refused by the narrow
+#: invariant as well as rewritten by the opt-in helper, where the punctuation is only rewritten.
+_CONTROL_CHARACTERS: frozenset[str] = frozenset(map(chr, range(32)))
+_UNPORTABLE_CHARACTERS: frozenset[str] = _CONTROL_CHARACTERS | frozenset(_FORBIDDEN_CHARACTERS)
 _TRAILING_CHARACTERS = ". "
 _REPLACEMENT = "_"
 
@@ -85,7 +103,10 @@ class SandboxOutputError(RuntimeError):
     """A declared output could not be collected. Base of the whole refusal family.
 
     A kind that only needs to tell the model "the artifacts did not come back" catches this;
-    the members below are for a caller that wants to say which of the six things went wrong.
+    the members below are for a caller that wants to name what went wrong.  Every refusal
+    :func:`collect_outputs` can raise is one of them, including the ones a backend raises in
+    its own vocabulary — those are translated on the way out, so the family is exhaustive
+    rather than merely typical.
     """
 
 
@@ -93,12 +114,20 @@ class SandboxOutputMissing(SandboxOutputError):
     """A declared output marked ``required`` was not there when the run finished."""
 
 
+class SandboxOutputNotConfined(SandboxOutputError):
+    """A declared output's path resolved outside the sandbox's working directory."""
+
+
 class SandboxOutputNotRegular(SandboxOutputError):
     """A declared output is a directory, a symlink, or anything else that is never read."""
 
 
 class SandboxOutputSizeUnknown(SandboxOutputError):
-    """A landing output's size could not be determined, so no cap could be applied to it."""
+    """A declared output's size could not be determined, so no cap could be applied to it."""
+
+
+class SandboxOutputUnreachable(SandboxOutputError):
+    """A declared output, or the sandbox holding it, went away while it was being collected."""
 
 
 class SandboxTransferCapExceeded(SandboxOutputError):
@@ -186,10 +215,15 @@ def _nfc(name: str) -> str:
 def validate_artifact_name(name: str) -> None:
     """Refuse ``name`` unless it meets the narrow invariant, naming the rule that refused it.
 
-    Relative, no traversal segment, no backslash, at most :data:`MAX_ARTIFACT_NAME_BYTES` bytes
-    of valid UTF-8 — and deliberately nothing further.  What is *legal* at the destination
-    differs between a blob container, NTFS and a workspace store, so a library that guessed
-    would be wrong for two of the three; hosts still own their own namespace rules.
+    Relative, no traversal segment, no backslash, no segment that names nothing (``a//b``,
+    ``a/./b``), no control character, at most :data:`MAX_ARTIFACT_NAME_BYTES` bytes of valid
+    UTF-8 — and deliberately nothing further.  What is *legal* at the destination differs
+    between a blob container, NTFS and a workspace store, so a library that guessed would be
+    wrong for two of the three; hosts still own their own namespace rules.
+
+    Call it on the spelling that will actually be **delivered**: NFC is not
+    length-non-increasing, so a name checked before normalization is not the name the host
+    receives.
 
     Raises:
         SandboxArtifactNameInvalid: naming which of the rules the name broke.
@@ -206,9 +240,24 @@ def validate_artifact_name(name: str) -> None:
             f"artifact name {name!r} is absolute, and a landing name is relative: where it "
             "lands is the host's to decide, not the guest's"
         )
-    if _TRAVERSAL in name.split(_SEPARATOR):
+    segments = name.split(_SEPARATOR)
+    if _TRAVERSAL in segments:
         raise SandboxArtifactNameInvalid(
             f"artifact name {name!r} contains a {_TRAVERSAL!r} traversal segment"
+        )
+    if not _NON_NAMING_SEGMENTS.isdisjoint(segments):
+        raise SandboxArtifactNameInvalid(
+            f"artifact name {name!r} contains an empty or {_CURRENT_DIRECTORY!r} path segment, "
+            "which names no directory of its own. It is the same file as the spelling without "
+            "it, and two spellings of one file would land as two artifacts."
+        )
+    control = sorted(_CONTROL_CHARACTERS.intersection(name))
+    if control:
+        raise SandboxArtifactNameInvalid(
+            f"artifact name {name!r} contains a control character (ASCII "
+            f"{', '.join(str(ord(character)) for character in control)}). No filesystem "
+            "accepts one, so this is a narrow-invariant rule rather than a guess about the "
+            "destination's own namespace."
         )
     try:
         encoded = name.encode("utf-8")
@@ -229,10 +278,10 @@ def portable_name(name: str) -> str:
 
     Per path segment: Windows's reserved device names (``CON``, ``PRN``, ``AUX``, ``NUL``, and
     ``COM`` or ``LPT`` followed by ``1``-``9`` or by a superscript ``¹``, ``²`` or ``³``, with
-    or without an extension), the ``< > : " | ? *`` set, and trailing dots and spaces.  A
-    helper rather than a rule, because a library that rewrote every name for the strictest
-    destination would be wrong for the other two — and because a rewritten name is no longer
-    the name the workload said it produced.
+    or without an extension), the ``< > : " | ? *`` set, ASCII 0-31, and trailing dots and
+    spaces.  A helper rather than a rule, because a library that rewrote every name for the
+    strictest destination would be wrong for the other two — and because a rewritten name is
+    no longer the name the workload said it produced.
     """
     return _SEPARATOR.join(_portable_segment(segment) for segment in name.split(_SEPARATOR))
 
@@ -240,7 +289,7 @@ def portable_name(name: str) -> str:
 def _portable_segment(segment: str) -> str:
     """One path segment made portable; an empty result becomes the replacement character."""
     cleaned = "".join(
-        _REPLACEMENT if character in _FORBIDDEN_CHARACTERS else character for character in segment
+        _REPLACEMENT if character in _UNPORTABLE_CHARACTERS else character for character in segment
     ).rstrip(_TRAILING_CHARACTERS)
     stem, dot, extension = cleaned.partition(".")
     if stem.upper() in _RESERVED_STEMS:
@@ -255,6 +304,11 @@ class _Tally:
     limits: TransferLimits
     files: int = 0
     total_bytes: int = 0
+
+    @property
+    def remaining_bytes(self) -> int:
+        """What is left of ``max_total_bytes`` — the budget everything still to come shares."""
+        return max(self.limits.max_total_bytes - self.total_bytes, 0)
 
     def add(self, path: str, size_bytes: int) -> None:
         """Count one file, refusing the whole collection when it puts any cap over."""
@@ -279,37 +333,125 @@ class _Tally:
             )
 
 
-def _check_landing_names(landing: tuple[DeclaredOutput, ...]) -> None:
+def landing_outputs(spec: SandboxSpec) -> tuple[DeclaredOutput, ...]:
+    """``spec``'s declared outputs that reach a host sink — the subset that needs one.
+
+    Written once and read from both sides of the boundary: :func:`collect_outputs` needs it to
+    know what to deliver, and ``sandboxed_tool`` needs the same answer at attach time to refuse
+    a spec that lands something with nowhere to land it.
+    """
+    return tuple(
+        declared
+        for declared in spec.declared_outputs
+        if declared.disposition is OutputDisposition.LAND
+    )
+
+
+def missing_sink_refusal(
+    spec: SandboxSpec, landing: tuple[DeclaredOutput, ...], *, asked_by: str
+) -> SandboxOutputSinkRequired:
+    """The refusal for a spec that lands something when no sink was supplied to land it in.
+
+    Returned rather than raised so each caller keeps its own control flow visible; the wording
+    lives here so the two sites cannot drift into telling a host two different stories.
+    """
+    return SandboxOutputSinkRequired(
+        f"the {spec.kind!r} workload declares "
+        f"{', '.join(repr(declared.path) for declared in landing)} as landing outputs and "
+        f"{asked_by} was given no output sink, so the tool cannot honour its own spec"
+    )
+
+
+def _delivered_name(path: str, sink: OutputSink | None) -> str:
+    """The exact spelling the host will be handed — what the invariant has to judge.
+
+    ``NameNormalization.NONE`` disables the rewrite and nothing else; with no sink at all
+    nothing is delivered, and the declared path is the only spelling there is.
+    """
+    if sink is None or sink.normalization is NameNormalization.NONE:
+        return path
+    return _nfc(path)
+
+
+def _collision_key(path: str) -> str:
+    """The one file two declared outputs must not both name, however each is spelled.
+
+    ``str.lower`` rather than ``str.casefold``: casefolding maps ``ß`` to ``ss`` and ``ﬁ`` to
+    ``fi``, which are distinct files on Linux, NTFS and case-insensitive APFS alike, so folding
+    them together would fail a whole collection that no destination has a problem with.
+    ``normpath`` answers the other half of the same question — and keying on it means the
+    answer does not depend on :func:`validate_artifact_name` continuing to refuse the
+    spellings it collapses.  ``NameNormalization.NONE`` disables the rewrite, never this.
+    """
+    return posixpath.normpath(_nfc(path).lower())
+
+
+def _check_declared_names(outputs: tuple[DeclaredOutput, ...], sink: OutputSink | None) -> None:
     """Settle what the spec alone decides, before the sandbox is touched at all.
+
+    Every declared path meets the narrow invariant **whatever its disposition** — a ``CONSUME``
+    path is still a path this library hands to a backend, and one that traverses would come
+    back as that backend's own exception rather than as a refusal a kind can catch.  Only
+    landing outputs can collide, because only they are delivered anywhere.
 
     Both rules are properties of the declaration rather than of the run, so a kind whose
     outputs could never land is refused the same way whatever the guest happened to produce.
     """
     seen: dict[str, str] = {}
-    for declared in landing:
-        validate_artifact_name(declared.path)
-        # NameNormalization.NONE disables the rewrite, never this comparison.
-        key = _nfc(declared.path).casefold()
+    for declared in outputs:
+        landing = declared.disposition is OutputDisposition.LAND
+        validate_artifact_name(_delivered_name(declared.path, sink) if landing else declared.path)
+        if not landing:
+            continue
+        key = _collision_key(declared.path)
         if key in seen:
             raise SandboxArtifactNameCollision(
-                f"declared outputs {seen[key]!r} and {declared.path!r} differ only by case or "
-                "by Unicode form, which is two files on Linux and one on Windows and default "
-                "macOS. Refused with the whole declaration in view, because the host receives "
-                "artifacts one at a time and could never see the collision itself."
+                f"declared outputs {seen[key]!r} and {declared.path!r} name one file, differing "
+                "only by case or by Unicode form, which is two files on Linux and one on "
+                "Windows and default macOS. Refused with the whole declaration in view, because "
+                "the host receives artifacts one at a time and could never see the collision."
             )
         seen[key] = declared.path
 
 
-async def _stat_and_cap(sandbox: Sandbox, spec: SandboxSpec) -> tuple[DeclaredOutput, ...]:
+@contextlib.contextmanager
+def _backend_refusals(path: str) -> Generator[None, None, None]:
+    """Translate what a backend raises out of the pull surface into this module's family.
+
+    A backend answers in its own vocabulary — a bare ``ValueError`` for a path that resolved
+    outside the working directory, a bare ``FileNotFoundError`` for a file the guest deleted
+    between the stat and the read — and a kind told to catch :class:`SandboxOutputError` would
+    never see either.
+    """
+    try:
+        yield
+    except ValueError as exc:
+        raise SandboxOutputNotConfined(
+            f"the backend refused declared output {path!r}: it does not resolve to a path "
+            "inside the sandbox's working directory. Reads are confined there because the "
+            "alternative is answering with whichever filesystem the reader can see."
+        ) from exc
+    except OSError as exc:
+        raise SandboxOutputUnreachable(
+            f"declared output {path!r} could not be reached: the file, or the sandbox holding "
+            "it, is gone. A stat is a promise about a filesystem the guest is still free to "
+            "change underneath the reader."
+        ) from exc
+
+
+async def _stat_and_cap(
+    sandbox: Sandbox, spec: SandboxSpec
+) -> tuple[tuple[DeclaredOutput, int], ...]:
     """Stat every declared output and settle every refusal the filesystem decides.
 
-    Reads nothing and delivers nothing; returns the landing outputs that are actually there,
-    in declaration order.
+    Reads nothing and delivers nothing; returns the landing outputs that are actually there
+    with their stat-ed sizes, in declaration order.
     """
     tally = _Tally(limits=spec.files_out)
-    present: list[DeclaredOutput] = []
+    present: list[tuple[DeclaredOutput, int]] = []
     for declared in spec.declared_outputs:
-        entry = await sandbox.stat_file(declared.path, working_directory=spec.work_dir)
+        with _backend_refusals(declared.path):
+            entry = await sandbox.stat_file(declared.path, working_directory=spec.work_dir)
         if entry is None:
             if declared.required:
                 raise SandboxOutputMissing(
@@ -319,47 +461,59 @@ async def _stat_and_cap(sandbox: Sandbox, spec: SandboxSpec) -> tuple[DeclaredOu
                     "gets that absence as a diagnostic instead of a transfer error."
                 )
             continue
-        if entry.kind != EntryKind.FILE:
+        if entry.kind is not EntryKind.FILE:
             raise SandboxOutputNotRegular(
                 f"declared output {declared.path!r} is a {str(entry.kind)!r} entry, and only a "
                 "regular file is ever read. A symlink is refused whether or not its target "
                 "would have resolved somewhere legitimate: that judgement is made with the "
                 "guest's filesystem in view and answered with whichever one the reader sees."
             )
-        # A CONSUME output is the kind's own `read_file` call, so nothing below applies to it —
-        # but `required` above means the same thing for both dispositions.
-        if declared.disposition != OutputDisposition.LAND:
-            continue
         if entry.size_bytes is None:
             raise SandboxOutputSizeUnknown(
                 f"declared output {declared.path!r} has no determinable size, so no cap can be "
                 "applied to it. Refused rather than read: coercing an unknown size to zero "
                 "would make every cap read the one file it cannot measure as free."
             )
+        # Counted whatever its disposition: `files_out` bounds the collection the spec
+        # declared, not the subset of it that happens to land.
         tally.add(declared.path, entry.size_bytes)
-        present.append(declared)
+        if declared.disposition is not OutputDisposition.LAND:
+            continue
+        present.append((declared, entry.size_bytes))
     return tuple(present)
 
 
 async def _read_all(
     sandbox: Sandbox,
     spec: SandboxSpec,
-    outputs: tuple[DeclaredOutput, ...],
-    normalization: NameNormalization,
+    outputs: tuple[tuple[DeclaredOutput, int], ...],
+    sink: OutputSink,
 ) -> tuple[Artifact, ...]:
     """Read every landing output into memory, re-applying the caps to the bytes that arrived.
 
     The second pass over the caps is not redundant: a stat is a promise about a file the guest
     is still free to rewrite, and only what was actually read bounds what reaches the host.
+    Each read carries the smaller of that promise and what the collection has left, so a
+    backend able to stop early does — and one whose SDK buffers the whole response internally
+    cannot, which is why the count below stays rather than trusting the bound it just passed.
     """
     tally = _Tally(limits=spec.files_out)
     artifacts: list[Artifact] = []
-    for declared in outputs:
-        content = await sandbox.read_file(declared.path, working_directory=spec.work_dir)
+    for declared, stat_bytes in outputs:
+        with _backend_refusals(declared.path):
+            content = await sandbox.read_file(
+                declared.path,
+                working_directory=spec.work_dir,
+                max_bytes=min(stat_bytes, tally.remaining_bytes),
+            )
         tally.add(declared.path, len(content))
-        name = declared.path if normalization == NameNormalization.NONE else _nfc(declared.path)
         artifacts.append(
-            Artifact(name=name, content=content, kind=spec.kind, media_type=declared.media_type)
+            Artifact(
+                name=_delivered_name(declared.path, sink),
+                content=content,
+                kind=spec.kind,
+                media_type=declared.media_type,
+            )
         )
     return tuple(artifacts)
 
@@ -370,15 +524,18 @@ async def collect_outputs(
     """Pull ``spec``'s declared outputs and land the ones that land, in declaration order.
 
     The order of the phases is the contract rather than an implementation detail: what the
-    spec alone decides — a sink for anything that lands, a valid landing name, no two landing
-    names that collide — is settled before the sandbox is touched, then every declared output
-    is stat-ed and capped, then every landing one is read, and only then is anything delivered.
+    spec alone decides — a sink for anything that lands, a valid name for every declared
+    output, no two landing names that collide — is settled before the sandbox is touched, then
+    every declared output is stat-ed and capped, then every landing one is read, and only then
+    is anything delivered.
     Delivery is a push nothing can take back, so a refusal arriving after the first ``deliver``
     could not leave the host as it found it.  The one residue is a ``deliver`` that itself
     raises part-way: whatever it already accepted stays accepted, and the exception propagates.
 
-    A ``CONSUME`` output is stat-ed like any other, and then left alone: its bytes are the
-    kind's own :meth:`~maf_sandbox.Sandbox.read_file` call and never reach the sink.
+    A ``CONSUME`` output is stat-ed and **counted against every cap** like any other, and then
+    left alone: ``spec.files_out`` bounds the collection the spec declared, not the subset of
+    it that lands.  Its bytes are the kind's own :meth:`~maf_sandbox.Sandbox.read_file` call,
+    they never reach the sink, and bounding that read is the kind's own responsibility.
 
     Args:
         sandbox: The running sandbox to pull from.
@@ -392,26 +549,20 @@ async def collect_outputs(
     Raises:
         SandboxOutputSinkRequired: when an output lands and no sink was supplied.
         SandboxOutputMissing: when a ``required`` output is not there, naming it.
+        SandboxOutputNotConfined: when a declared path resolves outside ``spec.work_dir``.
         SandboxOutputNotRegular: when a declared output is not a regular file.
-        SandboxOutputSizeUnknown: when a landing output's size could not be determined.
+        SandboxOutputSizeUnknown: when a declared output's size could not be determined.
+        SandboxOutputUnreachable: when an output, or the sandbox, went away mid-collection.
         SandboxTransferCapExceeded: when the collection is over one of ``spec.files_out``'s
             three caps, naming the cap and the file that breached it.
-        SandboxArtifactNameInvalid: when a landing name breaks the narrow invariant.
+        SandboxArtifactNameInvalid: when a declared name breaks the narrow invariant.
         SandboxArtifactNameCollision: when two landing names differ only by case or by Unicode
             form.
     """
-    landing = tuple(
-        declared
-        for declared in spec.declared_outputs
-        if declared.disposition == OutputDisposition.LAND
-    )
+    landing = landing_outputs(spec)
     if landing and sink is None:
-        raise SandboxOutputSinkRequired(
-            f"the {spec.kind!r} workload declares "
-            f"{', '.join(repr(declared.path) for declared in landing)} as landing outputs and "
-            "no output sink was supplied, so the tool cannot honour its own spec"
-        )
-    _check_landing_names(landing)
+        raise missing_sink_refusal(spec, landing, asked_by=collect_outputs.__name__)
+    _check_declared_names(spec.declared_outputs, sink)
 
     to_read = await _stat_and_cap(sandbox, spec)
     if not to_read:
@@ -419,6 +570,6 @@ async def collect_outputs(
     assert sink is not None  # non-empty only if something lands, which was refused above
 
     landed: list[LandedArtifact] = []
-    for artifact in await _read_all(sandbox, spec, to_read, sink.normalization):
+    for artifact in await _read_all(sandbox, spec, to_read, sink):
         landed.append(await sink.deliver(artifact))
     return tuple(landed)

@@ -30,9 +30,9 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Literal
 
 from ._error_detail import error_detail
-from ._outputs import OutputSink, SandboxOutputSinkRequired
+from ._outputs import OutputSink, landing_outputs, missing_sink_refusal
 from ._protocol import (
-    OutputDisposition,
+    Capability,
     Sandbox,
     SandboxKey,
     SandboxSpec,
@@ -132,13 +132,18 @@ def sandbox_tool_declarations(
     it can change which calls are gated or refused.  That is the host's decision to make with
     its own classification in hand, never a default a library picks.  When it *is* passed, the
     key is written only if this tool can carry something out at all: the spec permits egress
-    (``egress_allow`` non-empty), or artifacts land in ``output_sink``.  Capping a workload
-    with neither would gate calls for a flow that does not exist.
+    (``egress_allow`` non-empty), or the spec declares an output that **lands** in
+    ``output_sink``.  Capping a workload with neither would gate calls for a flow that does not
+    exist.
 
     The sink half of that condition is not symmetry for its own sake.  The rule was once
     ``egress_allow`` alone, on the premise that a sandbox with no network cannot carry anything
     out of the conversation — and a landing sink falsifies exactly that premise: with closed
     egress and a sink, guest bytes still reach host state, so the flow the cap gates is back.
+    It takes **both** halves, though: a sink is ordinarily one object handed to every sandbox
+    tool a host builds, so its mere presence says nothing about whether *this* workload sends
+    anything down it.  A spec that declares no output, or only ``CONSUME`` ones, carries
+    nothing to host state however many sinks it was given.
 
     **One value, one source, no fold.**  The cap is an opaque string in the host's own
     vocabulary with no ordering — this repository requires an ordering to be data with an
@@ -146,18 +151,20 @@ def sandbox_tool_declarations(
     them, and :class:`~maf_sandbox.OutputSink` carries no cap of its own to be combined.
 
     Args:
-        spec: The sandbox this workload asks for; ``egress_allow`` is what is read.
+        spec: The sandbox this workload asks for; ``egress_allow`` and ``declared_outputs``
+            are what is read.
         source_integrity: Integrity tier for this tool's results, or ``None`` to declare
             none.
         outbound_max_confidentiality: The host's cap for outbound tools, in the host's own
             vocabulary, or ``None`` (the default) to declare none.
-        output_sink: Where this workload's artifacts land, if it lands any. Read for its
-            presence alone.
+        output_sink: Where this workload's artifacts land, if it lands any. Read together with
+            ``spec.declared_outputs``, never for its presence alone.
     """
     declarations: dict[str, Any] = {}
     if source_integrity is not None:
         declarations["source_integrity"] = source_integrity
-    carries_something_out = bool(spec.egress_allow) or output_sink is not None
+    lands_artifacts = output_sink is not None and bool(landing_outputs(spec))
+    carries_something_out = bool(spec.egress_allow) or lands_artifacts
     if outbound_max_confidentiality is not None and carries_something_out:
         declarations["max_allowed_confidentiality"] = outbound_max_confidentiality
     return declarations
@@ -331,11 +338,13 @@ def sandboxed_tool(
     3. **Key from the host, not from the model** — see :meth:`SandboxToolSession.key`.
     4. **Sanitized failure surfaces** — see :meth:`SandboxToolSession.acquire`.
     5. **Declared information flow** — see :func:`sandbox_tool_declarations`.
-    6. **Two refusals about ``output_sink``**, both placed after the attach gate so that the
-       first point above keeps its promise.  It may not be combined with an explicit
+    6. **Three spec-consistency refusals**, all placed after the attach gate so that the first
+       point above keeps its promise.  ``output_sink`` may not be combined with an explicit
        ``declarations=``, which wins verbatim and would leave the tool carrying a derivation
-       blind to its own sink; and a ``spec`` declaring an output that lands is refused without
-       one, because such a tool cannot honour its own spec.
+       blind to its own sink; a ``spec`` declaring an output that lands is refused without a
+       sink, because such a tool cannot honour its own spec; and a ``spec`` declaring any
+       output without requiring :data:`~maf_sandbox.Capability.FILES_OUT` is refused, because
+       the capability match is what stands between it and a backend with no pull surface.
 
     ``build`` is a callback rather than a decorated function because the session does not
     exist until the attach gate has passed, and the tool body needs it in its closure.  Two
@@ -382,16 +391,18 @@ def sandboxed_tool(
             "than the one the host chose. Drop declarations= and pass "
             "outbound_max_confidentiality, or write the cap into the mapping yourself."
         )
-    landing = tuple(
-        declared
-        for declared in spec.declared_outputs
-        if declared.disposition == OutputDisposition.LAND
-    )
+    landing = landing_outputs(spec)
     if landing and output_sink is None:
-        raise SandboxOutputSinkRequired(
-            f"the {spec.kind!r} workload declares "
-            f"{', '.join(repr(declared.path) for declared in landing)} as landing outputs and "
-            f"{name} was given no output sink, so the tool cannot honour its own spec"
+        raise missing_sink_refusal(spec, landing, asked_by=name)
+    if spec.declared_outputs and Capability.FILES_OUT not in spec.requires:
+        raise ValueError(
+            f"{name}: the {spec.kind!r} workload declares "
+            f"{', '.join(repr(declared.path) for declared in spec.declared_outputs)} as "
+            f"outputs and does not require {str(Capability.FILES_OUT)!r}. Grow `requires` from "
+            "what you declare: the pull surface is what reads those paths back, and without "
+            "the requirement the router's capability match never asks whether this backend has "
+            "one — leaving the failure to happen inside the sandbox, where the reason is "
+            "hardest to see."
         )
     router.ensure_can_serve(spec)
 

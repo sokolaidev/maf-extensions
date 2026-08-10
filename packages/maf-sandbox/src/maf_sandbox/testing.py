@@ -20,7 +20,9 @@ from __future__ import annotations
 import posixpath
 import shlex
 from collections.abc import Mapping, Sequence
+from types import MappingProxyType
 
+from ._outputs import SandboxTransferCapExceeded
 from ._protocol import (
     DEFAULT_CAPABILITIES,
     DEFAULT_SANDBOX_LIMITS,
@@ -115,16 +117,21 @@ class InProcessSandbox:
             no content, never readable — the only way this fake can exercise the
             symlink-refusal rule.
 
-    Storage is bytes: ``write_file`` UTF-8-encodes ``str`` content on the way in, and
-    :attr:`files` is a computed ``dict[str, str]`` view over it, decoded back to text — kept
-    for callers written against the fake's original shape, which only ever wrote text.
-    ``exec`` records ``(command, working_directory, timeout)`` tuples into :attr:`commands`.
+    Storage is bytes, and :attr:`contents` **is** that store — the place a caller reading or
+    seeding binary content looks. ``write_file`` UTF-8-encodes ``str`` content on the way in.
+    :attr:`files` is a read-only, UTF-8-decoded view of the same store, kept for callers
+    written against the fake's original shape, which only ever wrote text: a write to it
+    raises rather than vanishing, and reading it raises ``UnicodeDecodeError`` if anything
+    stored is not text — asking for text that was never written is worth an error rather than
+    a replacement character. ``exec`` records ``(command, working_directory, timeout)`` tuples
+    into :attr:`commands`.
 
     ``stat_file``, ``read_file`` and ``list_dir`` confine every ``path`` to the
     ``working_directory`` a call names: a backslash or a resolved path outside it raises
     ``ValueError``. ``read_file`` serves only :data:`~maf_sandbox.EntryKind.FILE`, raising
     ``FileNotFoundError`` for nothing there, ``IsADirectoryError`` for a directory and
-    ``OSError`` for a seeded non-regular entry.
+    ``OSError`` for a seeded non-regular entry — and it **refuses** rather than truncates a
+    file over its ``max_bytes``, as the protocol requires.
 
     ``exec`` accepts a plain string or an argv sequence (mirroring
     :meth:`~maf_sandbox.Sandbox.exec`). A sequence is joined with :func:`shlex.join` *before*
@@ -142,28 +149,35 @@ class InProcessSandbox:
         default_stdout: str = "",
         seed_files: Mapping[str, str | bytes | EntryKind] | None = None,
     ) -> None:
-        self._contents: dict[str, bytes] = {}
+        self.contents: dict[str, bytes] = {}
         self._non_regular: set[str] = set()
         for path, value in (seed_files or {}).items():
             # EntryKind is itself a str subclass, so this must be checked before isinstance(str).
             if isinstance(value, EntryKind):
                 self._non_regular.add(path)
             elif isinstance(value, str):
-                self._contents[path] = value.encode("utf-8")
+                self.contents[path] = value.encode("utf-8")
             else:
-                self._contents[path] = value
+                self.contents[path] = value
         self.commands: list[tuple[str, str, float]] = []
         self._outputs = outputs or {}
         self._raises = raises
         self._default_stdout = default_stdout
 
     @property
-    def files(self) -> dict[str, str]:
-        """Back-compat view over the byte store, UTF-8 decoded — the shape older callers read."""
-        return {path: content.decode("utf-8") for path, content in self._contents.items()}
+    def files(self) -> Mapping[str, str]:
+        """Read-only UTF-8 view over :attr:`contents` — the shape older callers read.
+
+        A proxy rather than a plain dict because it is computed: a write to a fresh dict would
+        be discarded silently, and a test seeding through it would pass while asserting
+        nothing. Write to :attr:`contents` instead, in bytes.
+        """
+        return MappingProxyType(
+            {path: content.decode("utf-8") for path, content in self.contents.items()}
+        )
 
     async def write_file(self, path: str, content: str | bytes) -> None:
-        self._contents[path] = content.encode("utf-8") if isinstance(content, str) else content
+        self.contents[path] = content.encode("utf-8") if isinstance(content, str) else content
 
     async def exec(
         self, command: str | Sequence[str], *, working_directory: str, timeout: float
@@ -179,7 +193,7 @@ class InProcessSandbox:
 
     def _has_children(self, full_path: str) -> bool:
         prefix = full_path + "/"
-        return any(p.startswith(prefix) for p in self._contents) or any(
+        return any(p.startswith(prefix) for p in self.contents) or any(
             p.startswith(prefix) for p in self._non_regular
         )
 
@@ -187,9 +201,9 @@ class InProcessSandbox:
         full_path = _resolve(path, working_directory)
         rel = _relative(full_path, posixpath.normpath(working_directory))
         assert rel is not None  # _resolve already refused anything outside working_directory
-        if full_path in self._contents:
+        if full_path in self.contents:
             return SandboxEntry(
-                path=rel, kind=EntryKind.FILE, size_bytes=len(self._contents[full_path])
+                path=rel, kind=EntryKind.FILE, size_bytes=len(self.contents[full_path])
             )
         if full_path in self._non_regular:
             return SandboxEntry(path=rel, kind=EntryKind.OTHER, size_bytes=None)
@@ -197,10 +211,17 @@ class InProcessSandbox:
             return SandboxEntry(path=rel, kind=EntryKind.DIRECTORY, size_bytes=None)
         return None
 
-    async def read_file(self, path: str, *, working_directory: str) -> bytes:
+    async def read_file(self, path: str, *, working_directory: str, max_bytes: int) -> bytes:
         full_path = _resolve(path, working_directory)
-        if full_path in self._contents:
-            return self._contents[full_path]
+        if full_path in self.contents:
+            content = self.contents[full_path]
+            if len(content) > max_bytes:
+                # Refused, never truncated: a short read returned as success is an artifact
+                # the host cannot tell from a whole one.
+                raise SandboxTransferCapExceeded(
+                    f"{path!r} is {len(content)} bytes and the caller allowed {max_bytes}"
+                )
+            return content
         if full_path in self._non_regular:
             raise OSError(f"{path!r} is not a regular file and is refused")
         if self._has_children(full_path):
@@ -214,7 +235,7 @@ class InProcessSandbox:
         assert directory_rel is not None  # _resolve already refused anything outside it
 
         children: dict[str, tuple[EntryKind, int | None]] = {}
-        for stored_path, content in self._contents.items():
+        for stored_path, content in self.contents.items():
             _record_child(
                 children, _relative(stored_path, base), directory_rel, EntryKind.FILE, len(content)
             )

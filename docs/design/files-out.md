@@ -70,14 +70,14 @@ class DeclaredOutput:
 
 class Sandbox(Protocol):
     async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None: ...
-    async def read_file(self, path: str, *, working_directory: str) -> bytes: ...
+    async def read_file(self, path: str, *, working_directory: str, max_bytes: int) -> bytes: ...
 ```
 
 **`working_directory` is a parameter, exactly as it is on `exec`.** This is the correction that matters most: no sandbox object knows the spec's `work_dir` — `_AcasSandbox` holds an SDK client, `_WslcSandbox` holds a runner and a container name, `InProcessSandbox` holds a dict — and `work_dir` reaches a sandbox exactly once per call, as `exec(..., working_directory=...)`. A pull pair without it assigns the confinement duty to a layer with no way to discharge it. `path` resolves against `working_directory`, and a resolved path outside it is refused.
 
 Four more decisions, each paying for itself:
 
-- **`disposition` puts the two flows in the spec.** A PNG lands; a SARIF file is parsed by the kind and must never reach the sink, because it is the tool's own input rather than its product. Putting it in the spec is what lets the glue apply the sink's declaration to `LAND` outputs only, rather than to everything the kind touches.
+- **`disposition` puts the two flows in the spec.** A PNG lands; a SARIF file is parsed by the kind and must never reach the sink, because it is the tool's own input rather than its product. Putting it in the spec is what lets the glue apply the sink's declaration to `LAND` outputs only, rather than to everything the kind touches. It is a *routing* distinction and nothing more: a `CONSUME` output is stat-ed, capped and counted exactly like a landing one — see the caps below.
 - **`media_type` is declared, not sniffed.** Sniffing lets guest-produced content decide how the host handles it. A kind knows what it renders.
 - **`required` separates transport failure from workload failure.** `dot` exiting non-zero and producing no PNG is the *normal* path a model has to recover from; if collection raises on top of it, the model gets a transfer error where it should get a diagnostic.
 - **The spec field is `declared_outputs`, not `outputs`.** `InProcessSandbox.__init__` already takes `outputs=` meaning marker-keyed scripted stdout, and the two would appear in one expression in every kind's tests.
@@ -125,9 +125,13 @@ DEFAULT_TRANSFER_LIMITS: TransferLimits = TransferLimits(...)   # one constant, 
 
 `SandboxSpec` carries one per direction (`files_in`, `files_out`), and a backend declares its own ceilings. All three fields are needed: a byte cap alone does not bound a collection, since ten thousand files one byte under the per-file ceiling cost exactly what the ceiling was written to prevent.
 
+**`files_out` bounds the collection the spec *declared*, not the subset of it that lands.** A `CONSUME` output is stat-ed, capped and counted against all three fields exactly as a landing one is — it is the same guest, the same filesystem and the same bytes leaving the sandbox, and the only difference is where they go afterwards. Exempting them would have made every cap opt-out: a spec declaring everything `CONSUME` would be uncapped. What `collect_outputs` does *not* do for a `CONSUME` output is read it, so **a kind reading its own `CONSUME` output is responsible for that read's own bound** — it passes `max_bytes` to `read_file` like any other caller, and the collection-wide accounting above cannot see bytes it never handled.
+
 **The invariant that keeps this change inert: the spec-side default and the backend-side silent default are the same constant.** `within()` is then satisfied by equality, and nothing already in the repository starts being refused. Get this wrong in the other direction — a spec default above what a silent backend is assumed to allow — and *every* spec fails at attach, including `SandboxSpec(kind="smoke")` in the published-wheel smoke test. A test asserts `DEFAULT_TRANSFER_LIMITS.within(DEFAULT_TRANSFER_LIMITS)` so the invariant cannot drift apart.
 
 **Enforcement is pre-stat where stat exists, and stream-counting is the fallback.** This is the reverse of what an earlier draft said, and the evidence is on both real backends: the ACAS SDK's `read_file` does `await response.read()` internally — fully buffered, no incremental hook — so stat is the *only* enforcement available there; Docker's `HEAD /archive` returns a size before any byte moves, and can also count tar bytes on the way out as a second line. The contract is therefore: **stat, refuse if over cap or unknown, then read**; a backend that can additionally abort mid-transfer should, but no backend is required to.
+
+`read_file` therefore takes **`max_bytes`**, and the caller passes the stat-ed size clamped by what the collection has left. A backend that can stop early stops early; one that cannot refuses afterwards. It is a **refusal, never a truncation** — half a PNG returned as success is an artifact the host cannot tell from a whole one — and the caller re-counts what actually arrived regardless, because a bound handed to the guest's own backend is not a bound the guest cannot beat.
 
 **The caps are re-applied to the bytes actually read, not only to the stat-ed sizes.** A stat is a promise about a file the guest can still rewrite before the read reaches it, and the guest is the thing the sandbox exists to contain. Checking once would make the whole cap advisory against exactly the adversary it is written for.
 
@@ -151,7 +155,9 @@ Note the residual asymmetry, stated rather than hidden: `write_file` takes an **
 
 ### Error taxonomy
 
-Named exceptions, so backends do not diverge and a kind can map failures to messages: a declared output that is absent, a path resolving outside the working directory, a non-regular entry refused, a size that cannot be determined, a cap breached (naming which cap and which file), and a sandbox that has gone away. Provider and transport detail stays in the log under `error_detail`, never in the tool result.
+Named exceptions under one base, so backends do not diverge and a kind can map failures to messages: a declared output that is absent, a path resolving outside the working directory, a non-regular entry refused, a size that cannot be determined, a cap breached (naming which cap and which file), a sandbox that has gone away, and — decided by the declaration rather than by the run — a name breaking the narrow invariant, two names colliding, and something that lands with no sink to land it in. Provider and transport detail stays in the log under `error_detail`, never in the tool result.
+
+**The base class is a promise about coverage, not a family resemblance.** A backend answers in its own vocabulary — a bare `ValueError` for a path it would not resolve, a bare `FileNotFoundError` for a file the guest deleted between the stat and the read — and a kind told to catch one base class would never see either. `collect_outputs` translates what the pull surface raises into the family, keeping the original as `__cause__`. Enumerating the members anywhere is how the list drifts; the code states no count.
 
 ## Confinement
 
@@ -218,7 +224,9 @@ class OutputSink:
 
 **The typed return is a security property, not tidiness.** If `deliver` returned one string and the kind put it in the tool result, whatever the host handed back would enter the transcript verbatim — and for a blob container that may be a SAS URL with a bearer token in the query string, persisted and replayed on every subsequent turn. `display` is what the model sees; `handle` is the host's own reference and is never rendered anywhere by this library.
 
-**Everything is pulled and capped before the first `deliver`.** A push callback that writes to host state cannot be un-called, so "no partial delivery" is only achievable by collecting the whole set first. Two consequences, both normative rather than incidental: `max_total_bytes` is the **peak host-memory bound** for one collection, and there is no streaming to the sink.
+**Everything is pulled and capped before the first `deliver`.** A push callback that writes to host state cannot be un-called, so "no partial delivery" is only achievable by collecting the whole set first. One consequence is normative: there is no streaming to the sink.
+
+The second consequence is weaker than an earlier draft claimed, and the difference is worth stating plainly rather than discovering. **What is normative is that over-cap bytes are never *delivered*.** `max_total_bytes` as a *peak host-memory* bound is **best-effort and backend-dependent**: it is passed down as `read_file(max_bytes=...)`, so a backend that can stop reading early does — but a backend whose SDK buffers the whole response internally before returning it, which the reference one does (`await response.read()`), has already allocated the file by the time this library can look at its length. **Such a backend cannot provide the memory bound at all**; it can only refuse afterwards, which is a delivery guarantee, not a memory one. A host that needs a hard memory ceiling gets it from a backend that streams, or from the per-file cap it chooses.
 
 **One residue survives that ordering, and it is a property of the shape rather than a defect.** If `deliver` itself raises on the third of five artifacts, the first two are already in the host's store and nothing can retract them; the exception propagates and the host is left holding a partial set. Everything the library decides — a bad name, a collision, a breached cap, a missing required output — is settled before any delivery, so this is the *only* path to a partial landing. It is also the strongest argument for the batch form in the open questions below: a single call taking the whole collection would remove the residue entirely, where the per-artifact shape cannot.
 
@@ -228,15 +236,19 @@ class OutputSink:
 
 ### Names: what the library guarantees, and what it does not
 
-The library enforces a **narrow invariant** and no more: relative, no traversal, no separators beyond the declared output's own, bounded length, valid UTF-8. It does not guarantee the name is legal at the destination, because it cannot: legal names differ between a blob container, NTFS, and a workspace store. **Hosts still own their own namespace rules.**
+The library enforces a **narrow invariant** and no more: relative, no traversal, no separators beyond the declared output's own, no segment that names nothing (`a//b` and `a/./b` are `a/b`, and delivering both spellings would land two artifacts for one file), no control character, bounded length, valid UTF-8. It does not guarantee the name is legal at the destination, because it cannot: legal names differ between a blob container, NTFS, and a workspace store. **Hosts still own their own namespace rules.**
 
-Windows-hostility is real and worth helping with, so `portable_name()` ships as an **opt-in helper** covering Microsoft's authoritative set and nothing beyond it: `CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, **and the ISO/IEC 8859-1 superscript variants `COM¹ COM² COM³ LPT¹ LPT² LPT³`** — Windows reads those superscripts as digits, so `COM¹` is a device and `echo test > COM¹` fails to create a file. All of them reserved with an extension too (`NUL.tar.gz` is `NUL`), plus the forbidden `< > : " | ? *` set and trailing dots and spaces.
+Control characters are the one rule that reaches past the guest's own grammar, and it is not overreach: no filesystem anywhere accepts a NUL or a newline in a name, so refusing them decides nothing a destination might have decided differently. The length bound is checked against the name **as it will be delivered**, after normalization — NFC is not length-non-increasing (85 × U+0958 is 255 bytes decomposed and 510 composed), so checking the declared spelling would be checking a different name.
+
+Windows-hostility is real and worth helping with, so `portable_name()` ships as an **opt-in helper** covering Microsoft's authoritative set and nothing beyond it: `CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, **and the ISO/IEC 8859-1 superscript variants `COM¹ COM² COM³ LPT¹ LPT² LPT³`** — Windows reads those superscripts as digits, so `COM¹` is a device and `echo test > COM¹` fails to create a file. All of them reserved with an extension too (`NUL.tar.gz` is `NUL`), plus the forbidden `< > : " | ? *` set, **ASCII 0–31, which Microsoft's naming rules list in the same breath as that punctuation**, and trailing dots and spaces.
 
 The superscripts are the entry that justifies shipping this at all: no host writing its own list will think of them. The set stops exactly at the documented one — `COM⁴` (U+2074) is not a digit to Windows and is a legitimate filename, and a helper that guesses beyond the spec starts mangling names that were fine.
 
 Names are normalized to **NFC** before `deliver` sees them, because it is the one form that survives all three filesystems recognisably. A host with a content-addressed store or a Linux-only deployment opts out with `NameNormalization.NONE` — which disables **only** the rewrite. The narrow invariant still applies, and collision detection still **compares** normalized forms. We compare normalized and write what was asked for.
 
 **Case-only collisions are refused across one collection.** `Diagram.png` and `diagram.png` are two files on Linux and one on Windows and default macOS. `collect_outputs` has every name in hand before it delivers any of them; the host receives artifacts one at a time and can never see the collision.
+
+The comparison is **lowercase, not casefold**, and the difference is a refusal nobody would understand. Casefolding maps `ß` to `ss` and `ﬁ` (U+FB01) to `fi`, so `Straße.png` + `Strasse.png` and `ﬁle.png` + `file.png` would each be refused as one file — and they are two files on Linux, NTFS and case-insensitive APFS alike. A cap that fails a whole collection has to be right about why.
 
 **Never-overwrite is a contract clause, not a library guarantee.** Because the host does the writing, the library cannot enforce it.
 
@@ -252,7 +264,9 @@ What is *not* structural is how confidential the destination is — exactly the 
 
 `sandbox_tool_declarations` writes the cap only when the spec permits egress, because "a sandbox with no network cannot carry anything out of the conversation".
 
-**A landing sink falsifies that premise.** With closed egress and a sink, bytes leave for host state and the flow the guard was checking for exists again. The condition becomes "the spec permits egress **or** a sink is attached".
+**A landing sink falsifies that premise.** With closed egress and a sink, bytes leave for host state and the flow the guard was checking for exists again. The condition becomes "the spec permits egress **or** the spec declares an output that lands *and* a sink is attached".
+
+Both halves of that second clause are load-bearing, and the shorter version — "a sink is attached" — reintroduces the bug it was written to fix. A sink is ordinarily *one object handed to every sandbox tool a host builds*, so its presence says nothing about whether this particular workload sends anything down it. A spec that declares no outputs, or only `CONSUME` ones, carries nothing to host state however many sinks it was given, and capping it would gate calls for a flow that does not exist — the exact thing the condition exists to avoid.
 
 An earlier draft said the effective cap is "the strictest of the two, the same fold the `HOST_TOOLS` registry uses". **Both halves of that were wrong.** The cap is an opaque host-vocabulary string with no ordering — this repository requires orderings to be data with exhaustiveness tests, as `ISOLATION_RANK` is — so a library cannot rank two of them. And the cited precedent does not exist: the `HOST_TOOLS` registry, `require_declared` and the strictest-over-sinks fold are unimplemented rollout item 5 of the two-axis proposal, described there in the future tense.
 
@@ -274,7 +288,7 @@ One further hazard, which is the same shape as the bug this section fixes: `sand
 2. **Tell the model where to write.** The output path has to appear in the tool's description: a program that saves its PNG somewhere else produces nothing collectable and no error.
 3. **Do not put bytes in the result.** Return the references `deliver` gave you.
 4. **Require `FILES_LIST` only if you truly cannot name your outputs.** It is refused on Docker and wslc; a kind that requires it without needing it has made itself ACAS-only.
-5. **Grow `requires` from what you declare.** A spec with no declared outputs should not require `FILES_OUT` at all.
+5. **Grow `requires` from what you declare.** A spec with no declared outputs should not require `FILES_OUT` at all — and one that declares any output, of either disposition, is **refused** without it: the capability match is the only thing standing between that spec and a backend with no pull surface, and it only runs on what `requires` names.
 6. **Do not combine a sink with an explicit `declarations=`** — it is refused, because the two disagree about what the tool's flow is.
 
 ## Implementing `FILES_OUT` in a backend

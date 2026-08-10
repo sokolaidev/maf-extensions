@@ -508,6 +508,49 @@ class TestTransferLimitMatch:
             asyncio.run(router.acquire(_KEY, spec))
 
 
+class _BackendDeclaringTheWrongLimits(InProcessSandboxBackend):
+    """A third party that reached for the adjacent type, or left the field unfilled."""
+
+    def __init__(self, declared, **kwargs):
+        super().__init__(**kwargs)
+        self._declared = declared
+
+    @property
+    def limits(self):
+        return self._declared
+
+
+class TestAMalformedLimitsDeclarationIsRefused:
+    """The same refuse-unknown policy `_declared_isolation` applies, for the same reason.
+
+    `TransferLimits` is one direction's caps and `SandboxLimits` is the pair; they are adjacent
+    in one module and both exported, so handing over the wrong one is the obvious third-party
+    mistake — and it used to surface as a bare `AttributeError` out of a host's agent factory,
+    which is where a host's own wiring test is least able to say what happened.
+    """
+
+    @pytest.mark.parametrize("declared", [_TIGHT_LIMITS, None], ids=["a-TransferLimits", "None"])
+    def test_a_declaration_that_is_not_a_sandbox_limits_is_refused_and_named(self, declared):
+        router = SandboxRouter(
+            [_BackendDeclaringTheWrongLimits(declared)], min_isolation=Isolation.PROCESS
+        )
+        with pytest.raises(SandboxTransferLimitsNotPermitted, match="SandboxLimits"):
+            router.ensure_can_serve(_SPEC)
+
+    def test_acquire_refuses_it_too(self):
+        router = SandboxRouter(
+            [_BackendDeclaringTheWrongLimits(None)], min_isolation=Isolation.PROCESS
+        )
+        with pytest.raises(SandboxTransferLimitsNotPermitted):
+            asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_the_default_ceilings_are_still_what_silence_means(self):
+        """The guard refuses a declaration it cannot read — it does not make one mandatory."""
+        SandboxRouter(
+            [_BackendWithoutCapabilities()], min_isolation=Isolation.PROCESS
+        ).ensure_can_serve(_SPEC)
+
+
 class _BackendWithoutEgress:
     """A third-party backend that satisfied the protocol as it stood: one property short.
 

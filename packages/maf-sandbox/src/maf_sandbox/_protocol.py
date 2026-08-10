@@ -212,8 +212,11 @@ class TransferLimits:
 
     All three fields are load-bearing: a byte ceiling alone does not bound a collection, since
     ten thousand files one byte under the per-file cap cost exactly what the cap was written to
-    prevent.  ``max_total_bytes`` doubles as the peak host-memory bound, because a collection
-    is pulled whole before any of it is delivered.
+    prevent.  ``max_total_bytes`` also bounds host memory as far as the backend allows it to:
+    a collection is pulled whole before any of it is delivered, so the cap is what the host
+    holds at once — but a backend whose SDK buffers a whole response internally has already
+    spent that memory before the bytes are handed over, and no caller-side ceiling can
+    retract it.  Over-cap bytes are never *delivered*; the memory bound is best-effort.
     """
 
     max_bytes_per_file: int
@@ -329,8 +332,10 @@ class Sandbox(Protocol):
 
     The pull surface — :meth:`stat_file`, :meth:`read_file`, :meth:`list_dir` — is gated by
     :data:`Capability.FILES_OUT` and :data:`Capability.FILES_LIST`, and a backend declaring
-    neither may raise from all three.  The router refuses such a spec when the workload
-    attaches, so no kind has to feature-detect here.
+    neither may raise from all three.  The attach gate refuses such a spec before the workload
+    ever runs — ``sandboxed_tool`` refuses a spec that declares outputs without requiring
+    :data:`Capability.FILES_OUT`, and the router's capability match refuses a backend that
+    cannot serve it — so no kind has to feature-detect here.
 
     ``working_directory`` is a parameter on those three exactly as it is on :meth:`exec`,
     because no sandbox object knows the spec's ``work_dir``: it arrives per call or not at all,
@@ -376,14 +381,21 @@ class Sandbox(Protocol):
         """
         ...
 
-    async def read_file(self, path: str, *, working_directory: str) -> bytes:
-        """Read the regular file at ``path``.
+    async def read_file(self, path: str, *, working_directory: str, max_bytes: int) -> bytes:
+        """Read the regular file at ``path``, refusing anything over ``max_bytes``.
 
         Bytes, never text: decoding here would corrupt every artifact that is not text, and the
         caller already declared the media type.  Only :data:`EntryKind.FILE` is served — a
         symlink is refused whether or not its target would have resolved somewhere legitimate,
         because that judgement is made with the guest's filesystem in view and answered with
         whichever one the reader can actually see.
+
+        ``max_bytes`` is a **refusal, never a truncation**: half a PNG returned as success is
+        an artifact the host cannot tell from a whole one.  Refuse with
+        ``SandboxTransferCapExceeded``.  It is the caller's own ceiling handed down so a
+        backend that can stop early does — the stat-ed size clamped by what the collection has
+        left — and a backend whose SDK buffers the whole response before returning it can only
+        refuse after the fact, which is why the caller re-counts what actually arrived.
         """
         ...
 

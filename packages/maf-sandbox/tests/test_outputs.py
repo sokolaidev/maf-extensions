@@ -27,9 +27,11 @@ from maf_sandbox import (
     SandboxEntry,
     SandboxOutputError,
     SandboxOutputMissing,
+    SandboxOutputNotConfined,
     SandboxOutputNotRegular,
     SandboxOutputSinkRequired,
     SandboxOutputSizeUnknown,
+    SandboxOutputUnreachable,
     SandboxSpec,
     SandboxTransferCapExceeded,
     TransferLimits,
@@ -47,6 +49,10 @@ _PNG = "image/png"
 #: distinct `str` values, two distinct keys on Linux, one file on the other two.
 _DECOMPOSED = "café.png"
 _COMPOSED = "café.png"
+
+#: U+0958 is three UTF-8 bytes and a composition exclusion, so NFC *decomposes* it into two
+#: characters of three bytes each: 85 of them pass a 255-byte check and are delivered at 510.
+_NFC_GROWS = "क़" * 85
 
 
 def _spec(
@@ -104,9 +110,11 @@ class _RecordingSandbox(InProcessSandbox):
         self.calls.append(("stat", path))
         return await super().stat_file(path, working_directory=working_directory)
 
-    async def read_file(self, path, *, working_directory):
+    async def read_file(self, path, *, working_directory, max_bytes):
         self.calls.append(("read", path))
-        return await super().read_file(path, working_directory=working_directory)
+        return await super().read_file(
+            path, working_directory=working_directory, max_bytes=max_bytes
+        )
 
 
 class _StubSandbox:
@@ -114,7 +122,9 @@ class _StubSandbox:
 
     `InProcessSandbox` is honest, so it cannot express either of the two things a real guest
     can do to a reader: report a regular file whose size is unknown, and grow a file between
-    the stat and the read.
+    the stat and the read. It ignores `max_bytes` for the same reason a backend whose SDK
+    buffers the whole response internally has to — which is what makes it the fixture that
+    proves the caller's own re-count still catches the growth.
     """
 
     def __init__(
@@ -122,12 +132,30 @@ class _StubSandbox:
     ) -> None:
         self.entries = entries
         self.contents = contents or {}
+        self.budgets: list[int] = []
 
     async def stat_file(self, path, *, working_directory):
         return self.entries.get(path)
 
-    async def read_file(self, path, *, working_directory):
+    async def read_file(self, path, *, working_directory, max_bytes):
+        self.budgets.append(max_bytes)
         return self.contents[path]
+
+
+class _RaisingSandbox:
+    """A backend that answers the pull surface in its own vocabulary, as a real one does."""
+
+    def __init__(self, error: BaseException, *, on_read: bool = False) -> None:
+        self._error = error
+        self._on_read = on_read
+
+    async def stat_file(self, path, *, working_directory):
+        if self._on_read:
+            return SandboxEntry(path=path, kind=EntryKind.FILE, size_bytes=1)
+        raise self._error
+
+    async def read_file(self, path, *, working_directory, max_bytes):
+        raise self._error
 
 
 class TestArtifactShapes:
@@ -183,6 +211,10 @@ class TestValidateArtifactName:
             ("out/../../escape.png", "traversal"),
             ("\udcff.png", "not valid UTF-8"),
             ("a" * 256, "ceiling"),
+            ("a//b", "segment"),
+            ("a/./b", "segment"),
+            ("a\x00b.png", "control character"),
+            ("a\nb.png", "control character"),
         ],
     )
     def test_each_rule_refuses_by_name(self, name: str, rule: str):
@@ -194,6 +226,20 @@ class TestValidateArtifactName:
         bytes."""
         name = "é" * MAX_ARTIFACT_NAME_BYTES
         with pytest.raises(SandboxArtifactNameInvalid, match="ceiling"):
+            validate_artifact_name(name)
+
+    @pytest.mark.parametrize("name", ["a//b", "a/./b"])
+    def test_a_segment_that_names_nothing_is_refused(self, name: str):
+        """`a/b`, `a//b` and `a/./b` are one file to every filesystem, so delivering them as
+        written would land three artifacts for it."""
+        with pytest.raises(SandboxArtifactNameInvalid, match="segment"):
+            validate_artifact_name(name)
+
+    @pytest.mark.parametrize("name", ["a\x00b.png", "a\nb.png"])
+    def test_a_control_character_is_refused(self, name: str):
+        """NUL and newline: no filesystem accepts either, which is what keeps this inside the
+        narrow invariant rather than a guess about the destination's own namespace."""
+        with pytest.raises(SandboxArtifactNameInvalid, match="control character"):
             validate_artifact_name(name)
 
     def test_it_does_not_reach_for_the_destination_rules(self):
@@ -255,6 +301,11 @@ class TestPortableName:
 
     def test_the_forbidden_set_is_replaced(self):
         assert portable_name('a<b>c:d"e|f?g*h.png') == "a_b_c_d_e_f_g_h.png"
+
+    def test_ascii_control_characters_are_replaced_too(self):
+        """Microsoft's rules list ASCII 0-31 in the same breath as the punctuation above, so a
+        helper covering only the visible half hands Windows a name it still refuses."""
+        assert portable_name("a\x00b\x1fc\nd.png") == "a_b_c_d.png"
 
     @pytest.mark.parametrize(
         ("name", "expected"),
@@ -393,6 +444,64 @@ class TestDisposition:
         spec = _spec(DeclaredOutput(path="result.sarif", disposition=OutputDisposition.CONSUME))
         with pytest.raises(SandboxOutputMissing, match="result.sarif"):
             asyncio.run(collect_outputs(InProcessSandbox(), spec))
+
+    def test_a_consume_output_counts_against_max_files(self):
+        """`files_out` bounds the collection the spec declared, not the subset that lands: a
+        kind that reads its own outputs still moves those bytes out of the sandbox."""
+        sandbox = InProcessSandbox(seed_files={"/work/result.sarif": b"{}", "/work/a.png": b"x"})
+        recorder = _RecordingSink()
+        limits = TransferLimits(max_bytes_per_file=100, max_total_bytes=100, max_files=1)
+        with pytest.raises(SandboxTransferCapExceeded, match="max_files=1"):
+            asyncio.run(
+                collect_outputs(
+                    sandbox,
+                    _spec(
+                        DeclaredOutput(path="result.sarif", disposition=OutputDisposition.CONSUME),
+                        DeclaredOutput(path="a.png"),
+                        files_out=limits,
+                    ),
+                    sink=recorder.sink,
+                )
+            )
+        assert recorder.delivered == []
+
+    def test_a_consume_output_counts_against_max_total_bytes(self):
+        sandbox = InProcessSandbox(seed_files={"/work/result.sarif": b"{}{}", "/work/a.png": b"xx"})
+        recorder = _RecordingSink()
+        limits = TransferLimits(max_bytes_per_file=100, max_total_bytes=5, max_files=10)
+        with pytest.raises(SandboxTransferCapExceeded, match="max_total_bytes"):
+            asyncio.run(
+                collect_outputs(
+                    sandbox,
+                    _spec(
+                        DeclaredOutput(path="result.sarif", disposition=OutputDisposition.CONSUME),
+                        DeclaredOutput(path="a.png"),
+                        files_out=limits,
+                    ),
+                    sink=recorder.sink,
+                )
+            )
+
+    def test_a_consume_output_of_unknown_size_fails_closed_too(self):
+        sandbox = _StubSandbox(
+            entries={
+                "result.sarif": SandboxEntry(
+                    path="result.sarif", kind=EntryKind.FILE, size_bytes=None
+                )
+            }
+        )
+        spec = _spec(DeclaredOutput(path="result.sarif", disposition=OutputDisposition.CONSUME))
+        with pytest.raises(SandboxOutputSizeUnknown, match="result.sarif"):
+            asyncio.run(collect_outputs(sandbox, spec))
+
+    def test_a_consume_path_is_held_to_the_narrow_invariant_as_well(self):
+        """It is still a path this library hands to a backend. Unvalidated, the refusal would
+        come back as that backend's own exception rather than as one a kind can catch."""
+        sandbox = _RecordingSandbox(seed_files={"/work/a.png": b"x"})
+        spec = _spec(DeclaredOutput(path="../escape.sarif", disposition=OutputDisposition.CONSUME))
+        with pytest.raises(SandboxArtifactNameInvalid, match="traversal"):
+            asyncio.run(collect_outputs(sandbox, spec))
+        assert sandbox.calls == []
 
 
 class TestPresence:
@@ -560,6 +669,99 @@ class TestCaps:
         assert recorder.delivered == []
 
 
+class _ShrinkingStatSandbox(InProcessSandbox):
+    """Stats every file as a single byte, so any real read is over the bound it was given.
+
+    The only way to exercise the fake's own refusal end to end: `InProcessSandbox` is honest,
+    and an honest stat is never smaller than the file it describes.
+    """
+
+    async def stat_file(self, path, *, working_directory):
+        entry = await super().stat_file(path, working_directory=working_directory)
+        return entry if entry is None else dataclasses.replace(entry, size_bytes=1)
+
+
+class TestTheReadBudget:
+    """`max_total_bytes` is a memory bound only if it reaches the read, not just the count.
+
+    Reading first and capping afterwards makes the cap a statement about what is *delivered*
+    and nothing at all about what was buffered to decide it.
+    """
+
+    def test_a_read_is_bounded_by_the_stat_ed_size(self):
+        sandbox = _StubSandbox(
+            entries={"a.png": SandboxEntry(path="a.png", kind=EntryKind.FILE, size_bytes=3)},
+            contents={"a.png": b"abc"},
+        )
+        recorder = _RecordingSink()
+        asyncio.run(
+            collect_outputs(sandbox, _spec(DeclaredOutput(path="a.png")), sink=recorder.sink)
+        )
+        assert sandbox.budgets == [3]
+
+    def test_the_bound_is_clamped_by_what_the_collection_has_left(self):
+        """The first file grew after its stat, so the second one may only read the remainder —
+        the stat-ed size alone would let a collection buffer past its own total."""
+        sandbox = _StubSandbox(
+            entries={
+                "a.png": SandboxEntry(path="a.png", kind=EntryKind.FILE, size_bytes=5),
+                "b.png": SandboxEntry(path="b.png", kind=EntryKind.FILE, size_bytes=5),
+            },
+            contents={"a.png": b"a" * 8, "b.png": b"bb"},
+        )
+        recorder = _RecordingSink()
+        limits = TransferLimits(max_bytes_per_file=8, max_total_bytes=10, max_files=10)
+        asyncio.run(
+            collect_outputs(
+                sandbox,
+                _spec(DeclaredOutput(path="a.png"), DeclaredOutput(path="b.png"), files_out=limits),
+                sink=recorder.sink,
+            )
+        )
+        assert sandbox.budgets == [5, 2]
+
+    def test_a_backend_that_can_enforce_the_bound_refuses_rather_than_truncating(self):
+        """Half a PNG returned as success is an artifact the host cannot tell from a whole
+        one, so the fake — like the protocol — refuses instead."""
+        sandbox = _ShrinkingStatSandbox(seed_files={"/work/a.png": b"0123"})
+        recorder = _RecordingSink()
+        with pytest.raises(SandboxTransferCapExceeded, match="a.png"):
+            asyncio.run(
+                collect_outputs(sandbox, _spec(DeclaredOutput(path="a.png")), sink=recorder.sink)
+            )
+        assert recorder.delivered == []
+
+
+class TestBackendFailuresJoinTheFamily:
+    """A backend answers in its own vocabulary; a kind is told to catch one base class.
+
+    Both of these used to escape it — the first as a bare `ValueError` and the second as a
+    bare `FileNotFoundError` — so "catch `SandboxOutputError`" was advice that did not hold.
+    """
+
+    def _collect(self, sandbox) -> None:
+        recorder = _RecordingSink()
+        asyncio.run(
+            collect_outputs(sandbox, _spec(DeclaredOutput(path="a.png")), sink=recorder.sink)
+        )
+
+    def test_a_path_the_backend_resolves_outside_the_working_directory(self):
+        with pytest.raises(SandboxOutputNotConfined, match="a.png"):
+            self._collect(_RaisingSandbox(ValueError("resolves outside /work")))
+
+    def test_a_file_that_went_away_between_the_stat_and_the_read(self):
+        with pytest.raises(SandboxOutputUnreachable, match="a.png"):
+            self._collect(_RaisingSandbox(FileNotFoundError("no such file"), on_read=True))
+
+    def test_the_backends_own_error_survives_as_the_cause(self):
+        """Translated for the caller, not swallowed: the provider's text is still in the
+        traceback for whoever is debugging the backend."""
+        original = FileNotFoundError("no such file")
+        with pytest.raises(SandboxOutputUnreachable) as caught:
+            self._collect(_RaisingSandbox(original, on_read=True))
+        assert caught.value.__cause__ is original
+
+
 class TestNames:
     def test_a_landing_name_is_held_to_the_narrow_invariant(self):
         """Settled from the spec alone, so the refusal does not depend on what the guest
@@ -605,6 +807,61 @@ class TestNames:
                 )
             )
         assert recorder.delivered == []
+
+    @pytest.mark.parametrize(
+        ("first", "second"),
+        [("Straße.png", "Strasse.png"), ("ﬁle.png", "file.png")],
+    )
+    def test_two_names_every_filesystem_keeps_apart_are_accepted(self, first: str, second: str):
+        """`str.casefold` maps `ß` to `ss` and `ﬁ` (U+FB01) to `fi`, so folding would refuse
+        these pairs — which are two distinct files on Linux, NTFS and case-insensitive APFS
+        alike, and would fail the whole collection with a reason that is not true."""
+        sandbox = InProcessSandbox(seed_files={f"/work/{first}": b"a", f"/work/{second}": b"b"})
+        recorder = _RecordingSink()
+        landed = asyncio.run(
+            collect_outputs(
+                sandbox,
+                _spec(DeclaredOutput(path=first), DeclaredOutput(path=second)),
+                sink=recorder.sink,
+            )
+        )
+        assert [item.name for item in landed] == [first, second]
+
+    @pytest.mark.parametrize("twin", ["a//b", "a/./b"])
+    def test_two_spellings_of_one_path_cannot_both_be_delivered(self, twin: str):
+        """`a/b`, `a//b` and `a/./b` are one file in the guest, and the collision check used
+        to key on the raw string — so all three landed, as three artifacts."""
+        sandbox = InProcessSandbox(seed_files={"/work/a/b": b"x"})
+        recorder = _RecordingSink()
+        with pytest.raises(SandboxOutputError):
+            asyncio.run(
+                collect_outputs(
+                    sandbox,
+                    _spec(DeclaredOutput(path="a/b"), DeclaredOutput(path=twin)),
+                    sink=recorder.sink,
+                )
+            )
+        assert recorder.delivered == []
+
+    def test_the_byte_ceiling_judges_the_name_that_is_actually_delivered(self):
+        """NFC is not length-non-increasing: 85 × U+0958 is 255 bytes as declared and 510 as
+        composed, so a check made before the rewrite is a check of a different name."""
+        sandbox = InProcessSandbox(seed_files={f"/work/{_NFC_GROWS}": b"x"})
+        recorder = _RecordingSink()
+        with pytest.raises(SandboxArtifactNameInvalid, match="ceiling"):
+            asyncio.run(
+                collect_outputs(sandbox, _spec(DeclaredOutput(path=_NFC_GROWS)), sink=recorder.sink)
+            )
+        assert recorder.delivered == []
+
+    def test_the_same_name_is_accepted_by_a_sink_that_rewrites_nothing(self):
+        """Which is the point: what is judged is the spelling the host is handed."""
+        sandbox = InProcessSandbox(seed_files={f"/work/{_NFC_GROWS}": b"x"})
+        recorder = _RecordingSink(normalization=NameNormalization.NONE)
+        asyncio.run(
+            collect_outputs(sandbox, _spec(DeclaredOutput(path=_NFC_GROWS)), sink=recorder.sink)
+        )
+        assert recorder.names == [_NFC_GROWS]
 
     def test_collisions_compare_normalized_forms_even_when_normalization_is_off(self):
         """Opting out disables the rewrite and nothing else: compare normalized, write what
@@ -673,8 +930,10 @@ class TestRefusalsShareOneBase:
         "error",
         [
             SandboxOutputMissing,
+            SandboxOutputNotConfined,
             SandboxOutputNotRegular,
             SandboxOutputSizeUnknown,
+            SandboxOutputUnreachable,
             SandboxTransferCapExceeded,
             SandboxOutputSinkRequired,
             SandboxArtifactNameInvalid,
