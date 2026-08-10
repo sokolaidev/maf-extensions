@@ -136,11 +136,56 @@ class TestBackendIdentity:
         """A workload's tool attaches because of this; `TestEgressPolicy` pins that it is true."""
         assert AcasSandboxBackend(_config()).egress == Egress.ALLOWLIST
 
-    def test_declares_exec_and_files_in_capabilities(self):
-        """Declares only what it implements today — no ATTACHED_IDENTITY, SNAPSHOT, or FILES_OUT."""
+    def test_declares_exec_files_in_and_the_whole_pull_surface(self):
+        """Declares only what it implements today — no ATTACHED_IDENTITY and no SNAPSHOT."""
         assert AcasSandboxBackend(_config()).capabilities == frozenset(
-            {Capability.EXEC, Capability.FILES_IN}
+            {
+                Capability.EXEC,
+                Capability.FILES_IN,
+                Capability.FILES_OUT,
+                Capability.FILES_LIST,
+            }
         )
+
+    def test_is_the_only_backend_that_can_declare_files_list(self):
+        """Native enumeration is the split's own test — name the backend that lacks it."""
+        assert Capability.FILES_LIST in AcasSandboxBackend(_config()).capabilities
+
+    def test_declares_transfer_ceilings_that_admit_a_spec_saying_nothing(self):
+        """The spec-side default must stay within them, or every existing spec fails at attach."""
+        from maf_sandbox import DEFAULT_TRANSFER_LIMITS
+
+        limits = AcasSandboxBackend(_config()).limits
+        assert DEFAULT_TRANSFER_LIMITS.within(limits.files_in)
+        assert DEFAULT_TRANSFER_LIMITS.within(limits.files_out)
+
+    def test_a_spec_requiring_the_pull_surface_is_admitted(self):
+        from maf_sandbox import SandboxSpec
+
+        router = SandboxRouter([AcasSandboxBackend(_config())])
+        router.ensure_can_serve(
+            SandboxSpec(
+                kind="k",
+                requires=frozenset({Capability.EXEC, Capability.FILES_OUT, Capability.FILES_LIST}),
+            )
+        )  # does not raise
+
+    def test_a_spec_asking_above_the_transfer_ceiling_is_refused(self):
+        from maf_sandbox import SandboxSpec, SandboxTransferLimitsNotPermitted, TransferLimits
+
+        backend = AcasSandboxBackend(_config())
+        ceiling = backend.limits.files_out
+        spec = SandboxSpec(
+            kind="k",
+            requires=frozenset({Capability.EXEC, Capability.FILES_OUT}),
+            files_out=TransferLimits(
+                max_bytes_per_file=ceiling.max_bytes_per_file + 1,
+                max_total_bytes=ceiling.max_total_bytes,
+                max_files=ceiling.max_files,
+            ),
+        )
+        with pytest.raises(SandboxTransferLimitsNotPermitted):
+            SandboxRouter([backend]).ensure_can_serve(spec)
 
     def test_meets_the_default_floor(self):
         """Migration guarantee: a host that used `deployed=True` behaves identically."""
@@ -867,6 +912,455 @@ class TestEgressPolicy:
 
         assert policy.default_action == "Deny"
         assert policy.host_rules == []
+
+
+# ---------------------------------------------------------------------------
+# The pull surface — FILES_OUT and FILES_LIST
+# ---------------------------------------------------------------------------
+
+_WORK_DIR = "/work"
+_SBX_PATH = "/subscriptions/sub/resourceGroups/rg/sandboxGroups/grp/sandboxes/sbx-1"
+_API_VERSION = "2026-02-01-preview"
+
+#: What `/etc/hostname` holds inside the guest — the file a symlink out of the working
+#: directory reaches, and the bytes no read may ever return.
+_HOSTNAME = b"a-real-host\n"
+_REAL_CONTENT = b"hello world\n"
+
+# The stat payloads a live sandbox group answered with, verbatim, on
+# `azure-containerapps-sandbox` 0.1.0b4. Copied rather than constructed because this backend
+# reads these fields itself instead of through the SDK's `FileInfo` (#136): a preview SDK or a
+# service that renames one has to fail against these rather than silently degrade the
+# confinement rule to nothing. Note `size` on the symlink — 13 is the length of
+# `/etc/hostname`, the target *string*, not of anything readable.
+_LIVE_REGULAR = {
+    "name": "real.txt",
+    "path": "/work/real.txt",
+    "size": 12,
+    "mode": 420,
+    "isDir": False,
+    "isSymlink": False,
+    "modifiedTime": 1786404028,
+}
+_LIVE_SYMLINK = {
+    "name": "link-out.txt",
+    "path": "/work/link-out.txt",
+    "size": 13,
+    "mode": 511,
+    "isDir": False,
+    "isSymlink": True,
+    "symlinkTarget": "/etc/hostname",
+    "modifiedTime": 1786404028,
+}
+_LIVE_DIRECTORY = {
+    "name": "sub",
+    "path": "/work/sub",
+    "size": 4096,
+    "mode": 493,
+    "isDir": True,
+    "isSymlink": False,
+    "modifiedTime": 1786404028,
+}
+_LIVE_NESTED = {
+    "name": "child.txt",
+    "path": "/work/sub/child.txt",
+    "size": 5,
+    "mode": 420,
+    "isDir": False,
+    "isSymlink": False,
+    "modifiedTime": 1786404028,
+}
+_LIVE_WORK_DIR = {
+    "name": "work",
+    "path": _WORK_DIR,
+    "size": 4096,
+    "mode": 493,
+    "isDir": True,
+    "isSymlink": False,
+    "modifiedTime": 1786404028,
+}
+
+
+class _FakeDataPlaneClient:
+    """The slice of the SDK's sandbox client the pull surface reaches.
+
+    It serves the **raw** data-plane payloads rather than `FileInfo`, because raw is what the
+    backend reads; a fake returning the typed model would exercise a path the backend does not
+    take. `read_file` follows a symlink to its target exactly as the live service does, so a
+    test that reads a link and gets `/etc/hostname` back is a test of the leak rather than of
+    this fake's opinion about one — `TestReadFile` asserts that leak is reachable before
+    asserting the backend refuses it.
+    """
+
+    def __init__(self, entries=None, contents=None) -> None:
+        self.sandbox_id = "sbx-1"
+        self._sbx_path = _SBX_PATH
+        self._api_version = _API_VERSION
+        self._entries = dict(
+            entries
+            if entries is not None
+            else {
+                _WORK_DIR: _LIVE_WORK_DIR,
+                "/work/real.txt": _LIVE_REGULAR,
+                "/work/link-out.txt": _LIVE_SYMLINK,
+                "/work/sub": _LIVE_DIRECTORY,
+                "/work/sub/child.txt": _LIVE_NESTED,
+            }
+        )
+        self._contents = dict(
+            contents
+            if contents is not None
+            else {"/work/real.txt": _REAL_CONTENT, "/etc/hostname": _HOSTNAME}
+        )
+        self.gets: list[tuple[str, dict]] = []
+        self.reads: list[str] = []
+
+    async def _dp_get(self, path, *, params=None):
+        from azure.core.exceptions import ResourceNotFoundError
+
+        params = dict(params or {})
+        self.gets.append((path, params))
+        target = params["path"]
+        if path == f"{_SBX_PATH}/files/stat":
+            entry = self._entries.get(target)
+            if entry is None:
+                raise ResourceNotFoundError(message=f"no such path: {target}")
+            return dict(entry)
+        if path == f"{_SBX_PATH}/files/list":
+            entry = self._entries.get(target)
+            if entry is None or not entry.get("isDir"):
+                raise ResourceNotFoundError(message=f"no such directory: {target}")
+            return {"path": target, "entries": self._children(target)}
+        raise AssertionError(f"unexpected data-plane GET: {path}")
+
+    async def read_file(self, path):
+        from azure.core.exceptions import HttpResponseError, ResourceNotFoundError
+
+        self.reads.append(path)
+        entry = self._entries.get(path)
+        if entry is None:
+            raise ResourceNotFoundError(message=f"no such file: {path}")
+        if entry.get("isDir"):
+            raise HttpResponseError(message=f"{path} is a directory")
+        if entry.get("isSymlink"):
+            path = entry["symlinkTarget"]
+        return self._contents[path]
+
+    def _children(self, directory):
+        prefix = directory.rstrip("/") + "/"
+        return [
+            dict(payload)
+            for path, payload in self._entries.items()
+            if path.startswith(prefix) and "/" not in path[len(prefix) :]
+        ]
+
+
+def _sandbox(client=None):
+    from maf_sandbox_acas._backend import _AcasSandbox
+
+    return _AcasSandbox(client if client is not None else _FakeDataPlaneClient())
+
+
+def _stat(sandbox, path, working_directory=_WORK_DIR):
+    return asyncio.run(sandbox.stat_file(path, working_directory=working_directory))
+
+
+class TestTheWireShape:
+    """The payload this backend depends on, pinned so a change to it fails here.
+
+    The backend reads the raw data-plane JSON because the SDK's `FileInfo` drops the fields
+    the confinement rule needs (#136, upstream Azure/azure-sdk-for-python#48523). That is a
+    dependency on an undocumented preview shape, and the point of these assertions is that the
+    day it moves, the failure is a red test rather than a symlink quietly typing as a regular
+    file.
+    """
+
+    def test_the_backend_maps_what_the_service_actually_sends(self):
+        from maf_sandbox import EntryKind
+
+        sandbox = _sandbox()
+        assert _stat(sandbox, "real.txt").kind is EntryKind.FILE
+        assert _stat(sandbox, "link-out.txt").kind is EntryKind.OTHER
+        assert _stat(sandbox, "sub").kind is EntryKind.DIRECTORY
+
+    def test_the_typed_fileinfo_cannot_serve_the_confinement_rule(self):
+        """#136's removal gate: when this fails, go back to the typed surface and delete the raw read."""
+        from azure.containerapps.sandbox import FileInfo
+
+        symlink = FileInfo._from_dict(dict(_LIVE_SYMLINK))
+        assert not hasattr(symlink, "is_symlink")
+        assert not hasattr(symlink, "symlink_target")
+        # `_from_dict` reads `isDirectory`, a key the service does not send, so even a
+        # directory comes back through the typed surface looking like a regular file.
+        assert FileInfo._from_dict(dict(_LIVE_DIRECTORY)).is_directory is False
+
+    def test_mode_carries_permission_bits_only(self):
+        """Which is why nothing parses it for a type: 0o777 is a symlink and a loose file alike."""
+        import stat
+
+        for payload in (_LIVE_REGULAR, _LIVE_SYMLINK, _LIVE_DIRECTORY):
+            assert stat.S_IFMT(payload["mode"]) == 0
+
+    def test_the_route_and_query_are_the_ones_the_service_answers(self):
+        client = _FakeDataPlaneClient()
+        _stat(_sandbox(client), "real.txt")
+
+        assert client.gets == [
+            (
+                f"{_SBX_PATH}/files/stat",
+                {"path": "/work/real.txt", "api-version": _API_VERSION},
+            )
+        ]
+
+
+class TestStatFile:
+    def test_a_regular_file_carries_its_size(self):
+        assert _stat(_sandbox(), "real.txt").size_bytes == len(_REAL_CONTENT)
+
+    def test_a_symlinks_size_is_not_reported_as_content(self):
+        """13 is the length of `/etc/hostname`, so passing it on would be a lie about bytes."""
+        assert _stat(_sandbox(), "link-out.txt").size_bytes is None
+
+    def test_a_missing_path_is_none(self):
+        assert _stat(_sandbox(), "nothing-here.txt") is None
+
+    def test_the_entry_path_is_relative_to_the_working_directory(self):
+        assert _stat(_sandbox(), "sub/child.txt").path == "sub/child.txt"
+
+    def test_a_non_normalized_working_directory_still_resolves(self):
+        assert _stat(_sandbox(), "real.txt", working_directory="/work/").path == "real.txt"
+
+    def test_a_traversal_is_refused_before_the_service_is_asked(self):
+        client = _FakeDataPlaneClient()
+        with pytest.raises(ValueError, match="outside working directory"):
+            _stat(_sandbox(client), "../etc/hostname")
+        assert client.gets == []
+
+    def test_an_absolute_path_outside_the_working_directory_is_refused(self):
+        with pytest.raises(ValueError, match="outside working directory"):
+            _stat(_sandbox(), "/etc/hostname")
+
+    def test_a_backslash_is_refused_as_a_separator(self):
+        """The protocol has one path grammar, and `\\` is not a separator in it."""
+        with pytest.raises(ValueError, match="backslash"):
+            _stat(_sandbox(), "sub\\child.txt")
+
+    def test_a_sibling_sharing_a_prefix_is_not_read_as_a_descendant(self):
+        with pytest.raises(ValueError, match="outside working directory"):
+            _stat(_sandbox(), "/work2/real.txt")
+
+
+class TestFailsClosedOnAMissingTypeFlag:
+    """A payload that cannot say what it is, is refused — never assumed to be a regular file.
+
+    This is the tripwire for the service changing shape under this backend, and it is the whole
+    reason the confinement rule can be claimed at all: read follows symlinks here, so an entry
+    of unknown type is a read of an unknown file.
+    """
+
+    def _without(self, field):
+        payload = {k: v for k, v in _LIVE_REGULAR.items() if k != field}
+        return _FakeDataPlaneClient(entries={"/work/real.txt": payload})
+
+    def test_a_payload_without_the_symlink_flag_is_refused(self):
+        with pytest.raises(ValueError, match="isSymlink"):
+            _stat(_sandbox(self._without("isSymlink")), "real.txt")
+
+    def test_a_payload_without_the_directory_flag_is_refused(self):
+        with pytest.raises(ValueError, match="isDir"):
+            _stat(_sandbox(self._without("isDir")), "real.txt")
+
+    def test_a_non_boolean_flag_is_refused(self):
+        """A string `"false"` is truthy, so type-checking the flag is not pedantry."""
+        payload = {**_LIVE_REGULAR, "isSymlink": "false"}
+        client = _FakeDataPlaneClient(entries={"/work/real.txt": payload})
+        with pytest.raises(ValueError, match="isSymlink"):
+            _stat(_sandbox(client), "real.txt")
+
+    def test_an_absent_size_is_unknown_rather_than_zero(self):
+        """`None` fails closed upstream; zero would make every cap read that file as free."""
+        payload = {k: v for k, v in _LIVE_REGULAR.items() if k != "size"}
+        client = _FakeDataPlaneClient(entries={"/work/real.txt": payload})
+        assert _stat(_sandbox(client), "real.txt").size_bytes is None
+
+
+class TestReadFile:
+    def test_a_regular_file_comes_back_byte_identical(self):
+        sandbox = _sandbox()
+        content = asyncio.run(
+            sandbox.read_file("real.txt", working_directory=_WORK_DIR, max_bytes=64)
+        )
+        assert content == _REAL_CONTENT
+
+    def test_the_service_really_does_follow_a_symlink(self):
+        """The premise of the refusal below: without it, this read leaves the working directory."""
+        client = _FakeDataPlaneClient()
+        assert asyncio.run(client.read_file("/work/link-out.txt")) == _HOSTNAME
+
+    def test_a_symlink_is_refused_and_never_read(self):
+        client = _FakeDataPlaneClient()
+        sandbox = _sandbox(client)
+        with pytest.raises(OSError, match="regular file"):
+            asyncio.run(
+                sandbox.read_file("link-out.txt", working_directory=_WORK_DIR, max_bytes=64)
+            )
+        assert client.reads == []
+
+    def test_a_directory_is_refused(self):
+        with pytest.raises(OSError, match="regular file"):
+            asyncio.run(_sandbox().read_file("sub", working_directory=_WORK_DIR, max_bytes=64))
+
+    def test_a_missing_file_raises_file_not_found(self):
+        with pytest.raises(FileNotFoundError):
+            asyncio.run(
+                _sandbox().read_file("nothing.txt", working_directory=_WORK_DIR, max_bytes=64)
+            )
+
+    def test_a_size_over_the_cap_is_refused_before_a_byte_moves(self):
+        from maf_sandbox import SandboxTransferCapExceeded
+
+        client = _FakeDataPlaneClient()
+        with pytest.raises(SandboxTransferCapExceeded):
+            asyncio.run(
+                _sandbox(client).read_file("real.txt", working_directory=_WORK_DIR, max_bytes=1)
+            )
+        assert client.reads == []
+
+    def test_more_bytes_than_the_stat_promised_are_refused_not_truncated(self):
+        """A stat is a promise about a file the guest is still free to rewrite."""
+        from maf_sandbox import SandboxTransferCapExceeded
+
+        client = _FakeDataPlaneClient(contents={"/work/real.txt": b"x" * 4096})
+        with pytest.raises(SandboxTransferCapExceeded, match="read back"):
+            asyncio.run(
+                _sandbox(client).read_file(
+                    "real.txt", working_directory=_WORK_DIR, max_bytes=len(_REAL_CONTENT)
+                )
+            )
+
+    def test_an_unknown_size_is_refused(self):
+        from maf_sandbox import SandboxOutputSizeUnknown
+
+        payload = {k: v for k, v in _LIVE_REGULAR.items() if k != "size"}
+        client = _FakeDataPlaneClient(entries={"/work/real.txt": payload})
+        with pytest.raises(SandboxOutputSizeUnknown):
+            asyncio.run(
+                _sandbox(client).read_file("real.txt", working_directory=_WORK_DIR, max_bytes=64)
+            )
+
+    def test_the_guest_path_reaches_the_sdk_resolved(self):
+        client = _FakeDataPlaneClient()
+        asyncio.run(
+            _sandbox(client).read_file(
+                "./sub/../real.txt", working_directory=_WORK_DIR, max_bytes=64
+            )
+        )
+        assert client.reads == ["/work/real.txt"]
+
+
+class TestListDir:
+    def test_every_kind_in_one_listing_is_mapped(self):
+        from maf_sandbox import EntryKind
+
+        entries = asyncio.run(_sandbox().list_dir(".", working_directory=_WORK_DIR))
+        assert {entry.path: entry.kind for entry in entries} == {
+            "real.txt": EntryKind.FILE,
+            "link-out.txt": EntryKind.OTHER,
+            "sub": EntryKind.DIRECTORY,
+        }
+
+    def test_a_nested_listing_reports_paths_relative_to_the_working_directory(self):
+        entries = asyncio.run(_sandbox().list_dir("sub", working_directory=_WORK_DIR))
+        assert [entry.path for entry in entries] == ["sub/child.txt"]
+
+    def test_only_regular_files_carry_a_size(self):
+        entries = {
+            e.path: e.size_bytes
+            for e in asyncio.run(_sandbox().list_dir(".", working_directory=_WORK_DIR))
+        }
+        assert entries == {"real.txt": 12, "link-out.txt": None, "sub": None}
+
+    def test_a_missing_directory_raises_file_not_found(self):
+        """Translated out of the SDK's vocabulary, so a kind need not import azure-core."""
+        with pytest.raises(FileNotFoundError):
+            asyncio.run(_sandbox().list_dir("nowhere", working_directory=_WORK_DIR))
+
+    def test_a_listed_entry_outside_the_working_directory_fails_the_listing(self):
+        escaped = {**_LIVE_REGULAR, "path": "/etc/hostname"}
+        client = _FakeDataPlaneClient(
+            entries={_WORK_DIR: _LIVE_WORK_DIR, "/work/real.txt": escaped}
+        )
+        with pytest.raises(ValueError, match="outside working directory"):
+            asyncio.run(_sandbox(client).list_dir(".", working_directory=_WORK_DIR))
+
+    def test_a_listed_entry_without_a_type_flag_is_refused(self):
+        payload = {k: v for k, v in _LIVE_REGULAR.items() if k != "isSymlink"}
+        client = _FakeDataPlaneClient(
+            entries={_WORK_DIR: _LIVE_WORK_DIR, "/work/real.txt": payload}
+        )
+        with pytest.raises(ValueError, match="isSymlink"):
+            asyncio.run(_sandbox(client).list_dir(".", working_directory=_WORK_DIR))
+
+    def test_the_directory_itself_is_refused_when_it_is_outside(self):
+        with pytest.raises(ValueError, match="outside working directory"):
+            asyncio.run(_sandbox().list_dir("/etc", working_directory=_WORK_DIR))
+
+
+class TestThroughCollectOutputs:
+    """The surface as `maf_sandbox` actually drives it — the pair a kind depends on."""
+
+    @staticmethod
+    def _sink():
+        from maf_sandbox import LandedArtifact, OutputSink
+
+        delivered = []
+
+        async def deliver(artifact):
+            delivered.append(artifact)
+            return LandedArtifact(name=artifact.name, display=artifact.name)
+
+        return OutputSink(deliver=deliver), delivered
+
+    @staticmethod
+    def _spec(path):
+        from maf_sandbox import DeclaredOutput, SandboxSpec
+
+        return SandboxSpec(
+            kind="k",
+            work_dir=_WORK_DIR,
+            declared_outputs=(DeclaredOutput(path=path, media_type="text/plain"),),
+        )
+
+    def test_a_declared_regular_output_lands(self):
+        from maf_sandbox import collect_outputs
+
+        sink, delivered = self._sink()
+        landed = asyncio.run(collect_outputs(_sandbox(), self._spec("real.txt"), sink=sink))
+
+        assert [artifact.name for artifact in landed] == ["real.txt"]
+        assert delivered[0].content == _REAL_CONTENT
+
+    def test_a_declared_symlink_output_is_refused_as_not_regular(self):
+        from maf_sandbox import SandboxOutputNotRegular, collect_outputs
+
+        client = _FakeDataPlaneClient()
+        sink, delivered = self._sink()
+        with pytest.raises(SandboxOutputNotRegular):
+            asyncio.run(collect_outputs(_sandbox(client), self._spec("link-out.txt"), sink=sink))
+
+        assert client.reads == []
+        assert delivered == []
+
+    def test_a_traversing_declaration_never_reaches_the_service(self):
+        """The glue settles this one from the declaration alone; the backend's own refusal
+        (`TestStatFile`) is the floor under a caller that does not go through `collect_outputs`."""
+        from maf_sandbox import SandboxArtifactNameInvalid, collect_outputs
+
+        client = _FakeDataPlaneClient()
+        sink, _ = self._sink()
+        with pytest.raises(SandboxArtifactNameInvalid):
+            asyncio.run(collect_outputs(_sandbox(client), self._spec("../etc/hostname"), sink=sink))
+        assert client.gets == []
 
 
 # ---------------------------------------------------------------------------

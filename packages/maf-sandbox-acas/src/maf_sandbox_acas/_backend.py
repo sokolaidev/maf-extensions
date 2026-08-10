@@ -2,7 +2,8 @@
 
 Everything provider-specific lives here — the group client, disk-image resolution, the
 egress policy, the lifecycle policy, the sandbox registry and label-based purge.  A workload
-above the router sees only ``write_file`` and ``exec``.
+above the router sees ``write_file``, ``exec`` and the pull surface (``stat_file``,
+``read_file``, ``list_dir``).
 
 Isolation is :data:`~maf_sandbox.Isolation.MICROVM` — the router's default floor, so a host
 that configures nothing already permits this backend.
@@ -12,18 +13,25 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import posixpath
 import shlex
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from hashlib import sha256
 from typing import Any
 
 from maf_sandbox import (
     Capability,
     Egress,
+    EntryKind,
     ExecResult,
     Isolation,
+    SandboxEntry,
     SandboxKey,
+    SandboxLimits,
+    SandboxOutputSizeUnknown,
     SandboxSpec,
+    SandboxTransferCapExceeded,
+    TransferLimits,
     error_detail,
 )
 
@@ -90,6 +98,119 @@ _LABEL_KIND = "kind"
 # saying why. Waiting longer costs only the wait.
 _RESUME_TIMEOUT_S = 120
 
+#: So the ceilings below read as sizes rather than as eight-digit literals.
+_MIB = 1024 * 1024
+
+# This backend's own transfer ceilings, per direction: a spec may not ask above them, and the
+# router refuses one that does. Set above the protocol's spec-side defaults so a spec that
+# says nothing is admitted with room to spare, and well below what a streaming backend can
+# offer, because this one cannot stream: the SDK's `read_file` buffers the whole response
+# internally, so every byte is host memory before this package sees it and a per-file ceiling
+# is a memory statement rather than a transfer-cost one. `max_files` is the field raised
+# furthest — this is the only backend that can serve FILES_LIST, so it is where a kind whose
+# output names are unpredictable runs, and each of those files is one round trip rather than
+# one shared stream.
+_FILES_LIMITS = TransferLimits(
+    max_bytes_per_file=32 * _MIB, max_total_bytes=128 * _MIB, max_files=128
+)
+_LIMITS = SandboxLimits(files_in=_FILES_LIMITS, files_out=_FILES_LIMITS)
+
+# The data-plane routes and payload fields the pull surface reads for itself, rather than
+# through the SDK's typed models — see `_AcasSandbox._files_payload`.
+_STAT_ROUTE = "files/stat"
+_LIST_ROUTE = "files/list"
+_QUERY_PATH = "path"
+_QUERY_API_VERSION = "api-version"
+_FIELD_PATH = "path"
+_FIELD_ENTRIES = "entries"
+_FIELD_SIZE = "size"
+_FIELD_IS_DIR = "isDir"
+_FIELD_IS_SYMLINK = "isSymlink"
+
+#: The protocol's one path grammar, whatever the guest and the host each run.
+_SEPARATOR = "/"
+_BACKSLASH = "\\"
+
+
+def _confined(path: str, working_directory: str) -> tuple[str, str]:
+    """Resolve ``path`` against ``working_directory``: the guest path, and the relative one.
+
+    ``posixpath`` only, never ``os.path`` — the protocol has one path grammar and a Windows
+    host must not resolve a guest path with its own.  A backslash, or a ``..`` that climbs out
+    of ``working_directory``, raises :class:`ValueError`, which ``maf_sandbox`` translates into
+    ``SandboxOutputNotConfined`` for the caller.
+    """
+    if _BACKSLASH in path:
+        raise ValueError(f"path {path!r} contains a backslash, which is not a valid separator")
+    base = posixpath.normpath(working_directory)
+    resolved = posixpath.normpath(posixpath.join(base, path))
+    relative = _relative_path(resolved, base)
+    if relative is None:
+        raise ValueError(f"path {path!r} resolves outside working directory {working_directory!r}")
+    return resolved, relative
+
+
+def _relative_path(guest_path: str, base: str) -> str | None:
+    """``guest_path`` relative to ``base``, or ``None`` when it does not sit inside it.
+
+    Compared against ``base + "/"`` rather than ``base``, so a sibling sharing a string prefix
+    — ``/work/sub2`` under ``/work/sub`` — is not mistaken for a descendant.
+    """
+    if guest_path == base:
+        return ""
+    prefix = base if base.endswith(_SEPARATOR) else base + _SEPARATOR
+    if not guest_path.startswith(prefix):
+        return None
+    return guest_path[len(prefix) :]
+
+
+def _entry_from_payload(payload: Mapping[str, Any], relative_path: str) -> SandboxEntry:
+    """One raw stat payload as a :class:`~maf_sandbox.SandboxEntry`.
+
+    A payload missing either type flag is **refused**, never read as a regular file: those two
+    booleans are the whole of this backend's symlink refusal, so a service that stops sending
+    them has to break the read loudly rather than degrade confinement to nothing.  ``mode`` is
+    not consulted — it carries permission bits only, with no ``S_IFLNK`` or ``S_IFDIR`` in it.
+    """
+    is_symlink: Any = payload.get(_FIELD_IS_SYMLINK)
+    is_dir: Any = payload.get(_FIELD_IS_DIR)
+    if not isinstance(is_symlink, bool) or not isinstance(is_dir, bool):
+        raise ValueError(
+            f"the sandbox service described {relative_path!r} without both {_FIELD_IS_SYMLINK!r} "
+            f"and {_FIELD_IS_DIR!r}, so what it is cannot be told. Refused rather than assumed "
+            "to be a regular file: this backend's read follows a symlink to whatever it points "
+            "at, so an unknown type is a read of the wrong file."
+        )
+    if is_symlink:
+        return SandboxEntry(path=relative_path, kind=EntryKind.OTHER, size_bytes=None)
+    if is_dir:
+        return SandboxEntry(path=relative_path, kind=EntryKind.DIRECTORY, size_bytes=None)
+    return SandboxEntry(path=relative_path, kind=EntryKind.FILE, size_bytes=_size_bytes(payload))
+
+
+def _size_bytes(payload: Mapping[str, Any]) -> int | None:
+    """A regular file's size, or ``None`` when the service reported none.
+
+    ``None`` fails closed upstream, so an absent or non-integer ``size`` is passed through as
+    unknown rather than coerced to zero, which would make every cap read that one file as free.
+    Only a regular file is measured at all: a symlink's ``size`` is the length of the target
+    string, not of anything readable.
+    """
+    size: Any = payload.get(_FIELD_SIZE)
+    # `bool` is an `int`, and `True` would otherwise report as a one-byte file.
+    if isinstance(size, bool) or not isinstance(size, int):
+        return None
+    return size
+
+
+def _listed_entry_path(payload: Mapping[str, Any], working_directory: str) -> str:
+    """Where one listed entry sits, relative to the working directory the call named."""
+    reported: Any = payload.get(_FIELD_PATH)
+    if not isinstance(reported, str) or not reported:
+        raise ValueError("the sandbox service listed an entry with no path")
+    _, relative = _confined(reported, working_directory)
+    return relative
+
 
 class _AcasSandbox:
     """A running ACA sandbox, narrowed to what a workload is allowed to do with it."""
@@ -101,7 +222,7 @@ class _AcasSandbox:
     def sandbox_id(self) -> str:
         return self._sc.sandbox_id
 
-    async def write_file(self, path: str, content: str) -> None:
+    async def write_file(self, path: str, content: str | bytes) -> None:
         # `create_dirs=True` is the SDK's own default, and it is passed explicitly anyway.
         # A workload may hand us a nested path — `infra/main.bicep` is the example in the
         # bicep tool's own description — and without it every such write fails on a missing
@@ -131,6 +252,104 @@ class _AcasSandbox:
             stdout=getattr(result, "stdout", "") or "",
             stderr=getattr(result, "stderr", "") or "",
             exit_code=getattr(result, "exit_code", 0) or 0,
+        )
+
+    # -- the pull surface ---------------------------------------------------------
+
+    async def _files_payload(self, route: str, guest_path: str) -> Mapping[str, Any]:
+        """One ``files/`` data-plane GET, as the **raw** payload the service sent.
+
+        The SDK's typed ``FileInfo`` is bypassed, and this is the only place that reaches past
+        it: it exposes no ``isSymlink`` and no ``symlinkTarget``, and reads ``isDirectory``, a
+        key the service does not send — so through the typed surface a symlink and a directory
+        alike come back looking like a regular file, and this backend's confinement rule would
+        be a no-op.  Tracked as
+        `#136 <https://github.com/sokolaidev/maf-extensions/issues/136>`_ and filed upstream as
+        `Azure/azure-sdk-for-python#48523
+        <https://github.com/Azure/azure-sdk-for-python/issues/48523>`_; when the typed surface
+        carries the entry type, this helper and the field constants go with it.
+        """
+        sc = self._sc
+        payload: Mapping[str, Any] = await sc._dp_get(
+            f"{sc._sbx_path}/{route}",
+            params={_QUERY_PATH: guest_path, _QUERY_API_VERSION: sc._api_version},
+        )
+        return payload
+
+    async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
+        """Describe ``path``, or return ``None`` when nothing is there.
+
+        Stat is ``lstat``-like: a symlink is described as itself, never as its target.
+        """
+        from azure.core.exceptions import ResourceNotFoundError
+
+        guest, relative = _confined(path, working_directory)
+        try:
+            payload = await self._files_payload(_STAT_ROUTE, guest)
+        except ResourceNotFoundError:
+            return None
+        return _entry_from_payload(payload, relative)
+
+    async def read_file(self, path: str, *, working_directory: str, max_bytes: int) -> bytes:
+        """Read the regular file at ``path``, refusing anything over ``max_bytes``.
+
+        It stats first, and that ordering is the confinement rule rather than an optimisation:
+        **this backend's read follows symlinks** — reading a path that links to ``/etc/hostname``
+        returns that file's contents — so a non-regular entry has to be refused before any byte
+        moves, not classified afterwards when the damage is done.
+
+        ``max_bytes`` is a refusal, never a truncation, and it is applied twice.  The stat is a
+        promise about a file the guest is still free to rewrite, and the SDK buffers the whole
+        response internally rather than exposing an incremental hook, so the second check —
+        against what actually arrived — is the only one that bounds what this returns.
+        """
+        guest, _ = _confined(path, working_directory)
+        entry = await self.stat_file(path, working_directory=working_directory)
+        if entry is None:
+            raise FileNotFoundError(f"no such file: {path!r}")
+        if entry.kind is not EntryKind.FILE:
+            raise OSError(
+                f"{path!r} is a {str(entry.kind)!r} entry and only a regular file is ever read. "
+                "A symlink is refused whether or not its target would have resolved somewhere "
+                "legitimate, because this backend's read would follow it."
+            )
+        if entry.size_bytes is None:
+            raise SandboxOutputSizeUnknown(
+                f"the sandbox service reported no size for {path!r}, so no cap can be applied "
+                "to it. Refused rather than read."
+            )
+        if entry.size_bytes > max_bytes:
+            raise SandboxTransferCapExceeded(
+                f"{path!r} is {entry.size_bytes} bytes and the caller allowed {max_bytes}"
+            )
+        content: bytes = await self._sc.read_file(guest)
+        if len(content) > max_bytes:
+            raise SandboxTransferCapExceeded(
+                f"{path!r} read back as {len(content)} bytes and the caller allowed {max_bytes}"
+            )
+        return content
+
+    async def list_dir(self, path: str, *, working_directory: str) -> tuple[SandboxEntry, ...]:
+        """Enumerate the entries directly under ``path``.
+
+        Native here, which is why this is the only backend that declares
+        :data:`~maf_sandbox.Capability.FILES_LIST`.  Every listed entry is confined the same way
+        a declared path is: one naming something outside ``working_directory`` fails the
+        listing rather than being reported as a path a caller may go on to read.
+        """
+        from azure.core.exceptions import ResourceNotFoundError
+
+        guest, _ = _confined(path, working_directory)
+        try:
+            payload = await self._files_payload(_LIST_ROUTE, guest)
+        except ResourceNotFoundError as exc:
+            # Translated out of the SDK's vocabulary: a kind catching this would otherwise have
+            # to import azure-core to name what it caught.
+            raise FileNotFoundError(f"no such directory: {path!r}") from exc
+        entries: Sequence[Any] = payload.get(_FIELD_ENTRIES) or ()
+        return tuple(
+            _entry_from_payload(entry, _listed_entry_path(entry, working_directory))
+            for entry in entries
         )
 
 
@@ -171,7 +390,21 @@ class AcasSandboxBackend:
 
     @property
     def capabilities(self) -> frozenset[Capability]:
-        return frozenset({Capability.EXEC, Capability.FILES_IN})
+        # FILES_LIST as well as FILES_OUT, which is the split's own test — name the backend
+        # that lacks it. Enumeration is native here and unavailable on the backends that
+        # transport a named path only.
+        return frozenset(
+            {
+                Capability.EXEC,
+                Capability.FILES_IN,
+                Capability.FILES_OUT,
+                Capability.FILES_LIST,
+            }
+        )
+
+    @property
+    def limits(self) -> SandboxLimits:
+        return _LIMITS
 
     # -- client -------------------------------------------------------------------
 
