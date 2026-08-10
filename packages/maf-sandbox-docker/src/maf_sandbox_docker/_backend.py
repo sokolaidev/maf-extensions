@@ -70,8 +70,13 @@ _LABEL_VALUE_DIGEST = re.compile(r"sha256-[0-9a-f]{48}")
 #: `docker` reports this for a container or object that is not there — the string every
 #: teardown treats as a no-op rather than a failure. Matched case-insensitively.
 _NO_SUCH = "no such"
-#: What `run --name` reports when the name is taken — the one create failure that is recoverable.
+#: What `run --name` reports when a *container* name is taken — the create failure that is
+#: recoverable by adopting the existing one (`Conflict. The container name … is already in use`).
 _ALREADY_IN_USE = "already in use"
+#: What `network create` reports for a name already taken (`network with name … already
+#: exists`) — a different string from the container conflict above, and adopting the existing
+#: network is how warm reuse of an allowlisted sandbox works on the second acquire.
+_NETWORK_EXISTS = "already exists"
 
 _PROXY_PORT = 3128
 _ALLOW_ENV = "MAF_SANDBOX_ALLOW"
@@ -141,11 +146,21 @@ def _container_name(key: SandboxKey, kind: str, egress_id: str = "") -> str:
     reason — a sandbox is reused only by an acquire that wants the *same* egress — and is empty
     for closed egress.  The result matches Docker's name charset
     (``[a-zA-Z0-9][a-zA-Z0-9_.-]*``) with room to spare.
+
+    The fields are length-prefixed before hashing rather than joined by a separator: ``SandboxKey``
+    puts no restriction on its strings, so a plain delimiter would let ``scope="a|b", thread="c"``
+    and ``scope="a", thread="b|c"`` hash to one name and share a container.  These values are the
+    host's request context, not model input, so this is defence in depth rather than a reachable
+    exploit — but a length prefix makes the encoding unambiguous for free.
     """
     parts = [key.scope, key.thread_id, key.agent_dir, kind]
     if egress_id:
         parts.append(egress_id)
-    digest = sha256("|".join(parts).encode("utf-8"))
+    digest = sha256()
+    for part in parts:
+        encoded = part.encode("utf-8")
+        digest.update(f"{len(encoded)}:".encode("ascii"))
+        digest.update(encoded)
     return f"{_NAME_PREFIX}{digest.hexdigest()[:12]}"
 
 
@@ -205,10 +220,21 @@ class _DockerResult:
 
 
 class _DockerRunner(Protocol):
-    """The seam every ``docker`` invocation goes through."""
+    """The seam every ``docker`` invocation goes through.
+
+    ``read_limit`` bounds how many stdout bytes are read before the child is killed and reaped,
+    for the ``docker cp`` read path: a sandbox runs untrusted code, so looking at an output's
+    tar header, or enforcing a byte cap on it, must not first buffer the whole file into host
+    memory.  ``None`` reads to EOF, which is right for every command whose output is small and
+    known (``inspect``, ``ps``, ``logs``).
+    """
 
     async def __call__(
-        self, *args: str, stdin: bytes | None = None, timeout: float | None = None
+        self,
+        *args: str,
+        stdin: bytes | None = None,
+        timeout: float | None = None,
+        read_limit: int | None = None,
     ) -> _DockerResult: ...
 
 
@@ -278,32 +304,46 @@ class _DockerSandbox:
     async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
         """Describe ``path``, or return ``None`` when nothing is there.
 
-        Reads the first tar block of ``docker cp <name>:<guest path> -`` and stops: the header
-        carries size and entry type, so nothing after it is transferred.  A missing path is
-        ``None``; a resolution outside ``working_directory`` raises before the subprocess runs.
+        Reads only the first tar block of ``docker cp <name>:<guest path> -`` and kills the
+        transfer: the header carries the size and the entry type, so nothing after it moves,
+        and an output too large to serve costs one block rather than its whole self.  A missing
+        path is ``None``; a resolution outside ``working_directory`` raises before the
+        subprocess runs.
         """
         guest = _guest_path(working_directory, path)
-        rel = guest[len(working_directory.rstrip("/")) + 1 :] if guest != working_directory else ""
-        result = await self._run("cp", f"{self._name}:{guest}", "-", timeout=self._command_timeout)
-        if result.returncode != 0:
+        rel = posixpath.normpath(path)
+        result = await self._run(
+            "cp", f"{self._name}:{guest}", "-", timeout=self._command_timeout, read_limit=_TAR_BLOCK
+        )
+        if result.returncode != 0 and not result.stdout:
             if _NO_SUCH in result.stderr.lower() or "could not find" in result.stderr.lower():
                 return None
             raise RuntimeError(f"docker could not stat {path}: {result.stderr.strip()}")
         if len(result.stdout) < _TAR_BLOCK:
             raise RuntimeError(f"docker returned no tar header for {path}")
-        return _entry_from_tar_header(result.stdout[:_TAR_BLOCK], rel or path)
+        return _entry_from_tar_header(result.stdout[:_TAR_BLOCK], rel)
 
     async def read_file(self, path: str, *, working_directory: str, max_bytes: int) -> bytes:
         """Read the regular file at ``path``, refusing anything over ``max_bytes``.
 
-        The same ``docker cp`` tar stream as :meth:`stat_file`, read whole: the header block
-        gives the type and size, the body follows.  A non-regular entry (a symlink tars as a
-        link *entry*, not its target's bytes) is refused on the header type; a body over
-        ``max_bytes`` is refused, never truncated.
+        The same ``docker cp`` tar stream as :meth:`stat_file`, read only as far as it may
+        legitimately go: the header block gives the type and size, and the transfer is bounded
+        to header plus ``max_bytes`` before the child is killed, so a file larger than the cap
+        is **refused on its header without its body ever being buffered**.  A non-regular entry
+        (a symlink tars as a link *entry*, not its target's bytes) is refused on the header
+        type.
         """
         guest = _guest_path(working_directory, path)
-        result = await self._run("cp", f"{self._name}:{guest}", "-", timeout=self._command_timeout)
-        if result.returncode != 0:
+        # Header + the most body the cap allows. A larger file is refused from the header alone,
+        # so the extra bytes are never read; a file within the cap is fully present in this bound.
+        result = await self._run(
+            "cp",
+            f"{self._name}:{guest}",
+            "-",
+            timeout=self._command_timeout,
+            read_limit=_TAR_BLOCK + max_bytes,
+        )
+        if result.returncode != 0 and not result.stdout:
             if _NO_SUCH in result.stderr.lower() or "could not find" in result.stderr.lower():
                 raise FileNotFoundError(f"no such file: {path!r}")
             raise RuntimeError(f"docker could not read {path}: {result.stderr.strip()}")
@@ -471,9 +511,11 @@ class DockerSandboxBackend:
         is not a sandbox and is not counted. Its network is removed after it. The ``fallback``
         names cover the case the listing failed.
 
-        When this backend enforces allowlists, every workload's proxy and network are swept —
-        not only those whose proxy the listing returned — so a proxy a reuse failed to rebuild,
-        or one deleted by hand, does not strand its network.
+        Every workload's derived proxy and network are swept regardless of this backend's
+        current egress config — not gated on it — because a sandbox created while an allowlist
+        was configured must be fully reclaimable through a backend now configured closed; the
+        removal helpers treat a missing proxy or network as a no-op, so the extra attempts on a
+        genuinely closed sandbox cost nothing but a call.
         """
         listed = await self._list_names_by_labels(label_filters)
         listed_set = set(listed)
@@ -491,11 +533,10 @@ class DockerSandboxBackend:
             for n in listed
             if n.endswith(_PROXY_SUFFIX)
         }
-        if self._config.egress_proxy_image is not None:
-            for workload in (n for n in names if not n.endswith(_PROXY_SUFFIX)):
-                if _proxy_name(workload) not in listed_set:
-                    await self._remove(_proxy_name(workload))
-                networks.add(_network_name(workload))
+        for workload in (n for n in names if not n.endswith(_PROXY_SUFFIX)):
+            if _proxy_name(workload) not in listed_set:
+                await self._remove(_proxy_name(workload))
+            networks.add(_network_name(workload))
         for net in networks:
             await self._remove_network(net)
         return count
@@ -503,7 +544,11 @@ class DockerSandboxBackend:
     # -- internals ----------------------------------------------------------------
 
     async def _docker(
-        self, *args: str, stdin: bytes | None = None, timeout: float | None = None
+        self,
+        *args: str,
+        stdin: bytes | None = None,
+        timeout: float | None = None,
+        read_limit: int | None = None,
     ) -> _DockerResult:
         """Run one ``docker`` command — the single seam every invocation goes through.
 
@@ -511,6 +556,11 @@ class DockerSandboxBackend:
         — a timeout, a cancelled caller — kills the subprocess and reaps it before the exception
         propagates.  A missing or stopped daemon surfaces here as its own ``docker`` error on
         the returned ``stderr``; callers name it rather than letting a bare non-zero propagate.
+
+        With ``read_limit`` set, stdout is read only up to that many bytes and the child is then
+        killed and reaped rather than drained: the ``docker cp`` read path must never buffer a
+        whole untrusted output just to read its tar header or to enforce a byte cap, so an
+        oversized file costs ``read_limit`` bytes and no more.
         """
         try:
             process = await asyncio.create_subprocess_exec(
@@ -533,6 +583,8 @@ class DockerSandboxBackend:
                 f"the docker client {self._config.docker_path!r} was not found on PATH; set "
                 "DockerSandboxConfig.docker_path to the client binary (or 'podman')"
             ) from exc
+        if read_limit is not None:
+            return await self._read_bounded(process, read_limit, timeout)
         try:
             stdout, stderr = await asyncio.wait_for(process.communicate(stdin), timeout=timeout)
         except BaseException:
@@ -545,6 +597,54 @@ class DockerSandboxBackend:
             process.returncode or 0,
             stdout,
             stderr.decode("utf-8", errors="replace"),
+        )
+
+    @staticmethod
+    async def _read_bounded(
+        process: asyncio.subprocess.Process, read_limit: int, timeout: float | None
+    ) -> _DockerResult:
+        """Read at most ``read_limit`` stdout bytes, then kill and reap — the cp read path.
+
+        stderr is read only after the child is killed, so a pipe that fills cannot deadlock the
+        bounded stdout read against it — and it is short in every case that matters (``docker
+        cp`` writes its error there and nothing else).  A returncode of ``None`` after the kill
+        is normal for a file larger than ``read_limit`` and means nothing to the caller, which
+        decides on the tar header it now holds.
+        """
+        assert process.stdout is not None and process.stderr is not None
+        # Bound to locals so the narrowing survives into the closure below.
+        out_stream = process.stdout
+        err_stream = process.stderr
+
+        async def _pull_head() -> bytes:
+            chunks: list[bytes] = []
+            got = 0
+            while got < read_limit:
+                chunk = await out_stream.read(min(65536, read_limit - got))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                got += len(chunk)
+            return b"".join(chunks)
+
+        try:
+            stdout = await asyncio.wait_for(_pull_head(), timeout=timeout)
+        except BaseException:
+            with contextlib.suppress(Exception):
+                process.kill()
+            with contextlib.suppress(Exception):
+                await process.wait()
+            raise
+        with contextlib.suppress(Exception):
+            process.kill()
+        try:
+            stderr = await asyncio.wait_for(err_stream.read(), timeout=timeout)
+        except BaseException:
+            stderr = b""
+        with contextlib.suppress(Exception):
+            await process.wait()
+        return _DockerResult(
+            process.returncode or 0, stdout, stderr.decode("utf-8", errors="replace")
         )
 
     async def _is_running(self, name: str) -> bool:
@@ -679,7 +779,10 @@ class DockerSandboxBackend:
 
         ``fresh`` says no workload is attached yet, so if the proxy cannot be brought up the
         network this just created is ours to reclaim rather than leak; once a warm workload is
-        on it, the network stays and the proxy failure surfaces to the caller instead.
+        on it, the network stays and the proxy failure surfaces to the caller instead.  The
+        proxy is removed *before* the network: a proxy left attached to the network — a
+        ``network connect`` or readiness failure leaves exactly that — would make the network
+        removal fail on "has active endpoints", stranding both.
         """
         net = _network_name(name)
         await self._ensure_network(net, key, spec)
@@ -687,17 +790,23 @@ class DockerSandboxBackend:
             await self._ensure_proxy(name, key, spec)
         except BaseException:
             if fresh:
+                await self._remove(_proxy_name(name))
                 await self._remove_network(net)
             raise
 
     async def _ensure_network(self, net: str, key: SandboxKey, spec: SandboxSpec) -> None:
-        """Create the sandbox's internal network, adopting one already there."""
+        """Create the sandbox's internal network, adopting one already there.
+
+        ``network create`` reports an existing name as "already exists" (not the container
+        conflict's "already in use"), and adopting it rather than failing is what lets a second
+        acquire of an allowlisted sandbox reuse its network.
+        """
         args = ["network", "create", "--internal"]
         for label, value in _sandbox_labels(key, spec).items():
             args += ["--label", f"{label}={value}"]
         args.append(net)
         result = await self._docker(*args, timeout=self._config.command_timeout_seconds)
-        if result.returncode != 0 and _ALREADY_IN_USE not in result.stderr.lower():
+        if result.returncode != 0 and _NETWORK_EXISTS not in result.stderr.lower():
             raise RuntimeError(f"docker could not create network {net}: {result.stderr.strip()}")
 
     async def _ensure_proxy(self, name: str, key: SandboxKey, spec: SandboxSpec) -> None:

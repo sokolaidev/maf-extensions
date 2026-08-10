@@ -69,22 +69,39 @@ def _symlink_tar(path: str, target: str) -> bytes:
 
 
 class _Recorded:
-    def __init__(self, args: tuple[str, ...], stdin: bytes | None, timeout: float | None) -> None:
+    def __init__(
+        self,
+        args: tuple[str, ...],
+        stdin: bytes | None,
+        timeout: float | None,
+        read_limit: int | None,
+    ) -> None:
         self.args = args
         self.stdin = stdin
         self.timeout = timeout
+        self.read_limit = read_limit
 
 
 class _FakeDocker:
-    """Stands in for `DockerSandboxBackend._docker`."""
+    """Stands in for `DockerSandboxBackend._docker`.
+
+    Honours ``read_limit`` by slicing the responder's stdout to it, the way the real bounded
+    read stops after that many bytes — so a test asserting the read path never buffers a whole
+    oversized output sees the same truncated stdout the real seam would hand back.
+    """
 
     def __init__(self, responder=None) -> None:
         self.calls: list[_Recorded] = []
         self._responder = responder or (lambda args: _DockerResult(0, b"", ""))
 
-    async def __call__(self, *args: str, stdin=None, timeout=None) -> _DockerResult:
-        self.calls.append(_Recorded(args, stdin, timeout))
-        return self._responder(args)
+    async def __call__(
+        self, *args: str, stdin=None, timeout=None, read_limit=None
+    ) -> _DockerResult:
+        self.calls.append(_Recorded(args, stdin, timeout, read_limit))
+        result = self._responder(args)
+        if read_limit is not None and len(result.stdout) > read_limit:
+            result = _DockerResult(result.returncode, result.stdout[:read_limit], result.stderr)
+        return result
 
     def matching(self, *prefix: str) -> list[_Recorded]:
         return [c for c in self.calls if c.args[: len(prefix)] == prefix]
@@ -261,6 +278,13 @@ class TestAcquireCreatesClosed:
 
     def test_two_kinds_on_one_key_get_two_containers(self):
         assert _container_name(_KEY, "a") != _container_name(_KEY, "b")
+
+    def test_a_delimiter_in_a_field_does_not_collide_with_a_shifted_split(self):
+        """Length-prefixed hashing: `(scope='a|b', thread='c')` and `(scope='a', thread='b|c')`
+        must not resolve to one container even though a `|`-join would make them identical."""
+        left = _container_name(SandboxKey(scope="a|b", thread_id="c", agent_dir="d"), "k")
+        right = _container_name(SandboxKey(scope="a", thread_id="b|c", agent_dir="d"), "k")
+        assert left != right
 
     def test_the_keepalive_command_is_the_image_then_sleep_infinity(self):
         backend, fake = _backend_with(_machine())
@@ -543,11 +567,21 @@ class TestStatFile:
         sandbox, _ = self._sandbox_streaming(b"", rc=1, stderr="Could not find the file /work/x")
         assert asyncio.run(sandbox.stat_file("x", working_directory=_WORK)) is None
 
-    def test_the_stat_only_reads_one_block_worth(self):
-        """The stream may be arbitrarily long; a stat looks only at the header block."""
-        sandbox, fake = self._sandbox_streaming(_tar_bytes("out.png", b"x" * 40))
+    def test_the_stat_bounds_the_transfer_to_one_tar_block(self):
+        """A stat must not buffer a whole untrusted file: it bounds the cp read to 512 bytes."""
+        from maf_sandbox_docker._backend import _TAR_BLOCK
+
+        sandbox, fake = self._sandbox_streaming(_tar_bytes("out.png", b"x" * 100000))
         asyncio.run(sandbox.stat_file("out.png", working_directory=_WORK))
-        assert fake.matching("cp") != []
+        cp = fake.only("cp")
+        assert cp.read_limit == _TAR_BLOCK
+
+    def test_the_rel_path_is_correct_even_for_a_non_normalized_working_directory(self):
+        """A base like `/work/.` must not shift the reported path — normalize before slicing."""
+        sandbox, _ = self._sandbox_streaming(_tar_bytes("out.txt", b"x" * 5))
+        entry = asyncio.run(sandbox.stat_file("out.txt", working_directory="/work/."))
+        assert entry is not None
+        assert entry.path == "out.txt"
 
     def test_a_backslash_path_is_refused_before_any_subprocess(self):
         sandbox, fake = self._sandbox_streaming(b"")
@@ -580,6 +614,17 @@ class TestReadFile:
         sandbox = self._sandbox_streaming(_tar_bytes("out.png", b"x" * 100))
         with pytest.raises(SandboxTransferCapExceeded):
             asyncio.run(sandbox.read_file("out.png", working_directory=_WORK, max_bytes=10))
+
+    def test_the_read_bounds_the_transfer_to_header_plus_the_cap(self):
+        """An oversized output is refused from its header without its body being buffered."""
+        from maf_sandbox_docker._backend import _TAR_BLOCK
+
+        overrides = {("cp",): _DockerResult(0, _tar_bytes("big.bin", b"x" * 100000), "")}
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        with pytest.raises(SandboxTransferCapExceeded):
+            asyncio.run(sandbox.read_file("big.bin", working_directory=_WORK, max_bytes=64))
+        assert fake.only("cp").read_limit == _TAR_BLOCK + 64
 
     def test_a_symlink_is_refused_on_the_header_type(self):
         sandbox = self._sandbox_streaming(_symlink_tar("link", "/etc/passwd"))
@@ -846,10 +891,41 @@ class TestAllowlistTopology:
         assert run.args[run.args.index("--network") + 1] == "none"
 
 
+class TestAllowlistReuse:
+    def test_an_existing_network_is_adopted_not_treated_as_an_error(self):
+        """`network create` on a second acquire returns 'already exists'; adopting it is how
+        warm reuse of an allowlisted sandbox works, so it must not raise."""
+        overrides = {
+            ("network", "create"): _DockerResult(1, b"", "network with name X already exists")
+        }
+        backend, _ = _backend_with(
+            _machine(running=[_AL], overrides=overrides), config=_ALLOW_CONFIG
+        )
+        # Does not raise: the existing network is adopted, the running workload reused.
+        sandbox = asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        assert sandbox.container_name == _AL
+
+
 class TestAllowlistTeardown:
-    def test_a_fresh_proxy_failure_reclaims_the_network(self):
+    def test_a_fresh_proxy_failure_removes_the_proxy_before_the_network(self):
+        """A `network connect` failure leaves the proxy attached, so the proxy must be removed
+        before the network or `network rm` fails on 'has active endpoints' and both leak."""
         overrides = {("network", "connect"): _DockerResult(1, b"", "connect failed")}
         backend, fake = _backend_with(_machine(overrides=overrides), config=_ALLOW_CONFIG)
         with pytest.raises(RuntimeError, match="outbound leg"):
             asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))
+        proxy_rm = fake.matching("rm", "-f", _AL_PROXY)
+        net_rm = fake.matching("network", "rm", _AL_NET)
+        assert proxy_rm != [] and net_rm != []
+        assert fake.calls.index(proxy_rm[-1]) < fake.calls.index(net_rm[-1])
+
+
+class TestPurgeIsConfigIndependent:
+    def test_a_closed_backend_still_reclaims_an_allowlisted_workloads_network(self):
+        """A sandbox created under an allowlist must be fully reclaimable through a backend now
+        configured closed — the proxy/network sweep is not gated on the current egress config."""
+        # The workload is listed (its proxy was deleted by hand); the backend has no proxy image.
+        overrides = {("ps",): _DockerResult(0, f"{_AL}\n".encode(), "")}
+        backend, fake = _backend_with(_machine(overrides=overrides))
+        asyncio.run(backend.dispose_scope("scope-a", "thread-1"))
         assert fake.matching("network", "rm", _AL_NET) != []

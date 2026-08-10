@@ -1,13 +1,15 @@
 """Live tests against a real ``docker`` engine and a real container image.
 
 Skipped unless the ``docker`` client is on ``PATH`` and ``MAF_SANDBOX_DOCKER_E2E_IMAGE`` names
-an image to run — but unlike the wslc live suite, those gates are *satisfiable on this
-repository's own CI runners*, where Docker is preinstalled, so ``tests.yml`` sets the variables
-and this module runs on every pull request. It is the acceptance gate for the ``FILES_OUT``
-protocol: the offline suite pins every command line, and what is left to prove is that a real
-engine does what this backend believes — that a declared output written by a workload stats and
-comes back byte-identical, that an over-cap output is refused before its content moves, and that
-a symlinked output is refused on the tar entry's type bit.
+an image to run. This module is added here but **not yet wired on in CI**: unlike the wslc live
+suite, its gate is satisfiable on this repository's own runners (Docker is preinstalled), so the
+samples-and-CI rollout will set ``MAF_SANDBOX_DOCKER_E2E_IMAGE`` in ``tests.yml`` and turn it on
+for every pull request. Until then it runs only where a developer sets the variable by hand. It
+is the acceptance gate for the ``FILES_OUT`` protocol: the offline suite pins every command
+line, and what is left to prove is that a real engine does what this backend believes — that a
+declared output written by a workload stats and comes back byte-identical, that an over-cap
+output is refused before its content moves, and that a symlinked output is refused on the tar
+entry's type bit.
 
 Deliberately lightweight: a tiny image, no model, seconds not minutes. The image is read from
 the environment rather than written down here so a local tag never becomes a committed one; any
@@ -269,6 +271,8 @@ class TestAllowlistEgress:
 
         sandbox = asyncio.run(backend.acquire(_key(scope), spec))
         net = sandbox.container_name + "-net"
+        # A kind's first write creates the working directory that exec -w needs.
+        asyncio.run(sandbox.write_file("/work/.keep", ""))
         try:
             assert _network_present(net)
             allowed_rc, allowed_status = self._curl_status(sandbox, "https://mcr.microsoft.com/v2/")
