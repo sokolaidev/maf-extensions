@@ -1,6 +1,6 @@
 [project]
 name = "maf-sandbox-wslc"
-version = "0.3.0"
+version = "0.4.0"
 description = "WSL containers (wslc) as a developer-machine sandbox backend for Microsoft Agent Framework agents — reference implementation of agent-framework#7568."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
@@ -33,7 +33,7 @@ dependencies = [
     # include breaking changes (see its CHANGELOG); moving either end of this range has an
     # order to it — see RELEASING.md.
     # Widened to admit the 0.5.0 this repo is about to release (RELEASING.md step 1); this package imports Capability at module scope, so a ceiling that excludes the in-tree wheel would resolve PyPI's older release in the clean-env wheel smoke and die on ImportError.
-    "maf-sandbox>=0.2.0,<0.6",
+    "maf-sandbox>=0.5.0,<0.6",
 ]
 
 [project.urls]

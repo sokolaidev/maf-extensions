@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.4.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.3.0...maf-sandbox-wslc-v0.4.0) (2026-08-10)
+
+
+### ⚠ BREAKING CHANGES
+
+* replace deployed with a minimum-isolation floor, and match declared capabilities ([#96](https://github.com/sokolaidev/maf-extensions/issues/96))
+
+### Features
+
+* replace deployed with a minimum-isolation floor, and match declared capabilities ([#96](https://github.com/sokolaidev/maf-extensions/issues/96)) ([b5990ee](https://github.com/sokolaidev/maf-extensions/commit/b5990ee492bca09a0e267172216c087be1db647a))
+
+
+### Bug Fixes
+
+* admit maf-sandbox 0.4.0 in the dependents' range ([#92](https://github.com/sokolaidev/maf-extensions/issues/92)) ([101dccb](https://github.com/sokolaidev/maf-extensions/commit/101dccbcf4178d7155d646361d1ea3422cac6f7f))
+* require maf-sandbox 0.5.0 in the packages that use it ([#102](https://github.com/sokolaidev/maf-extensions/issues/102)) ([cd19b00](https://github.com/sokolaidev/maf-extensions/commit/cd19b0051254e32683dfa07580506e44fb71f41a))
+
 ## [0.3.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.2.1...maf-sandbox-wslc-v0.3.0) (2026-08-10)
 
 
