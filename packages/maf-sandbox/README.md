@@ -72,6 +72,20 @@ Note that the checks answer to different owners. How strong the boundary must be
 router.ensure_can_serve(bicep_sandbox_spec())
 ```
 
+## Upgrading from 0.4.x
+
+`0.5.0` replaced the `deployed` boolean with a declared isolation floor, and added a capability axis. Four changes need an edit; nothing else moves.
+
+**`SandboxRouter(..., deployed=...)` is gone — pass `min_isolation` instead.** `deployed=True` becomes `min_isolation=Isolation.MICROVM`, which is also the default, so a deployed host can drop the argument entirely. `deployed=False` on a developer machine becomes the rung that host actually accepts, stated explicitly — `min_isolation=Isolation.CONTAINER` for a container backend, `Isolation.PROCESS` for an in-process fake. There is no longer a value meaning "anything goes": a host that wants the weakest rung names it.
+
+**`DEPLOYED_ISOLATION` is removed.** The policy it expressed is `min_isolation`'s default.
+
+**`Isolation` and `Egress` are `StrEnum`s, and the ladder grew.** Values are unchanged, so `backend.isolation == "vm"` and any stored configuration keep working. The ladder is now `process < runtime < container < hardened_container < microvm < vm`; a declared value outside it is refused at construction rather than silently permitted.
+
+**`AcasSandboxBackend` now declares `microvm`, not `vm`.** ACA Sandboxes are hardware-isolated micro-VMs; `vm` now means a dedicated, full VM on remote infrastructure. A host that pinned `min_isolation=Isolation.VM` expecting ACA Sandboxes to satisfy it should use `Isolation.MICROVM` — the default, and the rung the micro-VM standard defines.
+
+Backends need no edit to keep working: one that declares no `capabilities` is read as declaring `DEFAULT_CAPABILITIES` (`exec` + `files_in`), which is what the `Sandbox` protocol already obliges. Declare a wider set to serve workloads that require more.
+
 ## Writing a backend
 
 Implement `name`, `isolation`, `egress`, `acquire`, `dispose`, `dispose_scope`. `capabilities` is optional. Four things worth knowing before you start:
