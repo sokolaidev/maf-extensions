@@ -59,6 +59,16 @@
         }
       ]
     },
+    "packages/maf-sandbox-docker": {
+      "package-name": "maf-sandbox-docker",
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "/uv.lock",
+          "jsonpath": "$.package[?(@.name.value=='maf-sandbox-docker')].version"
+        }
+      ]
+    },
     "packages/maf-sandbox-wslc": {
       "package-name": "maf-sandbox-wslc",
       "extra-files": [

@@ -25,6 +25,7 @@ _PACKAGES = {
     "maf-sandbox-acas": "maf_sandbox_acas",
     "maf-sandbox-bicep": "maf_sandbox_bicep",
     "maf-sandbox-codeact": "maf_sandbox_codeact",
+    "maf-sandbox-docker": "maf_sandbox_docker",
     "maf-sandbox-wslc": "maf_sandbox_wslc",
 }
 
@@ -290,11 +291,45 @@ def _smoke_maf_sandbox_wslc() -> str:
     return "backend constructs, declares its egress, and ships the proxy recipe"
 
 
+def _smoke_maf_sandbox_docker() -> str:
+    from maf_sandbox import Capability, Egress, Isolation
+    from maf_sandbox_docker import (
+        DockerSandboxBackend,
+        DockerSandboxConfig,
+        proxy_build_context,
+    )
+
+    # Constructed, not called: CI runners running this smoke have no engine reachable in a clean
+    # venv, and reaching one would not test packaging.
+    backend = DockerSandboxBackend(DockerSandboxConfig())
+    if backend.isolation != Isolation.CONTAINER:
+        raise SystemExit(
+            f"FAIL: docker backend declares {backend.isolation!r}, expected container"
+        )
+    if backend.capabilities != frozenset(
+        {Capability.EXEC, Capability.FILES_IN, Capability.FILES_OUT}
+    ):
+        raise SystemExit(
+            f"FAIL: docker backend declares {sorted(backend.capabilities)!r}"
+        )
+    allowlisting = DockerSandboxBackend(DockerSandboxConfig(egress_proxy_image="x:1"))
+    if backend.egress != Egress.CLOSED or allowlisting.egress != Egress.ALLOWLIST:
+        raise SystemExit(f"FAIL: egress {backend.egress!r}/{allowlisting.egress!r}")
+    # The proxy recipe is data, not code: a wheel that drops it breaks allowlist mode only here.
+    dockerfile = proxy_build_context() / "Dockerfile"
+    if not dockerfile.is_file():
+        raise SystemExit(
+            f"FAIL: the proxy build context is missing its Dockerfile ({dockerfile})"
+        )
+    return "backend constructs, declares FILES_OUT and its egress, and ships the proxy recipe"
+
+
 _SMOKES = {
     "maf-sandbox": _smoke_maf_sandbox,
     "maf-sandbox-acas": _smoke_maf_sandbox_acas,
     "maf-sandbox-bicep": _smoke_maf_sandbox_bicep,
     "maf-sandbox-codeact": _smoke_maf_sandbox_codeact,
+    "maf-sandbox-docker": _smoke_maf_sandbox_docker,
     "maf-sandbox-wslc": _smoke_maf_sandbox_wslc,
 }
 

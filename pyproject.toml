@@ -30,6 +30,7 @@ testpaths = [
     "packages/maf-sandbox-acas/tests",
     "packages/maf-sandbox-bicep/tests",
     "packages/maf-sandbox-codeact/tests",
+    "packages/maf-sandbox-docker/tests",
     "packages/maf-sandbox-wslc/tests",
 ]
 faulthandler_timeout = 90.0

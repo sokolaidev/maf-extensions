@@ -1,0 +1,75 @@
+[project]
+name = "maf-sandbox-docker"
+version = "0.1.0"
+description = "Plain Docker containers as a local and CI sandbox backend for Microsoft Agent Framework agents — any Docker-compatible engine, zero dependencies beyond maf-sandbox."
+readme = "README.md"
+requires-python = ">=3.12,<3.15"
+authors = [{ name = "SOKOLAI BV", email = "info@sokolai.com" }]
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = [
+    "docker",
+    "containers",
+    "sandbox",
+    "agent-framework",
+    "microsoft-agent-framework",
+    "isolation",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Typing :: Typed",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development :: Testing",
+]
+dependencies = [
+    # The backend protocol and the router this backend registers with — the only dependency
+    # there is. Everything else is the standard library driving the `docker` CLI. The floor is
+    # 0.6.0 because that release carries the FILES_OUT pull surface this backend declares and
+    # implements from day one; upper-bounded because maf-sandbox has not yet reached a stable
+    # API, so every release before 1.0.0 may include breaking changes (see its CHANGELOG);
+    # moving either end of this range has an order to it — see RELEASING.md.
+    "maf-sandbox>=0.6.0,<0.7",
+]
+
+[project.urls]
+Homepage = "https://www.sokol.ai"
+Source = "https://github.com/sokolaidev/maf-extensions"
+Issues = "https://github.com/sokolaidev/maf-extensions/issues"
+
+[tool.uv.sources]
+maf-sandbox = { workspace = true }
+
+[tool.uv.build-backend]
+module-name = "maf_sandbox_docker"
+module-root = "src"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+extend-select = ["I", "UP", "D100", "D101", "D103", "D104"]
+ignore = ["UP037"]
+
+[tool.ruff.lint.per-file-ignores]
+# ruff resolves [tool.ruff] per file by the NEAREST ancestor pyproject.toml that has one, so
+# this package carries its own copy rather than inheriting one from the workspace root.
+"tests/**" = ["D101", "D103"]
+
+# Self-contained type checking, scoped to this package — strict. `tests/` stays out (fakes
+# for the docker seam, not signal for a strict checker).
+[tool.pyright]
+include = ["src"]
+typeCheckingMode = "strict"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[build-system]
+requires = ["uv_build>=0.11.24,<0.12.0"]
+build-backend = "uv_build"
