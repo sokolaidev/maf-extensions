@@ -1,8 +1,9 @@
 """Backend selection: the layer between a host application and any sandbox provider.
 
 ``app -> SandboxRouter -> backend -> the sandbox itself``.  The router owns what no
-individual backend can own: **which** backend serves a request, and the three rules that
-decide whether it may — a minimum-isolation floor, a capability match, and the egress rule.
+individual backend can own: **which** backend serves a request, and the four rules that
+decide whether it may — a minimum-isolation floor, a capability match, the transfer ceilings,
+and the egress rule.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ from collections.abc import Sequence
 
 from ._protocol import (
     DEFAULT_CAPABILITIES,
+    DEFAULT_SANDBOX_LIMITS,
     ISOLATION_RANK,
     Capability,
     Egress,
@@ -19,6 +21,7 @@ from ._protocol import (
     Sandbox,
     SandboxBackend,
     SandboxKey,
+    SandboxLimits,
     SandboxSpec,
     meets_floor,
 )
@@ -31,6 +34,7 @@ __all__ = [
     "SandboxCapabilityNotSupported",
     "SandboxEgressNotEnforced",
     "SandboxRouter",
+    "SandboxTransferLimitsNotPermitted",
 ]
 
 
@@ -65,6 +69,15 @@ class SandboxEgressNotEnforced(PermissionError):
     Raised rather than degraded, like :class:`SandboxBackendNotPermitted`: a backend that
     accepts ``egress_allow`` and ignores it turns the containment a workload was designed
     around into a comment.
+    """
+
+
+class SandboxTransferLimitsNotPermitted(PermissionError):
+    """The workload's spec asks to move more data than the selected backend allows.
+
+    A safety claim rather than a functionality one, which is why an undeclared ``limits`` is
+    read as :data:`~maf_sandbox.DEFAULT_SANDBOX_LIMITS` and a bigger ask refused, where an
+    undeclared ``capabilities`` is read charitably.
     """
 
 
@@ -163,7 +176,7 @@ class SandboxRouter:
         return max(self._min_isolation, spec.min_isolation, key=ISOLATION_RANK.__getitem__)
 
     def _refuse_unless_backend_can_serve(self, spec: SandboxSpec) -> None:
-        """Raise unless the selected backend can serve ``spec``: floor, capabilities, egress.
+        """Raise unless the backend can serve ``spec``: floor, capabilities, limits, egress.
 
         The REFUSING half of the policy, shared by :meth:`ensure_can_serve` and
         :meth:`acquire`. It never logs: the closed-egress-vs-allowlist-spec WARNING is
@@ -199,6 +212,23 @@ class SandboxRouter:
                 "see."
             )
 
+        # Silence is a safety claim here, not a functionality one: an undeclared ceiling is
+        # the default ceiling, and a spec asking above it is refused rather than believed.
+        limits: SandboxLimits = getattr(self._backend, "limits", DEFAULT_SANDBOX_LIMITS)
+        for direction, asked, ceiling in (
+            (Capability.FILES_IN, spec.files_in, limits.files_in),
+            (Capability.FILES_OUT, spec.files_out, limits.files_out),
+        ):
+            if not asked.within(ceiling):
+                raise SandboxTransferLimitsNotPermitted(
+                    f"the {spec.kind!r} workload declares {str(direction)} limits above what "
+                    f"sandbox backend {self._backend.name!r} allows: it asks for {asked} and "
+                    f"the backend permits {ceiling}. Refused rather than clamped: a workload "
+                    "served a smaller cap than it declared fails part-way through a "
+                    "collection, and a partial artifact set is worse than none because the "
+                    "model cannot tell what it did not get."
+                )
+
         # Silence is read as enforcing nothing, not excused: a backend written before this
         # property existed cannot have been enforcing an allowlist it never read.
         egress = getattr(self._backend, "egress", Egress.UNRESTRICTED)
@@ -214,7 +244,7 @@ class SandboxRouter:
         )
 
     def ensure_can_serve(self, spec: SandboxSpec) -> None:
-        """Raise unless the selected backend can serve ``spec``: floor, capabilities, egress.
+        """Raise unless the backend can serve ``spec``: floor, capabilities, limits, egress.
 
         Called for you by :func:`maf_sandbox.maf.sandboxed_tool`, and it is also the whole of
         a host's own wiring test::
@@ -229,6 +259,7 @@ class SandboxRouter:
             SandboxBackendNotPermitted: when the spec raises the floor above what the backend
                 declares.
             SandboxCapabilityNotSupported: when the backend cannot do what the spec requires.
+            SandboxTransferLimitsNotPermitted: when the spec's caps exceed the backend's.
             SandboxEgressNotEnforced: when the backend cannot confine egress to this spec.
         """
         self._refuse_unless_backend_can_serve(spec)
@@ -248,10 +279,10 @@ class SandboxRouter:
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> Sandbox:
         """Return a running sandbox for ``key``, creating one if needed.
 
-        Runs the same floor, capability and egress checks as :meth:`ensure_can_serve` — minus
-        its WARNING, which stays there — before ever reaching the backend, so a caller that
-        skips :meth:`ensure_can_serve` is still refused rather than served behind a boundary
-        or capability set the spec did not agree to.
+        Runs the same floor, capability, limit and egress checks as :meth:`ensure_can_serve` —
+        minus its WARNING, which stays there — before ever reaching the backend, so a caller
+        that skips :meth:`ensure_can_serve` is still refused rather than served behind a
+        boundary or capability set the spec did not agree to.
 
         Raises:
             NoSandboxBackend: when no backend is configured. Callers that check
@@ -259,6 +290,7 @@ class SandboxRouter:
             SandboxBackendNotPermitted: when the spec raises the floor above what the backend
                 declares.
             SandboxCapabilityNotSupported: when the backend cannot do what the spec requires.
+            SandboxTransferLimitsNotPermitted: when the spec's caps exceed the backend's.
             SandboxEgressNotEnforced: when the backend cannot confine egress to this spec.
         """
         if self._backend is None:

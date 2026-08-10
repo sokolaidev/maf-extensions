@@ -9,7 +9,7 @@ boots — an ACA Sandbox (`maf-sandbox-acas`) today, a local Docker container or
 in-process fake later.  Neither knows about the other, which is what lets the same tool run
 against all of them unchanged.
 
-The router exists for four things a backend cannot own:
+The router exists for five things a backend cannot own:
 
 - **Which backend serves a request.** Configuration, not an import, decides.
 - **The minimum-isolation floor.** A backend declaring a rung below the one the host accepts
@@ -20,6 +20,9 @@ The router exists for four things a backend cannot own:
 - **The capability match.** A backend that cannot do what a workload's spec requires is
   refused when that workload attaches its tool — see
   :class:`~maf_sandbox._router.SandboxCapabilityNotSupported`.
+- **The transfer ceilings.** A spec declaring caps above what the backend allows in either
+  direction is refused at the same moment — see
+  :class:`~maf_sandbox._router.SandboxTransferLimitsNotPermitted`.
 - **The egress rule.** A backend that cannot confine a sandbox to the hosts a workload's spec
   names is refused at the same moment — see
   :meth:`~maf_sandbox.SandboxRouter.ensure_can_serve`.
@@ -46,15 +49,23 @@ from __future__ import annotations
 from ._error_detail import error_detail
 from ._protocol import (
     DEFAULT_CAPABILITIES,
+    DEFAULT_SANDBOX_LIMITS,
+    DEFAULT_TRANSFER_LIMITS,
     ISOLATION_RANK,
     Capability,
+    DeclaredOutput,
     Egress,
+    EntryKind,
     ExecResult,
     Isolation,
+    OutputDisposition,
     Sandbox,
     SandboxBackend,
+    SandboxEntry,
     SandboxKey,
+    SandboxLimits,
     SandboxSpec,
+    TransferLimits,
     WorkspaceContext,
     meets_floor,
 )
@@ -65,26 +76,36 @@ from ._router import (
     SandboxCapabilityNotSupported,
     SandboxEgressNotEnforced,
     SandboxRouter,
+    SandboxTransferLimitsNotPermitted,
 )
 
 __all__ = [
     "DEFAULT_CAPABILITIES",
+    "DEFAULT_SANDBOX_LIMITS",
+    "DEFAULT_TRANSFER_LIMITS",
     "ISOLATION_RANK",
     "Capability",
+    "DeclaredOutput",
     "Egress",
+    "EntryKind",
     "ExecResult",
     "Isolation",
     "MafSandboxExperimentalWarning",
     "NoSandboxBackend",
+    "OutputDisposition",
     "Sandbox",
     "SandboxBackend",
     "SandboxBackendNotPermitted",
     "SandboxCapabilityNotSupported",
     "SandboxEgressNotEnforced",
+    "SandboxEntry",
     "SandboxKey",
+    "SandboxLimits",
     "SandboxPurger",
     "SandboxRouter",
     "SandboxSpec",
+    "SandboxTransferLimitsNotPermitted",
+    "TransferLimits",
     "WorkspaceContext",
     "error_detail",
     "meets_floor",
