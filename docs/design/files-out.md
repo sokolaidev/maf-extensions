@@ -278,10 +278,12 @@ What it demonstrates, in the order a reader meets it: the DOT source goes in thr
 
 1. **Protocol** — `OutputDisposition`, `DeclaredOutput`, `EntryKind`, `SandboxEntry`, `TransferLimits`, `SandboxLimits`, `read_file`, `list_dir`, the two capabilities, the spec fields, the widened `write_file`, the error taxonomy, and the `maf_sandbox.testing` fake. No backend declares the capabilities yet, so nothing changes behaviourally.
 2. **Glue** — `Artefact`, `LandedArtefact`, `OutputSink`, name validation and normalization, the case-collision check, `collect_outputs`, and the `sandbox_tool_declarations` fix so a sink counts as an outbound flow. `collect_outputs` belongs in the **stdlib-only core**, not in `maf_sandbox.maf`: it needs nothing from `agent_framework`, and putting it in the MAF module would deny it to protocol-only consumers for no reason.
-3. **ACAS** — the reference implementation, natively, including the symlink `stat`.
-4. **Docker** — and the **acceptance gate**. Its e2e is the only one that runs on a GitHub runner with no subscription, no login and no disk-image import, so the first real round trip — write, exec, read back, cap breach, symlink refusal — is exercised on every pull request there. That makes the Docker backend a dependency of this work's verification rather than something downstream of it.
-5. **The diagram kind and `samples/07`** — end to end on ACAS.
+3. **Docker, first and as the acceptance gate.** The backend declares `FILES_OUT` from the day it exists rather than shipping without it and adding it later, and its e2e is what proves the protocol: write, exec, read back, cap breach with a mid-transfer abort, symlink refusal. It goes first because it is the only suite that runs on a GitHub runner with no subscription, no login and no disk-image import — and because it is the only backend a contributor can exercise on the machine in front of them. `docker cp` covers reads natively, and it does **not** declare `FILES_LIST`.
+4. **ACAS** — natively, including the symlink `stat`. It remains the *reference* for shape, since its file API is the richest and it is the only backend that can serve `FILES_LIST`; it follows Docker because verifying it requires infrastructure that a pull request cannot assume.
+5. **The diagram kind and `samples/07`** — end to end.
 6. **wslc** — tar-out, so "the same kind, both backends" holds for artefact-producing kinds too.
+
+Reference and gate are deliberately different roles. ACAS defines what the surface *should* look like because it has the most complete file API; Docker decides whether the surface actually *works*, because it is the one that runs everywhere. Splitting them is what keeps the richest backend from quietly setting requirements the portable ones cannot meet — which is the mistake the `FILES_LIST` split already corrected once.
 
 ## Open questions
 
