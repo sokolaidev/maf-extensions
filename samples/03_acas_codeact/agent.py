@@ -34,20 +34,12 @@ from maf_sandbox.maf import make_workspace_context
 from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
 from maf_sandbox_codeact import make_codeact_tools
 
-# A sandbox is keyed by (scope, thread_id, agent_dir).  A host reads the first two
-# from its own request context — a user/tenant and a conversation.  This program
-# serves exactly one request, so they are constants here, but they are still named
-# rather than inlined: the whole point of `make_workspace_context` below is that
-# they belong to the request, not to the agent.
+# Keyed by (scope, thread_id, agent_dir); constants here since this program serves one request.
 SCOPE = "samples"
 THREAD_ID = "03-acas-codeact"
 AGENT_DIR = "data-analyst"
 
-#: A standard Microsoft Container Registry devcontainer image, at Python 3.13 — N-1
-#: against current stable.  It is the only standard MCR family at 3.13 usable by both
-#: this backend and wslc: `azurelinux/base/python` caps at 3.12, and the
-#: docker-library mirror is frozen at 3.11.  See this directory's README for why a
-#: dev-container image is bulkier than this sandbox strictly needs.
+#: A standard MCR devcontainer image at Python 3.13; see this directory's README for why.
 CODEACT_IMAGE = "mcr.microsoft.com/devcontainers/python:3.13-bookworm"
 
 TASK = (
@@ -56,9 +48,8 @@ TASK = (
     "exactly what it printed."
 )
 
-#: Everything the sandbox backend needs. No `ACAS_SANDBOX_REGISTRY`: `CODEACT_IMAGE`
-#: above is already a fully-qualified reference, so nothing needs qualifying against
-#: a registry the way `BICEP_SANDBOX_IMAGE` does in sample 01.
+#: Everything the sandbox backend needs. No `ACAS_SANDBOX_REGISTRY`: `CODEACT_IMAGE` is
+#: already fully-qualified.
 SANDBOX_VARS = (
     "ACAS_SANDBOX_ENDPOINT",
     "ACAS_SANDBOX_SUBSCRIPTION_ID",
@@ -111,17 +102,9 @@ async def run() -> int:
         )
     )
 
-    # No `min_isolation` here is not an oversight: the router's default floor is
-    # `Isolation.MICROVM`, and `AcasSandboxBackend` declares exactly that, so this
-    # sample configures nothing and still gets the production posture. Compare
-    # sample 04, which opts the floor down explicitly for a container-isolated
-    # backend.
+    # No `min_isolation`: the default floor is `Isolation.MICROVM`, which this backend meets.
     router = SandboxRouter([backend])
 
-    # All three arguments are **callables, read per call** — not values. A sandbox
-    # is keyed by (scope, thread_id, agent_dir); a host that builds one agent and
-    # serves many conversations with it would, if scope and thread were captured
-    # here, let one conversation address another conversation's sandbox.
     context = make_workspace_context(
         no_workspace_files,
         lambda: SCOPE,
@@ -135,9 +118,7 @@ async def run() -> int:
         image=CODEACT_IMAGE,
     )
     if not tools:
-        # Unreachable with the checks above, and printed rather than asserted
-        # because the contract is worth stating: an unconfigured host gets `[]`
-        # back — no tool at all — rather than a tool that fails when called.
+        # Unreachable given the checks above; printed because the `[]` contract is worth stating.
         print("No sandbox backend: execute_code was not attached.", file=sys.stderr)
         return 2
 
@@ -161,8 +142,7 @@ async def run() -> int:
         response = await agent.run(TASK)
         print(response.text)
     finally:
-        # Delete the sandbox rather than leaving it to the lifecycle timers. See
-        # sample 01's README for what those timers cost if a run is killed mid-turn.
+        # Deletes rather than relying on the lifecycle timers — see sample 01's README.
         deleted = await router.dispose_scope(SCOPE, THREAD_ID)
         print(f"\nDisposed {deleted} sandbox(es).")
         await backend.aclose()

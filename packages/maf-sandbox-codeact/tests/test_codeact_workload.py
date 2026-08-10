@@ -93,8 +93,7 @@ def _context(*, thread_id: str | None = "thread-1") -> WorkspaceContext:
 
 def _tool(backend: InProcessSandboxBackend, *, thread_id: str | None = "thread-1", **kw):
     tools = make_codeact_tools(
-        # process isolation, opted below the router's default microvm floor: this suite
-        # exercises the workload, not the floor check.
+        # Below the default floor: this suite exercises the workload, not the floor check.
         SandboxRouter([backend], min_isolation=Isolation.PROCESS),
         "data-analyst",
         _context(thread_id=thread_id),

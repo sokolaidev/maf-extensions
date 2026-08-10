@@ -33,14 +33,12 @@ from maf_sandbox.maf import make_workspace_context
 from maf_sandbox_codeact import make_codeact_tools
 from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
 
-# A sandbox is keyed by (scope, thread_id, agent_dir). See sample 03's agent.py for
-# why all three travel as callables rather than values below.
+# Keyed by (scope, thread_id, agent_dir) — see sample 03's agent.py.
 SCOPE = "samples"
 THREAD_ID = "04-wslc-codeact"
 AGENT_DIR = "data-analyst"
 
-#: The same reference sample 03 uses — see this directory's README for why a
-#: dev-container image is bulkier than this sandbox strictly needs.
+#: The same reference sample 03 uses; see this directory's README for why.
 CODEACT_IMAGE = "mcr.microsoft.com/devcontainers/python:3.13-bookworm"
 
 TASK = (
@@ -87,9 +85,7 @@ async def run() -> int:
 
     backend = WslcSandboxBackend(WslcSandboxConfig())
 
-    # `Isolation.CONTAINER` sits below the router's default `microvm` floor, so
-    # this sample opts the floor down explicitly. Leave `min_isolation` at its
-    # default and construction raises `SandboxBackendNotPermitted` instead.
+    # Below the router's default `microvm` floor; opted down explicitly.
     router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
 
     context = make_workspace_context(
