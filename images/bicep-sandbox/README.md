@@ -72,6 +72,8 @@ aca sandboxgroup disk create --image <name>.azurecr.io/bicep-sandbox:0.46.1 --na
 
 Scope comes from the environment rather than from flags — the resource group is the sandbox group's, not the registry's. A private registry additionally needs the pull authenticated, which this project's deploys do with `--identity <managed-identity-resource-id>`. Both the CLI and the service are in preview and Microsoft says the command surface may change, so `aca sandboxgroup disk create --help` is the authority if a flag here does not match.
 
+The portal is the third way, and the one that needs nothing installed: [sandboxes.azure.com](https://sandboxes.azure.com) → your sandbox group → **Disk Images** → **Create** takes the same OCI reference in **Base Image URL**, with **Registry Authentication** set to a username and token or a managed identity for a private registry like this one. It also states plainly what the flag list does not: a disk image is a snapshot, and changing the source tag afterwards does not touch disk images already created.
+
 If you would rather not install the CLI, this repository ships the equivalent as a script with explicit arguments instead of environment variables — see [`packages/maf-sandbox-acas/scripts/README.md`](../../packages/maf-sandbox-acas/scripts/README.md). It is idempotent, and it prints the resolved disk-image id.
 
 Either way the identity doing the pull has to be attached to the sandbox group and hold `Container Registry Repository Reader` on a registry in RBAC + ABAC permissions mode, or `AcrPull` on a classic-mode one. Without it a private registry answers the pull with a 403 and the import fails rather than the run.
