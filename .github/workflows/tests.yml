@@ -56,6 +56,7 @@ jobs:
           uv run pyright -p packages/maf-sandbox-acas
           uv run pyright -p packages/maf-sandbox-bicep
           uv run pyright -p packages/maf-sandbox-codeact
+          uv run pyright -p packages/maf-sandbox-docker
           uv run pyright -p packages/maf-sandbox-wslc
 
       - name: Build + metadata check
@@ -64,6 +65,7 @@ jobs:
           uv build --package maf-sandbox-acas
           uv build --package maf-sandbox-bicep
           uv build --package maf-sandbox-codeact
+          uv build --package maf-sandbox-docker
           uv build --package maf-sandbox-wslc
           uv run twine check dist/*
 
@@ -72,7 +74,7 @@ jobs:
       - name: Install + use each wheel in a clean environment
         run: |
           set -euo pipefail
-          for package in maf-sandbox maf-sandbox-acas maf-sandbox-bicep maf-sandbox-codeact maf-sandbox-wslc; do
+          for package in maf-sandbox maf-sandbox-acas maf-sandbox-bicep maf-sandbox-codeact maf-sandbox-docker maf-sandbox-wslc; do
             module="${package//-/_}"
             venv="/tmp/smoke-${package}"
             uv venv "$venv"

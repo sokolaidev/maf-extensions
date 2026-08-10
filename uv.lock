@@ -8,6 +8,7 @@ members = [
     "maf-sandbox-acas",
     "maf-sandbox-bicep",
     "maf-sandbox-codeact",
+    "maf-sandbox-docker",
     "maf-sandbox-wslc",
 ]
 
@@ -666,6 +667,17 @@ requires-dist = [
     { name = "agent-framework-core", specifier = ">=1.13.0,<2" },
     { name = "maf-sandbox", editable = "packages/maf-sandbox" },
 ]
+
+[[package]]
+name = "maf-sandbox-docker"
+version = "0.1.0"
+source = { editable = "packages/maf-sandbox-docker" }
+dependencies = [
+    { name = "maf-sandbox" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "maf-sandbox", editable = "packages/maf-sandbox" }]
 
 [[package]]
 name = "maf-sandbox-wslc"
