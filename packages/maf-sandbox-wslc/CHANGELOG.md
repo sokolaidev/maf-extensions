@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.4.0...maf-sandbox-wslc-v0.5.0) (2026-08-10)
+
+
+### Features
+
+* carry raw bytes through the wslc runner seam ([#130](https://github.com/sokolaidev/maf-extensions/issues/130)) ([375b7dc](https://github.com/sokolaidev/maf-extensions/commit/375b7dca990a0f13e111751d952aea859a52d7df))
+
 ## [0.4.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.3.0...maf-sandbox-wslc-v0.4.0) (2026-08-10)
 
 
