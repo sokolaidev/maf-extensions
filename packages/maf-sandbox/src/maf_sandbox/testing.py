@@ -10,24 +10,86 @@ this module's own test suite for the assertions that keep it honest.
 Nothing here is a mock in the unittest.mock sense: every class is a plain, real implementation
 of the protocols in :mod:`maf_sandbox._protocol`, so ``isinstance(..., SandboxBackend)`` holds
 and a workload under test cannot tell it apart from a live backend except by what it does.
+``InProcessSandbox`` is bytes-backed, so it can now stand in for a real pull surface too:
+``stat_file``, ``read_file`` and ``list_dir`` confine every read to the ``working_directory``
+a call names, the same rule a real backend enforces against its own guest filesystem.
 """
 
 from __future__ import annotations
 
+import posixpath
 import shlex
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from ._protocol import (
     DEFAULT_CAPABILITIES,
+    DEFAULT_SANDBOX_LIMITS,
     Capability,
     Egress,
+    EntryKind,
     ExecResult,
     Isolation,
+    SandboxEntry,
     SandboxKey,
+    SandboxLimits,
     SandboxSpec,
 )
 
 __all__ = ["InMemoryStore", "InProcessSandbox", "InProcessSandboxBackend"]
+
+
+def _resolve(path: str, working_directory: str) -> str:
+    """POSIX-join ``path`` onto ``working_directory`` and refuse anything that escapes it.
+
+    A backslash is refused outright: the protocol has one path grammar, and ``\\`` is not a
+    separator in it, whatever the host OS.  ``posixpath`` only, never ``os.path``.
+    """
+    if "\\" in path:
+        raise ValueError(f"path {path!r} contains a backslash, which is not a valid separator")
+    base = posixpath.normpath(working_directory)
+    resolved = posixpath.normpath(posixpath.join(base, path))
+    if _relative(resolved, base) is None:
+        raise ValueError(f"path {path!r} resolves outside working directory {working_directory!r}")
+    return resolved
+
+
+def _relative(full_path: str, base: str) -> str | None:
+    """``full_path`` relative to ``base``, or ``None`` when it does not sit inside ``base``.
+
+    Compares against ``base + "/"``, not ``base``, so a sibling that merely shares a string
+    prefix — ``/work/sub2`` under ``/work/sub`` — is not mistaken for a descendant.
+    """
+    if full_path == base:
+        return ""
+    prefix = base if base.endswith("/") else base + "/"
+    if not full_path.startswith(prefix):
+        return None
+    return full_path[len(prefix) :]
+
+
+def _record_child(
+    children: dict[str, tuple[EntryKind, int | None]],
+    entry_rel: str | None,
+    directory_rel: str,
+    kind: EntryKind,
+    size_bytes: int | None,
+) -> None:
+    """Fold one stored entry into ``children`` if it sits under ``directory_rel``.
+
+    A grandchild collapses into a single ``DIRECTORY`` entry for its immediate parent —
+    ``list_dir`` enumerates one level, never the whole subtree.
+    """
+    if entry_rel is None or entry_rel == directory_rel:
+        return
+    prefix = "" if directory_rel == "" else directory_rel + "/"
+    if not entry_rel.startswith(prefix):
+        return
+    name, _, nested = entry_rel[len(prefix) :].partition("/")
+    child_path = prefix + name
+    if nested:
+        children[child_path] = (EntryKind.DIRECTORY, None)
+    else:
+        children.setdefault(child_path, (kind, size_bytes))
 
 
 class InProcessSandbox:
@@ -45,9 +107,24 @@ class InProcessSandbox:
             the caller rather than baked in: a kind that speaks SARIF wants an empty-but-valid
             SARIF document here, a kind that does not wants ``""`` (the default) — this fake
             has no opinion about either.
+        seed_files: Pre-populates the read surface before any ``write_file`` call. A name
+            distinct from ``outputs``, which already means scripted stdout — the same reason
+            the design doc spells ``declared_outputs`` apart from it. A ``str`` value is
+            UTF-8 encoded like ``write_file``'s; ``bytes`` is stored as given;
+            :data:`~maf_sandbox.EntryKind.OTHER` declares the path as a non-regular entry —
+            no content, never readable — the only way this fake can exercise the
+            symlink-refusal rule.
 
-    ``write_file`` records into :attr:`files`, keyed by path. ``exec`` records
-    ``(command, working_directory, timeout)`` tuples into :attr:`commands`.
+    Storage is bytes: ``write_file`` UTF-8-encodes ``str`` content on the way in, and
+    :attr:`files` is a computed ``dict[str, str]`` view over it, decoded back to text — kept
+    for callers written against the fake's original shape, which only ever wrote text.
+    ``exec`` records ``(command, working_directory, timeout)`` tuples into :attr:`commands`.
+
+    ``stat_file``, ``read_file`` and ``list_dir`` confine every ``path`` to the
+    ``working_directory`` a call names: a backslash or a resolved path outside it raises
+    ``ValueError``. ``read_file`` serves only :data:`~maf_sandbox.EntryKind.FILE`, raising
+    ``FileNotFoundError`` for nothing there, ``IsADirectoryError`` for a directory and
+    ``OSError`` for a seeded non-regular entry.
 
     ``exec`` accepts a plain string or an argv sequence (mirroring
     :meth:`~maf_sandbox.Sandbox.exec`). A sequence is joined with :func:`shlex.join` *before*
@@ -63,15 +140,30 @@ class InProcessSandbox:
         raises: BaseException | None = None,
         *,
         default_stdout: str = "",
+        seed_files: Mapping[str, str | bytes | EntryKind] | None = None,
     ) -> None:
-        self.files: dict[str, str] = {}
+        self._contents: dict[str, bytes] = {}
+        self._non_regular: set[str] = set()
+        for path, value in (seed_files or {}).items():
+            # EntryKind is itself a str subclass, so this must be checked before isinstance(str).
+            if isinstance(value, EntryKind):
+                self._non_regular.add(path)
+            elif isinstance(value, str):
+                self._contents[path] = value.encode("utf-8")
+            else:
+                self._contents[path] = value
         self.commands: list[tuple[str, str, float]] = []
         self._outputs = outputs or {}
         self._raises = raises
         self._default_stdout = default_stdout
 
-    async def write_file(self, path: str, content: str) -> None:
-        self.files[path] = content
+    @property
+    def files(self) -> dict[str, str]:
+        """Back-compat view over the byte store, UTF-8 decoded — the shape older callers read."""
+        return {path: content.decode("utf-8") for path, content in self._contents.items()}
+
+    async def write_file(self, path: str, content: str | bytes) -> None:
+        self._contents[path] = content.encode("utf-8") if isinstance(content, str) else content
 
     async def exec(
         self, command: str | Sequence[str], *, working_directory: str, timeout: float
@@ -84,6 +176,56 @@ class InProcessSandbox:
             if marker in joined:
                 return ExecResult(stdout=output)
         return ExecResult(stdout=self._default_stdout)
+
+    def _has_children(self, full_path: str) -> bool:
+        prefix = full_path + "/"
+        return any(p.startswith(prefix) for p in self._contents) or any(
+            p.startswith(prefix) for p in self._non_regular
+        )
+
+    async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
+        full_path = _resolve(path, working_directory)
+        rel = _relative(full_path, posixpath.normpath(working_directory))
+        assert rel is not None  # _resolve already refused anything outside working_directory
+        if full_path in self._contents:
+            return SandboxEntry(
+                path=rel, kind=EntryKind.FILE, size_bytes=len(self._contents[full_path])
+            )
+        if full_path in self._non_regular:
+            return SandboxEntry(path=rel, kind=EntryKind.OTHER, size_bytes=None)
+        if self._has_children(full_path):
+            return SandboxEntry(path=rel, kind=EntryKind.DIRECTORY, size_bytes=None)
+        return None
+
+    async def read_file(self, path: str, *, working_directory: str) -> bytes:
+        full_path = _resolve(path, working_directory)
+        if full_path in self._contents:
+            return self._contents[full_path]
+        if full_path in self._non_regular:
+            raise OSError(f"{path!r} is not a regular file and is refused")
+        if self._has_children(full_path):
+            raise IsADirectoryError(f"{path!r} is a directory")
+        raise FileNotFoundError(f"no such file: {path!r}")
+
+    async def list_dir(self, path: str, *, working_directory: str) -> tuple[SandboxEntry, ...]:
+        full_path = _resolve(path, working_directory)
+        base = posixpath.normpath(working_directory)
+        directory_rel = _relative(full_path, base)
+        assert directory_rel is not None  # _resolve already refused anything outside it
+
+        children: dict[str, tuple[EntryKind, int | None]] = {}
+        for stored_path, content in self._contents.items():
+            _record_child(
+                children, _relative(stored_path, base), directory_rel, EntryKind.FILE, len(content)
+            )
+        for stored_path in self._non_regular:
+            _record_child(
+                children, _relative(stored_path, base), directory_rel, EntryKind.OTHER, None
+            )
+        return tuple(
+            SandboxEntry(path=child_path, kind=kind, size_bytes=size_bytes)
+            for child_path, (kind, size_bytes) in sorted(children.items())
+        )
 
 
 class InProcessSandboxBackend:
@@ -104,9 +246,17 @@ class InProcessSandboxBackend:
             :data:`~maf_sandbox.Egress.ALLOWLIST` so a workload under test attaches as it
             would against a live backend, rather than every offline test becoming a test of
             the attach refusal.
-        capabilities: Returned by the :attr:`capabilities` property. Defaults to
-            :data:`~maf_sandbox.DEFAULT_CAPABILITIES`, which is what this fake actually does
-            — it writes files and runs commands, and claiming more would be a lying fake.
+        capabilities: Returned by the :attr:`capabilities` property. Still defaults to
+            :data:`~maf_sandbox.DEFAULT_CAPABILITIES` even though the sandbox now genuinely
+            implements the pull surface: widening the default would change what a bare
+            ``InProcessSandboxBackend()`` attaches against for every existing caller that
+            never asked for :data:`~maf_sandbox.Capability.FILES_OUT` or
+            :data:`~maf_sandbox.Capability.FILES_LIST`. A test that wants the pull surface
+            asks for it explicitly.
+        limits: Returned by the :attr:`limits` property. Defaults to
+            :data:`~maf_sandbox.DEFAULT_SANDBOX_LIMITS` — the same constant the router assumes
+            for a backend that declares nothing, so leaving this unset and setting it
+            explicitly serve one spec identically.
         acquire_error: When set, ``acquire`` raises this instead of returning the sandbox —
             for exercising a kind's "sandbox unavailable" degrade path.
 
@@ -130,6 +280,7 @@ class InProcessSandboxBackend:
         isolation: Isolation = Isolation.PROCESS,
         egress: Egress = Egress.ALLOWLIST,
         capabilities: frozenset[Capability] = DEFAULT_CAPABILITIES,
+        limits: SandboxLimits = DEFAULT_SANDBOX_LIMITS,
         acquire_error: BaseException | None = None,
     ) -> None:
         self.sandbox = sandbox if sandbox is not None else InProcessSandbox()
@@ -137,6 +288,7 @@ class InProcessSandboxBackend:
         self._isolation = isolation
         self._egress = egress
         self._capabilities = capabilities
+        self._limits = limits
         self.acquire_error = acquire_error
         self.keys: list[SandboxKey] = []
         self.specs: list[SandboxSpec] = []
@@ -159,6 +311,10 @@ class InProcessSandboxBackend:
     @property
     def capabilities(self) -> frozenset[Capability]:
         return self._capabilities
+
+    @property
+    def limits(self) -> SandboxLimits:
+        return self._limits
 
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> InProcessSandbox:
         if self.acquire_error is not None:

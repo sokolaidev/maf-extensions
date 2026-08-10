@@ -269,7 +269,9 @@ class TestSpecFloorRaise:
 class _BackendWithoutCapabilities:
     """A backend written before the capability axis existed: it declares what it had.
 
-    Written out rather than subclassed, because the fake now always has the property.
+    Written out rather than subclassed, because the fake now always has the property. It has no
+    ``limits`` either, which makes it the only fixture here that exercises *both* of the
+    router's `getattr` fallbacks — see `TestTransferLimitMatch`.
     """
 
     name = "legacy"
@@ -428,16 +430,15 @@ class TestTransferLimits:
         assert over.within(DEFAULT_TRANSFER_LIMITS) is False
 
 
-class _BackendWithLimits(InProcessSandboxBackend):
-    """A backend that declares ceilings, which the shared fake does not.
-
-    Subclassed rather than written out longhand: what is under test is the router's `getattr`,
-    not the fake's shape, and every other property it needs is already correct.
-    """
-
-    def __init__(self, limits: SandboxLimits, **kwargs) -> None:
-        super().__init__(**kwargs)
-        self.limits = limits
+#: The two ways a backend ends up on the default ceiling: declaring it, and declaring nothing
+#: at all.  The router's `getattr` fallback is the only thing that makes those the same, so
+#: every leg below that says "the default ceiling" runs against both — a fallback pointed at a
+#: different constant would pass the first and fail the second.  Classes, not instances, so the
+#: parametrized cases do not share one object.
+_DEFAULT_CEILING_BACKENDS = [
+    pytest.param(InProcessSandboxBackend, id="declares-the-default"),
+    pytest.param(_BackendWithoutCapabilities, id="declares-nothing"),
+]
 
 
 class TestTransferLimitMatch:
@@ -453,24 +454,43 @@ class TestTransferLimitMatch:
     def _router(self, backend) -> SandboxRouter:
         return SandboxRouter([backend], min_isolation=Isolation.PROCESS)
 
-    def test_a_backend_declaring_no_limits_serves_every_existing_spec(self):
+    def test_the_two_fixtures_really_are_one_declared_and_one_silent(self):
+        """A `getattr` fallback nobody is on the far side of would pass by accident forever.
+
+        The shared fake grew a `limits` property, so it stopped being evidence about silence;
+        if the legacy fake ever grows one too, both parametrized cases below become the same
+        case and stop covering the fallback at all.
+        """
+        assert InProcessSandboxBackend().limits == DEFAULT_SANDBOX_LIMITS
+        assert not hasattr(_BackendWithoutCapabilities(), "limits")
+
+    @pytest.mark.parametrize("backend_class", _DEFAULT_CEILING_BACKENDS)
+    def test_the_default_ceiling_serves_every_existing_spec(self, backend_class):
         """Including `SandboxSpec(kind="smoke")`, which `scripts/smoke_install.py` acquires."""
-        router = self._router(InProcessSandboxBackend())
+        router = self._router(backend_class())
         router.ensure_can_serve(_SPEC)
         router.ensure_can_serve(SandboxSpec(kind="smoke"))
 
-    def test_a_backend_written_before_the_axis_existed_serves_them_too(self):
-        SandboxRouter([_BackendWithoutCapabilities()]).ensure_can_serve(_SPEC)
+    @pytest.mark.parametrize("backend_class", _DEFAULT_CEILING_BACKENDS)
+    def test_a_spec_the_default_ceiling_cannot_hold_is_refused(self, backend_class):
+        """An absent ceiling is the default one, not "no ceiling" — the `Egress` rule."""
+        huge = dataclasses.replace(
+            DEFAULT_TRANSFER_LIMITS, max_files=DEFAULT_TRANSFER_LIMITS.max_files + 1
+        )
+        with pytest.raises(SandboxTransferLimitsNotPermitted):
+            self._router(backend_class()).ensure_can_serve(
+                SandboxSpec(kind="diagram", files_out=huge)
+            )
 
     def test_a_spec_within_the_declared_ceilings_is_served(self):
-        router = self._router(_BackendWithLimits(self._CEILING))
+        router = self._router(InProcessSandboxBackend(limits=self._CEILING))
         router.ensure_can_serve(
             SandboxSpec(kind="diagram", files_in=_TIGHT_LIMITS, files_out=_TIGHT_LIMITS)
         )
 
     @pytest.mark.parametrize("direction", ["files_in", "files_out"])
     def test_a_spec_above_the_ceiling_is_refused_and_the_direction_named(self, direction: str):
-        router = self._router(_BackendWithLimits(self._CEILING))
+        router = self._router(InProcessSandboxBackend(limits=self._CEILING))
         spec = dataclasses.replace(
             SandboxSpec(kind="diagram", files_in=_TIGHT_LIMITS, files_out=_TIGHT_LIMITS),
             **{direction: DEFAULT_TRANSFER_LIMITS},
@@ -478,19 +498,9 @@ class TestTransferLimitMatch:
         with pytest.raises(SandboxTransferLimitsNotPermitted, match=direction):
             router.ensure_can_serve(spec)
 
-    def test_a_spec_the_default_ceiling_cannot_hold_is_refused_by_a_silent_backend(self):
-        """Silence is the default ceiling, not "no ceiling" — the `Egress` rule, not the other."""
-        huge = dataclasses.replace(
-            DEFAULT_TRANSFER_LIMITS, max_files=DEFAULT_TRANSFER_LIMITS.max_files + 1
-        )
-        with pytest.raises(SandboxTransferLimitsNotPermitted):
-            self._router(InProcessSandboxBackend()).ensure_can_serve(
-                SandboxSpec(kind="diagram", files_out=huge)
-            )
-
     def test_acquire_refuses_it_too(self):
         """`acquire` runs the same checks, so a caller that skips `ensure_can_serve` is caught."""
-        router = self._router(_BackendWithLimits(self._CEILING))
+        router = self._router(InProcessSandboxBackend(limits=self._CEILING))
         spec = SandboxSpec(
             kind="diagram", files_in=_TIGHT_LIMITS, files_out=DEFAULT_TRANSFER_LIMITS
         )
