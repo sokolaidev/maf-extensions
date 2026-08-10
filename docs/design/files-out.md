@@ -129,6 +129,8 @@ DEFAULT_TRANSFER_LIMITS: TransferLimits = TransferLimits(...)   # one constant, 
 
 **Enforcement is pre-stat where stat exists, and stream-counting is the fallback.** This is the reverse of what an earlier draft said, and the evidence is on both real backends: the ACAS SDK's `read_file` does `await response.read()` internally — fully buffered, no incremental hook — so stat is the *only* enforcement available there; Docker's `HEAD /archive` returns a size before any byte moves, and can also count tar bytes on the way out as a second line. The contract is therefore: **stat, refuse if over cap or unknown, then read**; a backend that can additionally abort mid-transfer should, but no backend is required to.
 
+**The caps are re-applied to the bytes actually read, not only to the stat-ed sizes.** A stat is a promise about a file the guest can still rewrite before the read reaches it, and the guest is the thing the sandbox exists to contain. Checking once would make the whole cap advisory against exactly the adversary it is written for.
+
 A breach **fails the whole collection with no partial delivery**. A partial artifact set reported as success is worse than none, because the model cannot tell what it did not get.
 
 ### Backend maxima, and which silence rule they follow
@@ -218,6 +220,8 @@ class OutputSink:
 
 **Everything is pulled and capped before the first `deliver`.** A push callback that writes to host state cannot be un-called, so "no partial delivery" is only achievable by collecting the whole set first. Two consequences, both normative rather than incidental: `max_total_bytes` is the **peak host-memory bound** for one collection, and there is no streaming to the sink.
 
+**One residue survives that ordering, and it is a property of the shape rather than a defect.** If `deliver` itself raises on the third of five artifacts, the first two are already in the host's store and nothing can retract them; the exception propagates and the host is left holding a partial set. Everything the library decides — a bad name, a collision, a breached cap, a missing required output — is settled before any delivery, so this is the *only* path to a partial landing. It is also the strongest argument for the batch form in the open questions below: a single call taking the whole collection would remove the residue entirely, where the per-artifact shape cannot.
+
 **A spec with `LAND` outputs requires a sink.** This is structural rather than a per-kind judgement: if the spec declares something that lands and no sink was supplied, the tool cannot honour its own spec. The check lives **inside `sandboxed_tool`, after the attach gate** — a host with no sandbox configured at all still gets `[]`, because the unconfigured-host escape wins, exactly as it does today. A kind where artifacts are incidental declares no `LAND` outputs when it was given no sink.
 
 **`deliver` refuses by raising.** Returning `None` is a silent drop, and a "refused" flag on `LandedArtifact` means every consumer must remember to check it, and one will not.
@@ -226,7 +230,9 @@ class OutputSink:
 
 The library enforces a **narrow invariant** and no more: relative, no traversal, no separators beyond the declared output's own, bounded length, valid UTF-8. It does not guarantee the name is legal at the destination, because it cannot: legal names differ between a blob container, NTFS, and a workspace store. **Hosts still own their own namespace rules.**
 
-Windows-hostility is real and worth helping with, so `portable_name()` ships as an **opt-in helper** — reserved device names (`CON`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, including with extensions), the forbidden `< > : " | ? *` set, trailing dots and spaces.
+Windows-hostility is real and worth helping with, so `portable_name()` ships as an **opt-in helper** covering Microsoft's authoritative set and nothing beyond it: `CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, **and the ISO/IEC 8859-1 superscript variants `COM¹ COM² COM³ LPT¹ LPT² LPT³`** — Windows reads those superscripts as digits, so `COM¹` is a device and `echo test > COM¹` fails to create a file. All of them reserved with an extension too (`NUL.tar.gz` is `NUL`), plus the forbidden `< > : " | ? *` set and trailing dots and spaces.
+
+The superscripts are the entry that justifies shipping this at all: no host writing its own list will think of them. The set stops exactly at the documented one — `COM⁴` (U+2074) is not a digit to Windows and is a legitimate filename, and a helper that guesses beyond the spec starts mangling names that were fine.
 
 Names are normalized to **NFC** before `deliver` sees them, because it is the one form that survives all three filesystems recognisably. A host with a content-addressed store or a Linux-only deployment opts out with `NameNormalization.NONE` — which disables **only** the rewrite. The narrow invariant still applies, and collision detection still **compares** normalized forms. We compare normalized and write what was asked for.
 
