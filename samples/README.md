@@ -17,6 +17,8 @@ Small, self-contained programs, each showing one wiring end to end. The package 
 
 **Both CodeAct samples run the same image too**, but nobody in this repository builds it: `mcr.microsoft.com/devcontainers/python:3.13-bookworm`, a standard Microsoft Container Registry image, used by reference. Sample 03 imports it into an Azure sandbox group as a disk image; sample 04 pulls it directly, the way any `wslc container run` does. Each README says once why a dev-container image is bulkier than this workload strictly needs.
 
+**Every image here is sample-grade, chosen for prototyping.** The dev-container image is a convenience, and even the purpose-built Bicep image is only a pinned CLI on a stock base. A production deployment replaces them with hardened images your organization builds and owns — minimal base, digest-pinned, nothing installed the workload does not use, scanned and rebuilt on your patch cadence — supplied through the same `image`/`image_id` spec fields; nothing else in a sample's wiring changes.
+
 **Each sample installs from PyPI**, not from this workspace:
 
 ```bash

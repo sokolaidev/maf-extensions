@@ -30,7 +30,7 @@ Read these first; none of them is quick to arrange halfway through.
 
 **This creates a billable sandbox.** The sample deletes it on the way out, and the backend's auto-suspend and auto-delete timers are a backstop underneath that, but a run that is killed mid-turn can still leave one active for up to ten minutes.
 
-`mcr.microsoft.com/devcontainers/python:3.13-bookworm` is a dev-container image — it carries a full toolchain this workload never touches, not just a Python interpreter, so it is bulkier than the sandbox strictly needs. It is used here because it is the only standard MCR image family at Python 3.13; a minimal Azure Linux Python image becomes the better choice the day that family ships 3.13 too.
+`mcr.microsoft.com/devcontainers/python:3.13-bookworm` is a dev-container image — it carries a full toolchain this workload never touches, not just a Python interpreter, so it is bulkier than the sandbox strictly needs. It is used here because it is the only standard MCR image family at Python 3.13; a minimal Azure Linux Python image becomes the better choice the day that family ships 3.13 too. Either way this reference is for prototyping the sample: production replaces it with a hardened image you build and own — minimal, digest-pinned, scanned, rebuilt on your patch cadence — imported into the sandbox group the same way.
 
 ## Install
 
