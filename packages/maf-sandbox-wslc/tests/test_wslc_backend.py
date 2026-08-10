@@ -21,7 +21,17 @@ import time
 from collections.abc import Sequence
 
 import pytest
-from maf_sandbox import Egress, ExecResult, Isolation, SandboxBackend, SandboxKey, SandboxSpec
+from maf_sandbox import (
+    Capability,
+    Egress,
+    ExecResult,
+    Isolation,
+    SandboxBackend,
+    SandboxBackendNotPermitted,
+    SandboxKey,
+    SandboxRouter,
+    SandboxSpec,
+)
 
 from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
 from maf_sandbox_wslc._backend import (
@@ -100,7 +110,7 @@ def _backend_with(responder=None, config=None) -> tuple[WslcSandboxBackend, _Fak
 
 
 # ---------------------------------------------------------------------------
-# Backend identity — read by the router's deployed check
+# Backend identity — read by the router's isolation floor and capability match
 # ---------------------------------------------------------------------------
 
 
@@ -109,14 +119,36 @@ class TestBackendIdentity:
         assert isinstance(WslcSandboxBackend(WslcSandboxConfig()), SandboxBackend)
 
     def test_declares_container_isolation(self):
-        """`deployed=True` refuses this backend because of this value, by design."""
+        """The default `microvm` floor refuses this backend because of this value, by design.
+
+        Superseded by the two-axis floor (#85): was `deployed=True`, now `min_isolation`.
+        """
         assert WslcSandboxBackend(WslcSandboxConfig()).isolation == Isolation.CONTAINER
 
     def test_declares_closed_egress(self):
         assert WslcSandboxBackend(WslcSandboxConfig()).egress == Egress.CLOSED
 
+    def test_declares_exec_and_files_in_only(self):
+        assert WslcSandboxBackend(WslcSandboxConfig()).capabilities == frozenset(
+            {Capability.EXEC, Capability.FILES_IN}
+        )
+
     def test_is_named_wslc(self):
         assert WslcSandboxBackend(WslcSandboxConfig()).name == "wslc"
+
+
+class TestRouterFloor:
+    """The single most important behavior change for this backend's users."""
+
+    def test_the_default_floor_refuses_this_backend(self):
+        with pytest.raises(SandboxBackendNotPermitted):
+            SandboxRouter([WslcSandboxBackend(WslcSandboxConfig())])
+
+    def test_opting_the_floor_down_to_container_admits_it(self):
+        router = SandboxRouter(
+            [WslcSandboxBackend(WslcSandboxConfig())], min_isolation=Isolation.CONTAINER
+        )
+        assert router.enabled
 
 
 # ---------------------------------------------------------------------------

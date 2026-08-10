@@ -4,10 +4,8 @@ Everything provider-specific lives here — the group client, disk-image resolut
 egress policy, the lifecycle policy, the sandbox registry and label-based purge.  A workload
 above the router sees only ``write_file`` and ``exec``.
 
-Isolation is :data:`~maf_sandbox.Isolation.VM`: execution leaves the host process
-entirely, the host keeps the control-plane credential and never puts one inside, and egress
-is Deny-default with a per-spec allowlist.  That declaration is what the router checks
-before permitting this backend in a deployed environment.
+Isolation is :data:`~maf_sandbox.Isolation.MICROVM` — the router's default floor, so a host
+that configures nothing already permits this backend.
 """
 
 from __future__ import annotations
@@ -19,7 +17,15 @@ from collections.abc import Sequence
 from hashlib import sha256
 from typing import Any
 
-from maf_sandbox import Egress, ExecResult, Isolation, SandboxKey, SandboxSpec, error_detail
+from maf_sandbox import (
+    Capability,
+    Egress,
+    ExecResult,
+    Isolation,
+    SandboxKey,
+    SandboxSpec,
+    error_detail,
+)
 
 from ._config import AcasSandboxConfig
 from ._images import qualify_image_reference, resolve_disk_image_id
@@ -129,7 +135,7 @@ class _AcasSandbox:
 
 
 class AcasSandboxBackend:
-    """Hands out VM-isolated sandboxes from an Azure Container Apps sandbox group."""
+    """Hands out microVM-isolated sandboxes from an Azure Container Apps sandbox group."""
 
     def __init__(self, config: AcasSandboxConfig) -> None:
         self._config = config
@@ -155,13 +161,17 @@ class AcasSandboxBackend:
         return "acas"
 
     @property
-    def isolation(self) -> str:
-        return Isolation.VM
+    def isolation(self) -> Isolation:
+        return Isolation.MICROVM
 
     @property
-    def egress(self) -> str:
+    def egress(self) -> Egress:
         # True because `_egress_policy` builds it: Deny default, one Allow per named host.
         return Egress.ALLOWLIST
+
+    @property
+    def capabilities(self) -> frozenset[Capability]:
+        return frozenset({Capability.EXEC, Capability.FILES_IN})
 
     # -- client -------------------------------------------------------------------
 

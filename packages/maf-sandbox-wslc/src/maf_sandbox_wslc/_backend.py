@@ -5,9 +5,11 @@ the egress policy and the label-based purge.  A workload above the router sees o
 ``write_file`` and ``exec``.
 
 Isolation is :data:`~maf_sandbox.Isolation.CONTAINER`: a container shares the host kernel and
-sits on the developer's own machine, so the router refuses this backend outright when the host
-reports it is running deployed.  That refusal is the point of the declaration, not a
-limitation to work around.
+sits on the developer's own machine, below the router's default
+:data:`~maf_sandbox.Isolation.MICROVM` floor.  A host that wants this backend opts the floor
+down explicitly with ``min_isolation=Isolation.CONTAINER``; with nothing passed, construction
+raises :class:`~maf_sandbox.SandboxBackendNotPermitted`.  That refusal is the point of the
+declaration, not a limitation to work around — there is no flag left to forget.
 
 Egress is :data:`~maf_sandbox.Egress.CLOSED` — every container is created ``--network none``.
 The CLI cannot allow one host and deny the rest, and confining *more* than a spec asks only
@@ -30,7 +32,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from typing import Protocol, cast
 
-from maf_sandbox import Egress, ExecResult, Isolation, SandboxKey, SandboxSpec
+from maf_sandbox import Capability, Egress, ExecResult, Isolation, SandboxKey, SandboxSpec
 
 from ._config import WslcSandboxConfig
 from ._proxy import build_context
@@ -263,16 +265,20 @@ class WslcSandboxBackend:
         return "wslc"
 
     @property
-    def isolation(self) -> str:
+    def isolation(self) -> Isolation:
         return Isolation.CONTAINER
 
     @property
-    def egress(self) -> str:
+    def egress(self) -> Egress:
         # A capability, not a per-spec fact: the backend can enforce an allowlist iff it has a
         # proxy image to do it with. `acquire` still closes a spec that allows nothing outright.
         if self._config.egress_proxy_image:
             return Egress.ALLOWLIST
         return Egress.CLOSED
+
+    @property
+    def capabilities(self) -> frozenset[Capability]:
+        return frozenset({Capability.EXEC, Capability.FILES_IN})
 
     # -- SandboxBackend -----------------------------------------------------------
 

@@ -11,7 +11,7 @@ import asyncio
 import logging
 
 import pytest
-from maf_sandbox import Egress, Isolation, SandboxBackend, SandboxKey
+from maf_sandbox import Capability, Egress, Isolation, SandboxBackend, SandboxKey, SandboxRouter
 
 from maf_sandbox_acas import (
     AcasSandboxBackend,
@@ -120,7 +120,7 @@ def _backend_with(group_client, config: AcasSandboxConfig | None = None) -> Acas
 
 
 # ---------------------------------------------------------------------------
-# Backend identity — read by the router's deployed check
+# Backend identity — read by the router's floor check
 # ---------------------------------------------------------------------------
 
 
@@ -128,13 +128,23 @@ class TestBackendIdentity:
     def test_satisfies_the_backend_protocol(self):
         assert isinstance(AcasSandboxBackend(_config()), SandboxBackend)
 
-    def test_declares_vm_isolation(self):
-        """The router permits this backend in a deployed environment because of this value."""
-        assert AcasSandboxBackend(_config()).isolation == Isolation.VM
+    def test_declares_microvm_isolation(self):
+        """Supersedes `vm` from the three-rung ladder: `microvm` is the truthful rung, and the default floor."""
+        assert AcasSandboxBackend(_config()).isolation == Isolation.MICROVM
 
     def test_declares_allowlist_egress(self):
         """A workload's tool attaches because of this; `TestEgressPolicy` pins that it is true."""
         assert AcasSandboxBackend(_config()).egress == Egress.ALLOWLIST
+
+    def test_declares_exec_and_files_in_capabilities(self):
+        """Declares only what it implements today — no ATTACHED_IDENTITY, SNAPSHOT, or FILES_OUT."""
+        assert AcasSandboxBackend(_config()).capabilities == frozenset(
+            {Capability.EXEC, Capability.FILES_IN}
+        )
+
+    def test_meets_the_default_floor(self):
+        """Migration guarantee: a host that used `deployed=True` behaves identically."""
+        assert SandboxRouter([AcasSandboxBackend(_config())]).enabled
 
     def test_is_named_aca(self):
         assert AcasSandboxBackend(_config()).name == "acas"

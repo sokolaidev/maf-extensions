@@ -11,7 +11,7 @@ in it on purpose — into a workspace store, hands the agent the `bicep_validate
 tool, runs exactly one turn, prints what came back, and deletes the sandbox.
 
 What the printed diagnostics prove is the point.  They come from the Bicep
-compiler running inside a VM-isolated sandbox (T2), not from the model reading
+compiler running inside a microVM-isolated sandbox (T2), not from the model reading
 its own output and agreeing with itself (T0).  Running this against a *valid*
 file would prove much less.
 
@@ -121,19 +121,16 @@ async def run() -> int:
         )
     )
 
-    # `deployed=True` is permitted here for one reason: `AcasSandboxBackend`
-    # declares `Isolation.VM`, and `DEPLOYED_ISOLATION` is exactly {VM}.  Swap in
-    # a container- or process-isolated backend and this line raises
+    # A backend below `Isolation.MICROVM` here raises
     # `SandboxBackendNotPermitted` — at construction, not at first tool call, so
     # a misconfigured deployment cannot start with the feature apparently
-    # enabled and quietly unsafe.  A shared-kernel boundary sits next to the
-    # host's credentials, which is why it is not accepted.
+    # enabled and quietly unsafe.
     #
     # A swapped backend has a second way to be refused, one call further down:
     # `make_bicep_tools` checks it can confine egress to the hosts the workload
     # names.  Separate rules because they have separate owners — the boundary is
     # this host's policy, what the sandbox may reach is the workload's.
-    router = SandboxRouter([backend], deployed=True)
+    router = SandboxRouter([backend])
 
     # The agent's workspace.  A real host's store is usually backed by a disk or
     # a blob container and already holds what the agent wrote earlier in the

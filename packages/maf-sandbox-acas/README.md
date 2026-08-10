@@ -10,7 +10,7 @@ This package is not affiliated with, endorsed by, or a product of Microsoft — 
 app  ->  maf_sandbox  ->  maf_sandbox_acas  ->  the sandbox
 ```
 
-An agent that writes code should not be the thing that runs it. This package gives it somewhere else to run: a VM-isolated sandbox with Deny-default egress and no ambient identity, reached as an ordinary tool call so the agent framework's middleware still sees the call and classifies its result — only the *work* leaves the process.
+An agent that writes code should not be the thing that runs it. This package gives it somewhere else to run: a microVM-isolated sandbox with Deny-default egress and no ambient identity, reached as an ordinary tool call so the agent framework's middleware still sees the call and classifies its result — only the *work* leaves the process.
 
 This package is the backend only, with no sandbox kind of its own. [`maf-sandbox-bicep`](https://github.com/sokolaidev/maf-extensions/tree/main/packages/maf-sandbox-bicep) is the first kind that runs on it, written against [`maf-sandbox`](https://github.com/sokolaidev/maf-extensions/tree/main/packages/maf-sandbox)'s protocol rather than against this backend.
 
@@ -25,7 +25,7 @@ from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
 from maf_sandbox import SandboxRouter
 
 backend = AcasSandboxBackend(AcasSandboxConfig(endpoint="https://management.<region>.azuredevcompute.io", subscription_id="<sub-id>", resource_group="<rg>", sandbox_group="<group>", registry="<acr>.azurecr.io"))
-router = SandboxRouter([backend], deployed=True)  # VM isolation is what makes `deployed=True` permitted here
+router = SandboxRouter([backend])  # microVM isolation meets the router's default floor
 ```
 
 [`samples/01_acas_bicep`](https://github.com/sokolaidev/maf-extensions/tree/main/samples/01_acas_bicep) runs that pair end to end: the same two lines, plus the workspace context and the workload tool they exist to serve, in a program that validates a Bicep file and disposes the sandbox afterwards.
@@ -34,7 +34,7 @@ router = SandboxRouter([backend], deployed=True)  # VM isolation is what makes `
 
 ## Threat model
 
-**The VM boundary.** `AcasSandboxBackend` declares `Isolation.VM`: execution happens in a hardware-isolated microVM, not a shared-kernel container, which is what lets `maf-sandbox`'s router permit this backend when a host reports it is running deployed (see that package's README). Everything below this line assumes that boundary holds; it is a property of the Azure Container Apps Sandboxes service, not of this package's code.
+**The micro-VM boundary.** `AcasSandboxBackend` declares `Isolation.MICROVM`: execution happens in a hardware-isolated microVM, not a shared-kernel container, and that rung is `maf-sandbox`'s router's default floor — a host that configures nothing already permits this backend (see that package's README). Everything below this line assumes that boundary holds; it is a property of the Azure Container Apps Sandboxes service, not of this package's code.
 
 **What identity is reachable.** No ambient identity is placed inside the sandbox — the control-plane credential this package uses to create and manage sandboxes (`DefaultAzureCredential`) never travels into the guest. Code running inside a sandbox has no path back to the host's Azure identity, the host process's environment, or any other conversation's sandbox: `dispose_scope` deletes by service-side label, not by trusting the caller, and egress is Deny-default with a per-spec allowlist supplied by the *kind*, not by runtime configuration — a deployment that could widen a kind's egress after the fact could undo the containment its design rests on.
 
@@ -47,7 +47,8 @@ router = SandboxRouter([backend], deployed=True)  # VM isolation is what makes `
 | `acquire(key, spec)` | get-or-create, keyed `(scope, thread, agent)`. A warm sandbox is resumed rather than replaced, so a fix-round loop does not pay a cold start per iteration. |
 | `dispose(key)` | delete one sandbox |
 | `dispose_scope(scope, thread)` | delete every sandbox for a conversation — **from the service, by label**, not from process memory |
-| `isolation` | `vm` — which is what lets the router permit it in a deployed environment |
+| `isolation` | `microvm` — the router's default floor, so a host that configures nothing already permits this backend |
+| `capabilities` | `EXEC, FILES_IN` — declares only what it implements today |
 
 That `dispose_scope` detail is the one worth reading twice. A multi-replica host serves a conversation delete wherever it lands, so the replica that created a sandbox is usually not the one deleting it. A backend that consults only its own registry leaves billable sandboxes running, and the bug is invisible on a single-replica dev box. Sandboxes are labelled at create time so the service can answer the question instead.
 
@@ -63,7 +64,7 @@ What stays behind is the host's adapter — a single module in the host applicat
 
 ## Provenance
 
-Extracted from a production agent application, where a security review chose a VM-isolated sandbox over running agent-authored code in the host process. Both halves of that conclusion are visible in this backend's design: the boundary it declares, and the fact that no credential of the host's ever travels inside it.
+Extracted from a production agent application, where a security review chose a microVM-isolated sandbox over running agent-authored code in the host process. Both halves of that conclusion are visible in this backend's design: the boundary it declares, and the fact that no credential of the host's ever travels inside it.
 
 ---
 

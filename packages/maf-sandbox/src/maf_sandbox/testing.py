@@ -17,7 +17,15 @@ from __future__ import annotations
 import shlex
 from collections.abc import Sequence
 
-from ._protocol import Egress, ExecResult, Isolation, SandboxKey, SandboxSpec
+from ._protocol import (
+    DEFAULT_CAPABILITIES,
+    Capability,
+    Egress,
+    ExecResult,
+    Isolation,
+    SandboxKey,
+    SandboxSpec,
+)
 
 __all__ = ["InMemoryStore", "InProcessSandbox", "InProcessSandboxBackend"]
 
@@ -90,12 +98,15 @@ class InProcessSandboxBackend:
             to distinguish several registered backends (``"first"``, ``"aca"``, ``"docker"``)
             by name.
         isolation: Returned by the :attr:`isolation` property — configurable because the
-            router's deployed-isolation rule is exercised against fakes claiming every
-            :class:`~maf_sandbox.Isolation` level, not only ``PROCESS``.
+            router's minimum-isolation floor is exercised against fakes claiming every
+            :class:`~maf_sandbox.Isolation` rung, not only ``PROCESS``.
         egress: Returned by the :attr:`egress` property. Defaults to
             :data:`~maf_sandbox.Egress.ALLOWLIST` so a workload under test attaches as it
             would against a live backend, rather than every offline test becoming a test of
             the attach refusal.
+        capabilities: Returned by the :attr:`capabilities` property. Defaults to
+            :data:`~maf_sandbox.DEFAULT_CAPABILITIES`, which is what this fake actually does
+            — it writes files and runs commands, and claiming more would be a lying fake.
         acquire_error: When set, ``acquire`` raises this instead of returning the sandbox —
             for exercising a kind's "sandbox unavailable" degrade path.
 
@@ -116,14 +127,16 @@ class InProcessSandboxBackend:
         sandbox: InProcessSandbox | None = None,
         *,
         name: str = "in-process",
-        isolation: str = Isolation.PROCESS,
-        egress: str = Egress.ALLOWLIST,
+        isolation: Isolation = Isolation.PROCESS,
+        egress: Egress = Egress.ALLOWLIST,
+        capabilities: frozenset[Capability] = DEFAULT_CAPABILITIES,
         acquire_error: BaseException | None = None,
     ) -> None:
         self.sandbox = sandbox if sandbox is not None else InProcessSandbox()
         self._name = name
         self._isolation = isolation
         self._egress = egress
+        self._capabilities = capabilities
         self.acquire_error = acquire_error
         self.keys: list[SandboxKey] = []
         self.specs: list[SandboxSpec] = []
@@ -136,12 +149,16 @@ class InProcessSandboxBackend:
         return self._name
 
     @property
-    def isolation(self) -> str:
+    def isolation(self) -> Isolation:
         return self._isolation
 
     @property
-    def egress(self) -> str:
+    def egress(self) -> Egress:
         return self._egress
+
+    @property
+    def capabilities(self) -> frozenset[Capability]:
+        return self._capabilities
 
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> InProcessSandbox:
         if self.acquire_error is not None:

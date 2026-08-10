@@ -19,6 +19,7 @@ from maf_sandbox import (
     Egress,
     Isolation,
     NoSandboxBackend,
+    SandboxBackendNotPermitted,
     SandboxEgressNotEnforced,
     SandboxKey,
     SandboxRouter,
@@ -39,6 +40,11 @@ _NO_EGRESS_SPEC = SandboxSpec(kind="test", work_dir="/work")
 _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent-1")
 
 
+def _router(*backends, **kwargs):
+    """Every fake here declares `process` isolation, so these routers opt below the floor."""
+    return SandboxRouter(list(backends), min_isolation=Isolation.PROCESS, **kwargs)
+
+
 def _context(scope="scope-a", thread_id="thread-1", lister=None):
     return WorkspaceContext(
         current_scope=lambda: scope,
@@ -56,7 +62,7 @@ def _session(
     logger=None,
 ):
     return SandboxToolSession(
-        SandboxRouter([backend if backend is not None else InProcessSandboxBackend()]),
+        _router(backend if backend is not None else InProcessSandboxBackend()),
         context if context is not None else _context(),
         "agent-1",
         spec,
@@ -390,13 +396,13 @@ class TestAttachGate:
         assert built == []
 
     def test_a_configured_router_attaches_exactly_one_tool(self):
-        tools = _attach(SandboxRouter([InProcessSandboxBackend()]))
+        tools = _attach(_router(InProcessSandboxBackend()))
         assert len(tools) == 1
 
 
 class TestAttachedToolShape:
     def _tool(self, **kw):
-        (tool,) = _attach(SandboxRouter([InProcessSandboxBackend()]), **kw)
+        (tool,) = _attach(_router(InProcessSandboxBackend()), **kw)
         return tool
 
     def test_the_name_is_the_one_the_factory_was_given(self):
@@ -436,7 +442,7 @@ class TestAttachedToolShape:
 class TestAttachedToolRuns:
     def test_the_body_reaches_the_sandbox_through_the_session(self):
         backend = InProcessSandboxBackend(InProcessSandbox(default_stdout="ok"))
-        (tool,) = _attach(SandboxRouter([backend]))
+        (tool,) = _attach(_router(backend))
 
         assert _call(tool, target="thing") == "ok"
         assert backend.keys == [SandboxKey("scope-a", "thread-1", "agent-1")]
@@ -444,7 +450,7 @@ class TestAttachedToolRuns:
 
     def test_a_refusal_is_returned_as_the_tools_answer(self):
         backend = InProcessSandboxBackend()
-        (tool,) = _attach(SandboxRouter([backend]), context=_context(thread_id=None))
+        (tool,) = _attach(_router(backend), context=_context(thread_id=None))
 
         assert _call(tool, target="thing") == (
             "Error: no active thread context — widget_run must be called from within a thread"
@@ -461,24 +467,29 @@ class TestEgressIsCheckedWhereTheToolAttaches:
 
     def test_a_backend_that_cannot_confine_egress_raises(self):
         with pytest.raises(SandboxEgressNotEnforced):
-            _attach(SandboxRouter([InProcessSandboxBackend(egress=Egress.UNRESTRICTED)]))
+            _attach(_router(InProcessSandboxBackend(egress=Egress.UNRESTRICTED)))
 
     def test_nothing_configured_still_returns_an_empty_list(self):
         assert _attach(SandboxRouter([])) == []
 
     def test_a_backend_that_can_confine_egress_attaches(self):
-        assert len(_attach(SandboxRouter([InProcessSandboxBackend()]))) == 1
+        assert len(_attach(_router(InProcessSandboxBackend()))) == 1
 
 
-class TestDeployedIsolationStillApplies:
+class TestTheIsolationFloorStillApplies:
     """The glue adds no way around the router's construction-time refusal."""
 
-    def test_a_weak_backend_cannot_be_attached_deployed(self):
-        with pytest.raises(PermissionError):
+    def test_a_backend_below_the_floor_cannot_be_attached(self):
+        """Supersedes the deployed flag with a host-declared floor (two-axis policy, axis 1)."""
+        with pytest.raises(SandboxBackendNotPermitted):
+            _attach(SandboxRouter([InProcessSandboxBackend(isolation=Isolation.CONTAINER)]))
+
+    def test_a_workload_that_raises_the_floor_refuses_at_attach_time(self):
+        """The spec's own floor is the other half: a kind may demand more than the host does."""
+        with pytest.raises(SandboxBackendNotPermitted):
             _attach(
-                SandboxRouter(
-                    [InProcessSandboxBackend(isolation=Isolation.CONTAINER)], deployed=True
-                )
+                _router(InProcessSandboxBackend()),
+                spec=SandboxSpec(kind="test", min_isolation=Isolation.MICROVM),
             )
 
 
@@ -495,5 +506,5 @@ class TestPurgerReExport:
 
     def test_a_host_can_wire_the_whole_maf_surface_from_this_one_module(self):
         backend = InProcessSandboxBackend()
-        purger = SandboxPurger(SandboxRouter([backend]))
+        purger = SandboxPurger(_router(backend))
         assert asyncio.run(purger.purge_scoped_thread("scope-a", "thread-1")) == 1

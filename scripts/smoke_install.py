@@ -72,46 +72,47 @@ def _smoke_maf_sandbox() -> str:
     )
 
     backend = InProcessSandboxBackend(InProcessSandbox(default_stdout="ok"))
-    router = SandboxRouter([backend])
+    # Below the default microvm floor: this part proves acquire/exec, not the floor.
+    router = SandboxRouter([backend], min_isolation=Isolation.PROCESS)
     key = SandboxKey(scope="s", thread_id="t", agent_dir="a")
     sandbox = asyncio.run(router.acquire(key, SandboxSpec(kind="smoke")))
     result = asyncio.run(sandbox.exec("true", working_directory="/w", timeout=5))
     if result.stdout != "ok":
         raise SystemExit(f"FAIL: in-process sandbox returned {result.stdout!r}")
 
-    # The rule that is a security property, not a convenience: a deployed host must refuse
-    # anything weaker than a VM boundary. If this silently stopped raising, every consumer
-    # relying on it would be quietly unprotected.
     from maf_sandbox import SandboxBackendNotPermitted
 
     try:
-        SandboxRouter([backend], deployed=True)
+        SandboxRouter([backend])
     except SandboxBackendNotPermitted:
         pass
     else:
-        raise SystemExit("FAIL: a deployed router accepted a process-isolated backend")
+        raise SystemExit(
+            "FAIL: the default minimum-isolation floor accepted a process-isolated backend"
+        )
 
-    _ = InMemoryStore({"a": "b"}), Isolation.VM
-    return "router + in-process backend + deployed-isolation rule"
+    _ = InMemoryStore({"a": "b"})
+    return "router + in-process backend + the default minimum-isolation floor"
 
 
 def _smoke_maf_sandbox_acas() -> str:
-    from maf_sandbox import Isolation
+    from maf_sandbox import Isolation, meets_floor
     from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
 
     # Constructed, not called: this asserts the package imports with its real preview SDK
     # resolved and still declares the boundary the router gates on. Reaching the service
     # would need credentials and would not test packaging.
     backend = AcasSandboxBackend(AcasSandboxConfig(endpoint="https://example.invalid"))
-    if backend.isolation != Isolation.VM:
+    if not meets_floor(backend.isolation, Isolation.MICROVM):
         raise SystemExit(
-            f"FAIL: acas backend declares {backend.isolation!r}, expected vm"
+            f"FAIL: acas backend declares {backend.isolation!r}, "
+            "which does not meet the default microvm floor"
         )
-    return "backend constructs and declares vm isolation"
+    return "backend constructs and meets the default minimum-isolation floor"
 
 
 def _smoke_maf_sandbox_bicep() -> str:
-    from maf_sandbox import SandboxRouter, WorkspaceContext
+    from maf_sandbox import Isolation, SandboxRouter, WorkspaceContext
     from maf_sandbox.testing import (
         InMemoryStore,
         InProcessSandbox,
@@ -126,7 +127,8 @@ def _smoke_maf_sandbox_bicep() -> str:
             list_files=InMemoryStore.list,
         )
         tools = make_bicep_tools(
-            SandboxRouter([backend]),
+            # Below the default floor, as in _smoke_maf_sandbox: exercises the workload.
+            SandboxRouter([backend], min_isolation=Isolation.PROCESS),
             store,
             "devops-engineer",
             context,
