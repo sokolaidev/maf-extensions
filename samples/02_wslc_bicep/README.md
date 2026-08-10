@@ -18,7 +18,7 @@ Two things are genuinely weaker here, and neither is hidden.
 ## Prerequisites
 
 - **Windows with WSL 2.9.3 or later.** `wslc` is WSL's container CLI and ships with it; `wsl --version` reports the version, `wslc --version` confirms the CLI is on `PATH`. Nothing else needs installing — no Docker, no daemon, no login.
-- **The sandbox image**, built from [`images/bicep-sandbox`](../../images/bicep-sandbox/) — the same image sample 01 runs in Azure, two layers on `mcr.microsoft.com/azurelinux/base/core:3.0`: the Bicep CLI, pinned, plus `bicepconfig.json` at `/acas/work`. Run this from the repository root:
+- **The sandbox image**, built from [`images/bicep-sandbox`](../../images/bicep-sandbox/) — the same image sample 01 runs in Azure, two layers on `mcr.microsoft.com/azurelinux/base/core:3.0`: the Bicep CLI, pinned, plus `bicepconfig.json` at `/acas/work` — sample-grade, deliberately; production replaces it with a hardened build you own (minimal, digest-pinned, scanned, rebuilt on your patch cadence) built the same way. Run this from the repository root:
 
   ```bash
   wslc build -t bicep-sandbox:local images/bicep-sandbox

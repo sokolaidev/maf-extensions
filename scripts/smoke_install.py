@@ -24,6 +24,7 @@ _PACKAGES = {
     "maf-sandbox": "maf_sandbox",
     "maf-sandbox-acas": "maf_sandbox_acas",
     "maf-sandbox-bicep": "maf_sandbox_bicep",
+    "maf-sandbox-codeact": "maf_sandbox_codeact",
     "maf-sandbox-wslc": "maf_sandbox_wslc",
 }
 
@@ -196,6 +197,73 @@ def _smoke_maf_sandbox_bicep() -> str:
     )
 
 
+def _smoke_maf_sandbox_codeact() -> str:
+    from maf_sandbox import (
+        Capability,
+        Isolation,
+        SandboxCapabilityNotSupported,
+        SandboxRouter,
+        WorkspaceContext,
+    )
+    from maf_sandbox.testing import InProcessSandbox, InProcessSandboxBackend
+    from maf_sandbox_codeact import EXECUTE_CODE_TOOL_NAME, make_codeact_tools
+
+    async def _no_listing(_store):
+        return []
+
+    context = WorkspaceContext(
+        current_scope=lambda: "smoke",
+        current_thread_id=lambda: "thread",
+        list_files=_no_listing,
+    )
+
+    def _router(backend):
+        # Process isolation, opted below the default microvm floor: the floor itself is
+        # _smoke_maf_sandbox's subject, and a bare SandboxRouter([backend]) is refused there.
+        return SandboxRouter([backend], min_isolation=Isolation.PROCESS)
+
+    backend = InProcessSandboxBackend(InProcessSandbox(default_stdout="7\n"))
+    tools = make_codeact_tools(
+        _router(backend),
+        "data-analyst",
+        context,
+        image="registry.invalid/python:3",
+    )
+    if len(tools) != 1 or getattr(tools[0], "name", None) != EXECUTE_CODE_TOOL_NAME:
+        raise SystemExit(
+            f"FAIL: expected one {EXECUTE_CODE_TOOL_NAME} tool, got {tools}"
+        )
+    tool = tools[0]
+    body = getattr(tool, "func", None) or getattr(tool, "__wrapped__", None) or tool
+
+    out = asyncio.run(body(code="print(3 + 4)"))
+    if out != "stdout:\n7":
+        raise SystemExit(f"FAIL: the tool rendered {out!r}")
+    if backend.sandbox.files != {"/work/program.py": "print(3 + 4)"}:
+        raise SystemExit(
+            f"FAIL: the program never reached the sandbox: {backend.sandbox.files}"
+        )
+    if backend.sandbox.commands[0][0] != "python3 /work/program.py":
+        raise SystemExit(f"FAIL: unexpected command {backend.sandbox.commands[0]!r}")
+
+    # The spec's `requires` has to travel in the wheel: a backend that cannot run a command
+    # is refused as the tool attaches, not when the model first calls it.
+    weak = InProcessSandboxBackend(capabilities=frozenset({Capability.FILES_IN}))
+    try:
+        make_codeact_tools(_router(weak), "data-analyst", context)
+    except SandboxCapabilityNotSupported:
+        pass
+    else:
+        raise SystemExit(
+            "FAIL: a backend that cannot exec was allowed to serve execute_code"
+        )
+
+    return (
+        "execute_code wrote the program, ran the interpreter as argv, and refused a "
+        "backend that cannot exec"
+    )
+
+
 def _smoke_maf_sandbox_wslc() -> str:
     from maf_sandbox import Egress, Isolation
     from maf_sandbox_wslc import (
@@ -226,6 +294,7 @@ _SMOKES = {
     "maf-sandbox": _smoke_maf_sandbox,
     "maf-sandbox-acas": _smoke_maf_sandbox_acas,
     "maf-sandbox-bicep": _smoke_maf_sandbox_bicep,
+    "maf-sandbox-codeact": _smoke_maf_sandbox_codeact,
     "maf-sandbox-wslc": _smoke_maf_sandbox_wslc,
 }
 

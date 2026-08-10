@@ -5,7 +5,7 @@ Thanks for looking. These packages are early (`0.x`) and the API may still move,
 ## Getting set up
 
 ```bash
-uv sync            # one workspace, one lock, all three packages editable
+uv sync            # one workspace, one lock, every package editable
 uv run pytest -q   # the whole suite, about a second
 ```
 
@@ -16,7 +16,7 @@ uv run pytest -q   # the whole suite, about a second
 ```bash
 uv run pytest -q
 uv run ruff check . && uv run ruff format --check .
-uv run pyright -p packages/maf-sandbox        # and -acas, -bicep, -wslc
+uv run pyright -p packages/maf-sandbox        # and -acas, -bicep, -codeact, -wslc
 ```
 
 Type checking is **strict** and per package, and it covers `src/` only — fixtures and hand-rolled fakes are not where a strict checker's objections are signal.
@@ -29,7 +29,7 @@ Some tests exist to stop a specific mistake, and their failure messages say whic
 
 - **`TestOnlyDeclaredDependencies`** — every module imports only the standard library, its own package, or something its `pyproject.toml` declares. An undeclared import works fine here and breaks the first person to `pip install` the package alone.
 - **`TestZeroDependencies`** (`maf-sandbox`) — the protocol modules import nothing but the standard library. That layer exists to keep backends and workloads apart; a dependency there defeats it.
-- **`TestNoDirectAzureImport`** (`maf-sandbox-bicep`) — the workload reaches a sandbox through the protocol, never through a backend, which is what lets the same tool run on Azure, on Docker, or on the in-process fake.
+- **`TestNoDirectAzureImport`** (`maf-sandbox-bicep`, `maf-sandbox-codeact`) — a workload reaches a sandbox through the protocol, never through a backend, which is what lets the same tool run on Azure, on Docker, or on the in-process fake.
 
 If a change genuinely needs to cross one of those lines, say so in the PR — the boundary may be wrong, but it should move deliberately.
 

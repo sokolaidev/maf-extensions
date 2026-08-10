@@ -49,6 +49,16 @@
         }
       ]
     },
+    "packages/maf-sandbox-codeact": {
+      "package-name": "maf-sandbox-codeact",
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "/uv.lock",
+          "jsonpath": "$.package[?(@.name.value=='maf-sandbox-codeact')].version"
+        }
+      ]
+    },
     "packages/maf-sandbox-wslc": {
       "package-name": "maf-sandbox-wslc",
       "extra-files": [

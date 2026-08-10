@@ -38,6 +38,7 @@ Three things a Release PR does need from you first, all of them because it is a 
 | `maf-sandbox-v*` | `packages/maf-sandbox` |
 | `maf-sandbox-acas-v*` | `packages/maf-sandbox-acas` |
 | `maf-sandbox-bicep-v*` | `packages/maf-sandbox-bicep` |
+| `maf-sandbox-codeact-v*` | `packages/maf-sandbox-codeact` |
 | `maf-sandbox-wslc-v*` | `packages/maf-sandbox-wslc` |
 
 Note the order this leaves you with: **the GitHub Release exists before PyPI has the package.** release-please creates it when its PR merges, and the alternatives that would delay it break release-please outright — see [`docs/maintainers.md`](docs/maintainers.md#why-a-release-exists-before-its-upload-does). If a publish fails, delete the Release and its tag; the version number is spent regardless.
