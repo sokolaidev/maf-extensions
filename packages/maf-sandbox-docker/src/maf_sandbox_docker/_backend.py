@@ -200,17 +200,23 @@ def _guest_path(working_directory: str, path: str) -> str:
 
 
 def _directory_chain(guest_path: str, working_directory: str) -> tuple[str, ...]:
-    """Every directory from ``working_directory`` down to ``guest_path``, outermost first.
+    """Every directory from the filesystem root down to ``guest_path``, outermost first.
 
-    The components :meth:`_DockerSandbox._refuse_symlinked_directories` has to stat one by one;
+    The walk starts *above* ``working_directory`` rather than at it: a nested work dir has
+    ancestors the guest can replace, and stat-ing only the work dir follows straight through
+    them — with ``/acas -> /``, ``/acas/etc`` stats as a real directory and reads ``/etc``.
     ``guest_path`` must already be confined.
     """
     base = posixpath.normpath(working_directory)
-    chain = [base]
+    chain: list[str] = []
+    walked = ""
+    for segment in (s for s in base.split(_SEPARATOR) if s):
+        walked = f"{walked}{_SEPARATOR}{segment}"
+        chain.append(walked)
     relative = _relative_path(guest_path, base)
     if relative:
         for segment in relative.split(_SEPARATOR):
-            chain.append(posixpath.join(chain[-1], segment))
+            chain.append(posixpath.join(chain[-1] if chain else _SEPARATOR, segment))
     return tuple(chain)
 
 
@@ -347,31 +353,35 @@ class _DockerSandbox:
         subprocess runs.
         """
         guest = _guest_path(working_directory, path)
-        rel = posixpath.normpath(path)
+        return await self._stat_guest(guest, posixpath.normpath(path))
+
+    async def _stat_guest(self, guest: str, rel: str) -> SandboxEntry | None:
+        """Stat an absolute guest path, with no confinement check of its own.
+
+        Split out because the component walk stats the working directory's own ancestors, which
+        by definition sit outside it — confining here would refuse the very check being made.
+        """
         result = await self._run(
             "cp", f"{self._name}:{guest}", "-", timeout=self._command_timeout, read_limit=_TAR_BLOCK
         )
         if result.returncode != 0 and not result.stdout:
             if _NO_SUCH in result.stderr.lower() or "could not find" in result.stderr.lower():
                 return None
-            raise RuntimeError(f"docker could not stat {path}: {result.stderr.strip()}")
+            raise RuntimeError(f"docker could not stat {rel}: {result.stderr.strip()}")
         if len(result.stdout) < _TAR_BLOCK:
-            raise RuntimeError(f"docker returned no tar header for {path}")
+            raise RuntimeError(f"docker returned no tar header for {rel}")
         return _entry_from_tar_header(result.stdout[:_TAR_BLOCK], rel)
 
     async def _refuse_symlinked_directories(
         self, chain: Sequence[str], *, working_directory: str
     ) -> None:
-        """Refuse unless every directory in ``chain`` is a real one.
+        """Refuse unless every directory in ``chain`` is a real one — one header read each.
 
-        A symlinked *parent* is invisible in the final entry's stat: with ``/work/out -> /etc``,
-        ``out/hostname`` stats as a regular file and reads ``/etc/hostname``, because ``docker
-        cp`` resolves the path daemon-side and tars the entry it landed on.  Only a link that is
-        the entry being tarred shows as one, so confinement is a walk down the components rather
-        than a judgement about the last one — one header read each.
+        A link is only visible when it is the entry being tarred, so a symlinked component has
+        to be found by walking, not by judging the path that was asked for.
         """
         for directory in chain:
-            entry = await self.stat_file(directory, working_directory=working_directory)
+            entry = await self._stat_guest(directory, directory)
             if entry is None:
                 return
             if entry.kind is EntryKind.OTHER:

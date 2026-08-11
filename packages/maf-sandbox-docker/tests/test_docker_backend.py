@@ -670,13 +670,37 @@ class TestReadFile:
             asyncio.run(sandbox.read_file("gone", working_directory=_WORK, max_bytes=10))
 
 
-class TestASymlinkedParentEscapesLexicalConfinement:
-    """``ln -sfn /etc /work/out``, the escape a lexical check cannot see.
+class TestASymlinkedAncestorOfTheWorkingDirectory:
+    """A nested work dir has ancestors above it, and the guest can replace those too.
 
-    Verified against a live engine: ``read lnk.txt`` is refused as not a regular file, but
-    ``stat out/hostname`` answers ``FILE``/13 bytes and ``read out/hostname`` returns
-    ``/etc/hostname``.  ``docker cp`` resolves daemon-side, so the tar header describes the
-    entry it landed on and records nothing about the parent it went through.
+    `maf-sandbox-bicep` really does use `/acas/work`, so this is not a hypothetical shape.
+    """
+
+    _HOSTNAME = b"7eebe863ee42\n"
+    _NESTED = "/acas/etc"
+
+    def test_an_ancestor_link_above_the_working_directory_is_refused(self):
+        overrides = {
+            _cp("/acas"): _DockerResult(0, _symlink_tar("acas", "/"), ""),
+            _cp(self._NESTED): _DockerResult(0, _directory_tar("etc"), ""),
+            _cp(f"{self._NESTED}/hostname"): _DockerResult(
+                0, _tar_bytes("hostname", self._HOSTNAME), ""
+            ),
+            ("cp",): _DockerResult(1, b"", "Error: Could not find the file in container"),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        with pytest.raises(ValueError, match="real directory"):
+            asyncio.run(sandbox.read_file("hostname", working_directory=self._NESTED, max_bytes=99))
+        # Stopped at the ancestor: the entry itself was never fetched.
+        assert [c.args for c in fake.matching("cp")] == [(*_cp("/acas"), "-")]
+
+
+class TestASymlinkedParentEscapesLexicalConfinement:
+    """``ln -sfn /etc /work/out``: the entry reads as a regular file, the parent link does not.
+
+    The premise test below pins that the engine really does answer through the link, so the
+    refusal tests are not passing against a fake that simply cannot reach outside.
     """
 
     _HOSTNAME = b"53769ddf53e3\n"
