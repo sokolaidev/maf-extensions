@@ -1,6 +1,6 @@
 # Two-axis sandbox policy: a minimum-isolation floor and a capability match
 
-> **Status: PROPOSED** — tracking issue [#85](https://github.com/sokolaidev/maf-extensions/issues/85). Prerequisite defect, filed separately: [#84](https://github.com/sokolaidev/maf-extensions/issues/84) (sandbox identity must incorporate the kind) — landed, alongside Rollout items 1 (the isolation ladder, the floor, and `deployed`'s removal) and 2 (capabilities and matching); the rest of this document is still proposed, and its code blocks outside those items stay design sketches. The baseline this evolves — the architecture as it ships today — is [`sandbox-architecture.md`](sandbox-architecture.md).
+> **Status: PROPOSED** — tracking issue [#85](https://github.com/sokolaidev/maf-extensions/issues/85). Prerequisite defect, filed separately: [#84](https://github.com/sokolaidev/maf-extensions/issues/84) (sandbox identity must incorporate the kind) — landed, alongside Rollout items 1 (the isolation ladder, the floor, and `deployed`'s removal), 2 (capabilities and matching) and 4 (`FILES_OUT` with caps, specified separately in [`files-out.md`](files-out.md) and shipped from there); the rest of this document is still proposed, and its code blocks outside those items stay design sketches. The baseline this evolves — the architecture as it ships today — is [`sandbox-architecture.md`](sandbox-architecture.md).
 
 ## What this replaces
 
@@ -211,4 +211,4 @@ The point of the example: every posture question — where may this run, what ma
 
 ## Rollout
 
-Each step an issue, sequenced: (1) ladder + floor + rank + `deployed` removal (`feat!`); (2) capabilities + matching; (3) kind-aware sandbox identity (#84 — first, it blocks every kind); (4) `FILES_OUT` with caps; (5) `HOST_TOOLS` registry + decorator + gates; (6) identity vocabulary (A–D, `IdentityScope`, `ATTACHED_IDENTITY`) with C′'s prerequisites (`exec` env channel, audience ⊆ egress check); (7) parked: the conformance probe suite.
+Each step an issue, sequenced — **(1) to (4) have landed**: (1) ladder + floor + rank + `deployed` removal (`feat!`); (2) capabilities + matching; (3) kind-aware sandbox identity (#84 — first, it blocks every kind); (4) `FILES_OUT` with caps, specified in [`files-out.md`](files-out.md); (5) `HOST_TOOLS` registry + decorator + gates; (6) identity vocabulary (A–D, `IdentityScope`, `ATTACHED_IDENTITY`) with C′'s prerequisites (`exec` env channel, audience ⊆ egress check); (7) parked: the conformance probe suite.
