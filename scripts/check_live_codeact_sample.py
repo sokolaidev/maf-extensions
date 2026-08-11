@@ -1,7 +1,9 @@
-"""Assert that a live `samples/03_acas_codeact` run actually computed the answer.
+"""Assert that a live CodeAct sample run actually computed the answer.
 
-The live workflow installs the *published* wheels, runs the sample against a real Azure
-sandbox, and pipes its output here. `agent.py` prints exactly two things: the model's reply
+Shared by `samples/03_acas_codeact` (a real Azure sandbox) and `samples/06_docker_codeact` (a
+Docker container) — the task, the one right answer and the printed shape are identical, so one
+checker serves both. The live workflow installs the *published* wheels, runs the sample, and
+pipes its output here. `agent.py` prints exactly two things: the model's reply
 (`response.text`) and the disposal line — never `execute_code`'s own tool result — so this
 script has no `stdout:` marker to look for and does not try.
 
@@ -84,8 +86,8 @@ def main(argv: list[str]) -> int:
             print(f"  - {reason}", file=sys.stderr)
         return 1
     print(
-        "OK  sample 03 computed the 100th Fibonacci number in a live sandbox against the "
-        "published wheels"
+        "OK  the CodeAct sample computed the 100th Fibonacci number in a live sandbox against "
+        "the published wheels"
     )
     return 0
 

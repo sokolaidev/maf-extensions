@@ -1,16 +1,19 @@
 name: Verify (live)
 
-# Installs the PUBLISHED wheels into a clean environment and runs two samples against a real
-# Azure sandbox: samples/01_acas_bicep, asserting the compiler's diagnostics came back, and
-# samples/03_acas_codeact, asserting the 100th Fibonacci number came back from code actually
-# run in the sandbox. This is the half of issue #33 that costs something: it creates a billable
-# sandbox per sample and needs a subscription, so it never runs on a pull request. It runs on
-# demand, and once after each release that could change what either sample exercises
-# (dispatched by publish-packages.yml).
+# Installs the PUBLISHED wheels into a clean environment and runs three samples, each asserting
+# its own workload actually ran: samples/01_acas_bicep (the compiler's diagnostics came back),
+# samples/03_acas_codeact (the 100th Fibonacci number came back from code run in the sandbox),
+# and samples/06_docker_codeact (the same, in a Docker container instead of an Azure microVM).
+# This is the half of issue #33 that runs after a release rather than on a pull request. The two
+# ACAS jobs each create a billable Azure sandbox and need a subscription; the docker job creates
+# no billable sandbox — its sandbox is a container on the runner — and needs no sandbox
+# configuration at all. It runs on demand, and once after each release that could change what a
+# sample exercises (dispatched by publish-packages.yml).
 #
 # Authentication is OIDC federation to Azure — no stored secret, matching how publishing works.
 # Everything each sample reads is non-secret configuration (endpoints and ids), held as
-# environment variables on the `live-verify` environment. See docs/maintainers.md.
+# environment variables on the `live-verify` environment; the docker job reads only the model's.
+# See docs/maintainers.md.
 on:
   workflow_dispatch:
     inputs:
@@ -223,3 +226,85 @@ jobs:
           /tmp/live/bin/python samples/03_acas_codeact/agent.py | tee /tmp/sample03-out.txt
           # stdlib-only, so the runner's own python3 runs it — no dependency on the venv above.
           python3 scripts/check_live_codeact_sample.py /tmp/sample03-out.txt
+
+  sample-06:
+    name: samples/06_docker_codeact against a live container
+    # The same task and assertion as sample-03, but the sandbox is a Docker container on this
+    # runner rather than a billable Azure microVM — so this job needs no sandbox subscription
+    # and creates no billable resource; the only cloud dependency is the model, reached with a
+    # federated credential. Runs for an empty input or a package it actually exercises: the
+    # router (maf-sandbox), the backend (maf-sandbox-docker) and its own kind (maf-sandbox-
+    # codeact); an acas, bicep or wslc release cannot change what this sample does.
+    if: >-
+      inputs.package == ''
+      || contains(fromJSON('["maf-sandbox", "maf-sandbox-codeact", "maf-sandbox-docker"]'), inputs.package)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # For the model only: `live-verify` holds the non-secret Azure OpenAI configuration and is
+    # half the federated-credential subject. There is no sandbox configuration to hold — the
+    # docker backend reads none.
+    environment: live-verify
+    permissions:
+      # Mints the OIDC token azure/login exchanges. No secret is involved.
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      # From PyPI, no local fallback. `azure-identity` is explicit here: unlike sample 03, the
+      # docker backend does not depend on it, and the sample authenticates the model with
+      # `DefaultAzureCredential`.
+      - name: Install the published wheels into a clean environment
+        run: |
+          set -euo pipefail
+          uv venv /tmp/live
+          uv pip install --python /tmp/live/bin/python \
+            maf-sandbox-docker maf-sandbox-codeact agent-framework-openai azure-identity
+          uv pip list --python /tmp/live/bin/python
+
+      # The federation inputs azure/login needs and the two model variables the sample reads —
+      # there is no sandbox configuration for this backend. azure/login's own error for an empty
+      # client-id does not say which field is missing, so this checks the login variables too,
+      # by name, before the login step reaches them.
+      - name: Check the live configuration is present
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
+            AZURE_OPENAI_ENDPOINT AZURE_OPENAI_CHAT_MODEL; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::the live-verify environment is missing variables: ${missing[*]}. See docs/maintainers.md."
+            exit 1
+          fi
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # ubuntu-latest ships a running Docker daemon, so the sandbox is free and local. The
+      # sample authenticates the model with DefaultAzureCredential, which the az login above
+      # satisfies — the AZURE_CLIENT_ID/TENANT/SUBSCRIPTION values are login inputs only and are
+      # deliberately not exported here, so DefaultAzureCredential resolves through the CLI.
+      - name: Run sample 06 and assert the computed answer came back
+        env:
+          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+        run: |
+          set -euo pipefail
+          /tmp/live/bin/python samples/06_docker_codeact/agent.py | tee /tmp/sample06-out.txt
+          # The same assertion as sample 03: same task, same one right answer, same disposal line.
+          python3 scripts/check_live_codeact_sample.py /tmp/sample06-out.txt
