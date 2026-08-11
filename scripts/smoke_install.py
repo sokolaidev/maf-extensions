@@ -209,7 +209,11 @@ def _smoke_maf_sandbox_codeact() -> str:
         SandboxRouter,
         WorkspaceContext,
     )
-    from maf_sandbox.testing import InMemoryStore, InProcessSandbox, InProcessSandboxBackend
+    from maf_sandbox.testing import (
+        InMemoryStore,
+        InProcessSandbox,
+        InProcessSandboxBackend,
+    )
     from maf_sandbox_codeact import (
         EXECUTE_CODE_TOOL_NAME,
         CodeactOutputs,
@@ -232,7 +236,9 @@ def _smoke_maf_sandbox_codeact() -> str:
 
     def _body(tools):
         if len(tools) != 1 or getattr(tools[0], "name", None) != EXECUTE_CODE_TOOL_NAME:
-            raise SystemExit(f"FAIL: expected one {EXECUTE_CODE_TOOL_NAME} tool, got {tools}")
+            raise SystemExit(
+                f"FAIL: expected one {EXECUTE_CODE_TOOL_NAME} tool, got {tools}"
+            )
         tool = tools[0]
         return getattr(tool, "func", None) or getattr(tool, "__wrapped__", None) or tool
 
@@ -249,7 +255,9 @@ def _smoke_maf_sandbox_codeact() -> str:
     # Each call gets a directory of its own under the work dir, so the path is not fixed.
     written = list(backend.sandbox.files.items())
     if len(written) != 1 or not written[0][0].startswith("/work/"):
-        raise SystemExit(f"FAIL: the program never reached the sandbox: {backend.sandbox.files}")
+        raise SystemExit(
+            f"FAIL: the program never reached the sandbox: {backend.sandbox.files}"
+        )
     program_path, source = written[0]
     if not program_path.endswith("/program.py") or source != "print(3 + 4)":
         raise SystemExit(f"FAIL: the program landed at {program_path!r} as {source!r}")
@@ -270,7 +278,9 @@ def _smoke_maf_sandbox_codeact() -> str:
     )
     asyncio.run(with_files(code="print(1)", files=["data.csv"]))
     if not any(path.endswith("/data.csv") for path in shared.sandbox.files):
-        raise SystemExit(f"FAIL: the listed file was not shared: {shared.sandbox.files}")
+        raise SystemExit(
+            f"FAIL: the listed file was not shared: {shared.sandbox.files}"
+        )
     refused = asyncio.run(with_files(code="print(1)", files=["absent.csv"]))
     if "not in this tool's file listing" not in refused:
         raise SystemExit(f"FAIL: an unlisted file was not refused: {refused!r}")
@@ -307,7 +317,9 @@ def _smoke_maf_sandbox_codeact() -> str:
     )
     saved = asyncio.run(with_outputs(code="print(1)", outputs=["report.csv"]))
     if landed != ["report.csv"] or "saved report.csv" not in saved:
-        raise SystemExit(f"FAIL: the declared output did not land: {landed} / {saved!r}")
+        raise SystemExit(
+            f"FAIL: the declared output did not land: {landed} / {saved!r}"
+        )
 
     # The spec's `requires` has to travel in the wheel: a backend that cannot run a command
     # is refused as the tool attaches, not when the model first calls it.
