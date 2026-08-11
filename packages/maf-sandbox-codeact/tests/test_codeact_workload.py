@@ -702,11 +702,34 @@ class TestTheInboundCapsAreEnforcedHere:
     def test_a_set_within_the_caps_is_shared(self):
         sandbox = _ScriptedSandbox()
         store = InMemoryStore({"a.csv": "1", "b.csv": "2"})
-        tool = self._tool(sandbox, store, files_in=replace(DEFAULT_TRANSFER_LIMITS, max_files=2))
+        # Three, not two: the program is one of the files written into the sandbox.
+        tool = self._tool(sandbox, store, files_in=replace(DEFAULT_TRANSFER_LIMITS, max_files=3))
 
         _run(tool, "print(1)", files=["a.csv", "b.csv"])
         run_dir = _run_dirs(sandbox)[0]
         assert {f"{run_dir}/a.csv", f"{run_dir}/b.csv"} <= set(sandbox.files)
+
+    def test_the_program_itself_counts_against_the_file_count(self):
+        """The spec requires `FILES_IN` even with no store, because `program.py` crosses this
+        boundary too — so a tally that skipped it let `max_files=1` write two files."""
+        sandbox = _ScriptedSandbox()
+        store = InMemoryStore({"a.csv": "1"})
+        tool = self._tool(sandbox, store, files_in=replace(DEFAULT_TRANSFER_LIMITS, max_files=1))
+
+        out = _run(tool, "print(1)", files=["a.csv"])
+        assert "at most 1" in out
+        assert sandbox.contents == {}
+
+    def test_the_program_itself_counts_against_the_byte_ceilings(self):
+        """A large `code` cleared both ceilings while every shared file was measured."""
+        sandbox = _ScriptedSandbox()
+        tool = _tool(
+            _backend(sandbox), files_in=replace(DEFAULT_TRANSFER_LIMITS, max_bytes_per_file=10)
+        )
+
+        out = _run(tool, "print('" + "x" * 100 + "')")
+        assert "at most 10 bytes per file" in out
+        assert sandbox.contents == {}
 
     def test_the_spec_carries_the_caps_the_host_chose(self):
         limits = replace(DEFAULT_TRANSFER_LIMITS, max_files=3)
@@ -818,9 +841,30 @@ class TestDeclaredOutputs:
         name = "a" * (MAX_ARTIFACT_NAME_BYTES - 5)  # valid on its own, over budget with a prefix
 
         out = _run(tool, "print('hi')", outputs=[name])
-        assert "too long to save" in out
+        assert "over the 255-byte ceiling" in out
         assert sandbox.raw_commands == []
         assert sink.names == []
+
+    def test_a_name_that_only_grows_past_the_ceiling_once_normalized_is_refused_up_front(self):
+        """The delivered spelling is what `collect_outputs` judges: 43 × U+0958 is 129 bytes as
+        declared and 258 after NFC, so checking the bare name lets the program run first."""
+        sandbox = _ProducingSandbox()
+        sink = _RecordingSink()
+        tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, sink)
+
+        out = _run(tool, "print('hi')", outputs=["क़" * 43])
+        assert "ceiling" in out
+        assert sandbox.raw_commands == []
+
+    def test_two_names_that_are_one_file_once_saved_are_refused_up_front(self):
+        """`collect_outputs` keys collisions on the NFC-lowered name, so an exact-match check
+        here would let the pair through and have the whole collection refused after the run."""
+        sandbox = _ProducingSandbox()
+        tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, _RecordingSink())
+
+        out = _run(tool, "print('hi')", outputs=["Report.csv", "report.csv"])
+        assert "one file once saved" in out
+        assert sandbox.raw_commands == []
 
     def test_a_name_that_fits_with_the_prefix_is_accepted(self):
         """The other side of the bound, so the budget cannot drift into refusing everything."""

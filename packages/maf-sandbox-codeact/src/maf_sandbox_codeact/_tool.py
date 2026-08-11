@@ -28,10 +28,10 @@ from uuid import uuid4
 
 from maf_sandbox import (
     DEFAULT_TRANSFER_LIMITS,
-    MAX_ARTIFACT_NAME_BYTES,
     Capability,
     DeclaredOutput,
     ExecResult,
+    NameNormalization,
     OutputSink,
     SandboxArtifactNameInvalid,
     SandboxOutputError,
@@ -390,6 +390,7 @@ async def _execute(
             max_files=session.spec.files_out.max_files,
             reserved=reserved,
             run_id=run_id,
+            normalization=_normalization(session),
         )
         if isinstance(checked, str):
             return checked
@@ -398,15 +399,22 @@ async def _execute(
     # Read host-side and cap before acquiring anything: a request over the workload's own
     # `files_in` bounds should not cost a sandbox, and nothing may be written until the whole
     # set is known to fit — a program handed half its inputs computes a confident wrong answer.
-    shared: list[tuple[str, str]] = []
+    # `program.py` is counted with them: the spec requires FILES_IN even with no store
+    # because the program itself crosses this boundary, so leaving it out let `max_files=1`
+    # write two files and an arbitrarily large `code` clear both byte ceilings.
+    inbound: list[tuple[str, str]] = [(_PROGRAM_FILENAME, code)]
     if store is not None:
         resolved = await _resolve_workspace_files(session, store, files, reserved=reserved)
         if isinstance(resolved, str):
             return resolved
-        read = await _read_workspace_files(store, resolved, session.spec.files_in)
+        read = await _read_workspace_files(store, resolved)
         if isinstance(read, str):
             return read
-        shared = read
+        inbound += read
+    over_cap = _over_inbound_caps(inbound, session.spec.files_in)
+    if over_cap is not None:
+        return over_cap
+    shared = inbound[1:]
 
     sandbox = await session.acquire(key)
     if isinstance(sandbox, str):
@@ -478,12 +486,6 @@ async def _resolve_workspace_files(
     """
     if not files:
         return []
-    allowed = session.spec.files_in.max_files
-    if len(files) > allowed:
-        return (
-            f"Error: {len(files)} files were requested and this tool shares at most {allowed} "
-            f"per call. Nothing was shared."
-        )
     listing = await session.list_files(store)
     if isinstance(listing, str):
         return listing
@@ -535,20 +537,15 @@ def _listing_hint(name: str, listing: list[str]) -> str:
 
 
 async def _read_workspace_files(
-    store: "AgentFileStore", names: list[str], limits: TransferLimits
+    store: "AgentFileStore", names: list[str]
 ) -> list[tuple[str, str]] | str:
-    """Read every requested file, holding the whole set to the workload's ``files_in`` caps.
-
-    The bytes are counted **encoded**, since that is what crosses the boundary, and the caps
-    are the spec's own: no backend's ``write_file`` takes a limit, so a bound declared and not
-    applied here is applied nowhere.
+    """Read every requested file into memory, or answer with the refusal.
 
     Text only, because ``AgentFileStore.read`` answers with ``str``.  The protocol's
     ``write_file`` takes ``bytes`` too, so a binary input is reachable the day a store can hold
     one; nothing here needs to change first.
     """
     read: list[tuple[str, str]] = []
-    total = 0
     for name in names:
         try:
             content = await store.read(name)
@@ -561,20 +558,39 @@ async def _read_workspace_files(
             # parse.
             logger.warning("execute_code: %r is listed but has no content", name)
             return f"Error: {name!r} is listed in the workspace but has no content"
-        size = len(content.encode("utf-8"))
+        read.append((name, content))
+    return read
+
+
+def _over_inbound_caps(inbound: "Sequence[tuple[str, str]]", limits: TransferLimits) -> str | None:
+    """Hold everything about to cross into the sandbox to the workload's ``files_in`` caps.
+
+    Counted **encoded**, since that is what crosses, and counted over the whole set including
+    the program: no backend's ``write_file`` takes a limit, so a bound not applied here is
+    applied nowhere.  Nothing is written until the set is known to fit — a program handed half
+    its inputs does not fail, it computes a confident wrong answer.
+    """
+    if len(inbound) > limits.max_files:
+        return (
+            f"Error: {len(inbound)} files would be written into the sandbox — your program and "
+            f"{len(inbound) - 1} shared — and this tool writes at most {limits.max_files} per "
+            f"call. Nothing was shared."
+        )
+    total = 0
+    for name, content in inbound:
+        size = len(content.encode())
         if size > limits.max_bytes_per_file:
             return (
-                f"Error: {name!r} is {size} bytes and this tool shares at most "
+                f"Error: {name!r} is {size} bytes and this tool writes at most "
                 f"{limits.max_bytes_per_file} bytes per file. Nothing was shared."
             )
         total += size
         if total > limits.max_total_bytes:
             return (
-                f"Error: sharing these files would move {total} bytes and this tool shares at "
-                f"most {limits.max_total_bytes} per call. Nothing was shared."
+                f"Error: this call would write {total} bytes into the sandbox and this tool "
+                f"writes at most {limits.max_total_bytes} per call. Nothing was shared."
             )
-        read.append((name, content))
-    return read
+    return None
 
 
 async def _write_shared(sandbox: "Sandbox", name: str, guest_path: str, content: str) -> str | None:
@@ -592,39 +608,65 @@ async def _write_shared(sandbox: "Sandbox", name: str, guest_path: str, content:
 # --- Files out -----------------------------------------------------------------------------
 
 
+def _normalization(session: SandboxToolSession) -> NameNormalization:
+    """What the attached sink does to a name, which decides the spelling to judge."""
+    sink = session.output_sink
+    return sink.normalization if sink is not None else NameNormalization.NFC
+
+
 def _validated_output_names(
-    names: "Sequence[str]", *, max_files: int, reserved: set[str], run_id: str
+    names: "Sequence[str]",
+    *,
+    max_files: int,
+    reserved: set[str],
+    run_id: str,
+    normalization: NameNormalization,
 ) -> list[str] | str:
     """Settle every output name before the program runs, or answer with the refusal.
 
-    Up front rather than after, because these names are the model's and every one of them is
-    cheaper to argue about before a program has spent a turn producing files under them — which
-    is why the length bound is applied to the **guest path**, prefix included. Judging the bare
-    name would accept a 250-byte one here and have ``collect_outputs`` refuse the 263-byte
-    declaration it becomes, after the run, for a reason the model could not have foreseen.
+    Up front rather than after, because these names are the model's and every one is cheaper to
+    argue about before a program has spent a turn producing files under them.  Which means each
+    rule has to be applied to the **spelling that will actually be judged later** — the guest
+    path with its run prefix, and the delivered name after the sink's normalization.  A rule
+    applied to the bare name is a rule ``collect_outputs`` re-applies to a longer string, and
+    the difference is a refusal arriving one whole run too late.
+
+    ``collect_outputs`` remains the authority; nothing here relaxes it.  If the two ever
+    disagree the check below is the one that is wrong, and the cost of that is the post-run
+    refusal this exists to avoid — never a name reaching a host it should not have.
     """
     if len(names) > max_files:
         return (
             f"Error: {len(names)} output files were declared and this tool saves at most "
             f"{max_files} per call."
         )
-    budget = MAX_ARTIFACT_NAME_BYTES - len(f"{run_id}/".encode())
-    seen: set[str] = set()
+    prefix = f"{run_id}/"
+    seen: dict[str, str] = {}
     for name in names:
-        try:
-            validate_artifact_name(name)
-        except SandboxArtifactNameInvalid as exc:
-            return f"Error: {name!r} cannot be saved — {exc}"
-        if len(name.encode("utf-8")) > budget:
-            return (
-                f"Error: {name!r} is too long to save — at most {budget} bytes of UTF-8 here, "
-                f"because each call's files sit in a directory of their own."
-            )
+        # NFC is not length-non-increasing — 43 × U+0958 is 129 bytes declared and 258
+        # delivered — so the name to hold to the invariant is the one the sink will receive.
+        delivered = (
+            name if normalization is NameNormalization.NONE else unicodedata.normalize("NFC", name)
+        )
+        for spelling in (name, delivered, prefix + name):
+            try:
+                validate_artifact_name(spelling)
+            except SandboxArtifactNameInvalid as exc:
+                return f"Error: {name!r} cannot be saved — {exc}"
         if name in reserved:
             return f"Error: {name!r} cannot be saved — this tool writes that file itself."
-        if name in seen:
-            return f"Error: {name!r} was declared twice."
-        seen.add(name)
+        # The same file two ways: NFC and case-folded, which is what `collect_outputs` keys its
+        # collision check on. `normpath` is not needed alongside it, because the invariant above
+        # has already refused every spelling it would collapse.
+        key = delivered.lower()
+        if key in seen:
+            earlier = seen[key]
+            return (
+                f"Error: {name!r} and {earlier!r} are one file once saved"
+                if earlier != name
+                else f"Error: {name!r} was declared twice."
+            )
+        seen[key] = name
     return list(names)
 
 
@@ -651,6 +693,7 @@ async def _collect(
             max_files=session.spec.files_out.max_files,
             reserved=reserved,
             run_id=run_id,
+            normalization=_normalization(session),
         )
         if isinstance(checked, str):
             return checked
@@ -714,7 +757,12 @@ async def _read_manifest(
 
     try:
         document: object = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except ValueError as exc:
+        # Every way this parse fails with a value: `JSONDecodeError` and `UnicodeDecodeError`
+        # are both `ValueError`, and so is the refusal to convert an integer literal longer
+        # than `sys.get_int_max_str_digits()` — 4300 digits by default, a rounding error
+        # against the size ceiling. Naming only the two subclasses left that third one to
+        # escape the tool body.
         return f"Error: {_MANIFEST_FILENAME} is not valid JSON ({exc}), so no files were saved."
     except RecursionError:
         # A few thousand nested arrays fit in far less than the size ceiling, and the parser
