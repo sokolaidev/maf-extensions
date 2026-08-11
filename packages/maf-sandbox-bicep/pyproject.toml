@@ -31,7 +31,7 @@ dependencies = [
     # Upper-bounded too: maf-sandbox has not yet reached a stable API, so every release
     # before 1.0.0 may include breaking changes (see its CHANGELOG). Moving either end of
     # this range has an order to it — see RELEASING.md.
-    "maf-sandbox>=0.7.0,<0.9",
+    "maf-sandbox>=0.7.0,<0.10",
     # The `@tool` decorator and AgentFileStore. MAF is a genuine dependency of the tool
     # itself, not of the host application.
     "agent-framework-core>=1.13.0,<2",
