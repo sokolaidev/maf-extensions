@@ -120,27 +120,23 @@ jobs:
             --body "$body"
           echo "opened ${branch}" >> "$GITHUB_STEP_SUMMARY"
 
-      # Every pull request this workflow opens — Release PRs, the floor bump, the ceiling
-      # widening — starts its checks and then stops at `action_required`: a bot author trips
-      # the approval gate, so the required check never reports and the pull request sits
-      # BLOCKED until someone clears it by hand, once per pull request, every release.
-      #
-      # A dispatch is not subject to that gate, and its check runs land on the same head SHA,
-      # which is what the required contexts are evaluated against. This is the documented
-      # manual remedy, done automatically.
-      #
-      # Approving the held run instead would be one run rather than two, but the REST
-      # endpoint for it takes an OAuth or classic personal access token, not GITHUB_TOKEN —
-      # a stored credential in a repository that deliberately has none.
+      # A bot author trips the approval gate, so the run a bot-opened pull request creates
+      # waits at `action_required` and its required check never reports. A dispatched run
+      # is not held and lands its checks on the same head SHA, which is what the required
+      # contexts are evaluated against. Approving the held run instead needs a stored
+      # credential: GITHUB_TOKEN cannot call that endpoint.
       - name: Start the checks on the pull requests this workflow opened
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          gh pr list --state open --json headRefName,headRefOid,author \
-            --jq '.[] | select(.author.login == "app/github-actions")
-                      | [.headRefName, .headRefOid] | @tsv' \
+          # Author filtered server-side, before the limit: `gh pr list` returns 30 by
+          # default, so selecting the bot's afterwards would drop an older Release PR
+          # behind 30 newer ones and leave it blocked for good.
+          gh pr list --state open --author "app/github-actions" --limit 100 \
+            --json headRefName,headRefOid \
+            --jq '.[] | [.headRefName, .headRefOid] | @tsv' \
           | while IFS=$'\t' read -r branch sha; do
               # Skip one already running or already reported: a dispatch per push to main
               # would otherwise re-run every open bot pull request each time.
