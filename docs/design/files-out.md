@@ -104,9 +104,9 @@ class Sandbox(Protocol):
 
 `SandboxEntry` is shared with `FILES_OUT`, because `stat_file` returns one.
 
-`size_bytes` is `int | None`, and **`None` fails closed**: ACAS's `FileInfo.size` is `int | None` and an omitted field yields `None`, so coercing unknown to `0` would make a size cap read that file as free. An entry whose size cannot be determined is refused, never read.
+`size_bytes` is `int | None`, and **`None` fails closed**: ACAS's stat payload reports `size` as an optional integer, so coercing unknown to `0` would make a size cap read that file as free — as would passing on a negative, which clears the pre-read check outright and then reduces the collection's running total. An entry whose size cannot be determined, or cannot be believed, is refused rather than read.
 
-`kind` is a **typed field**, not a mode string to parse. ACAS's `FileInfo` carries `is_directory` — a two-way split with no symlink flag — and leaves type information in `mode: str | None`; Docker's stat carries both a Go `ModeSymlink` bit and an explicit `linkTarget`. `OTHER` also absorbs Windows junctions and reparse points, so the vocabulary survives a non-POSIX guest.
+`kind` is a **typed field**, not a mode string to parse. ACAS's `FileInfo` carries `is_directory` and nothing else about type — no symlink flag, and `mode` is an int of permission bits with no `S_IFMT` in it — so the backend reads the service's raw payload, which does carry `isSymlink` and `symlinkTarget`; Docker's stat carries both a Go `ModeSymlink` bit and an explicit `linkTarget`. `OTHER` also absorbs Windows junctions and reparse points, so the vocabulary survives a non-POSIX guest.
 
 ### Caps
 
@@ -175,9 +175,11 @@ Only regular files are ever read. A symlink is refused whether or not its target
 |---|---|---|
 | Docker | `HEAD /archive` returns a Go `ModeSymlink` bit **and** an explicit `linkTarget`; `docker cp` without `-L` additionally tars the link *entry* rather than the target's bytes | Strongest — two independent mechanisms, both verified against a live engine |
 | wslc | **None available.** `cp` reports success and writes a **0-byte file** for a symlink — neither preserved, nor followed, nor refused, and indistinguishable from a legitimately empty artifact | Cannot meet the rule; the backend does not serve `FILES_OUT` |
-| ACAS | `stat_file` returns `is_directory` (a two-way split) and `mode: str \| None`, so the type must be parsed out of the mode string | Weakest — **fail closed when `mode` is `None`** |
+| ACAS | The data plane's stat payload carries `isSymlink` and `symlinkTarget` explicitly; the SDK's typed `FileInfo` drops both, so the backend reads the raw payload | Middling — one explicit flag, from an undocumented preview shape, and the read follows links |
 
-The reference backend is the weak one, and its defence is a parse of an undocumented preview-SDK field. That is acceptable only stated plainly, and it should be raised upstream: `FileInfo` ought to carry the entry type as a field rather than leaving it in a mode string.
+The reference backend's defence rests on an undocumented preview shape it has to read past the SDK to reach, and a payload that omits either flag is refused rather than assumed regular. That is acceptable only stated plainly, and it is raised upstream ([#136](https://github.com/sokolaidev/maf-extensions/issues/136)): `FileInfo` ought to carry the entry type the service already sends.
+
+Classifying the last component is not enough on any of them. A symlinked *parent* is invisible in the final entry's stat — `out -> /etc` makes `out/hostname` a regular 12-byte file — so both real backends stat every parent component from the filesystem root down and refuse a link found in the chain, on `stat_file` as much as on the read. Only a link is a confinement failure there; any other non-directory is an ordinary `ENOTDIR`. Neither API offers a no-follow read, so a guest that swaps a stat-ed component between the walk and the read is followed; that residual is stated rather than closed.
 
 ## Cross-platform rules
 
@@ -295,7 +297,7 @@ One further hazard, which is the same shape as the bug this section fixes: `sand
 
 - **Declare it honestly or not at all.** There is no router-side emulation and there must not be.
 - **Docker** implements stat as `HEAD /containers/{id}/archive` (`X-Docker-Container-Path-Stat`: name, size, Go-mode, mtime, `linkTarget`) and reads as `docker cp <name>:<path> -`, a tar on stdout that works against an image with no shell. It does **not** declare `FILES_LIST`.
-- **ACAS** reads natively and is the only backend that can serve `FILES_LIST`. Its obligation is the symlink `mode` parse above, failing closed on `None`.
+- **ACAS** reads natively and is the only backend that can serve `FILES_LIST`. Its obligation is the raw-payload `isSymlink` read above, refusing a payload that omits it, plus the parent walk.
 - **wslc does not serve `FILES_OUT`, and the tar-out plan this document used to describe does not exist.** `wslc container cp` has three forms — local→container, container→local, and stdin→container — and **no container→stdout form**, so there is no reverse of the one-entry tar it writes on the way in. Container→local writes a raw file to a host path, with no tar header and therefore no type or size ahead of the content. Worse, a symlink source exits 0, writes nothing to stderr, and produces a 0-byte file. Serving the capability here would mean an `exec`-based `stat` before every read, which requires the image to contain a shell — the dependency the `FILES_LIST` split exists to avoid. Deferred in [#125](https://github.com/sokolaidev/maf-extensions/issues/125); filed upstream as [microsoft/WSL#41309](https://github.com/microsoft/WSL/issues/41309) (the symlink bug) and [microsoft/WSL#41310](https://github.com/microsoft/WSL/issues/41310) (the missing stdout form), either of which would reopen the question.
 - **base64-over-exec is opt-in convenience, never the contract.** It depends on `base64` and a shell existing in the image, which the native copy paths do not. If it ships it is **one reviewed implementation in `maf_sandbox`**, never a parse per backend, and it carries its own lower maxima.
 - **The micro-VM standard gains a clause.** For a backend claiming `microvm` *and* `FILES_OUT`, the declared channel is reads confined to the working directory with non-regular entries refused.
@@ -327,7 +329,7 @@ The DOT source goes in through `FILES_IN` as file content, so no shell sees mode
 1. **Protocol** — the vocabulary above, the pull surface on `Sandbox`, the two capabilities, the spec fields, the widened `write_file`, the error taxonomy, the `ensure_can_serve` match, and the `maf_sandbox.testing` fake. Two existing tests are tripwires that must be updated deliberately rather than silenced: `TestModuleInventory` requires every `maf_sandbox` module to be classified, and `TestSpecDefaults` asserts each spec field's default one by one.
 2. **Glue** — `Artifact`, `LandedArtifact`, `OutputSink`, name validation and normalization, the case-collision check, `collect_outputs`, and the declarations fix. `collect_outputs` belongs in the **stdlib-only core**, not in `maf_sandbox.maf`: it needs nothing from `agent_framework`, and registering it in the protocol-module set makes `TestZeroDependencies` enforce that automatically.
 3. **Docker, first and as the acceptance gate.** The backend declares `FILES_OUT` from the day it exists, and its e2e is what proves the protocol: write, exec, stat, read back, cap refusal, symlink refusal. It goes first because it is the only suite that runs on a GitHub runner with no subscription, no login and no disk-image import — and the only backend a contributor can exercise on the machine in front of them.
-4. **ACAS** — natively, including the symlink `mode` parse. It remains the *reference* for shape, since it is the only backend that can serve `FILES_LIST`; it follows Docker because verifying it requires infrastructure a pull request cannot assume.
+4. **ACAS** — natively, including the raw-payload symlink read. It remains the *reference* for shape, since it is the only backend that can serve `FILES_LIST`; it follows Docker because verifying it requires infrastructure a pull request cannot assume.
 5. **The diagram kind and `samples/07`** — end to end.
 6. ~~**wslc** — the bytes seam first, then tar-out.~~ **Deferred** ([#125](https://github.com/sokolaidev/maf-extensions/issues/125)): there is no tar-out to reach. See the backend section above; the two upstream gaps that would reopen it are [microsoft/WSL#41309](https://github.com/microsoft/WSL/issues/41309) and [microsoft/WSL#41310](https://github.com/microsoft/WSL/issues/41310).
 

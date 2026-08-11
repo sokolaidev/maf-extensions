@@ -16,6 +16,7 @@ import logging
 import posixpath
 import shlex
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any, cast
 
@@ -190,8 +191,23 @@ def _relative_path(guest_path: str, base: str) -> str | None:
     return guest_path[len(prefix) :]
 
 
-def _entry_from_payload(payload: Mapping[str, Any], relative_path: str) -> SandboxEntry:
-    """One raw stat payload as a :class:`~maf_sandbox.SandboxEntry`.
+@dataclass(frozen=True)
+class _GuestStat:
+    """One statted guest path: the protocol's entry, plus what the payload said it was.
+
+    :data:`~maf_sandbox.EntryKind.OTHER` is the protocol's word for every non-regular,
+    non-directory entry, so the entry alone cannot tell the component walk whether a path
+    through this component leaves the working directory or is merely ``ENOTDIR``.  The
+    payload's ``isSymlink`` knows, so it is carried here rather than collapsed away before
+    the walk sees it.
+    """
+
+    entry: SandboxEntry
+    is_symlink: bool
+
+
+def _stat_from_payload(payload: Mapping[str, Any], relative_path: str) -> _GuestStat:
+    """One raw stat payload as a :class:`_GuestStat`.
 
     A payload missing either type flag is **refused**, never read as a regular file: those two
     booleans are the whole of this backend's symlink refusal, so a service that stops sending
@@ -208,23 +224,29 @@ def _entry_from_payload(payload: Mapping[str, Any], relative_path: str) -> Sandb
             "at, so an unknown type is a read of the wrong file."
         )
     if is_symlink:
-        return SandboxEntry(path=relative_path, kind=EntryKind.OTHER, size_bytes=None)
-    if is_dir:
-        return SandboxEntry(path=relative_path, kind=EntryKind.DIRECTORY, size_bytes=None)
-    return SandboxEntry(path=relative_path, kind=EntryKind.FILE, size_bytes=_size_bytes(payload))
+        entry = SandboxEntry(path=relative_path, kind=EntryKind.OTHER, size_bytes=None)
+    elif is_dir:
+        entry = SandboxEntry(path=relative_path, kind=EntryKind.DIRECTORY, size_bytes=None)
+    else:
+        entry = SandboxEntry(
+            path=relative_path, kind=EntryKind.FILE, size_bytes=_size_bytes(payload)
+        )
+    return _GuestStat(entry=entry, is_symlink=is_symlink)
 
 
 def _size_bytes(payload: Mapping[str, Any]) -> int | None:
-    """A regular file's size, or ``None`` when the service reported none.
+    """A regular file's size, or ``None`` when the service reported none it can be trusted on.
 
-    ``None`` fails closed upstream, so an absent or non-integer ``size`` is passed through as
-    unknown rather than coerced to zero, which would make every cap read that one file as free.
-    Only a regular file is measured at all: a symlink's ``size`` is the length of the target
-    string, not of anything readable.
+    ``None`` fails closed upstream, so an absent, non-integer or negative ``size`` is passed
+    through as unknown rather than taken at face value, which would make every cap read that
+    one file as free — or, for a negative, as *less* than free: it clears the pre-read cap
+    check and is then subtracted from the collection's running total.  Only a regular file is
+    measured at all: a symlink's ``size`` is the length of the target string, not of anything
+    readable.
     """
     size: Any = payload.get(_FIELD_SIZE)
     # `bool` is an `int`, and `True` would otherwise report as a one-byte file.
-    if isinstance(size, bool) or not isinstance(size, int):
+    if isinstance(size, bool) or not isinstance(size, int) or size < 0:
         return None
     return size
 
@@ -252,23 +274,35 @@ def _listed_entries(payload: Mapping[str, Any], path: str) -> tuple[Mapping[str,
     return tuple(cast("list[Mapping[str, Any]]", listed))
 
 
-def _listed_entry_path(payload: Mapping[str, Any], working_directory: str) -> str:
-    """Where one listed entry sits, relative to the working directory the call named."""
+def _listed_entry_path(payload: Mapping[str, Any], *, listed: str, working_directory: str) -> str:
+    """Where one listed entry sits, relative to the working directory the call named.
+
+    Confined to ``working_directory`` *and* required to be a direct child of ``listed``: the
+    protocol's listing enumerates one level, so a sibling or a grandchild in the response is a
+    payload this backend cannot read, not a path a caller asked to traverse — hence
+    :class:`AcasEntryPayloadIncomplete` rather than the ``ValueError`` a traversal raises.
+    """
     reported: Any = payload.get(_FIELD_PATH)
     if not isinstance(reported, str) or not reported:
         raise AcasEntryPayloadIncomplete(
             f"the sandbox service listed an entry with no {_FIELD_PATH!r}, so where it sits "
             "cannot be told"
         )
-    _, relative = _confined(reported, working_directory)
+    resolved, relative = _confined(reported, working_directory)
+    if posixpath.dirname(resolved) != listed:
+        raise AcasEntryPayloadIncomplete(
+            f"the sandbox service listed {reported!r} as an entry of {listed!r}, which is not "
+            "its parent, and a listing enumerates one level only"
+        )
     return relative
 
 
 class _AcasSandbox:
     """A running ACA sandbox, narrowed to what a workload is allowed to do with it."""
 
-    def __init__(self, sandbox_client: Any) -> None:
+    def __init__(self, sandbox_client: Any, read_timeout: float) -> None:
         self._sc = sandbox_client
+        self._read_timeout = read_timeout
 
     @property
     def sandbox_id(self) -> str:
@@ -326,12 +360,20 @@ class _AcasSandbox:
     async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
         """Describe ``path``, or return ``None`` when nothing is there.
 
-        Stat is ``lstat``-like: a symlink is described as itself, never as its target.
+        Stat is ``lstat``-like: a symlink is described as itself, never as its target.  Its
+        *parents* are walked first, exactly as a read walks them: no byte of ``/etc`` crosses
+        when ``out -> /etc`` is statted through, but its type and size do, and that is
+        metadata from outside the boundary.
+
+        The **final** component is described rather than refused: a link reported as
+        :data:`~maf_sandbox.EntryKind.OTHER` is how a caller learns it is one.
         """
         guest, relative = _confined(path, working_directory)
-        return await self._stat_guest(guest, relative)
+        await self._refuse_symlinked_parents(guest, working_directory=working_directory)
+        stat = await self._stat_guest(guest, relative)
+        return stat.entry if stat is not None else None
 
-    async def _stat_guest(self, guest: str, relative: str) -> SandboxEntry | None:
+    async def _stat_guest(self, guest: str, relative: str) -> _GuestStat | None:
         """Stat an absolute guest path, with no confinement check of its own.
 
         Split out because the component walk stats the working directory's own ancestors, which
@@ -343,28 +385,36 @@ class _AcasSandbox:
             payload = await self._files_payload(_STAT_ROUTE, guest)
         except ResourceNotFoundError:
             return None
-        return _entry_from_payload(payload, relative)
+        return _stat_from_payload(payload, relative)
 
-    async def _refuse_symlinked_directories(
-        self, chain: Sequence[str], *, working_directory: str
+    async def _refuse_symlinked_parents(
+        self, guest: str, *, working_directory: str, include_guest: bool = False
     ) -> None:
-        """Refuse unless every directory in ``chain`` is a real one.
+        """Refuse unless every parent of ``guest``, from the root down, is a real directory.
 
         A symlinked *parent* is invisible in the final entry's stat: with ``/work/out -> /etc``,
         ``out/hostname`` stats as a regular 12-byte file and reads ``/etc/hostname``.  So
         confinement is a walk down the components, not a judgement about the last one — this
-        API offers no no-follow read and no realpath to do it in one call.
+        API offers no no-follow read and no realpath to do it in one call.  One stat each.
+
+        Only a link is a confinement failure.  A FIFO or a device node standing where a
+        directory was expected is an ordinary ``ENOTDIR``, and reporting it as an escape would
+        name a fault the guest did not commit.
+
+        ``include_guest`` extends the walk to ``guest`` itself, which :meth:`list_dir` needs:
+        the service enumerates through a symlinked directory as readily as it reads through one.
         """
-        for directory in chain:
-            entry = await self._stat_guest(directory, directory)
-            if entry is None:
+        deepest = guest if include_guest else posixpath.dirname(guest)
+        for directory in _directory_chain(deepest, working_directory):
+            stat = await self._stat_guest(directory, directory)
+            if stat is None:
                 return
-            if entry.kind is EntryKind.OTHER:
+            if stat.is_symlink:
                 raise ValueError(
                     f"{directory!r} is a link rather than a real directory, so a path through "
                     f"it does not stay inside working directory {working_directory!r}"
                 )
-            if entry.kind is not EntryKind.DIRECTORY:
+            if stat.entry.kind is not EntryKind.DIRECTORY:
                 raise NotADirectoryError(f"{directory!r} is not a directory")
 
     async def read_file(self, path: str, *, working_directory: str, max_bytes: int) -> bytes:
@@ -385,14 +435,13 @@ class _AcasSandbox:
         """
         from azure.core.exceptions import ResourceNotFoundError
 
-        guest, _ = _confined(path, working_directory)
-        await self._refuse_symlinked_directories(
-            _directory_chain(posixpath.dirname(guest), working_directory),
-            working_directory=working_directory,
-        )
-        entry = await self.stat_file(path, working_directory=working_directory)
-        if entry is None:
+        guest, relative = _confined(path, working_directory)
+        await self._refuse_symlinked_parents(guest, working_directory=working_directory)
+        # `_stat_guest` rather than `stat_file`, which would walk the same parents a second time.
+        stat = await self._stat_guest(guest, relative)
+        if stat is None:
             raise FileNotFoundError(f"no such file: {path!r}")
+        entry = stat.entry
         if entry.kind is not EntryKind.FILE:
             raise OSError(
                 f"{path!r} is a {str(entry.kind)!r} entry and only a regular file is ever read. "
@@ -409,7 +458,17 @@ class _AcasSandbox:
                 f"{path!r} is {entry.size_bytes} bytes and the caller allowed {max_bytes}"
             )
         try:
-            content: bytes = await self._sc.read_file(guest)
+            content: bytes = await asyncio.wait_for(
+                self._sc.read_file(guest), timeout=self._read_timeout
+            )
+        except TimeoutError as exc:
+            # Not merely slow: a FIFO is reported exactly as an empty regular file — same mode,
+            # both type flags false — so the classification above cannot refuse one, and the
+            # read never returns. A bound turns hanging the caller's turn into a refusal.
+            raise TimeoutError(
+                f"reading {path!r} did not return within {self._read_timeout}s; a guest can "
+                "make an entry the service reports as a regular file but never serves"
+            ) from exc
         except ResourceNotFoundError as exc:
             # Same translation `list_dir` does: a file the guest deleted after the stat must not
             # reach a kind as an azure-core type.
@@ -425,16 +484,17 @@ class _AcasSandbox:
 
         Native here, which is why this is the only backend that declares
         :data:`~maf_sandbox.Capability.FILES_LIST`.  Every listed entry is confined the same way
-        a declared path is: one naming something outside ``working_directory`` fails the
-        listing rather than being reported as a path a caller may go on to read.  ``path``
-        itself is confined by component, the directory listed included — the service enumerates
-        through a symlinked directory as readily as it reads through one.
+        a declared path is, and must additionally be a direct child of the directory that was
+        listed: one naming something else fails the listing rather than being reported as a path
+        a caller may go on to read.  ``path`` itself is confined by component, the directory
+        listed included — the service enumerates through a symlinked directory as readily as it
+        reads through one.
         """
         from azure.core.exceptions import ResourceNotFoundError
 
         guest, _ = _confined(path, working_directory)
-        await self._refuse_symlinked_directories(
-            _directory_chain(guest, working_directory), working_directory=working_directory
+        await self._refuse_symlinked_parents(
+            guest, working_directory=working_directory, include_guest=True
         )
         try:
             payload = await self._files_payload(_LIST_ROUTE, guest)
@@ -443,7 +503,9 @@ class _AcasSandbox:
             # to import azure-core to name what it caught.
             raise FileNotFoundError(f"no such directory: {path!r}") from exc
         return tuple(
-            _entry_from_payload(entry, _listed_entry_path(entry, working_directory))
+            _stat_from_payload(
+                entry, _listed_entry_path(entry, listed=guest, working_directory=working_directory)
+            ).entry
             for entry in _listed_entries(payload, path)
         )
 
@@ -591,7 +653,7 @@ class AcasSandboxBackend:
                     key.thread_id,
                     key.agent_dir,
                 )
-                return _AcasSandbox(sc)
+                return _AcasSandbox(sc, self._config.read_timeout_seconds)
             except Exception as exc:  # noqa: BLE001 - a dead sandbox is replaced, not reported
                 # Not a warning: a sandbox reclaimed by its auto-delete timer between rounds
                 # is the expected path, not a fault. But it does mean the next call pays for
@@ -633,7 +695,7 @@ class AcasSandboxBackend:
                 "it will be reclaimed by the auto-delete timer",
                 sc.sandbox_id,
             )
-        return _AcasSandbox(sc)
+        return _AcasSandbox(sc, self._config.read_timeout_seconds)
 
     async def dispose(self, key: SandboxKey) -> None:
         """Delete every kind's sandbox for ``key`` that this process knows of.

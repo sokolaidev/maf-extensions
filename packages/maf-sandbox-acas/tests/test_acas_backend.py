@@ -376,7 +376,9 @@ class TestFileWrites:
                 self.calls.append((path, content, kwargs))
 
         client = _RecordingClient()
-        asyncio.run(_AcasSandbox(client).write_file("/work/infra/main.bicep", "param x string"))
+        asyncio.run(
+            _AcasSandbox(client, 30.0).write_file("/work/infra/main.bicep", "param x string")
+        )
 
         assert client.calls == [("/work/infra/main.bicep", "param x string", {"create_dirs": True})]
 
@@ -408,7 +410,9 @@ class TestExecArgv:
         from maf_sandbox_acas._backend import _AcasSandbox
 
         client = self._RecordingClient()
-        asyncio.run(_AcasSandbox(client).exec("echo hi", working_directory="/work", timeout=5))
+        asyncio.run(
+            _AcasSandbox(client, 30.0).exec("echo hi", working_directory="/work", timeout=5)
+        )
         assert client.calls == ["echo hi"]
 
     def test_a_sequence_is_quoted_with_shlex_join(self):
@@ -418,7 +422,7 @@ class TestExecArgv:
 
         client = self._RecordingClient()
         argv = ["echo", "a; rm -rf /", "$(id)", "`id`", "it's mine", 'say "hi"']
-        asyncio.run(_AcasSandbox(client).exec(argv, working_directory="/work", timeout=5))
+        asyncio.run(_AcasSandbox(client, 30.0).exec(argv, working_directory="/work", timeout=5))
 
         assert client.calls == [shlex.join(argv)]
         # Round-tripping through shlex.split recovers the exact argv — proof the quoted
@@ -433,7 +437,7 @@ class TestExecArgv:
 
         client = self._RecordingClient()
         argv = ["bicep", "build", "/acas/work/r1/main.bicep", "--diagnostics-format", "sarif"]
-        asyncio.run(_AcasSandbox(client).exec(argv, working_directory="/work", timeout=5))
+        asyncio.run(_AcasSandbox(client, 30.0).exec(argv, working_directory="/work", timeout=5))
 
         assert shlex.split(client.calls[0]) == argv
 
@@ -1034,12 +1038,8 @@ _GUEST_CONTENTS = {
 class _FakeDataPlaneClient:
     """The slice of the SDK's sandbox client the pull surface reaches.
 
-    It serves the **raw** data-plane payloads rather than `FileInfo`, because raw is what the
-    backend reads; a fake returning the typed model would exercise a path the backend does not
-    take. `read_file` follows a symlink to its target exactly as the live service does, so a
-    test that reads a link and gets `/etc/hostname` back is a test of the leak rather than of
-    this fake's opinion about one — `TestReadFile` asserts that leak is reachable before
-    asserting the backend refuses it.
+    It serves the **raw** data-plane payloads rather than `FileInfo`, and its `read_file`
+    follows a symlink to its target exactly as the live service does.
     """
 
     def __init__(self, entries=None, contents=None) -> None:
@@ -1123,10 +1123,10 @@ class _FakeDataPlaneClient:
         ]
 
 
-def _sandbox(client=None):
+def _sandbox(client=None, read_timeout: float = 30.0):
     from maf_sandbox_acas._backend import _AcasSandbox
 
-    return _AcasSandbox(client if client is not None else _FakeDataPlaneClient())
+    return _AcasSandbox(client if client is not None else _FakeDataPlaneClient(), read_timeout)
 
 
 def _stat(sandbox, path, working_directory=_WORK_DIR):
@@ -1173,11 +1173,13 @@ class TestTheWireShape:
         client = _FakeDataPlaneClient()
         _stat(_sandbox(client), "real.txt")
 
+        # `/work` first: a stat walks its parents before describing the entry itself.
         assert client.gets == [
+            (f"{_SBX_PATH}/files/stat", {"path": _WORK_DIR, "api-version": _API_VERSION}),
             (
                 f"{_SBX_PATH}/files/stat",
                 {"path": "/work/real.txt", "api-version": _API_VERSION},
-            )
+            ),
         ]
 
 
@@ -1258,6 +1260,11 @@ class TestFailsClosedOnAMissingTypeFlag:
         client = _FakeDataPlaneClient(entries={"/work/real.txt": payload})
         assert _stat(_sandbox(client), "real.txt").size_bytes is None
 
+    def test_a_negative_size_is_unknown_too(self):
+        """Worse than zero: it clears every cap and is then subtracted from the running total."""
+        client = _FakeDataPlaneClient(entries={"/work/real.txt": {**_LIVE_REGULAR, "size": -1}})
+        assert _stat(_sandbox(client), "real.txt").size_bytes is None
+
 
 class TestReadFile:
     def test_a_regular_file_comes_back_byte_identical(self):
@@ -1323,6 +1330,19 @@ class TestReadFile:
                 _sandbox(client).read_file("real.txt", working_directory=_WORK_DIR, max_bytes=64)
             )
 
+    def test_a_negative_size_is_refused_rather_than_read(self):
+        """A negative passes `size_bytes > max_bytes`, so without this the read still happens."""
+        from maf_sandbox import SandboxOutputSizeUnknown
+
+        client = _FakeDataPlaneClient(
+            entries={**_GUEST_FILESYSTEM, "/work/real.txt": {**_LIVE_REGULAR, "size": -1}}
+        )
+        with pytest.raises(SandboxOutputSizeUnknown):
+            asyncio.run(
+                _sandbox(client).read_file("real.txt", working_directory=_WORK_DIR, max_bytes=64)
+            )
+        assert client.reads == []
+
     def test_the_guest_path_reaches_the_sdk_resolved(self):
         client = _FakeDataPlaneClient()
         asyncio.run(
@@ -1371,15 +1391,18 @@ class TestASymlinkedParentEscapesLexicalConfinement:
         return (f"{_SBX_PATH}/files/stat", {"path": path, "api-version": _API_VERSION})
 
     def test_the_service_answers_from_outside_the_working_directory(self):
-        """The premise of both refusals below: the link is visible, the path through it is not."""
+        """The premise of every refusal below: the path through the link resolves service-side.
+
+        Asked through the unconfined `_stat_guest` the walk itself uses, because the public
+        `stat_file` now refuses exactly this — and without the premise a refusal would also
+        pass against a fake that could not reach outside in the first place.
+        """
         from maf_sandbox import EntryKind
 
         client = self._client()
-        assert _stat(_sandbox(client), "out").kind is EntryKind.OTHER
-
-        through = _stat(_sandbox(client), "out/hostname")
-        assert through.kind is EntryKind.FILE
-        assert through.size_bytes == len(_HOSTNAME)
+        through = asyncio.run(_sandbox(client)._stat_guest("/work/out/hostname", "out/hostname"))
+        assert through.entry.kind is EntryKind.FILE
+        assert through.entry.size_bytes == len(_HOSTNAME)
         assert asyncio.run(client.read_file("/work/out/hostname")) == _HOSTNAME
 
         listed = asyncio.run(
@@ -1392,6 +1415,32 @@ class TestASymlinkedParentEscapesLexicalConfinement:
         # like it sits under the working directory. The per-entry check cannot fire on these —
         # the component walk is the only thing standing between a kind and /etc.
         assert [entry["path"] for entry in listed["entries"]] == ["/work/out/hostname"]
+
+    def test_a_final_component_link_is_described_rather_than_refused(self):
+        """Only the parents are refused: reporting a link as `OTHER` is how a caller learns."""
+        from maf_sandbox import EntryKind
+
+        assert _stat(_sandbox(self._client()), "out").kind is EntryKind.OTHER
+
+    def test_a_bare_stat_through_a_symlinked_parent_is_refused(self):
+        """No bytes escape, but a type and a size do — metadata from outside the boundary."""
+        client = self._client()
+        with pytest.raises(ValueError, match="real directory"):
+            _stat(_sandbox(client), "out/hostname")
+        assert client.gets == [self._stat_route(_WORK_DIR), self._stat_route("/work/out")]
+
+    def test_the_escape_is_decided_by_the_payload_flag_not_by_the_entry_kind(self):
+        """`OTHER` is the protocol's word for every non-regular entry, not a synonym for link.
+
+        So the walk reads `isSymlink`, and a non-directory that is not one stays `ENOTDIR`.
+        """
+        from maf_sandbox import EntryKind
+
+        sandbox = _sandbox(self._client())
+        link = asyncio.run(sandbox._stat_guest("/work/out", "out"))
+        assert link.is_symlink and link.entry.kind is EntryKind.OTHER
+        plain = asyncio.run(sandbox._stat_guest("/work/real.txt", "real.txt"))
+        assert not plain.is_symlink
 
     def test_a_read_through_a_symlinked_parent_is_refused(self):
         client = self._client()
@@ -1420,6 +1469,20 @@ class TestASymlinkedParentEscapesLexicalConfinement:
                     "real.txt/child", working_directory=_WORK_DIR, max_bytes=64
                 )
             )
+
+
+class _Relisting(_FakeDataPlaneClient):
+    """Answers every listing with one entry of the caller's choosing, whatever was asked for."""
+
+    def __init__(self, entry) -> None:
+        super().__init__()
+        self._listed = entry
+
+    async def _dp_get(self, path, *, params=None):
+        payload = await super()._dp_get(path, params=params)
+        if path.endswith("files/list"):
+            return {**payload, "entries": [dict(self._listed)]}
+        return payload
 
 
 class TestListDir:
@@ -1504,6 +1567,42 @@ class TestListDir:
     def test_the_directory_itself_is_refused_when_it_is_outside(self):
         with pytest.raises(ValueError, match="outside working directory"):
             asyncio.run(_sandbox().list_dir("/etc", working_directory=_WORK_DIR))
+
+    def test_a_listed_sibling_of_the_directory_is_refused(self):
+        """`list_dir("sub")` enumerates one level, so `/work/real.txt` is not an answer to it."""
+        with pytest.raises(AcasEntryPayloadIncomplete, match="one level"):
+            asyncio.run(
+                _sandbox(_Relisting(_LIVE_REGULAR)).list_dir("sub", working_directory=_WORK_DIR)
+            )
+
+    def test_a_listed_grandchild_is_refused(self):
+        """Confined and under the working directory, and still not a child of what was listed."""
+        with pytest.raises(AcasEntryPayloadIncomplete, match="one level"):
+            asyncio.run(
+                _sandbox(_Relisting(_LIVE_NESTED)).list_dir(".", working_directory=_WORK_DIR)
+            )
+
+
+class TestAReadThatNeverReturns:
+    """A FIFO is reported exactly as an empty regular file, so only a bound can stop it."""
+
+    def test_a_read_that_hangs_is_refused_rather_than_held_open(self):
+        import asyncio as _asyncio
+
+        class _Hangs(_FakeDataPlaneClient):
+            async def read_file(self, path):
+                await _asyncio.sleep(3600)
+
+        with pytest.raises(TimeoutError, match="did not return"):
+            asyncio.run(
+                _sandbox(_Hangs(), read_timeout=0.05).read_file(
+                    "real.txt", working_directory=_WORK_DIR, max_bytes=999
+                )
+            )
+
+    def test_the_timeout_reaches_a_kind_as_an_output_failure(self):
+        """`TimeoutError` is an `OSError`, so the glue already folds it into the family."""
+        assert issubclass(TimeoutError, OSError)
 
 
 class TestThroughCollectOutputs:
