@@ -220,7 +220,7 @@ A backend that identifies symlinks and directories has narrowed an entry to *not
 
 The ACAS case is not merely a mislabelling. Verified live: `read_file` on a FIFO **never returns**, so a guest that puts one where a declared output belongs holds the caller's turn open indefinitely.
 
-Nothing available closes it. `mode` has no type bits; `exec` with `test -f` would reintroduce the in-image shell dependency that the `FILES_LIST` split exists to avoid, and would fail on exactly the minimal images where the file API is most useful. So that backend **bounds the read** instead — a timeout turns an indefinite hang into a refusal in the output-error family — and the missing signal is filed upstream ([Azure/azure-sdk-for-python#48527](https://github.com/Azure/azure-sdk-for-python/issues/48527)).
+Nothing available closes it. `mode` has no type bits; `exec` with `test -f` would reintroduce the in-image shell dependency that the `FILES_LIST` split exists to avoid, and would fail on exactly the minimal images where the file API is most useful. So that backend **bounds the read** instead — a timeout turns an indefinite hang into a refusal in the output-error family — and the missing signal is filed upstream ([microsoft/azure-container-apps#1807](https://github.com/microsoft/azure-container-apps/issues/1807)).
 
 Stated plainly because a kind author is entitled to know it: on that backend, `EntryKind.FILE` means "not a directory and not a symlink", not "a regular file", and a read of one can fail on a timeout that no cap or size predicted.
 
