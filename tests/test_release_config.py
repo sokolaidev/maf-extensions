@@ -347,3 +347,50 @@ class TestRoutineAutomationDoesNotClaimToCloseAnIssue:
             f"release-please.yml emits {found} into a pull request body it writes every "
             "release; the issue it names gets re-referenced forever. Drop the keyword."
         )
+
+
+class TestTheConstraintCommentsDoNotNameAVersion:
+    """The prose above a maf-sandbox constraint must not name the release it points at.
+
+    `scripts/bump_dependents_floor.py` rewrites the constraint and never the comment above
+    it, so a sentence naming a version is stale one release later and no test noticed. Every
+    such sentence in this repository had drifted by at least two minors before anyone read
+    one. The constraint below is the source of truth; the comment says what the floor is
+    *for*. A bare `1.0.0` is fine — that is the stability boundary, not a release pointer.
+    """
+
+    _ZERO_VERSION = re.compile(r"0\.\d+\.\d+")
+
+    def _comment_block_above_the_constraint(self, package_path: str) -> list[str]:
+        lines = (
+            (REPO_ROOT / package_path / "pyproject.toml")
+            .read_text("utf-8")
+            .splitlines()
+        )
+        for index, line in enumerate(lines):
+            if "maf-sandbox>=" not in line:
+                continue
+            above: list[str] = []
+            cursor = index - 1
+            while cursor >= 0 and lines[cursor].lstrip().startswith("#"):
+                above.append(lines[cursor])
+                cursor -= 1
+            return above
+        return []
+
+    def test_no_dependent_names_a_maf_sandbox_release_in_prose(self):
+        checked = 0
+        for package_path in PACKAGE_PATHS:
+            block = self._comment_block_above_the_constraint(package_path)
+            if not block:
+                continue
+            checked += 1
+            for line in block:
+                assert not self._ZERO_VERSION.search(line), (
+                    f"{package_path}: {line.strip()!r} names a maf-sandbox release. The bump "
+                    "script moves the constraint and not this comment, so the number goes "
+                    "stale — say which release the floor is for, not which release that is."
+                )
+        assert checked, (
+            "expected at least one package to carry a maf-sandbox constraint"
+        )
