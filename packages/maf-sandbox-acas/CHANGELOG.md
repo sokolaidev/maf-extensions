@@ -4,6 +4,18 @@ All notable changes to `maf-sandbox-acas` are documented here. The format follow
 
 Releases up to and including `0.2.3` were published as **`maf-sandbox-aca`**, and the entries below name it as it was — their tags and compare links point at real history and are left as they were written. `maf-sandbox-aca` is not maintained past `0.2.3`; PyPI names cannot be reused, so the rename is a new distribution rather than a continuation of that one.
 
+## [0.6.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.5.0...maf-sandbox-acas-v0.6.0) (2026-08-11)
+
+
+### Features
+
+* ACAS reads artifacts out, refusing symlinks the SDK cannot even see ([#139](https://github.com/sokolaidev/maf-extensions/issues/139)) ([e989721](https://github.com/sokolaidev/maf-extensions/commit/e989721a538a85a56b17129d761b6d5092d261a5))
+
+
+### Documentation
+
+* stop claiming a regularity guarantee ACAS cannot keep ([#147](https://github.com/sokolaidev/maf-extensions/issues/147)) ([e328daf](https://github.com/sokolaidev/maf-extensions/commit/e328dafe513047e6d68de9542754562dff9e3601))
+
 ## [0.5.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.4.0...maf-sandbox-acas-v0.5.0) (2026-08-10)
 
 
