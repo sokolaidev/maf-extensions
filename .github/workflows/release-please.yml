@@ -114,7 +114,7 @@ jobs:
           - Close it whole if none of them do, and move the floor in the pull request that actually adopts the version.
           - Retitle it feat:/breaking if adopting the version is more than a patch for a dependent — the title defaults to fix: so the bot does not choose the bump.
 
-          The ceiling is deliberately untouched: it was widened before the release so the published set stays resolvable, which is a separate decision from whether any package's code needs this version. Supply its required check the way you do for a Release PR (approve the held run, or dispatch tests.yml at this branch)."
+          The ceiling is deliberately untouched: it was widened before the release so the published set stays resolvable, which is a separate decision from whether any package's code needs this version. Clear its held run the way you do for a Release PR: **Approve and run**. A dispatched run reports the required contexts but does not unblock the merge."
           gh pr create --base main --head "$branch" \
             --title "fix: require maf-sandbox ${VERSION} in the packages that use it" \
             --body "$body"
@@ -161,7 +161,7 @@ jobs:
 
           Unlike the floor bump alongside it, this is not a claim about any package's code. Widening only enlarges an accepted set, so it cannot make a resolution fail; what it buys is that the next core minor can be released without leaving the index unresolvable as a set (#175) and without anyone having to remember step 1 (#177).
 
-          **Merge it, and let the dependent releases it cuts publish.** The widening is only worth anything once it is on PyPI: that is what the next core release checks before it uploads. Supply its required check the way you do for a Release PR (approve the held run, or dispatch tests.yml at this branch)."
+          **Merge it, and let the dependent releases it cuts publish.** The widening is only worth anything once it is on PyPI: that is what the next core release checks before it uploads. Clear its held run the way you do for a Release PR: **Approve and run**. A dispatched run reports the required contexts but does not unblock the merge."
           gh pr create --base main --head "$branch" \
             --title "fix: admit maf-sandbox ${target%.*}.$(( ${target##*.} - 1 )) in the dependents' range" \
             --body "$body"
@@ -169,8 +169,11 @@ jobs:
       # A bot author trips the approval gate, so the run a bot-opened pull request creates
       # waits at `action_required` and its required check never reports. A dispatched run
       # is not held and lands its checks on the same head SHA, which is what the required
-      # contexts are evaluated against. Approving the held run instead needs a stored
-      # credential: GITHUB_TOKEN cannot call that endpoint.
+      # contexts are evaluated against.
+      #
+      # That is the whole of what this buys. The held run still blocks the merge with every
+      # context green, so a human still clears it — and clearing it runs these checks again.
+      # Whether the step earns its keep is #196; it is left in place until that is decided.
       - name: Start the checks on the pull requests this workflow opened
         env:
           GH_TOKEN: ${{ github.token }}
