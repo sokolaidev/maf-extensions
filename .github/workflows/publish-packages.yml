@@ -297,7 +297,7 @@ jobs:
     needs: [build, publish]
     if: >-
       needs.build.outputs.target == 'pypi'
-      && contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-bicep", "maf-sandbox-codeact"]'), needs.build.outputs.package)
+      && contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-bicep", "maf-sandbox-codeact", "maf-sandbox-docker"]'), needs.build.outputs.package)
     uses: ./.github/workflows/verify-live.yml
     with:
       package: ${{ needs.build.outputs.package }}

@@ -81,3 +81,25 @@ jobs:
             uv pip install --python "$venv/bin/python" --find-links dist/ dist/${module}-*.whl
             "$venv/bin/python" scripts/smoke_install.py "$package"
           done
+
+      # The docker backend is the first in this family whose live path runs on a PR at all:
+      # ubuntu-latest ships a running Docker daemon, so `test_docker_e2e.py` — write, exec,
+      # stat, read a real container, plus the allowlist proxy topology — is satisfiable here,
+      # where the wslc (needs Windows) and acas (needs a billable Azure sandbox) live suites
+      # are not. Deliberately lightweight: a tiny MCR image (MCR, not Docker Hub, so a shared
+      # runner IP is not rate-limited) and no model. The env vars turn the module's skip guard
+      # off; without them it skips, which is how it stays dormant everywhere else.
+      - name: Docker backend live tests
+        env:
+          # A small image with sh, cat, ln and curl — everything the round trip and the
+          # allowlist controls need, and nothing this workload does not.
+          MAF_SANDBOX_DOCKER_E2E_IMAGE: mcr.microsoft.com/azurelinux/base/core:3.0
+          MAF_SANDBOX_DOCKER_E2E_PROXY_IMAGE: maf-sandbox-docker-proxy:ci
+        run: |
+          set -euo pipefail
+          # Build the egress proxy from the package's own shipped context, so the allowlist
+          # topology (internal network + dual-homed proxy) is exercised end to end, not only
+          # asserted at the command-line level offline.
+          docker build -t maf-sandbox-docker-proxy:ci \
+            packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy
+          uv run pytest packages/maf-sandbox-docker/tests/test_docker_e2e.py -q
