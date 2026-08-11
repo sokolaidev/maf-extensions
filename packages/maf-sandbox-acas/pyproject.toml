@@ -39,7 +39,7 @@ dependencies = [
     # before 1.0.0 may include breaking changes (see its CHANGELOG). Moving either end of
     # this range has an order to it — see RELEASING.md.
     # The floor is 0.6.0 because that release carries the FILES_OUT vocabulary this backend now imports at module scope (SandboxEntry, EntryKind, SandboxLimits, TransferLimits); a range admitting 0.5.x would resolve it in the clean-env wheel smoke and die on ImportError.
-    "maf-sandbox>=0.6.0,<0.7",
+    "maf-sandbox>=0.6.0,<0.8",
     # DefaultAzureCredential for the sandbox data plane.
     "azure-identity>=1.25.1,<2",
     # The ACA Sandboxes data-plane SDK — still 0.1.0bN. The version pin lives here and
