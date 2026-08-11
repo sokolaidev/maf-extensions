@@ -1178,6 +1178,22 @@ class TestManifestOutputs:
                 files_out=replace(DEFAULT_TRANSFER_LIMITS, max_files=1),
             )
 
+    def test_the_manifest_read_is_bounded_by_the_collection_total_too(self):
+        """A manifest bigger than the whole collection's budget cannot be part of a collection
+        that fits, so the per-file ceiling alone is the wrong bound when the total is smaller."""
+        sandbox = _StatOnlySandbox(size_bytes=2048)
+        sink = _RecordingSink()
+        tool = _pulling_tool(
+            sandbox,
+            CodeactOutputs.MANIFEST,
+            sink,
+            files_out=replace(DEFAULT_TRANSFER_LIMITS, max_total_bytes=1024, max_files=2),
+        )
+
+        out = _run(tool, "print('hi')")
+        assert "reads at most 1024" in out
+        assert sandbox.reads == []
+
     def test_the_manifest_read_is_bounded_by_the_hosts_own_ceiling(self):
         """`files_out` is what the router matched against the backend, so reading past it would
         transfer more than the spec declared and make that match untrue for this kind."""

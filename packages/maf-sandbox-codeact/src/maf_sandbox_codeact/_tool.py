@@ -202,9 +202,6 @@ def make_codeact_tools(
     Both wait for the attach gate: a host with no sandbox configured gets ``[]``, never an
     exception.
     """
-    # After the attach gate, never before it: `sandboxed_tool` places its own refusals there so
-    # that a host which simply left sandboxing off keeps its ungrounded behaviour, and a check
-    # here would raise out of that host's agent factory instead.
     configured = router is not None and router.enabled
     if configured and outputs is CodeactOutputs.MANIFEST and files_out.max_files < 2:
         # The manifest occupies one slot of the collection, so a cap of one leaves room for
@@ -793,10 +790,13 @@ async def _read_manifest(
         # backend whose SDK buffers the whole response has already spent the memory by the
         # time `max_bytes` is looked at, so passing a ceiling down is not a bound on its own.
         # An unknown size fails closed for the same reason it does in `collect_outputs`.
-        # The smaller of this kind's own ceiling and the host's: `files_out` is what the
-        # router matched against the backend, so reading past it would transfer more than the
-        # spec declared and make that match untrue for this kind.
-        ceiling = min(_MANIFEST_MAX_BYTES, session.spec.files_out.max_bytes_per_file)
+        # The smallest of this kind's own ceiling and both of the host's: `files_out` is
+        # what the router matched against the backend, so reading past either would transfer
+        # more than the spec declared and make that match untrue for this kind. The total
+        # counts because a manifest bigger than the whole collection's budget cannot be part
+        # of a collection that fits.
+        limits = session.spec.files_out
+        ceiling = min(_MANIFEST_MAX_BYTES, limits.max_bytes_per_file, limits.max_total_bytes)
         if entry.size_bytes is None or entry.size_bytes > ceiling:
             return (
                 f"Error: {_MANIFEST_FILENAME} is {entry.size_bytes or 'of unknown'} bytes and "
