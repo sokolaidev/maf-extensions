@@ -9,6 +9,10 @@ on:
   push:
     branches: [main]
   pull_request:
+    # `edited` is not a default activity type, and the release-order gate below reads the
+    # pull request title. Without it a pull request goes green as `ci:`, is retitled to
+    # `feat:`, and keeps the passing check: same head SHA, no re-run, gate bypassed.
+    types: [opened, synchronize, reopened, edited]
   # Release PRs are opened by GITHUB_TOKEN, which starts no workflow run — so the required
   # check never reports on them. Running this against that branch by hand supplies it.
   workflow_dispatch:

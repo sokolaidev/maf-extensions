@@ -1,14 +1,8 @@
-"""The release-order gate: which titles cut a minor, and which ceilings still exclude it.
+"""The release-order gate, whose `assess` is a pure function and so is tested in full here.
 
-`scripts/check_release_order.py` runs on every pull request and refuses a maf-sandbox change
-that would publish a version the dependents cannot adopt. Its `assess` is a pure function of a
-title, a list of changed paths and a tree, so all of it is tested here rather than discovered
-on the one pull request it fires against.
-
-Two of these matter more than the rest: a breaking change below 1.0.0 cuts a *minor*, not a
-major, so `fix!:` crosses a ceiling that `fix:` does not; and `packages/maf-sandbox-acas/` must
-not read as the core package, which a prefix match missing the trailing separator gets wrong —
-refusing a backend-only change that releases no core version at all.
+Two cases carry the rest: below 1.0.0 a breaking change cuts a *minor*, so `fix!:` crosses a
+ceiling that `fix:` does not; and `packages/maf-sandbox-acas/` must not read as the core
+package, which a prefix match missing the trailing separator gets wrong.
 """
 
 from __future__ import annotations
@@ -146,14 +140,10 @@ class TestAssess:
 
 
 class TestTheVersionThisTreeDeclaresIsOneEveryDependentAdmits:
-    """The backstop, on the real tree — and the one that fires on a Release PR.
+    """The backstop: on a Release PR the version is in the tree rather than read from a title.
 
-    The gate above reads a title, so it can only predict what a merge would release, and a
-    `BREAKING CHANGE:` footer added in the squash box at merge time is invisible to it. Here
-    the prediction is over: a Release PR carries the bumped version in the tree, so a ceiling
-    that excludes it is an ordinary fact about two files. Since a Release PR cannot merge
-    without the required check reporting, this is the assertion the reversed order cannot get
-    past.
+    This is what catches a `BREAKING CHANGE:` footer added in the squash box, which no title
+    check can see.
     """
 
     def test_no_dependent_excludes_it(self):
