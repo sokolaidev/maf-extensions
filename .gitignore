@@ -5,3 +5,6 @@ dist/
 .pytest_cache/
 .ruff_cache/
 *.egg-info/
+
+# Sample runs land artifacts here; the sink is a host directory, not the repository.
+samples/*/out/

@@ -314,3 +314,80 @@ jobs:
           /tmp/live/bin/python samples/06_docker_codeact/agent.py | tee /tmp/sample06-out.txt
           # The same assertion as sample 03: same task, same one right answer, same disposal line.
           python3 scripts/check_live_codeact_sample.py /tmp/sample06-out.txt
+
+  sample-08:
+    name: samples/08_docker_codeact_files against a live container
+    # The first live job to exercise the pull surface end to end — stat, read, cap, land —
+    # and the first to assert on something other than stdout. Sample 07 is the other artifact
+    # sample and is not here: it authenticates against a plain OpenAI-compatible endpoint with
+    # a key, and there is no such secret in CI. Same runner economics as sample-06: a Docker
+    # container costs nothing and the model is reached with a federated credential. Runs for
+    # the same three packages, since it is the same router, backend and kind.
+    if: >-
+      inputs.package == ''
+      || contains(fromJSON('["maf-sandbox", "maf-sandbox-codeact", "maf-sandbox-docker"]'), inputs.package)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: live-verify
+    permissions:
+      # Mints the OIDC token azure/login exchanges. No secret is involved.
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      # Sample 06's line exactly — same backend, same kind, same credential stack, and
+      # `azure-core[aio]` for the same reason its comment gives.
+      - name: Install the published wheels into a clean environment
+        run: |
+          set -euo pipefail
+          uv venv /tmp/live
+          uv pip install --python /tmp/live/bin/python \
+            maf-sandbox-docker maf-sandbox-codeact agent-framework-openai \
+            azure-identity "azure-core[aio]"
+          uv pip list --python /tmp/live/bin/python
+
+      - name: Check the live configuration is present
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
+            AZURE_OPENAI_ENDPOINT AZURE_OPENAI_CHAT_MODEL; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::the live-verify environment is missing variables: ${missing[*]}. See docs/maintainers.md."
+            exit 1
+          fi
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Run sample 08 and assert a file went in and a file came out
+        env:
+          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+        run: |
+          set -euo pipefail
+          # A fresh checkout has no `out/`, but deleting it is what makes the on-disk half of
+          # the assertion mean anything: a summary left by an earlier run would pass it without
+          # this run having landed a thing.
+          rm -rf samples/08_docker_codeact_files/out
+          /tmp/live/bin/python samples/08_docker_codeact_files/agent.py | tee /tmp/sample08-out.txt
+          # Two halves, and the second is the point: the right total in stdout, and the declared
+          # summary actually on disk under its declared name.
+          python3 scripts/check_live_codeact_files_sample.py \
+            /tmp/sample08-out.txt samples/08_docker_codeact_files/out/summary.md
