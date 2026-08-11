@@ -47,8 +47,16 @@ router = SandboxRouter([backend])  # microVM isolation meets the router's defaul
 | `acquire(key, spec)` | get-or-create, keyed `(scope, thread, agent)`. A warm sandbox is resumed rather than replaced, so a fix-round loop does not pay a cold start per iteration. |
 | `dispose(key)` | delete one sandbox |
 | `dispose_scope(scope, thread)` | delete every sandbox for a conversation — **from the service, by label**, not from process memory |
+| `stat_file` / `read_file` / `list_dir` | the pull surface — reads confined to the call's `working_directory`, only regular files served, a size over the caller's cap refused rather than truncated |
 | `isolation` | `microvm` — the router's default floor, so a host that configures nothing already permits this backend |
-| `capabilities` | `EXEC, FILES_IN` — declares only what it implements today |
+| `capabilities` | `EXEC, FILES_IN, FILES_OUT, FILES_LIST` — declares only what it implements today |
+| `limits` | the transfer ceilings a spec may not exceed, per direction |
+
+**`Capability.FILES_LIST` as well as `FILES_OUT`, and this is the only backend that declares it.** The service enumerates a directory natively, which is the test the protocol's split applies — name the backend that lacks it. A kind whose output names are unpredictable is refused on Docker and wslc and served here.
+
+**Only regular files are read, and the refusal happens at stat time.** This backend's read *follows* symlinks: a path linking to `/etc/hostname` returns that file's contents, so classifying after the bytes come back would be too late. The type comes from the data-plane payload's `isSymlink` and `isDir` flags, read raw — the SDK's typed `FileInfo` exposes neither, and a payload missing them is refused as `AcasEntryPayloadIncomplete`, never assumed regular ([#136](https://github.com/sokolaidev/maf-extensions/issues/136)).
+
+**Every path component is checked, not just the last one.** A guest that points `out` at `/etc` gets a stat of `out/hostname` that says "regular file, 12 bytes" — the parent link is invisible there — so `stat_file`, `read_file` and `list_dir` stat every parent component from the **filesystem root** down, not from the working directory, whose own ancestors the guest can replace just as easily: with `/acas -> /` unchecked, `/acas/work` stats as a real directory and serves `/`. A link anywhere in that chain is refused as an escape; any other non-directory is an ordinary `ENOTDIR`. Only the parents are refused — a link as the **final** component is still described as `OTHER`, which is how a caller learns it is one. One residual stays open and cannot be closed with this API: the stat and the read are separate calls, and the service has no no-follow read, so a guest that swaps a stat-ed file for a symlink in between is followed.
 
 That `dispose_scope` detail is the one worth reading twice. A multi-replica host serves a conversation delete wherever it lands, so the replica that created a sandbox is usually not the one deleting it. A backend that consults only its own registry leaves billable sandboxes running, and the bug is invisible on a single-replica dev box. Sandboxes are labelled at create time so the service can answer the question instead.
 

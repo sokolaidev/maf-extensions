@@ -45,3 +45,7 @@ class AcasSandboxConfig:
     registry: str = ""
     auto_suspend_seconds: int = 60
     auto_delete_seconds: int = 600
+    #: A read that never returns must not hold the caller's turn open. The service reports a
+    #: FIFO identically to an empty regular file — same mode, both type flags false — so a
+    #: guest can put one where a declared output belongs and the read blocks forever.
+    read_timeout_seconds: float = 120.0
