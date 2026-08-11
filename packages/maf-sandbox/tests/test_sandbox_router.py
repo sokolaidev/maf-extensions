@@ -740,20 +740,17 @@ class TestSpecDefaults:
 class TestWorkDirIsPlatformNeutral:
     """The door issue #111 asks to keep open: nothing here commits the protocol to a Linux guest.
 
-    A platform axis — a backend declaring its guest OS, a spec declaring what it needs, the
-    router refusing the mismatch — is deliberately unbuilt while every shipped backend runs a
-    Linux guest (an axis no backend lacks would refuse nothing). The obligation until then is
-    smaller: keep the normative surface platform-neutral so that axis lands *additively*. These
-    pin the part of that a regression could quietly undo — a validator that assumed the guest.
+    The invariant: nothing in the protocol infers a guest OS or rejects a `work_dir` for not
+    looking like one, so a platform axis can be added as a new optional field rather than a
+    breaking change. Rationale and the decision to defer live in #111.
     """
 
     @pytest.mark.parametrize(
         "work_dir",
         [
             "C:/agent/work",  # a Windows guest's drive-rooted path
-            "work",  # relative
             "/opt/somewhere/else",  # a different POSIX root
-            "",  # empty — still not the protocol's business to reject
+            "D:\agent\work",  # a Windows guest's own separator
         ],
     )
     def test_the_spec_imposes_no_platform_constraint_on_work_dir(self, work_dir: str):

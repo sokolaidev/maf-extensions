@@ -183,9 +183,13 @@ Classifying the last component is not enough on any of them. A symlinked *parent
 
 ## Cross-platform rules
 
-Every shipped backend runs a Linux guest today. That is an observation, not a protocol assumption — Windows-guest backends are plausible ([#111](https://github.com/sokolaidev/maf-extensions/issues/111)), so the protocol states one grammar and **backends translate to whatever their guest actually is**. This is the same shape as `exec` taking an argv *sequence* rather than a command line.
+Every shipped backend runs a Linux guest today. That is an observation, not a protocol assumption — Windows-guest backends are plausible ([#111](https://github.com/sokolaidev/maf-extensions/issues/111)). An earlier version of this section said the protocol states one grammar and **backends translate to whatever their guest actually is**, by analogy with `exec` taking an argv *sequence* rather than a command line. **That analogy does not hold, and the claim was wrong.**
 
-- **Paths are POSIX-shaped in the protocol**, and a backslash in a declared path is refused — not because the guest is Linux, but because the protocol has one grammar and `\` is not a separator in it. Nothing builds a guest path with `os.path` or `pathlib`; `posixpath` only.
+A sequence protects against *quoting*, not against paths inside the arguments. A kind derives absolute guest paths from `work_dir` and passes them straight into argv — `maf-sandbox-codeact` builds `f"{spec.work_dir}/program.py"` and hands it to both `write_file` and `exec(["python3", program_path])`. A backend can translate a path it is given *as* a path; it cannot find one buried in an opaque argv without parsing arbitrary command lines. So there is no translation boundary to lean on.
+
+**`work_dir` is therefore guest-native, not protocol-normalized.** The host sets it to match the image it configured, and nothing rewrites it. What the protocol *does* normalize is narrower and worth separating: the **relative** declared-output paths and the artifact names the library validates and resolves itself.
+
+- **Declared output paths and artifact names are POSIX-shaped**, and a backslash in one is refused — not because the guest is Linux, but because these are the paths the library itself resolves, and it has one grammar. Nothing builds a guest path with `os.path` or `pathlib`; `posixpath` only. This says nothing about `work_dir`, which the host supplies whole.
 - **UTF-8 is the interchange form for names.** Linux filenames are byte strings and can be invalid UTF-8; such a name is refused rather than round-tripped. This only arises on the `FILES_LIST` road — declared paths are authored by the kind.
 - **`str` content means UTF-8, always**, independent of host locale. Any code path that reaches a platform default encoding is a mojibake bug waiting for a Windows host.
 - **No newline translation, in either direction, ever.** A host must write artifact content in **binary** mode: `open(path, "w")` on Windows turns `\n` into `\r\n` and corrupts a PNG that was byte-exact when it left the sandbox.
