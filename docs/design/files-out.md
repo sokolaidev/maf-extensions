@@ -42,7 +42,33 @@ One consequence decides the API shape: **globs require enumeration.** `*.png` ca
 | ACAS | Native (`stat_file`, `read_file`) | Native (`list_files`) |
 | Docker | Native (`HEAD /archive`, `docker cp`) | Not without an in-image shell |
 | wslc | **Not served** — `cp` has no container-to-stdout form, so there is no tar to read a header from ([#125](https://github.com/sokolaidev/maf-extensions/issues/125)) | Not without an in-image shell |
-| Who needs it | Every artifact-producing kind | Kinds whose output names are unpredictable — the CodeAct shape |
+| Who needs it | Every artifact-producing kind | Kinds that must **discover** names nothing told them — see the next section for why the CodeAct shape is not one of them |
+
+### Unpredictable output names do not need enumeration
+
+An earlier version of the table above named the CodeAct shape as `FILES_LIST`'s constituency, on the reasoning that a kind running model-written code cannot know what that code will write. The premise is right and the conclusion was wrong, and the difference decides whether the commonest artifact-producing kind is portable or ACAS-only.
+
+**A name that is unknown when the tool is *built* can still be known before the collection *runs*.** Two channels supply one, neither of them a directory listing: the model names its files in the tool call, or the program writes a manifest the kind reads at a path it chose itself. Both end in literal paths, which is all `FILES_OUT` needs. `FILES_LIST` is for a kind that must discover a name **nothing told it** — and a kind requiring it when it does not need it has made itself ACAS-only in the worst possible direction, since a host running Docker locally and ACAS deployed would see its tool refused at attach on a developer machine and attached in production.
+
+The declaring channel is the better of the two and the reason is not portability: it closes the trade the fixed-slot shape has to document. A program writing an artifact somewhere other than a declared path produces nothing collectable **and no error** — but a name declared *before* the run and absent *after* it is a diagnostic the kind can hand back verbatim. Guessing which of the files on a listing were meant to be artifacts could never do that.
+
+Two protocol additions pay for this, both driven by warm sandbox reuse:
+
+```python
+@dataclass(frozen=True)
+class SandboxSpec:
+    outputs_named_at_call_time: bool = False    # this workload lands artifacts it cannot yet name
+
+@dataclass(frozen=True)
+class DeclaredOutput:
+    name: str | None = None                     # the landing name; defaults to `path`
+
+async def collect_outputs(sandbox, spec, *, sink=None, outputs: tuple[DeclaredOutput, ...] = ()): ...
+```
+
+`outputs_named_at_call_time` is what keeps such a workload honest at attach. Every attach-time question — is a sink required, does the outbound confidentiality cap apply, must the backend serve `FILES_OUT` — is answered from `declared_outputs`, and a workload that lands artifacts while declaring none would answer all three wrongly. `collect_outputs(outputs=...)` is refused without it, so a kind cannot collect paths its own declarations never admitted to.
+
+`DeclaredOutput.name` exists because `acquire` is get-or-create. A kind whose outputs would otherwise persist into the next round needs a per-call directory — without one, a program that fails to rewrite `report.csv` has last round's collected as this round's, a false green from a warm sandbox — and the guest path then carries a run id the host has no use for. Without the split the artifact lands as `a1b2c3/report.csv`. `path` is what the backend reads; `name` is what the sink receives; both are held to the narrow invariant, and collisions are keyed on the delivered name, so two run directories landing one name are refused.
 
 ## The protocol
 
@@ -289,6 +315,8 @@ What is *not* structural is how confidential the destination is — exactly the 
 
 **A landing sink falsifies that premise.** With closed egress and a sink, bytes leave for host state and the flow the guard was checking for exists again. The condition becomes "the spec permits egress **or** the spec declares an output that lands *and* a sink is attached".
 
+(A spec setting `outputs_named_at_call_time` satisfies the second clause too: it lands artifacts, and not being able to name them yet changes nothing about the flow.)
+
 Both halves of that second clause are load-bearing, and the shorter version — "a sink is attached" — reintroduces the bug it was written to fix. A sink is ordinarily *one object handed to every sandbox tool a host builds*, so its presence says nothing about whether this particular workload sends anything down it. A spec that declares no outputs, or only `CONSUME` ones, carries nothing to host state however many sinks it was given, and capping it would gate calls for a flow that does not exist — the exact thing the condition exists to avoid.
 
 An earlier draft said the effective cap is "the strictest of the two, the same fold the `HOST_TOOLS` registry uses". **Both halves of that were wrong.** The cap is an opaque host-vocabulary string with no ordering — this repository requires orderings to be data with exhaustiveness tests, as `ISOLATION_RANK` is — so a library cannot rank two of them. And the cited precedent does not exist: the `HOST_TOOLS` registry, `require_declared` and the strictest-over-sinks fold are unimplemented rollout item 5 of the two-axis proposal, described there in the future tense.
@@ -310,7 +338,7 @@ One further hazard, which is the same shape as the bug this section fixes: `sand
 1. **Declare your outputs.** Literal relative paths, with a disposition, a media type, and `required` set honestly.
 2. **Tell the model where to write.** The output path has to appear in the tool's description: a program that saves its PNG somewhere else produces nothing collectable and no error.
 3. **Do not put bytes in the result.** Return the references `deliver` gave you.
-4. **Require `FILES_LIST` only if you truly cannot name your outputs.** It is refused on Docker and wslc; a kind that requires it without needing it has made itself ACAS-only.
+4. **Require `FILES_LIST` only if you truly cannot name your outputs.** It is refused on Docker and wslc; a kind that requires it without needing it has made itself ACAS-only. "The model decides at run time" is *not* that case — set `outputs_named_at_call_time` and pass the names to `collect_outputs(outputs=...)`.
 5. **Grow `requires` from what you declare.** A spec with no declared outputs should not require `FILES_OUT` at all — and one that declares any output, of either disposition, is **refused** without it: the capability match is the only thing standing between that spec and a backend with no pull surface, and it only runs on what `requires` names.
 6. **Do not combine a sink with an explicit `declarations=`** — it is refused, because the two disagree about what the tool's flow is.
 
@@ -352,6 +380,7 @@ The DOT source goes in through `FILES_IN` as file content, so no shell sees mode
 3. **Docker, first and as the acceptance gate.** The backend declares `FILES_OUT` from the day it exists, and its e2e is what proves the protocol: write, exec, stat, read back, cap refusal, symlink refusal. It goes first because it is the only suite that runs on a GitHub runner with no subscription, no login and no disk-image import — and the only backend a contributor can exercise on the machine in front of them.
 4. **ACAS** — natively, including the raw-payload symlink read. It remains the *reference* for shape, since it is the only backend that can serve `FILES_LIST`; it follows Docker because verifying it requires infrastructure a pull request cannot assume.
 5. **The diagram kind and `samples/07`** — end to end.
+5b. **The CodeAct workspace channel** ([#132](https://github.com/sokolaidev/maf-extensions/issues/132)) — files in, and the two call-time naming roads above.
 6. ~~**wslc** — the bytes seam first, then tar-out.~~ **Deferred** ([#125](https://github.com/sokolaidev/maf-extensions/issues/125)): there is no tar-out to reach. See the backend section above; the two upstream gaps that would reopen it are [microsoft/WSL#41309](https://github.com/microsoft/WSL/issues/41309) and [microsoft/WSL#41310](https://github.com/microsoft/WSL/issues/41310).
 
 Reference and gate are deliberately different roles. ACAS defines what the surface should look like; Docker decides whether it actually works, because it is the one that runs everywhere. Splitting them keeps the richest backend from quietly setting requirements the portable ones cannot meet — the mistake the `FILES_LIST` split already corrected once.

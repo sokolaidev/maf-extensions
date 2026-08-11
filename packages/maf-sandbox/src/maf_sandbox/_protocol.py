@@ -183,7 +183,12 @@ class OutputDisposition(StrEnum):
 
 @dataclass(frozen=True)
 class DeclaredOutput:
-    """One artifact a workload says it produces, named in the spec before the run.
+    """One artifact a workload says it produces, as a literal path this library will resolve.
+
+    That is the whole of what makes a declaration one — not *when* it was written down.  Most
+    live in ``SandboxSpec.declared_outputs``, fixed when the tool is built; a workload whose
+    names are not knowable then passes the same type to ``collect_outputs(outputs=...)``, which
+    for a guest-authored manifest is after the run that produced them.
 
     ``path`` is **literal** and relative to the sandbox's working directory.  A glob would
     have to be resolved by enumerating a directory, which is the primitive
@@ -194,12 +199,19 @@ class DeclaredOutput:
     decide how the host handles it, and a kind knows what it renders.  ``required=False`` is
     how a workload says an absence is normal — a renderer exiting non-zero produces no file,
     and the model needs that diagnostic rather than a transfer error stacked on top of it.
+
+    ``name`` is the spelling the artifact **lands** under, and it defaults to ``path`` because
+    for most kinds the two are the same string.  They come apart as soon as a kind writes into
+    a per-call directory — which warm sandbox reuse forces on any kind whose outputs would
+    otherwise persist into the next round — since the guest path then carries a run id the
+    host has no use for.
     """
 
     path: str
     disposition: OutputDisposition = OutputDisposition.LAND
     media_type: str | None = None
     required: bool = True
+    name: str | None = None
 
 
 #: So the ceilings below read as sizes rather than as eight-digit literals.
@@ -310,6 +322,12 @@ class SandboxSpec:
     in-process fake, and the two would meet in one expression in every kind's tests.
     ``files_in`` and ``files_out`` are the workload's own transfer caps per direction — a
     backend declares its own ceilings, and the router refuses a spec asking above them.
+
+    ``outputs_named_at_call_time`` says this workload lands artifacts it cannot name here.
+    Setting it obliges the same three things a declared ``LAND`` output does — a sink, the
+    outbound confidentiality cap, and :data:`Capability.FILES_OUT` in ``requires`` — and is
+    what ``collect_outputs(..., outputs=...)`` refuses to run without.  It composes with
+    ``declared_outputs`` rather than replacing it, and ``files_out`` caps the union.
     """
 
     kind: str
@@ -327,6 +345,10 @@ class SandboxSpec:
     declared_outputs: tuple[DeclaredOutput, ...] = ()
     files_in: TransferLimits = DEFAULT_TRANSFER_LIMITS
     files_out: TransferLimits = DEFAULT_TRANSFER_LIMITS
+    # Appended rather than grouped with `declared_outputs`, where it reads better: this is a
+    # public dataclass and is not keyword-only, so inserting a field rebinds every positional
+    # argument after it — a caller's `files_in` would silently become this flag.
+    outputs_named_at_call_time: bool = False
 
 
 @dataclass(frozen=True)
