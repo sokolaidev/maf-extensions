@@ -362,7 +362,18 @@ class HostToolRegistry:
             )
         if not callable(func):
             raise TypeError(f"a host tool must be callable, not {type(func).__name__}")
-        tool_name = name if name is not None else getattr(func, "__name__", "")
+        derived = cast(object, name if name is not None else getattr(func, "__name__", ""))
+        if not isinstance(derived, str):
+            # Cast and check for the same reason as everywhere else here — and this one is
+            # not only about untyped hosts: `__name__` is an ordinary attribute a callable
+            # object can set to anything. A non-string name registers into a `dict[str, ...]`
+            # and out of `names()`, and no guest can ever reach it: a transport carries the
+            # name as JSON text, so a tool keyed by 7 is registered and unreachable.
+            raise TypeError(
+                f"a host tool's name must be a string, not {type(derived).__name__}: it is the "
+                "key a guest sends to reach it, and only text crosses that boundary"
+            )
+        tool_name = derived
         if not tool_name:
             raise ValueError("a host tool needs a name: pass name= for a callable without one")
         if tool_name in self._tools:
@@ -508,6 +519,16 @@ class HostToolRun:
             return _refused(
                 f"Error: this run's host-tool dispatch cap ({cap}) is exhausted — finish "
                 "with the results already delivered and report what remains undone"
+            )
+        # The same cast-and-check the arguments get below, and for the same reason: a
+        # transport hands over whatever the guest's JSON parsed to. A name that arrived as an
+        # array or an object is unhashable, and the registry's dict lookup would raise out of
+        # this method rather than answer with a sentence. The type is named and the value is
+        # not — it is guest text, and this refusal lands in a transcript.
+        requested = cast(object, name)
+        if not isinstance(requested, str):
+            return _refused(
+                f"Error: a host tool name must be a string, not {type(requested).__name__}"
             )
         func = self._registry.resolve(name)
         if func is None:

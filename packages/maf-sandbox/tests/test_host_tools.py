@@ -158,6 +158,26 @@ class TestRegistration:
         with pytest.raises(TypeError, match="callable"):
             registry.register("not a function")  # type: ignore[arg-type]
 
+    def test_a_non_string_name_is_refused(self):
+        """A tool keyed by 7 registers, appears in a `frozenset[str]`, and no guest can ever
+        name it: a transport carries the name as JSON text."""
+        registry = HostToolRegistry()
+        with pytest.raises(TypeError, match="must be a string"):
+            registry.register(_stamped_pure(), name=7)  # type: ignore[arg-type]
+
+    def test_a_callable_whose_own_name_is_not_a_string_is_refused(self):
+        """`__name__` is an ordinary attribute, so the default name is not a string by fiat."""
+
+        class Odd:
+            __name__ = 7
+
+            def __call__(self) -> int:
+                return 1
+
+        registry = HostToolRegistry()
+        with pytest.raises(TypeError, match="must be a string"):
+            registry.register(Odd())
+
     def test_the_gate_refuses_an_unstamped_function_at_registration(self):
         """Where the host can fix it — one decorator away — not later at dispatch."""
         registry = HostToolRegistry(require_declared=True)
@@ -539,6 +559,18 @@ class TestDispatch:
         result = _dispatch(HostToolRun(registry), "_pure", {"x": 1})
         assert not result.ok
         assert result.refusal == "Error: '_pure' is not a registered host tool"
+
+    def test_an_unhashable_name_is_refused_not_raised(self):
+        """A transport hands over whatever the guest's JSON parsed to, and a name that came
+        as an array cannot be a dict key at all — the lookup raises before any refusal."""
+        with pytest.raises(TypeError):
+            {}.get(["doubled"])  # type: ignore[arg-type]  # the premise
+
+        registry = HostToolRegistry()
+        registry.register(_stamped_pure(), name="doubled")
+        result = _dispatch(HostToolRun(registry), ["doubled"])  # type: ignore[arg-type]
+        assert not result.ok
+        assert result.refusal == "Error: a host tool name must be a string, not list"
 
     def test_the_cap_returns_a_sanitized_refusal_rather_than_raising(self):
         registry = HostToolRegistry(max_dispatches_per_run=2)
