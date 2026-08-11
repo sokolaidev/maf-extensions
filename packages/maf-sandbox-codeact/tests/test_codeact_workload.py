@@ -24,11 +24,13 @@ from maf_sandbox import (
     DEFAULT_TRANSFER_LIMITS,
     Artifact,
     Capability,
+    EntryKind,
     ExecResult,
     Isolation,
     LandedArtifact,
     OutputSink,
     SandboxCapabilityNotSupported,
+    SandboxEntry,
     SandboxOutputSinkRequired,
     SandboxRouter,
     TransferLimits,
@@ -43,7 +45,12 @@ from maf_sandbox_codeact import (
     codeact_sandbox_spec,
     make_codeact_tools,
 )
-from maf_sandbox_codeact._tool import _MANIFEST_FILENAME, _PROGRAM_FILENAME, _WORK_DIR
+from maf_sandbox_codeact._tool import (
+    _MANIFEST_FILENAME,
+    _MANIFEST_MAX_BYTES,
+    _PROGRAM_FILENAME,
+    _WORK_DIR,
+)
 
 #: What a backend must declare before this kind may collect anything.
 _PULLS = DEFAULT_CAPABILITIES | {Capability.FILES_OUT}
@@ -95,6 +102,30 @@ class _ProducingSandbox(_ScriptedSandbox):
         for name, content in self.produces.items():
             self.contents[f"{working_directory}/{name}"] = content
         return result
+
+
+class _StatOnlySandbox(_ScriptedSandbox):
+    """Reports a manifest of a given size without holding one, and records every read.
+
+    `InProcessSandbox` is honest, so it cannot report a size it does not have — which is the
+    only way to show that an oversized or unmeasurable entry is refused *before* the read.
+    """
+
+    def __init__(self, *, size_bytes: int | None, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.reads: list[str] = []
+        self._size = size_bytes
+
+    async def stat_file(self, path, *, working_directory):
+        if path.endswith(_MANIFEST_FILENAME):
+            return SandboxEntry(path=path, kind=EntryKind.FILE, size_bytes=self._size)
+        return await super().stat_file(path, working_directory=working_directory)
+
+    async def read_file(self, path, *, working_directory, max_bytes):
+        self.reads.append(path)
+        return await super().read_file(
+            path, working_directory=working_directory, max_bytes=max_bytes
+        )
 
 
 class _RecordingSink:
@@ -551,6 +582,21 @@ class TestFilesIn:
         assert "data/sales.csv" not in out
         assert sandbox.files == {}
 
+    @pytest.mark.parametrize(
+        ("name", "reason"),
+        [("a\\b.csv", "backslash"), ("a//b.csv", "segment"), ("a\tb.csv", "control character")],
+    )
+    def test_a_refusal_names_the_rule_that_was_broken(self, name: str, reason: str):
+        """A fixed sentence about traversal and leading slashes tells a caller refused for a
+        backslash that its name satisfies everything the tool asked for."""
+        sandbox = _ScriptedSandbox()
+        store = InMemoryStore({name: "x"})
+        tool = _tool(_backend(sandbox), workspace_store=store)
+
+        out = _run(tool, "print('hi')", files=[name])
+        assert reason in out
+        assert sandbox.files == {}
+
     def test_the_program_file_cannot_be_shadowed_by_a_shared_file(self):
         sandbox = _ScriptedSandbox()
         store = InMemoryStore({_PROGRAM_FILENAME: "print('theirs')"})
@@ -934,6 +980,29 @@ class TestManifestOutputs:
         )
         assert "at most 1" in out
         assert sink.names == []
+
+    def test_an_oversized_manifest_is_refused_before_it_is_read(self):
+        """Stat, refuse, then read — the pull surface's contract. A backend whose SDK buffers
+        the whole response has spent the memory before `max_bytes` is looked at, so passing a
+        ceiling down is not a bound on its own."""
+        sandbox = _StatOnlySandbox(size_bytes=_MANIFEST_MAX_BYTES + 1)
+        sink = _RecordingSink()
+        tool = _pulling_tool(sandbox, CodeactOutputs.MANIFEST, sink)
+
+        out = _run(tool, "print('hi')")
+        assert "reads at most" in out
+        assert sandbox.reads == []
+        assert sink.names == []
+
+    def test_a_manifest_of_unknown_size_fails_closed(self):
+        """Coercing an unknown size to zero would make the ceiling read it as free."""
+        sandbox = _StatOnlySandbox(size_bytes=None)
+        sink = _RecordingSink()
+        tool = _pulling_tool(sandbox, CodeactOutputs.MANIFEST, sink)
+
+        out = _run(tool, "print('hi')")
+        assert "unknown" in out
+        assert sandbox.reads == []
 
     def test_no_outputs_parameter_is_offered_in_this_mode(self):
         """The program's own listing is the channel; a second one would contradict it."""

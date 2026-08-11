@@ -237,9 +237,9 @@ _DESCRIPTION_HEAD = """Run a short Python program inside a sandbox and return wh
         as ``python3 program.py`` in a sandbox with **no network access**, so it can compute
         but cannot fetch.
 
-        **Only what you print comes back.**  There is no REPL echo and the value of the last
-        expression is not returned, so end the program with ``print(...)`` of everything you
-        need to see.
+        **Only what you print is read back as text.**  There is no REPL echo and the value of
+        the last expression is not returned, so end the program with ``print(...)`` of
+        everything you need to see.
 
         Write a complete, self-contained program every time.  Each call gets a fresh working
         directory, so nothing carries over between calls but what you pass in."""
@@ -254,7 +254,12 @@ _DESCRIPTION_DECLARED = """**To produce files, name them in ``outputs`` and writ
         you get back a reference to where each one landed — the file contents do **not** come
         back, so do not claim to have read a file you only produced.  A name you declare and
         do not write is reported to you rather than silently dropped, and a file you write
-        without declaring is not saved at all."""
+        without declaring is not saved at all.
+
+        Naming a file in both ``files`` and ``outputs`` is how you edit one in place — and it
+        is the one case where "declared and not written" cannot be reported, because the copy
+        you were given is already there.  A program that fails before rewriting it saves the
+        original back, unchanged."""
 
 _DESCRIPTION_MANIFEST = f"""**To produce files, write them into the working directory and
         list them in ``{_MANIFEST_FILENAME}``**, in that directory, like this::
@@ -478,12 +483,12 @@ async def _resolve_workspace_files(
     for name in files:
         try:
             validate_artifact_name(name)
-        except SandboxArtifactNameInvalid:
-            # No listing echoed back: that would invite a retry with another spelling.
-            return (
-                f"Error: {name!r} cannot be shared — a file name must be a relative path with "
-                f"no '..' segment and no leading '/'."
-            )
+        except SandboxArtifactNameInvalid as exc:
+            # The validator's own sentence, which names the rule that was broken: a fixed
+            # message listing two of its rules tells a caller refused for a backslash or a
+            # control character that its name satisfies everything the tool asked for. The
+            # listing is still not echoed — that would invite a retry with another spelling.
+            return f"Error: {name!r} cannot be shared — {exc}"
         if name in reserved:
             return (
                 f"Error: {name!r} cannot be shared — this tool writes a file of that name into "
@@ -670,8 +675,17 @@ async def _read_manifest(
         entry = await sandbox.stat_file(path, working_directory=session.spec.work_dir)
         if entry is None:
             return f"No {_MANIFEST_FILENAME} was written, so no files were saved."
+        # Stat, refuse, *then* read — the pull surface's contract, not an optimisation. A
+        # backend whose SDK buffers the whole response has already spent the memory by the
+        # time `max_bytes` is looked at, so passing a ceiling down is not a bound on its own.
+        # An unknown size fails closed for the same reason it does in `collect_outputs`.
+        if entry.size_bytes is None or entry.size_bytes > _MANIFEST_MAX_BYTES:
+            return (
+                f"Error: {_MANIFEST_FILENAME} is {entry.size_bytes or 'of unknown'} bytes and "
+                f"this tool reads at most {_MANIFEST_MAX_BYTES}, so no files were saved."
+            )
         raw = await sandbox.read_file(
-            path, working_directory=session.spec.work_dir, max_bytes=_MANIFEST_MAX_BYTES
+            path, working_directory=session.spec.work_dir, max_bytes=entry.size_bytes
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("execute_code: could not read %s: %s", _MANIFEST_FILENAME, error_detail(exc))
