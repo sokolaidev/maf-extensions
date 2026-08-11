@@ -13,8 +13,10 @@ on:
     # pull request title. Without it a pull request goes green as `ci:`, is retitled to
     # `feat:`, and keeps the passing check: same head SHA, no re-run, gate bypassed.
     types: [opened, synchronize, reopened, edited]
-  # Release PRs are opened by GITHUB_TOKEN, which starts no workflow run — so the required
-  # check never reports on them. Running this against that branch by hand supplies it.
+  # A bot-opened pull request does start this — and then stops at `action_required`, the
+  # "Approve and run" gate, so the required check never reports until someone clears it.
+  # A dispatch is not subject to that gate, which is why release-please.yml fires one at
+  # each pull request it opens, and why running it here by hand is the manual equivalent.
   workflow_dispatch:
 
 # Read-only by default: nothing here writes to the repository, and an unset block would
