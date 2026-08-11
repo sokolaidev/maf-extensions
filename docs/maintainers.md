@@ -1,6 +1,6 @@
 # Maintainer setup
 
-Everything here is already done for the three published packages. You need it when **adding a package** to this repository, or when reconstructing the release plumbing somewhere else.
+Everything here is already done for the packages published today — a count is deliberately not given, because it moves and a stale one reads as an instruction to skip a step. You need it when **adding a package** to this repository, or when reconstructing the release plumbing somewhere else.
 
 Read it before touching PyPI settings: much of it is one-time configuration whose failure mode is a `403` at token-mint time that does not say which field was wrong. The later sections are the reasoning behind two choices in the release flow that look like oversights until you know what was tried.
 
@@ -43,7 +43,7 @@ A third environment, `live-verify`, exists too, but it belongs to release verifi
 
 ## Verifying a release against a live sandbox
 
-`verify-live.yml` installs the *published* wheels into a clean environment and runs two samples against a real Azure sandbox: [`samples/01_acas_bicep`](../samples/01_acas_bicep/), asserting the compiler's diagnostics came back, and [`samples/03_acas_codeact`](../samples/03_acas_codeact/), asserting the 100th Fibonacci number came back from code actually run in the sandbox — the happy-path half of [#33](https://github.com/sokolaidev/maf-extensions/issues/33). It runs on demand (Actions → *Verify (live)* → *Run workflow*) and once after each real publish of `maf-sandbox`, `maf-sandbox-acas`, `maf-sandbox-bicep` or `maf-sandbox-codeact` (dispatched by `publish-packages.yml`, which is why those two files know each other). It creates a **billable sandbox** — a PaaS container session, not a VM you provision — per sample, so it never runs on a pull request.
+`verify-live.yml` installs the *published* wheels into a clean environment and runs three samples. Two go against a real Azure sandbox — [`samples/01_acas_bicep`](../samples/01_acas_bicep/), asserting the compiler's diagnostics came back, and [`samples/03_acas_codeact`](../samples/03_acas_codeact/), asserting the 100th Fibonacci number came back from code actually run in the sandbox — which is the happy-path half of [#33](https://github.com/sokolaidev/maf-extensions/issues/33). The third, [`samples/06_docker_codeact`](../samples/06_docker_codeact/), makes the same Fibonacci assertion against the Docker backend on the runner itself. It runs on demand (Actions → *Verify (live)* → *Run workflow*) and once after each real publish of `maf-sandbox`, `maf-sandbox-acas`, `maf-sandbox-bicep`, `maf-sandbox-codeact` or `maf-sandbox-docker` (dispatched by `publish-packages.yml`, which is why those two files know each other). Each ACAS sample creates a **billable sandbox** — a PaaS container session, not a VM you provision — which is why this workflow never runs on a pull request; sample 06 costs nothing but model inference, and the Docker backend's own live coverage on a pull request comes from `tests.yml`, not from here.
 
 Authentication is OIDC federation to Azure — `azure/login`, no stored secret, the same principle as Trusted Publishing above. Everything the sample reads is non-secret configuration (endpoints and ids), so all of it lives as **environment variables**, none as secrets.
 

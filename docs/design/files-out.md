@@ -1,6 +1,6 @@
 # `FILES_OUT`: getting artifacts out of a sandbox
 
-> **Status: PROPOSED** — tracking issue [#109](https://github.com/sokolaidev/maf-extensions/issues/109). The baseline is [`sandbox-architecture.md`](sandbox-architecture.md); this document specifies rollout item 4 of [`two-axis-sandbox-policy.md`](two-axis-sandbox-policy.md), whose `FILES_OUT` paragraph is a sketch and is superseded here.
+> **Status: AS BUILT**, except where the rollout at the foot says otherwise — tracking issue [#109](https://github.com/sokolaidev/maf-extensions/issues/109). Items 1 to 5 have landed; item 6 is deferred behind two upstream gaps and records that in place. The baseline is [`sandbox-architecture.md`](sandbox-architecture.md); this document specifies rollout item 4 of [`two-axis-sandbox-policy.md`](two-axis-sandbox-policy.md), whose `FILES_OUT` paragraph is a sketch and is superseded here.
 
 ## What is missing, and why it is not symmetrical with `FILES_IN`
 
