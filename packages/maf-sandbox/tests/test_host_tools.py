@@ -184,6 +184,29 @@ class TestRegistration:
         with pytest.raises(HostToolNotDeclared, match="@sandbox_tool"):
             registry.register(_pure)
 
+    def test_the_gate_and_the_snapshot_are_one_read(self):
+        """A stamp is an attribute, so it can be a property that answers once and then stops.
+        Read twice, such a function passes the gate and registers as undeclared — the refusal
+        this gate promises the host arriving instead as a sentence to the model at dispatch."""
+        stamp = HostToolDeclaration(source=None, sink=None, identity=None)
+        reads: list[int] = []
+
+        class Flickering:
+            def __call__(self) -> int:
+                return 1
+
+        def answer_once(self: object) -> HostToolDeclaration | None:
+            reads.append(1)
+            return stamp if len(reads) == 1 else None
+
+        setattr(Flickering, FLOW_DECLARED_KEY, property(answer_once))
+
+        registry = HostToolRegistry(require_declared=True)
+        registry.register(Flickering(), name="flickering")
+
+        assert len(reads) == 1, "the gate and the snapshot must be the same read"
+        assert registry.declaration_for("flickering") == stamp
+
     def test_the_gate_admits_a_stamped_function(self):
         registry = HostToolRegistry(require_declared=True)
         registry.register(_stamped_pure())

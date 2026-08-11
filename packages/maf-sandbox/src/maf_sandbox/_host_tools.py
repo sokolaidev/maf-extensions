@@ -393,7 +393,12 @@ class HostToolRegistry:
                 "replaced: rebinding a name silently would change the dispatch surface out "
                 "from under the aggregate a host already derived from it."
             )
-        if self._require_declared and declaration_of(func) is None:
+        # One read, used by both the gate and the snapshot below. The stamp is an attribute,
+        # so it can be a property answering differently each time — and two reads would let a
+        # function pass the gate and register as undeclared, turning the refusal this gate
+        # promises the host into a sanitized sentence to the model at dispatch.
+        declaration = declaration_of(func)
+        if self._require_declared and declaration is None:
             raise HostToolNotDeclared(
                 f"host tool {tool_name!r} has no complete information-flow declaration and "
                 "this registry requires one. Stamp it with @sandbox_tool(source=..., "
@@ -402,7 +407,7 @@ class HostToolRegistry:
             )
         _warn_host_tools_once()
         self._tools[tool_name] = func
-        self._declarations[tool_name] = declaration_of(func)
+        self._declarations[tool_name] = declaration
 
     def declaration_for(self, name: str) -> HostToolDeclaration | None:
         """The declaration captured when ``name`` was registered.
