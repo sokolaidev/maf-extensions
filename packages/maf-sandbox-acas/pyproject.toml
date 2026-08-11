@@ -41,7 +41,7 @@ dependencies = [
     # The floor tracks the release carrying the FILES_OUT vocabulary this backend imports at
     # module scope (SandboxEntry, EntryKind, SandboxLimits, TransferLimits); admit anything
     # older and the clean-env wheel smoke resolves it and dies on ImportError. The number
-    # itself is below, and `scripts/bump_dependents_floor.py` moves it — so this says which
+    # itself is below, and `scripts/set_dependents_range.py` moves it — so this says which
     # release the floor is for, never which release that is.
     "maf-sandbox>=0.8.0,<0.10",
     # DefaultAzureCredential for the sandbox data plane.

@@ -294,8 +294,8 @@ class TestReleasePullRequestsKeepThemselvesCurrent:
         assert CONFIG["always-update"] is True
 
 
-class TestDependentsPinMafSandboxInAShapeTheBumpScriptCanRead:
-    """`scripts/bump_dependents_floor.py` raises the floor after a release by pattern.
+class TestDependentsPinMafSandboxInAShapeTheRangeScriptCanRead:
+    """`scripts/set_dependents_range.py` moves both ends of the range after a release, by pattern.
 
     Editing by pattern silently no-ops when the string drifts, so a dependent that reformats
     its maf-sandbox constraint would quietly stop being bumped while the release step still
@@ -323,7 +323,7 @@ class TestDependentsPinMafSandboxInAShapeTheBumpScriptCanRead:
         for package_path, constraint in dependents.items():
             assert self._MAF_SANDBOX.fullmatch(constraint), (
                 f"{package_path}: {constraint!r} is not the maf-sandbox>=X,<Y shape "
-                "scripts/bump_dependents_floor.py edits by pattern"
+                "scripts/set_dependents_range.py edits by pattern"
             )
 
 
@@ -420,7 +420,7 @@ class TestTheWorkflowReadsItsOwnPullRequestsWithoutTheSearchIndex:
 class TestTheConstraintCommentsDoNotNameAVersion:
     """The prose above a maf-sandbox constraint must not name the release it points at.
 
-    `scripts/bump_dependents_floor.py` rewrites the constraint and never the comment above
+    `scripts/set_dependents_range.py` rewrites the constraint and never the comment above
     it, so a sentence naming a version is stale one release later and no test noticed. Every
     such sentence in this repository had drifted by at least two minors before anyone read
     one. The constraint below is the source of truth; the comment says what the floor is
