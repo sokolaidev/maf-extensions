@@ -72,7 +72,10 @@ from ._protocol import (
     TransferLimits,
 )
 
-logger = logging.getLogger(__name__)
+#: Fallback for :class:`HostToolRun`'s ``logger`` argument — named apart from the usual
+#: module-level ``logger`` because that argument is the point: a workload passes its own so
+#: dispatch-failure records keep the workload's logger name (the convention `maf.py` set).
+_DEFAULT_LOGGER = logging.getLogger(__name__)
 
 __all__ = [
     "DEFAULT_MAX_DISPATCHES_PER_RUN",
@@ -255,16 +258,20 @@ class DispatchResult:
         return self.refusal is None
 
 
-#: One-time guard for the registration notice — module-level so it is per process, like the
-#: experimental notice it mirrors.
-_registration_warned = False
+class _RegistrationNotice:
+    """One-time guard for the registration notice — per process, like the experimental one.
+
+    A class attribute rather than a module global so mutating it is an ordinary attribute
+    write, visible to readers and tests alike, with no ``global`` statement to reason about.
+    """
+
+    warned = False
 
 
 def _warn_host_tools_once() -> None:
-    global _registration_warned
-    if _registration_warned:
+    if _RegistrationNotice.warned:
         return
-    _registration_warned = True
+    _RegistrationNotice.warned = True
     message = (
         "a host tool was registered for sandbox dispatch: dispatched calls run in the host "
         "process with the host's authority and bypass the middleware chain — the boundary "
@@ -470,7 +477,7 @@ class HostToolRun:
 
     def __init__(self, registry: HostToolRegistry, *, logger: logging.Logger | None = None) -> None:
         self._registry = registry
-        self._logger = logger if logger is not None else logging.getLogger(__name__)
+        self._logger = logger if logger is not None else _DEFAULT_LOGGER
         self._dispatched = 0
         self._delivered = 0
         self._delivered_bytes = 0

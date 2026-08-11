@@ -40,7 +40,7 @@ from maf_sandbox import (
 @pytest.fixture(autouse=True)
 def _quiet_registration_notice(monkeypatch: pytest.MonkeyPatch):
     """Pretend the one-time notice already fired, so only the tests about it see it."""
-    monkeypatch.setattr(host_tools_module, "_registration_warned", True)
+    monkeypatch.setattr(host_tools_module._RegistrationNotice, "warned", True)
 
 
 def _pure(x: int) -> int:
@@ -177,7 +177,7 @@ class TestRegistrationNotice:
     def test_the_first_registration_warns_once(self, monkeypatch: pytest.MonkeyPatch):
         import warnings
 
-        monkeypatch.setattr(host_tools_module, "_registration_warned", False)
+        monkeypatch.setattr(host_tools_module._RegistrationNotice, "warned", False)
         registry = HostToolRegistry()
         with pytest.warns(MafSandboxHostToolsWarning, match="bypass the middleware chain"):
             registry.register(_stamped_pure(), name="first")
@@ -189,7 +189,7 @@ class TestRegistrationNotice:
     def test_the_notice_is_suppressible_by_category(self, monkeypatch: pytest.MonkeyPatch):
         import warnings
 
-        monkeypatch.setattr(host_tools_module, "_registration_warned", False)
+        monkeypatch.setattr(host_tools_module._RegistrationNotice, "warned", False)
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             warnings.filterwarnings("ignore", category=MafSandboxHostToolsWarning)
@@ -200,7 +200,7 @@ class TestRegistrationNotice:
         """The notice must never decide whether registering succeeds."""
         import warnings
 
-        monkeypatch.setattr(host_tools_module, "_registration_warned", False)
+        monkeypatch.setattr(host_tools_module._RegistrationNotice, "warned", False)
         registry = HostToolRegistry()
         with warnings.catch_warnings():
             warnings.simplefilter("error")
