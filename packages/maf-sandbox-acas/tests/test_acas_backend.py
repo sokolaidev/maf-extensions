@@ -1185,7 +1185,7 @@ class TestStatFile:
     def test_a_regular_file_carries_its_size(self):
         assert _stat(_sandbox(), "real.txt").size_bytes == len(_REAL_CONTENT)
 
-    def test_a_symlinks_size_is_not_reported_as_content(self):
+    def test_a_symlink_size_is_not_reported_as_content(self):
         """13 is the length of `/etc/hostname`, so passing it on would be a lie about bytes."""
         assert _stat(_sandbox(), "link-out.txt").size_bytes is None
 
@@ -1464,6 +1464,33 @@ class TestListDir:
         )
         with pytest.raises(AcasEntryPayloadIncomplete, match="isSymlink"):
             asyncio.run(_sandbox(client).list_dir(".", working_directory=_WORK_DIR))
+
+    def test_a_listing_with_no_entries_list_is_refused_rather_than_read_as_empty(self):
+        """The service sends an explicit `[]` for an empty directory — verified against a live
+        group — so an absent key is a changed payload, and defaulting it to empty would hide
+        every declared output behind a listing that looks legitimately empty.
+        """
+
+        class _NoEntries(_FakeDataPlaneClient):
+            async def _dp_get(self, path, *, params=None):
+                payload = await super()._dp_get(path, params=params)
+                if path.endswith("files/list"):
+                    return {k: v for k, v in payload.items() if k != "entries"}
+                return payload
+
+        with pytest.raises(AcasEntryPayloadIncomplete, match="entries"):
+            asyncio.run(_sandbox(_NoEntries()).list_dir(".", working_directory=_WORK_DIR))
+
+    def test_a_listed_entry_that_is_not_an_object_is_refused(self):
+        class _Scalar(_FakeDataPlaneClient):
+            async def _dp_get(self, path, *, params=None):
+                payload = await super()._dp_get(path, params=params)
+                if path.endswith("files/list"):
+                    return {**payload, "entries": ["real.txt"]}
+                return payload
+
+        with pytest.raises(AcasEntryPayloadIncomplete, match="not an"):
+            asyncio.run(_sandbox(_Scalar()).list_dir(".", working_directory=_WORK_DIR))
 
     def test_a_listed_entry_with_no_path_is_refused_as_a_wire_shape_failure(self):
         """Where an entry sits is as load-bearing as what it is, and as absent from the payload."""

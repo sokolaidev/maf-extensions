@@ -17,7 +17,7 @@ import posixpath
 import shlex
 from collections.abc import Mapping, Sequence
 from hashlib import sha256
-from typing import Any
+from typing import Any, cast
 
 from maf_sandbox import (
     Capability,
@@ -223,6 +223,29 @@ def _size_bytes(payload: Mapping[str, Any]) -> int | None:
     return size
 
 
+def _listed_entries(payload: Mapping[str, Any], path: str) -> tuple[Mapping[str, Any], ...]:
+    """The entries of a listing, refusing a container this backend cannot read.
+
+    Not defaulted to empty: the service sends an explicit empty list for an empty directory, so
+    an absent or renamed key means the shape changed — and defaulting would hide every output
+    behind a listing that looks legitimately empty.
+    """
+    entries: Any = payload.get(_FIELD_ENTRIES)
+    if not isinstance(entries, list):
+        raise AcasEntryPayloadIncomplete(
+            f"the sandbox service listed {path!r} without a {_FIELD_ENTRIES!r} list, so a "
+            "changed payload cannot be told from an empty directory"
+        )
+    listed = cast("list[Any]", entries)
+    for entry in listed:
+        if not isinstance(entry, Mapping):
+            raise AcasEntryPayloadIncomplete(
+                f"the sandbox service listed an entry of type {type(entry).__name__}, not an "
+                "object, so its type and size cannot be read"
+            )
+    return tuple(cast("list[Mapping[str, Any]]", listed))
+
+
 def _listed_entry_path(payload: Mapping[str, Any], working_directory: str) -> str:
     """Where one listed entry sits, relative to the working directory the call named."""
     reported: Any = payload.get(_FIELD_PATH)
@@ -405,10 +428,9 @@ class _AcasSandbox:
             # Translated out of the SDK's vocabulary: a kind catching this would otherwise have
             # to import azure-core to name what it caught.
             raise FileNotFoundError(f"no such directory: {path!r}") from exc
-        entries: Sequence[Any] = payload.get(_FIELD_ENTRIES) or ()
         return tuple(
             _entry_from_payload(entry, _listed_entry_path(entry, working_directory))
-            for entry in entries
+            for entry in _listed_entries(payload, path)
         )
 
 
