@@ -51,6 +51,7 @@ from maf_sandbox_codeact._tool import (
     _MANIFEST_FILENAME,
     _MANIFEST_MAX_BYTES,
     _PROGRAM_FILENAME,
+    _SMALLEST_MANIFEST,
     _WORK_DIR,
 )
 
@@ -816,6 +817,24 @@ class TestTheInboundCapsAreEnforcedHere:
         assert "at most 10 bytes per file" in out
         assert store.reads == []
 
+    @pytest.mark.parametrize("where", ["code", "file"])
+    def test_content_that_is_not_encodable_is_a_refusal_not_a_dead_turn(self, where: str):
+        """A lone surrogate survives JSON and arrives as a `str` that cannot be encoded. The
+        tally runs outside the guarded write, so an unhandled `UnicodeEncodeError` here takes
+        the caller's turn with it."""
+        lone_surrogate = "x\ud800y"
+        sandbox = _ScriptedSandbox()
+        store = _CountingStore({"a.csv": lone_surrogate if where == "file" else "ok"})
+        tool = self._tool(sandbox, store)
+
+        out = _run(
+            tool,
+            lone_surrogate if where == "code" else "print(1)",
+            files=["a.csv"],
+        )
+        assert "not valid UTF-8" in out
+        assert sandbox.contents == {}
+
     def test_a_name_listed_twice_is_refused(self):
         """One read and one write per name; repeating one only multiplies both."""
         sandbox = _ScriptedSandbox()
@@ -1290,8 +1309,23 @@ class TestManifestOutputs:
                 _ProducingSandbox(),
                 CodeactOutputs.MANIFEST,
                 _RecordingSink(),
-                files_out=replace(DEFAULT_TRANSFER_LIMITS, **{cap: 20}),
+                files_out=replace(DEFAULT_TRANSFER_LIMITS, **{cap: _SMALLEST_MANIFEST - 1}),
             )
+
+    def test_exactly_the_smallest_manifest_is_a_usable_channel_and_attaches(self):
+        """Equality leaves nothing for the artifact's *bytes*, and a zero-byte file is still a
+        file — so refusing this configuration would refuse one that works."""
+        sandbox = _ProducingSandbox()
+        sink = _RecordingSink()
+        tool = _pulling_tool(
+            sandbox,
+            CodeactOutputs.MANIFEST,
+            sink,
+            files_out=replace(DEFAULT_TRANSFER_LIMITS, max_total_bytes=_SMALLEST_MANIFEST),
+        )
+
+        _run_producing(tool, sandbox, {_MANIFEST_FILENAME: b'{"outputs":[{"path":"a"}]}', "a": b""})
+        assert sink.names == ["a"]
 
     def test_the_manifest_read_is_bounded_by_the_collection_total_too(self):
         """A manifest bigger than the whole collection's budget cannot be part of a collection

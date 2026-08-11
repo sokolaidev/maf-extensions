@@ -80,8 +80,9 @@ _MANIFEST_PATH_KEY = "path"
 #: A listing of what a program wrote is text, and a small amount of it.
 _MANIFEST_MAX_BYTES = 64 * 1024
 
-#: The shortest manifest that names one file — the floor a host's byte caps must clear before
-#: this channel can deliver anything at all.
+#: The shortest manifest that names one file — the floor a host's byte caps must reach before
+#: this channel can deliver anything at all.  Equality is usable rather than impossible: the
+#: artifact it names may be empty, and a zero-byte regular file is collected like any other.
 _SMALLEST_MANIFEST = len(
     json.dumps({_MANIFEST_OUTPUTS_KEY: [{_MANIFEST_PATH_KEY: "a"}]}, separators=(",", ":"))
 )
@@ -238,12 +239,11 @@ def make_codeact_tools(
                 f"for an artifact — and this host allows {files_out.max_files}."
             )
         room = min(files_out.max_bytes_per_file, files_out.max_total_bytes)
-        if room <= _SMALLEST_MANIFEST:
+        if room < _SMALLEST_MANIFEST:
             raise ValueError(
                 f"{EXECUTE_CODE_TOOL_NAME}: outputs={str(CodeactOutputs.MANIFEST)!r} needs "
-                f"more than {_SMALLEST_MANIFEST} bytes of files_out — the smallest "
-                f"{_MANIFEST_FILENAME} naming one file, plus the file — and this host allows "
-                f"{room}."
+                f"at least {_SMALLEST_MANIFEST} bytes of files_out — the smallest "
+                f"{_MANIFEST_FILENAME} naming one file — and this host allows {room}."
             )
     if configured and outputs is CodeactOutputs.NONE and output_sink is not None:
         raise ValueError(
@@ -641,7 +641,16 @@ class _InboundTally:
 
     def add(self, name: str, content: str) -> str | None:
         """Count one file, or answer with the refusal that should stop the next read."""
-        size = len(content.encode())
+        try:
+            size = len(content.encode())
+        except UnicodeEncodeError:
+            # A lone surrogate survives JSON and reaches `code` as a `str` that cannot be
+            # encoded. This tally runs outside the guarded write, so without this the turn
+            # dies here rather than the model being told what to fix.
+            return (
+                f"Error: {name!r} is not valid UTF-8 and cannot be written into the sandbox. "
+                f"Nothing was shared."
+            )
         if size > self._limits.max_bytes_per_file:
             return (
                 f"Error: {name!r} is {size} bytes and this tool writes at most "
