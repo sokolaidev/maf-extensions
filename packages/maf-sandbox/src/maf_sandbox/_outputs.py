@@ -153,8 +153,10 @@ class SandboxArtifactNameCollision(SandboxOutputError):
 class Artifact:
     """One file pulled out of a sandbox, on its way to the host.
 
-    ``name`` is validated and relative, derived from the declared output's path and spelled as
-    the sink asked.  ``kind`` is the spec's, so a host can route by workload without being told
+    ``name`` is validated and relative, and spelled as the sink asked: it is the declared
+    output's ``name`` when the kind gave one, and its ``path`` otherwise — the two come apart
+    for a kind writing into a per-call directory, whose guest path carries a run id the host
+    has no use for.  ``kind`` is the spec's, so a host can route by workload without being told
     twice.  ``media_type`` is whatever the kind declared, never sniffed: sniffing would let
     guest-produced content decide how the host handles it.
     """

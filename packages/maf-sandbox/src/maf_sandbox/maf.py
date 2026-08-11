@@ -234,11 +234,10 @@ class SandboxToolSession:
 
     @property
     def output_sink(self) -> OutputSink | None:
-        """The sink :func:`sandboxed_tool` checked this spec against, for the body to hand on.
+        """The sink :func:`sandboxed_tool` checked this spec against.
 
-        The check and the honouring belong to one object deliberately.  A kind closing over a
-        sink of its own could pass ``collect_outputs`` a different one from the sink whose
-        presence satisfied the attach-time refusal, and nothing would notice.
+        Read it here rather than closing over one, so that the sink whose presence satisfied
+        the attach-time refusal is the sink the body actually hands to ``collect_outputs``.
         """
         return self._output_sink
 

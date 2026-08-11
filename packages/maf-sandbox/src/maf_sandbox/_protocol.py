@@ -183,7 +183,13 @@ class OutputDisposition(StrEnum):
 
 @dataclass(frozen=True)
 class DeclaredOutput:
-    """One artifact a workload says it produces, named in the spec before the run.
+    """One artifact a workload says it produces, named before the run that produces it.
+
+    Usually that means in ``SandboxSpec.declared_outputs``, written when the tool is built.  A
+    workload whose artifact names are not knowable that early passes them to
+    ``collect_outputs(outputs=...)`` instead, as the same type: what makes a declaration a
+    declaration is that it names a literal path this library will resolve, not when it was
+    written down.
 
     ``path`` is **literal** and relative to the sandbox's working directory.  A glob would
     have to be resolved by enumerating a directory, which is the primitive
@@ -320,7 +326,7 @@ class SandboxSpec:
 
     ``outputs_named_at_call_time`` is how a workload that cannot name its artifacts in advance
     stays honest at attach.  A CodeAct-class kind knows it lands files and knows nothing about
-    what they will be called, and every attach-time question —  is a sink required, does the
+    what they will be called, and every attach-time question — is a sink required, does the
     outbound confidentiality cap apply, must the backend serve
     :data:`Capability.FILES_OUT` — is answered from ``declared_outputs`` alone, so such a
     workload would answer all three wrongly by declaring nothing.  Setting it also unlocks

@@ -1058,7 +1058,9 @@ class TestCallTimeOutputs:
         assert landed == ()
         assert sandbox.calls == []
 
-    def test_they_are_counted_against_the_workload_s_own_caps(self):
+    def test_one_cap_counts_both_sources(self):
+        """One from each side, so a separate tally per source would still pass the cap and
+        deliver twice what the workload allowed."""
         sandbox = InProcessSandbox(seed_files={"/work/a.png": b"a", "/work/b.png": b"b"})
         recorder = _RecordingSink()
         limits = TransferLimits(max_bytes_per_file=8, max_total_bytes=8, max_files=1)
@@ -1066,9 +1068,25 @@ class TestCallTimeOutputs:
             asyncio.run(
                 collect_outputs(
                     sandbox,
-                    _spec(files_out=limits, at_call_time=True),
+                    _spec(DeclaredOutput(path="a.png"), files_out=limits, at_call_time=True),
                     sink=recorder.sink,
-                    outputs=(DeclaredOutput(path="a.png"), DeclaredOutput(path="b.png")),
+                    outputs=(DeclaredOutput(path="b.png"),),
+                )
+            )
+        assert recorder.delivered == []
+
+    def test_the_byte_ceiling_counts_both_sources_too(self):
+        """`max_files` alone would pass with a generous count and two large files."""
+        sandbox = InProcessSandbox(seed_files={"/work/a.png": b"aaaa", "/work/b.png": b"bbbb"})
+        recorder = _RecordingSink()
+        limits = TransferLimits(max_bytes_per_file=8, max_total_bytes=6, max_files=8)
+        with pytest.raises(SandboxTransferCapExceeded, match="max_total_bytes"):
+            asyncio.run(
+                collect_outputs(
+                    sandbox,
+                    _spec(DeclaredOutput(path="a.png"), files_out=limits, at_call_time=True),
+                    sink=recorder.sink,
+                    outputs=(DeclaredOutput(path="b.png"),),
                 )
             )
         assert recorder.delivered == []
