@@ -34,7 +34,7 @@ dependencies = [
     # published wheel resolves a maf-sandbox base missing those imports. The number itself is
     # below, and `scripts/bump_dependents_floor.py` moves it — so this says which release the
     # floor is for, never which release that is.
-    "maf-sandbox>=0.7.0,<0.9",
+    "maf-sandbox>=0.8.0,<0.9",
     # The `@tool` decorator. MAF is a genuine dependency of the tool itself, not of the host
     # application.
     "agent-framework-core>=1.13.0,<2",
