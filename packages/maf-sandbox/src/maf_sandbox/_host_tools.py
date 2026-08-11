@@ -292,6 +292,7 @@ class HostToolRegistry:
         max_dispatches_per_run: int = DEFAULT_MAX_DISPATCHES_PER_RUN,
         response_limits: TransferLimits = DEFAULT_TRANSFER_LIMITS,
     ) -> None:
+        _refuse_non_integer("max_dispatches_per_run", max_dispatches_per_run)
         if max_dispatches_per_run < 1:
             raise ValueError(
                 f"max_dispatches_per_run must be at least 1, not {max_dispatches_per_run}: a "
@@ -307,10 +308,18 @@ class HostToolRegistry:
                 f"not {type(response_limits).__name__} — a dispatch response is one outbound "
                 "collection, so the pair-of-directions type is the wrong shape here"
             )
+        for leg in ("max_bytes_per_file", "max_total_bytes", "max_files"):
+            bound = cast(object, getattr(response_limits, leg))
+            _refuse_non_integer(f"response_limits.{leg}", bound)
+            if cast(int, bound) < 0:
+                raise ValueError(f"response_limits.{leg} must not be negative, not {bound!r}")
         self._require_declared = require_declared
         self._max_dispatches_per_run = max_dispatches_per_run
         self._response_limits = response_limits
         self._tools: dict[str, Callable[..., Any]] = {}
+        # Captured at registration, never re-read from the function: see `declaration_for`.
+        self._declarations: dict[str, HostToolDeclaration | None] = {}
+        self._sealed = False
 
     @property
     def require_declared(self) -> bool:
@@ -343,6 +352,13 @@ class HostToolRegistry:
         configuration site, where the fix is one decorator away — rather than later at
         dispatch, where only a sanitized sentence comes back.
         """
+        if self._sealed:
+            raise ValueError(
+                f"host tool {name or getattr(func, '__name__', '?')!r} cannot be registered: "
+                "this registry was sealed when its aggregate was taken, and a host has "
+                "already derived a spec and a classification from the surface as it stood. "
+                "Widening it now would dispatch what nothing classified."
+            )
         if not callable(func):
             raise TypeError(f"a host tool must be callable, not {type(func).__name__}")
         tool_name = name if name is not None else getattr(func, "__name__", "")
@@ -363,6 +379,17 @@ class HostToolRegistry:
             )
         _warn_host_tools_once()
         self._tools[tool_name] = func
+        self._declarations[tool_name] = declaration_of(func)
+
+    def declaration_for(self, name: str) -> HostToolDeclaration | None:
+        """The declaration captured when ``name`` was registered.
+
+        Read from here and never from the function again: a stamp is an attribute the host
+        still owns, so re-reading it at dispatch would let a declaration swapped after the
+        aggregate was derived take effect against a policy that never saw it. The claim that
+        counts is the one standing at registration.
+        """
+        return self._declarations.get(name)
 
     def resolve(self, name: str) -> Callable[..., Any] | None:
         """The registered function for ``name``, or ``None`` — the only resolution path.
@@ -382,8 +409,7 @@ class HostToolRegistry:
         ``identity=None`` (pure computation) contributes nothing.
         """
         found: set[Identity] = set()
-        for func in self._tools.values():
-            declaration = declaration_of(func)
+        for declaration in self._declarations.values():
             if declaration is None:
                 found.add(Identity.APP)
             elif declaration.identity is not None:
@@ -391,27 +417,21 @@ class HostToolRegistry:
         return frozenset(found)
 
     def aggregate(self) -> HostToolAggregate:
-        """Derive what this registry means for the model-facing tool — re-gating as it goes.
+        """Derive what this registry means for the model-facing tool, and seal it.
 
-        With ``require_declared`` on, an unstamped tool raises here even though registration
-        already gated: a stamp is an attribute on a function the host still owns, and this is
-        the re-gate against mutation between registration and the moment a tool is built.
+        Taking the aggregate is the moment a host turns this surface into a spec and a
+        classification, so the surface stops moving here: a later :meth:`register` is refused
+        rather than dispatched against policy that never saw it. Together with declarations
+        being captured at registration (:meth:`declaration_for`), what the router denies and
+        what :class:`HostToolRun` dispatches cannot come apart.
         """
+        self._sealed = True
         undeclared = sorted(
-            tool_name for tool_name, func in self._tools.items() if declaration_of(func) is None
+            tool_name
+            for tool_name, declaration in self._declarations.items()
+            if declaration is None
         )
-        if undeclared and self._require_declared:
-            raise HostToolNotDeclared(
-                f"host tool(s) {', '.join(map(repr, undeclared))} carry no complete "
-                "information-flow declaration, and this registry requires one. They were "
-                "declared at registration, so the stamp was removed since — re-stamp with "
-                "@sandbox_tool, every leg answered."
-            )
-        declarations = [
-            declaration
-            for func in self._tools.values()
-            if (declaration := declaration_of(func)) is not None
-        ]
+        declarations = [d for d in self._declarations.values() if d is not None]
         sources = [d.source for d in declarations if d.source is not None]
         if undeclared:
             sources.append(SourceIntegrity.UNTRUSTED)
@@ -423,6 +443,21 @@ class HostToolRegistry:
             identities=identities,
             requires_approval=Identity.USER in identities,
             has_undeclared=bool(undeclared),
+        )
+
+
+def _refuse_non_integer(field: str, value: object) -> None:
+    """Refuse anything that is not a plain integer, at the configuration site.
+
+    A ceiling is only a ceiling if it compares. Every ``>`` against ``float("nan")`` is false
+    and every one against ``float("inf")`` is too, so either silently removes the cap it was
+    passed as — the failure mode a safety limit must not have. ``bool`` is an ``int`` and
+    would quietly mean 1.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(
+            f"{field} must be a plain integer, not {type(value).__name__}: a non-integer "
+            "ceiling compares false against every count and so removes itself"
         )
 
 
@@ -471,10 +506,11 @@ class HostToolRun:
         func = self._registry.resolve(name)
         if func is None:
             return _refused(f"Error: {name!r} is not a registered host tool")
-        declaration = declaration_of(func)
+        declaration = self._registry.declaration_for(name)
         if declaration is None and self._registry.require_declared:
-            # Belt-and-braces behind the registration and aggregate gates: a stamp removed
-            # after both still must not dispatch.
+            # Belt-and-braces behind the registration gate. Unreachable while the registry is
+            # the only way in, and kept because the cost of being wrong about that is a tool
+            # dispatching unclassified.
             return _refused(
                 f"Error: {name!r} carries no complete information-flow declaration, and "
                 "this host dispatches declared tools only"
@@ -492,6 +528,15 @@ class HostToolRun:
                 f"Error: arguments for {name!r} must be a JSON object of keyword arguments"
             )
         provided: dict[str, Any] = dict(arguments) if arguments is not None else {}
+        limits = self._registry.response_limits
+        if self._delivered + 1 > limits.max_files:
+            # Before the call, not after it. A sink tool's body runs in the host process and
+            # does its work there; refusing once it has already run means the effect happened
+            # and cannot be reported, and the refusal reads like something to retry.
+            return _refused(
+                f"Error: this run's delivered-response cap ({limits.max_files}) is "
+                "exhausted — finish with the results already delivered"
+            )
         try:
             signature = inspect.signature(func)
         except (ValueError, TypeError) as exc:
@@ -526,17 +571,11 @@ class HostToolRun:
             return _refused(
                 f"Error: host tool {name!r} returned a value that cannot be carried as JSON"
             )
-        limits = self._registry.response_limits
         size = len(encoded.encode("utf-8"))
         if size > limits.max_bytes_per_file:
             return _refused(
                 f"Error: host tool {name!r}'s response is {size} bytes and the "
                 f"per-response cap allows {limits.max_bytes_per_file}"
-            )
-        if self._delivered + 1 > limits.max_files:
-            return _refused(
-                f"Error: this run's delivered-response cap ({limits.max_files}) is "
-                "exhausted — finish with the results already delivered"
             )
         if self._delivered_bytes + size > limits.max_total_bytes:
             return _refused(

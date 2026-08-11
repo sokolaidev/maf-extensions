@@ -11,6 +11,7 @@ beside the rest of the router's policy.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import inspect
 import json
 import logging
@@ -293,14 +294,106 @@ class TestAggregate:
         assert aggregate.identities == frozenset({Identity.APP})
         assert aggregate.has_undeclared is True
 
-    def test_the_aggregate_regates_against_mutation(self):
-        """A stamp removed after registration is caught at the next aggregate build."""
+    def test_a_stamp_removed_after_registration_does_not_reach_the_aggregate(self):
+        """The claim is captured when the tool is registered, so removing it changes nothing.
+
+        Stronger than catching the removal: there is no window in which the registry and the
+        function disagree, so nothing has to notice.
+        """
         registry = HostToolRegistry(require_declared=True)
         tool = _stamped_pure()
         registry.register(tool, name="doubled")
         delattr(tool, FLOW_DECLARED_KEY)
-        with pytest.raises(HostToolNotDeclared, match="removed since"):
-            registry.aggregate()
+        aggregate = registry.aggregate()
+        assert aggregate.has_undeclared is False
+        assert registry.declaration_for("doubled") is not None
+
+    def test_a_stamp_replaced_after_registration_does_not_reach_the_aggregate(self):
+        """A swap is the dangerous half: a *complete* declaration passes every later gate."""
+        registry = HostToolRegistry()
+        tool = _stamped_pure()
+        registry.register(tool, name="doubled")
+        setattr(
+            tool,
+            FLOW_DECLARED_KEY,
+            HostToolDeclaration(source=SourceIntegrity.UNTRUSTED, sink="secret", identity=None),
+        )
+        aggregate = registry.aggregate()
+        assert aggregate.outbound_caps == frozenset(), "the swapped sink cap must not appear"
+        assert aggregate.result_integrity is None, (
+            "the registered declaration is a pure tool (source=None); the swapped UNTRUSTED "
+            "source must not drag the result integrity down"
+        )
+
+    def test_taking_the_aggregate_seals_the_registry(self):
+        """A host derives a spec from this; widening the surface afterwards must not be silent."""
+        registry = HostToolRegistry()
+        registry.register(_stamped_pure(), name="doubled")
+        registry.aggregate()
+        with pytest.raises(ValueError, match="sealed"):
+            registry.register(_stamped_pure(), name="another")
+
+    def test_the_sealed_surface_is_the_one_that_dispatches(self):
+        registry = HostToolRegistry()
+        registry.register(_stamped_pure(), name="doubled")
+        registry.aggregate()
+        with pytest.raises(ValueError):
+            registry.register(_stamped_pure(), name="late")
+        assert registry.names() == frozenset({"doubled"})
+
+
+class TestACeilingMustBeAbleToCompare:
+    """A non-integer ceiling removes itself, which is the one thing a safety cap must not do."""
+
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), 2.5, True, "8", None])
+    def test_the_dispatch_cap_refuses_anything_but_a_plain_integer(self, bad: object):
+        with pytest.raises(TypeError, match="max_dispatches_per_run"):
+            HostToolRegistry(max_dispatches_per_run=bad)  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("leg", ["max_bytes_per_file", "max_total_bytes", "max_files"])
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), True])
+    def test_each_response_ceiling_refuses_anything_but_a_plain_integer(
+        self, leg: str, bad: object
+    ):
+        limits = dataclasses.replace(DEFAULT_TRANSFER_LIMITS, **{leg: bad})
+        with pytest.raises(TypeError, match=leg):
+            HostToolRegistry(response_limits=limits)
+
+    def test_nan_would_otherwise_pass_every_comparison(self):
+        """Why this is a type check and not a range check: NaN satisfies both bounds."""
+        nan = float("nan")
+        assert not nan < 1 and not nan > 1
+
+    @pytest.mark.parametrize("leg", ["max_bytes_per_file", "max_total_bytes", "max_files"])
+    def test_a_negative_response_ceiling_is_refused(self, leg: str):
+        limits = dataclasses.replace(DEFAULT_TRANSFER_LIMITS, **{leg: -1})
+        with pytest.raises(ValueError, match=leg):
+            HostToolRegistry(response_limits=limits)
+
+
+class TestTheResponseLedgerIsCheckedBeforeTheSideEffect:
+    """A sink tool's body runs in the host process; refusing after it has run is too late."""
+
+    def test_an_exhausted_ledger_refuses_without_calling_the_tool(self):
+        calls: list[int] = []
+
+        @sandbox_tool(source=None, sink="workspace", identity=None)
+        def writes(x: int) -> int:
+            calls.append(x)
+            return x
+
+        registry = HostToolRegistry(
+            response_limits=dataclasses.replace(DEFAULT_TRANSFER_LIMITS, max_files=1)
+        )
+        registry.register(writes, name="writes")
+        run = HostToolRun(registry)
+
+        assert _dispatch(run, "writes", {"x": 1}).ok
+        second = _dispatch(run, "writes", {"x": 2})
+
+        assert not second.ok
+        assert second.refusal is not None and "delivered-response cap" in second.refusal
+        assert calls == [1], "the second call must not have reached the tool body"
 
 
 class TestDispatchResult:
@@ -404,15 +497,27 @@ class TestDispatch:
         assert "audience-within-egress" in result.refusal
         assert "env channel" in result.refusal
 
-    def test_the_gate_still_refuses_at_dispatch_after_mutation(self):
-        """Belt-and-braces: a stamp removed after both earlier gates still must not serve."""
+    def test_dispatch_uses_the_declaration_registration_captured(self):
+        """A stamp removed after registration neither refuses nor widens: it is not read."""
         registry = HostToolRegistry(require_declared=True)
         tool = _stamped_pure()
         registry.register(tool, name="doubled")
         delattr(tool, FLOW_DECLARED_KEY)
         result = _dispatch(HostToolRun(registry), "doubled", {"x": 1})
-        assert not result.ok
-        assert result.refusal is not None and "declared tools only" in result.refusal
+        assert result.ok, "the registered claim stands; the attribute is no longer consulted"
+
+    def test_an_identity_swapped_in_after_registration_cannot_reach_dispatch(self):
+        """The swap that matters: USER authority arriving after the aggregate was derived."""
+        registry = HostToolRegistry()
+        tool = _stamped_pure()
+        registry.register(tool, name="doubled")
+        setattr(
+            tool,
+            FLOW_DECLARED_KEY,
+            HostToolDeclaration(source=None, sink=None, identity=Identity.USER),
+        )
+        result = _dispatch(HostToolRun(registry), "doubled", {"x": 1})
+        assert result.ok, "dispatch reads the registered declaration, not the current one"
 
 
 class TestDispatchFailureLadder:
