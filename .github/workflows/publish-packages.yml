@@ -1,5 +1,18 @@
 name: Publish
 
+# Six packages share this workflow, so the run's own title has to say which one. Without a
+# `run-name` every run is called "Publish", and a deployment-review prompt — in the mobile
+# app especially, where the reviewer sees the title and the job list and nothing else — asks
+# for approval to upload without naming what.
+#
+# Inputs first, mirroring the resolve step below rather than reading the ref: a dispatch is
+# authoritative on its `package`, and the automated path dispatches *at the tag*, so a
+# ref-derived title could name a different package than the one that publishes. Only a tag
+# push falls through to the ref, and then the whole tag is the best label there is. The
+# version is deliberately absent — it is not known until the build resolves it, and the job
+# below carries it.
+run-name: Publish ${{ inputs.package || github.ref_name }} to ${{ inputs.target || 'pypi' }}
+
 # One package per tag (`maf-sandbox-v0.1.0` -> packages/maf-sandbox), published with
 # Trusted Publishing — no token anywhere. Registration values: docs/maintainers.md.
 on:
@@ -196,7 +209,10 @@ jobs:
         run: /tmp/smoke/bin/python scripts/smoke_install.py ${{ needs.build.outputs.package }}
 
   publish:
-    name: Publish to ${{ needs.build.outputs.target }}
+    # The row a reviewer approves, so it names the resolved package and version rather than
+    # the requested one: these come from the build's own outputs, which is what will actually
+    # be uploaded, and an upload is immutable.
+    name: Publish ${{ needs.build.outputs.package }} ${{ needs.build.outputs.version }} to ${{ needs.build.outputs.target }}
     needs: [build, smoke]
     runs-on: ubuntu-latest
     # Half of the trusted-publisher identity PyPI checks; must match what's registered
