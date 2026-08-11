@@ -80,6 +80,31 @@ class TestNumbersAreWholeTokensNotSubstrings:
         wrong = _SUMMARY.replace("| east | 84 |", "| east | 840 |")
         assert any("east" in reason for reason in check.assess(_HEALTHY, wrong))
 
+    @pytest.mark.parametrize(
+        "wrong",
+        ["1,390", "390,000", "1 390", "390 000", "1\u00a0390", "390\u202f000"],
+        ids=["comma", "comma-after", "space", "space-after", "nbsp", "narrow-nbsp"],
+    )
+    def test_a_total_inside_a_larger_grouped_number_fails(self, wrong: str):
+        """Tolerating a thousands separator reopened the substring hole one group over: a
+        separator is not a token boundary, so `390` sat inside both `1,390` and `390,000`."""
+        summary = _SUMMARY.replace("| north | 390 |", f"| north | {wrong} |")
+        assert any("north" in reason for reason in check.assess(_HEALTHY, summary))
+
+    @pytest.mark.parametrize("wrong", ["11,124", "1,124,000", "11 124"])
+    def test_a_grand_total_inside_a_larger_grouped_number_fails(self, wrong: str):
+        assert any(
+            "grand total" in reason
+            for reason in check.assess(_HEALTHY.replace("1124", wrong), _SUMMARY)
+        )
+
+    @pytest.mark.parametrize("shape", ["390", "390.0", "390 ", " 390"])
+    def test_the_separator_guard_does_not_reject_an_ordinary_cell(self, shape: str):
+        """The guards reject an adjacent *group*, not the whitespace a table puts around a
+        value — which is the way a fix like this goes wrong."""
+        summary = _SUMMARY.replace("| north | 390 |", f"| north |{shape}|")
+        assert check.assess(_HEALTHY, summary) == []
+
 
 class TestATotalBelongsToItsOwnRegion:
     def test_swapped_values_fail(self):

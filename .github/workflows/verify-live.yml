@@ -1,12 +1,14 @@
 name: Verify (live)
 
-# Installs the PUBLISHED wheels into a clean environment and runs three samples, each asserting
+# Installs the PUBLISHED wheels into a clean environment and runs four samples, each asserting
 # its own workload actually ran: samples/01_acas_bicep (the compiler's diagnostics came back),
 # samples/03_acas_codeact (the 100th Fibonacci number came back from code run in the sandbox),
-# and samples/06_docker_codeact (the same, in a Docker container instead of an Azure microVM).
+# samples/06_docker_codeact (the same, in a Docker container instead of an Azure microVM), and
+# samples/08_docker_codeact_files (a workspace file went in and a declared artifact came back
+# out — the only one that asserts on something other than stdout).
 # This is the half of issue #33 that runs after a release rather than on a pull request. The two
-# ACAS jobs each create a billable Azure sandbox and need a subscription; the docker job creates
-# no billable sandbox — its sandbox is a container on the runner — and needs no sandbox
+# ACAS jobs each create a billable Azure sandbox and need a subscription; the two docker jobs
+# create no billable sandbox — their sandbox is a container on the runner — and need no sandbox
 # configuration at all. It runs on demand, and once after each release that could change what a
 # sample exercises (dispatched by publish-packages.yml).
 #
