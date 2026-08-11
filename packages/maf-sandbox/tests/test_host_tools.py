@@ -391,6 +391,35 @@ class TestConcurrentDispatchesCannotOversubscribeTheLedger:
         assert "delivered-response cap" in second_result.refusal
         assert calls == [1], "the only slot was already spoken for; the second body must not run"
 
+    def test_a_cancelled_call_gives_its_reserved_slot_back(self):
+        """Cancellation is a `BaseException`, so it walks past any check on the outcome — and
+        a run that loses a slot to one can never deliver the response it was holding."""
+        entered = asyncio.Event()
+
+        @sandbox_tool(source=None, sink="workspace", identity=None)
+        async def never() -> int:
+            entered.set()
+            await asyncio.Event().wait()
+            return 1
+
+        registry = HostToolRegistry(
+            response_limits=dataclasses.replace(DEFAULT_TRANSFER_LIMITS, max_files=1)
+        )
+        registry.register(never)
+        registry.register(_stamped_pure(), name="doubled")
+        run = HostToolRun(registry)
+
+        async def scenario() -> DispatchResult:
+            abandoned = asyncio.create_task(run.dispatch("never"))
+            await entered.wait()
+            abandoned.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await abandoned
+            return await run.dispatch("doubled", {"x": 21})
+
+        result = asyncio.run(scenario())
+        assert result.ok, result.refusal
+
 
 class TestACeilingMustBeAbleToCompare:
     """A non-integer ceiling removes itself, which is the one thing a safety cap must not do."""
@@ -627,8 +656,33 @@ class TestDispatchFailureLadder:
         with caplog.at_level(logging.WARNING):
             result = _dispatch(HostToolRun(registry), "largest", {"iterable": [1, 2]})
         assert not result.ok
-        assert result.refusal is not None and "exposes no signature" in result.refusal
+        assert result.refusal is not None and "signature could not be read" in result.refusal
         assert "largest" in caplog.text
+
+    def test_a_signature_that_raises_is_refused_not_raised(self, caplog: pytest.LogCaptureFixture):
+        """The other half of the same door: not "no signature" but one whose *retrieval* fails.
+        A `__signature__` property can raise anything, and `inspect.signature` passes it on."""
+
+        class Proxy:
+            @property
+            def __signature__(self) -> inspect.Signature:
+                raise RuntimeError("upstream https://internal.example is unreachable")
+
+            def __call__(self) -> int:
+                return 1
+
+        proxy = Proxy()
+        with pytest.raises(RuntimeError):
+            inspect.signature(proxy)
+
+        registry = HostToolRegistry()
+        registry.register(proxy, name="proxied")
+        with caplog.at_level(logging.WARNING):
+            result = _dispatch(HostToolRun(registry), "proxied")
+        assert not result.ok
+        assert result.refusal is not None and "signature could not be read" in result.refusal
+        assert "internal.example" not in result.refusal
+        assert "internal.example" in caplog.text
 
     @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
     def test_a_non_finite_float_is_refused_rather_than_delivered_unparseable(self, value: float):

@@ -547,10 +547,18 @@ class HostToolRun:
         # method awaits: two concurrent dispatches would otherwise both read a ledger that
         # still said zero, both run, and both deliver against a cap of one.
         self._delivered += 1
-        outcome = await self._deliver(name, func, provided, limits)
-        if not outcome.ok:
-            self._delivered -= 1
-        return outcome
+        delivered = False
+        try:
+            outcome = await self._deliver(name, func, provided, limits)
+            delivered = outcome.ok
+            return outcome
+        finally:
+            # `finally` rather than a check on the outcome, because a cancelled call has no
+            # outcome to check: `CancelledError` is a `BaseException` and walks straight past
+            # one. Nothing was delivered either way, so the slot goes back. The *dispatch*
+            # count above stays spent — the attempt happened, and that is what it bounds.
+            if not delivered:
+                self._delivered -= 1
 
     async def _deliver(
         self,
@@ -569,13 +577,17 @@ class HostToolRun:
         """
         try:
             signature = inspect.signature(func)
-        except (ValueError, TypeError) as exc:
-            # `register` accepts any callable, and some — several built-ins — expose no
-            # signature to read. Nothing can be validated, so nothing is dispatched.
-            self._logger.warning("host tool %r exposes no signature to validate: %s", name, exc)
+        except Exception as exc:  # noqa: BLE001 - the guest gets a sentence, the log the rest
+            # `register` accepts any callable, and introspecting one fails in more ways than
+            # the two obvious errors: several built-ins expose no signature at all, and an
+            # object whose `__signature__` is a property can raise anything it likes from it.
+            # Nothing can be validated either way, so nothing is dispatched.
+            self._logger.warning(
+                "host tool %r has no signature to validate against: %s", name, error_detail(exc)
+            )
             return _refused(
-                f"Error: host tool {name!r} exposes no signature, so its arguments cannot be "
-                "validated"
+                f"Error: host tool {name!r}'s signature could not be read, so its arguments "
+                "cannot be validated"
             )
         try:
             # Host-side, at the one door, never in a guest shim: a schema check running
