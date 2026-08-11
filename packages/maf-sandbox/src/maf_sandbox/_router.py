@@ -1,16 +1,17 @@
 """Backend selection: the layer between a host application and any sandbox provider.
 
 ``app -> SandboxRouter -> backend -> the sandbox itself``.  The router owns what no
-individual backend can own: **which** backend serves a request, and the four rules that
+individual backend can own: **which** backend serves a request, and the five rules that
 decide whether it may — a minimum-isolation floor, a capability match, the transfer ceilings,
-and the egress rule.
+the egress rule, and the host's outright denials (capabilities and identities this posture
+refuses whatever the backend could do).
 """
 
 from __future__ import annotations
 
 import dataclasses
 import logging
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 
 from ._protocol import (
     DEFAULT_CAPABILITIES,
@@ -18,6 +19,7 @@ from ._protocol import (
     ISOLATION_RANK,
     Capability,
     Egress,
+    Identity,
     Isolation,
     Sandbox,
     SandboxBackend,
@@ -33,8 +35,10 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "NoSandboxBackend",
     "SandboxBackendNotPermitted",
+    "SandboxCapabilityDenied",
     "SandboxCapabilityNotSupported",
     "SandboxEgressNotEnforced",
+    "SandboxIdentityDenied",
     "SandboxRouter",
     "SandboxTransferLimitsNotPermitted",
 ]
@@ -66,6 +70,26 @@ class SandboxCapabilityNotSupported(RuntimeError):
 
     A functionality mismatch rather than a safety one — register a backend that implements
     the capability, or ask for less.
+    """
+
+
+class SandboxCapabilityDenied(PermissionError):
+    """The workload requires a capability this host's router denies outright.
+
+    The posture counterpart of :class:`SandboxCapabilityNotSupported`: not "the backend
+    cannot", but "this host will not", whatever the backend declares.  A hard stop rather
+    than awareness — the deny list exists for hosts whose policy about a capability
+    (``HOST_TOOLS`` above all) is a refusal, not a classification.
+    """
+
+
+class SandboxIdentityDenied(PermissionError):
+    """The workload's dispatched tools exercise an identity this host's router denies.
+
+    Same posture as :class:`SandboxCapabilityDenied`, on the identity axis: a host that
+    forbids model-orchestrated user authority states ``denied_identities={Identity.USER}``
+    once, and a spec whose registry-derived ``identities`` carries it is refused at attach —
+    before anything runs, where every other posture question is answered.
     """
 
 
@@ -136,6 +160,14 @@ class SandboxRouter:
         selected: Name of the backend to use. ``None`` picks the first registered one, which
             with a single backend is the whole selection story and stays correct when more
             arrive.
+        denied_capabilities: Capabilities this host refuses outright, whatever a backend
+            declares — a spec *requiring* one is refused at attach. The hard stop for a
+            posture: ``denied_capabilities={Capability.HOST_TOOLS}`` closes the
+            middleware-bypass channel for every workload this router serves.
+        denied_identities: Identities this host refuses dispatched tools to exercise — a
+            spec whose ``identities`` carries one is refused at attach.
+            ``denied_identities={Identity.USER}`` is how a host forbids model-orchestrated
+            user authority in one statement instead of auditing each registration.
 
     Raises:
         SandboxBackendNotPermitted: at construction, when the selected backend declares a
@@ -145,7 +177,9 @@ class SandboxRouter:
         ValueError: at construction, when ``min_isolation`` is not a rung this package
             recognises — raised by :class:`Isolation` itself rather than surfacing later as a
             bare ``KeyError`` out of a rank comparison, which would only happen once a backend
-            was registered and a floor was actually compared against.
+            was registered and a floor was actually compared against — or when a denied
+            capability or identity is not a member this package recognises: a deny list that
+            silently never matches would read as protection and provide none.
     """
 
     def __init__(
@@ -154,10 +188,18 @@ class SandboxRouter:
         *,
         min_isolation: Isolation = Isolation.MICROVM,
         selected: str | None = None,
+        denied_capabilities: Iterable[Capability] = (),
+        denied_identities: Iterable[Identity] = (),
     ) -> None:
         self._backends = list(backends)
         self._min_isolation = Isolation(str(min_isolation))
         self._selected_name = selected
+        self._denied_capabilities = frozenset(
+            Capability(str(capability)) for capability in denied_capabilities
+        )
+        self._denied_identities = frozenset(
+            Identity(str(identity)) for identity in denied_identities
+        )
         self._backend = self._resolve()
 
     def _resolve(self) -> SandboxBackend | None:
@@ -204,7 +246,7 @@ class SandboxRouter:
         return max(self._min_isolation, spec.min_isolation, key=ISOLATION_RANK.__getitem__)
 
     def _refuse_unless_backend_can_serve(self, spec: SandboxSpec) -> None:
-        """Raise unless the backend can serve ``spec``: floor, capabilities, limits, egress.
+        """Raise unless ``spec`` may be served: denials, floor, capabilities, limits, egress.
 
         The REFUSING half of the policy, shared by :meth:`ensure_can_serve` and
         :meth:`acquire`. It never logs: the closed-egress-vs-allowlist-spec WARNING is
@@ -214,6 +256,28 @@ class SandboxRouter:
         """
         if self._backend is None:
             return
+
+        # The denials first: they are statements about the spec against this host's posture,
+        # not about what the backend could do, so no backend property softens them.
+        denied_capabilities = spec.requires & self._denied_capabilities
+        if denied_capabilities:
+            raise SandboxCapabilityDenied(
+                f"the {spec.kind!r} workload requires "
+                f"{', '.join(sorted(str(capability) for capability in denied_capabilities))}, "
+                "which this host's router denies outright (denied_capabilities). A hard stop "
+                "rather than a missing feature: whatever backend is registered, this posture "
+                "refuses the capability — serve the workload on a host that permits it, or "
+                "narrow what it requires."
+            )
+        denied_identities = spec.identities & self._denied_identities
+        if denied_identities:
+            raise SandboxIdentityDenied(
+                f"the {spec.kind!r} workload's dispatched tools exercise "
+                f"{', '.join(sorted(str(identity) for identity in denied_identities))} "
+                "authority, which this host's router denies outright (denied_identities). "
+                "Remove the tools declaring that identity from the workload's registry, or "
+                "serve it on a host whose posture permits them."
+            )
 
         floor = self._effective_floor(spec)
         declared = _declared_isolation(self._backend)
@@ -272,7 +336,7 @@ class SandboxRouter:
         )
 
     def ensure_can_serve(self, spec: SandboxSpec) -> None:
-        """Raise unless the backend can serve ``spec``: floor, capabilities, limits, egress.
+        """Raise unless ``spec`` may be served: denials, floor, capabilities, limits, egress.
 
         Called for you by :func:`maf_sandbox.maf.sandboxed_tool`, and it is also the whole of
         a host's own wiring test::
@@ -284,6 +348,8 @@ class SandboxRouter:
         returns: nothing runs, so nothing reaches anything.
 
         Raises:
+            SandboxCapabilityDenied: when the spec requires a capability this host denies.
+            SandboxIdentityDenied: when the spec's ``identities`` carry one this host denies.
             SandboxBackendNotPermitted: when the spec raises the floor above what the backend
                 declares.
             SandboxCapabilityNotSupported: when the backend cannot do what the spec requires.
@@ -317,6 +383,8 @@ class SandboxRouter:
         Raises:
             NoSandboxBackend: when no backend is configured. Callers that check
                 :attr:`enabled` before attaching a tool never reach this.
+            SandboxCapabilityDenied: when the spec requires a capability this host denies.
+            SandboxIdentityDenied: when the spec's ``identities`` carry one this host denies.
             SandboxBackendNotPermitted: when the spec raises the floor above what the backend
                 declares.
             SandboxCapabilityNotSupported: when the backend cannot do what the spec requires.

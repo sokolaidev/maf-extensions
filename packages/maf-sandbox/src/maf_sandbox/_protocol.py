@@ -21,12 +21,14 @@ __all__ = [
     "DEFAULT_CAPABILITIES",
     "DEFAULT_SANDBOX_LIMITS",
     "DEFAULT_TRANSFER_LIMITS",
+    "INTEGRITY_RANK",
     "ISOLATION_RANK",
     "Capability",
     "DeclaredOutput",
     "Egress",
     "EntryKind",
     "ExecResult",
+    "Identity",
     "Isolation",
     "OutputDisposition",
     "Sandbox",
@@ -35,6 +37,7 @@ __all__ = [
     "SandboxKey",
     "SandboxLimits",
     "SandboxSpec",
+    "SourceIntegrity",
     "TransferLimits",
     "WorkspaceContext",
     "meets_floor",
@@ -134,6 +137,57 @@ class Capability(StrEnum):
 
 #: What every :class:`Sandbox` already obligates.
 DEFAULT_CAPABILITIES: frozenset[Capability] = frozenset({Capability.EXEC, Capability.FILES_IN})
+
+
+class SourceIntegrity(StrEnum):
+    """How much a host may trust data a dispatched host tool brings *in* — its source leg.
+
+    The vocabulary MAF's information-flow module already speaks (``source_integrity`` on a
+    tool's ``additional_properties``), promoted to an enum here because the host-tools
+    aggregate has to *fold* it: ``execute_code``'s own result integrity is the weakest tier
+    over every registered source, and "weakest" needs an ordering, which this repository
+    requires to be data — see :data:`INTEGRITY_RANK`.
+    """
+
+    #: Attacker-influenceable content: fetched documents, search results, anything a model or
+    #: the open network shaped. The tracker's own default for an undeclared tool.
+    UNTRUSTED = "untrusted"
+    #: Deterministic first-party output the host would trust from its own code.
+    TRUSTED = "trusted"
+
+
+#: The integrity ordering, weakest first, written down exactly once — the aggregate's fold
+#: goes through it, and an exhaustiveness test asserts every member is ranked.
+INTEGRITY_RANK: Mapping[SourceIntegrity, int] = {
+    level: rank for rank, level in enumerate((SourceIntegrity.UNTRUSTED, SourceIntegrity.TRUSTED))
+}
+
+
+class Identity(StrEnum):
+    """Whose authority a dispatched host tool's body exercises. Its declared identity leg.
+
+    A dispatched body runs **in the host process** and carries whatever authority that
+    process carries, so this leg is what makes the surface honest: it is declared per tool,
+    aggregated per registry, and deniable per router (``denied_identities``).
+
+    **:data:`APP` is not the safe option, only the declared one.**  It is the application's
+    full authority — for a deployed host, its workload identity with every grant it holds —
+    and the only real bounds on it are the emptiness of the registry and the dispatch cap.
+    Least privilege for dispatched tools comes from what a host registers, never from what it
+    declares.
+
+    :data:`USER` is **declarable but not servable**: declaring it must be possible so a
+    registry can be written honestly and refused loudly, and serving it must not be until
+    per-run token minting, an audience-within-egress check, and the ephemeral ``exec`` env
+    channel exist — or a host ships model-orchestrated user authority before anything bounds
+    it.  Registering a ``USER`` tool raises the whole ``execute_code`` surface to
+    approval-gated; dispatching one is refused with the prerequisites named.
+    """
+
+    #: The host application's own authority — everything its process can already do.
+    APP = "app"
+    #: The end user's delegated authority (on-behalf-of). Declarable, refused at dispatch.
+    USER = "user"
 
 
 class EntryKind(StrEnum):
@@ -328,6 +382,12 @@ class SandboxSpec:
     outbound confidentiality cap, and :data:`Capability.FILES_OUT` in ``requires`` — and is
     what ``collect_outputs(..., outputs=...)`` refuses to run without.  It composes with
     ``declared_outputs`` rather than replacing it, and ``files_out`` caps the union.
+
+    ``identities`` names whose authority the workload's dispatched host tools exercise —
+    derived from its registry (:meth:`~maf_sandbox.HostToolRegistry.identities`), never
+    invented.  Declared on the spec so the router can refuse it at attach
+    (``denied_identities``), the same moment every other posture question is answered; a
+    workload that dispatches nothing declares nothing.
     """
 
     kind: str
@@ -349,6 +409,7 @@ class SandboxSpec:
     # public dataclass and is not keyword-only, so inserting a field rebinds every positional
     # argument after it — a caller's `files_in` would silently become this flag.
     outputs_named_at_call_time: bool = False
+    identities: frozenset[Identity] = frozenset()
 
 
 @dataclass(frozen=True)
