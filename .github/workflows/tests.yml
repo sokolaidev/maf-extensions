@@ -29,6 +29,26 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # The release-order check below diffs against the base commit, which a shallow
+          # clone does not have.
+          fetch-depth: 0
+
+      - name: Release order (a core minor needs its ceilings widened first)
+        # First, because it costs a second and it is the one failure here whose fix is a
+        # different pull request rather than an edit to this one. Only a pull request carries
+        # the title release-please turns into a version, so it is the only event this reads.
+        #
+        # The title reaches the script through the environment rather than the command line:
+        # it is attacker-controlled text on a workflow that runs for any contributor.
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git diff --name-only "$BASE_SHA" HEAD |
+            python3 scripts/check_release_order.py "$PR_TITLE"
 
       - name: Install uv
         # Pinned to the commit v5 resolves to: a moving tag is a supply-chain hole, since
