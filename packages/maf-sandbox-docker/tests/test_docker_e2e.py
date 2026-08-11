@@ -186,10 +186,12 @@ class TestFilesOutAgainstARealEngine:
         finally:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
-    def test_a_read_through_a_symlinked_parent_is_refused(self):
+    def test_a_stat_or_read_through_a_symlinked_parent_is_refused(self):
         """``ln -sfn /etc /work/out``: the final entry stats as a regular file and reads /etc.
 
         The engine resolves the path daemon-side, so only the component walk sees the link.
+        Both halves of the pull surface walk it: a stat moves no byte of ``/etc``, but it does
+        report a type and a size from outside the working directory.
         """
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig())
@@ -202,10 +204,14 @@ class TestFilesOutAgainstARealEngine:
             )
             assert made.exit_code == 0, made.stderr
 
-            escaped = await sandbox.stat_file("out/hostname", working_directory=_WORK)
+            # Through the unconfined stat the walk itself uses: this is the premise — a real
+            # engine really does answer through the link — and the public surface now refuses it.
+            escaped = await sandbox._stat_guest(f"{_WORK}/out/hostname", "out/hostname")
             assert escaped is not None
-            assert escaped.kind is EntryKind.FILE  # the parent link is invisible here
+            assert escaped.entry.kind is EntryKind.FILE  # the parent link is invisible here
 
+            with pytest.raises(ValueError, match="real directory"):
+                await sandbox.stat_file("out/hostname", working_directory=_WORK)
             with pytest.raises(ValueError, match="real directory"):
                 await sandbox.read_file("out/hostname", working_directory=_WORK, max_bytes=1 << 20)
 
