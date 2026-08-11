@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import unicodedata
 from dataclasses import replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, cast
@@ -74,7 +75,6 @@ _PROGRAM_FILENAME = "program.py"
 _MANIFEST_FILENAME = "outputs.json"
 _MANIFEST_OUTPUTS_KEY = "outputs"
 _MANIFEST_PATH_KEY = "path"
-_MANIFEST_MEDIA_TYPE_KEY = "media_type"
 
 #: A listing of what a program wrote is text, and a small amount of it.
 _MANIFEST_MAX_BYTES = 64 * 1024
@@ -116,6 +116,7 @@ def codeact_sandbox_spec(
     image_id: str | None = None,
     *,
     outputs: CodeactOutputs = CodeactOutputs.NONE,
+    files_in: TransferLimits = DEFAULT_TRANSFER_LIMITS,
     files_out: TransferLimits = _DEFAULT_FILES_OUT,
 ) -> SandboxSpec:
     """The sandbox a CodeAct program needs, in backend-neutral terms.
@@ -138,6 +139,7 @@ def codeact_sandbox_spec(
         work_dir=_WORK_DIR,
         requires=frozenset(requires),
         outputs_named_at_call_time=collects,
+        files_in=files_in,
         files_out=files_out,
     )
 
@@ -154,6 +156,7 @@ def make_codeact_tools(
     image: str | None = None,
     image_id: str | None = None,
     exec_timeout_seconds: int = 120,
+    files_in: TransferLimits = DEFAULT_TRANSFER_LIMITS,
     files_out: TransferLimits = _DEFAULT_FILES_OUT,
 ) -> list[Any]:
     """Return the ``[execute_code]`` tool list, or ``[]`` when no sandbox is available.
@@ -180,20 +183,30 @@ def make_codeact_tools(
         image_id: A backend-native disk-image id, skipping resolution.
         exec_timeout_seconds: Per-program bound. A sandbox that stops answering must not hold
             the caller's turn open.
+        files_in: What one call may share into the sandbox. Enforced here, because no backend's
+            ``write_file`` knows the workload's caps — a spec that declared a bound nothing
+            applied would be worse than one that declared none.
         files_out: The collection's caps. ``max_files`` is what bounds how many artifacts one
             call may declare, so it is a property of the workload rather than of the guest.
 
     Raises:
         ValueError: when an output mode is asked for with no sink to land anything in, or when
-            a sink is supplied with nothing to send down it.
+            a sink is supplied with nothing to send down it. Both wait for the attach gate —
+            a host with no sandbox configured gets ``[]``, never an exception.
     """
-    if outputs is CodeactOutputs.NONE and output_sink is not None:
+    # After the attach gate, never before it: `sandboxed_tool` places its own refusals there so
+    # that a host which simply left sandboxing off keeps its ungrounded behaviour, and a check
+    # here would raise out of that host's agent factory instead.
+    configured = router is not None and router.enabled
+    if configured and outputs is CodeactOutputs.NONE and output_sink is not None:
         raise ValueError(
             f"{EXECUTE_CODE_TOOL_NAME}: an output sink was supplied with outputs="
             f"{str(CodeactOutputs.NONE)!r}, so nothing would ever be landed in it. Pass an "
             f"outputs mode, or drop the sink."
         )
-    spec = codeact_sandbox_spec(image, image_id, outputs=outputs, files_out=files_out)
+    spec = codeact_sandbox_spec(
+        image, image_id, outputs=outputs, files_in=files_in, files_out=files_out
+    )
     return sandboxed_tool(
         lambda session: _execute_code_tool(session, workspace_store, outputs, exec_timeout_seconds),
         router=router,
@@ -246,8 +259,8 @@ _DESCRIPTION_DECLARED = """**To produce files, name them in ``outputs`` and writ
 _DESCRIPTION_MANIFEST = f"""**To produce files, write them into the working directory and
         list them in ``{_MANIFEST_FILENAME}``**, in that directory, like this::
 
-            {{"{_MANIFEST_OUTPUTS_KEY}": [{{"{_MANIFEST_PATH_KEY}": "report.csv",
-              "{_MANIFEST_MEDIA_TYPE_KEY}": "text/csv"}}]}}
+            {{"{_MANIFEST_OUTPUTS_KEY}": [{{"{_MANIFEST_PATH_KEY}": "report.csv"}},
+              {{"{_MANIFEST_PATH_KEY}": "chart.png"}}]}}
 
         Every file listed there is saved to host storage after the program exits and you get
         back a reference to where each one landed — the file contents do **not** come back.  A
@@ -369,12 +382,18 @@ async def _execute(
             return checked
         names = checked
 
-    shared: list[str] = []
+    # Read host-side and cap before acquiring anything: a request over the workload's own
+    # `files_in` bounds should not cost a sandbox, and nothing may be written until the whole
+    # set is known to fit — a program handed half its inputs computes a confident wrong answer.
+    shared: list[tuple[str, str]] = []
     if store is not None:
         resolved = await _resolve_workspace_files(session, store, files, reserved=reserved)
         if isinstance(resolved, str):
             return resolved
-        shared = resolved
+        read = await _read_workspace_files(store, resolved, session.spec.files_in)
+        if isinstance(read, str):
+            return read
+        shared = read
 
     sandbox = await session.acquire(key)
     if isinstance(sandbox, str):
@@ -387,11 +406,10 @@ async def _execute(
     run_id = uuid4().hex[:12]
     run_dir = f"{session.spec.work_dir}/{run_id}"
 
-    if store is not None:
-        for name in shared:
-            refusal = await _share_one(sandbox, store, name, f"{run_dir}/{name}")
-            if refusal is not None:
-                return refusal
+    for name, content in shared:
+        refusal = await _write_shared(sandbox, name, f"{run_dir}/{name}", content)
+        if refusal is not None:
+            return refusal
 
     program_path = f"{run_dir}/{_PROGRAM_FILENAME}"
     try:
@@ -446,6 +464,12 @@ async def _resolve_workspace_files(
     """
     if not files:
         return []
+    allowed = session.spec.files_in.max_files
+    if len(files) > allowed:
+        return (
+            f"Error: {len(files)} files were requested and this tool shares at most {allowed} "
+            f"per call. Nothing was shared."
+        )
     listing = await session.list_files(store)
     if isinstance(listing, str):
         return listing
@@ -496,27 +520,58 @@ def _listing_hint(name: str, listing: list[str]) -> str:
     return f"Files visible here: {', '.join(shown)}{more}."
 
 
-async def _share_one(
-    sandbox: Sandbox, store: "AgentFileStore", store_key: str, guest_path: str
-) -> str | None:
-    """Copy one workspace file into the run's directory, or answer with the refusal."""
-    try:
-        content = await store.read(store_key)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("execute_code: could not read %r from workspace: %s", store_key, exc)
-        return f"Error: could not read {store_key!r} from workspace"
-    if content is None:
-        # A store read can miss without raising (the file was listed, then removed). Writing
-        # `None` through would put the string "None" into the sandbox for the program to parse.
-        logger.warning("execute_code: %r is listed but has no content", store_key)
-        return f"Error: {store_key!r} is listed in the workspace but has no content"
+async def _read_workspace_files(
+    store: "AgentFileStore", names: list[str], limits: TransferLimits
+) -> list[tuple[str, str]] | str:
+    """Read every requested file, holding the whole set to the workload's ``files_in`` caps.
+
+    The bytes are counted **encoded**, since that is what crosses the boundary, and the caps
+    are the spec's own: no backend's ``write_file`` takes a limit, so a bound declared and not
+    applied here is applied nowhere.
+
+    Text only, because ``AgentFileStore.read`` answers with ``str``.  The protocol's
+    ``write_file`` takes ``bytes`` too, so a binary input is reachable the day a store can hold
+    one; nothing here needs to change first.
+    """
+    read: list[tuple[str, str]] = []
+    total = 0
+    for name in names:
+        try:
+            content = await store.read(name)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("execute_code: could not read %r from workspace: %s", name, exc)
+            return f"Error: could not read {name!r} from workspace"
+        if content is None:
+            # A store read can miss without raising (the file was listed, then removed). Writing
+            # `None` through would put the string "None" into the sandbox for the program to
+            # parse.
+            logger.warning("execute_code: %r is listed but has no content", name)
+            return f"Error: {name!r} is listed in the workspace but has no content"
+        size = len(content.encode("utf-8"))
+        if size > limits.max_bytes_per_file:
+            return (
+                f"Error: {name!r} is {size} bytes and this tool shares at most "
+                f"{limits.max_bytes_per_file} bytes per file. Nothing was shared."
+            )
+        total += size
+        if total > limits.max_total_bytes:
+            return (
+                f"Error: sharing these files would move {total} bytes and this tool shares at "
+                f"most {limits.max_total_bytes} per call. Nothing was shared."
+            )
+        read.append((name, content))
+    return read
+
+
+async def _write_shared(sandbox: "Sandbox", name: str, guest_path: str, content: str) -> str | None:
+    """Put one already-read workspace file into the run's directory, or answer with the refusal."""
     try:
         await sandbox.write_file(guest_path, content)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "execute_code: could not write %r into the sandbox: %s", store_key, error_detail(exc)
+            "execute_code: could not write %r into the sandbox: %s", name, error_detail(exc)
         )
-        return f"Error: could not share {store_key!r} into the sandbox"
+        return f"Error: could not share {name!r} into the sandbox"
     return None
 
 
@@ -563,13 +618,11 @@ async def _collect(
     if sink is None:  # unreachable: `sandboxed_tool` refuses this spec without a sink
         return "Error: no output sink is configured, so nothing could be saved."
 
-    media_types: dict[str, str | None] = {}
     if outputs is CodeactOutputs.MANIFEST:
         listed = await _read_manifest(session, sandbox, run_id)
         if isinstance(listed, str):
             return listed
-        declared = [path for path, _ in listed]
-        media_types = dict(listed)
+        declared = listed
         checked = _validated_output_names(
             declared, max_files=session.spec.files_out.max_files, reserved=reserved
         )
@@ -581,15 +634,10 @@ async def _collect(
 
     # `required=False` throughout: a name that was declared and not written is this kind's
     # commonest recoverable mistake, and failing the whole collection over it would throw away
-    # the files the program did write.
+    # the files the program did write. `media_type` stays undeclared on both roads, because
+    # this kind genuinely does not know what a model-written program produced.
     call_time = tuple(
-        DeclaredOutput(
-            path=f"{run_id}/{name}",
-            name=name,
-            media_type=media_types.get(name),
-            required=False,
-        )
-        for name in declared
+        DeclaredOutput(path=f"{run_id}/{name}", name=name, required=False) for name in declared
     )
     try:
         landed = await collect_outputs(sandbox, session.spec, sink=sink, outputs=call_time)
@@ -604,8 +652,14 @@ async def _collect(
 
 async def _read_manifest(
     session: SandboxToolSession, sandbox: "Sandbox", run_id: str
-) -> list[tuple[str, str | None]] | str:
+) -> list[str] | str:
     """Parse the program's own listing of what it produced, bounded and refusing malformed shapes.
+
+    **Names only.**  A media type read from here would be the guest declaring how the host
+    should handle its own bytes, which is worse than the sniffing ``DeclaredOutput.media_type``
+    exists to forbid — a sink may route on that value to choose inline rendering. This kind does
+    not know what its program wrote, so it says so, and a host that wants to decide by extension
+    has :attr:`~maf_sandbox.Artifact.name` and its own policy.
 
     This read is the kind's own and so is its ceiling: a ``CONSUME`` output declared in the spec
     would be capped by :func:`~maf_sandbox.collect_outputs`, but the manifest has to be read
@@ -637,7 +691,7 @@ async def _read_manifest(
             f"Error: {_MANIFEST_FILENAME} must be an object with an "
             f"{_MANIFEST_OUTPUTS_KEY!r} array, so no files were saved."
         )
-    entries: list[tuple[str, str | None]] = []
+    entries: list[str] = []
     for item in cast("list[object]", listed):
         entry = cast("dict[str, object]", item) if isinstance(item, dict) else {}
         path_value = entry.get(_MANIFEST_PATH_KEY)
@@ -646,18 +700,25 @@ async def _read_manifest(
                 f"Error: every {_MANIFEST_OUTPUTS_KEY!r} entry needs a "
                 f"{_MANIFEST_PATH_KEY!r} string, so no files were saved."
             )
-        media_type = entry.get(_MANIFEST_MEDIA_TYPE_KEY)
-        entries.append((path_value, media_type if isinstance(media_type, str) else None))
+        entries.append(path_value)
     return entries
 
 
 def _format_landed(landed: "Sequence[LandedArtifact]", declared: "Sequence[str]") -> str:
-    """What the model is told about the files: the host's own references, and what is absent."""
+    """What the model is told about the files: the host's own references, and what is absent.
+
+    The two sides are compared in NFC, because a landing name is normalized before the sink
+    sees it: a declared ``e`` + combining acute comes back as the precomposed ``é``, and an
+    exact-string comparison would report a file that landed perfectly well as never written.
+    Normalizing **both** sides is right whichever normalization the sink chose — under
+    ``NameNormalization.NONE`` the two are already the same string.
+    """
     lines: list[str] = []
     if landed:
         lines.append("Saved:")
         lines.extend(f"- {item.display}" for item in landed)
-    missing = [name for name in declared if name not in {item.name for item in landed}]
+    delivered = {unicodedata.normalize("NFC", item.name) for item in landed}
+    missing = [name for name in declared if unicodedata.normalize("NFC", name) not in delivered]
     if missing:
         lines.append(
             f"Not written by the program, so not saved: {', '.join(sorted(missing))}. Write "

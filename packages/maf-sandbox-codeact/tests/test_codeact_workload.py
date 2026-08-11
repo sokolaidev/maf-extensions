@@ -589,6 +589,83 @@ class TestFilesIn:
         assert "files" not in inspect.signature(_callable(_tool(_backend()))).parameters
 
 
+class TestTheInboundCapsAreEnforcedHere:
+    """No backend's `write_file` takes a limit, so a `files_in` bound applied here is applied
+    nowhere else — and a spec declaring a bound nothing honours is worse than one declaring
+    none. Every refusal lands before the sandbox is acquired, and before any write."""
+
+    def _tool(self, sandbox, store, **kw):
+        return _tool(_backend(sandbox), workspace_store=store, **kw)
+
+    def test_more_files_than_the_count_allows_are_refused(self):
+        sandbox = _ScriptedSandbox()
+        store = InMemoryStore({"a": "1", "b": "2", "c": "3"})
+        tool = self._tool(sandbox, store, files_in=replace(DEFAULT_TRANSFER_LIMITS, max_files=2))
+
+        out = _run(tool, "print(1)", files=["a", "b", "c"])
+        assert "at most 2" in out
+        assert sandbox.contents == {}
+
+    def test_a_file_over_the_per_file_ceiling_is_refused(self):
+        sandbox = _ScriptedSandbox()
+        store = InMemoryStore({"big.csv": "x" * 100})
+        tool = self._tool(
+            sandbox, store, files_in=replace(DEFAULT_TRANSFER_LIMITS, max_bytes_per_file=10)
+        )
+
+        out = _run(tool, "print(1)", files=["big.csv"])
+        assert "at most 10 bytes per file" in out
+        assert sandbox.contents == {}
+
+    def test_a_set_over_the_total_is_refused_before_any_of_it_is_written(self):
+        """Half an input set is worse than none: the program computes a confident wrong answer
+        from whichever files happened to be written before the ceiling was reached."""
+        sandbox = _ScriptedSandbox()
+        store = InMemoryStore({"a.csv": "x" * 8, "b.csv": "y" * 8})
+        tool = self._tool(
+            sandbox, store, files_in=replace(DEFAULT_TRANSFER_LIMITS, max_total_bytes=10)
+        )
+
+        out = _run(tool, "print(1)", files=["a.csv", "b.csv"])
+        assert "at most 10 per call" in out
+        assert sandbox.contents == {}
+
+    def test_the_count_is_of_encoded_bytes_not_characters(self):
+        """A character ceiling would be a different, larger bound for every non-ASCII file."""
+        sandbox = _ScriptedSandbox()
+        store = InMemoryStore({"a.txt": "é" * 6})  # 6 characters, 12 bytes of UTF-8
+        tool = self._tool(
+            sandbox, store, files_in=replace(DEFAULT_TRANSFER_LIMITS, max_bytes_per_file=10)
+        )
+
+        assert "at most 10 bytes per file" in _run(tool, "print(1)", files=["a.txt"])
+
+    def test_nothing_is_acquired_when_the_caps_refuse(self):
+        backend = _backend(_ScriptedSandbox())
+        store = InMemoryStore({"a": "1", "b": "2"})
+        tool = _tool(
+            backend,
+            workspace_store=store,
+            files_in=replace(DEFAULT_TRANSFER_LIMITS, max_files=1),
+        )
+
+        _run(tool, "print(1)", files=["a", "b"])
+        assert backend.keys == []
+
+    def test_a_set_within_the_caps_is_shared(self):
+        sandbox = _ScriptedSandbox()
+        store = InMemoryStore({"a.csv": "1", "b.csv": "2"})
+        tool = self._tool(sandbox, store, files_in=replace(DEFAULT_TRANSFER_LIMITS, max_files=2))
+
+        _run(tool, "print(1)", files=["a.csv", "b.csv"])
+        run_dir = _run_dirs(sandbox)[0]
+        assert {f"{run_dir}/a.csv", f"{run_dir}/b.csv"} <= set(sandbox.files)
+
+    def test_the_spec_carries_the_caps_the_host_chose(self):
+        limits = replace(DEFAULT_TRANSFER_LIMITS, max_files=3)
+        assert codeact_sandbox_spec(files_in=limits).files_in == limits
+
+
 # ---------------------------------------------------------------------------
 # Files out — two roads to a name, neither of them enumeration
 # ---------------------------------------------------------------------------
@@ -713,6 +790,30 @@ class TestDeclaredOutputs:
 
         assert _run(tool, "print(42)") == "stdout:\n42"
 
+    def test_a_name_normalized_on_the_way_out_is_not_also_reported_missing(self):
+        """`collect_outputs` normalizes a landing name to NFC, so a declared `e` + combining
+        acute is delivered as the precomposed `é`. Comparing the two spellings exactly reports
+        a file that landed perfectly well as never written."""
+        decomposed, composed = "café.csv", "café.csv"
+        sandbox = _ProducingSandbox()
+        sink = _RecordingSink()
+        tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, sink)
+
+        out = _run_producing(tool, sandbox, {decomposed: b"1"}, outputs=[decomposed])
+        assert sink.names == [composed]
+        assert "Not written" not in out
+
+    def test_a_genuinely_missing_name_is_still_reported_under_normalization(self):
+        """The other direction, so the fix above cannot be 'never report anything missing'."""
+        decomposed = "café.csv"
+        sandbox = _ProducingSandbox()
+        sink = _RecordingSink()
+        tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, sink)
+
+        out = _run(tool, "print(1)", outputs=[decomposed])
+        assert "Not written" in out
+        assert sink.names == []
+
     def test_neither_the_bytes_nor_the_hosts_handle_reach_the_model(self):
         """A handle can be a SAS URL with a bearer token in its query string, and a tool result
         is persisted into the transcript and replayed every turn after."""
@@ -727,7 +828,7 @@ class TestDeclaredOutputs:
 
 
 class TestManifestOutputs:
-    def test_files_the_manifest_lists_are_landed_with_the_media_type_it_gave(self):
+    def test_files_the_manifest_lists_are_landed(self):
         sandbox = _ProducingSandbox()
         sink = _RecordingSink()
         tool = _pulling_tool(sandbox, CodeactOutputs.MANIFEST, sink)
@@ -736,13 +837,33 @@ class TestManifestOutputs:
             tool,
             sandbox,
             {
-                _MANIFEST_FILENAME: b'{"outputs": [{"path": "r.csv", "media_type": "text/csv"}]}',
+                _MANIFEST_FILENAME: b'{"outputs": [{"path": "r.csv"}]}',
                 "r.csv": b"1,2",
             },
         )
         assert sink.names == ["r.csv"]
-        assert sink.media_types == ["text/csv"]
         assert "saved r.csv" in out
+
+    def test_a_media_type_in_the_manifest_is_ignored_rather_than_forwarded(self):
+        """The guest declaring how the host should handle its own bytes is worse than the
+        sniffing `DeclaredOutput.media_type` exists to forbid: a sink may route on that value
+        to choose inline rendering. This kind does not know what its program wrote."""
+        sandbox = _ProducingSandbox()
+        sink = _RecordingSink()
+        tool = _pulling_tool(sandbox, CodeactOutputs.MANIFEST, sink)
+
+        _run_producing(
+            tool,
+            sandbox,
+            {
+                _MANIFEST_FILENAME: (
+                    b'{"outputs": [{"path": "r.svg", "media_type": "image/svg+xml"}]}'
+                ),
+                "r.svg": b"<svg/>",
+            },
+        )
+        assert sink.names == ["r.svg"]
+        assert sink.media_types == [None]
 
     def test_no_manifest_means_nothing_was_saved(self):
         sandbox = _ProducingSandbox()
@@ -835,6 +956,24 @@ class TestTheSinkIsTheHostsChoice:
     def test_a_sink_with_no_output_mode_is_refused_at_attach(self):
         with pytest.raises(ValueError, match="nothing would ever be landed"):
             _tool(_backend(), output_sink=_RecordingSink().sink)
+
+    @pytest.mark.parametrize("router", [None, SandboxRouter([])])
+    def test_an_unconfigured_host_gets_an_empty_list_from_that_refusal_too(self, router):
+        """Rule 1 of `sandboxed_tool`: a host that simply left sandboxing off keeps its
+        ungrounded behaviour. A check placed before the attach gate would raise out of that
+        host's agent factory instead — which is what this one did."""
+        assert (
+            make_codeact_tools(
+                router, "data-analyst", _context(), output_sink=_RecordingSink().sink
+            )
+            == []
+        )
+
+    def test_an_unconfigured_host_gets_one_from_the_missing_sink_refusal_as_well(self):
+        assert (
+            make_codeact_tools(None, "data-analyst", _context(), outputs=CodeactOutputs.DECLARED)
+            == []
+        )
 
     def test_the_cap_the_host_asked_for_reaches_the_tool(self):
         """Closed egress and a sink: bytes still reach host state, so the flow is real."""
