@@ -14,6 +14,7 @@ from __future__ import annotations
 from ._tool import (
     CODEACT_KIND,
     EXECUTE_CODE_TOOL_NAME,
+    CodeactOutputs,
     codeact_sandbox_spec,
     make_codeact_tools,
 )
@@ -21,6 +22,7 @@ from ._tool import (
 __all__ = [
     "CODEACT_KIND",
     "EXECUTE_CODE_TOOL_NAME",
+    "CodeactOutputs",
     "MafSandboxCodeactExperimentalWarning",
     "codeact_sandbox_spec",
     "make_codeact_tools",

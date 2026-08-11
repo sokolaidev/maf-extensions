@@ -13,26 +13,40 @@ detail.
 from __future__ import annotations
 
 import asyncio
+import inspect
 from collections.abc import Sequence
+from dataclasses import replace
+from typing import Any
 
 import pytest
 from maf_sandbox import (
+    DEFAULT_CAPABILITIES,
+    DEFAULT_TRANSFER_LIMITS,
+    Artifact,
     Capability,
     ExecResult,
     Isolation,
+    LandedArtifact,
+    OutputSink,
     SandboxCapabilityNotSupported,
+    SandboxOutputSinkRequired,
     SandboxRouter,
+    TransferLimits,
     WorkspaceContext,
 )
-from maf_sandbox.testing import InProcessSandbox, InProcessSandboxBackend
+from maf_sandbox.testing import InMemoryStore, InProcessSandbox, InProcessSandboxBackend
 
 from maf_sandbox_codeact import (
     CODEACT_KIND,
     EXECUTE_CODE_TOOL_NAME,
+    CodeactOutputs,
     codeact_sandbox_spec,
     make_codeact_tools,
 )
-from maf_sandbox_codeact._tool import _PROGRAM_FILENAME, _WORK_DIR
+from maf_sandbox_codeact._tool import _MANIFEST_FILENAME, _PROGRAM_FILENAME, _WORK_DIR
+
+#: What a backend must declare before this kind may collect anything.
+_PULLS = DEFAULT_CAPABILITIES | {Capability.FILES_OUT}
 
 # ---------------------------------------------------------------------------
 # Fakes: a sandbox that keeps the command it was handed, unjoined
@@ -65,6 +79,64 @@ class _WriteFailingSandbox(_ScriptedSandbox):
         raise RuntimeError("no space left at https://internal.invalid subscription 0000-1111")
 
 
+class _ProducingSandbox(_ScriptedSandbox):
+    """A sandbox whose ``exec`` writes files, standing in for a program that produced them.
+
+    The run directory is a fresh uuid chosen inside the call, so an output cannot be seeded
+    before it — which is the honest shape anyway: these files appear when the program runs.
+    """
+
+    def __init__(self, produces: dict[str, bytes] | None = None, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.produces = produces or {}
+
+    async def exec(self, command, *, working_directory, timeout):
+        result = await super().exec(command, working_directory=working_directory, timeout=timeout)
+        for name, content in self.produces.items():
+            self.contents[f"{working_directory}/{name}"] = content
+        return result
+
+
+class _RecordingSink:
+    """A host sink that records what it was handed and answers with a reference.
+
+    ``handle`` carries a token on purpose: nothing this kind returns may render it.
+    """
+
+    def __init__(self) -> None:
+        self.delivered: list[Artifact] = []
+        self.sink = OutputSink(deliver=self.deliver)
+
+    async def deliver(self, artifact: Artifact) -> LandedArtifact:
+        self.delivered.append(artifact)
+        return LandedArtifact(
+            name=artifact.name,
+            display=f"saved {artifact.name}",
+            handle=f"blob://{artifact.name}?sig=secret",
+        )
+
+    @property
+    def names(self) -> list[str]:
+        return [artifact.name for artifact in self.delivered]
+
+    @property
+    def media_types(self) -> list[str | None]:
+        return [artifact.media_type for artifact in self.delivered]
+
+
+class _ListedButGoneStore:
+    """A store whose listing outlives its content, which `AgentFileStore.read` reports as `None`."""
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+
+    async def read(self, name: str) -> str | None:
+        return None
+
+    async def list(self) -> list[str]:
+        return [self._name]
+
+
 def _backend(
     sandbox: InProcessSandbox | None = None,
     *,
@@ -78,16 +150,16 @@ def _backend(
     )
 
 
-async def _no_listing(_store: object) -> list[str]:
-    """This kind shares no workspace files, so nothing ever enumerates one."""
-    return []
+async def _listing(store: Any) -> list[str]:
+    """Enumerate whatever store the host wired; without one this kind shares nothing."""
+    return [] if store is None else await store.list()
 
 
 def _context(*, thread_id: str | None = "thread-1") -> WorkspaceContext:
     return WorkspaceContext(
         current_scope=lambda: "scope-a",
         current_thread_id=lambda: thread_id,
-        list_files=_no_listing,
+        list_files=_listing,
     )
 
 
@@ -104,13 +176,40 @@ def _tool(backend: InProcessSandboxBackend, *, thread_id: str | None = "thread-1
     return tools[0]
 
 
+def _landing(mode: CodeactOutputs, sink: _RecordingSink | None = None) -> dict[str, Any]:
+    """The pair `make_codeact_tools` requires together: a mode, and somewhere to land."""
+    return {"outputs": mode, "output_sink": (sink or _RecordingSink()).sink}
+
+
+def _pulling_tool(
+    sandbox: InProcessSandbox,
+    mode: CodeactOutputs,
+    sink: _RecordingSink,
+    *,
+    files_out: TransferLimits | None = None,
+    **kw,
+):
+    return _tool(
+        _backend(sandbox, capabilities=_PULLS),
+        **_landing(mode, sink),
+        **({} if files_out is None else {"files_out": files_out}),
+        **kw,
+    )
+
+
 def _callable(tool):
     """The tool body, off whichever attribute the MAF decorator carries it on."""
     return getattr(tool, "func", None) or getattr(tool, "__wrapped__", None) or tool
 
 
-def _run(tool, code: str) -> str:
-    return asyncio.run(_callable(tool)(code=code))
+def _run(tool, code: str, **kw) -> str:
+    return asyncio.run(_callable(tool)(code=code, **kw))
+
+
+def _run_producing(tool, sandbox: _ProducingSandbox, produced: dict[str, bytes], **kw) -> str:
+    """Run one call whose program writes ``produced`` into its own working directory."""
+    sandbox.produces = produced
+    return _run(tool, "print('hi')", **kw)
 
 
 # ---------------------------------------------------------------------------
@@ -155,12 +254,24 @@ class TestCodeactSandboxSpec:
 # ---------------------------------------------------------------------------
 
 
+def _run_dirs(sandbox: InProcessSandbox) -> list[str]:
+    """The distinct run directories this sandbox was written into, in first-seen order."""
+    seen: list[str] = []
+    for path in sandbox.contents:
+        parent = path.removeprefix(f"{_WORK_DIR}/").split("/", 1)[0]
+        if parent not in seen:
+            seen.append(parent)
+    return [f"{_WORK_DIR}/{name}" for name in seen]
+
+
 class TestTheProgramIsWrittenThenRun:
-    def test_the_program_is_written_to_the_work_dir(self):
+    def test_the_program_is_written_into_this_calls_own_directory(self):
         sandbox = _ScriptedSandbox()
         _run(_tool(_backend(sandbox)), "print('hi')")
 
-        assert sandbox.files == {f"{_WORK_DIR}/{_PROGRAM_FILENAME}": "print('hi')"}
+        (run_dir,) = _run_dirs(sandbox)
+        assert run_dir.startswith(f"{_WORK_DIR}/")
+        assert sandbox.files == {f"{run_dir}/{_PROGRAM_FILENAME}": "print('hi')"}
 
     def test_the_interpreter_is_run_with_an_argv_sequence(self):
         """A sequence, not a string: a shell never sees any of this.
@@ -175,7 +286,8 @@ class TestTheProgramIsWrittenThenRun:
         assert len(sandbox.raw_commands) == 1
         argv = sandbox.raw_commands[0]
         assert not isinstance(argv, str)
-        assert list(argv) == ["python3", f"{_WORK_DIR}/{_PROGRAM_FILENAME}"]
+        (run_dir,) = _run_dirs(sandbox)
+        assert list(argv) == ["python3", f"{run_dir}/{_PROGRAM_FILENAME}"]
 
     def test_the_command_never_carries_the_model_written_source(self):
         code = "import os; os.system('id'); print('$(whoami)`id`; rm -rf /')"
@@ -184,14 +296,16 @@ class TestTheProgramIsWrittenThenRun:
 
         argv = sandbox.raw_commands[0]
         assert all(part == "python3" or part.endswith(_PROGRAM_FILENAME) for part in argv)
-        assert sandbox.files[f"{_WORK_DIR}/{_PROGRAM_FILENAME}"] == code
+        assert list(sandbox.files.values()) == [code]
 
-    def test_the_program_runs_in_the_work_dir(self):
+    def test_the_program_runs_in_its_own_directory(self):
+        """So a program addresses everything it was given, and everything it produces, by a
+        bare relative name."""
         sandbox = _ScriptedSandbox()
         _run(_tool(_backend(sandbox)), "print('hi')")
 
         _, working_directory, _ = sandbox.commands[0]
-        assert working_directory == _WORK_DIR
+        assert working_directory == _run_dirs(sandbox)[0]
 
     def test_the_exec_timeout_is_passed_through(self):
         sandbox = _ScriptedSandbox()
@@ -200,14 +314,21 @@ class TestTheProgramIsWrittenThenRun:
         _, _, timeout = sandbox.commands[0]
         assert timeout == 7
 
-    def test_each_call_replaces_the_previous_program(self):
-        """One fixed path, so a stale program cannot be run in place of the current one."""
+    def test_each_call_gets_a_directory_of_its_own(self):
+        """`acquire` is get-or-create, so the sandbox is reused across calls — and a file left
+        behind by one round must not be readable as the next round's input, nor collectable as
+        its output."""
         sandbox = _ScriptedSandbox()
         tool = _tool(_backend(sandbox))
         _run(tool, "print(1)")
         _run(tool, "print(2)")
 
-        assert sandbox.files == {f"{_WORK_DIR}/{_PROGRAM_FILENAME}": "print(2)"}
+        first, second = _run_dirs(sandbox)
+        assert first != second
+        assert sandbox.files == {
+            f"{first}/{_PROGRAM_FILENAME}": "print(1)",
+            f"{second}/{_PROGRAM_FILENAME}": "print(2)",
+        }
 
     def test_the_key_carries_the_hosts_scope_and_thread_not_model_input(self):
         backend = _backend()
@@ -350,14 +471,384 @@ class TestDegrades:
 
 
 class TestToolDescription:
-    def _description(self) -> str:
-        return _callable(_tool(_backend())).__doc__ or ""
+    def _description(self, **kw) -> str:
+        return _callable(_tool(_backend(capabilities=_PULLS), **kw)).__doc__ or ""
 
     def test_it_says_only_printed_output_comes_back(self):
         assert "print" in self._description()
 
     def test_it_says_the_sandbox_has_no_network(self):
         assert "no network" in self._description().lower()
+
+    def test_a_channel_the_host_did_not_wire_is_never_described(self):
+        """The description is what the model plans against, so a parameter it cannot pass and
+        a directory nothing collects must not appear in it."""
+        plain = self._description()
+        assert "``files``" not in plain
+        assert "``outputs``" not in plain
+        assert _MANIFEST_FILENAME not in plain
+
+    def test_the_files_channel_is_described_when_it_exists(self):
+        described = self._description(workspace_store=InMemoryStore({}))
+        assert "``files``" in described
+
+    def test_the_declared_outputs_channel_names_the_parameter(self):
+        described = self._description(**_landing(CodeactOutputs.DECLARED))
+        assert "``outputs``" in described
+        assert _MANIFEST_FILENAME not in described
+
+    def test_the_manifest_channel_names_the_file_and_shows_its_shape(self):
+        described = self._description(**_landing(CodeactOutputs.MANIFEST))
+        assert _MANIFEST_FILENAME in described
+        assert '"outputs"' in described
+        assert "``outputs``" not in described
+
+
+# ---------------------------------------------------------------------------
+# Files in — the caller's listing is the authority, and every run starts empty
+# ---------------------------------------------------------------------------
+
+
+class TestFilesIn:
+    def _shared(self, sandbox: _ScriptedSandbox) -> dict[str, str]:
+        """What was written into the run directory, keyed by the name the program sees."""
+        run_dir = _run_dirs(sandbox)[0]
+        return {
+            path.removeprefix(f"{run_dir}/"): content
+            for path, content in sandbox.files.items()
+            if path != f"{run_dir}/{_PROGRAM_FILENAME}"
+        }
+
+    def test_a_listed_file_is_shared_under_its_own_name(self):
+        sandbox = _ScriptedSandbox()
+        store = InMemoryStore({"data/sales.csv": "a,b\n1,2\n"})
+        tool = _tool(_backend(sandbox), workspace_store=store)
+
+        _run(tool, "print('hi')", files=["data/sales.csv"])
+        assert self._shared(sandbox) == {"data/sales.csv": "a,b\n1,2\n"}
+
+    def test_a_name_outside_the_listing_is_refused_with_a_hint(self):
+        """The listing is the injection-pinning boundary: a name the model invented, or read
+        out of a file it was given, has nowhere to go."""
+        sandbox = _ScriptedSandbox()
+        store = InMemoryStore({"data/sales.csv": "x"})
+        tool = _tool(_backend(sandbox), workspace_store=store)
+
+        out = _run(tool, "print('hi')", files=["data/secrets.csv"])
+        assert "not in this tool's file listing" in out
+        assert "data/sales.csv" in out
+        assert sandbox.files == {}
+
+    @pytest.mark.parametrize("name", ["../../etc/passwd", "/etc/passwd", "a/../../b"])
+    def test_a_traversing_name_is_refused_without_echoing_the_listing(self, name: str):
+        """Echoing it would invite a retry with another spelling."""
+        sandbox = _ScriptedSandbox()
+        store = InMemoryStore({name: "x", "data/sales.csv": "y"})
+        tool = _tool(_backend(sandbox), workspace_store=store)
+
+        out = _run(tool, "print('hi')", files=[name])
+        assert "cannot be shared" in out
+        assert "data/sales.csv" not in out
+        assert sandbox.files == {}
+
+    def test_the_program_file_cannot_be_shadowed_by_a_shared_file(self):
+        sandbox = _ScriptedSandbox()
+        store = InMemoryStore({_PROGRAM_FILENAME: "print('theirs')"})
+        tool = _tool(_backend(sandbox), workspace_store=store)
+
+        out = _run(tool, "print('mine')", files=[_PROGRAM_FILENAME])
+        assert "cannot be shared" in out
+        assert sandbox.files == {}
+
+    def test_a_file_deleted_between_rounds_does_not_survive_in_the_guest(self):
+        """The reason each call gets its own directory: the sandbox is reused, so a stale
+        input would otherwise be read by the next program as a live one."""
+        sandbox = _ScriptedSandbox()
+        store = InMemoryStore({"a.csv": "1", "b.csv": "2"})
+        tool = _tool(_backend(sandbox), workspace_store=store)
+
+        _run(tool, "print(1)", files=["a.csv", "b.csv"])
+        del store.files["a.csv"]
+        _run(tool, "print(2)", files=["b.csv"])
+
+        second = _run_dirs(sandbox)[1]
+        assert f"{second}/a.csv" not in sandbox.files
+        assert f"{second}/b.csv" in sandbox.files
+
+    def test_a_listed_file_with_no_content_is_reported_rather_than_written_as_none(self):
+        """A store read can miss without raising — the file was listed, then removed. Writing
+        `None` through would put the string "None" into the sandbox for the program to parse."""
+        sandbox = _ScriptedSandbox()
+        tool = _tool(_backend(sandbox), workspace_store=_ListedButGoneStore("gone.csv"))
+
+        out = _run(tool, "print('hi')", files=["gone.csv"])
+        assert "no content" in out
+        assert sandbox.contents == {}
+
+    def test_no_files_parameter_exists_without_a_store(self):
+        assert "files" not in inspect.signature(_callable(_tool(_backend()))).parameters
+
+
+# ---------------------------------------------------------------------------
+# Files out — two roads to a name, neither of them enumeration
+# ---------------------------------------------------------------------------
+
+
+class TestOutputsAreNeverEnumerated:
+    def test_the_spec_requires_files_out_and_never_files_list(self):
+        """A kind requiring `FILES_LIST` when it does not need one has made itself ACAS-only,
+        and would attach locally and refuse in production or the reverse."""
+        for mode in (CodeactOutputs.DECLARED, CodeactOutputs.MANIFEST):
+            requires = codeact_sandbox_spec(outputs=mode).requires
+            assert Capability.FILES_OUT in requires
+            assert Capability.FILES_LIST not in requires
+
+    def test_the_stdout_only_spec_requires_neither(self):
+        assert codeact_sandbox_spec().requires == frozenset({Capability.EXEC, Capability.FILES_IN})
+
+    def test_only_a_collecting_spec_says_it_names_outputs_later(self):
+        assert codeact_sandbox_spec().outputs_named_at_call_time is False
+        assert codeact_sandbox_spec(outputs=CodeactOutputs.DECLARED).outputs_named_at_call_time
+
+    def test_a_backend_without_the_pull_surface_is_refused_at_attach(self):
+        with pytest.raises(SandboxCapabilityNotSupported):
+            _tool(_backend(), **_landing(CodeactOutputs.DECLARED))
+
+
+class TestDeclaredOutputs:
+    def test_a_declared_file_lands_under_its_own_name_not_the_run_directorys(self):
+        """The guest path carries a run id and the landing name must not: a host writing files
+        to disk would otherwise get one directory per call, named after nothing."""
+        sandbox = _ProducingSandbox()
+        sink = _RecordingSink()
+        tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, sink)
+
+        out = _run_producing(tool, sandbox, {"report.csv": b"a,b\n"}, outputs=["report.csv"])
+        assert sink.names == ["report.csv"]
+        assert _run_dirs(sandbox)[0] not in out
+
+    def test_the_media_type_is_not_guessed(self):
+        """Sniffing would let guest-produced content decide how the host handles it, and this
+        kind genuinely does not know what its program wrote."""
+        sandbox = _ProducingSandbox()
+        sink = _RecordingSink()
+        tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, sink)
+
+        _run_producing(tool, sandbox, {"report.csv": b"a,b\n"}, outputs=["report.csv"])
+        assert sink.media_types == [None]
+
+    def test_a_name_declared_and_not_written_is_reported_rather_than_dropped(self):
+        """The trade this kind would otherwise have to document: a file that goes uncollected
+        with no error at all."""
+        sandbox = _ProducingSandbox()
+        sink = _RecordingSink()
+        tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, sink)
+
+        out = _run(tool, "print('hi')", outputs=["report.csv"])
+        assert "Not written by the program" in out
+        assert "report.csv" in out
+        assert sink.names == []
+
+    def test_what_was_written_still_lands_when_a_sibling_is_missing(self):
+        """`required=False` throughout: failing the whole collection over one forgotten name
+        would throw away the files the program did write."""
+        sandbox = _ProducingSandbox()
+        sink = _RecordingSink()
+        tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, sink)
+
+        out = _run_producing(tool, sandbox, {"a.csv": b"1"}, outputs=["a.csv", "b.csv"])
+        assert sink.names == ["a.csv"]
+        assert "b.csv" in out.rsplit("Not written", 1)[-1]
+
+    def test_more_names_than_the_cap_are_refused_before_the_program_runs(self):
+        sandbox = _ProducingSandbox()
+        tool = _pulling_tool(
+            sandbox,
+            CodeactOutputs.DECLARED,
+            _RecordingSink(),
+            files_out=replace(DEFAULT_TRANSFER_LIMITS, max_files=2),
+        )
+
+        out = _run(tool, "print('hi')", outputs=["a", "b", "c"])
+        assert "at most 2" in out
+        assert sandbox.raw_commands == []
+
+    @pytest.mark.parametrize("name", ["../escape.csv", "/etc/passwd", "a/./b.csv", "a\\b.csv"])
+    def test_a_name_breaking_the_narrow_invariant_is_refused_before_the_program_runs(
+        self, name: str
+    ):
+        sandbox = _ProducingSandbox()
+        tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, _RecordingSink())
+
+        out = _run(tool, "print('hi')", outputs=[name])
+        assert "cannot be saved" in out
+        assert sandbox.raw_commands == []
+
+    def test_a_name_declared_twice_is_refused(self):
+        sandbox = _ProducingSandbox()
+        tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, _RecordingSink())
+
+        assert "declared twice" in _run(tool, "print('hi')", outputs=["a.csv", "a.csv"])
+
+    def test_the_program_file_cannot_be_declared_as_an_output(self):
+        sandbox = _ProducingSandbox()
+        tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, _RecordingSink())
+
+        assert "cannot be saved" in _run(tool, "print('hi')", outputs=[_PROGRAM_FILENAME])
+
+    def test_a_failed_program_reports_its_traceback_and_nothing_about_files(self):
+        """A missing-file report stacked on a traceback buries what the model has to fix."""
+        sandbox = _ProducingSandbox(result=ExecResult(stdout="", stderr="Traceback", exit_code=1))
+        sink = _RecordingSink()
+        tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, sink)
+
+        out = _run(tool, "print('hi')", outputs=["report.csv"])
+        assert "Traceback" in out
+        assert "Not written" not in out
+        assert sink.names == []
+
+    def test_declaring_nothing_says_nothing_about_files(self):
+        sandbox = _ProducingSandbox(result=ExecResult(stdout="42\n"))
+        tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, _RecordingSink())
+
+        assert _run(tool, "print(42)") == "stdout:\n42"
+
+    def test_neither_the_bytes_nor_the_hosts_handle_reach_the_model(self):
+        """A handle can be a SAS URL with a bearer token in its query string, and a tool result
+        is persisted into the transcript and replayed every turn after."""
+        sandbox = _ProducingSandbox()
+        sink = _RecordingSink()
+        tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, sink)
+
+        out = _run_producing(tool, sandbox, {"r.csv": b"SECRET-BYTES"}, outputs=["r.csv"])
+        assert "SECRET-BYTES" not in out
+        assert "sig=secret" not in out
+        assert "saved r.csv" in out
+
+
+class TestManifestOutputs:
+    def test_files_the_manifest_lists_are_landed_with_the_media_type_it_gave(self):
+        sandbox = _ProducingSandbox()
+        sink = _RecordingSink()
+        tool = _pulling_tool(sandbox, CodeactOutputs.MANIFEST, sink)
+
+        out = _run_producing(
+            tool,
+            sandbox,
+            {
+                _MANIFEST_FILENAME: b'{"outputs": [{"path": "r.csv", "media_type": "text/csv"}]}',
+                "r.csv": b"1,2",
+            },
+        )
+        assert sink.names == ["r.csv"]
+        assert sink.media_types == ["text/csv"]
+        assert "saved r.csv" in out
+
+    def test_no_manifest_means_nothing_was_saved(self):
+        sandbox = _ProducingSandbox()
+        sink = _RecordingSink()
+        tool = _pulling_tool(sandbox, CodeactOutputs.MANIFEST, sink)
+
+        out = _run(tool, "print('hi')")
+        assert _MANIFEST_FILENAME in out
+        assert sink.names == []
+
+    @pytest.mark.parametrize(
+        "manifest",
+        [b"not json", b"[]", b'{"outputs": {}}', b'{"outputs": [{"media_type": "text/csv"}]}'],
+    )
+    def test_a_malformed_manifest_is_a_diagnostic_and_lands_nothing(self, manifest: bytes):
+        sandbox = _ProducingSandbox()
+        sink = _RecordingSink()
+        tool = _pulling_tool(sandbox, CodeactOutputs.MANIFEST, sink)
+
+        out = _run_producing(tool, sandbox, {_MANIFEST_FILENAME: manifest})
+        assert "Error:" in out
+        assert sink.names == []
+
+    def test_a_manifest_naming_a_path_outside_the_run_is_refused(self):
+        """The names are the guest's here rather than the model's, and the same invariant
+        holds: this is the first channel where a guest-chosen name reaches host state."""
+        sandbox = _ProducingSandbox()
+        sink = _RecordingSink()
+        tool = _pulling_tool(sandbox, CodeactOutputs.MANIFEST, sink)
+
+        out = _run_producing(
+            tool, sandbox, {_MANIFEST_FILENAME: b'{"outputs": [{"path": "../escape"}]}'}
+        )
+        assert "cannot be saved" in out
+        assert sink.names == []
+
+    def test_the_manifest_itself_is_never_landed(self):
+        sandbox = _ProducingSandbox()
+        sink = _RecordingSink()
+        tool = _pulling_tool(sandbox, CodeactOutputs.MANIFEST, sink)
+
+        out = _run_producing(
+            tool,
+            sandbox,
+            {_MANIFEST_FILENAME: f'{{"outputs": [{{"path": "{_MANIFEST_FILENAME}"}}]}}'.encode()},
+        )
+        assert "cannot be saved" in out
+        assert sink.names == []
+
+    def test_a_manifest_over_the_file_cap_lands_nothing(self):
+        sandbox = _ProducingSandbox()
+        sink = _RecordingSink()
+        tool = _pulling_tool(
+            sandbox,
+            CodeactOutputs.MANIFEST,
+            sink,
+            files_out=replace(DEFAULT_TRANSFER_LIMITS, max_files=1),
+        )
+
+        out = _run_producing(
+            tool,
+            sandbox,
+            {
+                _MANIFEST_FILENAME: b'{"outputs": [{"path": "a"}, {"path": "b"}]}',
+                "a": b"1",
+                "b": b"2",
+            },
+        )
+        assert "at most 1" in out
+        assert sink.names == []
+
+    def test_no_outputs_parameter_is_offered_in_this_mode(self):
+        """The program's own listing is the channel; a second one would contradict it."""
+        sandbox = _ProducingSandbox()
+        tool = _pulling_tool(sandbox, CodeactOutputs.MANIFEST, _RecordingSink())
+        assert "outputs" not in inspect.signature(_callable(tool)).parameters
+
+
+class TestTheSinkIsTheHostsChoice:
+    def test_an_output_mode_without_a_sink_is_refused_at_attach(self):
+        """With `OutputSink` the kind never chooses where artifacts go — and a kind that
+        landed them where the agent's own file tools write would have handed model-written
+        code an unapproved `file_access_write`."""
+        with pytest.raises(SandboxOutputSinkRequired):
+            _tool(
+                _backend(capabilities=_PULLS),
+                outputs=CodeactOutputs.DECLARED,
+            )
+
+    def test_a_sink_with_no_output_mode_is_refused_at_attach(self):
+        with pytest.raises(ValueError, match="nothing would ever be landed"):
+            _tool(_backend(), output_sink=_RecordingSink().sink)
+
+    def test_the_cap_the_host_asked_for_reaches_the_tool(self):
+        """Closed egress and a sink: bytes still reach host state, so the flow is real."""
+        tool = _tool(
+            _backend(capabilities=_PULLS),
+            **_landing(CodeactOutputs.DECLARED),
+            outbound_max_confidentiality="private",
+        )
+        assert dict(tool.additional_properties or {}) == {"max_allowed_confidentiality": "private"}
+
+    def test_it_still_declares_no_source_integrity(self):
+        """Landing files changes nothing about where the tool's *result* came from."""
+        tool = _tool(_backend(capabilities=_PULLS), **_landing(CodeactOutputs.DECLARED))
+        assert "source_integrity" not in dict(tool.additional_properties or {})
 
 
 # ---------------------------------------------------------------------------

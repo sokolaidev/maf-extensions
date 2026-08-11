@@ -4,39 +4,57 @@ The agent gets one tool, the model writes a short Python program, and the progra
 a sandbox — computing an answer instead of reasoning about what the computation would produce.
 
 **This module contains no Azure import, no backend import and no sandbox lifecycle code.**  It
-talks to a :class:`~maf_sandbox.SandboxRouter` and gets back ``write_file`` and ``exec``, so
-the same tool runs unchanged against ACA Sandboxes, a WSL container or an in-process fake.
+talks to a :class:`~maf_sandbox.SandboxRouter` and gets back ``write_file``, ``exec`` and the
+pull surface, so the same tool runs unchanged against ACA Sandboxes, a Docker container or an
+in-process fake.
 
-This version is the ``EXEC`` road and it is stdout-only.  Nothing is read back out of the
-sandbox, no workspace file is shared into it, and no host function is dispatchable from
-inside: with the spec's egress closed as well, nothing external can enter and nothing leaves
-but what the program printed.  That empty dispatch surface is what makes running model-written
-code defensible here, so it is a property of this version rather than a gap in it.
+Three channels, and the host chooses which of them exist.  Stdout is always there.  A
+**workspace store** adds a ``files`` parameter, so a program can transform files that already
+exist rather than only data the model wrote into its own source.  An **output sink** plus a
+:class:`CodeactOutputs` mode adds a way for files the program produces to reach host state.
+Wire neither and this is the stdout-only kind it has always been, with nothing dispatchable
+from inside: no network, no host functions, and nothing leaving but what the program printed.
 """
 
 from __future__ import annotations
 
+import json
 import logging
-from typing import TYPE_CHECKING, Any
+from dataclasses import replace
+from enum import StrEnum
+from typing import TYPE_CHECKING, Any, cast
+from uuid import uuid4
 
 from maf_sandbox import (
+    DEFAULT_TRANSFER_LIMITS,
     Capability,
+    DeclaredOutput,
     ExecResult,
+    OutputSink,
+    SandboxArtifactNameInvalid,
+    SandboxOutputError,
     SandboxRouter,
     SandboxSpec,
+    TransferLimits,
     WorkspaceContext,
+    collect_outputs,
     error_detail,
+    validate_artifact_name,
 )
-from maf_sandbox.maf import SandboxToolSession, sandbox_tool_declarations, sandboxed_tool
+from maf_sandbox.maf import SandboxToolSession, sandboxed_tool
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Sequence
+
+    from agent_framework import AgentFileStore
+    from maf_sandbox import LandedArtifact, Sandbox
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
     "CODEACT_KIND",
     "EXECUTE_CODE_TOOL_NAME",
+    "CodeactOutputs",
     "codeact_sandbox_spec",
     "make_codeact_tools",
 ]
@@ -46,13 +64,26 @@ EXECUTE_CODE_TOOL_NAME = "execute_code"
 #: The sandbox kind this workload asks for.
 CODEACT_KIND = "codeact"
 
-#: Where the program is written and run — a dedicated root rather than the image's own tree.
+#: Where every run's directory is created — a dedicated root rather than the image's own tree.
 _WORK_DIR = "/work"
 
-#: One fixed name, rewritten on every call, since the sandbox is reused across calls.
+#: One fixed name inside each run's own directory.
 _PROGRAM_FILENAME = "program.py"
 
+#: Where a ``MANIFEST``-mode program says what it produced.
+_MANIFEST_FILENAME = "outputs.json"
+_MANIFEST_OUTPUTS_KEY = "outputs"
+_MANIFEST_PATH_KEY = "path"
+_MANIFEST_MEDIA_TYPE_KEY = "media_type"
+
+#: A listing of what a program wrote is text, and a small amount of it.
+_MANIFEST_MAX_BYTES = 64 * 1024
+
 _INTERPRETER = "python3"
+
+#: Eight artifacts is a generous single call and a cap that actually bounds something; the
+#: byte ceilings are the shared defaults, so only the count is this workload's own opinion.
+_DEFAULT_FILES_OUT = replace(DEFAULT_TRANSFER_LIMITS, max_files=8)
 
 #: Writing an expression and expecting a REPL to echo it is the commonest way a first CodeAct
 #: call comes back empty, so the answer says what to do instead.
@@ -62,20 +93,52 @@ _NO_OUTPUT = (
 )
 
 
-def codeact_sandbox_spec(image: str | None = None, image_id: str | None = None) -> SandboxSpec:
+class CodeactOutputs(StrEnum):
+    """How a program's output files are named — the host's choice, made at construction.
+
+    Both roads collect literal paths and neither enumerates a directory, so this kind requires
+    :data:`~maf_sandbox.Capability.FILES_OUT` and never
+    :data:`~maf_sandbox.Capability.FILES_LIST`, and runs on every backend serving the first.
+    """
+
+    #: No output channel at all: stdout is the whole result, and no sink is needed.
+    NONE = "none"
+    #: The model names its files in the call, before the program runs. Names are validated and
+    #: capped up front, and one declared but not written is reported back by name.
+    DECLARED = "declared"
+    #: The program writes ``outputs.json`` saying what it produced. For a program whose output
+    #: names it can only know once it has read its input.
+    MANIFEST = "manifest"
+
+
+def codeact_sandbox_spec(
+    image: str | None = None,
+    image_id: str | None = None,
+    *,
+    outputs: CodeactOutputs = CodeactOutputs.NONE,
+    files_out: TransferLimits = _DEFAULT_FILES_OUT,
+) -> SandboxSpec:
     """The sandbox a CodeAct program needs, in backend-neutral terms.
 
     ``egress_allow=()`` and no ``min_isolation`` are both deliberate: the program computes
     rather than fetches, and this kind runs only what the model wrote, so the host's floor
-    governs.
+    governs.  An output mode other than :data:`CodeactOutputs.NONE` grows ``requires`` by
+    :data:`~maf_sandbox.Capability.FILES_OUT` and sets ``outputs_named_at_call_time``, which is
+    what keeps the attached tool honest about landing artifacts it cannot yet name.
     """
+    collects = outputs is not CodeactOutputs.NONE
+    requires = {Capability.EXEC, Capability.FILES_IN}
+    if collects:
+        requires.add(Capability.FILES_OUT)
     return SandboxSpec(
         kind=CODEACT_KIND,
         image=image,
         image_id=image_id,
         egress_allow=(),
         work_dir=_WORK_DIR,
-        requires=frozenset({Capability.EXEC, Capability.FILES_IN}),
+        requires=frozenset(requires),
+        outputs_named_at_call_time=collects,
+        files_out=files_out,
     )
 
 
@@ -84,51 +147,77 @@ def make_codeact_tools(
     agent_dir: str,
     context: WorkspaceContext,
     *,
+    workspace_store: "AgentFileStore | None" = None,
+    output_sink: OutputSink | None = None,
+    outputs: CodeactOutputs = CodeactOutputs.NONE,
+    outbound_max_confidentiality: str | None = None,
     image: str | None = None,
     image_id: str | None = None,
     exec_timeout_seconds: int = 120,
+    files_out: TransferLimits = _DEFAULT_FILES_OUT,
 ) -> list[Any]:
     """Return the ``[execute_code]`` tool list, or ``[]`` when no sandbox is available.
+
+    The tool's *signature* follows the channels the host wired: ``files`` appears only with a
+    ``workspace_store``, and ``outputs`` only under :data:`CodeactOutputs.DECLARED`.  A model is
+    never shown a parameter this deployment cannot honour.
 
     Args:
         router: The sandbox router, or ``None`` when sandboxing is not configured.
         agent_dir: The agent's directory name. Baked into the sandbox key at factory time
             rather than taken from the model at call time.
-        context: How to read the caller's scope and thread.
+        context: How to read the caller's scope and thread, and how to enumerate the workspace.
+        workspace_store: The agent's workspace store. Given one, the tool takes a ``files``
+            parameter and shares those files into the sandbox; the caller's listing is the
+            authority on which names exist, exactly as it is for the Bicep kind.
+        output_sink: Where produced files land. Required by any mode but
+            :data:`CodeactOutputs.NONE`, and refused at attach without one.
+        outputs: How a program's output files are named. See :class:`CodeactOutputs`.
+        outbound_max_confidentiality: The host's cap for tools that carry something out, in the
+            host's own vocabulary. Off by default and written only when this workload lands
+            something — with egress closed, the sink *is* the flow it gates.
         image: OCI reference of a sandbox image with a Python interpreter on its path.
         image_id: A backend-native disk-image id, skipping resolution.
         exec_timeout_seconds: Per-program bound. A sandbox that stops answering must not hold
             the caller's turn open.
+        files_out: The collection's caps. ``max_files`` is what bounds how many artifacts one
+            call may declare, so it is a property of the workload rather than of the guest.
+
+    Raises:
+        ValueError: when an output mode is asked for with no sink to land anything in, or when
+            a sink is supplied with nothing to send down it.
     """
-    spec = codeact_sandbox_spec(image, image_id)
+    if outputs is CodeactOutputs.NONE and output_sink is not None:
+        raise ValueError(
+            f"{EXECUTE_CODE_TOOL_NAME}: an output sink was supplied with outputs="
+            f"{str(CodeactOutputs.NONE)!r}, so nothing would ever be landed in it. Pass an "
+            f"outputs mode, or drop the sink."
+        )
+    spec = codeact_sandbox_spec(image, image_id, outputs=outputs, files_out=files_out)
     return sandboxed_tool(
-        lambda session: _execute_code_tool(session, exec_timeout_seconds),
+        lambda session: _execute_code_tool(session, workspace_store, outputs, exec_timeout_seconds),
         router=router,
         context=context,
         agent_dir=agent_dir,
         spec=spec,
         name=EXECUTE_CODE_TOOL_NAME,
         approval_mode="never_require",
-        # No `source_integrity`: undeclared defaults to untrusted, the fail-safe direction.
-        declarations=sandbox_tool_declarations(spec, source_integrity=None),
+        # The library's "trusted" default is right for a compiler's diagnostics and wrong here:
+        # what comes back is whatever a model-written `print(...)` chose to emit. Undeclared,
+        # the tracker's untrusted default applies and the result taints the conversation.
+        source_integrity=None,
+        outbound_max_confidentiality=outbound_max_confidentiality,
+        output_sink=output_sink,
         logger=logger,
     )
 
 
-def _execute_code_tool(
-    session: SandboxToolSession,
-    timeout: int,
-) -> "Callable[..., Awaitable[str]]":
-    """Build the ``execute_code`` body for one attached tool.
+# --- The tool's description, assembled from the channels the host wired --------------------
+#
+# Six combinations of `files` and an output mode share one body, so the description is built
+# rather than written six times. It still reaches the model exactly as `__doc__`.
 
-    Defined at module level rather than nested inside :func:`make_codeact_tools`, and that is
-    not a style choice: the function below's **docstring is the tool's description** — MAF
-    passes ``__doc__`` through verbatim, indentation and all — so nesting this one level
-    deeper would re-indent every line of what the model reads at call time.
-    """
-
-    async def execute_code(code: str) -> str:
-        """Run a short Python program inside a sandbox and return what it printed.
+_DESCRIPTION_HEAD = """Run a short Python program inside a sandbox and return what it printed.
 
         Use this to compute rather than to reason: parse, transform, count, check, simulate —
         anything where running the code beats predicting what it would do.  The program runs
@@ -137,60 +226,444 @@ def _execute_code_tool(
 
         **Only what you print comes back.**  There is no REPL echo and the value of the last
         expression is not returned, so end the program with ``print(...)`` of everything you
-        need to see.  Nothing is read back out of the sandbox either — a file your program
-        writes may still be there on a later call in the same conversation, but the printed
-        output is the whole result.
+        need to see.
 
-        Write a complete, self-contained program every time.  Each call replaces the previous
-        one, and nothing carries over except what the program itself wrote to disk.
+        Write a complete, self-contained program every time.  Each call gets a fresh working
+        directory, so nothing carries over between calls but what you pass in."""
 
-        Args:
-            code: The Python source to run.  The standard library, plus whatever the sandbox
-                image ships.
+_DESCRIPTION_FILES = """**To work on existing files, list them in ``files``.**  Each one is
+        copied into the program's working directory under its own name, so a file listed as
+        ``data/sales.csv`` is read by the program as ``data/sales.csv``.  A file you do not
+        list is not there."""
 
-        Returns:
-            The program's stdout, its stderr when it wrote any, and its exit code when that
-            was not zero.  If the sandbox is unavailable the tool returns an error message
-            instead, so the run degrades rather than blocking.
-        """
-        # Scope and thread come from the host's request context, never from model input.
-        key = session.key()
-        if isinstance(key, str):
-            return key
+_DESCRIPTION_DECLARED = """**To produce files, name them in ``outputs`` and write them into
+        the working directory.**  They are saved to host storage after the program exits and
+        you get back a reference to where each one landed — the file contents do **not** come
+        back, so do not claim to have read a file you only produced.  A name you declare and
+        do not write is reported to you rather than silently dropped, and a file you write
+        without declaring is not saved at all."""
 
-        sandbox = await session.acquire(key)
-        if isinstance(sandbox, str):
-            return sandbox
+_DESCRIPTION_MANIFEST = f"""**To produce files, write them into the working directory and
+        list them in ``{_MANIFEST_FILENAME}``**, in that directory, like this::
 
-        program_path = f"{session.spec.work_dir}/{_PROGRAM_FILENAME}"
+            {{"{_MANIFEST_OUTPUTS_KEY}": [{{"{_MANIFEST_PATH_KEY}": "report.csv",
+              "{_MANIFEST_MEDIA_TYPE_KEY}": "text/csv"}}]}}
+
+        Every file listed there is saved to host storage after the program exits and you get
+        back a reference to where each one landed — the file contents do **not** come back.  A
+        file you write without listing is not saved, and no ``{_MANIFEST_FILENAME}`` means
+        nothing is saved."""
+
+_DESCRIPTION_ARG_CODE = """code: The Python source to run.  The standard library, plus
+                whatever the sandbox image ships."""
+
+_DESCRIPTION_ARG_FILES = """files: Workspace-relative paths to share into the sandbox, or
+                omit for none.  Only files in your workspace listing can be shared."""
+
+_DESCRIPTION_ARG_OUTPUTS = """outputs: The file names your program will write into its
+                working directory, or omit if it writes none."""
+
+_DESCRIPTION_RETURNS = """The program's stdout, its stderr when it wrote any, and its exit
+            code when that was not zero.  If the sandbox is unavailable the tool returns an
+            error message instead, so the run degrades rather than blocking."""
+
+_DESCRIPTION_RETURNS_SAVED = """  A run that saved files also names where each one landed."""
+
+
+def _tool_description(*, takes_files: bool, outputs: CodeactOutputs) -> str:
+    """The description the model reads, for the channels this host actually wired."""
+    body = [_DESCRIPTION_HEAD]
+    arguments = [_DESCRIPTION_ARG_CODE]
+    if takes_files:
+        body.append(_DESCRIPTION_FILES)
+        arguments.append(_DESCRIPTION_ARG_FILES)
+    if outputs is CodeactOutputs.DECLARED:
+        body.append(_DESCRIPTION_DECLARED)
+        arguments.append(_DESCRIPTION_ARG_OUTPUTS)
+    elif outputs is CodeactOutputs.MANIFEST:
+        body.append(_DESCRIPTION_MANIFEST)
+    returns = _DESCRIPTION_RETURNS
+    if outputs is not CodeactOutputs.NONE:
+        returns += _DESCRIPTION_RETURNS_SAVED
+    return (
+        "\n\n        ".join(body)
+        + "\n\n        Args:\n            "
+        + "\n            ".join(arguments)
+        + "\n\n        Returns:\n            "
+        + returns
+        + "\n        "
+    )
+
+
+def _execute_code_tool(
+    session: SandboxToolSession,
+    store: "AgentFileStore | None",
+    outputs: CodeactOutputs,
+    timeout: int,
+) -> "Callable[..., Awaitable[str]]":
+    """Build the ``execute_code`` body for one attached tool.
+
+    Four signatures over one implementation, because MAF derives the tool's schema from the
+    function's parameters: a host that wired no workspace store must not be shown ``files``.
+    """
+
+    async def run(code: str, files: list[str] | None, declared: list[str] | None) -> str:
+        return await _execute(session, store, outputs, timeout, code, files or [], declared or [])
+
+    async def with_files_and_outputs(
+        code: str, files: list[str] | None = None, outputs: list[str] | None = None
+    ) -> str:
+        return await run(code, files, outputs)
+
+    async def with_files(code: str, files: list[str] | None = None) -> str:
+        return await run(code, files, None)
+
+    async def with_outputs(code: str, outputs: list[str] | None = None) -> str:
+        return await run(code, None, outputs)
+
+    async def plain(code: str) -> str:
+        return await run(code, None, None)
+
+    takes_files = store is not None
+    declares = outputs is CodeactOutputs.DECLARED
+    body = (
+        with_files_and_outputs
+        if takes_files and declares
+        else with_files
+        if takes_files
+        else with_outputs
+        if declares
+        else plain
+    )
+    body.__doc__ = _tool_description(takes_files=takes_files, outputs=outputs)
+    return body
+
+
+async def _execute(
+    session: SandboxToolSession,
+    store: "AgentFileStore | None",
+    outputs: CodeactOutputs,
+    timeout: int,
+    code: str,
+    files: list[str],
+    declared: list[str],
+) -> str:
+    """One ``execute_code`` call: share, run, and collect."""
+    # Scope and thread come from the host's request context, never from model input.
+    key = session.key()
+    if isinstance(key, str):
+        return key
+
+    # Two names this kind writes into every run's directory itself, so neither an input nor an
+    # output may claim one. The manifest is reserved only where it means something.
+    reserved = {_PROGRAM_FILENAME}
+    if outputs is CodeactOutputs.MANIFEST:
+        reserved.add(_MANIFEST_FILENAME)
+
+    names: list[str] = []
+    if outputs is CodeactOutputs.DECLARED:
+        checked = _validated_output_names(
+            declared, max_files=session.spec.files_out.max_files, reserved=reserved
+        )
+        if isinstance(checked, str):
+            return checked
+        names = checked
+
+    shared: list[str] = []
+    if store is not None:
+        resolved = await _resolve_workspace_files(session, store, files, reserved=reserved)
+        if isinstance(resolved, str):
+            return resolved
+        shared = resolved
+
+    sandbox = await session.acquire(key)
+    if isinstance(sandbox, str):
+        return sandbox
+
+    # Every call gets a fresh directory, because `acquire` is get-or-create and the sandbox is
+    # REUSED across calls. Without it a file deleted from the workspace between rounds would
+    # still be there to read, and last round's output would be collected as this round's — a
+    # stale answer presented as a live one, in a kind whose whole job is transforming files.
+    run_id = uuid4().hex[:12]
+    run_dir = f"{session.spec.work_dir}/{run_id}"
+
+    for name in shared:
+        assert store is not None  # `shared` is empty unless a store was wired
+        refusal = await _share_one(sandbox, store, name, f"{run_dir}/{name}")
+        if refusal is not None:
+            return refusal
+
+    program_path = f"{run_dir}/{_PROGRAM_FILENAME}"
+    try:
+        await sandbox.write_file(program_path, code)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "execute_code: could not write the program into the sandbox: %s", error_detail(exc)
+        )
+        return "Error: could not write the program into the sandbox"
+
+    try:
+        # An argv sequence, never a command line: the model's source never reaches a shell.
+        result = await sandbox.exec(
+            [_INTERPRETER, program_path], working_directory=run_dir, timeout=timeout
+        )
+    except TimeoutError:
+        logger.warning("execute_code: the program timed out after %ss", timeout)
+        return f"Error: the program timed out after {timeout}s"
+    except Exception as exc:  # noqa: BLE001
+        # Provider/transport detail can carry account ids — must not reach the transcript.
+        logger.warning("execute_code: exec failed: %s", error_detail(exc))
+        return "Error: could not run the program in the sandbox"
+
+    logger.info("execute_code: ran exit_code=%d shared=%d", result.exit_code, len(shared))
+    report = _format_result(result)
+    nothing_to_collect = outputs is CodeactOutputs.NONE or (
+        outputs is CodeactOutputs.DECLARED and not names
+    )
+    if nothing_to_collect or result.exit_code != 0:
+        # A program that failed is unlikely to have written what it promised, and a missing-file
+        # report stacked on a traceback buries the thing the model has to fix.
+        return report
+    collected = await _collect(session, sandbox, run_id, outputs, names, reserved)
+    return f"{report}\n\n{collected}" if collected else report
+
+
+# --- Files in ------------------------------------------------------------------------------
+
+
+async def _resolve_workspace_files(
+    session: SandboxToolSession,
+    store: "AgentFileStore",
+    files: list[str],
+    *,
+    reserved: set[str],
+) -> list[str] | str:
+    """Match each requested name against the caller's listing, or answer with the refusal.
+
+    The listing is the injection-pinning boundary: a name the model invented, or read out of a
+    poisoned file, has nowhere to go.  Which is why a listing that cannot be read is a refusal
+    rather than an empty one — every name would then be refused for the wrong reason.
+    """
+    if not files:
+        return []
+    listing = await session.list_files(store)
+    if isinstance(listing, str):
+        return listing
+    known = set(listing)
+    resolved: list[str] = []
+    for name in files:
         try:
-            await sandbox.write_file(program_path, code)
-        except Exception as exc:  # noqa: BLE001
+            validate_artifact_name(name)
+        except SandboxArtifactNameInvalid:
+            # No listing echoed back: that would invite a retry with another spelling.
+            return (
+                f"Error: {name!r} cannot be shared — a file name must be a relative path with "
+                f"no '..' segment and no leading '/'."
+            )
+        if name in reserved:
+            return (
+                f"Error: {name!r} cannot be shared — this tool writes a file of that name into "
+                f"every run's directory."
+            )
+        if name not in known:
             logger.warning(
-                "execute_code: could not write the program into the sandbox: %s",
-                error_detail(exc),
+                "execute_code: %r is not in this tool's workspace listing (%d file(s) visible) "
+                "— the store wired here may be narrower than the agent's",
+                name,
+                len(listing),
             )
-            return "Error: could not write the program into the sandbox"
+            return (
+                f"Error: {name!r} is not in this tool's file listing, so it was not shared. "
+                f"{_listing_hint(name, listing)}"
+            )
+        resolved.append(name)
+    return resolved
 
+
+#: Capped so a large workspace cannot flood the model's context.
+_LISTING_HINT_MAX = 20
+
+
+def _listing_hint(name: str, listing: list[str]) -> str:
+    """The listing, or its near misses — what resolves a typo without another round trip."""
+    if not listing:
+        return "This tool's listing is empty — no files were shared with it."
+    near = [known for known in listing if known.rsplit("/", 1)[-1] == name.rsplit("/", 1)[-1]]
+    if near and near != [name]:
+        return f"Did you mean: {', '.join(sorted(near)[:_LISTING_HINT_MAX])}?"
+    shown = sorted(listing)[:_LISTING_HINT_MAX]
+    more = f" (+{len(listing) - len(shown)} more)" if len(listing) > len(shown) else ""
+    return f"Files visible here: {', '.join(shown)}{more}."
+
+
+async def _share_one(
+    sandbox: Sandbox, store: "AgentFileStore", store_key: str, guest_path: str
+) -> str | None:
+    """Copy one workspace file into the run's directory, or answer with the refusal."""
+    try:
+        content = await store.read(store_key)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("execute_code: could not read %r from workspace: %s", store_key, exc)
+        return f"Error: could not read {store_key!r} from workspace"
+    if content is None:
+        # A store read can miss without raising (the file was listed, then removed). Writing
+        # `None` through would put the string "None" into the sandbox for the program to parse.
+        logger.warning("execute_code: %r is listed but has no content", store_key)
+        return f"Error: {store_key!r} is listed in the workspace but has no content"
+    try:
+        await sandbox.write_file(guest_path, content)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "execute_code: could not write %r into the sandbox: %s", store_key, error_detail(exc)
+        )
+        return f"Error: could not share {store_key!r} into the sandbox"
+    return None
+
+
+# --- Files out -----------------------------------------------------------------------------
+
+
+def _validated_output_names(
+    names: "Sequence[str]", *, max_files: int, reserved: set[str]
+) -> list[str] | str:
+    """Settle every output name before the program runs, or answer with the refusal.
+
+    Up front rather than after, because these names are the model's and every one of them is
+    cheaper to argue about before a program has spent a turn producing files under them.
+    """
+    if len(names) > max_files:
+        return (
+            f"Error: {len(names)} output files were declared and this tool saves at most "
+            f"{max_files} per call."
+        )
+    seen: set[str] = set()
+    for name in names:
         try:
-            # An argv sequence, never a command line: the model's source never reaches a shell.
-            result = await sandbox.exec(
-                [_INTERPRETER, program_path],
-                working_directory=session.spec.work_dir,
-                timeout=timeout,
+            validate_artifact_name(name)
+        except SandboxArtifactNameInvalid as exc:
+            return f"Error: {name!r} cannot be saved — {exc}"
+        if name in reserved:
+            return f"Error: {name!r} cannot be saved — this tool writes that file itself."
+        if name in seen:
+            return f"Error: {name!r} was declared twice."
+        seen.add(name)
+    return list(names)
+
+
+async def _collect(
+    session: SandboxToolSession,
+    sandbox: "Sandbox",
+    run_id: str,
+    outputs: CodeactOutputs,
+    declared: list[str],
+    reserved: set[str],
+) -> str:
+    """Land whatever this run produced, and say what happened — never raising into the model."""
+    sink = session.output_sink
+    if sink is None:  # unreachable: `sandboxed_tool` refuses this spec without a sink
+        return "Error: no output sink is configured, so nothing could be saved."
+
+    media_types: dict[str, str | None] = {}
+    if outputs is CodeactOutputs.MANIFEST:
+        listed = await _read_manifest(session, sandbox, run_id)
+        if isinstance(listed, str):
+            return listed
+        declared = [path for path, _ in listed]
+        media_types = dict(listed)
+        checked = _validated_output_names(
+            declared, max_files=session.spec.files_out.max_files, reserved=reserved
+        )
+        if isinstance(checked, str):
+            return checked
+
+    if not declared:
+        return f"{_MANIFEST_FILENAME} listed no files, so nothing was saved."
+
+    # `required=False` throughout: a name that was declared and not written is this kind's
+    # commonest recoverable mistake, and failing the whole collection over it would throw away
+    # the files the program did write.
+    call_time = tuple(
+        DeclaredOutput(
+            path=f"{run_id}/{name}",
+            name=name,
+            media_type=media_types.get(name),
+            required=False,
+        )
+        for name in declared
+    )
+    try:
+        landed = await collect_outputs(sandbox, session.spec, sink=sink, outputs=call_time)
+    except SandboxOutputError as exc:
+        logger.warning("execute_code: could not save this run's files: %s", error_detail(exc))
+        return f"Error: the program ran but its files could not be saved — {exc}"
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("execute_code: saving this run's files failed: %s", error_detail(exc))
+        return "Error: the program ran but its files could not be saved"
+    return _format_landed(landed, declared)
+
+
+async def _read_manifest(
+    session: SandboxToolSession, sandbox: "Sandbox", run_id: str
+) -> list[tuple[str, str | None]] | str:
+    """Parse the program's own listing of what it produced, bounded and refusing malformed shapes.
+
+    This read is the kind's own and so is its ceiling: a ``CONSUME`` output declared in the spec
+    would be capped by :func:`~maf_sandbox.collect_outputs`, but the manifest has to be read
+    *before* there is anything to declare.
+    """
+    path = f"{run_id}/{_MANIFEST_FILENAME}"
+    try:
+        entry = await sandbox.stat_file(path, working_directory=session.spec.work_dir)
+        if entry is None:
+            return f"No {_MANIFEST_FILENAME} was written, so no files were saved."
+        raw = await sandbox.read_file(
+            path, working_directory=session.spec.work_dir, max_bytes=_MANIFEST_MAX_BYTES
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("execute_code: could not read %s: %s", _MANIFEST_FILENAME, error_detail(exc))
+        return f"Error: {_MANIFEST_FILENAME} could not be read, so no files were saved."
+
+    try:
+        document: object = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return f"Error: {_MANIFEST_FILENAME} is not valid JSON ({exc}), so no files were saved."
+    listed = (
+        cast("dict[str, object]", document).get(_MANIFEST_OUTPUTS_KEY)
+        if isinstance(document, dict)
+        else None
+    )
+    if not isinstance(listed, list):
+        return (
+            f"Error: {_MANIFEST_FILENAME} must be an object with an "
+            f"{_MANIFEST_OUTPUTS_KEY!r} array, so no files were saved."
+        )
+    entries: list[tuple[str, str | None]] = []
+    for item in cast("list[object]", listed):
+        entry = cast("dict[str, object]", item) if isinstance(item, dict) else {}
+        path_value = entry.get(_MANIFEST_PATH_KEY)
+        if not isinstance(path_value, str):
+            return (
+                f"Error: every {_MANIFEST_OUTPUTS_KEY!r} entry needs a "
+                f"{_MANIFEST_PATH_KEY!r} string, so no files were saved."
             )
-        except TimeoutError:
-            logger.warning("execute_code: the program timed out after %ss", timeout)
-            return f"Error: the program timed out after {timeout}s"
-        except Exception as exc:  # noqa: BLE001
-            # Provider/transport detail can carry account ids — must not reach the transcript.
-            logger.warning("execute_code: exec failed: %s", error_detail(exc))
-            return "Error: could not run the program in the sandbox"
+        media_type = entry.get(_MANIFEST_MEDIA_TYPE_KEY)
+        entries.append((path_value, media_type if isinstance(media_type, str) else None))
+    return entries
 
-        logger.info("execute_code: ran exit_code=%d", result.exit_code)
-        return _format_result(result)
 
-    return execute_code
+def _format_landed(landed: "Sequence[LandedArtifact]", declared: "Sequence[str]") -> str:
+    """What the model is told about the files: the host's own references, and what is absent."""
+    lines: list[str] = []
+    if landed:
+        lines.append("Saved:")
+        lines.extend(f"- {item.display}" for item in landed)
+    missing = [name for name in declared if name not in {item.name for item in landed}]
+    if missing:
+        lines.append(
+            f"Not written by the program, so not saved: {', '.join(sorted(missing))}. Write "
+            "each file into the working directory before the program exits."
+        )
+    return "\n".join(lines)
 
 
 def _format_result(result: ExecResult) -> str:
