@@ -1,22 +1,14 @@
-"""Refuse a core change that would release a maf-sandbox the dependents cannot admit.
-
-`RELEASING.md` sequences a maf-sandbox minor in four steps, and the first is widening the
-dependents' ceilings in an ordinary pull request. Skipping it goes unnoticed, because nothing
-turns red: the release publishes, `bump_dependents_floor.py` finds no dependent whose ceiling
-admits the new version and changes nothing, and every dependent stays pinned to the previous
-minor while the release step still reports success. This is step 1, enforced at the moment it
-can still be acted on cheaply.
+"""Refuse a maf-sandbox change that would release a version the dependents cannot admit.
 
     git diff --name-only <base> HEAD | python scripts/check_release_order.py "<pull request title>"
 
-Changed paths arrive on stdin, one per line. It refuses only when all three are true: the title
-would release a new *minor* of maf-sandbox, the change is attributed to that package by the
-files it touches, and some dependent's ceiling excludes the version that would result. A patch,
-a title that releases nothing, and a change touching no core file all pass.
+Changed paths arrive on stdin, one per line. It refuses only when the title would cut a new
+*minor* of maf-sandbox, the change is attributed to that package by the files it touches, and
+some dependent's ceiling excludes the result — step 1 of a maf-sandbox release in RELEASING.md.
 
 One shape it cannot see: `BREAKING CHANGE:` goes in the squash-commit box at merge time, so a
-title with no `!` can still cut a minor. `tests/test_release_config.py` catches that later, on
-the Release PR itself, where the version has stopped being a prediction.
+title with no `!` can still cut a minor. `tests/test_check_release_order.py` catches that on
+the Release PR, where the version has stopped being a prediction.
 """
 
 from __future__ import annotations

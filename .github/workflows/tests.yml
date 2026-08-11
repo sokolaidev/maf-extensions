@@ -39,8 +39,9 @@ jobs:
         # different pull request rather than an edit to this one. Only a pull request carries
         # the title release-please turns into a version, so it is the only event this reads.
         #
-        # The title reaches the script through the environment rather than the command line:
-        # it is attacker-controlled text on a workflow that runs for any contributor.
+        # The `${{ }}` expression is assigned to an environment variable rather than
+        # interpolated into this shell script. A pull request title is attacker-controlled
+        # text, and interpolating it here would make it shell source; keep it out.
         if: github.event_name == 'pull_request'
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}

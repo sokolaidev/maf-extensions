@@ -7,8 +7,8 @@ on the one pull request it fires against.
 
 Two of these matter more than the rest: a breaking change below 1.0.0 cuts a *minor*, not a
 major, so `fix!:` crosses a ceiling that `fix:` does not; and `packages/maf-sandbox-acas/` must
-not read as the core package, which a prefix match would get wrong in the direction that lets
-the release through.
+not read as the core package, which a prefix match missing the trailing separator gets wrong —
+refusing a backend-only change that releases no core version at all.
 """
 
 from __future__ import annotations
