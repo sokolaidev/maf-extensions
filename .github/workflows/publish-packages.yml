@@ -104,6 +104,19 @@ jobs:
             exit 1
           fi
 
+      # The published dependents cannot be edited after the fact, so a core release they
+      # exclude leaves the index unresolvable as a set until every one of them ships again.
+      # RELEASING.md orders the releases so that never happens; this is what enforces it.
+      # Only for maf-sandbox — a dependent's own release is what closes such a window — and
+      # only for the real index, so a TestPyPI rehearsal stays frictionless.
+      - name: Check the published dependents admit this version
+        if: >-
+          steps.resolve.outputs.package == 'maf-sandbox'
+          && steps.resolve.outputs.target == 'pypi'
+        env:
+          VERSION: ${{ steps.resolve.outputs.version }}
+        run: python3 scripts/check_published_dependents_admit.py "$VERSION"
+
       # The full gate again, on the exact commit being released. The Tests workflow already
       # ran it on the branch, but a tag can point anywhere.
       - name: Sync workspace
