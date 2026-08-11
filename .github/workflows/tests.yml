@@ -1,7 +1,10 @@
 name: Tests
 
-# The whole gate for every push and PR: tests, lint, format, and each package's own strict
-# pyright config — unconditionally, with no path filters.
+# The gate for every push and PR, in two parallel jobs: `tests` is the hermetic one — the
+# offline suite, lint, format, each package's strict pyright, the wheel builds and their
+# clean-env smoke, with no path filters; `docker-e2e` is the one integration suite, real
+# containers on the runner's Docker daemon, kept separate so its distinct failure surface does
+# not muddy the deterministic checks.
 on:
   push:
     branches: [main]
@@ -82,19 +85,34 @@ jobs:
             "$venv/bin/python" scripts/smoke_install.py "$package"
           done
 
-      # The docker backend is the first in this family whose live path runs on a PR at all:
-      # ubuntu-latest ships a running Docker daemon, so `test_docker_e2e.py` — write, exec,
-      # stat, read a real container, plus the allowlist proxy topology — is satisfiable here,
-      # where the wslc (needs Windows) and acas (needs a billable Azure sandbox) live suites
-      # are not. Deliberately lightweight: a tiny MCR image (MCR, not Docker Hub, so a shared
-      # runner IP is not rate-limited) and no model. The env vars turn the module's skip guard
-      # off; without them it skips, which is how it stays dormant everywhere else.
-      - name: Docker backend live tests
-        env:
-          # A small image with sh, cat, ln and curl — everything the round trip and the
-          # allowlist controls need, and nothing this workload does not.
-          MAF_SANDBOX_DOCKER_E2E_IMAGE: mcr.microsoft.com/azurelinux/base/core:3.0
-          MAF_SANDBOX_DOCKER_E2E_PROXY_IMAGE: maf-sandbox-docker-proxy:ci
+  # A real Docker daemon on ubuntu-latest makes this the one live backend suite that can run on
+  # a pull request — wslc needs Windows, acas needs a billable Azure sandbox. It is an
+  # integration test, so it lives in its own job rather than as a step of the hermetic
+  # unit/lint/type job above: it depends on the daemon, a network and an image registry, a
+  # different failure class, and isolating it keeps a daemon or registry blip from reding the
+  # deterministic checks — a red here names Docker, not pytest. It runs in parallel with the job
+  # above, so it adds no wall-clock to the gate. The offline docker suite still runs in `tests`;
+  # `test_docker_e2e.py` skips there (no env vars) and runs only here.
+  docker-e2e:
+    name: Docker backend live tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      # A small MCR image (not Docker Hub, so a shared runner IP is not rate-limited) with sh,
+      # cat, ln and curl — everything the round trip and the allowlist controls need. Setting
+      # these two variables is what turns the module's skip guard off.
+      MAF_SANDBOX_DOCKER_E2E_IMAGE: mcr.microsoft.com/azurelinux/base/core:3.0
+      MAF_SANDBOX_DOCKER_E2E_PROXY_IMAGE: maf-sandbox-docker-proxy:ci
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Sync workspace
+        run: uv sync --locked
+
+      - name: Run the live suite
         run: |
           set -euo pipefail
           # Build the egress proxy from the package's own shipped context, so the allowlist
