@@ -104,7 +104,7 @@ jobs:
           # is a bigger change for a dependent than a patch. A bot must not pick the bump.
           git commit -am "fix: require maf-sandbox ${VERSION} in the packages that use it"
           git push -u origin "$branch"
-          body="Automated by the release workflow after maf-sandbox ${VERSION} published. It raises the floor in every dependent whose ceiling already admits ${VERSION}.
+          body="Automated by the release workflow when maf-sandbox ${VERSION} was released. **Check that it actually published before merging this.** The upload is dispatched separately and may still be waiting on the pypi environment, or have failed; a floor pointing at a version that never reached PyPI is unresolvable for every consumer. It raises the floor in every dependent whose ceiling already admits ${VERSION}.
 
           **That is a guess, and usually a wrong one.** Ceilings are widened for all dependents at once, before the release, so that the published set stays resolvable — see RELEASING.md, Release order. A widened ceiling therefore says nothing about whether a package's code uses ${VERSION}. Move a floor only for a package that relies on API or behaviour this release introduced or changed — a new import is the obvious case, but a fixed bug in an existing call counts too. For the rest this pins a version they do not need and over-constrains their consumers.
 
@@ -120,6 +120,52 @@ jobs:
             --body "$body"
           echo "opened ${branch}" >> "$GITHUB_STEP_SUMMARY"
 
+      # Its own pull request, not a section of the one above. The floor bump asserts that a
+      # package needs this version and has to be judged per package; this is uniform, is a
+      # claim about nobody's code, and can be merged without that thought. Bundling them
+      # would put the judgement behind the same button as the formality.
+      - name: Propose the dependents' ceiling widening
+        if: >-
+          steps.release.outputs.releases_created == 'true'
+          && contains(steps.release.outputs.paths_released, '"packages/maf-sandbox"')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs['packages/maf-sandbox--version'] }}
+        run: |
+          set -euo pipefail
+          git checkout -- . && git switch main
+          python3 scripts/widen_dependents_ceiling.py "$VERSION"
+          if git diff --quiet; then
+            echo "every dependent already admits the next minor; no widening" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # From the script, never recomputed here: the branch, title and body all name this
+          # bound, and a second implementation of the rule is how they come to advertise one
+          # ceiling while the commit edits another.
+          target="$(python3 scripts/widen_dependents_ceiling.py --print-target "$VERSION")"
+          branch="chore/admit-maf-sandbox-${target}"
+          if [ -n "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ]; then
+            echo "a PR for ${branch} is already open; leaving it" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          git push origin --delete "$branch" 2>/dev/null || true
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$branch"
+          # `fix:` is required, not stylistic: chore/ci release nothing here, and this widening
+          # is only useful once it is *published*, which needs the dependent releases a
+          # releasing type cuts. See RELEASING.md, Release order.
+          git commit -am "fix: admit maf-sandbox ${target%.*}.$(( ${target##*.} - 1 )) in the dependents' range"
+          git push -u origin "$branch"
+          body="Automated by the release workflow when maf-sandbox ${VERSION} was released. Its upload is dispatched separately and may still be waiting on the pypi environment, or have failed — this does not wait for it. It widens every dependent's ceiling to <${target}, so the minor after ${VERSION} is admitted before it exists. That holds either way: a ceiling admits a version whether or not it exists.
+
+          Unlike the floor bump alongside it, this is not a claim about any package's code. Widening only enlarges an accepted set, so it cannot make a resolution fail; what it buys is that the next core minor can be released without leaving the index unresolvable as a set (#175) and without anyone having to remember step 1 (#177).
+
+          **Merge it, and let the dependent releases it cuts publish.** The widening is only worth anything once it is on PyPI: that is what the next core release checks before it uploads. Supply its required check the way you do for a Release PR (approve the held run, or dispatch tests.yml at this branch)."
+          gh pr create --base main --head "$branch" \
+            --title "fix: admit maf-sandbox ${target%.*}.$(( ${target##*.} - 1 )) in the dependents' range" \
+            --body "$body"
+          echo "opened ${branch}" >> "$GITHUB_STEP_SUMMARY"
       # A bot author trips the approval gate, so the run a bot-opened pull request creates
       # waits at `action_required` and its required check never reports. A dispatched run
       # is not held and lands its checks on the same head SHA, which is what the required
