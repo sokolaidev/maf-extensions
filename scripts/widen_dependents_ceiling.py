@@ -1,19 +1,16 @@
 """Widen the dependents' maf-sandbox ceiling to admit the minor after the one just released.
 
     python scripts/widen_dependents_ceiling.py <released-version>
+    python scripts/widen_dependents_ceiling.py --print-target <released-version>
 
-`release-please.yml` runs this once `maf-sandbox` has published. Releasing 0.7.0 sets every
-dependent's ceiling to `<0.9`, so the 0.8.0 that follows is admitted before it exists.
+Releasing 0.7.0 sets every ceiling to `<0.9`, so the 0.8.0 after it is admitted before it
+exists. `--print-target` prints that bound and changes nothing, so a caller naming it in a
+branch or a title reads it from here rather than deriving it a second time. RELEASING.md has
+the release order this belongs to.
 
-The point is the order, not the tidiness. RELEASING.md requires a widened ceiling to be
-**published** before the core release it admits, or the index does not resolve as a set until
-the last dependent ships. Doing it here means the widening rides the dependent releases this
-same cycle already cuts, so the next core minor has nothing left to remember (#177).
-
-Only ever widens. A ceiling already at or beyond the target is left alone, so re-running on a
-patch release changes nothing. Exits non-zero if a dependent carries a constraint this cannot
-read, for the reason the floor bump does: a release step that quietly no-ops while looking
-healthy is worse than one that stops.
+Only ever widens, so re-running on a patch changes nothing. Exits non-zero if a dependent
+carries a constraint it cannot read: a release step that quietly no-ops while looking healthy
+is worse than one that stops.
 """
 
 from __future__ import annotations
@@ -93,8 +90,11 @@ def run(released_text: str, repo_root: Path) -> list[Path]:
 
 
 def main(argv: list[str]) -> int:
+    if len(argv) == 3 and argv[1] == "--print-target":
+        print(".".join(str(part) for part in target_ceiling(_version(argv[2]))))
+        return 0
     if len(argv) != 2:
-        print(f"usage: {argv[0]} <released-version>", file=sys.stderr)
+        print(f"usage: {argv[0]} [--print-target] <released-version>", file=sys.stderr)
         return 2
     changed = run(argv[1], Path(__file__).resolve().parent.parent)
     if changed:

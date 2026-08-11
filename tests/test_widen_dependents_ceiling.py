@@ -1,12 +1,7 @@
 """Widening the dependents' ceiling so the next core minor is admitted before it exists.
 
-`scripts/widen_dependents_ceiling.py` runs after a core publish and is the automated half of
-RELEASING.md's step 1. Its rewriting is a pure function of a pyproject's text, so it is tested
-here rather than discovered on a release.
-
-Two properties carry the rest: the target is **two** minors up, because a ceiling of `<0.8`
-excludes 0.8.0 itself and admitting the next release is the entire point; and it only ever
-widens, so re-running on a patch — which the release workflow will do — changes nothing.
+The target is **two** minors up: `<0.8` excludes the 0.8.0 it is meant to admit, and that is
+the mistake this would otherwise make silently.
 """
 
 from __future__ import annotations
