@@ -156,17 +156,23 @@ def _confined(path: str, working_directory: str) -> tuple[str, str]:
 
 
 def _directory_chain(guest_path: str, working_directory: str) -> tuple[str, ...]:
-    """Every directory from ``working_directory`` down to ``guest_path``, outermost first.
+    """Every directory from the filesystem root down to ``guest_path``, outermost first.
 
-    The components :meth:`_AcasSandbox._refuse_symlinked_directories` has to stat one by one;
+    The walk starts *above* ``working_directory`` rather than at it: a nested work dir has
+    ancestors the guest can replace, and stat-ing only the work dir follows straight through
+    them — with ``/acas -> /``, ``/acas/etc`` stats as a real directory and reads ``/etc``.
     ``guest_path`` must already be confined.
     """
     base = posixpath.normpath(working_directory)
-    chain = [base]
+    chain: list[str] = []
+    walked = ""
+    for segment in (s for s in base.split(_SEPARATOR) if s):
+        walked = f"{walked}{_SEPARATOR}{segment}"
+        chain.append(walked)
     relative = _relative_path(guest_path, base)
     if relative:
         for segment in relative.split(_SEPARATOR):
-            chain.append(posixpath.join(chain[-1], segment))
+            chain.append(posixpath.join(chain[-1] if chain else _SEPARATOR, segment))
     return tuple(chain)
 
 
@@ -322,9 +328,17 @@ class _AcasSandbox:
 
         Stat is ``lstat``-like: a symlink is described as itself, never as its target.
         """
+        guest, relative = _confined(path, working_directory)
+        return await self._stat_guest(guest, relative)
+
+    async def _stat_guest(self, guest: str, relative: str) -> SandboxEntry | None:
+        """Stat an absolute guest path, with no confinement check of its own.
+
+        Split out because the component walk stats the working directory's own ancestors, which
+        by definition sit outside it — confining here would refuse the very check being made.
+        """
         from azure.core.exceptions import ResourceNotFoundError
 
-        guest, relative = _confined(path, working_directory)
         try:
             payload = await self._files_payload(_STAT_ROUTE, guest)
         except ResourceNotFoundError:
@@ -342,7 +356,7 @@ class _AcasSandbox:
         API offers no no-follow read and no realpath to do it in one call.
         """
         for directory in chain:
-            entry = await self.stat_file(directory, working_directory=working_directory)
+            entry = await self._stat_guest(directory, directory)
             if entry is None:
                 return
             if entry.kind is EntryKind.OTHER:
