@@ -464,8 +464,11 @@ class TestACeilingMustBeAbleToCompare:
         assert not nan < 1 and not nan > 1
 
     @pytest.mark.parametrize("leg", ["max_bytes_per_file", "max_total_bytes", "max_files"])
-    def test_a_negative_response_ceiling_is_refused(self, leg: str):
-        limits = dataclasses.replace(DEFAULT_TRANSFER_LIMITS, **{leg: -1})
+    @pytest.mark.parametrize("bound", [-1, 0])
+    def test_a_response_ceiling_that_could_carry_nothing_is_refused(self, leg: str, bound: int):
+        """Zero as well as negative: the smallest JSON value is one byte, so a zero on any leg
+        is a registry that can never deliver — an empty one, reached the expensive way."""
+        limits = dataclasses.replace(DEFAULT_TRANSFER_LIMITS, **{leg: bound})
         with pytest.raises(ValueError, match=leg):
             HostToolRegistry(response_limits=limits)
 
@@ -493,6 +496,29 @@ class TestTheResponseLedgerIsCheckedBeforeTheSideEffect:
         assert not second.ok
         assert second.refusal is not None and "delivered-response cap" in second.refusal
         assert calls == [1], "the second call must not have reached the tool body"
+
+    def test_an_exhausted_byte_budget_refuses_without_calling_the_tool(self):
+        """The count leg is not the only one knowable before a size: once the run's total is
+        spent, no response of any size fits, and running the body only spends the effect."""
+        calls: list[int] = []
+
+        @sandbox_tool(source=None, sink="workspace", identity=None)
+        def writes(x: int) -> str:
+            calls.append(x)
+            return "y" * 20
+
+        registry = HostToolRegistry(
+            response_limits=TransferLimits(max_bytes_per_file=64, max_total_bytes=22, max_files=8)
+        )
+        registry.register(writes, name="writes")
+        run = HostToolRun(registry)
+
+        assert _dispatch(run, "writes", {"x": 1}).ok  # 22 bytes: the budget, exactly
+        second = _dispatch(run, "writes", {"x": 2})
+
+        assert not second.ok
+        assert second.refusal is not None and "byte budget" in second.refusal
+        assert calls == [1], "nothing could have been delivered, so nothing should have run"
 
 
 class TestDispatchResult:

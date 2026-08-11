@@ -73,6 +73,10 @@ FLOW_DECLARED_KEY = "__maf_sandbox_flow_declaration__"
 #: with everything defaulted this cap is the one that bites first.
 DEFAULT_MAX_DISPATCHES_PER_RUN = 16
 
+#: The shortest response that can cross at all — ``json.dumps(0)`` is one byte.  What makes
+#: "no room left" answerable before a tool runs rather than only after its size is known.
+_SMALLEST_RESPONSE = 1
+
 #: What serving a USER-identity tool would need, named once — the refusal and the docs must
 #: tell the same story.
 _USER_IDENTITY_PREREQUISITES = (
@@ -312,8 +316,15 @@ class HostToolRegistry:
         for leg in ("max_bytes_per_file", "max_total_bytes", "max_files"):
             bound = cast(object, getattr(response_limits, leg))
             _refuse_non_integer(f"response_limits.{leg}", bound)
-            if cast(int, bound) < 0:
-                raise ValueError(f"response_limits.{leg} must not be negative, not {bound!r}")
+            if cast(int, bound) < 1:
+                # Zero as well as negative, and for the reason the dispatch cap gives above:
+                # the smallest JSON value is one byte, so a zero on any leg is a registry that
+                # can never deliver a response — which is an empty registry with extra steps,
+                # and a per-call refusal the model can do nothing about.
+                raise ValueError(
+                    f"response_limits.{leg} is {bound!r}, so no response could ever be "
+                    "delivered — a host that wants none wants an empty registry"
+                )
         self._require_declared = require_declared
         self._max_dispatches_per_run = max_dispatches_per_run
         self._response_limits = response_limits
@@ -466,15 +477,19 @@ class HostToolRegistry:
 def _refuse_non_integer(field: str, value: object) -> None:
     """Refuse anything that is not a plain integer, at the configuration site.
 
-    A ceiling is only a ceiling if it compares. Every ``>`` against ``float("nan")`` is false
-    and every one against ``float("inf")`` is too, so either silently removes the cap it was
-    passed as — the failure mode a safety limit must not have. ``bool`` is an ``int`` and
+    A type check rather than a tightened range, because the two values that matter most defeat
+    a range check: every ``>`` against ``float("nan")`` is false and every one against
+    ``float("inf")`` is too, so both pass any bound and then silently remove the cap they were
+    passed as — the failure mode a safety limit must not have.  The rest are refused for
+    ordinary reasons and not that one: ``"8"`` and ``None`` raise at the first comparison,
+    ``2.5`` compares perfectly well and is simply not a count, and ``bool`` is an ``int`` that
     would quietly mean 1.
     """
     if isinstance(value, bool) or not isinstance(value, int):
         raise TypeError(
-            f"{field} must be a plain integer, not {type(value).__name__}: a non-integer "
-            "ceiling compares false against every count and so removes itself"
+            f"{field} must be a plain integer, not {type(value).__name__}: it bounds a count, "
+            "and a range check cannot be relied on to catch a non-integer — float('nan') and "
+            "float('inf') satisfy every bound and then compare false against every count"
         )
 
 
@@ -575,12 +590,19 @@ class HostToolRun:
             )
         provided: dict[str, Any] = dict(arguments) if arguments is not None else {}
         limits = self._registry.response_limits
+        # Both ledgers, before the call rather than after it. A sink tool's body runs in the
+        # host process and does its work there; refusing once it has already run means the
+        # effect happened, could not be reported, and the refusal reads like something to
+        # retry. Every state below is knowable without the response: what stays in `_deliver`
+        # is only what needs a size.
         if self._delivered + 1 > limits.max_files:
-            # Before the call, not after it. A sink tool's body runs in the host process and
-            # does its work there; refusing once it has already run means the effect happened
-            # and cannot be reported, and the refusal reads like something to retry.
             return _refused(
                 f"Error: this run's delivered-response cap ({limits.max_files}) is "
+                "exhausted — finish with the results already delivered"
+            )
+        if self._delivered_bytes + _SMALLEST_RESPONSE > limits.max_total_bytes:
+            return _refused(
+                f"Error: this run's response byte budget ({limits.max_total_bytes}) is "
                 "exhausted — finish with the results already delivered"
             )
         # Taken now and held across the call, because the tool body is the one place this
