@@ -177,22 +177,14 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          # The author is selected from the returned list, not passed as `--author`. That
-          # flag is not a filter on this query: it switches gh to the search index, which
-          # is eventually consistent, and this step runs seconds after release-please
-          # opened the pull request. The index does not have it yet, the loop reads an
-          # empty set, and nothing is dispatched. `--head` and a plain list are direct
-          # repository reads and see the pull request immediately.
-          #
-          # The page is raised because the filter now happens after it: gh returns 30 by
-          # default, so a bot pull request sitting behind 30 newer open ones would be
-          # dropped before the select could see it.
+          # Selecting the author rather than passing `--author`, which is not a filter on
+          # this query: it switches gh to the search index, and that index will not have a
+          # pull request opened seconds ago by the step above. The page is raised because
+          # the filter now follows it — the default is 30.
           open_bot_pull_requests="$(gh pr list --state open --limit 100 \
             --json headRefName,headRefOid,author \
             --jq '.[] | select(.author.login == "app/github-actions") | [.headRefName, .headRefOid] | @tsv')"
-          # Said out loud, because the failure this step has already had once is doing
-          # nothing at all — and a step that writes no summary line looks the same whether
-          # it decided to skip or never saw anything to decide about.
+          # Dispatching nothing is this step's failure mode, so it never exits silent.
           if [ -z "$open_bot_pull_requests" ]; then
             echo "no open pull requests from app/github-actions" >> "$GITHUB_STEP_SUMMARY"
             exit 0

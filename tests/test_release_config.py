@@ -351,21 +351,11 @@ class TestRoutineAutomationDoesNotClaimToCloseAnIssue:
 
 
 class TestTheWorkflowReadsItsOwnPullRequestsWithoutTheSearchIndex:
-    """`release-please.yml` must not find its own pull requests with `gh pr list --author`.
+    """`gh pr list --author` switches gh to the search index, which is eventually
+    consistent and will not have a pull request this workflow opened seconds earlier.
 
-    That flag is not a filter applied to the list. It switches gh to the search index — the
-    query it sends is a GraphQL search for `author:… repo:… state:open type:pr` — and that
-    index is eventually consistent, while every read in this workflow is of a pull request
-    the same workflow opened seconds earlier. The index does not have it yet, the list comes
-    back empty, and the step succeeds having done nothing.
-
-    Which is what happened the first time the dispatch step ran: the Release PR was created
-    at 17:44:23Z, the step ran at 17:44:25Z, found nothing, and the pull request sat blocked
-    with no test run against it. A step whose failure mode is silence needs its query pinned,
-    because nothing else here notices.
-
-    `--head` and a plain list are direct repository reads and see the pull request at once,
-    so the author is selected out of the result instead.
+    Pinned by a test because the resulting failure is silence: an empty list dispatches
+    nothing and the step still succeeds.
     """
 
     _AUTHOR_FLAG = re.compile(r"--author\b")
@@ -373,11 +363,15 @@ class TestTheWorkflowReadsItsOwnPullRequestsWithoutTheSearchIndex:
     _SELECTS_THE_AUTHOR = "select(.author.login"
 
     def _pull_request_list_commands(self) -> list[str]:
-        """Every `gh pr list` in the workflow, each with its continuation lines."""
+        """Every `gh pr list` in the workflow, each with its continuation lines.
+
+        A commented-out or quoted mention is not one, or prose naming the flag would fail
+        the test that reads this.
+        """
         lines = RELEASE_WORKFLOW.read_text(encoding="utf-8").splitlines()
         commands: list[str] = []
         for index, line in enumerate(lines):
-            if "gh pr list" not in line:
+            if "gh pr list" not in line or line.lstrip().startswith("#"):
                 continue
             command = [line]
             cursor = index
@@ -394,9 +388,8 @@ class TestTheWorkflowReadsItsOwnPullRequestsWithoutTheSearchIndex:
     def test_no_pull_request_list_filters_by_author(self):
         for command in self._pull_request_list_commands():
             assert not self._AUTHOR_FLAG.search(command), (
-                f"`--author` in {RELEASE_WORKFLOW.name} sends this query to the search "
-                "index, which will not have a pull request this workflow opened seconds "
-                f"ago:\n{command}"
+                f"`--author` sends this to the search index; select the author from the "
+                f"result instead:\n{command}"
             )
 
     def _commands_that_select_the_author(self) -> list[str]:
@@ -407,9 +400,8 @@ class TestTheWorkflowReadsItsOwnPullRequestsWithoutTheSearchIndex:
             if self._SELECTS_THE_AUTHOR in command
         ]
         assert selecting, (
-            f"no `gh pr list` in {RELEASE_WORKFLOW.name} selects on `.author.login`. The "
-            "dispatch step has to tell the bot's pull requests from a contributor's, and "
-            "the search index is not how."
+            f"nothing in {RELEASE_WORKFLOW.name} selects on `.author.login`; the dispatch "
+            "step has to tell the bot's pull requests from a contributor's."
         )
         return selecting
 
@@ -420,9 +412,8 @@ class TestTheWorkflowReadsItsOwnPullRequestsWithoutTheSearchIndex:
         for command in self._commands_that_select_the_author():
             found = self._LIMIT.search(command)
             assert found is not None and int(found.group(1)) >= 100, (
-                "gh returns 30 pull requests by default and this command filters after "
-                "that page, so a bot pull request behind 30 newer open ones is dropped "
-                f"before the select can see it:\n{command}"
+                "this filters after the page, and gh returns 30 by default, so a bot pull "
+                f"request behind 30 newer open ones is dropped unseen:\n{command}"
             )
 
 
