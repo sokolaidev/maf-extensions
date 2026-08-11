@@ -112,7 +112,7 @@ jobs:
           - Retitle it feat:/breaking if adopting the version is more than a patch for a dependent — the title defaults to fix: so the bot does not choose the bump.
           - Close it if nothing actually needs ${VERSION}; pinning a newer floor than consumers require only over-constrains them.
 
-          The ceiling is deliberately untouched: widening it is the pre-release decision to adopt, and this step only follows through on it. Supply its required check the way you do for a Release PR (approve the held run, or dispatch tests.yml at this branch). Closes #41."
+          The ceiling is deliberately untouched: widening it is the pre-release decision to adopt, and this step only follows through on it. Supply its required check the way you do for a Release PR (approve the held run, or dispatch tests.yml at this branch)."
           gh pr create --base main --head "$branch" \
             --title "fix: require maf-sandbox ${VERSION} in the packages that use it" \
             --body "$body"

@@ -324,3 +324,26 @@ class TestDependentsPinMafSandboxInAShapeTheBumpScriptCanRead:
                 f"{package_path}: {constraint!r} is not the maf-sandbox>=X,<Y shape "
                 "scripts/bump_dependents_floor.py edits by pattern"
             )
+
+
+class TestRoutineAutomationDoesNotClaimToCloseAnIssue:
+    """A pull request the release workflow opens every cycle cannot close a specific issue.
+
+    `release-please.yml` writes the floor-bump pull request's body from a template. It once
+    carried `Closes #41.` — true of the one pull request that built the automation, and
+    inherited by every bump it has emitted since, each telling a reader it closes an issue it
+    has nothing to do with. A closing keyword belongs in a pull request written once, never in
+    a body a workflow re-emits.
+    """
+
+    _CLOSING_KEYWORD = re.compile(
+        r"\b(?:closes|closed|fixes|fixed|resolves|resolved)\s+#\d+", re.I
+    )
+
+    def test_the_release_workflow_writes_no_closing_keyword(self):
+        text = (WORKFLOWS / "release-please.yml").read_text(encoding="utf-8")
+        found = self._CLOSING_KEYWORD.findall(text)
+        assert not found, (
+            f"release-please.yml emits {found} into a pull request body it writes every "
+            "release; the issue it names gets re-referenced forever. Drop the keyword."
+        )
