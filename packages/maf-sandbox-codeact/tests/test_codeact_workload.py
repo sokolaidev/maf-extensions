@@ -1125,13 +1125,14 @@ class TestManifestOutputs:
         assert sink.names == []
 
     def test_a_manifest_over_the_file_cap_lands_nothing(self):
+        """`max_files=2` leaves room for the manifest and one artifact, so listing two is over."""
         sandbox = _ProducingSandbox()
         sink = _RecordingSink()
         tool = _pulling_tool(
             sandbox,
             CodeactOutputs.MANIFEST,
             sink,
-            files_out=replace(DEFAULT_TRANSFER_LIMITS, max_files=1),
+            files_out=replace(DEFAULT_TRANSFER_LIMITS, max_files=2),
         )
 
         out = _run_producing(
@@ -1145,6 +1146,53 @@ class TestManifestOutputs:
         )
         assert "at most 1" in out
         assert sink.names == []
+
+    def test_the_manifest_is_counted_against_the_collection_it_describes(self):
+        """It is a file this collection moved, so `files_out` counts it — `CONSUME`, because
+        the kind read it itself and it must never reach the sink."""
+        sandbox = _ProducingSandbox()
+        sink = _RecordingSink()
+        tool = _pulling_tool(
+            sandbox,
+            CodeactOutputs.MANIFEST,
+            sink,
+            files_out=replace(DEFAULT_TRANSFER_LIMITS, max_files=2),
+        )
+
+        out = _run_producing(
+            tool,
+            sandbox,
+            {_MANIFEST_FILENAME: b'{"outputs": [{"path": "a"}]}', "a": b"1"},
+        )
+        assert sink.names == ["a"]
+        assert _MANIFEST_FILENAME not in " ".join(sink.names)
+        assert "saved a" in out
+
+    def test_a_host_cap_with_no_room_for_an_artifact_is_refused_at_attach(self):
+        """One slot means the manifest fills it and the channel could never deliver."""
+        with pytest.raises(ValueError, match="at least 2"):
+            _pulling_tool(
+                _ProducingSandbox(),
+                CodeactOutputs.MANIFEST,
+                _RecordingSink(),
+                files_out=replace(DEFAULT_TRANSFER_LIMITS, max_files=1),
+            )
+
+    def test_the_manifest_read_is_bounded_by_the_hosts_own_ceiling(self):
+        """`files_out` is what the router matched against the backend, so reading past it would
+        transfer more than the spec declared and make that match untrue for this kind."""
+        sandbox = _StatOnlySandbox(size_bytes=2048)
+        sink = _RecordingSink()
+        tool = _pulling_tool(
+            sandbox,
+            CodeactOutputs.MANIFEST,
+            sink,
+            files_out=replace(DEFAULT_TRANSFER_LIMITS, max_bytes_per_file=1024, max_files=2),
+        )
+
+        out = _run(tool, "print('hi')")
+        assert "reads at most 1024" in out
+        assert sandbox.reads == []
 
     def test_an_oversized_manifest_is_refused_before_it_is_read(self):
         """Stat, refuse, then read — the pull surface's contract. A backend whose SDK buffers

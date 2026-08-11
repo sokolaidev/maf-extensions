@@ -32,6 +32,7 @@ from maf_sandbox import (
     DeclaredOutput,
     ExecResult,
     NameNormalization,
+    OutputDisposition,
     OutputSink,
     SandboxArtifactNameInvalid,
     SandboxOutputError,
@@ -205,6 +206,15 @@ def make_codeact_tools(
     # that a host which simply left sandboxing off keeps its ungrounded behaviour, and a check
     # here would raise out of that host's agent factory instead.
     configured = router is not None and router.enabled
+    if configured and outputs is CodeactOutputs.MANIFEST and files_out.max_files < 2:
+        # The manifest occupies one slot of the collection, so a cap of one leaves room for
+        # nothing else: the channel is wired but could never deliver an artifact. Better here
+        # than as a per-call refusal the model cannot act on.
+        raise ValueError(
+            f"{EXECUTE_CODE_TOOL_NAME}: outputs={str(CodeactOutputs.MANIFEST)!r} needs "
+            f"files_out.max_files of at least 2 — one for {_MANIFEST_FILENAME} and one for an "
+            f"artifact — and this host allows {files_out.max_files}."
+        )
     if configured and outputs is CodeactOutputs.NONE and output_sink is not None:
         raise ValueError(
             f"{EXECUTE_CODE_TOOL_NAME}: an output sink was supplied with outputs="
@@ -429,10 +439,6 @@ async def _execute(
 
     # The fresh directory chosen above, because `acquire` is get-or-create and the sandbox is
     # REUSED across calls. Without it a file deleted from the workspace between rounds would
-    # still be read as current, and last round's output would be collected as this round's — a
-    # stale answer presented as a live one, in a kind whose whole job is transforming files.
-    # It removes staleness from the *namespace*, not from the filesystem: earlier directories
-    # remain, and a program that walks upwards can still open them.
     run_dir = f"{session.spec.work_dir}/{run_id}"
 
     for name, content in shared:
@@ -714,14 +720,27 @@ async def _collect(
     if sink is None:  # unreachable: `sandboxed_tool` refuses this spec without a sink
         return "Error: no output sink is configured, so nothing could be saved."
 
+    # The manifest is a file this collection moved, so it is declared as one and counted
+    # against all three caps — `CONSUME`, because the kind read it itself and it must never
+    # reach the sink. One slot of `max_files` therefore belongs to it rather than to an
+    # artifact, which the check below has to know before the model is told what fits.
+    also: tuple[DeclaredOutput, ...] = ()
     if outputs is CodeactOutputs.MANIFEST:
         listed = await _read_manifest(session, sandbox, run_id)
         if isinstance(listed, str):
             return listed
         declared = listed
+        also = (
+            DeclaredOutput(
+                path=f"{run_id}/{_MANIFEST_FILENAME}",
+                name=_MANIFEST_FILENAME,
+                disposition=OutputDisposition.CONSUME,
+                required=False,
+            ),
+        )
         checked = _validated_output_names(
             declared,
-            max_files=session.spec.files_out.max_files,
+            max_files=session.spec.files_out.max_files - len(also),
             reserved=reserved,
             run_id=run_id,
             normalization=_normalization(session),
@@ -736,7 +755,7 @@ async def _collect(
     # commonest recoverable mistake, and failing the whole collection over it would throw away
     # the files the program did write. `media_type` stays undeclared on both roads, because
     # this kind genuinely does not know what a model-written program produced.
-    call_time = tuple(
+    call_time = also + tuple(
         DeclaredOutput(path=f"{run_id}/{name}", name=name, required=False) for name in declared
     )
     try:
@@ -774,10 +793,14 @@ async def _read_manifest(
         # backend whose SDK buffers the whole response has already spent the memory by the
         # time `max_bytes` is looked at, so passing a ceiling down is not a bound on its own.
         # An unknown size fails closed for the same reason it does in `collect_outputs`.
-        if entry.size_bytes is None or entry.size_bytes > _MANIFEST_MAX_BYTES:
+        # The smaller of this kind's own ceiling and the host's: `files_out` is what the
+        # router matched against the backend, so reading past it would transfer more than the
+        # spec declared and make that match untrue for this kind.
+        ceiling = min(_MANIFEST_MAX_BYTES, session.spec.files_out.max_bytes_per_file)
+        if entry.size_bytes is None or entry.size_bytes > ceiling:
             return (
                 f"Error: {_MANIFEST_FILENAME} is {entry.size_bytes or 'of unknown'} bytes and "
-                f"this tool reads at most {_MANIFEST_MAX_BYTES}, so no files were saved."
+                f"this tool reads at most {ceiling}, so no files were saved."
             )
         raw = await sandbox.read_file(
             path, working_directory=session.spec.work_dir, max_bytes=entry.size_bytes

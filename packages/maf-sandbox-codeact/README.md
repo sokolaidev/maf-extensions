@@ -60,7 +60,7 @@ tools = make_codeact_tools(router, "data-analyst", context,
 ```
 
 - **`DECLARED`** adds an `outputs` parameter: the model says what its program will write *before* it runs. Names are validated and capped up front, and one declared but not written is reported back by name rather than dropped. Prefer this.
-- **`MANIFEST`** has the program write `outputs.json` listing what it produced — for a program whose output names it can only know once it has read its input. The names are then the guest's rather than the model's, settled after the fact.
+- **`MANIFEST`** has the program write `outputs.json` listing what it produced — for a program whose output names it can only know once it has read its input. The names are then the guest's rather than the model's, settled after the fact. The manifest is itself a file the collection moved, so it takes one slot of `files_out.max_files` and its bytes count against the ceilings; a cap below 2 leaves no room for an artifact and is refused at attach.
 
 Either way the kind requires `FILES_OUT` and **never** `FILES_LIST`: it collects literal paths and never enumerates a directory, so it runs on every backend that serves the pull surface at all rather than only on the one with the richest file API. `files_out.max_files` is what bounds how many artifacts a single call may produce, and `files_in` bounds what one call may share in — count, per-file bytes and total. Both are enforced by this kind, because no backend's `write_file` or `read_file` knows the workload's caps.
 
