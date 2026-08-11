@@ -542,7 +542,7 @@ async def _resolve_workspace_files(
             # control character that its name satisfies everything the tool asked for. The
             # listing is still not echoed — that would invite a retry with another spelling.
             return f"Error: {name!r} cannot be shared — {exc}"
-        if name in reserved:
+        if _is_reserved(name, reserved):
             return (
                 f"Error: {name!r} cannot be shared — this tool writes a file of that name into "
                 f"every run's directory."
@@ -614,6 +614,16 @@ async def _read_workspace_files(
             return over_cap
         read.append((name, content))
     return read
+
+
+def _is_reserved(name: str, reserved: set[str]) -> bool:
+    """Whether ``name`` is a file this tool writes itself, **or sits beneath one**.
+
+    The subtree matters because every shipped backend creates parent directories for a nested
+    write: sharing ``program.py/data.csv`` would turn ``program.py`` into a directory, and the
+    source write that follows would fail on every call.
+    """
+    return any(name == owned or name.startswith(f"{owned}/") for owned in reserved)
 
 
 def _over_file_count(count: int, limits: TransferLimits) -> str | None:
@@ -720,7 +730,7 @@ def _validated_output_names(
                 validate_artifact_name(spelling)
             except SandboxArtifactNameInvalid as exc:
                 return f"Error: {name!r} cannot be saved — {exc}"
-        if name in reserved:
+        if _is_reserved(name, reserved):
             return f"Error: {name!r} cannot be saved — this tool writes that file itself."
         # `collect_outputs`' own key: NFC and case-folded, always, whatever the sink does
         # about rewriting.

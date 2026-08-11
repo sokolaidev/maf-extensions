@@ -648,6 +648,29 @@ class TestFilesIn:
         assert reason in out
         assert sandbox.files == {}
 
+    def test_a_file_beneath_the_program_name_cannot_be_shared_either(self):
+        """Backends create parent directories for a nested write, so sharing
+        `program.py/data.csv` would turn `program.py` into a directory and the source write
+        that follows would fail on every call."""
+        sandbox = _ScriptedSandbox()
+        nested = f"{_PROGRAM_FILENAME}/data.csv"
+        store = InMemoryStore({nested: "x"})
+        tool = _tool(_backend(sandbox), workspace_store=store)
+
+        out = _run(tool, "print('hi')", files=[nested])
+        assert "cannot be shared" in out
+        assert sandbox.contents == {}
+
+    def test_a_name_that_merely_starts_with_the_program_name_is_fine(self):
+        """`program.py.bak` shares no directory with it, so refusing it would be overreach."""
+        sandbox = _ScriptedSandbox()
+        store = InMemoryStore({f"{_PROGRAM_FILENAME}.bak": "x"})
+        tool = _tool(_backend(sandbox), workspace_store=store)
+
+        _run(tool, "print('hi')", files=[f"{_PROGRAM_FILENAME}.bak"])
+        run_dir = _run_dirs(sandbox)[0]
+        assert f"{run_dir}/{_PROGRAM_FILENAME}.bak" in sandbox.files
+
     def test_the_program_file_cannot_be_shadowed_by_a_shared_file(self):
         sandbox = _ScriptedSandbox()
         store = InMemoryStore({_PROGRAM_FILENAME: "print('theirs')"})
