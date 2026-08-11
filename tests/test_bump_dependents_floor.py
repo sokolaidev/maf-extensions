@@ -2,9 +2,10 @@
 
 `scripts/bump_dependents_floor.py` is what `release-please.yml` runs once `maf-sandbox` has
 published, to open the floor-raise pull request a person used to remember by hand. These tests
-pin the two things that make it safe: it moves the floor only for a dependent that has actually
-adopted the new version (its ceiling admits it and its floor is a minor behind), and it fails
-loudly rather than silently no-op when the constraint it expects to edit is not there.
+pin the two things that make it safe: it moves the floor only for a candidate — a dependent
+whose ceiling admits the version and whose floor is a minor behind, which is a shape rather
+than evidence the package uses it — and it fails loudly rather than silently no-op when the
+constraint it expects to edit is not there.
 """
 
 from __future__ import annotations
