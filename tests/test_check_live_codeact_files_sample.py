@@ -106,6 +106,51 @@ class TestNumbersAreWholeTokensNotSubstrings:
         assert check.assess(_HEALTHY, summary) == []
 
 
+class TestASignBelongsToTheNumber:
+    @pytest.mark.parametrize("signed", ["-1124", "+1124"])
+    def test_a_signed_grand_total_fails(self, signed: str):
+        """`-1124` is not 1124, however much of it looks like it."""
+        assert any(
+            "grand total" in reason
+            for reason in check.assess(_HEALTHY.replace("1124", signed), _SUMMARY)
+        )
+
+    def test_a_signed_region_total_fails(self):
+        negative = _SUMMARY.replace("| north | 390 |", "| north | -390 |")
+        assert any("north" in reason for reason in check.assess(_HEALTHY, negative))
+
+
+class TestNamesAreWholeWords:
+    def test_a_compound_region_label_is_not_read_as_two_regions(self):
+        """As substrings, `northwest` contains both `north` and `west`, so a mislabelled row
+        satisfied whichever of the two had no row of its own."""
+        mislabelled = _SUMMARY.replace("| west | 450 |", "| northwest | 450 |")
+        assert any(
+            "does not mention the west region" in reason
+            for reason in check.assess(_HEALTHY, mislabelled)
+        )
+
+    @pytest.mark.parametrize("wrong", ["not-summary.md", "summary.md.bak"])
+    def test_a_delivery_line_naming_a_lookalike_fails(self, wrong: str):
+        """The pairing that matters: an earlier run's `summary.md` still on disk, and this
+        turn delivering something whose name merely contains the declared one."""
+        reported = _HEALTHY.replace(
+            "Delivered this turn into out/: summary.md",
+            f"Delivered this turn into out/: {wrong}",
+        )
+        assert any(
+            "did not reach the sink this turn" in reason
+            for reason in check.assess(reported, _SUMMARY)
+        )
+
+    def test_a_delivery_line_naming_several_files_still_finds_the_declared_one(self):
+        several = _HEALTHY.replace(
+            "Delivered this turn into out/: summary.md",
+            "Delivered this turn into out/: notes.txt, summary.md, chart.png",
+        )
+        assert check.assess(several, _SUMMARY) == []
+
+
 class TestATotalBelongsToItsOwnRegion:
     def test_swapped_values_fail(self):
         """Every expected string is still present, which is exactly why checking them

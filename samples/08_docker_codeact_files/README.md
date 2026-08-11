@@ -95,7 +95,7 @@ Both refusals below are ordinary tool results, not exceptions — the turn conti
 Error: 'not-there.csv' is not in this tool's file listing, so it was not shared. Files visible here: sales.csv.
 ```
 
-A name that *traverses* is refused too, and that one echoes nothing back.
+A name that *traverses* is refused by the name validator instead, and that refusal names the rule the name broke — but not the listing, which would invite retrying a different spelling until one lands.
 
 **A declared output that was never written.** The program ran, exited cleanly, and a name it promised is not there — reported by name, with whatever *was* written still saved:
 

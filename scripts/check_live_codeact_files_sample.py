@@ -54,12 +54,13 @@ def _number(value: str) -> re.Pattern[str]:
     exclude an adjacent group as well as an adjacent digit.
     """
     grouped = value if len(value) <= 3 else f"{value[:-3]}{_SEPARATOR}?{value[-3:]}"
-    # Four guards, two per side. The digit ones reject a longer number sharing these digits;
-    # the separator ones reject a longer *grouped* number doing the same. The trailing digit
-    # guard skips a dot rather than refusing one, because `1124.0.` ends a sentence and is
-    # still the number, while `1124.05` is a different one.
+    # Five guards. The digit ones reject a longer number sharing these digits, the separator
+    # ones a longer *grouped* number doing the same, and the sign one `-390`, which is not 390
+    # however much of it looks like it. The trailing digit guard skips a dot rather than
+    # refusing one, because `1124.0.` ends a sentence and is still the number, while
+    # `1124.05` is a different one.
     return re.compile(
-        rf"(?<![\d.])(?<!\d{_SEPARATOR}){grouped}(?:\.0*)?(?!\.?\d)(?!{_SEPARATOR}\d)"
+        rf"(?<![\d.+-])(?<!\d{_SEPARATOR}){grouped}(?:\.0*)?(?!\.?\d)(?!{_SEPARATOR}\d)"
     )
 
 
@@ -72,13 +73,14 @@ def _regions_reporting_their_own_total(summary: str) -> tuple[set[str], set[str]
 
     Name-before-value is why the sample's task asks for the region in the first column: the
     association is what catches a swap, and it cannot also accept the reverse order without
-    accepting swaps again.
+    accepting swaps again.  Names match on word boundaries, so a row labelled ``northwest``
+    is neither ``north`` nor ``west`` — as a substring it would have been read as both.
     """
     lowered = summary.lower()
     mentions = sorted(
         (match.start(), region)
         for region in _REGION_TOTALS
-        for match in re.finditer(re.escape(region), lowered)
+        for match in re.finditer(rf"\b{re.escape(region)}\b", lowered)
     )
     correct: set[str] = set()
     for index, (start, region) in enumerate(mentions):
@@ -87,6 +89,16 @@ def _regions_reporting_their_own_total(summary: str) -> tuple[set[str], set[str]
             correct.add(region)
     named = {region for _, region in mentions}
     return correct, named - correct
+
+
+def _delivered_names(reported: str) -> set[str]:
+    """The names on the sample's delivery line, as whole names.
+
+    A membership test rather than a substring one: `summary.md.bak` and `not-summary.md` both
+    contain the declared name and neither is it, and the pairing that matters — an earlier
+    run's file still on disk, this turn delivering something else — would otherwise pass.
+    """
+    return {name.strip() for name in reported.split(",") if name.strip()}
 
 
 def assess(output: str, summary: str | None) -> list[str]:
@@ -118,7 +130,7 @@ def assess(output: str, summary: str | None) -> list[str]:
         failures.append(
             "no 'Delivered this turn' line — the sample did not reach its final report"
         )
-    elif _SUMMARY_NAME not in delivered.group(1):
+    elif _SUMMARY_NAME not in _delivered_names(delivered.group(1)):
         failures.append(
             f"the host recorded delivering {delivered.group(1).strip()!r}, which does not "
             f"include {_SUMMARY_NAME!r} — a declared output did not reach the sink this turn"
