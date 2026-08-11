@@ -30,7 +30,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import Any, Literal
 
 from ._error_detail import error_detail
-from ._outputs import OutputSink, landing_outputs, missing_sink_refusal
+from ._outputs import OutputSink, landing_outputs, missing_sink_refusal, spec_lands_artifacts
 from ._protocol import (
     Capability,
     Sandbox,
@@ -143,7 +143,9 @@ def sandbox_tool_declarations(
     It takes **both** halves, though: a sink is ordinarily one object handed to every sandbox
     tool a host builds, so its mere presence says nothing about whether *this* workload sends
     anything down it.  A spec that declares no output, or only ``CONSUME`` ones, carries
-    nothing to host state however many sinks it was given.
+    nothing to host state however many sinks it was given — while one setting
+    ``outputs_named_at_call_time`` carries something without being able to say what, and counts
+    here exactly as a declared ``LAND`` output does.
 
     **One value, one source, no fold.**  The cap is an opaque string in the host's own
     vocabulary with no ordering — this repository requires an ordering to be data with an
@@ -151,19 +153,19 @@ def sandbox_tool_declarations(
     them, and :class:`~maf_sandbox.OutputSink` carries no cap of its own to be combined.
 
     Args:
-        spec: The sandbox this workload asks for; ``egress_allow`` and ``declared_outputs``
-            are what is read.
+        spec: The sandbox this workload asks for; ``egress_allow``, ``declared_outputs`` and
+            ``outputs_named_at_call_time`` are what is read.
         source_integrity: Integrity tier for this tool's results, or ``None`` to declare
             none.
         outbound_max_confidentiality: The host's cap for outbound tools, in the host's own
             vocabulary, or ``None`` (the default) to declare none.
         output_sink: Where this workload's artifacts land, if it lands any. Read together with
-            ``spec.declared_outputs``, never for its presence alone.
+            what the spec says it lands, never for its presence alone.
     """
     declarations: dict[str, Any] = {}
     if source_integrity is not None:
         declarations["source_integrity"] = source_integrity
-    lands_artifacts = output_sink is not None and bool(landing_outputs(spec))
+    lands_artifacts = output_sink is not None and spec_lands_artifacts(spec)
     carries_something_out = bool(spec.egress_allow) or lands_artifacts
     if outbound_max_confidentiality is not None and carries_something_out:
         declarations["max_allowed_confidentiality"] = outbound_max_confidentiality
@@ -204,6 +206,7 @@ class SandboxToolSession:
         *,
         name: str,
         logger: logging.Logger,
+        output_sink: OutputSink | None = None,
     ) -> None:
         self._router = router
         self._context = context
@@ -211,6 +214,7 @@ class SandboxToolSession:
         self._spec = spec
         self._name = name
         self._logger = logger
+        self._output_sink = output_sink
         # The tool's name prefixes every log line this class writes, and it is baked into the
         # FORMAT string rather than passed as an argument so the emitted record is
         # indistinguishable from one the workload wrote by hand — `record.msg` included,
@@ -227,6 +231,15 @@ class SandboxToolSession:
     def name(self) -> str:
         """The tool's name, as the model sees it."""
         return self._name
+
+    @property
+    def output_sink(self) -> OutputSink | None:
+        """The sink :func:`sandboxed_tool` checked this spec against.
+
+        Read it here rather than closing over one, so that the sink whose presence satisfied
+        the attach-time refusal is the sink the body actually hands to ``collect_outputs``.
+        """
+        return self._output_sink
 
     def key(self) -> SandboxKey | str:
         """The sandbox key for this call, or the message to return when no thread is bound.
@@ -317,6 +330,7 @@ def sandboxed_tool(
     name: str,
     approval_mode: Literal["always_require", "never_require"] = "never_require",
     declarations: Mapping[str, Any] | None = None,
+    source_integrity: str | None = "trusted",
     outbound_max_confidentiality: str | None = None,
     output_sink: OutputSink | None = None,
     logger: logging.Logger | None = None,
@@ -373,11 +387,17 @@ def sandboxed_tool(
         declarations: ``additional_properties`` to write verbatim, for a workload that wants
             full control. Defaults to :func:`sandbox_tool_declarations` over ``spec``.
             Refused together with ``output_sink``.
+        source_integrity: Passed to :func:`sandbox_tool_declarations`; ignored when
+            ``declarations`` is given. ``None`` declares no integrity at all, which is the
+            fail-safe answer for a workload whose result is whatever model-written code chose
+            to emit — and the reason this is a parameter here rather than something a kind
+            reaches ``declarations=`` for, since that escape hatch is refused alongside a sink.
         outbound_max_confidentiality: Passed to :func:`sandbox_tool_declarations`; ignored when
             ``declarations`` is given. Read that function before setting it — it is off by
             default for a reason.
         output_sink: Where this workload's landing artifacts go, threaded into the derivation
-            above and on to :func:`~maf_sandbox.collect_outputs` by the workload itself.
+            above, carried on the session, and passed on to
+            :func:`~maf_sandbox.collect_outputs` by the workload itself.
         logger: Where the failure ladder writes its detail. Defaults to this module's logger;
             pass the workload's own so its records keep the workload's logger name.
     """
@@ -391,18 +411,20 @@ def sandboxed_tool(
             "than the one the host chose. Drop declarations= and pass "
             "outbound_max_confidentiality, or write the cap into the mapping yourself."
         )
-    landing = landing_outputs(spec)
-    if landing and output_sink is None:
-        raise missing_sink_refusal(spec, landing, asked_by=name)
-    if spec.declared_outputs and Capability.FILES_OUT not in spec.requires:
+    if spec_lands_artifacts(spec) and output_sink is None:
+        raise missing_sink_refusal(spec, landing_outputs(spec), asked_by=name)
+    if (spec.declared_outputs or spec.outputs_named_at_call_time) and (
+        Capability.FILES_OUT not in spec.requires
+    ):
+        declares = ", ".join(repr(declared.path) for declared in spec.declared_outputs)
+        if spec.outputs_named_at_call_time:
+            declares = f"{declares}, plus names at call time" if declares else "names at call time"
         raise ValueError(
-            f"{name}: the {spec.kind!r} workload declares "
-            f"{', '.join(repr(declared.path) for declared in spec.declared_outputs)} as "
-            f"outputs and does not require {str(Capability.FILES_OUT)!r}. Grow `requires` from "
-            "what you declare: the pull surface is what reads those paths back, and without "
-            "the requirement the router's capability match never asks whether this backend has "
-            "one — leaving the failure to happen inside the sandbox, where the reason is "
-            "hardest to see."
+            f"{name}: the {spec.kind!r} workload declares {declares} as outputs and does not "
+            f"require {str(Capability.FILES_OUT)!r}. Grow `requires` from what you declare: "
+            "the pull surface is what reads those paths back, and without the requirement the "
+            "router's capability match never asks whether this backend has one — leaving the "
+            "failure to happen inside the sandbox, where the reason is hardest to see."
         )
     router.ensure_can_serve(spec)
 
@@ -413,12 +435,14 @@ def sandboxed_tool(
         spec,
         name=name,
         logger=logger if logger is not None else _DEFAULT_LOGGER,
+        output_sink=output_sink,
     )
     properties = (
         dict(declarations)
         if declarations is not None
         else sandbox_tool_declarations(
             spec,
+            source_integrity=source_integrity,
             outbound_max_confidentiality=outbound_max_confidentiality,
             output_sink=output_sink,
         )

@@ -70,7 +70,10 @@ from ._outputs import (
     SandboxOutputUnreachable,
     SandboxTransferCapExceeded,
     collect_outputs,
+    landing_outputs,
+    missing_sink_refusal,
     portable_name,
+    spec_lands_artifacts,
     validate_artifact_name,
 )
 from ._protocol import (
@@ -150,8 +153,11 @@ __all__ = [
     "WorkspaceContext",
     "collect_outputs",
     "error_detail",
+    "landing_outputs",
     "meets_floor",
+    "missing_sink_refusal",
     "portable_name",
+    "spec_lands_artifacts",
     "validate_artifact_name",
 ]
 

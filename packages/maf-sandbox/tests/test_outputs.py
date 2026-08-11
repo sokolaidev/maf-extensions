@@ -56,10 +56,16 @@ _NFC_GROWS = "क़" * 85
 
 
 def _spec(
-    *outputs: DeclaredOutput, files_out: TransferLimits = DEFAULT_TRANSFER_LIMITS
+    *outputs: DeclaredOutput,
+    files_out: TransferLimits = DEFAULT_TRANSFER_LIMITS,
+    at_call_time: bool = False,
 ) -> SandboxSpec:
     return SandboxSpec(
-        kind=_KIND, work_dir=_WORK_DIR, declared_outputs=outputs, files_out=files_out
+        kind=_KIND,
+        work_dir=_WORK_DIR,
+        declared_outputs=outputs,
+        outputs_named_at_call_time=at_call_time,
+        files_out=files_out,
     )
 
 
@@ -892,6 +898,223 @@ class TestSinkIsRequiredForAnythingThatLands:
         with pytest.raises(SandboxOutputSinkRequired):
             asyncio.run(collect_outputs(sandbox, _spec(DeclaredOutput(path="a.png"))))
         assert sandbox.calls == []
+
+    def test_a_call_time_output_without_a_sink_is_refused_and_named(self):
+        """By the time a collection runs the names exist, so the refusal states them — it is
+        `sandboxed_tool`, refusing at attach, that has nothing yet to name."""
+        sandbox = _RecordingSandbox(seed_files={"/work/a.png": b"x"})
+        with pytest.raises(SandboxOutputSinkRequired, match="a.png"):
+            asyncio.run(
+                collect_outputs(
+                    sandbox,
+                    _spec(at_call_time=True),
+                    outputs=(DeclaredOutput(path="a.png"),),
+                )
+            )
+        assert sandbox.calls == []
+
+
+class TestTheLandingNameIsNotAlwaysTheGuestPath:
+    """A kind writing into a per-call directory must not land `<run-id>/report.csv`."""
+
+    def test_the_declared_name_is_what_the_sink_receives(self):
+        sandbox = InProcessSandbox(seed_files={"/work/run-1/report.csv": b"x"})
+        recorder = _RecordingSink()
+        landed = asyncio.run(
+            collect_outputs(
+                sandbox,
+                _spec(DeclaredOutput(path="run-1/report.csv", name="report.csv")),
+                sink=recorder.sink,
+            )
+        )
+        assert recorder.names == ["report.csv"]
+        assert [item.name for item in landed] == ["report.csv"]
+
+    def test_the_guest_path_is_still_what_is_read(self):
+        sandbox = _RecordingSandbox(seed_files={"/work/run-1/report.csv": b"x"})
+        recorder = _RecordingSink()
+        asyncio.run(
+            collect_outputs(
+                sandbox,
+                _spec(DeclaredOutput(path="run-1/report.csv", name="report.csv")),
+                sink=recorder.sink,
+            )
+        )
+        assert sandbox.calls == [("stat", "run-1/report.csv"), ("read", "run-1/report.csv")]
+
+    def test_it_defaults_to_the_path_so_every_kind_written_before_it_is_unchanged(self):
+        assert DeclaredOutput(path="a.png").name is None
+        sandbox = InProcessSandbox(seed_files={"/work/a.png": b"x"})
+        recorder = _RecordingSink()
+        asyncio.run(
+            collect_outputs(sandbox, _spec(DeclaredOutput(path="a.png")), sink=recorder.sink)
+        )
+        assert recorder.names == ["a.png"]
+
+    def test_the_landing_name_is_held_to_the_narrow_invariant(self):
+        sandbox = _RecordingSandbox(seed_files={"/work/run-1/report.csv": b"x"})
+        recorder = _RecordingSink()
+        with pytest.raises(SandboxArtifactNameInvalid, match="traversal"):
+            asyncio.run(
+                collect_outputs(
+                    sandbox,
+                    _spec(DeclaredOutput(path="run-1/report.csv", name="../report.csv")),
+                    sink=recorder.sink,
+                )
+            )
+        assert sandbox.calls == []
+
+    def test_the_guest_path_is_held_to_it_too(self):
+        """Both halves cross a boundary: the path goes to a backend, the name to the host."""
+        sandbox = _RecordingSandbox(seed_files={"/work/a.png": b"x"})
+        recorder = _RecordingSink()
+        with pytest.raises(SandboxArtifactNameInvalid, match="traversal"):
+            asyncio.run(
+                collect_outputs(
+                    sandbox,
+                    _spec(DeclaredOutput(path="../a.png", name="a.png")),
+                    sink=recorder.sink,
+                )
+            )
+        assert sandbox.calls == []
+
+    def test_two_run_directories_landing_one_name_collide(self):
+        """The paths differ, so keying the collision check on them would have missed it."""
+        sandbox = InProcessSandbox(
+            seed_files={"/work/run-1/report.csv": b"a", "/work/run-2/report.csv": b"b"}
+        )
+        recorder = _RecordingSink()
+        with pytest.raises(SandboxArtifactNameCollision) as refusal:
+            asyncio.run(
+                collect_outputs(
+                    sandbox,
+                    _spec(
+                        DeclaredOutput(path="run-1/report.csv", name="report.csv"),
+                        DeclaredOutput(path="run-2/report.csv", name="report.csv"),
+                    ),
+                    sink=recorder.sink,
+                )
+            )
+        # Both guest paths, because the landing name alone would print the same string twice.
+        assert "run-1/report.csv" in str(refusal.value)
+        assert "run-2/report.csv" in str(refusal.value)
+        # And not the variant wording: these two names are identical, not case-folded twins.
+        assert "differing only by case" not in str(refusal.value)
+        assert recorder.delivered == []
+
+    def test_a_case_only_collision_still_says_which_difference_it_is(self):
+        """The other half: two names that really are variants keep the explanation that makes
+        the refusal understandable, since nothing about them looks wrong on Linux."""
+        sandbox = InProcessSandbox(
+            seed_files={"/work/run-1/a.png": b"a", "/work/run-2/b.png": b"b"}
+        )
+        recorder = _RecordingSink()
+        with pytest.raises(SandboxArtifactNameCollision, match="differing only by case") as ref:
+            asyncio.run(
+                collect_outputs(
+                    sandbox,
+                    _spec(
+                        DeclaredOutput(path="run-1/a.png", name="Report.png"),
+                        DeclaredOutput(path="run-2/b.png", name="report.png"),
+                    ),
+                    sink=recorder.sink,
+                )
+            )
+        assert "Report.png" in str(ref.value) and "report.png" in str(ref.value)
+
+    def test_a_consume_output_lands_nothing_however_it_is_named(self):
+        sandbox = InProcessSandbox(seed_files={"/work/run-1/manifest.json": b"{}"})
+        recorder = _RecordingSink()
+        landed = asyncio.run(
+            collect_outputs(
+                sandbox,
+                _spec(
+                    DeclaredOutput(
+                        path="run-1/manifest.json",
+                        name="manifest.json",
+                        disposition=OutputDisposition.CONSUME,
+                    )
+                ),
+                sink=recorder.sink,
+            )
+        )
+        assert landed == ()
+        assert recorder.delivered == []
+
+
+class TestCallTimeOutputs:
+    """The road for a kind that knows it lands artifacts and cannot name them in advance."""
+
+    def test_they_are_collected_alongside_what_the_spec_declared(self):
+        sandbox = InProcessSandbox(
+            seed_files={"/work/fixed.png": b"a", "/work/run-1/report.csv": b"bb"}
+        )
+        recorder = _RecordingSink()
+        asyncio.run(
+            collect_outputs(
+                sandbox,
+                _spec(DeclaredOutput(path="fixed.png"), at_call_time=True),
+                sink=recorder.sink,
+                outputs=(DeclaredOutput(path="run-1/report.csv", name="report.csv"),),
+            )
+        )
+        assert recorder.names == ["fixed.png", "report.csv"]
+
+    def test_a_spec_that_does_not_admit_them_refuses_them(self):
+        """Such a tool was attached with no sink required and no outbound cap written."""
+        sandbox = _RecordingSandbox(seed_files={"/work/a.png": b"x"})
+        recorder = _RecordingSink()
+        with pytest.raises(ValueError, match="outputs_named_at_call_time"):
+            asyncio.run(
+                collect_outputs(
+                    sandbox,
+                    _spec(),
+                    sink=recorder.sink,
+                    outputs=(DeclaredOutput(path="a.png"),),
+                )
+            )
+        assert sandbox.calls == []
+
+    def test_the_flag_alone_collects_nothing(self):
+        """It is a declaration about the workload, not an instruction to go looking."""
+        sandbox = _RecordingSandbox(seed_files={"/work/a.png": b"x"})
+        recorder = _RecordingSink()
+        landed = asyncio.run(collect_outputs(sandbox, _spec(at_call_time=True), sink=recorder.sink))
+        assert landed == ()
+        assert sandbox.calls == []
+
+    def test_one_cap_counts_both_sources(self):
+        """One from each side, so a separate tally per source would still pass the cap and
+        deliver twice what the workload allowed."""
+        sandbox = InProcessSandbox(seed_files={"/work/a.png": b"a", "/work/b.png": b"b"})
+        recorder = _RecordingSink()
+        limits = TransferLimits(max_bytes_per_file=8, max_total_bytes=8, max_files=1)
+        with pytest.raises(SandboxTransferCapExceeded, match="max_files=1"):
+            asyncio.run(
+                collect_outputs(
+                    sandbox,
+                    _spec(DeclaredOutput(path="a.png"), files_out=limits, at_call_time=True),
+                    sink=recorder.sink,
+                    outputs=(DeclaredOutput(path="b.png"),),
+                )
+            )
+        assert recorder.delivered == []
+
+    def test_the_byte_ceiling_counts_both_sources_too(self):
+        """`max_files` alone would pass with a generous count and two large files."""
+        sandbox = InProcessSandbox(seed_files={"/work/a.png": b"aaaa", "/work/b.png": b"bbbb"})
+        recorder = _RecordingSink()
+        limits = TransferLimits(max_bytes_per_file=8, max_total_bytes=6, max_files=8)
+        with pytest.raises(SandboxTransferCapExceeded, match="max_total_bytes"):
+            asyncio.run(
+                collect_outputs(
+                    sandbox,
+                    _spec(DeclaredOutput(path="a.png"), files_out=limits, at_call_time=True),
+                    sink=recorder.sink,
+                    outputs=(DeclaredOutput(path="b.png"),),
+                )
+            )
+        assert recorder.delivered == []
 
 
 class TestDeliveryFailure:
