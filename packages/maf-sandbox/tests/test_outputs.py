@@ -984,7 +984,7 @@ class TestTheLandingNameIsNotAlwaysTheGuestPath:
             seed_files={"/work/run-1/report.csv": b"a", "/work/run-2/report.csv": b"b"}
         )
         recorder = _RecordingSink()
-        with pytest.raises(SandboxArtifactNameCollision, match="report.csv"):
+        with pytest.raises(SandboxArtifactNameCollision) as refusal:
             asyncio.run(
                 collect_outputs(
                     sandbox,
@@ -995,7 +995,32 @@ class TestTheLandingNameIsNotAlwaysTheGuestPath:
                     sink=recorder.sink,
                 )
             )
+        # Both guest paths, because the landing name alone would print the same string twice.
+        assert "run-1/report.csv" in str(refusal.value)
+        assert "run-2/report.csv" in str(refusal.value)
+        # And not the variant wording: these two names are identical, not case-folded twins.
+        assert "differing only by case" not in str(refusal.value)
         assert recorder.delivered == []
+
+    def test_a_case_only_collision_still_says_which_difference_it_is(self):
+        """The other half: two names that really are variants keep the explanation that makes
+        the refusal understandable, since nothing about them looks wrong on Linux."""
+        sandbox = InProcessSandbox(
+            seed_files={"/work/run-1/a.png": b"a", "/work/run-2/b.png": b"b"}
+        )
+        recorder = _RecordingSink()
+        with pytest.raises(SandboxArtifactNameCollision, match="differing only by case") as ref:
+            asyncio.run(
+                collect_outputs(
+                    sandbox,
+                    _spec(
+                        DeclaredOutput(path="run-1/a.png", name="Report.png"),
+                        DeclaredOutput(path="run-2/b.png", name="report.png"),
+                    ),
+                    sink=recorder.sink,
+                )
+            )
+        assert "Report.png" in str(ref.value) and "report.png" in str(ref.value)
 
     def test_a_consume_output_lands_nothing_however_it_is_named(self):
         sandbox = InProcessSandbox(seed_files={"/work/run-1/manifest.json": b"{}"})

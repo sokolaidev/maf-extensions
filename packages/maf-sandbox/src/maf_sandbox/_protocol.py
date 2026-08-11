@@ -348,9 +348,12 @@ class SandboxSpec:
     requires: frozenset[Capability] = DEFAULT_CAPABILITIES
     min_isolation: Isolation | None = None
     declared_outputs: tuple[DeclaredOutput, ...] = ()
-    outputs_named_at_call_time: bool = False
     files_in: TransferLimits = DEFAULT_TRANSFER_LIMITS
     files_out: TransferLimits = DEFAULT_TRANSFER_LIMITS
+    # Appended rather than grouped with `declared_outputs`, where it reads better: this is a
+    # public dataclass and is not keyword-only, so inserting a field rebinds every positional
+    # argument after it — a caller's `files_in` would silently become this flag.
+    outputs_named_at_call_time: bool = False
 
 
 @dataclass(frozen=True)

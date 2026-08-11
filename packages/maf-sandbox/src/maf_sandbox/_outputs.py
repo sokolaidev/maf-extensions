@@ -423,7 +423,7 @@ def _check_declared_names(outputs: tuple[DeclaredOutput, ...], sink: OutputSink 
     Both rules are properties of the declaration rather than of the run, so a kind whose
     outputs could never land is refused the same way whatever the guest happened to produce.
     """
-    seen: dict[str, str] = {}
+    seen: dict[str, tuple[DeclaredOutput, str]] = {}
     for declared in outputs:
         validate_artifact_name(declared.path)
         if declared.disposition is not OutputDisposition.LAND:
@@ -433,13 +433,34 @@ def _check_declared_names(outputs: tuple[DeclaredOutput, ...], sink: OutputSink 
             validate_artifact_name(delivered)
         key = _collision_key(delivered)
         if key in seen:
-            raise SandboxArtifactNameCollision(
-                f"declared outputs {seen[key]!r} and {delivered!r} name one file, differing "
-                "only by case or by Unicode form, which is two files on Linux and one on "
-                "Windows and default macOS. Refused with the whole declaration in view, because "
-                "the host receives artifacts one at a time and could never see the collision."
-            )
-        seen[key] = delivered
+            raise _collision(seen[key], (declared, delivered))
+        seen[key] = (declared, delivered)
+
+
+def _collision(
+    first: tuple[DeclaredOutput, str], second: tuple[DeclaredOutput, str]
+) -> SandboxArtifactNameCollision:
+    """Two declarations landing as one file, saying which of the two ways it happened.
+
+    Since a landing name can be given apart from the guest path, the two spellings are no
+    longer necessarily *variants* of each other: two paths may ask for the identical name.
+    Reporting that as "differing only by case" would describe a difference the reader can see
+    is not there.
+    """
+    (earlier, earlier_name), (later, later_name) = first, second
+    how = (
+        f"both land as {earlier_name!r}"
+        if earlier_name == later_name
+        else (
+            f"land as {earlier_name!r} and {later_name!r}, which are one file on Windows and "
+            "default macOS and two on Linux, differing only by case or by Unicode form"
+        )
+    )
+    return SandboxArtifactNameCollision(
+        f"declared outputs {earlier.path!r} and {later.path!r} {how}. Refused with the whole "
+        "declaration in view, because the host receives artifacts one at a time and could "
+        "never see the collision."
+    )
 
 
 @contextlib.contextmanager

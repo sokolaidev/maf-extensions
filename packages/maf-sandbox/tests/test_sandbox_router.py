@@ -731,6 +731,14 @@ class TestSpecDefaults:
         """The flag makes a tool require a sink and carry an outbound cap, so silence is off."""
         assert SandboxSpec(kind="test").outputs_named_at_call_time is False
 
+    def test_a_new_field_is_appended_rather_than_grouped_where_it_reads_best(self):
+        """This dataclass is public and is not keyword-only, so a field inserted before another
+        rebinds every positional argument after it — a caller's `files_in` would silently
+        become the next field, with no error anywhere. New fields go on the end."""
+        names = [f.name for f in dataclasses.fields(SandboxSpec)]
+        assert names[-1] == "outputs_named_at_call_time"
+        assert names.index("files_in") < names.index("files_out") < len(names) - 1
+
     @pytest.mark.parametrize("direction", ["files_in", "files_out"])
     def test_both_transfer_directions_ask_for_the_shared_default(self, direction: str):
         """The same object the silent backend ceiling is, so the two cannot drift apart."""
