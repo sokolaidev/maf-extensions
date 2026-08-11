@@ -211,6 +211,30 @@ jobs:
           name: dist-${{ needs.build.outputs.package }}
           path: dist/
 
+      # The build job ran this too, to fail before a human is asked to approve. This is the
+      # one that decides: the `pypi` environment holds here for as long as a reviewer takes,
+      # and the index can move under a verdict reached before the wait.
+      #
+      # Sparse: this job mints the publishing credential, so it checks out the two paths the
+      # check reads and nothing else.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: >-
+          needs.build.outputs.package == 'maf-sandbox'
+          && needs.build.outputs.target == 'pypi'
+        with:
+          sparse-checkout: |
+            scripts
+            packages/*/pyproject.toml
+          sparse-checkout-cone-mode: false
+
+      - name: Re-check the published dependents at upload time
+        if: >-
+          needs.build.outputs.package == 'maf-sandbox'
+          && needs.build.outputs.target == 'pypi'
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: python3 scripts/check_published_dependents_admit.py "$VERSION"
+
       - name: Publish
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
