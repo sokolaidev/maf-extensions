@@ -24,7 +24,7 @@ Everything else is sample 06 unchanged: the same image, the same backend, the sa
 
 **The summary lands as `summary.md`, not `<run-id>/summary.md`.** Inside the sandbox the file lives under the run directory; the delivered name is a separate field. This is the one place that distinction is visible from outside — on disk, in `out/`.
 
-**The last line of output is the host's, not the model's.** The model is told a sentence by the sink; the program prints what actually arrived in `out/`. A turn that computes the right total and writes nothing is exactly the failure this sample exists to make visible, and it is not visible from the transcript alone.
+**The last line of output is the host's, not the model's.** The model is told a sentence by the sink; the sample prints what the sink actually took *this turn*. That distinction is the whole value of the line: `out/` may still hold a summary an earlier run left there, so listing the directory would report a delivery that did not happen. A turn that computes the right total and writes nothing is exactly the failure this sample exists to make visible, and it is not visible from the transcript alone.
 
 ## Where the sink points, and why it is the interesting decision
 
@@ -66,10 +66,12 @@ Expected shape — the grand total over `sales.csv` is **1124**:
 The grand total is 1124. The per-region summary was saved as summary.md.
 
 Disposed 1 sandbox(es).
-Landed in out/: summary.md
+Delivered this turn into out/: summary.md
 ```
 
 `out/summary.md` then holds the per-region table: north 390, south 200, east 84, west 450.
+
+A nested declared name works too — `reports/summary.md` lands at `out/reports/summary.md`, because the sink makes each destination's own parent. Names are validated relative before they reach it, so nesting cannot climb out of `out/`.
 
 The tool result behind that reply — which the sample does not print, because the model's answer is what a host would show — looks like this, and is worth knowing the shape of:
 

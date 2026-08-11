@@ -8,24 +8,11 @@ Sample 06 with both of CodeAct's file channels wired::
 Samples 03, 04 and 06 give `execute_code` nothing to read and take only stdout
 back.  This one passes a `workspace_store`, which grows the tool a `files`
 parameter, and an `output_sink` with `CodeactOutputs.DECLARED`, which grows it an
-`outputs` parameter.  The task cannot be answered without the first and cannot be
-delivered without the second, so a run that skips either is visibly wrong rather
-than quietly thinner.
+`outputs` parameter.  The task needs both, so a run that skips either is visibly
+wrong rather than quietly thinner.
 
-Two things worth watching, because they are the parts a fake backend cannot show:
-
-- The program opens `sales.csv` by that name.  Each call gets a fresh directory
-  inside the sandbox and the shared file is written into it, so a bare relative
-  name is what the program uses — no run id, no absolute path.
-- The summary lands as `summary.md`, not `<run-id>/summary.md`.  The guest path
-  and the delivered name are separate fields, and this is the difference showing
-  up on disk.
-
-Sample 07 also lands an artifact, and does it by defining a kind inline against
-the protocol.  This one changes no workload code at all: the same packaged
-`execute_code` a host already has, with two constructor arguments it did not pass
-before.  Read this directory's README first — particularly on where the sink
-points, which is the security-relevant decision here.
+This directory's README is the walkthrough — what to watch for, and where the
+sink should point, which is the security-relevant decision here.  Read it first.
 """
 
 from __future__ import annotations
@@ -111,13 +98,19 @@ async def list_workspace(store: Any) -> list[str]:
     return paths
 
 
-def make_markdown_sink(output_dir: Path) -> OutputSink:
-    """A sink that lands each produced file under ``output_dir``.
+def make_markdown_sink(output_dir: Path, delivered: list[str]) -> OutputSink:
+    """A sink that lands each produced file under ``output_dir``, recording what it took.
+
+    ``delivered`` is the host's own record of this turn, and it is why the sink keeps
+    one: the directory cannot answer the question. A second run that writes nothing
+    leaves the first run's file sitting there, so *what is in ``out/``* and *what this
+    turn delivered* are different facts, and only the second is worth asserting on.
 
     ``display`` is the one line the model is allowed to see; ``handle`` is the host's
     own path and nothing renders it into a transcript.  ``artifact.name`` is validated
     relative before it arrives — no traversal, not absolute — so joining it under
-    ``output_dir`` stays under ``output_dir``.
+    ``output_dir`` stays under ``output_dir``.  It may still be *nested*: a model may
+    declare ``reports/summary.md``, which needs its own parent made.
 
     ``artifact.media_type`` is always ``None`` for this kind and there is nothing to fix
     about that: the bytes came from a program the model wrote, so a type read out of the
@@ -126,9 +119,10 @@ def make_markdown_sink(output_dir: Path) -> OutputSink:
     """
 
     async def deliver(artifact: Artifact) -> LandedArtifact:
-        output_dir.mkdir(parents=True, exist_ok=True)
         destination = output_dir / artifact.name
+        destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(artifact.content)
+        delivered.append(artifact.name)
         return LandedArtifact(
             name=artifact.name,
             # No leading verb: the kind introduces this list with "Saved:" of its own, and
@@ -164,6 +158,10 @@ async def run() -> int:
 
     context = make_workspace_context(list_workspace, lambda: SCOPE, lambda: THREAD_ID)
 
+    # This turn's deliveries, recorded by the sink as they arrive. Not the same as the
+    # contents of `out/`, which also holds whatever an earlier run left there.
+    delivered: list[str] = []
+
     tools = make_codeact_tools(
         router,
         AGENT_DIR,
@@ -173,7 +171,7 @@ async def run() -> int:
         # Files out: a sink and a naming road. `DECLARED` makes the model say what its
         # program will write before it runs, which is the road that can report a name
         # declared and never written — the diagnostic `MANIFEST` cannot have.
-        output_sink=make_markdown_sink(OUTPUT_DIR),
+        output_sink=make_markdown_sink(OUTPUT_DIR, delivered),
         outputs=CodeactOutputs.DECLARED,
         image=CODEACT_IMAGE,
     )
@@ -208,15 +206,15 @@ async def run() -> int:
         print(f"\nDisposed {deleted} sandbox(es).")
         await credential.close()
 
-    # What actually landed, printed from the host's side of the sink. The model was told a
-    # sentence; this is the file. A turn that answers correctly and writes nothing is the
-    # failure this sample exists to make visible, so it is worth looking at separately.
-    landed = (
-        sorted(path.name for path in OUTPUT_DIR.glob("*"))
-        if OUTPUT_DIR.is_dir()
-        else []
+    # What this turn delivered, from the host's side of the sink rather than from the
+    # directory: `out/` may still hold an earlier run's file, and "there is a summary on
+    # disk" is not the same claim as "this turn produced one". The second is the one worth
+    # printing, because a turn that answers correctly and writes nothing is the failure
+    # this sample exists to make visible.
+    print(
+        f"Delivered this turn into {OUTPUT_DIR.name}/: "
+        f"{', '.join(delivered) if delivered else 'nothing'}"
     )
-    print(f"Landed in {OUTPUT_DIR.name}/: {', '.join(landed) if landed else 'nothing'}")
 
     return 0
 
