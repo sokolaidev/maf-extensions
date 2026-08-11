@@ -28,8 +28,8 @@ jobs:
       # Labels are an Issues-API concept even on a PR, and release-please creates its own
       # `autorelease:*` pair on first run. Without this it 403s and every release wedges.
       issues: write
-      # Dispatching the two workflows below. It cannot approve anything: publishing still
-      # waits on the `pypi` environment's reviewer.
+      # Dispatching publish-packages.yml below. It cannot approve anything: publishing
+      # still waits on the `pypi` environment's reviewer.
       actions: write
     steps:
       - name: Run release-please
@@ -127,49 +127,8 @@ jobs:
 
           **To decline a floor without losing its ceiling**, edit that line back to the floor it had and leave the new upper bound alone — the two now live in one hunk, so dropping the hunk wholesale would give up the widening too. Retitle it feat:/breaking if adopting the version is more than a patch for a dependent; the title says fix: so the bot does not choose the bump.
 
-          **Then merge it, and let the dependent releases it cuts publish.** The widening is only worth anything once it is on PyPI: that is what the next core release checks before it uploads. Clear its held run the way you do for a Release PR: **Approve and run**. A dispatched run reports the required contexts but does not unblock the merge."
+          **Then merge it, and let the dependent releases it cuts publish.** The widening is only worth anything once it is on PyPI: that is what the next core release checks before it uploads. Its checks are held at "Approve and run", the same as a Release PR's; clearing them is what starts them."
           gh pr create --base main --head "$branch" \
             --title "$title" \
             --body "$body"
           echo "opened ${branch}" >> "$GITHUB_STEP_SUMMARY"
-
-      # A bot author trips the approval gate, so the run a bot-opened pull request creates
-      # waits at `action_required` and its required check never reports. A dispatched run
-      # is not held and lands its checks on the same head SHA, which is what the required
-      # contexts are evaluated against.
-      #
-      # That is the whole of what this buys. The held run still blocks the merge with every
-      # context green, so a human still clears it — and clearing it runs these checks again.
-      # Whether the step earns its keep is #196; it is left in place until that is decided.
-      - name: Start the checks on the pull requests this workflow opened
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          # Selecting the author rather than passing `--author`, which is not a filter on
-          # this query: it switches gh to the search index, and that index will not have a
-          # pull request opened seconds ago by the step above. The page is raised because
-          # the filter now follows it — the default is 30.
-          open_bot_pull_requests="$(gh pr list --state open --limit 100 \
-            --json headRefName,headRefOid,author \
-            --jq '.[] | select(.author.login == "app/github-actions") | [.headRefName, .headRefOid] | @tsv')"
-          # Dispatching nothing is this step's failure mode, so it never exits silent.
-          if [ -z "$open_bot_pull_requests" ]; then
-            echo "no open pull requests from app/github-actions" >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          printf '%s\n' "$open_bot_pull_requests" \
-          | while IFS=$'\t' read -r branch sha; do
-              # Skip one already running or already reported: a dispatch per push to main
-              # would otherwise re-run every open bot pull request each time.
-              live="$(gh run list --workflow=tests.yml --branch "$branch" --limit 20 \
-                --json headSha,conclusion \
-                --jq "[.[] | select(.headSha == \"$sha\") | select(.conclusion != \"action_required\")] | length")"
-              if [ "$live" -gt 0 ]; then
-                echo "checks already running or reported for ${branch}" >> "$GITHUB_STEP_SUMMARY"
-                continue
-              fi
-              gh workflow run tests.yml --ref "$branch"
-              echo "dispatched tests for ${branch}" >> "$GITHUB_STEP_SUMMARY"
-            done
