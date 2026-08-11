@@ -28,6 +28,7 @@ from maf_sandbox import (
     SandboxEntry,
     SandboxKey,
     SandboxLimits,
+    SandboxOutputError,
     SandboxOutputSizeUnknown,
     SandboxSpec,
     SandboxTransferCapExceeded,
@@ -40,7 +41,16 @@ from ._images import qualify_image_reference, resolve_disk_image_id
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["AcasSandboxBackend"]
+__all__ = ["AcasEntryPayloadIncomplete", "AcasSandboxBackend"]
+
+
+class AcasEntryPayloadIncomplete(SandboxOutputError):
+    """The service described an entry without a field this backend needs to classify it.
+
+    Deliberately not a ``ValueError``: ``collect_outputs`` reads that as a confinement failure,
+    so a renamed wire field would reach a kind as path traversal and mask the tripwire.
+    """
+
 
 #: The service's limit on a label value. Exceeding it fails the whole create with
 #: ``400 … Label value for key 'scope' exceeds 63 characters``.
@@ -101,15 +111,10 @@ _RESUME_TIMEOUT_S = 120
 #: So the ceilings below read as sizes rather than as eight-digit literals.
 _MIB = 1024 * 1024
 
-# This backend's own transfer ceilings, per direction: a spec may not ask above them, and the
-# router refuses one that does. Set above the protocol's spec-side defaults so a spec that
-# says nothing is admitted with room to spare, and well below what a streaming backend can
-# offer, because this one cannot stream: the SDK's `read_file` buffers the whole response
-# internally, so every byte is host memory before this package sees it and a per-file ceiling
-# is a memory statement rather than a transfer-cost one. `max_files` is the field raised
-# furthest — this is the only backend that can serve FILES_LIST, so it is where a kind whose
-# output names are unpredictable runs, and each of those files is one round trip rather than
-# one shared stream.
+# This backend's own transfer ceilings, per direction. The byte ones stay well under what a
+# streaming backend could offer because this one cannot stream: the SDK's `read_file` buffers
+# the whole response, so a per-file ceiling bounds host memory rather than transfer cost.
+# `max_files` is higher because a FILES_LIST kind fetches each file in a round trip of its own.
 _FILES_LIMITS = TransferLimits(
     max_bytes_per_file=32 * _MIB, max_total_bytes=128 * _MIB, max_files=128
 )
@@ -150,6 +155,21 @@ def _confined(path: str, working_directory: str) -> tuple[str, str]:
     return resolved, relative
 
 
+def _directory_chain(guest_path: str, working_directory: str) -> tuple[str, ...]:
+    """Every directory from ``working_directory`` down to ``guest_path``, outermost first.
+
+    The components :meth:`_AcasSandbox._refuse_symlinked_directories` has to stat one by one;
+    ``guest_path`` must already be confined.
+    """
+    base = posixpath.normpath(working_directory)
+    chain = [base]
+    relative = _relative_path(guest_path, base)
+    if relative:
+        for segment in relative.split(_SEPARATOR):
+            chain.append(posixpath.join(chain[-1], segment))
+    return tuple(chain)
+
+
 def _relative_path(guest_path: str, base: str) -> str | None:
     """``guest_path`` relative to ``base``, or ``None`` when it does not sit inside it.
 
@@ -175,7 +195,7 @@ def _entry_from_payload(payload: Mapping[str, Any], relative_path: str) -> Sandb
     is_symlink: Any = payload.get(_FIELD_IS_SYMLINK)
     is_dir: Any = payload.get(_FIELD_IS_DIR)
     if not isinstance(is_symlink, bool) or not isinstance(is_dir, bool):
-        raise ValueError(
+        raise AcasEntryPayloadIncomplete(
             f"the sandbox service described {relative_path!r} without both {_FIELD_IS_SYMLINK!r} "
             f"and {_FIELD_IS_DIR!r}, so what it is cannot be told. Refused rather than assumed "
             "to be a regular file: this backend's read follows a symlink to whatever it points "
@@ -207,7 +227,10 @@ def _listed_entry_path(payload: Mapping[str, Any], working_directory: str) -> st
     """Where one listed entry sits, relative to the working directory the call named."""
     reported: Any = payload.get(_FIELD_PATH)
     if not isinstance(reported, str) or not reported:
-        raise ValueError("the sandbox service listed an entry with no path")
+        raise AcasEntryPayloadIncomplete(
+            f"the sandbox service listed an entry with no {_FIELD_PATH!r}, so where it sits "
+            "cannot be told"
+        )
     _, relative = _confined(reported, working_directory)
     return relative
 
@@ -259,15 +282,10 @@ class _AcasSandbox:
     async def _files_payload(self, route: str, guest_path: str) -> Mapping[str, Any]:
         """One ``files/`` data-plane GET, as the **raw** payload the service sent.
 
-        The SDK's typed ``FileInfo`` is bypassed, and this is the only place that reaches past
-        it: it exposes no ``isSymlink`` and no ``symlinkTarget``, and reads ``isDirectory``, a
-        key the service does not send — so through the typed surface a symlink and a directory
-        alike come back looking like a regular file, and this backend's confinement rule would
-        be a no-op.  Tracked as
-        `#136 <https://github.com/sokolaidev/maf-extensions/issues/136>`_ and filed upstream as
-        `Azure/azure-sdk-for-python#48523
-        <https://github.com/Azure/azure-sdk-for-python/issues/48523>`_; when the typed surface
-        carries the entry type, this helper and the field constants go with it.
+        The only place that reaches past the SDK's typed ``FileInfo``, which cannot express an
+        entry's type at all: no ``isSymlink``, and an ``isDirectory`` the service never sends.
+        Removal gate — this helper and the field constants go when the typed surface carries the
+        type: `#136 <https://github.com/sokolaidev/maf-extensions/issues/136>`_.
         """
         sc = self._sc
         payload: Mapping[str, Any] = await sc._dp_get(
@@ -290,20 +308,51 @@ class _AcasSandbox:
             return None
         return _entry_from_payload(payload, relative)
 
+    async def _refuse_symlinked_directories(
+        self, chain: Sequence[str], *, working_directory: str
+    ) -> None:
+        """Refuse unless every directory in ``chain`` is a real one.
+
+        A symlinked *parent* is invisible in the final entry's stat: with ``/work/out -> /etc``,
+        ``out/hostname`` stats as a regular 12-byte file and reads ``/etc/hostname``.  So
+        confinement is a walk down the components, not a judgement about the last one — this
+        API offers no no-follow read and no realpath to do it in one call.
+        """
+        for directory in chain:
+            entry = await self.stat_file(directory, working_directory=working_directory)
+            if entry is None:
+                return
+            if entry.kind is EntryKind.OTHER:
+                raise ValueError(
+                    f"{directory!r} is a link rather than a real directory, so a path through "
+                    f"it does not stay inside working directory {working_directory!r}"
+                )
+            if entry.kind is not EntryKind.DIRECTORY:
+                raise NotADirectoryError(f"{directory!r} is not a directory")
+
     async def read_file(self, path: str, *, working_directory: str, max_bytes: int) -> bytes:
         """Read the regular file at ``path``, refusing anything over ``max_bytes``.
 
-        It stats first, and that ordering is the confinement rule rather than an optimisation:
-        **this backend's read follows symlinks** — reading a path that links to ``/etc/hostname``
-        returns that file's contents — so a non-regular entry has to be refused before any byte
-        moves, not classified afterwards when the damage is done.
+        Stat-before-read is the confinement rule rather than an optimisation: **this backend's
+        read follows symlinks**, in the parents as much as in the final component, so every one
+        of them is classified before a byte moves.
 
-        ``max_bytes`` is a refusal, never a truncation, and it is applied twice.  The stat is a
-        promise about a file the guest is still free to rewrite, and the SDK buffers the whole
-        response internally rather than exposing an incremental hook, so the second check —
-        against what actually arrived — is the only one that bounds what this returns.
+        ``max_bytes`` is a refusal, never a truncation, and it is checked again against what
+        arrived, because the SDK buffers the whole response rather than exposing an incremental
+        hook and a stat is only a promise about a file the guest may still rewrite.
+
+        That promise is also the residual this cannot close: a guest that swaps the stat-ed file
+        for a symlink between the two calls wins, since the service follows it and this API has
+        no no-follow read.  An atomic no-follow read, or a frozen guest filesystem, would close
+        it; nothing available here does.
         """
+        from azure.core.exceptions import ResourceNotFoundError
+
         guest, _ = _confined(path, working_directory)
+        await self._refuse_symlinked_directories(
+            _directory_chain(posixpath.dirname(guest), working_directory),
+            working_directory=working_directory,
+        )
         entry = await self.stat_file(path, working_directory=working_directory)
         if entry is None:
             raise FileNotFoundError(f"no such file: {path!r}")
@@ -322,7 +371,12 @@ class _AcasSandbox:
             raise SandboxTransferCapExceeded(
                 f"{path!r} is {entry.size_bytes} bytes and the caller allowed {max_bytes}"
             )
-        content: bytes = await self._sc.read_file(guest)
+        try:
+            content: bytes = await self._sc.read_file(guest)
+        except ResourceNotFoundError as exc:
+            # Same translation `list_dir` does: a file the guest deleted after the stat must not
+            # reach a kind as an azure-core type.
+            raise FileNotFoundError(f"no such file: {path!r}") from exc
         if len(content) > max_bytes:
             raise SandboxTransferCapExceeded(
                 f"{path!r} read back as {len(content)} bytes and the caller allowed {max_bytes}"
@@ -335,11 +389,16 @@ class _AcasSandbox:
         Native here, which is why this is the only backend that declares
         :data:`~maf_sandbox.Capability.FILES_LIST`.  Every listed entry is confined the same way
         a declared path is: one naming something outside ``working_directory`` fails the
-        listing rather than being reported as a path a caller may go on to read.
+        listing rather than being reported as a path a caller may go on to read.  ``path``
+        itself is confined by component, the directory listed included — the service enumerates
+        through a symlinked directory as readily as it reads through one.
         """
         from azure.core.exceptions import ResourceNotFoundError
 
         guest, _ = _confined(path, working_directory)
+        await self._refuse_symlinked_directories(
+            _directory_chain(guest, working_directory), working_directory=working_directory
+        )
         try:
             payload = await self._files_payload(_LIST_ROUTE, guest)
         except ResourceNotFoundError as exc:

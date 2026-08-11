@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import posixpath
 
 import pytest
 from maf_sandbox import Capability, Egress, Isolation, SandboxBackend, SandboxKey, SandboxRouter
 
 from maf_sandbox_acas import (
+    AcasEntryPayloadIncomplete,
     AcasSandboxBackend,
     AcasSandboxConfig,
     disk_image_base,
@@ -979,6 +981,54 @@ _LIVE_WORK_DIR = {
     "isSymlink": False,
     "modifiedTime": 1786404028,
 }
+#: `ln -sfn /etc /work/out` inside the guest. `size` is 4 — the length of `/etc`, the target
+#: *string*. The link itself types as OTHER; a path *through* it carries nothing that says so.
+_LIVE_SYMLINK_DIR = {
+    "name": "out",
+    "path": "/work/out",
+    "size": 4,
+    "mode": 511,
+    "isDir": False,
+    "isSymlink": True,
+    "symlinkTarget": "/etc",
+    "modifiedTime": 1786404028,
+}
+_LIVE_ETC = {
+    "name": "etc",
+    "path": "/etc",
+    "size": 4096,
+    "mode": 493,
+    "isDir": True,
+    "isSymlink": False,
+    "modifiedTime": 1786404028,
+}
+_LIVE_ETC_HOSTNAME = {
+    "name": "hostname",
+    "path": "/etc/hostname",
+    "size": 12,
+    "mode": 420,
+    "isDir": False,
+    "isSymlink": False,
+    "modifiedTime": 1786404028,
+}
+
+#: The guest filesystem the fake answers about. `/etc` stands in for the real one — one entry
+#: where a live listing returned 121 — because it is what a symlink out of the working
+#: directory reaches, and what no read or listing may ever answer with.
+_GUEST_FILESYSTEM = {
+    _WORK_DIR: _LIVE_WORK_DIR,
+    "/work/real.txt": _LIVE_REGULAR,
+    "/work/link-out.txt": _LIVE_SYMLINK,
+    "/work/sub": _LIVE_DIRECTORY,
+    "/work/sub/child.txt": _LIVE_NESTED,
+    "/etc": _LIVE_ETC,
+    "/etc/hostname": _LIVE_ETC_HOSTNAME,
+}
+_GUEST_CONTENTS = {
+    "/work/real.txt": _REAL_CONTENT,
+    "/work/sub/child.txt": b"child",
+    "/etc/hostname": _HOSTNAME,
+}
 
 
 class _FakeDataPlaneClient:
@@ -996,22 +1046,8 @@ class _FakeDataPlaneClient:
         self.sandbox_id = "sbx-1"
         self._sbx_path = _SBX_PATH
         self._api_version = _API_VERSION
-        self._entries = dict(
-            entries
-            if entries is not None
-            else {
-                _WORK_DIR: _LIVE_WORK_DIR,
-                "/work/real.txt": _LIVE_REGULAR,
-                "/work/link-out.txt": _LIVE_SYMLINK,
-                "/work/sub": _LIVE_DIRECTORY,
-                "/work/sub/child.txt": _LIVE_NESTED,
-            }
-        )
-        self._contents = dict(
-            contents
-            if contents is not None
-            else {"/work/real.txt": _REAL_CONTENT, "/etc/hostname": _HOSTNAME}
-        )
+        self._entries = dict(entries if entries is not None else _GUEST_FILESYSTEM)
+        self._contents = dict(contents if contents is not None else _GUEST_CONTENTS)
         self.gets: list[tuple[str, dict]] = []
         self.reads: list[str] = []
 
@@ -1020,31 +1056,63 @@ class _FakeDataPlaneClient:
 
         params = dict(params or {})
         self.gets.append((path, params))
-        target = params["path"]
+        requested = params["path"]
         if path == f"{_SBX_PATH}/files/stat":
-            entry = self._entries.get(target)
+            resolved = self._follow(requested, follow_last=False)
+            entry = self._entries.get(resolved)
             if entry is None:
-                raise ResourceNotFoundError(message=f"no such path: {target}")
-            return dict(entry)
+                raise ResourceNotFoundError(message=f"no such path: {requested}")
+            # Live-verified: the service echoes the path that was asked for, so following a
+            # symlinked component is invisible in the answer. Only rewritten where a follow
+            # actually happened, so a test can still inject a hostile `path` of its own.
+            return {**entry, "path": requested} if resolved != requested else dict(entry)
         if path == f"{_SBX_PATH}/files/list":
+            target = self._follow(requested, follow_last=True)
             entry = self._entries.get(target)
             if entry is None or not entry.get("isDir"):
-                raise ResourceNotFoundError(message=f"no such directory: {target}")
-            return {"path": target, "entries": self._children(target)}
+                raise ResourceNotFoundError(message=f"no such directory: {requested}")
+            children = self._children(target)
+            if target != requested:
+                children = [
+                    {**child, "path": posixpath.join(requested, child["name"])}
+                    for child in children
+                ]
+            return {"path": requested, "entries": children}
         raise AssertionError(f"unexpected data-plane GET: {path}")
 
     async def read_file(self, path):
         from azure.core.exceptions import HttpResponseError, ResourceNotFoundError
 
         self.reads.append(path)
-        entry = self._entries.get(path)
+        target = self._follow(path, follow_last=True)
+        entry = self._entries.get(target)
         if entry is None:
             raise ResourceNotFoundError(message=f"no such file: {path}")
         if entry.get("isDir"):
             raise HttpResponseError(message=f"{path} is a directory")
-        if entry.get("isSymlink"):
-            path = entry["symlinkTarget"]
-        return self._contents[path]
+        content = self._contents.get(target)
+        if content is None:
+            # The guest deleted it after the stat — the SDK's own answer, not `FileNotFoundError`.
+            raise ResourceNotFoundError(message=f"no such file: {path}")
+        return content
+
+    def _follow(self, path, *, follow_last):
+        """Where the service actually looks, resolving a symlinked component as it goes.
+
+        A stat describes the last component itself and follows only what is above it; a read
+        and a listing follow all of them. That asymmetry is the whole leak: `stat out` reports
+        the link, `stat out/hostname` reports a file inside `/etc`.
+        """
+        segments = [segment for segment in path.split("/") if segment]
+        resolved = ""
+        for index, segment in enumerate(segments):
+            resolved = f"{resolved}/{segment}"
+            entry = self._entries.get(resolved)
+            if entry is None:
+                continue
+            if entry.get("isSymlink") and (follow_last or index < len(segments) - 1):
+                resolved = entry["symlinkTarget"]
+        return resolved
 
     def _children(self, directory):
         prefix = directory.rstrip("/") + "/"
@@ -1156,6 +1224,9 @@ class TestFailsClosedOnAMissingTypeFlag:
     This is the tripwire for the service changing shape under this backend, and it is the whole
     reason the confinement rule can be claimed at all: read follows symlinks here, so an entry
     of unknown type is a read of an unknown file.
+
+    It is deliberately not a `ValueError`: `collect_outputs` reads one of those as a confinement
+    failure, which would report a renamed wire field as path traversal and mask this tripwire.
     """
 
     def _without(self, field):
@@ -1163,19 +1234,23 @@ class TestFailsClosedOnAMissingTypeFlag:
         return _FakeDataPlaneClient(entries={"/work/real.txt": payload})
 
     def test_a_payload_without_the_symlink_flag_is_refused(self):
-        with pytest.raises(ValueError, match="isSymlink"):
+        with pytest.raises(AcasEntryPayloadIncomplete, match="isSymlink"):
             _stat(_sandbox(self._without("isSymlink")), "real.txt")
 
     def test_a_payload_without_the_directory_flag_is_refused(self):
-        with pytest.raises(ValueError, match="isDir"):
+        with pytest.raises(AcasEntryPayloadIncomplete, match="isDir"):
             _stat(_sandbox(self._without("isDir")), "real.txt")
 
     def test_a_non_boolean_flag_is_refused(self):
         """A string `"false"` is truthy, so type-checking the flag is not pedantry."""
         payload = {**_LIVE_REGULAR, "isSymlink": "false"}
         client = _FakeDataPlaneClient(entries={"/work/real.txt": payload})
-        with pytest.raises(ValueError, match="isSymlink"):
+        with pytest.raises(AcasEntryPayloadIncomplete, match="isSymlink"):
             _stat(_sandbox(client), "real.txt")
+
+    def test_the_refusal_is_not_one_a_confinement_check_would_raise(self):
+        """`_backend_refusals` translates `ValueError` and `OSError`; this must pass through both."""
+        assert not issubclass(AcasEntryPayloadIncomplete, ValueError | OSError)
 
     def test_an_absent_size_is_unknown_rather_than_zero(self):
         """`None` fails closed upstream; zero would make every cap read that file as free."""
@@ -1257,6 +1332,95 @@ class TestReadFile:
         )
         assert client.reads == ["/work/real.txt"]
 
+    def test_a_nested_path_through_real_directories_still_reads(self):
+        """The component walk refuses links, not depth."""
+        content = asyncio.run(
+            _sandbox().read_file("sub/child.txt", working_directory=_WORK_DIR, max_bytes=64)
+        )
+        assert content == _GUEST_CONTENTS["/work/sub/child.txt"]
+
+    def test_a_file_that_vanishes_after_the_stat_is_a_file_not_found(self):
+        """The SDK answers a late deletion with `ResourceNotFoundError`, which is no `OSError`.
+
+        Untranslated it reaches `collect_outputs` as an azure-core type that nothing in the
+        refusal family covers — see `TestThroughCollectOutputs`.
+        """
+        client = _FakeDataPlaneClient(contents={})
+        with pytest.raises(FileNotFoundError):
+            asyncio.run(
+                _sandbox(client).read_file("real.txt", working_directory=_WORK_DIR, max_bytes=64)
+            )
+        assert client.reads == ["/work/real.txt"]
+
+
+class TestASymlinkedParentEscapesLexicalConfinement:
+    """`ln -sfn /etc /work/out`, the escape a lexical check cannot see.
+
+    Verified against a live sandbox group: `stat out` is OTHER, but `stat out/hostname` is a
+    regular 12-byte file, reading it returns `/etc/hostname`, and listing `out` enumerates
+    `/etc`. Nothing in the final entry's payload records that a parent was a link, so
+    confinement has to stat every component rather than classify the last one.
+    """
+
+    @staticmethod
+    def _client():
+        return _FakeDataPlaneClient(entries={**_GUEST_FILESYSTEM, "/work/out": _LIVE_SYMLINK_DIR})
+
+    @staticmethod
+    def _stat_route(path):
+        return (f"{_SBX_PATH}/files/stat", {"path": path, "api-version": _API_VERSION})
+
+    def test_the_service_answers_from_outside_the_working_directory(self):
+        """The premise of both refusals below: the link is visible, the path through it is not."""
+        from maf_sandbox import EntryKind
+
+        client = self._client()
+        assert _stat(_sandbox(client), "out").kind is EntryKind.OTHER
+
+        through = _stat(_sandbox(client), "out/hostname")
+        assert through.kind is EntryKind.FILE
+        assert through.size_bytes == len(_HOSTNAME)
+        assert asyncio.run(client.read_file("/work/out/hostname")) == _HOSTNAME
+
+        listed = asyncio.run(
+            client._dp_get(
+                f"{_SBX_PATH}/files/list",
+                params={"path": "/work/out", "api-version": _API_VERSION},
+            )
+        )
+        # Live-verified: the service echoes the REQUESTED prefix, so every escaped entry looks
+        # like it sits under the working directory. The per-entry check cannot fire on these —
+        # the component walk is the only thing standing between a kind and /etc.
+        assert [entry["path"] for entry in listed["entries"]] == ["/work/out/hostname"]
+
+    def test_a_read_through_a_symlinked_parent_is_refused(self):
+        client = self._client()
+        with pytest.raises(ValueError, match="real directory"):
+            asyncio.run(
+                _sandbox(client).read_file(
+                    "out/hostname", working_directory=_WORK_DIR, max_bytes=64
+                )
+            )
+        assert client.reads == []
+        assert client.gets == [self._stat_route(_WORK_DIR), self._stat_route("/work/out")]
+
+    def test_a_listing_through_a_symlinked_directory_is_refused(self):
+        """The listing is never requested: the walk covers the directory named, not only its parents."""
+        client = self._client()
+        with pytest.raises(ValueError, match="real directory"):
+            asyncio.run(_sandbox(client).list_dir("out", working_directory=_WORK_DIR))
+        assert client.gets == [self._stat_route(_WORK_DIR), self._stat_route("/work/out")]
+
+    def test_a_path_through_a_regular_file_is_not_reported_as_an_escape(self):
+        """`ENOTDIR` is not a confinement failure, and only a link makes it one."""
+        client = self._client()
+        with pytest.raises(NotADirectoryError):
+            asyncio.run(
+                _sandbox(client).read_file(
+                    "real.txt/child", working_directory=_WORK_DIR, max_bytes=64
+                )
+            )
+
 
 class TestListDir:
     def test_every_kind_in_one_listing_is_mapped(self):
@@ -1298,7 +1462,16 @@ class TestListDir:
         client = _FakeDataPlaneClient(
             entries={_WORK_DIR: _LIVE_WORK_DIR, "/work/real.txt": payload}
         )
-        with pytest.raises(ValueError, match="isSymlink"):
+        with pytest.raises(AcasEntryPayloadIncomplete, match="isSymlink"):
+            asyncio.run(_sandbox(client).list_dir(".", working_directory=_WORK_DIR))
+
+    def test_a_listed_entry_with_no_path_is_refused_as_a_wire_shape_failure(self):
+        """Where an entry sits is as load-bearing as what it is, and as absent from the payload."""
+        payload = {k: v for k, v in _LIVE_REGULAR.items() if k != "path"}
+        client = _FakeDataPlaneClient(
+            entries={_WORK_DIR: _LIVE_WORK_DIR, "/work/real.txt": payload}
+        )
+        with pytest.raises(AcasEntryPayloadIncomplete, match="no 'path'"):
             asyncio.run(_sandbox(client).list_dir(".", working_directory=_WORK_DIR))
 
     def test_the_directory_itself_is_refused_when_it_is_outside(self):
@@ -1349,6 +1522,29 @@ class TestThroughCollectOutputs:
             asyncio.run(collect_outputs(_sandbox(client), self._spec("link-out.txt"), sink=sink))
 
         assert client.reads == []
+        assert delivered == []
+
+    def test_a_wire_shape_refusal_is_not_reported_as_traversal(self):
+        """The glue maps a backend `ValueError` to `SandboxOutputNotConfined`. A payload that
+        cannot say what an entry is has to arrive as itself, or the tripwire reads as a bad path."""
+        from maf_sandbox import collect_outputs
+
+        payload = {k: v for k, v in _LIVE_REGULAR.items() if k != "isSymlink"}
+        client = _FakeDataPlaneClient(
+            entries={_WORK_DIR: _LIVE_WORK_DIR, "/work/real.txt": payload}
+        )
+        sink, _ = self._sink()
+        with pytest.raises(AcasEntryPayloadIncomplete):
+            asyncio.run(collect_outputs(_sandbox(client), self._spec("real.txt"), sink=sink))
+
+    def test_a_file_that_vanishes_after_the_stat_lands_in_the_refusal_family(self):
+        """A kind must never need azure-core to catch a file the guest deleted mid-collection."""
+        from maf_sandbox import SandboxOutputUnreachable, collect_outputs
+
+        client = _FakeDataPlaneClient(contents={})
+        sink, delivered = self._sink()
+        with pytest.raises(SandboxOutputUnreachable):
+            asyncio.run(collect_outputs(_sandbox(client), self._spec("real.txt"), sink=sink))
         assert delivered == []
 
     def test_a_traversing_declaration_never_reaches_the_service(self):

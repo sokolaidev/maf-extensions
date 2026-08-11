@@ -22,11 +22,12 @@ This package imports no host application.
 
 from __future__ import annotations
 
-from ._backend import AcasSandboxBackend
+from ._backend import AcasEntryPayloadIncomplete, AcasSandboxBackend
 from ._config import AcasSandboxConfig
 from ._images import disk_image_base, resolve_disk_image_id
 
 __all__ = [
+    "AcasEntryPayloadIncomplete",
     "AcasSandboxBackend",
     "AcasSandboxConfig",
     "MafSandboxAcasExperimentalWarning",
