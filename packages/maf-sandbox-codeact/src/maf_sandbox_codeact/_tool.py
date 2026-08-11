@@ -387,11 +387,11 @@ async def _execute(
     run_id = uuid4().hex[:12]
     run_dir = f"{session.spec.work_dir}/{run_id}"
 
-    for name in shared:
-        assert store is not None  # `shared` is empty unless a store was wired
-        refusal = await _share_one(sandbox, store, name, f"{run_dir}/{name}")
-        if refusal is not None:
-            return refusal
+    if store is not None:
+        for name in shared:
+            refusal = await _share_one(sandbox, store, name, f"{run_dir}/{name}")
+            if refusal is not None:
+                return refusal
 
     program_path = f"{run_dir}/{_PROGRAM_FILENAME}"
     try:
