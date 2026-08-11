@@ -7,14 +7,20 @@ app  ->  maf_sandbox (router)  ->  maf_sandbox_docker  ->  the container
               ^ maf_sandbox_codeact calls the router
 ```
 
-Sample 07 also lands an artifact, and gets there by defining a kind inline against the protocol — it is the worked example of *writing* a kind. This sample changes no workload code at all: the same packaged `execute_code` a host already has, with two constructor arguments it did not pass before.
+Sample 07 also lands an artifact, and gets there by defining a kind inline against the protocol — it is the worked example of *writing* a kind. This sample changes no workload code at all: the same packaged `execute_code` a host already has, with three constructor arguments it did not pass before.
 
 ## What is new against sample 06
 
-Two arguments to `make_codeact_tools`, and the tool grows a parameter for each:
+Two channels, three arguments to `make_codeact_tools` — the second channel takes two of them, and they are not separable:
 
 - **`workspace_store=store`** adds `files`. Each named file is read from the store and written into the program's working directory under its own name. **The caller's listing is the authority**: only a path returned by `WorkspaceContext.list_files` is ever shared, so a name the model invented — or read out of a file it was given — has nowhere to go.
-- **`output_sink=...` with `outputs=CodeactOutputs.DECLARED`** adds `outputs`. The model says what its program will write *before* it runs; names are validated and capped up front, and one declared but never written is reported back by name rather than dropped. Produced files never return as bytes — they go to the sink, and the model gets the sentence the sink returned.
+- **`output_sink=...` *and* `outputs=CodeactOutputs.DECLARED`** together add `outputs`. The model says what its program will write *before* it runs; names are validated and capped up front, and one declared but never written is reported back by name rather than dropped. Produced files never return as bytes — they go to the sink, and the model gets the sentence the sink returned.
+
+The mode is not optional once a sink is passed. `outputs` defaults to `CodeactOutputs.NONE`, and a sink under that default is refused where you wrote it rather than ignored at run time:
+
+```
+ValueError: execute_code: an output sink was supplied with outputs='none', so nothing would ever be landed in it. Pass an outputs mode, or drop the sink.
+```
 
 Everything else is sample 06 unchanged: the same image, the same backend, the same `Isolation.CONTAINER` floor, the same model reached with `DefaultAzureCredential`.
 

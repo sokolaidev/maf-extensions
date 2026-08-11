@@ -44,18 +44,24 @@ _DELIVERED = re.compile(
 #: narrow one. Optional, because the program itself prints none of them.
 _SEPARATOR = "[,\u00a0\u202f ]"
 
+#: Signs a model may render, beyond the ASCII pair: the true minus, and the fullwidth
+#: forms. This checker reads model-authored prose, where `\u2212390` is as likely as `-390`.
+_SIGNS = "+\u2212\uff0b\uff0d-"
+
 
 def _number(value: str) -> re.Pattern[str]:
     """Match ``value`` where it is the whole number, not part of a longer token.
 
-    Nothing may abut it: no digit, no sign, no thousands group, and no word character — so
-    `840`, `-390`, `1,390`, `390,000` and `1124e3` are all *not* the value.  A trailing `.0`
+    Nothing may abut it: no digit, no sign (ASCII or Unicode), no thousands group, and no
+    word character — so `840`, `-390`, `\u2212390`, `1,390`, `390,000` and `1124e3` are all
+    *not* the value.  A trailing `.0`
     and a thousands separator inside the value are accepted, and the trailing guard skips a
     dot rather than refusing one, so `1124.0.` is the number and `1124.05` is not.
     """
     grouped = value if len(value) <= 3 else f"{value[:-3]}{_SEPARATOR}?{value[-3:]}"
     return re.compile(
-        rf"(?<![\w.+-])(?<!\d{_SEPARATOR}){grouped}(?:\.0*)?(?!\.?\d)(?!{_SEPARATOR}\d)(?!\w)"
+        rf"(?<![\w.{_SIGNS}])(?<!\d{_SEPARATOR}){grouped}"
+        rf"(?:\.0*)?(?!\.?\d)(?!{_SEPARATOR}\d)(?!\w)"
     )
 
 

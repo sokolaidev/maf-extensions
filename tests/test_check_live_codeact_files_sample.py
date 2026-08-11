@@ -127,16 +127,24 @@ class TestLettersAreNotABoundaryEither:
 
 
 class TestASignBelongsToTheNumber:
-    @pytest.mark.parametrize("signed", ["-1124", "+1124"])
+    @pytest.mark.parametrize(
+        "signed",
+        ["-1124", "+1124", "\u22121124", "\uff0d1124", "\uff0b1124"],
+        ids=["hyphen-minus", "plus", "minus-sign", "fullwidth-minus", "fullwidth-plus"],
+    )
     def test_a_signed_grand_total_fails(self, signed: str):
-        """`-1124` is not 1124, however much of it looks like it."""
+        """`-1124` is not 1124, however much of it looks like it — and this checker reads
+        model-authored prose, where a true minus is as likely as the ASCII one."""
         assert any(
             "grand total" in reason
             for reason in check.assess(_HEALTHY.replace("1124", signed), _SUMMARY)
         )
 
-    def test_a_signed_region_total_fails(self):
-        negative = _SUMMARY.replace("| north | 390 |", "| north | -390 |")
+    @pytest.mark.parametrize(
+        "signed", ["-390", "\u2212390"], ids=["hyphen-minus", "minus-sign"]
+    )
+    def test_a_signed_region_total_fails(self, signed: str):
+        negative = _SUMMARY.replace("| north | 390 |", f"| north | {signed} |")
         assert any("north" in reason for reason in check.assess(_HEALTHY, negative))
 
 
