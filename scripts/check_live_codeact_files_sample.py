@@ -1,25 +1,17 @@
 """Assert that a live run of `samples/08_docker_codeact_files` moved files in both directions.
 
-The other CodeAct checker (`check_live_codeact_sample.py`) reads stdout alone, because samples
-03 and 06 produce nothing else. This sample's whole subject is a file that leaves the sandbox,
-and stdout cannot show that: the model is handed a sentence by the sink and could write that
-sentence whether or not anything landed. So this check has two halves and the second is the
-point — **a run that prints the right total and lands nothing must go red.**
+Two halves, and the second is the point: stdout cannot show that a file left the sandbox, so a
+run that prints the right total and lands nothing must go red.
 
     python samples/08_docker_codeact_files/agent.py | tee out.txt
     python scripts/check_live_codeact_files_sample.py out.txt samples/08_docker_codeact_files/out/summary.md
-
-In the output: the grand total over the shipped `sales.csv`, a `Disposed N sandbox(es).` line
-with N >= 1, and the sample's own `Delivered this turn` line naming `summary.md` — the host's
-record of what reached the sink, not a listing of `out/`. On disk: the summary, carrying each
-region's own total. It landing as `summary.md` rather than `<run-id>/summary.md` is itself an
-assertion, since the guest path and the delivered name are separate fields.
 
 Exits non-zero listing every reason it failed.
 """
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -93,13 +85,19 @@ def _regions_reporting_their_own_total(summary: str) -> tuple[set[str], set[str]
 
 
 def _delivered_names(reported: str) -> set[str]:
-    """The names on the sample's delivery line, as whole names.
+    """The names on the sample's delivery line, exactly as the host recorded them.
 
-    A membership test rather than a substring one: `summary.md.bak` and `not-summary.md` both
-    contain the declared name and neither is it, and the pairing that matters — an earlier
-    run's file still on disk, this turn delivering something else — would otherwise pass.
+    The sample emits JSON so this can be read rather than guessed at: an artifact name may
+    legally contain a comma, and splitting one delivery called ``notes, summary.md`` yields
+    two, one of them the declared name. An unparseable line is no names, which fails.
     """
-    return {name.strip() for name in reported.split(",") if name.strip()}
+    try:
+        reported_names = json.loads(reported)
+    except ValueError:
+        return set()
+    if not isinstance(reported_names, list):
+        return set()
+    return {name for name in reported_names if isinstance(name, str)}
 
 
 def assess(output: str, summary: str | None) -> list[str]:

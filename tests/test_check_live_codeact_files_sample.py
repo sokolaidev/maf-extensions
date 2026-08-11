@@ -11,6 +11,7 @@ the regression this sample exists to catch.
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -33,7 +34,7 @@ _HEALTHY = """\
 The grand total across all regions is 1124. I saved the per-region breakdown as summary.md.
 
 Disposed 1 sandbox(es).
-Delivered this turn into out/: summary.md
+Delivered this turn into out/: ["summary.md"]
 """
 
 _SUMMARY = """\
@@ -162,10 +163,7 @@ class TestNamesAreWholeWords:
     def test_a_delivery_line_naming_a_lookalike_fails(self, wrong: str):
         """The pairing that matters: an earlier run's `summary.md` still on disk, and this
         turn delivering something whose name merely contains the declared one."""
-        reported = _HEALTHY.replace(
-            "Delivered this turn into out/: summary.md",
-            f"Delivered this turn into out/: {wrong}",
-        )
+        reported = _HEALTHY.replace('["summary.md"]', json.dumps([wrong]))
         assert any(
             "did not reach the sink this turn" in reason
             for reason in check.assess(reported, _SUMMARY)
@@ -173,10 +171,26 @@ class TestNamesAreWholeWords:
 
     def test_a_delivery_line_naming_several_files_still_finds_the_declared_one(self):
         several = _HEALTHY.replace(
-            "Delivered this turn into out/: summary.md",
-            "Delivered this turn into out/: notes.txt, summary.md, chart.png",
+            '["summary.md"]', json.dumps(["notes.txt", "summary.md", "chart.png"])
         )
         assert check.assess(several, _SUMMARY) == []
+
+    def test_one_delivery_whose_name_contains_a_comma_is_not_read_as_two(self):
+        """A comma is legal in an artifact name, so a delivery called `notes, summary.md` is
+        one file and not two — and reading it as two would find the declared name in a turn
+        that never delivered it."""
+        comma = _HEALTHY.replace('["summary.md"]', json.dumps(["notes, summary.md"]))
+        assert any(
+            "did not reach the sink this turn" in reason
+            for reason in check.assess(comma, _SUMMARY)
+        )
+
+    def test_a_delivery_line_that_is_not_json_fails(self):
+        unparseable = _HEALTHY.replace('["summary.md"]', "summary.md")
+        assert any(
+            "did not reach the sink this turn" in reason
+            for reason in check.assess(unparseable, _SUMMARY)
+        )
 
 
 class TestATotalBelongsToItsOwnRegion:
@@ -222,8 +236,8 @@ class TestTheRunThatAnsweredAndSavedNothing:
         """The stale-artifact case: `out/` holds an earlier run's summary, and the host's
         record of *this* turn is what settles it."""
         nothing = _HEALTHY.replace(
-            "Delivered this turn into out/: summary.md",
-            "Delivered this turn into out/: nothing",
+            'Delivered this turn into out/: ["summary.md"]',
+            "Delivered this turn into out/: []",
         )
         assert any(
             "did not reach the sink this turn" in r
@@ -231,7 +245,9 @@ class TestTheRunThatAnsweredAndSavedNothing:
         )
 
     def test_a_run_that_never_reached_its_final_report_fails(self):
-        truncated = _HEALTHY.replace("Delivered this turn into out/: summary.md", "")
+        truncated = _HEALTHY.replace(
+            'Delivered this turn into out/: ["summary.md"]', ""
+        )
         assert any(
             "did not reach its final report" in r
             for r in check.assess(truncated, _SUMMARY)

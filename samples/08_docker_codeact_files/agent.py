@@ -18,6 +18,7 @@ sink should point, which is the security-relevant decision here.  Read it first.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sys
 from pathlib import Path
@@ -201,10 +202,10 @@ async def run() -> int:
         print(f"\nDisposed {deleted} sandbox(es).")
         await credential.close()
 
-    print(
-        f"Delivered this turn into {OUTPUT_DIR.name}/: "
-        f"{', '.join(delivered) if delivered else 'nothing'}"
-    )
+    # JSON, not a comma-joined sentence: an artifact name may legally contain a comma, so
+    # one delivery called `notes, summary.md` would read back as two — one of them the name
+    # this run is checked for.
+    print(f"Delivered this turn into {OUTPUT_DIR.name}/: {json.dumps(delivered)}")
 
     return 0
 

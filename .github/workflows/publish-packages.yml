@@ -330,13 +330,13 @@ jobs:
           fi
 
   # The happy-path half of issue #33: once a real publish lands, run the samples verify-live.yml
-  # covers — 01_acas_bicep, 03_acas_codeact and 06_docker_codeact — against a live sandbox at the
-  # just-released version, proving router, backend, image and workload agree. This job's own `if:`
-  # is gated to the packages any of those samples exercises; a maf-sandbox-wslc release touches
-  # none, so it triggers nothing. Which samples actually run is the called workflow's decision:
-  # `package` tells it which package was just released, and each job runs only if that release
-  # could affect it — so a maf-sandbox-docker release runs the docker job (no billable sandbox)
-  # and not the ACAS ones. A batch releasing more than one package runs this once per package;
+  # covers — 01_acas_bicep, 03_acas_codeact, 06_docker_codeact and 08_docker_codeact_files —
+  # against a live sandbox at the just-released version, proving router, backend, image and
+  # workload agree. This job's own `if:` is gated to the packages any of those samples exercises;
+  # a maf-sandbox-wslc release touches none, so it triggers nothing. Which samples actually run
+  # is the called workflow's decision: `package` tells it which package was just released, and
+  # each job runs only if that release could affect it — so a maf-sandbox-docker release runs
+  # both docker jobs (neither creates a billable sandbox) and not the ACAS ones. A batch releasing more than one package runs this once per package;
   # each run is independent and safe.
   verify:
     name: Verify against a live sandbox
