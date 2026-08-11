@@ -1168,6 +1168,27 @@ class TestManifestOutputs:
         assert _MANIFEST_FILENAME not in " ".join(sink.names)
         assert "saved a" in out
 
+    @pytest.mark.parametrize(
+        ("mode", "kwargs", "match"),
+        [
+            (CodeactOutputs.NONE, {"files_in": 0}, "no call could succeed"),
+            (CodeactOutputs.DECLARED, {"files_out": 0}, "refuse every non-empty use"),
+            (CodeactOutputs.MANIFEST, {"files_out": 1}, "at least 2"),
+        ],
+    )
+    def test_a_cap_no_call_could_satisfy_is_refused_at_attach(self, mode, kwargs, match):
+        """A tool the model can see and can never use successfully is worse than one that
+        never attached: `program.py` is always one inbound file, and an `outputs` parameter
+        with nowhere to put an output advertises a channel that refuses every use."""
+        caps = {k: replace(DEFAULT_TRANSFER_LIMITS, max_files=v) for k, v in kwargs.items()}
+        with pytest.raises(ValueError, match=match):
+            _tool(
+                _backend(capabilities=_PULLS),
+                outputs=mode,
+                output_sink=_RecordingSink().sink if mode is not CodeactOutputs.NONE else None,
+                **caps,
+            )
+
     def test_a_host_cap_with_no_room_for_an_artifact_is_refused_at_attach(self):
         """One slot means the manifest fills it and the channel could never deliver."""
         with pytest.raises(ValueError, match="at least 2"):

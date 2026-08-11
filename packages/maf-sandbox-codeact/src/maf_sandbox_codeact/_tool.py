@@ -203,6 +203,21 @@ def make_codeact_tools(
     exception.
     """
     configured = router is not None and router.enabled
+    if configured and files_in.max_files < 1:
+        # `program.py` is one inbound file on every call, so a cap below one refuses all of
+        # them. Every impossible pairing below is caught here rather than per call: a tool the
+        # model can see and can never use successfully is worse than one that never attached.
+        raise ValueError(
+            f"{EXECUTE_CODE_TOOL_NAME}: files_in.max_files is {files_in.max_files}, and the "
+            f"program itself is one file written into the sandbox on every call, so no call "
+            f"could succeed."
+        )
+    if configured and outputs is CodeactOutputs.DECLARED and files_out.max_files < 1:
+        raise ValueError(
+            f"{EXECUTE_CODE_TOOL_NAME}: outputs={str(CodeactOutputs.DECLARED)!r} shows the "
+            f"model an `outputs` parameter, and files_out.max_files of "
+            f"{files_out.max_files} would refuse every non-empty use of it."
+        )
     if configured and outputs is CodeactOutputs.MANIFEST and files_out.max_files < 2:
         # The manifest occupies one slot of the collection, so a cap of one leaves room for
         # nothing else: the channel is wired but could never deliver an artifact. Better here
@@ -270,10 +285,10 @@ _DESCRIPTION_DECLARED = """**To produce files, name them in ``outputs`` and writ
         do not write is reported to you rather than silently dropped, and a file you write
         without declaring is not saved at all.
 
-        Naming a file in both ``files`` and ``outputs`` is how you edit one in place — and it
-        is the one case where "declared and not written" cannot be reported, because the copy
-        you were given is already there.  A program that fails before rewriting it saves the
-        original back, unchanged."""
+        Naming a file in both ``files`` and ``outputs`` is how you edit one in place.  It is
+        the one case where "declared and not written" cannot be reported, because the copy you
+        were given is already there: a program that **exits cleanly** without rewriting it saves
+        the original back unchanged.  A program that fails saves nothing at all."""
 
 _DESCRIPTION_MANIFEST = f"""**To produce files, write them into the working directory and
         list them in ``{_MANIFEST_FILENAME}``**, in that directory, like this::
@@ -434,8 +449,7 @@ async def _execute(
     if isinstance(sandbox, str):
         return sandbox
 
-    # The fresh directory chosen above, because `acquire` is get-or-create and the sandbox is
-    # REUSED across calls. Without it a file deleted from the workspace between rounds would
+    # Fresh per call, because `acquire` is get-or-create: see where `run_id` is chosen.
     run_dir = f"{session.spec.work_dir}/{run_id}"
 
     for name, content in shared:
@@ -559,9 +573,10 @@ async def _read_workspace_files(
     write: a tally applied to the finished set bounds what crosses into the sandbox and nothing
     about what this process spent getting there.
 
-    Text only, because ``AgentFileStore.read`` answers with ``str``.  The protocol's
-    ``write_file`` takes ``bytes`` too, so a binary input is reachable the day a store can hold
-    one; nothing here needs to change first.
+    Text only: ``AgentFileStore.read`` answers with ``str``, and this path encodes what it
+    is given.  The protocol's ``write_file`` takes ``bytes``, so the boundary below is not what
+    stands in the way of a binary input — but this function and the tally would both have to
+    learn about it.
     """
     read: list[tuple[str, str]] = []
     for name in names:
@@ -655,16 +670,10 @@ def _validated_output_names(
 ) -> list[str] | str:
     """Settle every output name before the program runs, or answer with the refusal.
 
-    Up front rather than after, because these names are the model's and every one is cheaper to
-    argue about before a program has spent a turn producing files under them.  Which means each
-    rule has to be applied to the **spelling that will actually be judged later** — the guest
-    path with its run prefix, and the delivered name after the sink's normalization.  A rule
-    applied to the bare name is a rule ``collect_outputs`` re-applies to a longer string, and
-    the difference is a refusal arriving one whole run too late.
-
-    ``collect_outputs`` remains the authority; nothing here relaxes it.  If the two ever
-    disagree the check below is the one that is wrong, and the cost of that is the post-run
-    refusal this exists to avoid — never a name reaching a host it should not have.
+    Each rule is applied to the spelling ``collect_outputs`` will judge later — the guest path
+    with its run prefix, and the delivered name after normalization — so that a refusal cannot
+    arrive a whole run late.  That function stays the authority: if the two disagree, this one
+    is wrong, and the cost is the late refusal rather than a name reaching a host.
     """
     if len(names) > max_files:
         return (
