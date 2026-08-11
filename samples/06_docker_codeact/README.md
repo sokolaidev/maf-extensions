@@ -36,7 +36,7 @@ From PyPI, not from this workspace:
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install maf-sandbox-docker maf-sandbox-codeact agent-framework-openai azure-identity
+pip install maf-sandbox-docker maf-sandbox-codeact agent-framework-openai azure-identity "azure-core[aio]"
 ```
 
 `maf-sandbox` arrives as a dependency of the backend, which otherwise drives the `docker` client and imports only the standard library. `agent-framework-openai` is separate because the framework's core ships no model connector. `azure-identity` is separate too, and named explicitly for a reason: sample 03 gets it transitively through `maf-sandbox-acas`, but the docker backend does not depend on it — and `agent-framework-openai` does not install it either — so a sample that authenticates the model with `DefaultAzureCredential` has to ask for it, exactly as `verify-live.yml` does.
