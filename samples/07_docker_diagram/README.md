@@ -56,7 +56,7 @@ There is **no workload package** to install — the kind is in `agent.py`, which
 
 | Variable | What it is |
 |---|---|
-| `DIAGRAM_SANDBOX_IMAGE` | The image built above — for example `diagram-sandbox:local`. A bare local reference; there is no registry to qualify it, because the backend runs what is already on this machine |
+| `DIAGRAM_SANDBOX_IMAGE` | The image built above — for example `diagram-sandbox:local`. An unqualified single-name tag: Docker resolves it to its official `docker.io/library/` namespace, which no third party can publish to, so if you skip the build the backend's pull fails cleanly rather than fetching a different image. Build it first and it runs from this machine. (To pin it to the local daemon regardless, qualify it — `localhost/diagram-sandbox:local` — and tag the build to match.) |
 | `OPENAI_API_KEY` | The model endpoint's key. A local server that ignores it still wants a placeholder |
 | `OPENAI_CHAT_MODEL` | The model name the endpoint serves |
 | `OPENAI_BASE_URL` | *Optional.* The endpoint, when it is not OpenAI itself — `http://localhost:11434/v1` for a local Ollama, say. Unset, the client talks to OpenAI |
@@ -98,7 +98,7 @@ The PNG is git-ignored (`out/`), so a run leaves no tracked file behind.
 
 **`Cannot connect to the Docker daemon`** — the client is installed but no daemon is reachable. Start Docker Desktop (or your engine) and confirm with `docker version`, which reports both a Client and a Server section when the daemon is up.
 
-**`Error: ... image ... not found` / the render never happens** — `DIAGRAM_SANDBOX_IMAGE` names an image that is not on this machine. Build it (see prerequisites); the backend pulls an absent image before creating the container, but a bare local tag like `diagram-sandbox:local` has no registry to pull from, so it must be built locally.
+**`Error: ... image ... not found` / the render never happens** — `DIAGRAM_SANDBOX_IMAGE` names an image that is not on this machine. Build it (see prerequisites); the backend pulls an absent image before creating the container, and a single-name tag like `diagram-sandbox:local` resolves to Docker's official `library/` namespace, where this name is not published — so that pull fails rather than fetching something else, and the fix is to build the image locally.
 
 **`SandboxBackendNotPermitted` at startup** — the router was constructed without `min_isolation=Isolation.CONTAINER`. `DockerSandboxBackend` declares `Isolation.CONTAINER`, below the router's default `MICROVM` floor, and raises at construction rather than at first call.
 

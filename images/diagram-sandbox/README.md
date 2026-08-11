@@ -23,6 +23,8 @@ docker build -t diagram-sandbox:local images/diagram-sandbox
 
 That is the whole story for the sample — `docker` runs what is already on the machine, so there is nothing to push and nothing to import. Podman takes the same arguments.
 
+`diagram-sandbox:local` is an unqualified single-name tag, which Docker resolves to its official `docker.io/library/` namespace — a namespace no third party can publish to, so the sample referencing it can only ever get this locally built image or a clean not-found (never someone else's). Qualify it as `localhost/diagram-sandbox:local` if you would rather it never resolve past the local daemon at all; tag the build to match.
+
 That the image is built rather than pulled from a registry is deliberate for a sample: there is no widely trusted minimal Graphviz image to reference, and building one here keeps the sample's guest a thing the reader can read in five lines rather than a third-party tag whose contents they have to take on faith.
 
 ## What it may reach at run time

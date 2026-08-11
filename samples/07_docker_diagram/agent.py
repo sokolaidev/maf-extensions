@@ -75,8 +75,8 @@ TASK = (
 # does not leave a tracked file behind.
 OUTPUT_DIR = Path(__file__).parent / "out"
 
-#: The image is a local reference (for example `diagram-sandbox:local`); there is no registry
-#: to qualify it, because the backend runs what is already on this machine.
+#: The image is a local reference (for example `diagram-sandbox:local`); the sample builds it and
+#: the backend runs what is on this machine. See the README on why an unqualified tag is safe here.
 SANDBOX_VARS = ("DIAGRAM_SANDBOX_IMAGE",)
 
 #: Everything the chat model needs. `OPENAI_BASE_URL` is optional, so it is read separately:
@@ -104,7 +104,9 @@ _RENDERER = "dot"
 _OUTPUT_FORMAT = "png"
 _FORMAT_FLAG = f"-T{_OUTPUT_FORMAT}"
 _OUTPUT_FLAG = "-o"
-#: One fixed name each, rewritten on every call, since the sandbox is reused across calls.
+#: One fixed name each. The sandbox is reused across calls, so concurrent calls would share
+#: these paths — the render is serialised per attached tool (see `_render_diagram_tool`) so one
+#: call's source and image are never overwritten by another's mid-render.
 _SOURCE_FILENAME = "diagram.dot"
 _OUTPUT_FILENAME = f"diagram.{_OUTPUT_FORMAT}"
 _OUTPUT_MEDIA_TYPE = "image/png"
@@ -180,8 +182,10 @@ def make_diagram_tools(
         spec=spec,
         name=RENDER_DIAGRAM_TOOL_NAME,
         approval_mode="never_require",
-        # `source_integrity` stays at its "trusted" default: this tool's result is a
-        # host-authored reference string (the sink's `display`), never guest-produced content.
+        # `source_integrity` stays at its "trusted" default: the result is deterministic
+        # first-party output from a no-identity, closed-egress sandbox — a host-authored
+        # reference on success, `dot`'s own diagnostic on failure — the same basis on which the
+        # Bicep workload trusts a compiler's output. It is not model-authored content.
         output_sink=sink,
         logger=logger,
     )
@@ -199,6 +203,16 @@ def _render_diagram_tool(
     ``__doc__`` through verbatim, indentation and all — so nesting this one level deeper would
     re-indent every line of what the model reads.
     """
+
+    # The function calls in one assistant message run concurrently, so two `render_diagram`
+    # calls can drive the same sandbox at once — `maf_sandbox._protocol.Sandbox.acquire`
+    # documents this. Both write `diagram.dot` and read `diagram.png` at the fixed paths below,
+    # so without guarding, one call could collect the other's image. This lock serialises the
+    # write -> exec -> collect sequence per attached tool. A stdout-only kind could instead give
+    # each call its own sub-directory, as the Bicep kind does; a FILES_OUT kind cannot, because
+    # the declared output path is the artifact's name and a per-call directory would leak into
+    # it — so serialising is the natural remedy here.
+    render_lock = asyncio.Lock()
 
     async def render_diagram(dot: str) -> str:
         """Render a Graphviz diagram from DOT source and save it as a PNG image.
@@ -234,46 +248,53 @@ def _render_diagram_tool(
 
         source_path = f"{session.spec.work_dir}/{_SOURCE_FILENAME}"
         output_path = f"{session.spec.work_dir}/{_OUTPUT_FILENAME}"
-        try:
-            await sandbox.write_file(source_path, dot)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "render_diagram: could not write the DOT source into the sandbox: %s",
-                error_detail(exc),
-            )
-            return "Error: could not write the diagram source into the sandbox"
 
-        try:
-            # An argv sequence, never a command line: the source is a written file and the
-            # renderer's arguments are fixed, so nothing the model wrote reaches a shell.
-            result = await sandbox.exec(
-                [_RENDERER, _FORMAT_FLAG, source_path, _OUTPUT_FLAG, output_path],
-                working_directory=session.spec.work_dir,
-                timeout=timeout,
-            )
-        except TimeoutError:
-            logger.warning("render_diagram: dot timed out after %ss", timeout)
-            return f"Error: rendering timed out after {timeout}s"
-        except Exception as exc:  # noqa: BLE001
-            # Provider/transport detail can carry account ids — must not reach the transcript.
-            logger.warning("render_diagram: exec failed: %s", error_detail(exc))
-            return "Error: could not run the renderer in the sandbox"
+        # One call's write -> exec -> collect must complete before the next touches the shared
+        # paths — see the note where `render_lock` is created.
+        async with render_lock:
+            try:
+                await sandbox.write_file(source_path, dot)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "render_diagram: could not write the DOT source into the sandbox: %s",
+                    error_detail(exc),
+                )
+                return "Error: could not write the diagram source into the sandbox"
 
-        if result.exit_code != 0:
-            # dot rejects malformed DOT with a diagnostic on stderr. That is the model's to fix,
-            # not a transport failure — hand it back so the next attempt can correct the source.
-            # The declared output is required=False, so its absence here is not a transfer error.
-            logger.info("render_diagram: dot exited %d", result.exit_code)
-            return _render_failed(result.exit_code, (result.stderr or "").rstrip("\n"))
+            try:
+                # An argv sequence, never a command line: the source is a written file and the
+                # renderer's arguments are fixed, so nothing the model wrote reaches a shell.
+                result = await sandbox.exec(
+                    [_RENDERER, _FORMAT_FLAG, source_path, _OUTPUT_FLAG, output_path],
+                    working_directory=session.spec.work_dir,
+                    timeout=timeout,
+                )
+            except TimeoutError:
+                logger.warning("render_diagram: dot timed out after %ss", timeout)
+                return f"Error: rendering timed out after {timeout}s"
+            except Exception as exc:  # noqa: BLE001
+                # Provider/transport detail can carry account ids — must not reach the transcript.
+                logger.warning("render_diagram: exec failed: %s", error_detail(exc))
+                return "Error: could not run the renderer in the sandbox"
 
-        try:
-            landed = await collect_outputs(sandbox, session.spec, sink=sink)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "render_diagram: could not land the rendered image: %s",
-                error_detail(exc),
-            )
-            return "Error: the diagram rendered but could not be saved"
+            if result.exit_code != 0:
+                # dot rejects malformed DOT with a diagnostic on stderr. That is the model's to
+                # fix, not a transport failure — hand it back so the next attempt can correct the
+                # source. The declared output is required=False, so an absent file here is not a
+                # transfer error.
+                logger.info("render_diagram: dot exited %d", result.exit_code)
+                return _render_failed(
+                    result.exit_code, (result.stderr or "").rstrip("\n")
+                )
+
+            try:
+                landed = await collect_outputs(sandbox, session.spec, sink=sink)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "render_diagram: could not land the rendered image: %s",
+                    error_detail(exc),
+                )
+                return "Error: the diagram rendered but could not be saved"
 
         if not landed:
             # dot exited 0 but produced no file — required=False, so collect_outputs returned
