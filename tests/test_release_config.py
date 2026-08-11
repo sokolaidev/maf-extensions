@@ -29,6 +29,7 @@ LOCK_PATH = REPO_ROOT / "uv.lock"
 WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 PUBLISH_WORKFLOW = WORKFLOWS / "publish-packages.yml"
 PR_TITLE_WORKFLOW = WORKFLOWS / "pr-title.yml"
+RELEASE_WORKFLOW = WORKFLOWS / "release-please.yml"
 
 CONFIG = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
 MANIFEST = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
@@ -341,12 +342,88 @@ class TestRoutineAutomationDoesNotClaimToCloseAnIssue:
     )
 
     def test_the_release_workflow_writes_no_closing_keyword(self):
-        text = (WORKFLOWS / "release-please.yml").read_text(encoding="utf-8")
+        text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
         found = self._CLOSING_KEYWORD.findall(text)
         assert not found, (
             f"release-please.yml emits {found} into a pull request body it writes every "
             "release; the issue it names gets re-referenced forever. Drop the keyword."
         )
+
+
+class TestTheWorkflowReadsItsOwnPullRequestsWithoutTheSearchIndex:
+    """`release-please.yml` must not find its own pull requests with `gh pr list --author`.
+
+    That flag is not a filter applied to the list. It switches gh to the search index — the
+    query it sends is a GraphQL search for `author:… repo:… state:open type:pr` — and that
+    index is eventually consistent, while every read in this workflow is of a pull request
+    the same workflow opened seconds earlier. The index does not have it yet, the list comes
+    back empty, and the step succeeds having done nothing.
+
+    Which is what happened the first time the dispatch step ran: the Release PR was created
+    at 17:44:23Z, the step ran at 17:44:25Z, found nothing, and the pull request sat blocked
+    with no test run against it. A step whose failure mode is silence needs its query pinned,
+    because nothing else here notices.
+
+    `--head` and a plain list are direct repository reads and see the pull request at once,
+    so the author is selected out of the result instead.
+    """
+
+    _AUTHOR_FLAG = re.compile(r"--author\b")
+    _LIMIT = re.compile(r"--limit[= ](\d+)")
+    _SELECTS_THE_AUTHOR = "select(.author.login"
+
+    def _pull_request_list_commands(self) -> list[str]:
+        """Every `gh pr list` in the workflow, each with its continuation lines."""
+        lines = RELEASE_WORKFLOW.read_text(encoding="utf-8").splitlines()
+        commands: list[str] = []
+        for index, line in enumerate(lines):
+            if "gh pr list" not in line:
+                continue
+            command = [line]
+            cursor = index
+            while command[-1].rstrip().endswith("\\"):
+                cursor += 1
+                command.append(lines[cursor])
+            commands.append("\n".join(command))
+        assert commands, (
+            f"no `gh pr list` found in {RELEASE_WORKFLOW.name}; this test has stopped "
+            "reading what it was written to read."
+        )
+        return commands
+
+    def test_no_pull_request_list_filters_by_author(self):
+        for command in self._pull_request_list_commands():
+            assert not self._AUTHOR_FLAG.search(command), (
+                f"`--author` in {RELEASE_WORKFLOW.name} sends this query to the search "
+                "index, which will not have a pull request this workflow opened seconds "
+                f"ago:\n{command}"
+            )
+
+    def _commands_that_select_the_author(self) -> list[str]:
+        """The client-side filter, asserted to exist so the test below cannot pass empty."""
+        selecting = [
+            command
+            for command in self._pull_request_list_commands()
+            if self._SELECTS_THE_AUTHOR in command
+        ]
+        assert selecting, (
+            f"no `gh pr list` in {RELEASE_WORKFLOW.name} selects on `.author.login`. The "
+            "dispatch step has to tell the bot's pull requests from a contributor's, and "
+            "the search index is not how."
+        )
+        return selecting
+
+    def test_the_bot_is_selected_out_of_the_returned_list(self):
+        self._commands_that_select_the_author()
+
+    def test_the_page_is_raised_past_the_default_when_the_filter_comes_after_it(self):
+        for command in self._commands_that_select_the_author():
+            found = self._LIMIT.search(command)
+            assert found is not None and int(found.group(1)) >= 100, (
+                "gh returns 30 pull requests by default and this command filters after "
+                "that page, so a bot pull request behind 30 newer open ones is dropped "
+                f"before the select can see it:\n{command}"
+            )
 
 
 class TestTheConstraintCommentsDoNotNameAVersion:

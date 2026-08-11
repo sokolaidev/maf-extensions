@@ -177,12 +177,27 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          # Author filtered server-side, before the limit: `gh pr list` returns 30 by
-          # default, so selecting the bot's afterwards would drop an older Release PR
-          # behind 30 newer ones and leave it blocked for good.
-          gh pr list --state open --author "app/github-actions" --limit 100 \
-            --json headRefName,headRefOid \
-            --jq '.[] | [.headRefName, .headRefOid] | @tsv' \
+          # The author is selected from the returned list, not passed as `--author`. That
+          # flag is not a filter on this query: it switches gh to the search index, which
+          # is eventually consistent, and this step runs seconds after release-please
+          # opened the pull request. The index does not have it yet, the loop reads an
+          # empty set, and nothing is dispatched. `--head` and a plain list are direct
+          # repository reads and see the pull request immediately.
+          #
+          # The page is raised because the filter now happens after it: gh returns 30 by
+          # default, so a bot pull request sitting behind 30 newer open ones would be
+          # dropped before the select could see it.
+          open_bot_pull_requests="$(gh pr list --state open --limit 100 \
+            --json headRefName,headRefOid,author \
+            --jq '.[] | select(.author.login == "app/github-actions") | [.headRefName, .headRefOid] | @tsv')"
+          # Said out loud, because the failure this step has already had once is doing
+          # nothing at all — and a step that writes no summary line looks the same whether
+          # it decided to skip or never saw anything to decide about.
+          if [ -z "$open_bot_pull_requests" ]; then
+            echo "no open pull requests from app/github-actions" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          printf '%s\n' "$open_bot_pull_requests" \
           | while IFS=$'\t' read -r branch sha; do
               # Skip one already running or already reported: a dispatch per push to main
               # would otherwise re-run every open bot pull request each time.
