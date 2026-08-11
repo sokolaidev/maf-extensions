@@ -9,6 +9,10 @@ on:
   push:
     branches: [main]
   pull_request:
+    # `edited` is not a default activity type, and the release-order gate below reads the
+    # pull request title. Without it a pull request goes green as `ci:`, is retitled to
+    # `feat:`, and keeps the passing check: same head SHA, no re-run, gate bypassed.
+    types: [opened, synchronize, reopened, edited]
   # Release PRs are opened by GITHUB_TOKEN, which starts no workflow run — so the required
   # check never reports on them. Running this against that branch by hand supplies it.
   workflow_dispatch:
@@ -29,6 +33,27 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # The release-order check below diffs against the base commit, which a shallow
+          # clone does not have.
+          fetch-depth: 0
+
+      - name: Release order (a core minor needs its ceilings widened first)
+        # First, because it costs a second and it is the one failure here whose fix is a
+        # different pull request rather than an edit to this one. Only a pull request carries
+        # the title release-please turns into a version, so it is the only event this reads.
+        #
+        # The `${{ }}` expression is assigned to an environment variable rather than
+        # interpolated into this shell script. A pull request title is attacker-controlled
+        # text, and interpolating it here would make it shell source; keep it out.
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git diff --name-only "$BASE_SHA" HEAD |
+            python3 scripts/check_release_order.py "$PR_TITLE"
 
       - name: Install uv
         # Pinned to the commit v5 resolves to: a moving tag is a supply-chain hole, since
