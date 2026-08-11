@@ -413,8 +413,8 @@ class TestConcurrentDispatchesCannotOversubscribeTheLedger:
             abandoned = asyncio.create_task(run.dispatch("never"))
             await entered.wait()
             abandoned.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await abandoned
+            await asyncio.wait([abandoned])
+            assert abandoned.cancelled(), "the premise: the call was abandoned mid-body"
             return await run.dispatch("doubled", {"x": 21})
 
         result = asyncio.run(scenario())
