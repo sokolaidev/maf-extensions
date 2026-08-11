@@ -183,13 +183,12 @@ class OutputDisposition(StrEnum):
 
 @dataclass(frozen=True)
 class DeclaredOutput:
-    """One artifact a workload says it produces, named before the run that produces it.
+    """One artifact a workload says it produces, as a literal path this library will resolve.
 
-    Usually that means in ``SandboxSpec.declared_outputs``, written when the tool is built.  A
-    workload whose artifact names are not knowable that early passes them to
-    ``collect_outputs(outputs=...)`` instead, as the same type: what makes a declaration a
-    declaration is that it names a literal path this library will resolve, not when it was
-    written down.
+    That is the whole of what makes a declaration one — not *when* it was written down.  Most
+    live in ``SandboxSpec.declared_outputs``, fixed when the tool is built; a workload whose
+    names are not knowable then passes the same type to ``collect_outputs(outputs=...)``, which
+    for a guest-authored manifest is after the run that produced them.
 
     ``path`` is **literal** and relative to the sandbox's working directory.  A glob would
     have to be resolved by enumerating a directory, which is the primitive
@@ -324,15 +323,11 @@ class SandboxSpec:
     ``files_in`` and ``files_out`` are the workload's own transfer caps per direction — a
     backend declares its own ceilings, and the router refuses a spec asking above them.
 
-    ``outputs_named_at_call_time`` is how a workload that cannot name its artifacts in advance
-    stays honest at attach.  A CodeAct-class kind knows it lands files and knows nothing about
-    what they will be called, and every attach-time question — is a sink required, does the
-    outbound confidentiality cap apply, must the backend serve
-    :data:`Capability.FILES_OUT` — is answered from ``declared_outputs`` alone, so such a
-    workload would answer all three wrongly by declaring nothing.  Setting it also unlocks
-    ``collect_outputs(..., outputs=...)``, which is the only way to collect a path this field
-    admits exists.  It is not a substitute for declaring what you *can* name: the two compose,
-    and the caps apply to the union.
+    ``outputs_named_at_call_time`` says this workload lands artifacts it cannot name here.
+    Setting it obliges the same three things a declared ``LAND`` output does — a sink, the
+    outbound confidentiality cap, and :data:`Capability.FILES_OUT` in ``requires`` — and is
+    what ``collect_outputs(..., outputs=...)`` refuses to run without.  It composes with
+    ``declared_outputs`` rather than replacing it, and ``files_out`` caps the union.
     """
 
     kind: str

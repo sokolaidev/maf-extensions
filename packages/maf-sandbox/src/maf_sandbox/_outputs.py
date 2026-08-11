@@ -146,7 +146,11 @@ class SandboxArtifactNameInvalid(SandboxOutputError):
 
 
 class SandboxArtifactNameCollision(SandboxOutputError):
-    """Two landing names in one collection differ only by case or by Unicode form."""
+    """Two landing names in one collection are one file at the destination.
+
+    Either identical — two guest paths given the same ``name`` — or differing only by case or
+    by Unicode form, which is one file on Windows and default macOS and two on Linux.
+    """
 
 
 @dataclass(frozen=True)
@@ -614,8 +618,8 @@ async def collect_outputs(
         SandboxTransferCapExceeded: when the collection is over one of ``spec.files_out``'s
             three caps, naming the cap and the file that breached it.
         SandboxArtifactNameInvalid: when a declared name breaks the narrow invariant.
-        SandboxArtifactNameCollision: when two landing names differ only by case or by Unicode
-            form.
+        SandboxArtifactNameCollision: when two landing names are one file at the destination —
+            identical, or differing only by case or by Unicode form.
     """
     if outputs and not spec.outputs_named_at_call_time:
         raise ValueError(
