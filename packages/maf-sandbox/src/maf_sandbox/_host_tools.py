@@ -1,56 +1,24 @@
 """The host-tools safety contract: what may be dispatched from inside a sandbox, and how.
 
-Dispatching host functions from inside a sandbox is the CodeAct pattern's differentiator and
-the one capability where trust crosses *outward*: the function body runs in the host process
-with the host's privileges, driven by model-written code, and each dispatched call bypasses
-whatever middleware the host runs.  This module is the contract that has to exist **before**
-anything can dispatch — no backend declares :data:`~maf_sandbox.Capability.HOST_TOOLS` at the
-end of it, which is the point (issue #133, part A).  The transport an ``EXEC`` backend can
-implement honestly, and the kind that composes both, come after it and build on it.
+``HOST_TOOLS`` is the one capability where trust crosses *outward*.  A dispatched body runs
+in the **host process**, with the host's authority, driven by model-written code, and its
+call bypasses whatever middleware the host runs — the boundary sees only ``execute_code``'s
+aggregate result.  The layered rationale lives in ``docs/design/two-axis-sandbox-policy.md``.
 
-The layers, each its own mechanism:
+Three things a caller must know:
 
-1. **Nothing is dispatchable by default.**  :class:`HostToolRegistry` starts empty; every
-   function reachable from inside a sandbox is one a developer explicitly registered.
-2. **Registering warns, once.**  A one-time, suppressible :class:`MafSandboxHostToolsWarning`
-   names the property that surprises people: dispatched calls bypass the middleware chain,
-   and the boundary sees only ``execute_code``'s aggregate result.
-3. **A role-explicit decorator.**  :func:`sandbox_tool` makes the developer answer every
-   information-flow leg — ``source``, ``sink``, ``identity`` — with no defaults; each leg's
-   ``None`` is a considered "not that role", and the stamp
-   (:data:`FLOW_DECLARED_KEY`) exists only when every leg was answered.
-4. **The registry derives, per leg, over the relevant subset.**  :meth:`HostToolRegistry
-   .aggregate`: result integrity is the weakest tier over *sources only*, outbound caps are
-   collected over *sinks only*, and any :data:`~maf_sandbox.Identity.USER` tool raises the
-   whole surface to approval-gated.
-5. **A ``require_declared`` gate, enforced at one door.**  The registry is the only
-   resolution path, so it is the only validation path; the gate fires at registration
-   (raises — a host configuration error), at every aggregate build (re-gates against
-   mutation), and at dispatch (belt-and-braces, a sanitized refusal into the sandbox).  With
-   the gate off, an undeclared tool fails safe: an untrusted source, flagged in the
-   aggregate.
-6. **Router-level denial** lives on :class:`~maf_sandbox.SandboxRouter`
-   (``denied_capabilities``, ``denied_identities``), for hosts whose posture wants a hard
-   stop rather than awareness.
-
-On top of the layers, four bounds the dispatch surface carries itself: a **per-run dispatch
-cap** (a host's function-call budget is part of the middleware chain a dispatch bypasses, so
-one ``execute_code`` must not make an unbounded number of middleware-invisible calls);
-**host-side argument validation** at the one door (never in a guest shim — a schema check
-running where model-written code can edit it is decoration); a **response size cap** reusing
-:class:`~maf_sandbox.TransferLimits` rather than inventing a second vocabulary for the same
-concern; and the **identity leg** itself — see :class:`~maf_sandbox.Identity` for why
-``APP`` is not the safe option, only the declared one.
-
-Every refusal a guest can see is a sanitized sentence in the failure-ladder style of
-:mod:`maf_sandbox.maf`: the program finishes and reports rather than dying mid-way, and
-provider detail goes to the host's log, never into a transcript.
+- :class:`HostToolRegistry` is the **one door**.  Nothing is dispatchable until it is
+  registered, and :meth:`HostToolRegistry.resolve` is the only path in — which is what makes
+  registration the only place a gate or a validation can honestly sit.
+- **Least privilege comes from what a host registers, never from what it declares.**  A
+  declaration reads like a control and is not one; see :class:`~maf_sandbox.Identity`.
+- Everything a guest can see is a sanitized sentence, in the failure-ladder style of
+  :mod:`maf_sandbox.maf`: a refusal ends the call, not the program, and provider detail goes
+  to the host's log rather than into a transcript.
 
 Declarations are carried claims; enforcement is the host's middleware.  A host without
-``agent_framework.security`` loses nothing structural — the registry, warning, gate and
-denials all function identically — and gains classifications that are ready the day it turns
-enforcement on.  Declaring ``source=SourceIntegrity.TRUSTED`` protects nothing by itself; a
-claim without a reader is documentation, and this sentence is the documentation saying so.
+``agent_framework.security`` still gets the registry, the warning, the gate and the denials —
+and classifications ready the day it turns enforcement on.
 """
 
 from __future__ import annotations
@@ -279,7 +247,8 @@ def _warn_host_tools_once() -> None:
         "warnings.filterwarnings('ignore', category=MafSandboxHostToolsWarning) once read."
     )
     try:
-        warnings.warn(message, category=MafSandboxHostToolsWarning, stacklevel=4)
+        # 3 == the host's own `registry.register(...)` line: this frame, `register`, caller.
+        warnings.warn(message, category=MafSandboxHostToolsWarning, stacklevel=3)
     except MafSandboxHostToolsWarning:
         # Under `python -W error` the warning above raises at the call site. Registering a
         # tool must never fail because of an informational notice, so it is swallowed —
@@ -524,10 +493,20 @@ class HostToolRun:
             )
         provided: dict[str, Any] = dict(arguments) if arguments is not None else {}
         try:
+            signature = inspect.signature(func)
+        except (ValueError, TypeError) as exc:
+            # `register` accepts any callable, and some — several built-ins — expose no
+            # signature to read. Nothing can be validated, so nothing is dispatched.
+            self._logger.warning("host tool %r exposes no signature to validate: %s", name, exc)
+            return _refused(
+                f"Error: host tool {name!r} exposes no signature, so its arguments cannot be "
+                "validated"
+            )
+        try:
             # Host-side, at the one door, never in a guest shim: a schema check running
             # where model-written code can edit it is decoration. Binding proves the names
             # and arity; anything deeper is the tool body's own duty — it is host code.
-            inspect.signature(func).bind(**provided)
+            signature.bind(**provided)
         except TypeError as exc:
             return _refused(f"Error: arguments do not bind to host tool {name!r}: {exc}")
         try:
@@ -538,7 +517,10 @@ class HostToolRun:
             self._logger.warning("host tool %r failed: %s", name, error_detail(exc))
             return _refused(f"Error: host tool {name!r} failed — the reason is in the host's log")
         try:
-            encoded = json.dumps(result, ensure_ascii=False)
+            # `allow_nan=False` because Python's default emits bare NaN/Infinity, which no
+            # strict JSON parser on the guest side accepts — a payload delivered as success
+            # and unreadable on arrival is worse than the refusal the ValueError becomes.
+            encoded = json.dumps(result, ensure_ascii=False, allow_nan=False)
         except (TypeError, ValueError) as exc:
             self._logger.warning("host tool %r returned an unserializable value: %s", name, exc)
             return _refused(

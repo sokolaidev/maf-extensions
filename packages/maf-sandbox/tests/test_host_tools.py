@@ -11,6 +11,7 @@ beside the rest of the router's policy.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 
@@ -185,6 +186,17 @@ class TestRegistrationNotice:
             warnings.simplefilter("always")
             registry.register(_stamped_pure(), name="second")
         assert not any(isinstance(w.message, MafSandboxHostToolsWarning) for w in caught)
+
+    def test_the_notice_points_at_the_host_that_registered(self, monkeypatch: pytest.MonkeyPatch):
+        """A notice blaming this package's own frame tells the host nothing about where."""
+        import warnings
+
+        monkeypatch.setattr(host_tools_module._RegistrationNotice, "warned", False)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            HostToolRegistry().register(_stamped_pure())
+        assert len(caught) == 1
+        assert caught[0].filename == __file__
 
     def test_the_notice_is_suppressible_by_category(self, monkeypatch: pytest.MonkeyPatch):
         import warnings
@@ -421,6 +433,41 @@ class TestDispatchFailureLadder:
         )
         assert "internal.example" not in result.refusal
         assert "internal.example" in caplog.text
+
+    def test_a_callable_without_a_signature_is_refused_not_raised(
+        self, caplog: pytest.LogCaptureFixture
+    ):
+        """`register` takes any callable, and some built-ins expose no signature to read —
+        that must follow the failure ladder rather than escaping `dispatch`.
+
+        `max` is one such built-in today; the assertion below pins the premise, so this test
+        fails loudly if CPython ever gives it a text signature rather than passing vacuously.
+        """
+        with pytest.raises(ValueError):
+            inspect.signature(max)
+
+        registry = HostToolRegistry()
+        registry.register(max, name="largest")
+        with caplog.at_level(logging.WARNING):
+            result = _dispatch(HostToolRun(registry), "largest", {"iterable": [1, 2]})
+        assert not result.ok
+        assert result.refusal is not None and "exposes no signature" in result.refusal
+        assert "largest" in caplog.text
+
+    @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+    def test_a_non_finite_float_is_refused_rather_than_delivered_unparseable(self, value: float):
+        """Python's default `json.dumps` emits bare NaN/Infinity, which strict parsers on the
+        guest side reject — delivering that as success hands over a payload nothing can read."""
+
+        @sandbox_tool(source=None, sink=None, identity=None)
+        def measure() -> float:
+            return value
+
+        registry = HostToolRegistry()
+        registry.register(measure)
+        result = _dispatch(HostToolRun(registry), "measure")
+        assert not result.ok
+        assert result.refusal is not None and "cannot be carried as JSON" in result.refusal
 
     def test_an_unserializable_value_is_refused(self):
         @sandbox_tool(source=None, sink=None, identity=None)
