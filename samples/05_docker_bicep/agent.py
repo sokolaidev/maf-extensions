@@ -10,10 +10,12 @@ here is a byte-identical copy of sample 01's.  That is what makes the pair worth
 having: it is the protocol's central claim — a workload written against
 `maf_sandbox` runs unchanged on another backend — shown rather than asserted.
 
-Nothing here needs Azure.  Any machine with a Docker-compatible engine runs the
-sandbox — macOS, Linux, or Windows with WSL 2 — where sample 02's `wslc` needed
-Windows and WSL, and the model is any OpenAI-compatible endpoint, a local server
-included.
+No Azure *sandbox* here.  Any machine with a Docker-compatible engine runs it —
+macOS, Linux, or Windows with WSL 2 — where sample 02's `wslc` needed Windows and
+WSL.  The model is sample 01's Azure OpenAI deployment reached with
+`DefaultAzureCredential`, so this program holds no API key: `az login` is enough.
+Sample 02 is the one that keeps the key-and-base-URL client, because that is the
+surface a local server speaks — see this directory's README.
 
 The boundary is a container, not a VM, and the egress is closed rather than
 allowlisted.  Both are honest downgrades from sample 01, and this directory's
@@ -30,7 +32,8 @@ from pathlib import Path
 from typing import Any
 
 from agent_framework import Agent, InMemoryAgentFileStore
-from agent_framework.openai import OpenAIChatCompletionClient
+from agent_framework.openai import OpenAIChatClient
+from azure.identity.aio import DefaultAzureCredential
 from maf_sandbox import Isolation, SandboxRouter
 from maf_sandbox.maf import make_workspace_context
 from maf_sandbox_bicep import make_bicep_tools
@@ -52,9 +55,9 @@ BICEP_FILE = "main.bicep"
 #: it, because the backend runs what is already on this machine.
 SANDBOX_VARS = ("BICEP_SANDBOX_IMAGE",)
 
-#: Everything the chat model needs. `OPENAI_BASE_URL` is optional, so it is read
-#: separately: unset, the client talks to OpenAI.
-MODEL_VARS = ("OPENAI_API_KEY", "OPENAI_CHAT_MODEL")
+#: Everything the chat model needs. No key: auth is `DefaultAzureCredential`, which
+#: an `az login` session or a federated CI credential satisfies.
+MODEL_VARS = ("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_CHAT_MODEL")
 
 
 def require_environment(names: tuple[str, ...]) -> dict[str, str] | None:
@@ -130,12 +133,13 @@ async def run() -> int:
         print("No sandbox backend: bicep_validate was not attached.", file=sys.stderr)
         return 2
 
+    credential = DefaultAzureCredential()
     try:
         agent = Agent(
-            client=OpenAIChatCompletionClient(
-                model=env["OPENAI_CHAT_MODEL"],
-                api_key=env["OPENAI_API_KEY"],
-                base_url=os.environ.get("OPENAI_BASE_URL"),
+            client=OpenAIChatClient(
+                model=env["AZURE_OPENAI_CHAT_MODEL"],
+                azure_endpoint=env["AZURE_OPENAI_ENDPOINT"],
+                credential=credential,
             ),
             name=AGENT_DIR,
             instructions=(
@@ -153,6 +157,7 @@ async def run() -> int:
     finally:
         deleted = await router.dispose_scope(SCOPE, THREAD_ID)
         print(f"\nDisposed {deleted} sandbox(es).")
+        await credential.close()
 
     return 0
 

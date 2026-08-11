@@ -26,7 +26,7 @@ Two things are genuinely weaker here, and neither is hidden.
   docker build -t bicep-sandbox:local images/bicep-sandbox
   ```
 
-- **An OpenAI-compatible endpoint** — api.openai.com, or a local server that speaks the same protocol. The sample deliberately uses the chat-completions API, the one surface local servers implement well; their newer-API support is often partial in ways that surface as an empty final answer. The model needs to be able to call a tool; beyond that this sample asks nothing unusual of it.
+- **An Azure OpenAI deployment.** No key: the sample authenticates with `DefaultAzureCredential`, so an `az login` session — or a federated credential in CI — is enough. The model has to be able to call a tool; beyond that this sample asks nothing unusual of it. Samples 02 and 04 are the ones that keep the key-and-base-URL client, because a local server (Ollama, vLLM, LM Studio) is the case that needs it.
 
 No Azure subscription, no preview enrolment, no billable sandbox. A run that is killed mid-turn leaves the container **running** — it was started with `sleep infinity` and nothing stops it on the way out — so plain `docker ps` shows it, it holds engine memory until it goes, and `docker rm -f <name>` reclaims it.
 
@@ -36,7 +36,7 @@ From PyPI, not from this workspace:
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install maf-sandbox-docker maf-sandbox-bicep agent-framework-openai
+pip install maf-sandbox-docker maf-sandbox-bicep agent-framework-openai azure-identity "azure-core[aio]"
 ```
 
 `maf-sandbox` arrives as a dependency, and nothing Azure does — the backend drives the `docker` client and imports only the standard library. `agent-framework-openai` is separate because the framework's core ships no model connector.
@@ -46,9 +46,8 @@ pip install maf-sandbox-docker maf-sandbox-bicep agent-framework-openai
 | Variable | What it is |
 |---|---|
 | `BICEP_SANDBOX_IMAGE` | Local image reference, e.g. `bicep-sandbox:local`. No registry qualifies it — the backend runs what is already on this machine |
-| `OPENAI_API_KEY` | Key for the endpoint below. A local server that ignores it still wants something non-empty here |
-| `OPENAI_CHAT_MODEL` | Model name, e.g. `gpt-4o` — or whatever your local server calls the model it serves |
-| `OPENAI_BASE_URL` | *Optional.* An OpenAI-compatible base URL, e.g. `http://localhost:11434/v1`. Unset, the client talks to OpenAI |
+| `AZURE_OPENAI_ENDPOINT` | e.g. `https://my-resource.openai.azure.com` |
+| `AZURE_OPENAI_CHAT_MODEL` | The chat deployment name |
 
 With any of the first three unset the program says which and exits non-zero, rather than running. That is deliberate: `make_bicep_tools` returns an empty list when the router has no backend, so a half-configured run does not crash — it produces an agent with no tools, which answers from the model alone. That failure looks exactly like success.
 

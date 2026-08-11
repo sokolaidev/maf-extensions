@@ -37,7 +37,7 @@ A kind is three things, and they are all in `agent.py`:
   docker build -t diagram-sandbox:local images/diagram-sandbox
   ```
 
-- **An OpenAI-compatible chat model that can call tools.** No reasoning model and no Azure — any endpoint the `agent-framework-openai` client can reach, a local server (Ollama, vLLM, LM Studio) included. The model has to write DOT and call one tool; that is the whole demand on it.
+- **An Azure OpenAI deployment.** No key: the sample authenticates with `DefaultAzureCredential`, so an `az login` session — or a federated credential in CI — is enough. The model has to write DOT and call one tool; that is the whole demand on it. Samples 02 and 04 are the ones that keep the key-and-base-URL client, because a local server (Ollama, vLLM, LM Studio) is the case that needs it.
 
 No preview enrolment and no billable sandbox — the container is free. A run killed mid-turn leaves the container **running** (it was started with `sleep infinity`, and nothing stops it on the way out), so `docker ps` shows it and `docker rm -f <name>` reclaims it.
 
@@ -47,7 +47,7 @@ From PyPI, not from this workspace:
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install maf-sandbox-docker agent-framework-openai
+pip install maf-sandbox-docker agent-framework-openai azure-identity "azure-core[aio]"
 ```
 
 There is **no workload package** to install — the kind is in `agent.py`, which is the point of the sample. `maf-sandbox` arrives as a dependency of the backend, which otherwise drives the `docker` client and imports only the standard library. `agent-framework-openai` is separate because the framework's core ships no model connector.
@@ -57,9 +57,8 @@ There is **no workload package** to install — the kind is in `agent.py`, which
 | Variable | What it is |
 |---|---|
 | `DIAGRAM_SANDBOX_IMAGE` | The image built above — for example `diagram-sandbox:local`. An unqualified single-name tag: Docker resolves it to its official `docker.io/library/` namespace, which no third party can publish to, so if you skip the build the backend's pull fails cleanly rather than fetching a different image. Build it first and it runs from this machine. (To pin it to the local daemon regardless, qualify it — `localhost/diagram-sandbox:local` — and tag the build to match.) |
-| `OPENAI_API_KEY` | The model endpoint's key. A local server that ignores it still wants a placeholder |
-| `OPENAI_CHAT_MODEL` | The model name the endpoint serves |
-| `OPENAI_BASE_URL` | *Optional.* The endpoint, when it is not OpenAI itself — `http://localhost:11434/v1` for a local Ollama, say. Unset, the client talks to OpenAI |
+| `AZURE_OPENAI_ENDPOINT` | e.g. `https://my-resource.openai.azure.com` |
+| `AZURE_OPENAI_CHAT_MODEL` | The chat deployment name |
 
 With `DIAGRAM_SANDBOX_IMAGE` or either required model variable unset, the program says which and exits non-zero rather than running. That is deliberate: `make_diagram_tools` returns an empty list when the router has no backend, so a half-configured run does not crash — it produces an agent with no tools, which answers from the model alone. That failure looks exactly like success.
 
@@ -90,9 +89,9 @@ The PNG is git-ignored (`out/`), so a run leaves no tracked file behind.
 
 ## What has and has not been run against a live backend
 
-**Run live**, on 2026-08-11: Docker Engine 29.5.3 with the `diagram-sandbox` image above (Graphviz 2.43.0), and a local tool-calling model behind an OpenAI-compatible endpoint. The agent wrote DOT, `render_diagram` rendered it in a `--network none` container at `Isolation.CONTAINER`, and `collect_outputs` landed a valid 4–11 KB PNG at `out/diagram.png` — the full `FILES_IN → exec → FILES_OUT` round trip, end to end.
+**Run live**, on 2026-08-11: Docker Engine 29.5.3 with the `diagram-sandbox` image above (Graphviz 2.43.0), and a local tool-calling model behind an OpenAI-compatible endpoint — which is what this sample used at the time; it has since moved onto the same Azure OpenAI wiring as the rest of the set, and that run has not been repeated against it. The agent wrote DOT, `render_diagram` rendered it in a `--network none` container at `Isolation.CONTAINER`, and `collect_outputs` landed a valid 4–11 KB PNG at `out/diagram.png` — the full `FILES_IN → exec → FILES_OUT` round trip, end to end.
 
-**Not run in CI.** This sample is not wired into `verify-live.yml`, for the same reason sample 05 is not: it needs an OpenAI-compatible endpoint and key, and there is no such secret in CI (sample 06 is the docker sample precisely because its Azure-federated model needs none). The docker **backend** beneath it, however, is exercised on every pull request by `test_docker_e2e.py` — including its `FILES_OUT` stat-and-read path — on the Linux runners that have Docker.
+**Not run in CI — but no longer for a reason.** This sample was left out of `verify-live.yml` because it needed an endpoint and key that CI has no secret for. It now authenticates the way samples 01, 03, 05, 06 and 08 do, so that objection is gone and only the image build stands between it and a job: `images/diagram-sandbox` would have to be built on the runner first. Tracked on [#191](https://github.com/sokolaidev/maf-extensions/issues/191). The docker **backend** beneath it is exercised on every pull request by `test_docker_e2e.py` — including its `FILES_OUT` stat-and-read path — on the Linux runners that have Docker.
 
 ## Troubleshooting
 
