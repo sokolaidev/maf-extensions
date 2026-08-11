@@ -2,9 +2,11 @@
 
 Community extensions for [Microsoft Agent Framework](https://aka.ms/AgentFramework), maintained by [SOKOLAI BV](https://www.sokol.ai). **Not affiliated with or endorsed by Microsoft.** Everything here is experimental (0.x): each package warns on import, and every release before 1.0.0 may include breaking changes.
 
-## The maf-sandbox family
+## The maf-sandbox family — the first extension suite
 
-Sandboxed code execution for MAF agents — the reference implementation of [microsoft/agent-framework#7568](https://github.com/microsoft/agent-framework/issues/7568). An agent that writes code should not be the thing that runs it; these packages give the work somewhere else to run, reached as an ordinary tool call so the framework's middleware (approvals, information-flow policy, budgets) still sees it.
+Sandboxed code execution for MAF agents, and the first extension suite this repository publishes — the reference implementation of [microsoft/agent-framework#7568](https://github.com/microsoft/agent-framework/issues/7568). An agent that writes code should not be the thing that runs it; these packages give the work somewhere else to run, reached as an ordinary tool call so the framework's middleware (approvals, information-flow policy, budgets) still sees it.
+
+[`docs/SANDBOX.md`](docs/SANDBOX.md) is the introduction — what the suite is, how it attaches to a MAF agent, what it buys and what it deliberately is not — written for a reader who does not already know the framework. The table below is the map.
 
 | Package | What it is | Depends on |
 |---|---|---|
