@@ -27,7 +27,8 @@ _DIST_NAME = re.compile(r"[A-Za-z0-9._-]+")
 _PATCH_TYPES = frozenset({"fix", "perf", "revert", "docs"})
 
 
-def _version(text: str) -> tuple[int, ...]:
+def version(text: str) -> tuple[int, ...]:
+    """The dotted release as a tuple of ints."""
     return tuple(int(part) for part in text.split("."))
 
 
@@ -79,13 +80,13 @@ def ceilings(repo_root: Path) -> dict[str, tuple[int, ...]]:
                 continue
             bound = _CEILING.search(dep)
             if bound is not None:
-                found[path.parent.name] = _version(bound.group(1))
+                found[path.parent.name] = version(bound.group(1))
     return found
 
 
 def core_version(repo_root: Path) -> tuple[int, ...]:
     text = (repo_root / "packages" / _CORE / "pyproject.toml").read_text("utf-8")
-    return _version(tomllib.loads(text)["project"]["version"])
+    return version(tomllib.loads(text)["project"]["version"])
 
 
 def assess(title: str, paths: list[str], repo_root: Path) -> list[str]:

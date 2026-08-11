@@ -104,6 +104,19 @@ jobs:
             exit 1
           fi
 
+      # The published dependents cannot be edited after the fact, so a core release they
+      # exclude leaves the index unresolvable as a set until every one of them ships again.
+      # RELEASING.md orders the releases so that never happens; this is what enforces it.
+      # Only for maf-sandbox — a dependent's own release is what closes such a window — and
+      # only for the real index, so a TestPyPI rehearsal stays frictionless.
+      - name: Check the published dependents admit this version
+        if: >-
+          steps.resolve.outputs.package == 'maf-sandbox'
+          && steps.resolve.outputs.target == 'pypi'
+        env:
+          VERSION: ${{ steps.resolve.outputs.version }}
+        run: python3 scripts/check_published_dependents_admit.py "$VERSION"
+
       # The full gate again, on the exact commit being released. The Tests workflow already
       # ran it on the branch, but a tag can point anywhere.
       - name: Sync workspace
@@ -192,11 +205,43 @@ jobs:
     permissions:
       # Mints the OIDC token that IS the credential. No secrets involved.
       id-token: write
+      # A job-level block replaces the workflow's outright, so anything unlisted here is
+      # `none` — without this the sparse checkout below cannot read the repository.
+      contents: read
     steps:
+      # Into a subdirectory of its own, and before the artifact arrives. `actions/checkout`
+      # cleans the directory it checks out, so a checkout at the workspace root — in any
+      # position — is one reordering away from deleting the `dist/` this job exists to
+      # upload. `path:` puts that beyond reach rather than relying on step order.
+      #
+      # Sparse, because this job mints the publishing credential: the two paths the check
+      # reads, and nothing else.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: >-
+          needs.build.outputs.package == 'maf-sandbox'
+          && needs.build.outputs.target == 'pypi'
+        with:
+          path: release-guard
+          sparse-checkout: |
+            scripts
+            packages/*/pyproject.toml
+          sparse-checkout-cone-mode: false
+
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: dist-${{ needs.build.outputs.package }}
           path: dist/
+
+      # The build job ran this too, to fail before a human is asked to approve. This is the
+      # one that decides: the `pypi` environment holds here for as long as a reviewer takes,
+      # and the index can move under a verdict reached before the wait.
+      - name: Re-check the published dependents at upload time
+        if: >-
+          needs.build.outputs.package == 'maf-sandbox'
+          && needs.build.outputs.target == 'pypi'
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: python3 release-guard/scripts/check_published_dependents_admit.py "$VERSION"
 
       - name: Publish
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2

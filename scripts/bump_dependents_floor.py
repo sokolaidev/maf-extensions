@@ -1,12 +1,13 @@
 """Raise the maf-sandbox floor in the packages that depend on it, after a release.
 
 `release-please.yml` runs this once `maf-sandbox` has published a version. It moves a
-dependent's floor to that version **only when the dependent has already adopted it** — its
-ceiling admits the version and its floor is a minor behind — because that is the one case the
-post-release step exists for: the ceiling was widened in an earlier pull request to build
-against the new version, and the floor could not point at it until it was on PyPI. A patch,
-or a version a dependent's ceiling still excludes, moves nothing: pinning a newer floor than a
-consumer needs would over-constrain them for no reason.
+dependent's floor to that version in every package whose ceiling admits it and whose floor is
+a minor behind. That is a **mechanical selection of candidates, not a detection of adoption**:
+ceilings are widened for all dependents at once before a release so the published set stays
+resolvable (RELEASING.md, Release order), so admitting a version says nothing about whether a
+package's code relies on it. Whether a floor should actually move is the reviewer's call on the
+pull request this opens. A patch, or a version a dependent's ceiling still excludes, moves
+nothing: pinning a newer floor than a consumer needs would over-constrain them for no reason.
 
     python scripts/bump_dependents_floor.py <released-version>
 
@@ -49,11 +50,12 @@ def parse_constraint(constraint: str) -> tuple[tuple[int, ...], tuple[int, ...]]
 
 
 def bump_floor(text: str, released: tuple[int, ...]) -> tuple[str, bool]:
-    """Rewrite a pyproject's maf-sandbox floor to ``released`` when the dependent has adopted it.
+    """Rewrite a pyproject's maf-sandbox floor to ``released`` when the package is a candidate.
 
-    Adopted means the ceiling admits the release and the floor is an older ``(major, minor)`` —
-    the state a ceiling-widening pull request leaves behind while the version it named is being
-    published. Anything else is returned unchanged.
+    A candidate is one whose ceiling admits the release and whose floor is an older
+    ``(major, minor)`` — the state a ceiling-widening pull request leaves behind. That is a
+    shape, not evidence that the package uses the version; see the module docstring. Anything
+    else is returned unchanged.
     """
     parsed = parse_constraint(text)
     if parsed is None:
