@@ -86,7 +86,7 @@ Either way the kind requires `FILES_OUT` and **never** `FILES_LIST`: it collects
 
 Host-tool dispatch and the `RUN_CODE` road served by an embedded-interpreter backend are absent on purpose. The design that governs them — capabilities declared by backends and required by specs, and what `HOST_TOOLS` would have to carry before it ships — is [`docs/design/two-axis-sandbox-policy.md`](https://github.com/sokolaidev/maf-extensions/blob/main/docs/design/two-axis-sandbox-policy.md); the file channels above are specified in [`docs/design/files-out.md`](https://github.com/sokolaidev/maf-extensions/blob/main/docs/design/files-out.md).
 
-There is also **no way to delete a file from a sandbox**, which is why staleness is answered by a fresh directory per call rather than by cleaning the old one. A long conversation therefore accumulates one directory per call until the sandbox is disposed.
+There is also **no way to delete a file from a sandbox**, which is why staleness is answered by a fresh directory per call rather than by cleaning the old one. A long conversation therefore accumulates one directory per call until the sandbox is disposed — and a program that walks upwards can still open them. The fresh directory removes staleness from the *namespace*, so a program reading `data.csv` gets this call's or nothing; it does not put earlier rounds out of reach. Everything reachable that way belongs to the same conversation and the same agent, since that is what a sandbox is keyed by.
 
 ---
 

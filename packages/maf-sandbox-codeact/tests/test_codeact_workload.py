@@ -22,6 +22,7 @@ import pytest
 from maf_sandbox import (
     DEFAULT_CAPABILITIES,
     DEFAULT_TRANSFER_LIMITS,
+    MAX_ARTIFACT_NAME_BYTES,
     Artifact,
     Capability,
     EntryKind,
@@ -807,6 +808,30 @@ class TestDeclaredOutputs:
         assert "cannot be saved" in out
         assert sandbox.raw_commands == []
 
+    def test_a_name_too_long_once_the_run_directory_is_counted_is_refused_up_front(self):
+        """The guest path carries a 13-byte prefix, so judging the bare name accepts a
+        250-byte one here and has `collect_outputs` refuse the 263-byte declaration it becomes
+        — after the program has run, for a reason the model could not have foreseen."""
+        sandbox = _ProducingSandbox()
+        sink = _RecordingSink()
+        tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, sink)
+        name = "a" * (MAX_ARTIFACT_NAME_BYTES - 5)  # valid on its own, over budget with a prefix
+
+        out = _run(tool, "print('hi')", outputs=[name])
+        assert "too long to save" in out
+        assert sandbox.raw_commands == []
+        assert sink.names == []
+
+    def test_a_name_that_fits_with_the_prefix_is_accepted(self):
+        """The other side of the bound, so the budget cannot drift into refusing everything."""
+        sandbox = _ProducingSandbox()
+        sink = _RecordingSink()
+        tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, sink)
+        name = "a" * (MAX_ARTIFACT_NAME_BYTES - 13)
+
+        _run_producing(tool, sandbox, {name: b"1"}, outputs=[name])
+        assert sink.names == [name]
+
     def test_a_name_declared_twice_is_refused(self):
         sandbox = _ProducingSandbox()
         tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, _RecordingSink())
@@ -931,6 +956,20 @@ class TestManifestOutputs:
 
         out = _run_producing(tool, sandbox, {_MANIFEST_FILENAME: manifest})
         assert "Error:" in out
+        assert sink.names == []
+
+    def test_a_deeply_nested_manifest_is_a_diagnostic_rather_than_a_dead_turn(self):
+        """`RecursionError` is neither a decode error nor a JSON one, and a few thousand nested
+        arrays fit in a fraction of the size ceiling — so it used to leave the tool body and
+        take the caller's turn with it, from a file the guest program chose to write."""
+        sandbox = _ProducingSandbox()
+        sink = _RecordingSink()
+        tool = _pulling_tool(sandbox, CodeactOutputs.MANIFEST, sink)
+        nested = b"[" * 20_000 + b"]" * 20_000
+        assert len(nested) < _MANIFEST_MAX_BYTES
+
+        out = _run_producing(tool, sandbox, {_MANIFEST_FILENAME: nested})
+        assert "nested too deeply" in out
         assert sink.names == []
 
     def test_a_manifest_naming_a_path_outside_the_run_is_refused(self):

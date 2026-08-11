@@ -28,6 +28,7 @@ from uuid import uuid4
 
 from maf_sandbox import (
     DEFAULT_TRANSFER_LIMITS,
+    MAX_ARTIFACT_NAME_BYTES,
     Capability,
     DeclaredOutput,
     ExecResult,
@@ -88,8 +89,8 @@ _DEFAULT_FILES_OUT = replace(DEFAULT_TRANSFER_LIMITS, max_files=8)
 #: Writing an expression and expecting a REPL to echo it is the commonest way a first CodeAct
 #: call comes back empty, so the answer says what to do instead.
 _NO_OUTPUT = (
-    "The program ran and printed nothing. Only what you print comes back — end the program "
-    "with print(...) of what you need to see."
+    "The program ran and printed nothing. Only what you print is read back as text — end the "
+    "program with print(...) of what you need to see."
 )
 
 
@@ -242,7 +243,7 @@ _DESCRIPTION_HEAD = """Run a short Python program inside a sandbox and return wh
         everything you need to see.
 
         Write a complete, self-contained program every time.  Each call gets a fresh working
-        directory, so nothing carries over between calls but what you pass in."""
+        directory: nothing you did not pass in to *this* call is in it."""
 
 _DESCRIPTION_FILES = """**To work on existing files, list them in ``files``.**  Each one is
         copied into the program's working directory under its own name, so a file listed as
@@ -378,10 +379,17 @@ async def _execute(
     if outputs is CodeactOutputs.MANIFEST:
         reserved.add(_MANIFEST_FILENAME)
 
+    # Chosen here rather than after `acquire`, so that a declared name can be judged against
+    # the guest path it will actually become — the prefix is 13 bytes of the 255 a name gets.
+    run_id = uuid4().hex[:12]
+
     names: list[str] = []
     if outputs is CodeactOutputs.DECLARED:
         checked = _validated_output_names(
-            declared, max_files=session.spec.files_out.max_files, reserved=reserved
+            declared,
+            max_files=session.spec.files_out.max_files,
+            reserved=reserved,
+            run_id=run_id,
         )
         if isinstance(checked, str):
             return checked
@@ -404,11 +412,12 @@ async def _execute(
     if isinstance(sandbox, str):
         return sandbox
 
-    # Every call gets a fresh directory, because `acquire` is get-or-create and the sandbox is
+    # The fresh directory chosen above, because `acquire` is get-or-create and the sandbox is
     # REUSED across calls. Without it a file deleted from the workspace between rounds would
-    # still be there to read, and last round's output would be collected as this round's — a
+    # still be read as current, and last round's output would be collected as this round's — a
     # stale answer presented as a live one, in a kind whose whole job is transforming files.
-    run_id = uuid4().hex[:12]
+    # It removes staleness from the *namespace*, not from the filesystem: earlier directories
+    # remain, and a program that walks upwards can still open them.
     run_dir = f"{session.spec.work_dir}/{run_id}"
 
     for name, content in shared:
@@ -584,24 +593,33 @@ async def _write_shared(sandbox: "Sandbox", name: str, guest_path: str, content:
 
 
 def _validated_output_names(
-    names: "Sequence[str]", *, max_files: int, reserved: set[str]
+    names: "Sequence[str]", *, max_files: int, reserved: set[str], run_id: str
 ) -> list[str] | str:
     """Settle every output name before the program runs, or answer with the refusal.
 
     Up front rather than after, because these names are the model's and every one of them is
-    cheaper to argue about before a program has spent a turn producing files under them.
+    cheaper to argue about before a program has spent a turn producing files under them — which
+    is why the length bound is applied to the **guest path**, prefix included. Judging the bare
+    name would accept a 250-byte one here and have ``collect_outputs`` refuse the 263-byte
+    declaration it becomes, after the run, for a reason the model could not have foreseen.
     """
     if len(names) > max_files:
         return (
             f"Error: {len(names)} output files were declared and this tool saves at most "
             f"{max_files} per call."
         )
+    budget = MAX_ARTIFACT_NAME_BYTES - len(f"{run_id}/".encode())
     seen: set[str] = set()
     for name in names:
         try:
             validate_artifact_name(name)
         except SandboxArtifactNameInvalid as exc:
             return f"Error: {name!r} cannot be saved — {exc}"
+        if len(name.encode("utf-8")) > budget:
+            return (
+                f"Error: {name!r} is too long to save — at most {budget} bytes of UTF-8 here, "
+                f"because each call's files sit in a directory of their own."
+            )
         if name in reserved:
             return f"Error: {name!r} cannot be saved — this tool writes that file itself."
         if name in seen:
@@ -629,7 +647,10 @@ async def _collect(
             return listed
         declared = listed
         checked = _validated_output_names(
-            declared, max_files=session.spec.files_out.max_files, reserved=reserved
+            declared,
+            max_files=session.spec.files_out.max_files,
+            reserved=reserved,
+            run_id=run_id,
         )
         if isinstance(checked, str):
             return checked
@@ -695,6 +716,11 @@ async def _read_manifest(
         document: object = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         return f"Error: {_MANIFEST_FILENAME} is not valid JSON ({exc}), so no files were saved."
+    except RecursionError:
+        # A few thousand nested arrays fit in far less than the size ceiling, and the parser
+        # answers with a `RecursionError` that is neither a decode error nor a JSON one — so
+        # without this it leaves the tool body and takes the caller's turn with it.
+        return f"Error: {_MANIFEST_FILENAME} is nested too deeply to parse, so no files were saved."
     listed = (
         cast("dict[str, object]", document).get(_MANIFEST_OUTPUTS_KEY)
         if isinstance(document, dict)
