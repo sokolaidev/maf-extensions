@@ -11,7 +11,7 @@ app  ->  maf_sandbox (router)  ->  maf_sandbox_docker  ->  the container
 
 ## The first sample CI verifies without a cloud sandbox
 
-Sample 03 proves the CodeAct stack against a real Azure microVM, and pays for a billable sandbox each time it runs — so it runs only on demand and after a release. This sample proves the same stack, but its sandbox is a Docker container on the runner, which costs nothing and needs no subscription. The only cloud dependency left is the model, and it is the same Azure OpenAI deployment sample 03 uses, reached with `DefaultAzureCredential` — a federated credential in CI, `az login` locally — so there is no API key anywhere. That combination is why this sample can join `verify-live.yml`: a real container, a real model, no secret, no bill.
+Sample 03 proves the CodeAct stack against a real Azure microVM, and pays for a billable sandbox each time it runs — so it runs only on demand and after a release. This sample proves the same stack, but its sandbox is a Docker container on the runner: free, and needing no Azure subscription. The model still needs both — it is the same Azure OpenAI deployment sample 03 uses, in a subscription and billed per inference, reached with `DefaultAzureCredential` (a federated credential in CI, `az login` locally), so there is no stored API key. What this sample removes from sample 03 is the **billable sandbox and the stored secret**, not the model's inference charge, which no sample avoids. That is enough to let it join `verify-live.yml`: a real container and a real model, with no billable sandbox and no secret to hold.
 
 A developer without Azure runs it locally by making sample 04's one-line client swap — `OpenAIChatCompletionClient` against a local endpoint in place of the Azure client here. The wiring in this directory is the one CI needs; the swap is small and sample 04 shows it in full.
 
@@ -36,10 +36,10 @@ From PyPI, not from this workspace:
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install maf-sandbox-docker maf-sandbox-codeact agent-framework-openai
+pip install maf-sandbox-docker maf-sandbox-codeact agent-framework-openai azure-identity
 ```
 
-`maf-sandbox` arrives as a dependency, and so does `azure-identity` (through `agent-framework-openai`'s Azure support). The backend drives the `docker` client and imports only the standard library. `agent-framework-openai` is separate because the framework's core ships no model connector.
+`maf-sandbox` arrives as a dependency of the backend, which otherwise drives the `docker` client and imports only the standard library. `agent-framework-openai` is separate because the framework's core ships no model connector. `azure-identity` is separate too, and named explicitly for a reason: sample 03 gets it transitively through `maf-sandbox-acas`, but the docker backend does not depend on it — and `agent-framework-openai` does not install it either — so a sample that authenticates the model with `DefaultAzureCredential` has to ask for it, exactly as `verify-live.yml` does.
 
 ## Environment
 

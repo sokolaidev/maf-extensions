@@ -1,16 +1,19 @@
 name: Verify (live)
 
-# Installs the PUBLISHED wheels into a clean environment and runs two samples against a real
-# Azure sandbox: samples/01_acas_bicep, asserting the compiler's diagnostics came back, and
-# samples/03_acas_codeact, asserting the 100th Fibonacci number came back from code actually
-# run in the sandbox. This is the half of issue #33 that costs something: it creates a billable
-# sandbox per sample and needs a subscription, so it never runs on a pull request. It runs on
-# demand, and once after each release that could change what either sample exercises
-# (dispatched by publish-packages.yml).
+# Installs the PUBLISHED wheels into a clean environment and runs three samples, each asserting
+# its own workload actually ran: samples/01_acas_bicep (the compiler's diagnostics came back),
+# samples/03_acas_codeact (the 100th Fibonacci number came back from code run in the sandbox),
+# and samples/06_docker_codeact (the same, in a Docker container instead of an Azure microVM).
+# This is the half of issue #33 that runs after a release rather than on a pull request. The two
+# ACAS jobs each create a billable Azure sandbox and need a subscription; the docker job creates
+# no billable sandbox — its sandbox is a container on the runner — and needs no sandbox
+# configuration at all. It runs on demand, and once after each release that could change what a
+# sample exercises (dispatched by publish-packages.yml).
 #
 # Authentication is OIDC federation to Azure — no stored secret, matching how publishing works.
 # Everything each sample reads is non-secret configuration (endpoints and ids), held as
-# environment variables on the `live-verify` environment. See docs/maintainers.md.
+# environment variables on the `live-verify` environment; the docker job reads only the model's.
+# See docs/maintainers.md.
 on:
   workflow_dispatch:
     inputs:
@@ -262,17 +265,22 @@ jobs:
             maf-sandbox-docker maf-sandbox-codeact agent-framework-openai azure-identity
           uv pip list --python /tmp/live/bin/python
 
-      # Only the two model variables the sample reads — no sandbox configuration exists for this
-      # backend. azure/login's own error for an empty client-id does not say which field is
-      # missing, so check by name first.
+      # The federation inputs azure/login needs and the two model variables the sample reads —
+      # there is no sandbox configuration for this backend. azure/login's own error for an empty
+      # client-id does not say which field is missing, so this checks the login variables too,
+      # by name, before the login step reaches them.
       - name: Check the live configuration is present
         env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
           AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
           missing=()
-          for name in AZURE_OPENAI_ENDPOINT AZURE_OPENAI_CHAT_MODEL; do
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
+            AZURE_OPENAI_ENDPOINT AZURE_OPENAI_CHAT_MODEL; do
             [ -n "${!name}" ] || missing+=("$name")
           done
           if [ "${#missing[@]}" -ne 0 ]; then
