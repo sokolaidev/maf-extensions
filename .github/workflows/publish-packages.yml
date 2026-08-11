@@ -205,6 +205,9 @@ jobs:
     permissions:
       # Mints the OIDC token that IS the credential. No secrets involved.
       id-token: write
+      # A job-level block replaces the workflow's outright, so anything unlisted here is
+      # `none` — without this the sparse checkout below cannot read the repository.
+      contents: read
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
