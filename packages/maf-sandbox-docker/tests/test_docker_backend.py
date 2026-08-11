@@ -68,6 +68,37 @@ def _symlink_tar(path: str, target: str) -> bytes:
     return buffer.getvalue()
 
 
+def _fifo_tar(path: str) -> bytes:
+    """A tar carrying a FIFO — non-regular, ``EntryKind.OTHER``, and emphatically not a link."""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        entry = tarfile.TarInfo(path)
+        entry.type = tarfile.FIFOTYPE
+        archive.addfile(entry)
+    return buffer.getvalue()
+
+
+def _directory_tar(path: str) -> bytes:
+    """A tar whose first entry is a directory — what ``docker cp`` streams for one."""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        entry = tarfile.TarInfo(path)
+        entry.type = tarfile.DIRTYPE
+        entry.mode = 0o755
+        archive.addfile(entry)
+    return buffer.getvalue()
+
+
+def _cp(guest: str) -> tuple[str, ...]:
+    """The ``docker cp`` argv prefix for one guest path — the key a per-path override needs."""
+    return ("cp", f"{_NAME}:{guest}")
+
+
+#: Every stat and every read walks the components from the root down, so a fake engine that
+#: cannot answer for `/work` itself refuses both as a path through a non-directory.
+_WORK_IS_A_DIRECTORY = {_cp(_WORK): _DockerResult(0, _directory_tar(_WORK.lstrip("/")), "")}
+
+
 class _Recorded:
     def __init__(
         self,
@@ -123,11 +154,15 @@ def _machine(
     ``docker inspect -f {{.State.Running}}`` decides existence and running state — a name in
     ``running`` prints ``true``, one only in ``stopped`` prints ``false``, one in neither errors
     like a missing container. ``image inspect`` succeeds for a known image and errors otherwise.
+
+    The longest matching ``overrides`` prefix wins, so a per-path ``cp`` answer beats a
+    catch-all one however the mapping was written.
     """
     present = set(running) | set(stopped)
+    ranked = sorted((overrides or {}).items(), key=lambda item: len(item[0]), reverse=True)
 
     def respond(args: tuple[str, ...]) -> _DockerResult:
-        for prefix, result in (overrides or {}).items():
+        for prefix, result in ranked:
             if args[: len(prefix)] == prefix:
                 return result
         if args[:2] == ("image", "inspect"):
@@ -545,7 +580,7 @@ class TestWriteFile:
 
 class TestStatFile:
     def _sandbox_streaming(self, stream: bytes, rc: int = 0, stderr: str = ""):
-        overrides = {("cp",): _DockerResult(rc, stream, stderr)}
+        overrides = {**_WORK_IS_A_DIRECTORY, ("cp",): _DockerResult(rc, stream, stderr)}
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
         return asyncio.run(backend.acquire(_KEY, _SPEC)), fake
 
@@ -573,7 +608,8 @@ class TestStatFile:
 
         sandbox, fake = self._sandbox_streaming(_tar_bytes("out.png", b"x" * 100000))
         asyncio.run(sandbox.stat_file("out.png", working_directory=_WORK))
-        cp = fake.only("cp")
+        # By path: the parent walk stats `/work` first, and it is the entry's own cp under test.
+        cp = fake.only(*_cp(f"{_WORK}/out.png"))
         assert cp.read_limit == _TAR_BLOCK
 
     def test_the_rel_path_is_correct_even_for_a_non_normalized_working_directory(self):
@@ -600,7 +636,7 @@ class TestStatFile:
 
 class TestReadFile:
     def _sandbox_streaming(self, stream: bytes):
-        overrides = {("cp",): _DockerResult(0, stream, "")}
+        overrides = {**_WORK_IS_A_DIRECTORY, ("cp",): _DockerResult(0, stream, "")}
         backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
         return asyncio.run(backend.acquire(_KEY, _SPEC))
 
@@ -619,12 +655,15 @@ class TestReadFile:
         """An oversized output is refused from its header without its body being buffered."""
         from maf_sandbox_docker._backend import _TAR_BLOCK
 
-        overrides = {("cp",): _DockerResult(0, _tar_bytes("big.bin", b"x" * 100000), "")}
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("cp",): _DockerResult(0, _tar_bytes("big.bin", b"x" * 100000), ""),
+        }
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
         sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
         with pytest.raises(SandboxTransferCapExceeded):
             asyncio.run(sandbox.read_file("big.bin", working_directory=_WORK, max_bytes=64))
-        assert fake.only("cp").read_limit == _TAR_BLOCK + 64
+        assert fake.only(*_cp(f"{_WORK}/big.bin")).read_limit == _TAR_BLOCK + 64
 
     def test_a_symlink_is_refused_on_the_header_type(self):
         sandbox = self._sandbox_streaming(_symlink_tar("link", "/etc/passwd"))
@@ -632,11 +671,139 @@ class TestReadFile:
             asyncio.run(sandbox.read_file("link", working_directory=_WORK, max_bytes=1000))
 
     def test_a_missing_file_raises_file_not_found(self):
-        overrides = {("cp",): _DockerResult(1, b"", "No such file or directory")}
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("cp",): _DockerResult(1, b"", "No such file or directory"),
+        }
         backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
         sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
         with pytest.raises(FileNotFoundError):
             asyncio.run(sandbox.read_file("gone", working_directory=_WORK, max_bytes=10))
+
+
+class TestASymlinkedAncestorOfTheWorkingDirectory:
+    """A nested work dir has ancestors above it, and the guest can replace those too.
+
+    `maf-sandbox-bicep` really does use `/acas/work`, so this is not a hypothetical shape.
+    """
+
+    _HOSTNAME = b"7eebe863ee42\n"
+    _NESTED = "/acas/etc"
+
+    def test_an_ancestor_link_above_the_working_directory_is_refused(self):
+        overrides = {
+            _cp("/acas"): _DockerResult(0, _symlink_tar("acas", "/"), ""),
+            _cp(self._NESTED): _DockerResult(0, _directory_tar("etc"), ""),
+            _cp(f"{self._NESTED}/hostname"): _DockerResult(
+                0, _tar_bytes("hostname", self._HOSTNAME), ""
+            ),
+            ("cp",): _DockerResult(1, b"", "Error: Could not find the file in container"),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        with pytest.raises(ValueError, match="real directory"):
+            asyncio.run(sandbox.read_file("hostname", working_directory=self._NESTED, max_bytes=99))
+        # Stopped at the ancestor: the entry itself was never fetched.
+        assert [c.args for c in fake.matching("cp")] == [(*_cp("/acas"), "-")]
+
+
+class TestASymlinkedParentEscapesLexicalConfinement:
+    """``ln -sfn /etc /work/out``: the entry reads as a regular file, the parent link does not.
+
+    The premise test below pins that the engine really does answer through the link, so the
+    refusal tests are not passing against a fake that simply cannot reach outside.
+    """
+
+    _HOSTNAME = b"53769ddf53e3\n"
+
+    def _sandbox(self):
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            _cp(f"{_WORK}/out"): _DockerResult(0, _symlink_tar("out", "/etc"), ""),
+            _cp(f"{_WORK}/out/hostname"): _DockerResult(
+                0, _tar_bytes("hostname", self._HOSTNAME), ""
+            ),
+            _cp(f"{_WORK}/real.txt"): _DockerResult(0, _tar_bytes("real.txt", b"artifact"), ""),
+            _cp(f"{_WORK}/pipe"): _DockerResult(0, _fifo_tar("pipe"), ""),
+            ("cp",): _DockerResult(1, b"", "Error: Could not find the file in container"),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        return asyncio.run(backend.acquire(_KEY, _SPEC)), fake
+
+    def test_the_engine_answers_from_outside_the_working_directory(self):
+        """The premise of the refusals below: the path through the link resolves daemon-side.
+
+        Asked through the unconfined stat the walk itself uses, because the public one now
+        refuses exactly this — and without the premise a refusal would also pass against a fake
+        engine that could not reach outside in the first place.
+        """
+        sandbox, _ = self._sandbox()
+        through = asyncio.run(sandbox._stat_guest(f"{_WORK}/out/hostname", "out/hostname"))
+        assert through is not None
+        assert through.entry.kind is EntryKind.FILE
+        assert through.entry.size_bytes == len(self._HOSTNAME)
+
+    def test_a_final_component_link_is_described_rather_than_refused(self):
+        """Only the parents are refused: reporting a link as `OTHER` is how a caller learns."""
+        sandbox, _ = self._sandbox()
+        link = asyncio.run(sandbox.stat_file("out", working_directory=_WORK))
+        assert link is not None
+        assert link.kind is EntryKind.OTHER
+
+    def test_a_bare_stat_through_a_symlinked_parent_is_refused(self):
+        """No bytes escape, but a type and a size do — metadata from outside the boundary."""
+        sandbox, fake = self._sandbox()
+        with pytest.raises(ValueError, match="real directory"):
+            asyncio.run(sandbox.stat_file("out/hostname", working_directory=_WORK))
+        assert [c.args for c in fake.matching("cp")] == [
+            (*_cp(_WORK), "-"),
+            (*_cp(f"{_WORK}/out"), "-"),
+        ]
+
+    def test_a_read_through_a_symlinked_parent_is_refused_before_the_read(self):
+        sandbox, fake = self._sandbox()
+        with pytest.raises(ValueError, match="real directory"):
+            asyncio.run(sandbox.read_file("out/hostname", working_directory=_WORK, max_bytes=1000))
+        assert [c.args for c in fake.matching("cp")] == [
+            (*_cp(_WORK), "-"),
+            (*_cp(f"{_WORK}/out"), "-"),
+        ]
+
+    def test_a_symlinked_working_directory_is_refused_too(self):
+        """``ln -sfn /etc /work`` is the same escape one level up, so the walk starts at the base."""
+        overrides = {_cp(_WORK): _DockerResult(0, _symlink_tar("work", "/etc"), "")}
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        with pytest.raises(ValueError, match="real directory"):
+            asyncio.run(sandbox.read_file("hostname", working_directory=_WORK, max_bytes=1000))
+        assert [c.args for c in fake.matching("cp")] == [(*_cp(_WORK), "-")]
+
+    def test_a_path_through_a_regular_file_is_not_reported_as_an_escape(self):
+        """``ENOTDIR`` is not a confinement failure, and only a link makes it one."""
+        sandbox, _ = self._sandbox()
+        with pytest.raises(NotADirectoryError):
+            asyncio.run(
+                sandbox.read_file("real.txt/child", working_directory=_WORK, max_bytes=1000)
+            )
+
+    def test_a_path_through_a_fifo_is_not_reported_as_an_escape_either(self):
+        """`OTHER` covers a FIFO and a device node too, and a path through one is `ENOTDIR`."""
+        sandbox, _ = self._sandbox()
+        with pytest.raises(NotADirectoryError):
+            asyncio.run(sandbox.read_file("pipe/child", working_directory=_WORK, max_bytes=1000))
+
+    def test_a_fifo_still_stats_as_other(self):
+        """The private tar-type distinction does not widen the protocol's vocabulary."""
+        sandbox, _ = self._sandbox()
+        entry = asyncio.run(sandbox.stat_file("pipe", working_directory=_WORK))
+        assert entry is not None
+        assert entry.kind is EntryKind.OTHER
+
+    def test_a_missing_component_leaves_the_refusal_to_the_read(self):
+        """A walk that finds nothing must not turn a missing output into a confinement failure."""
+        sandbox, _ = self._sandbox()
+        with pytest.raises(FileNotFoundError):
+            asyncio.run(sandbox.read_file("gone/output", working_directory=_WORK, max_bytes=1000))
 
 
 class TestListDirIsRefused:
