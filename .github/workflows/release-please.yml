@@ -177,12 +177,19 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          # Author filtered server-side, before the limit: `gh pr list` returns 30 by
-          # default, so selecting the bot's afterwards would drop an older Release PR
-          # behind 30 newer ones and leave it blocked for good.
-          gh pr list --state open --author "app/github-actions" --limit 100 \
-            --json headRefName,headRefOid \
-            --jq '.[] | [.headRefName, .headRefOid] | @tsv' \
+          # Selecting the author rather than passing `--author`, which is not a filter on
+          # this query: it switches gh to the search index, and that index will not have a
+          # pull request opened seconds ago by the step above. The page is raised because
+          # the filter now follows it — the default is 30.
+          open_bot_pull_requests="$(gh pr list --state open --limit 100 \
+            --json headRefName,headRefOid,author \
+            --jq '.[] | select(.author.login == "app/github-actions") | [.headRefName, .headRefOid] | @tsv')"
+          # Dispatching nothing is this step's failure mode, so it never exits silent.
+          if [ -z "$open_bot_pull_requests" ]; then
+            echo "no open pull requests from app/github-actions" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          printf '%s\n' "$open_bot_pull_requests" \
           | while IFS=$'\t' read -r branch sha; do
               # Skip one already running or already reported: a dispatch per push to main
               # would otherwise re-run every open bot pull request each time.
