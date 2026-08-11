@@ -745,6 +745,50 @@ class TestTheInboundCapsAreEnforcedHere:
         assert store.reads == []
         assert sandbox.contents == {}
 
+    def test_a_file_over_the_per_file_ceiling_stops_the_next_read(self):
+        """A tally applied to the finished set bounds what crosses into the sandbox and nothing
+        about what this process spent getting there."""
+        sandbox = _ScriptedSandbox()
+        store = _CountingStore({"a.csv": "x" * 100, "b.csv": "y", "c.csv": "z"})
+        tool = self._tool(
+            sandbox, store, files_in=replace(DEFAULT_TRANSFER_LIMITS, max_bytes_per_file=10)
+        )
+
+        out = _run(tool, "print(1)", files=["a.csv", "b.csv", "c.csv"])
+        assert "at most 10 bytes per file" in out
+        assert store.reads == ["a.csv"]
+
+    def test_the_running_total_stops_the_next_read_too(self):
+        sandbox = _ScriptedSandbox()
+        store = _CountingStore({"a.csv": "x" * 8, "b.csv": "y" * 8, "c.csv": "z" * 8})
+        tool = self._tool(
+            sandbox, store, files_in=replace(DEFAULT_TRANSFER_LIMITS, max_total_bytes=20)
+        )
+
+        out = _run(tool, "print(1)", files=["a.csv", "b.csv", "c.csv"])
+        assert "at most 20 per call" in out
+        assert store.reads == ["a.csv", "b.csv"]
+
+    def test_the_program_is_measured_before_the_store_is_touched(self):
+        sandbox = _ScriptedSandbox()
+        store = _CountingStore({"a.csv": "x"})
+        tool = self._tool(
+            sandbox, store, files_in=replace(DEFAULT_TRANSFER_LIMITS, max_bytes_per_file=10)
+        )
+
+        out = _run(tool, "print('" + "x" * 100 + "')", files=["a.csv"])
+        assert "at most 10 bytes per file" in out
+        assert store.reads == []
+
+    def test_a_name_listed_twice_is_refused(self):
+        """One read and one write per name; repeating one only multiplies both."""
+        sandbox = _ScriptedSandbox()
+        store = _CountingStore({"a.csv": "x"})
+        tool = self._tool(sandbox, store)
+
+        assert "listed twice" in _run(tool, "print(1)", files=["a.csv", "a.csv"])
+        assert store.reads == []
+
     def test_the_program_itself_counts_against_the_byte_ceilings(self):
         """A large `code` cleared both ceilings while every shared file was measured."""
         sandbox = _ScriptedSandbox()

@@ -402,31 +402,26 @@ async def _execute(
             return checked
         names = checked
 
-    # Read host-side and cap before acquiring anything: a request over the workload's own
-    # `files_in` bounds should not cost a sandbox, and nothing may be written until the whole
-    # set is known to fit — a program handed half its inputs computes a confident wrong answer.
-    # `program.py` is counted with them: the spec requires FILES_IN even with no store
-    # because the program itself crosses this boundary, so leaving it out let `max_files=1`
-    # write two files and an arbitrarily large `code` clear both byte ceilings.
-    inbound: list[tuple[str, str]] = [(_PROGRAM_FILENAME, code)]
+    # Cap before acquiring anything, and cap *as we go*: a bound that answers only once
+    # everything is in memory has already spent what it exists to bound. Every check below
+    # therefore happens before the read it would have prevented — the count before the listing,
+    # the program's own bytes before the store is touched at all, and each file's as it arrives.
+    # `program.py` is counted with them: the spec requires FILES_IN even with no store, because
+    # the program is the one thing that crosses this boundary on every single call.
+    limits = session.spec.files_in
+    tally = _InboundTally(limits)
+    shared: list[tuple[str, str]] = []
+    over_cap = _over_file_count(len(files) + 1, limits) or tally.add(_PROGRAM_FILENAME, code)
+    if over_cap is not None:
+        return over_cap
     if store is not None:
-        # The count first, before the listing and before a single store read: a cap that only
-        # answers once every requested file is in memory has already spent what it exists to
-        # bound. The same check runs again below over what was actually read.
-        over_count = _over_file_count(len(files) + len(inbound), session.spec.files_in)
-        if over_count is not None:
-            return over_count
         resolved = await _resolve_workspace_files(session, store, files, reserved=reserved)
         if isinstance(resolved, str):
             return resolved
-        read = await _read_workspace_files(store, resolved)
+        read = await _read_workspace_files(store, resolved, tally)
         if isinstance(read, str):
             return read
-        inbound += read
-    over_cap = _over_inbound_caps(inbound, session.spec.files_in)
-    if over_cap is not None:
-        return over_cap
-    shared = inbound[1:]
+        shared = read
 
     sandbox = await session.acquire(key)
     if isinstance(sandbox, str):
@@ -517,6 +512,10 @@ async def _resolve_workspace_files(
                 f"Error: {name!r} cannot be shared — this tool writes a file of that name into "
                 f"every run's directory."
             )
+        if name in resolved:
+            # One read and one write per name. Repeating one buys the caller nothing and
+            # multiplies both, which is the cheapest way to amplify against the byte ceilings.
+            return f"Error: {name!r} was listed twice."
         if name not in known:
             logger.warning(
                 "execute_code: %r is not in this tool's workspace listing (%d file(s) visible) "
@@ -549,9 +548,13 @@ def _listing_hint(name: str, listing: list[str]) -> str:
 
 
 async def _read_workspace_files(
-    store: "AgentFileStore", names: list[str]
+    store: "AgentFileStore", names: list[str], tally: "_InboundTally"
 ) -> list[tuple[str, str]] | str:
     """Read every requested file into memory, or answer with the refusal.
+
+    Each file is counted **as it arrives**, so a breach stops the next read rather than the
+    write: a tally applied to the finished set bounds what crosses into the sandbox and nothing
+    about what this process spent getting there.
 
     Text only, because ``AgentFileStore.read`` answers with ``str``.  The protocol's
     ``write_file`` takes ``bytes`` too, so a binary input is reachable the day a store can hold
@@ -570,6 +573,9 @@ async def _read_workspace_files(
             # parse.
             logger.warning("execute_code: %r is listed but has no content", name)
             return f"Error: {name!r} is listed in the workspace but has no content"
+        over_cap = tally.add(name, content)
+        if over_cap is not None:
+            return over_cap
         read.append((name, content))
     return read
 
@@ -585,32 +591,34 @@ def _over_file_count(count: int, limits: TransferLimits) -> str | None:
     )
 
 
-def _over_inbound_caps(inbound: "Sequence[tuple[str, str]]", limits: TransferLimits) -> str | None:
-    """Hold everything about to cross into the sandbox to the workload's ``files_in`` caps.
+class _InboundTally:
+    """The two byte ceilings of ``files_in``, applied one file at a time.
 
-    Counted **encoded**, since that is what crosses, and counted over the whole set including
-    the program: no backend's ``write_file`` takes a limit, so a bound not applied here is
-    applied nowhere.  Nothing is written until the set is known to fit — a program handed half
-    its inputs does not fail, it computes a confident wrong answer.
+    Incremental rather than over a finished list, because a cap on a collection already read is
+    a cap on nothing this process has left to spend.  Counted **encoded**, since that is what
+    crosses, and seeded with the program, which crosses on every call.
     """
-    over_count = _over_file_count(len(inbound), limits)
-    if over_count is not None:
-        return over_count
-    total = 0
-    for name, content in inbound:
+
+    def __init__(self, limits: TransferLimits) -> None:
+        self._limits = limits
+        self._total = 0
+
+    def add(self, name: str, content: str) -> str | None:
+        """Count one file, or answer with the refusal that should stop the next read."""
         size = len(content.encode())
-        if size > limits.max_bytes_per_file:
+        if size > self._limits.max_bytes_per_file:
             return (
                 f"Error: {name!r} is {size} bytes and this tool writes at most "
-                f"{limits.max_bytes_per_file} bytes per file. Nothing was shared."
+                f"{self._limits.max_bytes_per_file} bytes per file. Nothing was shared."
             )
-        total += size
-        if total > limits.max_total_bytes:
+        self._total += size
+        if self._total > self._limits.max_total_bytes:
             return (
-                f"Error: this call would write {total} bytes into the sandbox and this tool "
-                f"writes at most {limits.max_total_bytes} per call. Nothing was shared."
+                f"Error: this call would write {self._total} bytes into the sandbox and this "
+                f"tool writes at most {self._limits.max_total_bytes} per call. Nothing was "
+                f"shared."
             )
-    return None
+        return None
 
 
 async def _write_shared(sandbox: "Sandbox", name: str, guest_path: str, content: str) -> str | None:
