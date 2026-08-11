@@ -384,8 +384,9 @@ class SandboxSpec:
     ``declared_outputs`` rather than replacing it, and ``files_out`` caps the union.
 
     ``identities`` names whose authority the workload's dispatched host tools exercise —
-    derived from its registry (:meth:`~maf_sandbox.HostToolRegistry.identities`), never
-    invented.  Declared on the spec so the router can refuse it at attach
+    derived from its registry (:attr:`~maf_sandbox.HostToolAggregate.identities`, which seals
+    that registry as it answers), never invented.  Declared on the spec so the router can
+    refuse it at attach
     (``denied_identities``), the same moment every other posture question is answered; a
     workload that dispatches nothing declares nothing.
     """

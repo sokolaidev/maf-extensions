@@ -341,6 +341,56 @@ class TestAggregate:
             registry.register(_stamped_pure(), name="late")
         assert registry.names() == frozenset({"doubled"})
 
+    def test_the_identity_set_is_readable_only_through_the_sealing_aggregate(self):
+        """A policy view that does not seal is a way around the seal: read an empty identity
+        set, build a spec and a router that denies `Identity.APP` from it, then register an
+        APP tool afterwards and dispatch it past a deny list that never saw it."""
+        registry = HostToolRegistry()
+        assert not hasattr(registry, "identities")
+        assert registry.aggregate().identities == frozenset()
+
+
+class TestConcurrentDispatchesCannotOversubscribeTheLedger:
+    """The tool body is the one place `dispatch` awaits — which is long enough for a second
+    dispatch to walk past a ledger the first has not written to yet."""
+
+    def test_the_second_of_two_in_flight_calls_is_refused_without_running(self):
+        calls: list[int] = []
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        @sandbox_tool(source=None, sink="workspace", identity=None)
+        async def slow(x: int) -> int:
+            calls.append(x)
+            entered.set()
+            await release.wait()
+            return x
+
+        registry = HostToolRegistry(
+            response_limits=dataclasses.replace(DEFAULT_TRANSFER_LIMITS, max_files=1)
+        )
+        registry.register(slow)
+        run = HostToolRun(registry)
+
+        async def scenario() -> tuple[DispatchResult, DispatchResult]:
+            first = asyncio.create_task(run.dispatch("slow", {"x": 1}))
+            await entered.wait()  # the first call is inside its body, holding the one slot
+            second = asyncio.create_task(run.dispatch("slow", {"x": 2}))
+            # A task and a bounded wait rather than a plain `await`: a regression here does
+            # not refuse the second call, it runs its body — which blocks on `release`, and
+            # awaiting it directly would deadlock the test instead of failing it.
+            await asyncio.wait([second], timeout=5)
+            release.set()
+            return await first, await second
+
+        first_result, second_result = asyncio.run(scenario())
+
+        assert first_result.ok
+        assert not second_result.ok
+        assert second_result.refusal is not None
+        assert "delivered-response cap" in second_result.refusal
+        assert calls == [1], "the only slot was already spoken for; the second body must not run"
+
 
 class TestACeilingMustBeAbleToCompare:
     """A non-integer ceiling removes itself, which is the one thing a safety cap must not do."""
@@ -585,6 +635,44 @@ class TestDispatchFailureLadder:
         assert not result.ok
         assert result.refusal is not None and "cannot be carried as JSON" in result.refusal
 
+    def test_a_lone_surrogate_is_refused_rather_than_escaping_the_ladder(self):
+        """`ensure_ascii=False` leaves the surrogate in the text and serializes happily; the
+        *encode* is what raises, which is why it has to sit inside the guard, not after it."""
+        with pytest.raises(UnicodeEncodeError):
+            json.dumps("\ud800", ensure_ascii=False).encode("utf-8")
+
+        @sandbox_tool(source=None, sink=None, identity=None)
+        def half_a_pair() -> str:
+            return "\ud800"
+
+        registry = HostToolRegistry()
+        registry.register(half_a_pair)
+        result = _dispatch(HostToolRun(registry), "half_a_pair")
+        assert not result.ok
+        assert result.refusal is not None and "cannot be carried as JSON" in result.refusal
+
+    def test_a_deeply_nested_result_is_refused_rather_than_escaping_the_ladder(self):
+        """`RecursionError` is not a `ValueError`, so the narrow guard let it past — and a few
+        thousand nested lists is a few kilobytes, well inside every cap the run carries."""
+        deep: list[object] = []
+        node = deep
+        for _ in range(3000):
+            child: list[object] = []
+            node.append(child)
+            node = child
+        with pytest.raises(RecursionError):
+            json.dumps(deep)
+
+        @sandbox_tool(source=None, sink=None, identity=None)
+        def nested() -> list[object]:
+            return deep
+
+        registry = HostToolRegistry()
+        registry.register(nested)
+        result = _dispatch(HostToolRun(registry), "nested")
+        assert not result.ok
+        assert result.refusal is not None and "cannot be carried as JSON" in result.refusal
+
 
 class TestResponseCaps:
     def _registry(self, **limit_overrides) -> HostToolRegistry:
@@ -627,3 +715,10 @@ class TestResponseCaps:
         run = HostToolRun(self._registry())
         assert not _dispatch(run, "payload", {"size": 100}).ok
         assert _dispatch(run, "payload", {"size": 60}).ok
+
+    def test_a_refusal_gives_its_reserved_response_slot_back(self):
+        """The count slot is taken before the call so it can be held across it; a run that
+        once overran the per-response cap must not be one response poorer forever after."""
+        run = HostToolRun(self._registry(max_files=1, max_total_bytes=10_000))
+        assert not _dispatch(run, "payload", {"size": 100}).ok
+        assert _dispatch(run, "payload", {"size": 1}).ok

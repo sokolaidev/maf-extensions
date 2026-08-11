@@ -797,10 +797,11 @@ class TestSpecDefaults:
         rebinds every positional argument after it — a caller's `files_in` would silently
         become the next field, with no error anywhere. New fields go on the end."""
         names = [f.name for f in dataclasses.fields(SandboxSpec)]
-        # The order every released version has carried. Pinned as a prefix rather than by
-        # naming whichever field is newest: appending is what this test is for, so it should
-        # not have to be edited each time something is appended — only when a field lands
-        # somewhere a released caller could already be passing positionally.
+        # A prefix rather than the whole list, so a field appended at the end needs no edit
+        # here — but a field joins this list in the change that adds it, because from that
+        # moment on it is a position a caller can pass. Leaving the newest one out would
+        # leave exactly one field unguarded: the next insertion could land in front of it
+        # and this test would still be green.
         settled = [
             "kind",
             "image",
@@ -814,6 +815,7 @@ class TestSpecDefaults:
             "files_in",
             "files_out",
             "outputs_named_at_call_time",
+            "identities",
         ]
         assert names[: len(settled)] == settled
 

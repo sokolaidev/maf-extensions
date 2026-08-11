@@ -87,9 +87,9 @@ class MafSandboxHostToolsWarning(UserWarning):
 class HostToolNotDeclared(ValueError):
     """A host tool has no complete information-flow declaration and the registry requires one.
 
-    A host configuration error, raised where the host can fix it — at registration, or at
-    aggregate build when a stamp was removed after registration.  The fix is
-    :func:`sandbox_tool` with every leg answered; ``None`` is an answer.
+    A host configuration error, raised at registration — the host's own configuration site,
+    where the fix is one decorator away.  The fix is :func:`sandbox_tool` with every leg
+    answered; ``None`` is an answer.
     """
 
 
@@ -272,8 +272,9 @@ class HostToolRegistry:
     what it declares** — see :class:`~maf_sandbox.Identity`.
 
     Args:
-        require_declared: When ``True``, an unstamped function is refused at registration and
-            again at every aggregate build (see :class:`HostToolNotDeclared`).  Library
+        require_declared: When ``True``, an unstamped function is refused at registration
+            (see :class:`HostToolNotDeclared`) — the one gate that matters, because the
+            declaration is captured there and never re-read from the function.  Library
             default ``False``, in which case an unstamped tool registers and fails safe —
             an untrusted source, an :data:`~maf_sandbox.Identity.APP` identity, and a raised
             flag in the aggregate.
@@ -400,8 +401,13 @@ class HostToolRegistry:
         """
         return self._tools.get(name)
 
-    def identities(self) -> frozenset[Identity]:
+    def _identities(self) -> frozenset[Identity]:
         """Whose authority this registry's tools exercise — what a spec's ``identities`` carries.
+
+        Private, and reachable only as :attr:`HostToolAggregate.identities`, because taking a
+        policy view has to seal: a host that read this set, built a spec from it and passed a
+        router denying :data:`~maf_sandbox.Identity.APP` could otherwise register an APP tool
+        afterwards and dispatch it past a deny list that never saw it.
 
         An unstamped tool (gate off) contributes :data:`~maf_sandbox.Identity.APP`: nobody
         answered the identity question, and its body factually runs in the host process with
@@ -436,7 +442,7 @@ class HostToolRegistry:
         if undeclared:
             sources.append(SourceIntegrity.UNTRUSTED)
         result_integrity = min(sources, key=INTEGRITY_RANK.__getitem__) if sources else None
-        identities = self.identities()
+        identities = self._identities()
         return HostToolAggregate(
             result_integrity=result_integrity,
             outbound_caps=frozenset(d.sink for d in declarations if d.sink is not None),
@@ -537,6 +543,30 @@ class HostToolRun:
                 f"Error: this run's delivered-response cap ({limits.max_files}) is "
                 "exhausted — finish with the results already delivered"
             )
+        # Taken now and held across the call, because the tool body is the one place this
+        # method awaits: two concurrent dispatches would otherwise both read a ledger that
+        # still said zero, both run, and both deliver against a cap of one.
+        self._delivered += 1
+        outcome = await self._deliver(name, func, provided, limits)
+        if not outcome.ok:
+            self._delivered -= 1
+        return outcome
+
+    async def _deliver(
+        self,
+        name: str,
+        func: Callable[..., Any],
+        provided: dict[str, Any],
+        limits: TransferLimits,
+    ) -> DispatchResult:
+        """Validate, call, serialize and cap, with a response slot already reserved.
+
+        Split from :meth:`dispatch` so that giving the slot back has exactly one site: every
+        refusal here is a ``return`` the caller sees, and none of them can forget.  The byte
+        ledger stays here instead, where a size is known — its check and its commit sit in one
+        run of statements with no ``await`` between them, which is what makes it safe from the
+        same interleaving (a caller driving one run from several *threads* is out of contract).
+        """
         try:
             signature = inspect.signature(func)
         except (ValueError, TypeError) as exc:
@@ -566,12 +596,19 @@ class HostToolRun:
             # strict JSON parser on the guest side accepts — a payload delivered as success
             # and unreadable on arrival is worse than the refusal the ValueError becomes.
             encoded = json.dumps(result, ensure_ascii=False, allow_nan=False)
-        except (TypeError, ValueError) as exc:
-            self._logger.warning("host tool %r returned an unserializable value: %s", name, exc)
+            # Encoded inside the same guard, and the guard is broad, because turning a value
+            # into bytes fails in more ways than `dumps` alone does: `ensure_ascii=False` can
+            # leave a lone surrogate in the text and encoding one raises, while a deeply
+            # nested result raises `RecursionError` out of `dumps` itself. Either escaping
+            # here would take the caller's whole turn instead of ending one dispatch.
+            size = len(encoded.encode("utf-8"))
+        except Exception as exc:  # noqa: BLE001 - the guest gets a sentence, the log the rest
+            self._logger.warning(
+                "host tool %r returned an unserializable value: %s", name, error_detail(exc)
+            )
             return _refused(
                 f"Error: host tool {name!r} returned a value that cannot be carried as JSON"
             )
-        size = len(encoded.encode("utf-8"))
         if size > limits.max_bytes_per_file:
             return _refused(
                 f"Error: host tool {name!r}'s response is {size} bytes and the "
@@ -582,6 +619,5 @@ class HostToolRun:
                 f"Error: delivering host tool {name!r}'s {size}-byte response would exceed "
                 f"this run's total response cap ({limits.max_total_bytes} bytes)"
             )
-        self._delivered += 1
         self._delivered_bytes += size
         return DispatchResult(value_json=encoded)
