@@ -1,6 +1,6 @@
 # maf-sandbox: sandboxed code execution for MAF agents
 
-> An introduction to the suite — what it is, how it attaches to an agent, and what a host gets for wiring it in. It assumes no prior knowledge of Microsoft Agent Framework. [`docs/design/`](design/) carries the depth: [`sandbox-architecture.md`](design/sandbox-architecture.md) for the surface as built, [`two-axis-sandbox-policy.md`](design/two-axis-sandbox-policy.md) and [`files-out.md`](design/files-out.md) for the decisions behind it.
+> An introduction to the suite — the problem it solves, how it relates to everything else in a crowded field, how it attaches to an agent, and what a host gets for wiring it in. It assumes no prior knowledge of Microsoft Agent Framework. [`docs/design/`](design/) carries the depth: [`sandbox-architecture.md`](design/sandbox-architecture.md) for the surface as built, [`two-axis-sandbox-policy.md`](design/two-axis-sandbox-policy.md) and [`files-out.md`](design/files-out.md) for the decisions behind it.
 
 ## Microsoft Agent Framework, in a paragraph
 
@@ -34,32 +34,41 @@ The framework's own tracker shows the same shape from four directions — a remo
 
 ### What else is out there
 
-**Sandbox-as-a-service SDKs** — E2B, Daytona and similar — solve the genuinely hard part, which is the isolated machine, and they solve it well. What they hand you is a client rather than a contract: a tool written against one is written against that vendor, and moving it to another, to a container on a CI runner, or to a fake in a unit test is a rewrite rather than a configuration change. None of them can decide whether a given boundary is strong enough for your deployment, because that is a question about your host and not about their service.
+Sandboxing for agents is a crowded and fast-moving field, and most of it sits at a *different layer* rather than in the same place. Beyond the framework-native options above, three layers are worth separating, because anyone choosing tools needs to know which one they are shopping in.
 
-**Container executors** of the kind familiar from the AutoGen line run code in a local Docker container. That is the right tool on a developer's machine, and it carries no isolation claim a deployment can enforce — a shared kernel is not what you want between model-authored code and a process holding managed-identity credentials.
+**Containment systems — the boundary itself.** [MXC](https://github.com/microsoft/mxc), the Microsoft eXecution Container, is a cross-platform system for running untrusted code behind one versioned JSON schema and a TypeScript SDK, with ProcessContainer, Windows Sandbox, LXC, Bubblewrap, Seatbelt, micro-VM, Hyperlight and WSLC as interchangeable backends, and filesystem, network and UI policy over all of them. It is the same *idea* one layer down — many boundaries behind one description — which makes it a natural backend for a protocol like this one rather than a competitor to it. It is an early preview, and its own README currently asks that no MXC profile be treated as a security boundary yet. Below it sit the primitives themselves: Firecracker, gVisor, Kata, Hyperlight, Landlock, Seatbelt.
 
-**Hardening the in-process path** — a locked argument list, no shell, a scrubbed environment — is worth doing and is never sufficient. It answers an agent misusing the tool as designed. It does nothing about the tool being used to run something else, because the two controls that would hold that line, a different user and no reachable token endpoint, are both absent inside your own process.
+**Sandbox services — someone else's machine.** Azure Container Apps Sandboxes and dynamic sessions, E2B on Firecracker micro-VMs, Modal on gVisor, Daytona on containers. They solve the genuinely hard part and solve it well. What each hands you is a client rather than a contract: a tool written against one is written against that vendor, and moving it to another — or to a container on a CI runner, or to a fake in a unit test — is a rewrite rather than a configuration change.
 
-What none of these provides is the part this suite is: a contract that lets a workload be written once, and a policy that lets the *host* decide which boundaries it is willing to accept.
+**Governance layers — was this call allowed, and who made it.** Microsoft's [Agent Governance Toolkit](https://github.com/microsoft/agent-governance-toolkit) intercepts every tool call, message and delegation in deterministic code, evaluates a declared policy, and writes an audit record, alongside identity and reliability concerns, for any framework. That is a different question from this one and largely a complementary answer: MAF addresses it in-process through the middleware chain and `agent_framework.security`, which is exactly why this suite keeps a sandbox on the *tool* path where both can see it.
+
+The toolkit also ships `agt-sandbox` — five interchangeable providers (Docker, Hyperlight, ACA Sandboxes, MXC, nono) behind one `SandboxProvider` ABC — which makes it the nearest neighbour to this suite, and the thing to look at first if governance is the primary need. The difference is what the abstraction is *of*. `SandboxProvider` abstracts a session that executes code, and the host chooses the provider. This protocol abstracts the sandbox a *workload* needs: a spec carrying the image, the egress allowlist, the declared outputs and the required capabilities, and a router that decides whether a given backend may serve it — refusing one below the host's isolation floor, or missing a capability, rather than degrading. Its unit is a tool attached to an agent, keyed to a conversation and disposed with it, rather than a session a caller opens and closes.
+
+**And one thing that is not a layer at all: hardening the in-process path** — a locked argument list, no shell, a scrubbed environment — which is worth doing and never sufficient. It answers an agent misusing the tool as designed, and does nothing about the tool being used to run something else, because the two controls that would hold that line, a different user and no reachable token endpoint, are both absent inside your own process.
+
+That the same nouns keep reappearing across all of these — a spec, an allowlist, a mount, a set of interchangeable backends — is the argument the upstream feature request makes: they belong in a contract the framework owns, so that a workload can be written once and every runtime can declare what it truthfully is. Until such a contract exists, this suite is one answer to that, deliberately a small one, and shaped so the others are backends beneath it rather than alternatives beside it.
 
 ## What the suite is
 
-A backend-neutral protocol for giving agent-written code **somewhere else to run**, reached as an **ordinary tool call**.
+**A backend-neutral protocol that lets an agent's tool run its work in a sandbox — any sandbox — while the host decides which sandboxes qualify.**
 
-That second half is the hinge the whole design turns on. The *work* ships out to an isolated sandbox; the tool *call* stays in the host process, so the middleware chain still sees it, still gates it, and still classifies what it returns. The alternative shape — exposing the sandbox as a remote *agent* — leaves that security context entirely, and everything coming back has to be re-treated as untrusted ingress. Tool rather than agent is a security decision, not an ergonomic one.
+Those layers are not so much competitors as an unfinished sentence. The boundaries exist, and several of them are very good; what is missing is a contract that lets an agent's workload be written **once** and run behind **any** of them, with the *host* deciding which ones are acceptable. That contract is what this suite is. It contributes no isolation of its own. It makes the isolation that already exists interchangeable, declarable, and accountable to the deployment rather than to the vendor.
 
-Three roles, and the separation between them is what everything else rests on:
+The scattered landscape collapses into one shape. An ACA Sandbox, a Docker container, a container on a developer's laptop, an in-process fake — and, in principle, a containment system like MXC or a service like E2B — is each **one backend class**. A unit of work, whether that is validating a template, running a model-written program or rendering a diagram, is **one kind**, written against the protocol alone and never against a vendor. Between them sits a router, and the host tells it what it is willing to accept. When the backend changes, nothing else in the picture does.
 
-```
-app  ->  maf_sandbox (protocol + router)  ->  a backend  ->  the sandbox
-              ^ a kind calls the router; kinds and backends never import each other
-```
+And it is reached, always, as an **ordinary tool call** — the second half of the design and the half that is easy to get wrong. The *work* ships out to the sandbox; the *call* stays in the host process, where the middleware chain still sees it, still gates it, and still classifies what comes back. The tempting alternative, exposing the sandbox as a remote *agent*, leaves that security context altogether, and everything it returns has to be re-treated as untrusted ingress. Tool rather than agent is a security decision, not an ergonomic one.
 
-- **The protocol and the router** — `maf-sandbox`. The vocabulary (`SandboxKey`, `SandboxSpec`, `Sandbox`, `SandboxBackend`, `Isolation`, `Capability`) and the policy deciding whether a given backend may serve a given request. Its protocol modules import nothing but the standard library: a seam that depends on the things it separates is not a seam.
-- **A backend** — *where* code runs. Azure Container Apps Sandboxes, a plain Docker container, a `wslc` container on a developer's own machine, or the in-process fake in `maf_sandbox.testing`. A backend declares what it can and cannot provide, and is held to it.
-- **A kind** — *what work* runs. `bicep_validate` compiles agent-authored Bicep; `execute_code` runs a short program the model wrote and returns what it printed. A kind is a MAF tool with a sandbox behind it, written against the protocol alone.
+### Why this rather than one of the alternatives
 
-Because kinds and backends never import each other — and tests fail if they begin to — a kind is portable by construction. The same `bicep_validate` runs in a microVM in production, a Docker container on a CI runner, and an in-process fake in a unit test, unchanged.
+**You stop picking a sandbox.** The choice a service forces on day one — which vendor, which isolation technology, which region — becomes a configuration line you can change later, and a decision you can make differently in production, in CI and on a laptop. The same `bicep_validate` runs in a micro-VM, in a Docker container on a CI runner and in an in-process fake in a unit test, unchanged, because kinds and backends never import each other and tests fail if they begin to.
+
+**The host owns the boundary decision, and can enforce it.** No sandbox service can tell you whether its boundary is strong enough for your deployment, because that is a question about your threat model and not about their product. Here the host declares a minimum isolation floor and a workload declares what it needs; a backend that sits below the floor, cannot confine egress to the hosts the workload named, or lacks a required capability is **refused** — at construction where possible — rather than quietly serving the request with less containment than was asked for.
+
+**Your governance keeps working.** Because the sandbox stays on the tool path, MAF's approvals, budgets, telemetry and information-flow policy apply to it exactly as they apply to every other tool, with nothing to re-implement and no second security context to reason about. A suite that made you choose between isolation and governance would be solving one problem by creating another.
+
+**It is shaped like the framework rather than like a session API.** A sandbox is keyed from the host's request context, so one conversation cannot address another's; it is reused warm across a fix-and-retry loop; it is purged from the service by label when the thread is deleted, which is correct even on the replica that never created it; and when nothing is configured, no tool is attached at all. Those are the details that go wrong quietly in a hand-rolled integration, and they are invariants here rather than advice.
+
+**It is small enough to read.** The protocol is standard library only, one module in it touches `agent_framework`, and a new backend is a single class. There is no service to run, no daemon, no control plane, and nothing that has to be adopted wholesale — a host can attach one tool to one agent and stop there.
 
 ## What the suite is not
 
@@ -74,6 +83,17 @@ Because kinds and backends never import each other — and tests fail if they be
 **Not a guarantee about a backend you supply.** The router enforces what a backend *declares* against what a workload *asked for*. Whether a backend's declaration is true of the system underneath it is that backend's claim to make and its documentation's to justify — the protocol makes the claim explicit and checkable, which is a different thing from making it true.
 
 ## How it attaches to a MAF agent
+
+Three roles, and the separation between them is what everything above rests on:
+
+```
+app  ->  maf_sandbox (protocol + router)  ->  a backend  ->  the sandbox
+              ^ a kind calls the router; kinds and backends never import each other
+```
+
+- **The protocol and the router** — `maf-sandbox`. The vocabulary (`SandboxKey`, `SandboxSpec`, `Sandbox`, `SandboxBackend`, `Isolation`, `Capability`) and the policy deciding whether a given backend may serve a given request. Its protocol modules import nothing but the standard library: a seam that depends on the things it separates is not a seam.
+- **A backend** — *where* code runs. Azure Container Apps Sandboxes, a plain Docker container, a `wslc` container on a developer's own machine, or the in-process fake in `maf_sandbox.testing`. A backend declares what it can and cannot provide, and is held to it.
+- **A kind** — *what work* runs. `bicep_validate` compiles agent-authored Bicep; `execute_code` runs a short program the model wrote and returns what it printed. A kind is a MAF tool with a sandbox behind it, written against the protocol alone.
 
 Exactly one module imports `agent_framework`, and it is deliberately not re-exported from the package: `import maf_sandbox` stays cheap and framework-free for a backend author or a workload's own test suite, while a host reaches the conveniences by name. Both halves are pinned by tests.
 
@@ -98,7 +118,7 @@ Two behaviours are worth knowing before the first call, because both are deliber
 - **Nothing configured attaches nothing.** With no backend, a kind's factory returns `[]` — not a tool that fails when the model calls it. The host keeps its ungrounded behaviour with no half-attached error path, and the model is never shown a capability it does not have.
 - **A backend that cannot honour the spec raises.** That is a misconfiguration rather than a choice, and a quiet degrade would ship a workload with containment it does not have. The distinction is the rule: absence is silent, dishonesty is loud.
 
-## What it buys
+## The guarantees, in detail
 
 **Truth in place of plausibility.** The agent stops reporting that a template looks valid and starts reporting what the compiler said. Everything else here is what it costs to get that safely.
 
@@ -109,8 +129,6 @@ Two behaviours are worth knowing before the first call, because both are deliber
 **Egress closed unless opened.** A spec names the hosts its work may reach, and a backend that cannot confine egress to that list is refused. A spec silent about egress gets the closed configuration, never the open one.
 
 **Failures that do not leak.** When a sandbox is unavailable the model receives a fixed sentence saying the run degraded, and nothing else. The provider's own message — endpoint, subscription, tenant — goes to the log instead, because a tool result is persisted into the transcript.
-
-**Portability, and no lock-in.** Cloud microVMs in production, Docker on a CI runner, a container on a laptop, an in-process fake in the test suite. A new backend is a sibling package implementing one protocol; a workload written against that protocol does not learn about it.
 
 ## Where to read next
 
