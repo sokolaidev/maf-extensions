@@ -460,6 +460,27 @@ def _dispatch(run: HostToolRun, name: str, arguments=None) -> DispatchResult:
     return asyncio.run(run.dispatch(name, arguments))
 
 
+def _nesting_json_refuses_to_encode() -> list[object]:
+    """A structure whose only problem is depth, found rather than assumed.
+
+    How deep it takes is the platform's business — CPython's guard is a C-recursion budget,
+    and a depth that raises on Windows encodes happily on Linux — so a hard-coded number
+    would pin one runner and quietly prove nothing on the other.
+    """
+    for depth in (2_000, 12_000, 60_000):
+        deep: list[object] = []
+        node = deep
+        for _ in range(depth):
+            child: list[object] = []
+            node.append(child)
+            node = child
+        try:
+            json.dumps(deep)
+        except RecursionError:
+            return deep
+    raise AssertionError("json.dumps encoded 60k levels of nesting without a RecursionError")
+
+
 class TestDispatch:
     def test_a_registered_tool_round_trips_its_value_as_json(self):
         registry = HostToolRegistry()
@@ -652,16 +673,9 @@ class TestDispatchFailureLadder:
         assert result.refusal is not None and "cannot be carried as JSON" in result.refusal
 
     def test_a_deeply_nested_result_is_refused_rather_than_escaping_the_ladder(self):
-        """`RecursionError` is not a `ValueError`, so the narrow guard let it past — and a few
-        thousand nested lists is a few kilobytes, well inside every cap the run carries."""
-        deep: list[object] = []
-        node = deep
-        for _ in range(3000):
-            child: list[object] = []
-            node.append(child)
-            node = child
-        with pytest.raises(RecursionError):
-            json.dumps(deep)
+        """`RecursionError` is not a `ValueError`, so the narrow guard let it past — and it
+        arrives before any byte cap has been consulted, since nothing was encoded at all."""
+        deep = _nesting_json_refuses_to_encode()
 
         @sandbox_tool(source=None, sink=None, identity=None)
         def nested() -> list[object]:
