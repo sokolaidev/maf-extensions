@@ -572,6 +572,29 @@ class TestDispatch:
         assert not result.ok
         assert result.refusal == "Error: a host tool name must be a string, not list"
 
+    @pytest.mark.parametrize(
+        ("name", "arguments"),
+        [
+            ("z" * 100_000, None),
+            ("doubled", {"x": 1, "z" * 100_000: 1}),
+        ],
+        ids=["the name that did not resolve", "the keyword that did not bind"],
+    )
+    def test_a_refusal_never_grows_with_the_text_the_guest_sent(self, name: str, arguments):
+        """Refusals are the one response `TransferLimits` never sees — it bounds what a tool
+        delivered, and a refusal delivered nothing — so anything they quote is a payload the
+        guest sizes. 100 KB in, a sentence out.
+
+        The second case satisfies `x` deliberately: `bind` reports a missing argument before
+        an unexpected one, so a call that omits it never reaches the guest-chosen keyword."""
+        registry = HostToolRegistry()
+        registry.register(_stamped_pure(), name="doubled")
+        result = _dispatch(HostToolRun(registry), name, arguments)
+        assert not result.ok
+        assert result.refusal is not None
+        assert len(result.refusal) < 400, "the guest chose the length of this refusal"
+        assert "truncated" in result.refusal
+
     def test_the_cap_returns_a_sanitized_refusal_rather_than_raising(self):
         registry = HostToolRegistry(max_dispatches_per_run=2)
         registry.register(_stamped_pure(), name="doubled")
@@ -605,6 +628,12 @@ class TestDispatch:
         result = _dispatch(HostToolRun(registry), "doubled", {"y": 1})
         assert not result.ok
         assert result.refusal is not None and "do not bind" in result.refusal
+        # The diagnostic is the point of quoting the error at all — a model fixes its own
+        # call from it. `bind` reports the missing argument before it notices the extra one.
+        assert "missing a required argument" in result.refusal
+
+        named = _dispatch(HostToolRun(registry), "doubled", {"x": 1, "y": 2})
+        assert named.refusal is not None and "unexpected keyword argument 'y'" in named.refusal
 
     def test_non_mapping_arguments_are_refused(self):
         registry = HostToolRegistry()

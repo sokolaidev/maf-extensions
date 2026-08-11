@@ -482,6 +482,23 @@ def _refused(sentence: str) -> DispatchResult:
     return DispatchResult(refusal=sentence)
 
 
+#: How much guest-chosen text one refusal may quote back.  Generous for anything a caller
+#: meant, short enough that quoting it costs nothing.
+_MAX_ECHOED_CHARS = 120
+
+
+def _bounded(text: str) -> str:
+    """``text``, cut to a length this package chose rather than the guest.
+
+    A refusal is the one payload the response ceilings never see: :class:`TransferLimits`
+    bounds what a tool *delivered*, and a refusal by definition delivered nothing — yet the
+    transport writes it just the same.  So a sentence quoting its own input is a response the
+    guest picks the size of, and two of them quote guest text: the name that did not resolve,
+    and the binding error, which names the keyword that was not expected.
+    """
+    return text if len(text) <= _MAX_ECHOED_CHARS else f"{text[:_MAX_ECHOED_CHARS]} (truncated)"
+
+
 class HostToolRun:
     """One ``execute_code`` run's dispatch context: the cap, the ledger, and the one door.
 
@@ -532,7 +549,9 @@ class HostToolRun:
             )
         func = self._registry.resolve(name)
         if func is None:
-            return _refused(f"Error: {name!r} is not a registered host tool")
+            # The last refusal whose name is the guest's. Past this line `name` is a key the
+            # host registered, so every later sentence quoting it is bounded by configuration.
+            return _refused(f"Error: {_bounded(name)!r} is not a registered host tool")
         declaration = self._registry.declaration_for(name)
         if declaration is None and self._registry.require_declared:
             # Belt-and-braces behind the registration gate. Unreachable while the registry is
@@ -616,7 +635,11 @@ class HostToolRun:
             # and arity; anything deeper is the tool body's own duty — it is host code.
             signature.bind(**provided)
         except TypeError as exc:
-            return _refused(f"Error: arguments do not bind to host tool {name!r}: {exc}")
+            # The detail is kept, bounded, rather than dropped: "unexpected keyword argument
+            # 'x'" is how a model fixes its own call. The keyword in it is the guest's.
+            return _refused(
+                f"Error: arguments do not bind to host tool {name!r}: {_bounded(str(exc))}"
+            )
         try:
             result = func(**provided)
             if inspect.isawaitable(result):
