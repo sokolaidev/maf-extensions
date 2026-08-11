@@ -32,7 +32,6 @@ from maf_sandbox import (
     DeclaredOutput,
     ExecResult,
     NameNormalization,
-    OutputDisposition,
     OutputSink,
     SandboxArtifactNameInvalid,
     SandboxOutputError,
@@ -80,6 +79,16 @@ _MANIFEST_PATH_KEY = "path"
 
 #: A listing of what a program wrote is text, and a small amount of it.
 _MANIFEST_MAX_BYTES = 64 * 1024
+
+#: The shortest manifest that names one file — the floor a host's byte caps must clear before
+#: this channel can deliver anything at all.
+_SMALLEST_MANIFEST = len(
+    json.dumps({_MANIFEST_OUTPUTS_KEY: [{_MANIFEST_PATH_KEY: "a"}]}, separators=(",", ":"))
+)
+
+#: Said whenever a collection fails part-way: `collect_outputs` delivers one artifact at a
+#: time and cannot un-deliver, so "could not be saved" is not the same as "nothing was saved".
+_MAY_HAVE_LANDED = "Some of them may already have been saved; do not assume none were."
 
 _INTERPRETER = "python3"
 
@@ -218,15 +227,24 @@ def make_codeact_tools(
             f"model an `outputs` parameter, and files_out.max_files of "
             f"{files_out.max_files} would refuse every non-empty use of it."
         )
-    if configured and outputs is CodeactOutputs.MANIFEST and files_out.max_files < 2:
-        # The manifest occupies one slot of the collection, so a cap of one leaves room for
-        # nothing else: the channel is wired but could never deliver an artifact. Better here
-        # than as a per-call refusal the model cannot act on.
-        raise ValueError(
-            f"{EXECUTE_CODE_TOOL_NAME}: outputs={str(CodeactOutputs.MANIFEST)!r} needs "
-            f"files_out.max_files of at least 2 — one for {_MANIFEST_FILENAME} and one for an "
-            f"artifact — and this host allows {files_out.max_files}."
-        )
+    if configured and outputs is CodeactOutputs.MANIFEST:
+        # The manifest occupies one slot of the collection and at least `_SMALLEST_MANIFEST`
+        # of its bytes, so a cap below either leaves room for nothing else: the channel is
+        # wired and could never deliver an artifact.
+        if files_out.max_files < 2:
+            raise ValueError(
+                f"{EXECUTE_CODE_TOOL_NAME}: outputs={str(CodeactOutputs.MANIFEST)!r} needs "
+                f"files_out.max_files of at least 2 — one for {_MANIFEST_FILENAME} and one "
+                f"for an artifact — and this host allows {files_out.max_files}."
+            )
+        room = min(files_out.max_bytes_per_file, files_out.max_total_bytes)
+        if room <= _SMALLEST_MANIFEST:
+            raise ValueError(
+                f"{EXECUTE_CODE_TOOL_NAME}: outputs={str(CodeactOutputs.MANIFEST)!r} needs "
+                f"more than {_SMALLEST_MANIFEST} bytes of files_out — the smallest "
+                f"{_MANIFEST_FILENAME} naming one file, plus the file — and this host allows "
+                f"{room}."
+            )
     if configured and outputs is CodeactOutputs.NONE and output_sink is not None:
         raise ValueError(
             f"{EXECUTE_CODE_TOOL_NAME}: an output sink was supplied with outputs="
@@ -695,12 +713,8 @@ def _validated_output_names(
                 return f"Error: {name!r} cannot be saved — {exc}"
         if name in reserved:
             return f"Error: {name!r} cannot be saved — this tool writes that file itself."
-        # The same file two ways: NFC and case-folded, which is what `collect_outputs` keys its
-        # collision check on. Always NFC here, never `delivered` — opting out of normalization
-        # disables the *rewrite* and not the comparison, so keying on the raw spelling would let
-        # a composed/decomposed pair through and have the whole collection refused after the
-        # run. `normpath` is not needed alongside it: the invariant above has already refused
-        # every spelling it would collapse.
+        # `collect_outputs`' own key: NFC and case-folded, always, whatever the sink does
+        # about rewriting.
         key = unicodedata.normalize("NFC", name).lower()
         if key in seen:
             earlier = seen[key]
@@ -725,28 +739,29 @@ async def _collect(
     sink = session.output_sink
     if sink is None:  # unreachable: `sandboxed_tool` refuses this spec without a sink
         return "Error: no output sink is configured, so nothing could be saved."
+    spec = session.spec
 
-    # The manifest is a file this collection moved, so it is declared as one and counted
-    # against all three caps — `CONSUME`, because the kind read it itself and it must never
-    # reach the sink. One slot of `max_files` therefore belongs to it rather than to an
-    # artifact, which the check below has to know before the model is told what fits.
-    also: tuple[DeclaredOutput, ...] = ()
     if outputs is CodeactOutputs.MANIFEST:
         listed = await _read_manifest(session, sandbox, run_id)
         if isinstance(listed, str):
             return listed
-        declared = listed
-        also = (
-            DeclaredOutput(
-                path=f"{run_id}/{_MANIFEST_FILENAME}",
-                name=_MANIFEST_FILENAME,
-                disposition=OutputDisposition.CONSUME,
-                required=False,
+        declared, manifest_bytes = listed
+        # The manifest is a file this collection moved, so the budget the artifacts get is
+        # what is left after it. Charged as the bytes actually read, not as a `CONSUME`
+        # declaration `collect_outputs` would stat a second time: the guest may still be
+        # running, and a manifest truncated between the two would return its cost to the
+        # budget while its bytes had already crossed.
+        spec = replace(
+            session.spec,
+            files_out=replace(
+                session.spec.files_out,
+                max_files=session.spec.files_out.max_files - 1,
+                max_total_bytes=max(session.spec.files_out.max_total_bytes - manifest_bytes, 0),
             ),
         )
         checked = _validated_output_names(
             declared,
-            max_files=session.spec.files_out.max_files - len(also),
+            max_files=spec.files_out.max_files,
             reserved=reserved,
             run_id=run_id,
             normalization=_normalization(session),
@@ -757,27 +772,27 @@ async def _collect(
     if not declared:
         return f"{_MANIFEST_FILENAME} listed no files, so nothing was saved."
 
-    # `required=False` throughout: a name that was declared and not written is this kind's
-    # commonest recoverable mistake, and failing the whole collection over it would throw away
-    # the files the program did write. `media_type` stays undeclared on both roads, because
-    # this kind genuinely does not know what a model-written program produced.
-    call_time = also + tuple(
+    # `required=False` so one forgotten name does not throw away the files that were
+    # written, and no `media_type`, which this kind does not know.
+    call_time = tuple(
         DeclaredOutput(path=f"{run_id}/{name}", name=name, required=False) for name in declared
     )
     try:
-        landed = await collect_outputs(sandbox, session.spec, sink=sink, outputs=call_time)
+        landed = await collect_outputs(sandbox, spec, sink=sink, outputs=call_time)
     except SandboxOutputError as exc:
         logger.warning("execute_code: could not save this run's files: %s", error_detail(exc))
-        return f"Error: the program ran but its files could not be saved — {exc}"
+        return (
+            f"Error: the program ran but its files could not be saved — {exc}. {_MAY_HAVE_LANDED}"
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("execute_code: saving this run's files failed: %s", error_detail(exc))
-        return "Error: the program ran but its files could not be saved"
+        return f"Error: the program ran but its files could not be saved. {_MAY_HAVE_LANDED}"
     return _format_landed(landed, declared)
 
 
 async def _read_manifest(
     session: SandboxToolSession, sandbox: "Sandbox", run_id: str
-) -> list[str] | str:
+) -> tuple[list[str], int] | str:
     """Parse the program's own listing of what it produced, bounded and refusing malformed shapes.
 
     **Names only.**  A media type read from here would be the guest declaring how the host
@@ -852,7 +867,7 @@ async def _read_manifest(
                 f"{_MANIFEST_PATH_KEY!r} string, so no files were saved."
             )
         entries.append(path_value)
-    return entries
+    return entries, len(raw)
 
 
 def _format_landed(landed: "Sequence[LandedArtifact]", declared: "Sequence[str]") -> str:

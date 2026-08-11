@@ -157,6 +157,42 @@ class _RecordingSink:
         return [artifact.media_type for artifact in self.delivered]
 
 
+class _ShrinkingManifestSandbox(_ProducingSandbox):
+    """Reports the manifest as tiny once it has been read — a guest still running after `exec`.
+
+    The protocol says a stat is a promise about a file the guest may still rewrite, so a second
+    stat of the manifest is worth exactly nothing. This is the only way to show that its cost is
+    charged from the bytes that were actually read.
+    """
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.manifest_read = False
+
+    async def stat_file(self, path, *, working_directory):
+        entry = await super().stat_file(path, working_directory=working_directory)
+        if entry is not None and self.manifest_read and path.endswith(_MANIFEST_FILENAME):
+            return replace(entry, size_bytes=2)
+        return entry
+
+    async def read_file(self, path, *, working_directory, max_bytes):
+        content = await super().read_file(
+            path, working_directory=working_directory, max_bytes=max_bytes
+        )
+        if path.endswith(_MANIFEST_FILENAME):
+            self.manifest_read = True
+        return content
+
+
+class _FailingSink(_RecordingSink):
+    """A host store that accepts the first artifact and then breaks."""
+
+    async def deliver(self, artifact: Artifact) -> LandedArtifact:
+        if self.delivered:
+            raise RuntimeError("the store went away")
+        return await super().deliver(artifact)
+
+
 class _CountingStore(InMemoryStore):
     """Records every read, so a cap can be shown to answer before it spends anything."""
 
@@ -1011,6 +1047,19 @@ class TestDeclaredOutputs:
         assert "Not written" in out
         assert sink.names == []
 
+    def test_a_sink_that_breaks_part_way_says_some_files_may_already_be_saved(self):
+        """`collect_outputs` cannot un-deliver, so "could not be saved" alone invites a retry
+        on the assumption that nothing landed."""
+        sandbox = _ProducingSandbox()
+        sink = _FailingSink()
+        tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, sink)
+
+        out = _run_producing(
+            tool, sandbox, {"a.csv": b"1", "b.csv": b"2"}, outputs=["a.csv", "b.csv"]
+        )
+        assert "may already have been saved" in out
+        assert sink.names == ["a.csv"]
+
     def test_neither_the_bytes_nor_the_hosts_handle_reach_the_model(self):
         """A handle can be a SAS URL with a bearer token in its query string, and a tool result
         is persisted into the transcript and replayed every turn after."""
@@ -1197,6 +1246,51 @@ class TestManifestOutputs:
                 CodeactOutputs.MANIFEST,
                 _RecordingSink(),
                 files_out=replace(DEFAULT_TRANSFER_LIMITS, max_files=1),
+            )
+
+    def test_the_manifest_is_charged_the_bytes_that_were_read_not_a_second_stat(self):
+        """A guest can still be running after `exec`. If the manifest is truncated between the
+        read and a re-stat, an accounting that trusts the stat hands its cost back to the
+        budget after its bytes have already crossed."""
+        sandbox = _ShrinkingManifestSandbox()
+        sink = _RecordingSink()
+        manifest = b'{"outputs":[{"path":"a"}]}' + b" " * 40
+        tool = _pulling_tool(
+            sandbox,
+            CodeactOutputs.MANIFEST,
+            sink,
+            files_out=replace(DEFAULT_TRANSFER_LIMITS, max_total_bytes=len(manifest) + 5),
+        )
+
+        out = _run_producing(tool, sandbox, {_MANIFEST_FILENAME: manifest, "a": b"0123456789"})
+        assert "could not be saved" in out
+        assert sink.names == []
+
+    def test_an_artifact_that_fits_beside_the_manifest_still_lands(self):
+        """The other side of the budget, so charging the manifest cannot refuse everything."""
+        sandbox = _ProducingSandbox()
+        sink = _RecordingSink()
+        manifest = b'{"outputs":[{"path":"a"}]}'
+        tool = _pulling_tool(
+            sandbox,
+            CodeactOutputs.MANIFEST,
+            sink,
+            files_out=replace(DEFAULT_TRANSFER_LIMITS, max_total_bytes=len(manifest) + 10),
+        )
+
+        _run_producing(tool, sandbox, {_MANIFEST_FILENAME: manifest, "a": b"12345"})
+        assert sink.names == ["a"]
+
+    @pytest.mark.parametrize("cap", ["max_bytes_per_file", "max_total_bytes"])
+    def test_a_byte_cap_below_the_smallest_manifest_is_refused_at_attach(self, cap: str):
+        """26 bytes is the shortest manifest naming one file, so a lower ceiling exposes a
+        channel whose every call `_read_manifest` would refuse."""
+        with pytest.raises(ValueError, match="bytes of files_out"):
+            _pulling_tool(
+                _ProducingSandbox(),
+                CodeactOutputs.MANIFEST,
+                _RecordingSink(),
+                files_out=replace(DEFAULT_TRANSFER_LIMITS, **{cap: 20}),
             )
 
     def test_the_manifest_read_is_bounded_by_the_collection_total_too(self):
