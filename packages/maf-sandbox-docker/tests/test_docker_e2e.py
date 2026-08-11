@@ -186,6 +186,34 @@ class TestFilesOutAgainstARealEngine:
         finally:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
+    def test_a_read_through_a_symlinked_parent_is_refused(self):
+        """``ln -sfn /etc /work/out``: the final entry stats as a regular file and reads /etc.
+
+        The engine resolves the path daemon-side, so only the component walk sees the link.
+        """
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(_key(scope), _spec())
+            await sandbox.write_file("/work/.keep", "")
+            made = await sandbox.exec(
+                ["ln", "-sfn", "/etc", "/work/out"], working_directory=_WORK, timeout=60
+            )
+            assert made.exit_code == 0, made.stderr
+
+            escaped = await sandbox.stat_file("out/hostname", working_directory=_WORK)
+            assert escaped is not None
+            assert escaped.kind is EntryKind.FILE  # the parent link is invisible here
+
+            with pytest.raises(ValueError, match="real directory"):
+                await sandbox.read_file("out/hostname", working_directory=_WORK, max_bytes=1 << 20)
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
     def test_collect_outputs_lands_a_declared_output_through_the_router(self):
         """The whole pull surface, end to end: a kind declares an output and it lands.
 

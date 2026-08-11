@@ -50,6 +50,8 @@ config = DockerSandboxConfig(egress_proxy_image="maf-egress-proxy:local")
 
 **`Capability.FILES_OUT`, never `Capability.FILES_LIST`.** This backend reads declared outputs back out — `docker cp <container>:<path> -` streams a tar whose first 512-byte header carries the size, the entry type and any link target, so a file is statted and read from one stream with no stat command and no shell in the image. It does **not** enumerate directories: Docker has no engine-level primitive for it, which is exactly why the protocol splits enumeration into `FILES_LIST`. A kind that cannot name its outputs in advance requires that capability and is refused here — served instead by a backend, like ACAS, that has native listing.
 
+**Every path component is checked, not just the last one.** A symlink is refused on the tar entry's type bit only when it is the entry being tarred; the engine resolves the path daemon-side, so a guest that points `out` at `/etc` gets a stat of `out/hostname` describing a regular file with the parent link nowhere in it. `read_file` therefore stats each component from the working directory down — the directory itself included, since `ln -sfn /etc /work` is the same escape one level up — and refuses anything that is not a real directory. One residual stays open: the walk and the read are separate calls and `docker cp` has no no-follow form, so a guest that swaps a stat-ed component for a link in between is followed.
+
 ## The backend
 
 `DockerSandboxBackend` implements `maf_sandbox.SandboxBackend`:
@@ -58,7 +60,7 @@ config = DockerSandboxConfig(egress_proxy_image="maf-egress-proxy:local")
 |---|---|
 | `acquire(key, spec)` | get-or-create, keyed `(scope, thread, agent, kind)`. A running container is reused, a stopped one started, a missing one created; an absent image is pulled explicitly first so a cold pull does not ride the lifecycle timeout |
 | `write_file(path, content)` | a one-entry tar on stdin to `cp - <container>:/`, which creates the parent directories from the entry name; `str` is UTF-8, `bytes` is written as given |
-| `stat_file` / `read_file` | the `FILES_OUT` pull surface — stat from the first tar header of `docker cp`, read from the same stream; symlinks and other non-regular entries refused on the header type, a body over the caller's cap refused rather than truncated |
+| `stat_file` / `read_file` | the `FILES_OUT` pull surface — stat from the first tar header of `docker cp`, read from the same stream; symlinks and other non-regular entries refused on the header type, every parent component refused unless it is a real directory, a body over the caller's cap refused rather than truncated |
 | `dispose(key)` | `rm -f` on every kind's container the key names, with the proxy and network of an allowlisted one |
 | `dispose_scope(scope, thread)` | delete every container for a conversation — **by label, read back from docker**, not from process memory |
 | `isolation` | `container`, unconditionally |

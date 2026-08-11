@@ -174,6 +174,11 @@ def _proxy_name(container: str) -> str:
     return f"{container}{_PROXY_SUFFIX}"
 
 
+#: The protocol's one path grammar, whatever the guest and the host each run.
+_SEPARATOR = "/"
+_BACKSLASH = "\\"
+
+
 def _guest_path(working_directory: str, path: str) -> str:
     """The absolute guest path a ``working_directory``-relative output resolves to.
 
@@ -181,15 +186,46 @@ def _guest_path(working_directory: str, path: str) -> str:
     ``working_directory`` raises :class:`ValueError`, which :mod:`maf_sandbox._outputs`
     translates into :class:`~maf_sandbox.SandboxOutputNotConfined` for the caller.  Refused
     before any subprocess is built, so a traversal never reaches the engine.
+
+    Lexical, and only lexical: a symlinked *parent* satisfies every check here, which is what
+    :meth:`_DockerSandbox._refuse_symlinked_directories` exists to catch.
     """
-    if "\\" in path:
+    if _BACKSLASH in path:
         raise ValueError(f"path {path!r} contains a backslash, which is not a valid separator")
     base = posixpath.normpath(working_directory)
     resolved = posixpath.normpath(posixpath.join(base, path))
-    prefix = base if base.endswith("/") else base + "/"
-    if resolved != base and not resolved.startswith(prefix):
+    if _relative_path(resolved, base) is None:
         raise ValueError(f"path {path!r} resolves outside working directory {working_directory!r}")
     return resolved
+
+
+def _directory_chain(guest_path: str, working_directory: str) -> tuple[str, ...]:
+    """Every directory from ``working_directory`` down to ``guest_path``, outermost first.
+
+    The components :meth:`_DockerSandbox._refuse_symlinked_directories` has to stat one by one;
+    ``guest_path`` must already be confined.
+    """
+    base = posixpath.normpath(working_directory)
+    chain = [base]
+    relative = _relative_path(guest_path, base)
+    if relative:
+        for segment in relative.split(_SEPARATOR):
+            chain.append(posixpath.join(chain[-1], segment))
+    return tuple(chain)
+
+
+def _relative_path(guest_path: str, base: str) -> str | None:
+    """``guest_path`` relative to ``base``, or ``None`` when it does not sit inside it.
+
+    Compared against ``base + "/"`` rather than ``base``, so a sibling sharing a string prefix
+    — ``/work/sub2`` under ``/work/sub`` — is not mistaken for a descendant.
+    """
+    if guest_path == base:
+        return ""
+    prefix = base if base.endswith(_SEPARATOR) else base + _SEPARATOR
+    if not guest_path.startswith(prefix):
+        return None
+    return guest_path[len(prefix) :]
 
 
 def _entry_from_tar_header(block: bytes, rel_path: str) -> SandboxEntry:
@@ -323,6 +359,29 @@ class _DockerSandbox:
             raise RuntimeError(f"docker returned no tar header for {path}")
         return _entry_from_tar_header(result.stdout[:_TAR_BLOCK], rel)
 
+    async def _refuse_symlinked_directories(
+        self, chain: Sequence[str], *, working_directory: str
+    ) -> None:
+        """Refuse unless every directory in ``chain`` is a real one.
+
+        A symlinked *parent* is invisible in the final entry's stat: with ``/work/out -> /etc``,
+        ``out/hostname`` stats as a regular file and reads ``/etc/hostname``, because ``docker
+        cp`` resolves the path daemon-side and tars the entry it landed on.  Only a link that is
+        the entry being tarred shows as one, so confinement is a walk down the components rather
+        than a judgement about the last one — one header read each.
+        """
+        for directory in chain:
+            entry = await self.stat_file(directory, working_directory=working_directory)
+            if entry is None:
+                return
+            if entry.kind is EntryKind.OTHER:
+                raise ValueError(
+                    f"{directory!r} is a link rather than a real directory, so a path through "
+                    f"it does not stay inside working directory {working_directory!r}"
+                )
+            if entry.kind is not EntryKind.DIRECTORY:
+                raise NotADirectoryError(f"{directory!r} is not a directory")
+
     async def read_file(self, path: str, *, working_directory: str, max_bytes: int) -> bytes:
         """Read the regular file at ``path``, refusing anything over ``max_bytes``.
 
@@ -331,9 +390,16 @@ class _DockerSandbox:
         to header plus ``max_bytes`` before the child is killed, so a file larger than the cap
         is **refused on its header without its body ever being buffered**.  A non-regular entry
         (a symlink tars as a link *entry*, not its target's bytes) is refused on the header
-        type.
+        type, and every parent down to ``working_directory`` is classified first.
+
+        The residual that walk cannot close: a guest that turns a stat-ed component into a link
+        between the walk and the read wins, since ``docker cp`` has no no-follow form.
         """
         guest = _guest_path(working_directory, path)
+        await self._refuse_symlinked_directories(
+            _directory_chain(posixpath.dirname(guest), working_directory),
+            working_directory=working_directory,
+        )
         # Header + the most body the cap allows. A larger file is refused from the header alone,
         # so the extra bytes are never read; a file within the cap is fully present in this bound.
         result = await self._run(
