@@ -797,8 +797,25 @@ class TestSpecDefaults:
         rebinds every positional argument after it — a caller's `files_in` would silently
         become the next field, with no error anywhere. New fields go on the end."""
         names = [f.name for f in dataclasses.fields(SandboxSpec)]
-        assert names[-1] == "outputs_named_at_call_time"
-        assert names.index("files_in") < names.index("files_out") < len(names) - 1
+        # The order every released version has carried. Pinned as a prefix rather than by
+        # naming whichever field is newest: appending is what this test is for, so it should
+        # not have to be edited each time something is appended — only when a field lands
+        # somewhere a released caller could already be passing positionally.
+        settled = [
+            "kind",
+            "image",
+            "image_id",
+            "egress_allow",
+            "work_dir",
+            "labels",
+            "requires",
+            "min_isolation",
+            "declared_outputs",
+            "files_in",
+            "files_out",
+            "outputs_named_at_call_time",
+        ]
+        assert names[: len(settled)] == settled
 
     @pytest.mark.parametrize("direction", ["files_in", "files_out"])
     def test_both_transfer_directions_ask_for_the_shared_default(self, direction: str):
