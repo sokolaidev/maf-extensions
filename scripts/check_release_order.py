@@ -20,11 +20,8 @@ from pathlib import Path
 
 _CORE = "maf-sandbox"
 _CORE_DIR = f"packages/{_CORE}/"
-#: `type(optional scope)!:` — the leading half of a Conventional Commit subject.
 _SUBJECT = re.compile(r"^(?P<type>[a-z]+)(?:\([^)]*\))?(?P<breaking>!)?:")
-#: The `<Y` bound of a `maf-sandbox>=X,<Y` constraint.
 _CEILING = re.compile(r"maf-sandbox>=\d+(?:\.\d+)*,<(\d+(?:\.\d+)*)")
-#: The distribution name at the head of a dependency string, before any version operator.
 _DIST_NAME = re.compile(r"[A-Za-z0-9._-]+")
 #: Mirrors `changelog-sections` in release-please-config.json: the types that cut a release.
 _PATCH_TYPES = frozenset({"fix", "perf", "revert", "docs"})

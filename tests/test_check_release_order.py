@@ -8,6 +8,7 @@ package, which a prefix match missing the trailing separator gets wrong.
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -48,10 +49,23 @@ class TestWhichTitlesCutWhichRelease:
         assert check.next_version((0, 6, 1), title) == (0, 7, 0)
 
     @pytest.mark.parametrize(
-        "title", ["fix: a thing", "perf: a thing", "docs: a thing"]
+        "title",
+        ["fix: a thing", "perf: a thing", "revert: a thing", "docs: a thing"],
     )
     def test_the_patch_types_cut_a_patch(self, title: str):
         assert check.next_version((0, 6, 1), title) == (0, 6, 2)
+
+    def test_the_patch_types_are_the_releasing_types_that_are_not_feat(self):
+        sections = json.loads(
+            (
+                Path(__file__).resolve().parent.parent / "release-please-config.json"
+            ).read_text("utf-8")
+        )["changelog-sections"]
+        releasing = {s["type"] for s in sections if not s.get("hidden")}
+        assert check._PATCH_TYPES == releasing - {"feat"}, (
+            "the types this script treats as a patch have drifted from the ones "
+            "release-please actually releases"
+        )
 
     @pytest.mark.parametrize(
         "title", ["chore: a thing", "ci: a thing", "refactor: a thing"]
