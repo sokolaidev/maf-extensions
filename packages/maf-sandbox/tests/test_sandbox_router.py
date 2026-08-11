@@ -29,14 +29,17 @@ from maf_sandbox import (
     DeclaredOutput,
     Egress,
     EntryKind,
+    Identity,
     Isolation,
     NoSandboxBackend,
     OutputDisposition,
     SandboxBackend,
     SandboxBackendNotPermitted,
+    SandboxCapabilityDenied,
     SandboxCapabilityNotSupported,
     SandboxEgressNotEnforced,
     SandboxEntry,
+    SandboxIdentityDenied,
     SandboxKey,
     SandboxLimits,
     SandboxPurger,
@@ -326,6 +329,60 @@ class TestCapabilityMatch:
             router.ensure_can_serve(
                 SandboxSpec(kind="codeact", requires=frozenset({Capability.FILES_OUT}))
             )
+
+
+class TestRouterDenials:
+    """The hard stop: capabilities and identities a host refuses whatever the backend can do.
+
+    A posture statement about the *spec*, not a property of the backend — which is why the
+    denial fires even when the backend genuinely implements the capability, and why its
+    exception is a `PermissionError` where the capability *match* is a `RuntimeError`.
+    """
+
+    def _router(self, **kwargs) -> SandboxRouter:
+        backend = InProcessSandboxBackend(
+            capabilities=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS}
+        )
+        return SandboxRouter([backend], min_isolation=Isolation.PROCESS, **kwargs)
+
+    def test_a_denied_capability_is_refused_even_when_the_backend_has_it(self):
+        router = self._router(denied_capabilities={Capability.HOST_TOOLS})
+        spec = SandboxSpec(kind="codeact", requires=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS})
+        with pytest.raises(SandboxCapabilityDenied, match="host_tools"):
+            router.ensure_can_serve(spec)
+
+    def test_a_spec_not_requiring_the_denied_capability_is_served(self):
+        """The denial reads `requires`: a workload that dispatches nothing is untouched."""
+        self._router(denied_capabilities={Capability.HOST_TOOLS}).ensure_can_serve(
+            SandboxSpec(kind="test")
+        )
+
+    def test_acquire_enforces_the_denial_too(self):
+        router = self._router(denied_capabilities={Capability.HOST_TOOLS})
+        spec = SandboxSpec(kind="codeact", requires=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS})
+        with pytest.raises(SandboxCapabilityDenied):
+            asyncio.run(router.acquire(_KEY, spec))
+
+    def test_a_denied_identity_is_refused_at_attach(self):
+        """`denied_identities={USER}` is the one-statement ban on model-orchestrated user
+        authority the identity leg exists to make possible."""
+        router = self._router(denied_identities={Identity.USER})
+        spec = SandboxSpec(kind="codeact", identities=frozenset({Identity.USER}))
+        with pytest.raises(SandboxIdentityDenied, match="user"):
+            router.ensure_can_serve(spec)
+
+    def test_an_undenied_identity_is_served(self):
+        router = self._router(denied_identities={Identity.USER})
+        router.ensure_can_serve(SandboxSpec(kind="codeact", identities=frozenset({Identity.APP})))
+
+    def test_an_unknown_denied_capability_is_refused_at_construction(self):
+        """A deny list that silently never matched would read as protection and provide none."""
+        with pytest.raises(ValueError):
+            self._router(denied_capabilities={"teleport"})  # type: ignore[arg-type]
+
+    def test_an_unknown_denied_identity_is_refused_at_construction(self):
+        with pytest.raises(ValueError):
+            self._router(denied_identities={"root"})  # type: ignore[arg-type]
 
 
 class TestFileTransferVocabulary:
@@ -723,6 +780,10 @@ class TestSpecDefaults:
         """`None`, not `PROCESS` — the second would be an opinion, and the weakest one."""
         assert SandboxSpec(kind="test").min_isolation is None
 
+    def test_it_exercises_no_identities(self):
+        """A workload that dispatches nothing declares nothing — and passes every deny list."""
+        assert SandboxSpec(kind="test").identities == frozenset()
+
     def test_it_declares_no_outputs(self):
         """A tuple, as `egress_allow` is: a spec that collects nothing declares nothing."""
         assert SandboxSpec(kind="test").declared_outputs == ()
@@ -736,8 +797,27 @@ class TestSpecDefaults:
         rebinds every positional argument after it — a caller's `files_in` would silently
         become the next field, with no error anywhere. New fields go on the end."""
         names = [f.name for f in dataclasses.fields(SandboxSpec)]
-        assert names[-1] == "outputs_named_at_call_time"
-        assert names.index("files_in") < names.index("files_out") < len(names) - 1
+        # A prefix rather than the whole list, so a field appended at the end needs no edit
+        # here — but a field joins this list in the change that adds it, because from that
+        # moment on it is a position a caller can pass. Leaving the newest one out would
+        # leave exactly one field unguarded: the next insertion could land in front of it
+        # and this test would still be green.
+        settled = [
+            "kind",
+            "image",
+            "image_id",
+            "egress_allow",
+            "work_dir",
+            "labels",
+            "requires",
+            "min_isolation",
+            "declared_outputs",
+            "files_in",
+            "files_out",
+            "outputs_named_at_call_time",
+            "identities",
+        ]
+        assert names[: len(settled)] == settled
 
     @pytest.mark.parametrize("direction", ["files_in", "files_out"])
     def test_both_transfer_directions_ask_for_the_shared_default(self, direction: str):
@@ -795,10 +875,17 @@ class TestPolicyVocabularyExports:
         [
             "Capability",
             "DEFAULT_CAPABILITIES",
+            "HostToolRegistry",
+            "INTEGRITY_RANK",
             "ISOLATION_RANK",
+            "Identity",
             "Isolation",
+            "SandboxCapabilityDenied",
             "SandboxCapabilityNotSupported",
+            "SandboxIdentityDenied",
+            "SourceIntegrity",
             "meets_floor",
+            "sandbox_tool",
         ],
     )
     def test_the_two_axes_are_importable_from_the_package(self, name: str):
@@ -821,7 +908,7 @@ class TestPolicyVocabularyExports:
 #: happens by omission.  `TestModuleInventory` pins the complement, so a new module cannot be
 #: quietly neither.
 _PROTOCOL_MODULES = frozenset(
-    {"_error_detail", "_outputs", "_protocol", "_purger", "_router", "testing"}
+    {"_error_detail", "_host_tools", "_outputs", "_protocol", "_purger", "_router", "testing"}
 )
 
 #: The modules deliberately OUTSIDE the stdlib-only claim.  `maf` is the MAF-glue
