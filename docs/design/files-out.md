@@ -181,6 +181,23 @@ The reference backend's defence rests on an undocumented preview shape it has to
 
 Classifying the last component is not enough on any of them. A symlinked *parent* is invisible in the final entry's stat — `out -> /etc` makes `out/hostname` a regular 12-byte file — so both real backends stat every parent component from the filesystem root down and refuse a link found in the chain, on `stat_file` as much as on the read. Only a link is a confinement failure there; any other non-directory is an ordinary `ENOTDIR`. Neither API offers a no-follow read, so a guest that swaps a stat-ed component between the walk and the read is followed; that residual is stated rather than closed.
 
+### Refusing a symlink is not the same as proving a regular file
+
+The rule above is stated as "only regular files are ever read", and one backend cannot actually prove the second half.
+
+A backend that identifies symlinks and directories has narrowed an entry to *not one of those*. It has not established that the entry is a regular file — FIFOs, sockets and device nodes are none of the three. Whether that matters depends on what the backend can see:
+
+| Backend | Can it prove regularity? |
+|---|---|
+| Docker | **Yes.** The tar header carries the real type, so a FIFO is `OTHER` and refused like any other non-regular entry |
+| ACAS | **No.** The payload has `isDir` and `isSymlink` and nothing else, and `mode` is permission bits with the type bits stripped. A FIFO is reported *identically* to an empty regular file — same `mode`, both flags false — and is therefore classified `FILE` |
+
+The ACAS case is not merely a mislabelling. Verified live: `read_file` on a FIFO **never returns**, so a guest that puts one where a declared output belongs holds the caller's turn open indefinitely.
+
+Nothing available closes it. `mode` has no type bits; `exec` with `test -f` would reintroduce the in-image shell dependency that the `FILES_LIST` split exists to avoid, and would fail on exactly the minimal images where the file API is most useful. So that backend **bounds the read** instead — a timeout turns an indefinite hang into a refusal in the output-error family — and the missing signal is filed upstream ([Azure/azure-sdk-for-python#48527](https://github.com/Azure/azure-sdk-for-python/issues/48527)).
+
+Stated plainly because a kind author is entitled to know it: on that backend, `EntryKind.FILE` means "not a directory and not a symlink", not "a regular file", and a read of one can fail on a timeout that no cap or size predicted.
+
 ## Cross-platform rules
 
 Every shipped backend runs a Linux guest today. That is an observation, not a protocol assumption — Windows-guest backends are plausible ([#111](https://github.com/sokolaidev/maf-extensions/issues/111)), so the protocol states one grammar and **backends translate to whatever their guest actually is**. This is the same shape as `exec` taking an argv *sequence* rather than a command line.
