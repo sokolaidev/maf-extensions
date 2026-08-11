@@ -191,9 +191,15 @@ def make_codeact_tools(
             call may declare, so it is a property of the workload rather than of the guest.
 
     Raises:
-        ValueError: when an output mode is asked for with no sink to land anything in, or when
-            a sink is supplied with nothing to send down it. Both wait for the attach gate —
-            a host with no sandbox configured gets ``[]``, never an exception.
+        ValueError: when a sink is supplied with nothing to send down it — an output mode of
+            :data:`CodeactOutputs.NONE`.
+        ~maf_sandbox.SandboxOutputSinkRequired: when an output mode is asked for and no sink
+            was given. Raised by ``sandboxed_tool`` rather than here, and a
+            :class:`RuntimeError` rather than a :class:`ValueError`, so a caller catching one
+            of the two does not catch the other.
+
+    Both wait for the attach gate: a host with no sandbox configured gets ``[]``, never an
+    exception.
     """
     # After the attach gate, never before it: `sandboxed_tool` places its own refusals there so
     # that a host which simply left sandboxing off keeps its ungrounded behaviour, and a check
@@ -404,6 +410,12 @@ async def _execute(
     # write two files and an arbitrarily large `code` clear both byte ceilings.
     inbound: list[tuple[str, str]] = [(_PROGRAM_FILENAME, code)]
     if store is not None:
+        # The count first, before the listing and before a single store read: a cap that only
+        # answers once every requested file is in memory has already spent what it exists to
+        # bound. The same check runs again below over what was actually read.
+        over_count = _over_file_count(len(files) + len(inbound), session.spec.files_in)
+        if over_count is not None:
+            return over_count
         resolved = await _resolve_workspace_files(session, store, files, reserved=reserved)
         if isinstance(resolved, str):
             return resolved
@@ -562,6 +574,17 @@ async def _read_workspace_files(
     return read
 
 
+def _over_file_count(count: int, limits: TransferLimits) -> str | None:
+    """Refuse a call that would write more files than the workload allows, program included."""
+    if count <= limits.max_files:
+        return None
+    return (
+        f"Error: {count} files would be written into the sandbox — your program and "
+        f"{count - 1} shared — and this tool writes at most {limits.max_files} per call. "
+        f"Nothing was shared."
+    )
+
+
 def _over_inbound_caps(inbound: "Sequence[tuple[str, str]]", limits: TransferLimits) -> str | None:
     """Hold everything about to cross into the sandbox to the workload's ``files_in`` caps.
 
@@ -570,12 +593,9 @@ def _over_inbound_caps(inbound: "Sequence[tuple[str, str]]", limits: TransferLim
     applied nowhere.  Nothing is written until the set is known to fit — a program handed half
     its inputs does not fail, it computes a confident wrong answer.
     """
-    if len(inbound) > limits.max_files:
-        return (
-            f"Error: {len(inbound)} files would be written into the sandbox — your program and "
-            f"{len(inbound) - 1} shared — and this tool writes at most {limits.max_files} per "
-            f"call. Nothing was shared."
-        )
+    over_count = _over_file_count(len(inbound), limits)
+    if over_count is not None:
+        return over_count
     total = 0
     for name, content in inbound:
         size = len(content.encode())
@@ -656,9 +676,12 @@ def _validated_output_names(
         if name in reserved:
             return f"Error: {name!r} cannot be saved — this tool writes that file itself."
         # The same file two ways: NFC and case-folded, which is what `collect_outputs` keys its
-        # collision check on. `normpath` is not needed alongside it, because the invariant above
-        # has already refused every spelling it would collapse.
-        key = delivered.lower()
+        # collision check on. Always NFC here, never `delivered` — opting out of normalization
+        # disables the *rewrite* and not the comparison, so keying on the raw spelling would let
+        # a composed/decomposed pair through and have the whole collection refused after the
+        # run. `normpath` is not needed alongside it: the invariant above has already refused
+        # every spelling it would collapse.
+        key = unicodedata.normalize("NFC", name).lower()
         if key in seen:
             earlier = seen[key]
             return (

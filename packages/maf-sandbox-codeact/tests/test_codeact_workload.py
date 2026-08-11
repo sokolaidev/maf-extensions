@@ -29,6 +29,7 @@ from maf_sandbox import (
     ExecResult,
     Isolation,
     LandedArtifact,
+    NameNormalization,
     OutputSink,
     SandboxCapabilityNotSupported,
     SandboxEntry,
@@ -135,9 +136,9 @@ class _RecordingSink:
     ``handle`` carries a token on purpose: nothing this kind returns may render it.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, normalization: NameNormalization = NameNormalization.NFC) -> None:
         self.delivered: list[Artifact] = []
-        self.sink = OutputSink(deliver=self.deliver)
+        self.sink = OutputSink(deliver=self.deliver, normalization=normalization)
 
     async def deliver(self, artifact: Artifact) -> LandedArtifact:
         self.delivered.append(artifact)
@@ -154,6 +155,18 @@ class _RecordingSink:
     @property
     def media_types(self) -> list[str | None]:
         return [artifact.media_type for artifact in self.delivered]
+
+
+class _CountingStore(InMemoryStore):
+    """Records every read, so a cap can be shown to answer before it spends anything."""
+
+    def __init__(self, files: dict[str, str]) -> None:
+        super().__init__(files)
+        self.reads: list[str] = []
+
+    async def read(self, name: str) -> str | None:
+        self.reads.append(name)
+        return await super().read(name)
 
 
 class _ListedButGoneStore:
@@ -720,6 +733,18 @@ class TestTheInboundCapsAreEnforcedHere:
         assert "at most 1" in out
         assert sandbox.contents == {}
 
+    def test_an_over_count_call_reads_nothing_from_the_store(self):
+        """A count cap that answers only once every requested file is in memory has already
+        spent what it exists to bound."""
+        sandbox = _ScriptedSandbox()
+        store = _CountingStore({f"f{i}.csv": "x" for i in range(10)})
+        tool = self._tool(sandbox, store, files_in=replace(DEFAULT_TRANSFER_LIMITS, max_files=3))
+
+        out = _run(tool, "print(1)", files=sorted(store.files))
+        assert "at most 3" in out
+        assert store.reads == []
+        assert sandbox.contents == {}
+
     def test_the_program_itself_counts_against_the_byte_ceilings(self):
         """A large `code` cleared both ceilings while every shared file was measured."""
         sandbox = _ScriptedSandbox()
@@ -863,6 +888,19 @@ class TestDeclaredOutputs:
         tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, _RecordingSink())
 
         out = _run(tool, "print('hi')", outputs=["Report.csv", "report.csv"])
+        assert "one file once saved" in out
+        assert sandbox.raw_commands == []
+
+    def test_a_sink_that_rewrites_nothing_still_gets_the_normalized_collision_check(self):
+        """Opting out of normalization disables the *rewrite*, never the comparison — which is
+        `collect_outputs`' rule, so keying on the raw spelling here lets the pair run first."""
+        sandbox = _ProducingSandbox()
+        sink = _RecordingSink(normalization=NameNormalization.NONE)
+        tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, sink)
+
+        # Escapes, not literals: the two spellings are indistinguishable in a source file and
+        # an editor that normalizes one of them turns this into a test of nothing.
+        out = _run(tool, "print('hi')", outputs=["cafe\u0301.csv", "caf\u00e9.csv"])
         assert "one file once saved" in out
         assert sandbox.raw_commands == []
 
