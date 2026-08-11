@@ -732,6 +732,48 @@ class TestSpecDefaults:
         """The same object the silent backend ceiling is, so the two cannot drift apart."""
         assert getattr(SandboxSpec(kind="test"), direction) is DEFAULT_TRANSFER_LIMITS
 
+    def test_work_dir_defaults_to_a_conventional_root(self):
+        """A default, not a requirement — see `TestWorkDirIsPlatformNeutral` for why it is only that."""
+        assert SandboxSpec(kind="test").work_dir == "/work"
+
+
+class TestWorkDirIsPlatformNeutral:
+    """The door issue #111 asks to keep open: nothing here commits the protocol to a Linux guest.
+
+    The invariant: nothing in the protocol infers a guest OS or rejects a `work_dir` for not
+    looking like one, so a platform axis can be added as a new optional field rather than a
+    breaking change. Rationale and the decision to defer live in #111.
+    """
+
+    @pytest.mark.parametrize(
+        "work_dir",
+        [
+            "C:/agent/work",  # a Windows guest's drive-rooted path
+            "/opt/somewhere/else",  # a different POSIX root
+            "D:\agent\work",  # a Windows guest's own separator
+        ],
+    )
+    def test_the_spec_imposes_no_platform_constraint_on_work_dir(self, work_dir: str):
+        """`SandboxSpec` accepts any `work_dir`: it neither requires a POSIX-absolute path nor
+        infers a guest OS from it, so a future non-Linux-guest backend needs no protocol change."""
+        assert SandboxSpec(kind="test", work_dir=work_dir).work_dir == work_dir
+
+    def test_the_spec_has_no_platform_field_yet(self):
+        """The axis is unbuilt: a spec carries no platform requirement. Adding one later is
+        additive (a new optional field), which is the whole point of leaving it out now."""
+        fields = {f.name for f in dataclasses.fields(SandboxSpec)}
+        assert "platform" not in fields
+        assert "requires_platform" not in fields
+
+    def test_a_backend_declaring_no_platform_is_still_a_backend(self):
+        """The three optional declarations the router reads are all `getattr`-based, so a fourth
+        (a platform) is additive too — a backend that declares none still satisfies the protocol
+        and is served, which is what makes the axis a non-breaking addition."""
+        backend = InProcessSandboxBackend(isolation=Isolation.MICROVM)
+        assert not hasattr(backend, "platform")
+        # It resolves and serves today, so adding a getattr-read platform later breaks nothing.
+        SandboxRouter([backend]).ensure_can_serve(SandboxSpec(kind="test"))
+
 
 class TestPolicyVocabularyExports:
     """The package's public vocabulary — a name a host cannot import is a name it cannot use."""
