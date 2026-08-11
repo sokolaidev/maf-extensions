@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.1.3...maf-sandbox-codeact-v0.2.0) (2026-08-11)
+
+
+### Features
+
+* a workspace channel for CodeAct — files in, and outputs a portable backend can serve ([#158](https://github.com/sokolaidev/maf-extensions/issues/158)) ([322c579](https://github.com/sokolaidev/maf-extensions/commit/322c579fc8fa2a951af6777ada900d09cf30252f))
+
 ## [0.1.3](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.1.2...maf-sandbox-codeact-v0.1.3) (2026-08-11)
 
 
