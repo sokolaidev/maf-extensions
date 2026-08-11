@@ -9,26 +9,11 @@ point — **a run that prints the right total and lands nothing must go red.**
     python samples/08_docker_codeact_files/agent.py | tee out.txt
     python scripts/check_live_codeact_files_sample.py out.txt samples/08_docker_codeact_files/out/summary.md
 
-What it checks in the output: the grand total `1124` over the shipped `sales.csv`, a
-`Disposed N sandbox(es).` line with N >= 1, and the sample's own `Delivered this turn` line
-naming `summary.md`. That last line is the host's record of what reached the sink during this
-turn — not a listing of `out/`, which would still name an earlier run's file.
-
-What it checks on disk: the summary exists, is not empty, and reports each region's own total.
-The file landing as `summary.md` rather than `<run-id>/summary.md` is itself an assertion: the
-guest path and the delivered name are separate fields, and this is where that shows.
-
-Numbers are matched as whole tokens rather than substrings, so `840` does not satisfy `84` and
-`11240` does not satisfy `1124`, and each region's total has to appear before the next region
-is named, so a summary that swaps two regions' values fails. Both allowances are deliberate: a
-trailing `.0` passes, because a program that computed in floats is not what is under test, and
-so does a thousands separator, because the grand total is read out of the *model's* prose and
-`1,124` is a formatting choice rather than a broken stack.
-
-The two halves are weak apart and strong together. A stale `summary.md` from an earlier run
-would satisfy the on-disk half alone, which is why the workflow deletes the directory first and
-why the delivery line is the host's record rather than a listing; a model reciting a total it
-inferred would satisfy the output half alone.
+In the output: the grand total over the shipped `sales.csv`, a `Disposed N sandbox(es).` line
+with N >= 1, and the sample's own `Delivered this turn` line naming `summary.md` — the host's
+record of what reached the sink, not a listing of `out/`. On disk: the summary, carrying each
+region's own total. It landing as `summary.md` rather than `<run-id>/summary.md` is itself an
+assertion, since the guest path and the delivered name are separate fields.
 
 Exits non-zero listing every reason it failed.
 """
@@ -78,6 +63,10 @@ def _regions_reporting_their_own_total(summary: str) -> tuple[set[str], set[str]
     Each region's total must appear between that region's name and whatever region is named
     next.  Checking the two independently over the whole file — which is what this replaces —
     passes a summary with every value swapped, since all eight strings are still present.
+
+    Name-before-value is why the sample's task asks for the region in the first column: the
+    association is what catches a swap, and it cannot also accept the reverse order without
+    accepting swaps again.
     """
     lowered = summary.lower()
     mentions = sorted(

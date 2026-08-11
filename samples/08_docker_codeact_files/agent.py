@@ -49,8 +49,9 @@ TASK = (
     "The file sales.csv is in your workspace. Using a Python program, compute each "
     "row's revenue as units * unit_price, total it by region, and also compute the "
     "grand total across all regions. Print the grand total as a single integer on "
-    "its own line, and save a Markdown table of the per-region totals as summary.md. "
-    "Tell me the grand total and where the summary was saved."
+    "its own line, and save the per-region totals as summary.md — a Markdown table "
+    "with the region in the first column and its revenue in the second. Tell me the "
+    "grand total and where the summary was saved."
 )
 
 #: The Docker backend reads no environment — it drives the local `docker` client — so the only
@@ -99,34 +100,28 @@ async def list_workspace(store: Any) -> list[str]:
 
 
 def make_markdown_sink(output_dir: Path, delivered: list[str]) -> OutputSink:
-    """A sink that lands each produced file under ``output_dir``, recording what it took.
+    """Land each produced file under ``output_dir``, appending its name to ``delivered``.
 
-    ``delivered`` is the host's own record of this turn, and it is why the sink keeps
-    one: the directory cannot answer the question. A second run that writes nothing
-    leaves the first run's file sitting there, so *what is in ``out/``* and *what this
-    turn delivered* are different facts, and only the second is worth asserting on.
-
-    ``display`` is the one line the model is allowed to see; ``handle`` is the host's
-    own path and nothing renders it into a transcript.  ``artifact.name`` is validated
-    relative before it arrives — no traversal, not absolute — so joining it under
-    ``output_dir`` stays under ``output_dir``.  It may still be *nested*: a model may
-    declare ``reports/summary.md``, which needs its own parent made.
-
-    ``artifact.media_type`` is always ``None`` for this kind and there is nothing to fix
-    about that: the bytes came from a program the model wrote, so a type read out of the
-    guest would be the sandbox telling the host how to handle its own content.  A host
-    that wants to decide by extension has ``artifact.name`` and its own policy.
+    ``delivered`` is this turn's record. The directory cannot stand in for it: it also
+    holds whatever an earlier run left behind.
     """
+    root = output_dir.resolve()
 
     async def deliver(artifact: Artifact) -> LandedArtifact:
-        destination = output_dir / artifact.name
+        # Resolved and checked before anything is created, because `artifact.name` is
+        # validated only *lexically* upstream — no `..`, not absolute — and a symlink
+        # already sitting in `out/` would carry a write straight out of it. A sink refuses
+        # by raising. Still a check rather than a guarantee: resolving and writing are two
+        # calls, so a production sink wants no-follow primitives (see #142).
+        destination = (output_dir / artifact.name).resolve()
+        if not destination.is_relative_to(root):
+            raise ValueError(f"{artifact.name!r} resolves outside {output_dir.name}/")
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(artifact.content)
         delivered.append(artifact.name)
         return LandedArtifact(
             name=artifact.name,
-            # No leading verb: the kind introduces this list with "Saved:" of its own, and
-            # two of them read as a stutter in the transcript.
+            # No leading verb: the kind introduces this list with "Saved:" of its own.
             display=f"{artifact.name} ({len(artifact.content)} bytes), in {output_dir.name}/",
             handle=str(destination),
         )

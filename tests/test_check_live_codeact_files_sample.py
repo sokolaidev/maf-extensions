@@ -3,14 +3,9 @@
 `scripts/check_live_codeact_files_sample.py` runs on a real `samples/08_docker_codeact_files`
 run to decide whether the published stack moved a file in *and* a file out. Its `assess` is a
 pure function, so the judgement is tested here — on every PR — while the run that feeds it
-happens only on dispatch and after a release.
-
-What these pin is the half that is easy to lose: an output-only check would pass a turn that
-computed the right total and landed nothing, and that turn is precisely the regression this
-sample exists to catch. So the failing cases matter more than the healthy one — and two whole
-classes of them come from a first draft that matched numbers as substrings and checked region
-names and totals independently, which let `11240` stand in for `1124` and a summary with every
-value swapped pass intact.
+happens only on dispatch and after a release. The failing cases carry the weight: an
+output-only check would pass a turn that computed the right total and landed nothing, which is
+the regression this sample exists to catch.
 """
 
 from __future__ import annotations

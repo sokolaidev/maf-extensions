@@ -71,7 +71,7 @@ Delivered this turn into out/: summary.md
 
 `out/summary.md` then holds the per-region table: north 390, south 200, east 84, west 450.
 
-A nested declared name works too — `reports/summary.md` lands at `out/reports/summary.md`, because the sink makes each destination's own parent. Names are validated relative before they reach it, so nesting cannot climb out of `out/`.
+A nested declared name works too — `reports/summary.md` lands at `out/reports/summary.md`, because the sink makes each destination's own parent. Nesting cannot climb out: names are validated relative before they arrive, and the sink resolves each destination and refuses one that lands outside `out/` — which lexical validation alone would not catch, since a symlink already sitting in `out/` carries a write wherever it points.
 
 The tool result behind that reply — which the sample does not print, because the model's answer is what a host would show — looks like this, and is worth knowing the shape of:
 
