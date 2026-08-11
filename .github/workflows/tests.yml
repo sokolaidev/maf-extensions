@@ -16,7 +16,8 @@ on:
   # A bot-opened pull request does start this — and then stops at `action_required`, the
   # "Approve and run" gate, so the required check never reports until someone clears it.
   # A dispatch is not subject to that gate, which is why release-please.yml fires one at
-  # each pull request it opens, and why running it here by hand is the manual equivalent.
+  # each pull request it opens. It supplies the check, not the clearance: a held run blocks
+  # the merge with the contexts already green, so approving it is still a human step (#196).
   workflow_dispatch:
 
 # Read-only by default: nothing here writes to the repository, and an unset block would
