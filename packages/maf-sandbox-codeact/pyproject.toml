@@ -29,13 +29,11 @@ dependencies = [
     # dependency. No Azure import, no backend import; a test enforces both.
     # Upper-bounded too: maf-sandbox has not yet reached a stable API, so every release
     # before 1.0.0 may include breaking changes (see its CHANGELOG). Moving either end of
-    # this range has an order to it — see RELEASING.md. The floor is where `Capability` and
-    # `SandboxSpec.requires` actually arrive — the 0.5.0 release the isolation-floor branch
-    # creates — not 0.4.0, which predates them; a floor below 0.5.0 would let a published
-    # wheel resolve a maf-sandbox base missing the imports this kind's spec needs. This
-    # package's own clean-environment wheel check cannot go green until maf-sandbox 0.5.0 is
-    # published; that ordering is deliberate (RELEASING.md release order), not a bug to work
-    # around here.
+    # this range has an order to it — see RELEASING.md. The floor tracks the release where
+    # the vocabulary this kind's spec names actually arrives; admit anything older and a
+    # published wheel resolves a maf-sandbox base missing those imports. The number itself is
+    # below, and `scripts/bump_dependents_floor.py` moves it — so this says which release the
+    # floor is for, never which release that is.
     "maf-sandbox>=0.7.0,<0.8",
     # The `@tool` decorator. MAF is a genuine dependency of the tool itself, not of the host
     # application.

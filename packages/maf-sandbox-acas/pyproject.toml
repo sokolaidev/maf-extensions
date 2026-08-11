@@ -38,7 +38,11 @@ dependencies = [
     # Upper-bounded too: maf-sandbox has not yet reached a stable API, so every release
     # before 1.0.0 may include breaking changes (see its CHANGELOG). Moving either end of
     # this range has an order to it — see RELEASING.md.
-    # The floor is 0.6.0 because that release carries the FILES_OUT vocabulary this backend now imports at module scope (SandboxEntry, EntryKind, SandboxLimits, TransferLimits); a range admitting 0.5.x would resolve it in the clean-env wheel smoke and die on ImportError.
+    # The floor tracks the release carrying the FILES_OUT vocabulary this backend imports at
+    # module scope (SandboxEntry, EntryKind, SandboxLimits, TransferLimits); admit anything
+    # older and the clean-env wheel smoke resolves it and dies on ImportError. The number
+    # itself is below, and `scripts/bump_dependents_floor.py` moves it — so this says which
+    # release the floor is for, never which release that is.
     "maf-sandbox>=0.7.0,<0.8",
     # DefaultAzureCredential for the sandbox data plane.
     "azure-identity>=1.25.1,<2",
