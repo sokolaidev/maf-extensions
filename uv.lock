@@ -612,7 +612,7 @@ wheels = [
 
 [[package]]
 name = "maf-sandbox"
-version = "0.6.0"
+version = "0.6.1"
 source = { editable = "packages/maf-sandbox" }
 dependencies = [
     { name = "agent-framework-core" },
@@ -640,7 +640,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-bicep"
-version = "0.5.0"
+version = "0.5.1"
 source = { editable = "packages/maf-sandbox-bicep" }
 dependencies = [
     { name = "agent-framework-core" },
@@ -655,7 +655,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-codeact"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "packages/maf-sandbox-codeact" }
 dependencies = [
     { name = "agent-framework-core" },
@@ -681,7 +681,7 @@ requires-dist = [{ name = "maf-sandbox", editable = "packages/maf-sandbox" }]
 
 [[package]]
 name = "maf-sandbox-wslc"
-version = "0.5.0"
+version = "0.5.1"
 source = { editable = "packages/maf-sandbox-wslc" }
 dependencies = [
     { name = "maf-sandbox" },
