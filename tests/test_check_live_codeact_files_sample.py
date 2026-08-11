@@ -106,6 +106,26 @@ class TestNumbersAreWholeTokensNotSubstrings:
         assert check.assess(_HEALTHY, summary) == []
 
 
+class TestLettersAreNotABoundaryEither:
+    @pytest.mark.parametrize("wrong", ["1124e3", "1124E3", "1124kg", "x1124"])
+    def test_a_total_glued_to_letters_fails(self, wrong: str):
+        """`1124e3` is 1,124,000 and contains `1124`, which is the whole problem."""
+        assert any(
+            "grand total" in reason
+            for reason in check.assess(_HEALTHY.replace("1124", wrong), _SUMMARY)
+        )
+
+    @pytest.mark.parametrize("wrong", ["390kg", "usd390"])
+    def test_a_region_total_glued_to_letters_fails(self, wrong: str):
+        summary = _SUMMARY.replace("| north | 390 |", f"| north | {wrong} |")
+        assert any("north" in reason for reason in check.assess(_HEALTHY, summary))
+
+    @pytest.mark.parametrize("shape", ["(1124)", "**1124**", "1124", "`1124`"])
+    def test_ordinary_punctuation_around_a_total_still_passes(self, shape: str):
+        """The guard is about word characters, not about every neighbour a total can have."""
+        assert check.assess(_HEALTHY.replace("1124", shape), _SUMMARY) == []
+
+
 class TestASignBelongsToTheNumber:
     @pytest.mark.parametrize("signed", ["-1124", "+1124"])
     def test_a_signed_grand_total_fails(self, signed: str):

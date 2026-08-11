@@ -46,21 +46,16 @@ _SEPARATOR = "[,\u00a0\u202f ]"
 
 
 def _number(value: str) -> re.Pattern[str]:
-    """Match ``value`` as a whole number, tolerating `.0` and a thousands separator.
+    """Match ``value`` where it is the whole number, not part of a longer token.
 
-    A substring test is what this replaces, and it was wrong in both directions: `84` was
-    satisfied by `840` and `1124` by `11240`. Tolerating the separator then reopened the same
-    hole one group over — `390` sat inside both `1,390` and `390,000` — so a guard has to
-    exclude an adjacent group as well as an adjacent digit.
+    Nothing may abut it: no digit, no sign, no thousands group, and no word character — so
+    `840`, `-390`, `1,390`, `390,000` and `1124e3` are all *not* the value.  A trailing `.0`
+    and a thousands separator inside the value are accepted, and the trailing guard skips a
+    dot rather than refusing one, so `1124.0.` is the number and `1124.05` is not.
     """
     grouped = value if len(value) <= 3 else f"{value[:-3]}{_SEPARATOR}?{value[-3:]}"
-    # Five guards. The digit ones reject a longer number sharing these digits, the separator
-    # ones a longer *grouped* number doing the same, and the sign one `-390`, which is not 390
-    # however much of it looks like it. The trailing digit guard skips a dot rather than
-    # refusing one, because `1124.0.` ends a sentence and is still the number, while
-    # `1124.05` is a different one.
     return re.compile(
-        rf"(?<![\d.+-])(?<!\d{_SEPARATOR}){grouped}(?:\.0*)?(?!\.?\d)(?!{_SEPARATOR}\d)"
+        rf"(?<![\w.+-])(?<!\d{_SEPARATOR}){grouped}(?:\.0*)?(?!\.?\d)(?!{_SEPARATOR}\d)(?!\w)"
     )
 
 

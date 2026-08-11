@@ -201,11 +201,6 @@ async def run() -> int:
         print(f"\nDisposed {deleted} sandbox(es).")
         await credential.close()
 
-    # What this turn delivered, from the host's side of the sink rather than from the
-    # directory: `out/` may still hold an earlier run's file, and "there is a summary on
-    # disk" is not the same claim as "this turn produced one". The second is the one worth
-    # printing, because a turn that answers correctly and writes nothing is the failure
-    # this sample exists to make visible.
     print(
         f"Delivered this turn into {OUTPUT_DIR.name}/: "
         f"{', '.join(delivered) if delivered else 'nothing'}"
