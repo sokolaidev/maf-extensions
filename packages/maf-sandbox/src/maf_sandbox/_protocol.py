@@ -288,6 +288,16 @@ class SandboxSpec:
     an empty tuple means no network at all.  Stating it positively is deliberate: a spec that
     forgets to mention egress gets the closed configuration, not the open one.
 
+    ``work_dir`` is the guest-side directory a workload's paths resolve against, stated in the
+    protocol's **one path grammar** — POSIX-shaped, whatever OS the guest actually runs — so a
+    backend translates it to its guest the same way it translates every other path (the shape
+    :meth:`Sandbox.exec` uses for its argv).  ``/work`` is a default, not a requirement: a kind
+    may name another, and a non-Linux guest would name whatever suits it.  A workload must not
+    read the guest's platform *out* of this field, and nothing here validates it against one —
+    that a kind can depend on its guest's OS, and that no axis yet declares or matches it, is a
+    gap kept deliberately additive so a platform axis lands without a breaking change (issue
+    #111).
+
     ``requires`` names the capabilities the workload cannot run without, and ``min_isolation``
     the weakest boundary it accepts anywhere.  A spec may **raise** the host's floor and never
     lower it, and ``None`` means no opinion — not the same as :data:`Isolation.PROCESS`, which
