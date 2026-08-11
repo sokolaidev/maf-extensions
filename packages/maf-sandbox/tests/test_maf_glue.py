@@ -67,6 +67,12 @@ _CONSUME_SPEC = SandboxSpec(
     declared_outputs=(DeclaredOutput(path="report.sarif", disposition=OutputDisposition.CONSUME),),
 )
 
+#: The CodeAct shape: it knows it lands artifacts and cannot say what they will be called, so
+#: `declared_outputs` alone would answer every attach-time question wrongly.
+_CALL_TIME_SPEC = SandboxSpec(
+    kind="test", work_dir="/work", requires=_PULLS, outputs_named_at_call_time=True
+)
+
 
 async def _deliver(artifact: Artifact) -> LandedArtifact:
     return LandedArtifact(name=artifact.name, display=artifact.name)
@@ -225,6 +231,13 @@ class TestSandboxToolDeclarations:
         assert sandbox_tool_declarations(
             spec, outbound_max_confidentiality="private", output_sink=_SINK
         ) == {"source_integrity": "trusted"}
+
+    def test_a_call_time_spec_and_a_sink_earn_the_cap_too(self):
+        """It lands artifacts; not being able to name them yet changes nothing about the flow,
+        and reading `declared_outputs` alone would leave the cap silently off."""
+        assert sandbox_tool_declarations(
+            _CALL_TIME_SPEC, outbound_max_confidentiality="private", output_sink=_SINK
+        ) == {"source_integrity": "trusted", "max_allowed_confidentiality": "private"}
 
 
 # ---------------------------------------------------------------------------
@@ -511,6 +524,24 @@ class TestAttachedToolShape:
             "max_allowed_confidentiality": "private",
         }
 
+    def test_source_integrity_reaches_the_derivation_without_the_declarations_escape_hatch(self):
+        """The pair a kind running model-written code needs: no integrity claim *and* a sink.
+        `declarations=` is refused alongside a sink, so before this parameter existed the two
+        could not both be had."""
+        (tool,) = _attach(
+            _router(_pulling_backend()),
+            spec=_LANDING_SPEC,
+            source_integrity=None,
+            outbound_max_confidentiality="private",
+            output_sink=_SINK,
+        )
+        assert tool.additional_properties == {"max_allowed_confidentiality": "private"}
+
+    def test_an_explicit_mapping_still_wins_over_it(self):
+        assert self._tool(
+            source_integrity=None, declarations={"source_integrity": "untrusted"}
+        ).additional_properties == {"source_integrity": "untrusted"}
+
     def test_the_declarations_dict_is_not_shared_with_the_caller(self):
         declarations = {"source_integrity": "trusted"}
         tool = self._tool(declarations=declarations)
@@ -611,6 +642,44 @@ class TestTheSinkRefusals:
         tools = _attach(_router(_pulling_backend()), spec=_LANDING_SPEC, output_sink=_SINK)
         assert len(tools) == 1
 
+    def test_a_call_time_spec_without_a_sink_is_refused_with_nothing_to_name(self):
+        with pytest.raises(SandboxOutputSinkRequired, match="names at call time"):
+            _attach(_router(_pulling_backend()), spec=_CALL_TIME_SPEC)
+
+    def test_a_call_time_spec_with_a_sink_attaches(self):
+        assert (
+            len(_attach(_router(_pulling_backend()), spec=_CALL_TIME_SPEC, output_sink=_SINK)) == 1
+        )
+
+
+class TestTheSessionCarriesTheSinkThatWasChecked:
+    """The object that checked the invariant is the one that has to honour it.
+
+    A kind closing over its own sink could hand `collect_outputs` a different one from the sink
+    whose presence satisfied the refusal above, and nothing would notice.
+    """
+
+    def test_the_body_reads_the_sink_off_the_session(self):
+        seen: list[OutputSink | None] = []
+
+        def _capture(session: SandboxToolSession):
+            seen.append(session.output_sink)
+            return _body(session)
+
+        sandboxed_tool(
+            _capture,
+            router=_router(_pulling_backend()),
+            context=_context(),
+            agent_dir="agent-1",
+            spec=_LANDING_SPEC,
+            name="widget_run",
+            output_sink=_SINK,
+        )
+        assert seen == [_SINK]
+
+    def test_a_workload_that_lands_nothing_sees_none(self):
+        assert _session().output_sink is None
+
 
 class TestDeclaredOutputsImplyTheCapability:
     """`Sandbox` promises a kind never has to feature-detect the pull surface, and this is
@@ -628,6 +697,12 @@ class TestDeclaredOutputsImplyTheCapability:
         spec = dataclasses.replace(_CONSUME_SPEC, requires=DEFAULT_CAPABILITIES)
         with pytest.raises(ValueError, match="files_out"):
             _attach(_router(_pulling_backend()), spec=spec)
+
+    def test_naming_outputs_at_call_time_needs_it_just_the_same(self):
+        """The names arrive later; the surface that reads them is required now."""
+        spec = dataclasses.replace(_CALL_TIME_SPEC, requires=DEFAULT_CAPABILITIES)
+        with pytest.raises(ValueError, match="files_out"):
+            _attach(_router(_pulling_backend()), spec=spec, output_sink=_SINK)
 
     def test_a_spec_declaring_nothing_needs_nothing_new(self):
         """Which is the other half of the rule: grow `requires` from what you declare."""

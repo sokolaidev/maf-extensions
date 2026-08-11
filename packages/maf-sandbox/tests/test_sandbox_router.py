@@ -727,6 +727,10 @@ class TestSpecDefaults:
         """A tuple, as `egress_allow` is: a spec that collects nothing declares nothing."""
         assert SandboxSpec(kind="test").declared_outputs == ()
 
+    def test_it_does_not_claim_to_name_outputs_later_either(self):
+        """The flag makes a tool require a sink and carry an outbound cap, so silence is off."""
+        assert SandboxSpec(kind="test").outputs_named_at_call_time is False
+
     @pytest.mark.parametrize("direction", ["files_in", "files_out"])
     def test_both_transfer_directions_ask_for_the_shared_default(self, direction: str):
         """The same object the silent backend ceiling is, so the two cannot drift apart."""
@@ -750,7 +754,7 @@ class TestWorkDirIsPlatformNeutral:
         [
             "C:/agent/work",  # a Windows guest's drive-rooted path
             "/opt/somewhere/else",  # a different POSIX root
-            "D:\agent\work",  # a Windows guest's own separator
+            r"D:\agent\work",  # a Windows guest's own separator — raw, or `\a` is a bell
         ],
     )
     def test_the_spec_imposes_no_platform_constraint_on_work_dir(self, work_dir: str):

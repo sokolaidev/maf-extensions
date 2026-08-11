@@ -53,7 +53,10 @@ __all__ = [
     "SandboxOutputUnreachable",
     "SandboxTransferCapExceeded",
     "collect_outputs",
+    "landing_outputs",
+    "missing_sink_refusal",
     "portable_name",
+    "spec_lands_artifacts",
     "validate_artifact_name",
 ]
 
@@ -339,12 +342,23 @@ def landing_outputs(spec: SandboxSpec) -> tuple[DeclaredOutput, ...]:
     Written once and read from both sides of the boundary: :func:`collect_outputs` needs it to
     know what to deliver, and ``sandboxed_tool`` needs the same answer at attach time to refuse
     a spec that lands something with nowhere to land it.
+
+    It answers for ``spec.declared_outputs`` only, so a spec setting
+    ``outputs_named_at_call_time`` can land something and still be answered ``()`` here.  Every
+    caller therefore reads :func:`spec_lands_artifacts` instead when the question is whether a
+    sink is needed at all.
     """
-    return tuple(
-        declared
-        for declared in spec.declared_outputs
-        if declared.disposition is OutputDisposition.LAND
-    )
+    return _landing(spec.declared_outputs)
+
+
+def _landing(outputs: tuple[DeclaredOutput, ...]) -> tuple[DeclaredOutput, ...]:
+    """The subset of ``outputs`` that reaches a sink."""
+    return tuple(declared for declared in outputs if declared.disposition is OutputDisposition.LAND)
+
+
+def spec_lands_artifacts(spec: SandboxSpec) -> bool:
+    """Whether ``spec`` sends anything to a host sink — named in advance or at call time."""
+    return bool(landing_outputs(spec)) or spec.outputs_named_at_call_time
 
 
 def missing_sink_refusal(
@@ -353,24 +367,32 @@ def missing_sink_refusal(
     """The refusal for a spec that lands something when no sink was supplied to land it in.
 
     Returned rather than raised so each caller keeps its own control flow visible; the wording
-    lives here so the two sites cannot drift into telling a host two different stories.
+    lives here so the two sites cannot drift into telling a host two different stories.  An
+    empty ``landing`` is the ``outputs_named_at_call_time`` case, where the spec says it lands
+    something and cannot yet say what.
     """
+    declares = (
+        f"declares {', '.join(repr(declared.path) for declared in landing)} as landing outputs"
+        if landing
+        else "lands artifacts it names at call time"
+    )
     return SandboxOutputSinkRequired(
-        f"the {spec.kind!r} workload declares "
-        f"{', '.join(repr(declared.path) for declared in landing)} as landing outputs and "
-        f"{asked_by} was given no output sink, so the tool cannot honour its own spec"
+        f"the {spec.kind!r} workload {declares} and {asked_by} was given no output sink, so "
+        "the tool cannot honour its own spec"
     )
 
 
-def _delivered_name(path: str, sink: OutputSink | None) -> str:
+def _delivered_name(declared: DeclaredOutput, sink: OutputSink | None) -> str:
     """The exact spelling the host will be handed — what the invariant has to judge.
 
-    ``NameNormalization.NONE`` disables the rewrite and nothing else; with no sink at all
-    nothing is delivered, and the declared path is the only spelling there is.
+    ``name`` when the kind gave one, else the guest path, since for most kinds they are the
+    same string.  ``NameNormalization.NONE`` disables the rewrite and nothing else; with no
+    sink at all nothing is delivered, and the declaration is the only spelling there is.
     """
+    name = declared.name if declared.name is not None else declared.path
     if sink is None or sink.normalization is NameNormalization.NONE:
-        return path
-    return _nfc(path)
+        return name
+    return _nfc(name)
 
 
 def _collision_key(path: str) -> str:
@@ -387,31 +409,35 @@ def _collision_key(path: str) -> str:
 
 
 def _check_declared_names(outputs: tuple[DeclaredOutput, ...], sink: OutputSink | None) -> None:
-    """Settle what the spec alone decides, before the sandbox is touched at all.
+    """Settle what the declaration alone decides, before the sandbox is touched at all.
 
-    Every declared path meets the narrow invariant **whatever its disposition** — a ``CONSUME``
+    Every declared **path** meets the narrow invariant whatever its disposition — a ``CONSUME``
     path is still a path this library hands to a backend, and one that traverses would come
-    back as that backend's own exception rather than as a refusal a kind can catch.  Only
-    landing outputs can collide, because only they are delivered anywhere.
+    back as that backend's own exception rather than as a refusal a kind can catch.  A landing
+    output's delivered **name** is checked as well, in the spelling the sink will receive,
+    because the two are no longer always the same string.  Only landing names can collide,
+    because only they are delivered anywhere.
 
     Both rules are properties of the declaration rather than of the run, so a kind whose
     outputs could never land is refused the same way whatever the guest happened to produce.
     """
     seen: dict[str, str] = {}
     for declared in outputs:
-        landing = declared.disposition is OutputDisposition.LAND
-        validate_artifact_name(_delivered_name(declared.path, sink) if landing else declared.path)
-        if not landing:
+        validate_artifact_name(declared.path)
+        if declared.disposition is not OutputDisposition.LAND:
             continue
-        key = _collision_key(declared.path)
+        delivered = _delivered_name(declared, sink)
+        if delivered != declared.path:
+            validate_artifact_name(delivered)
+        key = _collision_key(delivered)
         if key in seen:
             raise SandboxArtifactNameCollision(
-                f"declared outputs {seen[key]!r} and {declared.path!r} name one file, differing "
+                f"declared outputs {seen[key]!r} and {delivered!r} name one file, differing "
                 "only by case or by Unicode form, which is two files on Linux and one on "
                 "Windows and default macOS. Refused with the whole declaration in view, because "
                 "the host receives artifacts one at a time and could never see the collision."
             )
-        seen[key] = declared.path
+        seen[key] = delivered
 
 
 @contextlib.contextmanager
@@ -440,7 +466,7 @@ def _backend_refusals(path: str) -> Generator[None, None, None]:
 
 
 async def _stat_and_cap(
-    sandbox: Sandbox, spec: SandboxSpec
+    sandbox: Sandbox, spec: SandboxSpec, declared_outputs: tuple[DeclaredOutput, ...]
 ) -> tuple[tuple[DeclaredOutput, int], ...]:
     """Stat every declared output and settle every refusal the filesystem decides.
 
@@ -449,7 +475,7 @@ async def _stat_and_cap(
     """
     tally = _Tally(limits=spec.files_out)
     present: list[tuple[DeclaredOutput, int]] = []
-    for declared in spec.declared_outputs:
+    for declared in declared_outputs:
         with _backend_refusals(declared.path):
             entry = await sandbox.stat_file(declared.path, working_directory=spec.work_dir)
         if entry is None:
@@ -509,7 +535,7 @@ async def _read_all(
         tally.add(declared.path, len(content))
         artifacts.append(
             Artifact(
-                name=_delivered_name(declared.path, sink),
+                name=_delivered_name(declared, sink),
                 content=content,
                 kind=spec.kind,
                 media_type=declared.media_type,
@@ -519,12 +545,16 @@ async def _read_all(
 
 
 async def collect_outputs(
-    sandbox: Sandbox, spec: SandboxSpec, *, sink: OutputSink | None = None
+    sandbox: Sandbox,
+    spec: SandboxSpec,
+    *,
+    sink: OutputSink | None = None,
+    outputs: tuple[DeclaredOutput, ...] = (),
 ) -> tuple[LandedArtifact, ...]:
-    """Pull ``spec``'s declared outputs and land the ones that land, in declaration order.
+    """Pull the declared outputs and land the ones that land, in declaration order.
 
     The order of the phases is the contract rather than an implementation detail: what the
-    spec alone decides — a sink for anything that lands, a valid name for every declared
+    declaration alone decides — a sink for anything that lands, a valid name for every declared
     output, no two landing names that collide — is settled before the sandbox is touched, then
     every declared output is stat-ed and capped, then every landing one is read, and only then
     is anything delivered.
@@ -539,14 +569,19 @@ async def collect_outputs(
 
     Args:
         sandbox: The running sandbox to pull from.
-        spec: The workload's spec. ``declared_outputs``, ``work_dir``, ``files_out`` and
-            ``kind`` all come from it, so no caller can pair one workload's outputs with
-            another's caps.
+        spec: The workload's spec. ``work_dir``, ``files_out`` and ``kind`` all come from it,
+            so no caller can pair one workload's outputs with another's caps.
         sink: Where landing artifacts go. Required as soon as any output declares
             :data:`~maf_sandbox.OutputDisposition.LAND`, because a tool that declares something
             that lands and has nowhere to land it cannot honour its own spec.
+        outputs: Declarations settled at call time, collected **in addition to**
+            ``spec.declared_outputs`` and counted against the same caps. This is the road for
+            a workload whose artifact names are not knowable when its tool is built; it is
+            refused unless the spec set ``outputs_named_at_call_time``, so a kind cannot
+            quietly collect paths its attach-time declarations never admitted to.
 
     Raises:
+        ValueError: when ``outputs`` is passed and the spec does not admit call-time names.
         SandboxOutputSinkRequired: when an output lands and no sink was supplied.
         SandboxOutputMissing: when a ``required`` output is not there, naming it.
         SandboxOutputNotConfined: when a declared path resolves outside ``spec.work_dir``.
@@ -559,12 +594,21 @@ async def collect_outputs(
         SandboxArtifactNameCollision: when two landing names differ only by case or by Unicode
             form.
     """
-    landing = landing_outputs(spec)
+    if outputs and not spec.outputs_named_at_call_time:
+        raise ValueError(
+            f"the {spec.kind!r} workload passed {len(outputs)} call-time output(s) to "
+            "collect_outputs and its spec does not set outputs_named_at_call_time. That flag "
+            "is what makes the tool's attach-time declarations honest about landing anything "
+            "at all — without it the tool was attached with no sink required and no outbound "
+            "confidentiality cap, and collecting here would land artifacts behind both checks."
+        )
+    declared_outputs = spec.declared_outputs + outputs
+    landing = _landing(declared_outputs)
     if landing and sink is None:
         raise missing_sink_refusal(spec, landing, asked_by=collect_outputs.__name__)
-    _check_declared_names(spec.declared_outputs, sink)
+    _check_declared_names(declared_outputs, sink)
 
-    to_read = await _stat_and_cap(sandbox, spec)
+    to_read = await _stat_and_cap(sandbox, spec, declared_outputs)
     if not to_read:
         return ()
     assert sink is not None  # non-empty only if something lands, which was refused above

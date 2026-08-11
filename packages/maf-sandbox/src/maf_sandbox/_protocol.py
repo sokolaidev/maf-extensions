@@ -194,12 +194,19 @@ class DeclaredOutput:
     decide how the host handles it, and a kind knows what it renders.  ``required=False`` is
     how a workload says an absence is normal — a renderer exiting non-zero produces no file,
     and the model needs that diagnostic rather than a transfer error stacked on top of it.
+
+    ``name`` is the spelling the artifact **lands** under, and it defaults to ``path`` because
+    for most kinds the two are the same string.  They come apart as soon as a kind writes into
+    a per-call directory — which warm sandbox reuse forces on any kind whose outputs would
+    otherwise persist into the next round — since the guest path then carries a run id the
+    host has no use for.
     """
 
     path: str
     disposition: OutputDisposition = OutputDisposition.LAND
     media_type: str | None = None
     required: bool = True
+    name: str | None = None
 
 
 #: So the ceilings below read as sizes rather than as eight-digit literals.
@@ -310,6 +317,16 @@ class SandboxSpec:
     in-process fake, and the two would meet in one expression in every kind's tests.
     ``files_in`` and ``files_out`` are the workload's own transfer caps per direction — a
     backend declares its own ceilings, and the router refuses a spec asking above them.
+
+    ``outputs_named_at_call_time`` is how a workload that cannot name its artifacts in advance
+    stays honest at attach.  A CodeAct-class kind knows it lands files and knows nothing about
+    what they will be called, and every attach-time question —  is a sink required, does the
+    outbound confidentiality cap apply, must the backend serve
+    :data:`Capability.FILES_OUT` — is answered from ``declared_outputs`` alone, so such a
+    workload would answer all three wrongly by declaring nothing.  Setting it also unlocks
+    ``collect_outputs(..., outputs=...)``, which is the only way to collect a path this field
+    admits exists.  It is not a substitute for declaring what you *can* name: the two compose,
+    and the caps apply to the union.
     """
 
     kind: str
@@ -325,6 +342,7 @@ class SandboxSpec:
     requires: frozenset[Capability] = DEFAULT_CAPABILITIES
     min_isolation: Isolation | None = None
     declared_outputs: tuple[DeclaredOutput, ...] = ()
+    outputs_named_at_call_time: bool = False
     files_in: TransferLimits = DEFAULT_TRANSFER_LIMITS
     files_out: TransferLimits = DEFAULT_TRANSFER_LIMITS
 
