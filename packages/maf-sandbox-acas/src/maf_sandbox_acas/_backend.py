@@ -35,7 +35,11 @@ from maf_sandbox import (
     TransferLimits,
     error_detail,
 )
-from maf_sandbox.paths import refuse_symlinked_parents
+from maf_sandbox.paths import (
+    confine_guest_path,
+    guest_path_relative_to,
+    refuse_symlinked_parents,
+)
 
 from ._config import AcasSandboxConfig
 from ._images import qualify_image_reference, resolve_disk_image_id
@@ -133,41 +137,24 @@ _FIELD_SIZE = "size"
 _FIELD_IS_DIR = "isDir"
 _FIELD_IS_SYMLINK = "isSymlink"
 
-#: The protocol's one path grammar, whatever the guest and the host each run.
-_SEPARATOR = "/"
-_BACKSLASH = "\\"
-
 
 def _confined(path: str, working_directory: str) -> tuple[str, str]:
     """Resolve ``path`` against ``working_directory``: the guest path, and the relative one.
 
-    ``posixpath`` only, never ``os.path`` — the protocol has one path grammar and a Windows
-    host must not resolve a guest path with its own.  A backslash, or a ``..`` that climbs out
-    of ``working_directory``, raises :class:`ValueError`, which ``maf_sandbox`` translates into
-    ``SandboxOutputNotConfined`` for the caller.
+    Both halves come from :mod:`maf_sandbox.paths`, which owns the protocol's one path grammar.
+    They are paired here because every caller in this module wants the relative half for a
+    :class:`~maf_sandbox.SandboxEntry` the moment the absolute one is confined.  A backslash, or
+    a ``..`` that climbs out of ``working_directory``, raises :class:`ValueError`, which
+    ``maf_sandbox`` translates into ``SandboxOutputNotConfined`` for the caller.
+
+    The ``or ""`` narrows a type rather than covering a case:
+    :func:`~maf_sandbox.paths.guest_path_relative_to` *is* the containment check
+    :func:`~maf_sandbox.paths.confine_guest_path` just made, so it cannot answer ``None`` for a
+    path that survived it, and the one path it answers ``""`` for — the working directory
+    itself — is ``""`` under either reading.
     """
-    if _BACKSLASH in path:
-        raise ValueError(f"path {path!r} contains a backslash, which is not a valid separator")
-    base = posixpath.normpath(working_directory)
-    resolved = posixpath.normpath(posixpath.join(base, path))
-    relative = _relative_path(resolved, base)
-    if relative is None:
-        raise ValueError(f"path {path!r} resolves outside working directory {working_directory!r}")
-    return resolved, relative
-
-
-def _relative_path(guest_path: str, base: str) -> str | None:
-    """``guest_path`` relative to ``base``, or ``None`` when it does not sit inside it.
-
-    Compared against ``base + "/"`` rather than ``base``, so a sibling sharing a string prefix
-    — ``/work/sub2`` under ``/work/sub`` — is not mistaken for a descendant.
-    """
-    if guest_path == base:
-        return ""
-    prefix = base if base.endswith(_SEPARATOR) else base + _SEPARATOR
-    if not guest_path.startswith(prefix):
-        return None
-    return guest_path[len(prefix) :]
+    resolved = confine_guest_path(path, working_directory)
+    return resolved, guest_path_relative_to(resolved, working_directory) or ""
 
 
 def _stat_from_payload(payload: Mapping[str, Any], relative_path: str) -> SandboxEntry:
