@@ -1163,6 +1163,7 @@ class TestRefusalsShareOneBase:
             SandboxOutputSinkRequired,
             SandboxArtifactNameInvalid,
             SandboxArtifactNameCollision,
+            SandboxLandingNotConfined,
         ],
     )
     def test_every_refusal_is_a_sandbox_output_error(self, error: type[Exception]):
@@ -1196,12 +1197,10 @@ def _link_dir(link, target) -> bool:
 
 
 class TestMakeFileSystemSink:
-    """The packaged landing sink, and the escape it exists to refuse.
+    """The packaged landing sink: what it writes, and the two escapes it refuses.
 
-    Two samples wrote this by hand and disagreed about whether the confinement check was
-    needed at all, which is the case for shipping one ([#229]). The refusal is therefore
-    pinned from both directions: a name that resolves out lexically, and a destination that
-    resolves out only because something on the path is a link.
+    Only one of the two is reachable through `collect_outputs`, so the other is driven
+    through `deliver` directly.
     """
 
     def _artifact(self, name: str, content: bytes = b"payload") -> Artifact:
@@ -1249,6 +1248,22 @@ class TestMakeFileSystemSink:
             asyncio.run(sink.deliver(self._artifact("../escaped.txt")))
 
         assert not (tmp_path / "escaped.txt").exists()
+
+    def test_the_refusal_names_no_host_path(self, tmp_path):
+        """`maf-sandbox-codeact` interpolates this family straight into the tool result the
+        model reads, so a host path in the message reaches the transcript — the leak
+        `LandedArtifact.handle` exists to prevent. Every other member of the family says only
+        the guest-supplied name, and this one has to as well."""
+        root = tmp_path / "out"
+        sink = make_file_system_sink(root)
+
+        with pytest.raises(SandboxLandingNotConfined) as caught:
+            asyncio.run(sink.deliver(self._artifact("../escaped.txt")))
+
+        message = str(caught.value)
+        assert "escaped.txt" in message, "the guest's own name is what a caller can act on"
+        for leaked in (str(root), str(root.resolve()), str(tmp_path)):
+            assert leaked not in message, f"the refusal named a host path: {leaked}"
 
     def test_a_link_already_in_the_root_is_refused_rather_than_followed(self, tmp_path):
         """The case the lexical name check cannot see, and the one that made this a helper.

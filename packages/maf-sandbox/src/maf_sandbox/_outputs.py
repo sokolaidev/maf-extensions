@@ -244,8 +244,7 @@ def make_file_system_sink(
     :func:`validate_artifact_name` is **lexical** — it bounds the name and says nothing about
     what is already sitting at the path that name resolves to — so a symlink in ``root`` carries
     a write straight out of it, the host-side twin of the symlinked parent a guest path is
-    walked for.  Every host that lands to a filesystem has to make this check, and the two
-    that wrote it by hand here did not agree on whether to.
+    walked for.  Every host that lands to a filesystem has to make this check.
 
     It stays a check rather than a guarantee: resolving and writing are two calls, so a
     destination replaced in between is followed, and a host landing genuinely hostile output
@@ -264,10 +263,16 @@ def make_file_system_sink(
     async def deliver(artifact: Artifact) -> LandedArtifact:
         destination = (confined_root / artifact.name).resolve()
         if not destination.is_relative_to(confined_root):
+            # Neither path is named. This family is the one a kind may show the model
+            # verbatim — `maf-sandbox-codeact` interpolates it straight into the tool result
+            # — and every other member says only `name!r`, which the guest supplied and
+            # already knows. A host path here would reach the transcript, which is the leak
+            # `LandedArtifact.handle` exists to prevent. A host wanting the resolution has
+            # `root` and the name.
             raise SandboxLandingNotConfined(
-                f"artifact {artifact.name!r} lands at {destination}, which is outside "
-                f"{confined_root}. Something on that path leaves the landing directory — a "
-                "link, most likely — and writing would follow it."
+                f"artifact {artifact.name!r} resolves outside the directory it lands in. "
+                "Something on that path leaves it — a link, most likely — and writing "
+                "would follow it."
             )
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(artifact.content)
