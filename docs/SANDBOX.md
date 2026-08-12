@@ -95,6 +95,10 @@ app  ->  maf_sandbox (protocol + router)  ->  a backend  ->  the sandbox
 - **A backend** — *where* code runs. Azure Container Apps Sandboxes, a plain Docker container, a `wslc` container on a developer's own machine, or the in-process fake in `maf_sandbox.testing`. A backend declares what it can and cannot provide, and is held to it.
 - **A kind** — *what work* runs. `bicep_validate` compiles agent-authored Bicep; `execute_code` runs a short program the model wrote and returns what it printed. A kind is a MAF tool with a sandbox behind it, written against the protocol alone.
 
+What that looks like in one turn — note that exactly two things cross the process boundary, and the call is not one of them:
+
+![The host application holds the agent, the middleware chain, the tool and the router; the code the agent wrote is untrusted. The host's own edge is the process boundary. Two arrows cross it — files in, to the sandbox, and result out, back again. The sandbox holds a work dir, the running code and a declared output, and has one egress valve, closed unless allowed.](assets/sandbox-flow.svg)
+
 Exactly one module imports `agent_framework`, and it is deliberately not re-exported from the package: `import maf_sandbox` stays cheap and framework-free for a backend author or a workload's own test suite, while a host reaches the conveniences by name. Both halves are pinned by tests.
 
 A host wires three things.
@@ -123,6 +127,8 @@ Two behaviours are worth knowing before the first call, because both are deliber
 **Truth in place of plausibility.** The agent stops reporting that a template looks valid and starts reporting what the compiler said. Everything else here is what it costs to get that safely.
 
 **Isolation declared rather than hoped for.** A host sets a minimum isolation floor on an ordered ladder — `process`, `runtime`, `container`, `hardened_container`, `microvm`, `vm` — and a backend below it is refused *at construction*, not at the first tool call, so a misconfigured deployment cannot start with the feature apparently enabled and quietly unsafe. The default is `microvm`, the production posture; a workload's spec may raise the floor and can never lower it.
+
+![Four backends ordered by increasing isolation and drawn with increasing border thickness: in-process fake, local container, container, cloud micro-VM. A vertical line marks the host's minimum isolation floor; the two weaker backends sit below it and are refused, the two stronger ones are admitted.](assets/isolation-floor.svg)
 
 **Capabilities that mean something.** A backend declares what it can do — execute a command, take files in, read a declared file back out, enumerate a directory, and more — and the router matches that against what the workload asked for, refusing rather than degrading. One rule keeps the list honest: *name the backend that lacks it; if none does, it is a comment, not a capability.* That is why reading a declared output and listing a directory are separate capabilities, since Docker has no engine-level listing primitive — and why widening a write to accept bytes got no capability at all.
 
