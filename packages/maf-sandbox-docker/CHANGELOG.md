@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.1.4...maf-sandbox-docker-v0.2.0) (2026-08-12)
+
+
+### Features
+
+* name a symlink in the protocol, and hold every FILES_OUT backend to one conformance suite ([#215](https://github.com/sokolaidev/maf-extensions/issues/215)) ([051c4c2](https://github.com/sokolaidev/maf-extensions/commit/051c4c2a906dcca4f5bd45654834061befc71308))
+
+
+### Bug Fixes
+
+* require maf-sandbox 0.10.0 and admit 0.11 in the dependents' range ([#231](https://github.com/sokolaidev/maf-extensions/issues/231)) ([353c1b3](https://github.com/sokolaidev/maf-extensions/commit/353c1b34f8c2d1d8f5f32dfa260913c27d50ab60))
+
 ## [0.1.4](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.1.3...maf-sandbox-docker-v0.1.4) (2026-08-12)
 
 
