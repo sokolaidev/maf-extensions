@@ -908,7 +908,16 @@ class TestPolicyVocabularyExports:
 #: happens by omission.  `TestModuleInventory` pins the complement, so a new module cannot be
 #: quietly neither.
 _PROTOCOL_MODULES = frozenset(
-    {"_error_detail", "_host_tools", "_outputs", "_protocol", "_purger", "_router", "testing"}
+    {
+        "_error_detail",
+        "_host_tools",
+        "_outputs",
+        "_protocol",
+        "_purger",
+        "_router",
+        "paths",
+        "testing",
+    }
 )
 
 #: The modules deliberately OUTSIDE the stdlib-only claim.  `maf` is the MAF-glue
