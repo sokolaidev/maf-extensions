@@ -14,7 +14,7 @@ that only speaks the protocol.  Reach it by name — ``from maf_sandbox.maf impo
 
 Three things live here, and each of them had begun to exist twice before it did:
 
-- :func:`make_workspace_context` — how a host says who is calling and which files they own.
+- :func:`make_caller_context` — how a host says who is calling and which files they own.
 - :func:`sandboxed_tool` — the shape every sandbox workload's tool has: attach nothing when
   no backend is configured, key the sandbox from the host's request context rather than from
   model input, and turn a provider failure into a sanitized sentence the model may see plus
@@ -32,11 +32,11 @@ from typing import Any, Literal
 from ._error_detail import error_detail
 from ._outputs import OutputSink, landing_outputs, missing_sink_refusal, spec_lands_artifacts
 from ._protocol import (
+    CallerContext,
     Capability,
     Sandbox,
     SandboxKey,
     SandboxSpec,
-    WorkspaceContext,
 )
 from ._purger import SandboxPurger
 from ._router import NoSandboxBackend, SandboxRouter
@@ -50,7 +50,7 @@ _DEFAULT_LOGGER = logging.getLogger(__name__)
 __all__ = [
     "SandboxPurger",
     "SandboxToolSession",
-    "make_workspace_context",
+    "make_caller_context",
     "sandbox_tool_declarations",
     "sandboxed_tool",
 ]
@@ -68,15 +68,15 @@ _NO_BACKEND_CONFIGURED = "Error: no sandbox backend is configured — degrading 
 _SANDBOX_UNAVAILABLE = "Error: sandbox unavailable — degrading to T0 (LLM self-check only)"
 
 
-def make_workspace_context(
-    store_walker: Callable[[Any], Awaitable[list[str]]],
+def make_caller_context(
+    list_files: Callable[[Any], Awaitable[list[str]]],
     scope_getter: Callable[[], str],
     thread_getter: Callable[[], str | None],
-) -> WorkspaceContext:
-    """Build the :class:`~maf_sandbox.WorkspaceContext` a host hands to a workload factory.
+) -> CallerContext:
+    """Build the :class:`~maf_sandbox.CallerContext` a host hands to a workload factory.
 
     Args:
-        store_walker: Given the workspace store, returns the paths the caller may act on.
+        list_files: Given the file store, returns the paths the caller may act on.
             A workload treats that listing as its injection-pinning boundary: only a name
             present in it is ever substituted into a command.
         scope_getter: The caller's user/tenant scope, read at call time.
@@ -96,10 +96,10 @@ def make_workspace_context(
     lazily inside their own bodies, and building the context stays as cheap as the tuple it
     is.
     """
-    return WorkspaceContext(
+    return CallerContext(
         current_scope=scope_getter,
         current_thread_id=thread_getter,
-        list_files=store_walker,
+        list_files=list_files,
     )
 
 
@@ -200,7 +200,7 @@ class SandboxToolSession:
     def __init__(
         self,
         router: SandboxRouter,
-        context: WorkspaceContext,
+        context: CallerContext,
         agent_dir: str,
         spec: SandboxSpec,
         *,
@@ -270,7 +270,7 @@ class SandboxToolSession:
         The listing is a workload's injection-pinning boundary: only a name present in it is
         ever substituted into a command, so a name the model invented — or one it read out of
         a poisoned file — has nowhere to go.  Which makes a failure to enumerate a refusal
-        rather than an empty listing: an empty list would look like "the workspace has no
+        rather than an empty listing: an empty list would look like "the file store has no
         files" and refuse each name individually with the wrong reason.
 
         The store is passed per call rather than held: which store a workload reads is the
@@ -279,7 +279,7 @@ class SandboxToolSession:
         try:
             return await self._context.list_files(store)
         except Exception as exc:  # noqa: BLE001
-            return f"Error: could not list workspace files: {exc}"
+            return f"Error: could not list the file store: {exc}"
 
     async def acquire(self, key: SandboxKey) -> Sandbox | str:
         """A running sandbox for ``key``, or the message to return when there is none.
@@ -324,7 +324,7 @@ def sandboxed_tool(
     build: Callable[[SandboxToolSession], Callable[..., Awaitable[str]]],
     *,
     router: SandboxRouter | None,
-    context: WorkspaceContext,
+    context: CallerContext,
     agent_dir: str,
     spec: SandboxSpec,
     name: str,
@@ -378,7 +378,7 @@ def sandboxed_tool(
         build: Given the session, returns the async function to expose as the tool.
         router: The sandbox router, or ``None`` when sandboxing is not configured.
         context: How to read the caller's scope and thread, and how to enumerate the
-            workspace (see :func:`make_workspace_context`).
+            file store (see :func:`make_caller_context`).
         agent_dir: The agent's directory name. Baked into the sandbox key here, at factory
             time, rather than taken from the model at call time.
         spec: The sandbox this workload asks for.
@@ -449,7 +449,7 @@ def sandboxed_tool(
     )
 
     # Imported here rather than at module scope so that merely importing this module — which
-    # a host may do to reach `make_workspace_context` alone — does not pull the framework in.
+    # a host may do to reach `make_caller_context` alone — does not pull the framework in.
     from agent_framework import tool
 
     decorate = tool(

@@ -490,7 +490,7 @@ jobs:
 
   sample-08:
     name: samples/08_docker_codeact_files against a live container
-    # Both of the packaged CodeAct kind's file channels, in one turn: a workspace file in and a
+    # Both of the packaged CodeAct kind's file channels, in one turn: a file store file in and a
     # declared output back out. Sample-07 gates the same pull surface through a hand-written
     # kind; this one gates what an adopter reaches for first, the channels the package itself
     # exposes. Same runner economics as sample-06: a Docker container costs nothing and the

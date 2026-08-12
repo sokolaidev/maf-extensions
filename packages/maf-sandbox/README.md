@@ -13,7 +13,7 @@ pip install maf-sandbox
 ```
 
 ```python
-from maf_sandbox import Isolation, SandboxKey, SandboxRouter, SandboxSpec, WorkspaceContext
+from maf_sandbox import Isolation, SandboxKey, SandboxRouter, SandboxSpec, CallerContext
 
 # Implement SandboxBackend against your own provider — or install maf-sandbox-acas for a
 # ready-made Azure Container Apps Sandboxes backend — then wire it into a router. Configuring
@@ -25,7 +25,7 @@ sandbox = await router.acquire(SandboxKey(scope="tenant-1", thread_id="t-1", age
 
 This snippet never calls `ensure_can_serve` (below) and is checked anyway: `acquire` runs the same floor, capability and egress refusals itself before it ever reaches the backend, so the only thing calling `ensure_can_serve` first buys you is the closed-egress-vs-allowlist-spec warning, which `acquire` deliberately stays silent about.
 
-[`samples/01_acas_bicep`](https://github.com/sokolaidev/maf-extensions/tree/main/samples/01_acas_bicep) is that wiring as a runnable program, including the part no snippet shows well: building the `WorkspaceContext` out of callables rather than values, which is what keeps a `SandboxKey` a property of the host's request.
+[`samples/01_acas_bicep`](https://github.com/sokolaidev/maf-extensions/tree/main/samples/01_acas_bicep) is that wiring as a runnable program, including the part no snippet shows well: building the `CallerContext` out of callables rather than values, which is what keeps a `SandboxKey` a property of the host's request.
 
 ## Threat model
 
@@ -44,7 +44,7 @@ This package draws no isolation boundary itself — it is protocol and policy ov
 
 `Isolation`, weakest to strongest: `process < runtime < container < hardened_container < microvm < vm`. `SandboxRouter`'s default `min_isolation` is `microvm`; an unrecognised rung refuses rather than guesses which side of the floor it falls on.
 
-`SandboxKey`'s scope and thread come from the host's request context through `WorkspaceContext`, whose fields are **callables read at call time** rather than values. That is deliberate: a key a caller can supply is a key a *model* can supply, and that would let one conversation address another's sandbox.
+`SandboxKey`'s scope and thread come from the host's request context through `CallerContext`, whose fields are **callables read at call time** rather than values. That is deliberate: a key a caller can supply is a key a *model* can supply, and that would let one conversation address another's sandbox.
 
 `SandboxSpec.egress_allow` is an allowlist — everything not named is denied, so an empty tuple means no network. Stating it positively means a spec that forgets to mention egress gets the closed configuration rather than the open one.
 
@@ -86,7 +86,7 @@ A workload's only return channel used to be `ExecResult.stdout`, which is right 
 
 `spec.files_out` is a `TransferLimits` and all three of its fields are load-bearing: a byte ceiling alone does not bound a collection, since ten thousand files one byte under the per-file cap cost exactly what the cap was written to prevent. What comes back when a collection does not fit is specific rather than generic — `SandboxTransferCapExceeded` names both the cap and the file that breached it, `SandboxOutputMissing` names a `required` output that was not there, `SandboxOutputSizeUnknown` is a backend that could not say how large something was, and `SandboxArtifactNameCollision` is two landing names that are one file at the destination: identical, or differing only by case or by Unicode form.
 
-**Land it.** An `OutputSink` wraps a single `async def deliver(artifact) -> LandedArtifact`. This library holds no opinion about where an artifact goes — a directory, a blob container, a workspace store — which is what keeps that flow visible to the host's own information-flow policy instead of buried in a dependency. `LandedArtifact.display` is the one line the model is allowed to see; `handle` is the host's own reference, and nothing renders it into the transcript.
+**Land it.** An `OutputSink` wraps a single `async def deliver(artifact) -> LandedArtifact`. This library holds no opinion about where an artifact goes — a directory, a blob container, a file store — which is what keeps that flow visible to the host's own information-flow policy instead of buried in a dependency. `LandedArtifact.display` is the one line the model is allowed to see; `handle` is the host's own reference, and nothing renders it into the transcript.
 
 **`validate_artifact_name` is lexical, so a sink still has to confine its own destination.** It refuses `..`, absolute paths, backslashes and empty segments, so the *name* cannot traverse — which is not the same as safe, because it says nothing about what is already sitting at the path that name resolves to. A symlink in the output directory carries the write straight out of it: the same failure class as [#142](https://github.com/sokolaidev/maf-extensions/issues/142), on the host side of the boundary. Resolve the destination first, then refuse anything that does not stay under the root. It remains a check rather than a guarantee — resolving and writing are two calls — so a sink taking hostile output wants no-follow primitives underneath it.
 

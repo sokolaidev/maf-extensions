@@ -37,13 +37,13 @@ raise the host's floor for itself, and never lower it.
 Alongside the router it owns the sink half of ``FILES_OUT``:
 :func:`~maf_sandbox.collect_outputs` pulls a spec's declared outputs, caps them, and hands each
 one to a host-supplied :class:`~maf_sandbox.OutputSink`.  The host does the writing — a
-workspace store, a blob container or a UI panel is a property of the application, and this
+file store, a blob container or a UI panel is a property of the application, and this
 package writes nothing anywhere.
 
 This package imports no backend and no host application.
 
 One module sits outside that claim: :mod:`maf_sandbox.maf`, the MAF glue
-(``make_workspace_context``, ``sandboxed_tool``, and the purge participant).  It is the only
+(``make_caller_context``, ``sandboxed_tool``, and the purge participant).  It is the only
 module allowed to import ``agent_framework``, and keeping it off this ``__init__`` is what
 lets ``import maf_sandbox`` stay cheap and framework-free for a backend or a test that only
 speaks the protocol.
@@ -100,6 +100,7 @@ from ._protocol import (
     DEFAULT_TRANSFER_LIMITS,
     INTEGRITY_RANK,
     ISOLATION_RANK,
+    CallerContext,
     Capability,
     DeclaredOutput,
     Egress,
@@ -116,7 +117,6 @@ from ._protocol import (
     SandboxSpec,
     SourceIntegrity,
     TransferLimits,
-    WorkspaceContext,
     meets_floor,
 )
 from ._purger import SandboxPurger
@@ -187,7 +187,7 @@ __all__ = [
     "SandboxTransferLimitsNotPermitted",
     "SourceIntegrity",
     "TransferLimits",
-    "WorkspaceContext",
+    "CallerContext",
     "collect_outputs",
     "declaration_of",
     "error_detail",

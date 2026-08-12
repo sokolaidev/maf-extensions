@@ -7,7 +7,7 @@ This is the `app` box of the layering the whole repository is organised around::
 
 Deliberately the smallest thing that is still real: no chat loop, no multi-turn
 fix cycle, no framework of its own.  It puts `main.bicep` — which has a mistake
-in it on purpose — into a workspace store, hands the agent the `bicep_validate`
+in it on purpose — into a file store, hands the agent the `bicep_validate`
 tool, runs exactly one turn, prints what came back, and deletes the sandbox.
 
 What the printed diagnostics prove is the point.  They come from the Bicep
@@ -31,14 +31,14 @@ from agent_framework import Agent, InMemoryAgentFileStore
 from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
 from maf_sandbox import SandboxRouter
-from maf_sandbox.maf import make_workspace_context
+from maf_sandbox.maf import make_caller_context
 from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
 from maf_sandbox_bicep import make_bicep_tools
 
 # A sandbox is keyed by (scope, thread_id, agent_dir).  A host reads the first two
 # from its own request context — a user/tenant and a conversation.  This program
 # serves exactly one request, so they are constants here, but they are still named
-# rather than inlined: the whole point of `make_workspace_context` below is that
+# rather than inlined: the whole point of `make_caller_context` below is that
 # they belong to the request, not to the agent.
 SCOPE = "samples"
 THREAD_ID = "01-acas-bicep"
@@ -63,7 +63,7 @@ SANDBOX_VARS = (
 MODEL_VARS = ("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_CHAT_MODEL")
 
 
-def require_environment(names: tuple[str, ...]) -> dict[str, str] | None:
+def require_env_vars(names: tuple[str, ...]) -> dict[str, str] | None:
     """Read `names` from the environment, or report every one that is missing.
 
     Worth doing before anything else, and worth failing on.  `make_bicep_tools`
@@ -83,8 +83,8 @@ def require_environment(names: tuple[str, ...]) -> dict[str, str] | None:
     return {name: os.environ[name] for name in names}
 
 
-async def list_workspace(store: Any) -> list[str]:
-    """Return every file in the workspace store, as workspace-relative paths.
+async def list_all_files(store: Any) -> list[str]:
+    """Return every file in the file store, as store-relative paths.
 
     This listing is the workload's **injection-pinning boundary**: only a name
     that appears in it is ever substituted into a sandbox command, so a path the
@@ -107,7 +107,7 @@ async def list_workspace(store: Any) -> list[str]:
 
 async def run() -> int:
     """Wire the stack, run one turn, and take the sandbox down again."""
-    env = require_environment(SANDBOX_VARS + MODEL_VARS)
+    env = require_env_vars(SANDBOX_VARS + MODEL_VARS)
     if env is None:
         return 2
 
@@ -132,7 +132,7 @@ async def run() -> int:
     # this host's policy, what the sandbox may reach is the workload's.
     router = SandboxRouter([backend])
 
-    # The agent's workspace.  A real host's store is usually backed by a disk or
+    # The agent's file store.  A real host's store is usually backed by a disk or
     # a blob container and already holds what the agent wrote earlier in the
     # conversation; here the sample seeds it with the one file to validate.
     store = InMemoryAgentFileStore()
@@ -145,8 +145,8 @@ async def run() -> int:
     # one conversation address another conversation's sandbox.  Reading them per
     # call keeps the key a property of the request.  It is also why nothing in
     # this stack accepts a scope or a thread id from the model.
-    context = make_workspace_context(
-        list_workspace,
+    context = make_caller_context(
+        list_all_files,
         lambda: SCOPE,
         lambda: THREAD_ID,
     )

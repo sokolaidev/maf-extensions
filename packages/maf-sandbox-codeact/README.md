@@ -35,20 +35,20 @@ Pass `router=None` — or a router with no backend — and you get `[]` back: an
 
 One tool, `execute_code`. The program is written to a directory of its own and run as the argv `["python3", ".../program.py"]`, and the result is its stdout, its stderr when it wrote any, and its exit code when that was not zero. There is no REPL echo, so a program that computes without printing returns a sentence saying so.
 
-**Every call gets a fresh directory, and that is load-bearing rather than hygiene.** `acquire` is get-or-create, so the same sandbox serves every call in a conversation. Without a per-call directory a file deleted from the workspace between rounds would still be there for the next program to read as current, and last round's output file would be collected as this round's — a stale answer presented as a live one, in a kind whose whole job is transforming files.
+**Every call gets a fresh directory, and that is load-bearing rather than hygiene.** `acquire` is get-or-create, so the same sandbox serves every call in a conversation. Without a per-call directory a file deleted from the file store between rounds would still be there for the next program to read as current, and last round's output file would be collected as this round's — a stale answer presented as a live one, in a kind whose whole job is transforming files.
 
 Two further channels exist and neither is on by default. Wire neither and this is the stdout-only kind it has always been.
 
 ### Files in
 
-Pass a `workspace_store` and the tool grows a `files` parameter:
+Pass a `file_store` and the tool grows a `files` parameter:
 
 ```python
 tools = make_codeact_tools(router, "data-analyst", context,
-                           workspace_store=store, image=...)
+                           file_store=store, image=...)
 ```
 
-Each named file is read from the store and written into the program's working directory under its own name, so `data/sales.csv` is what the program opens. **The caller's listing is the authority**: only a name present in `WorkspaceContext.list_files` is ever shared, so a name the model invented — or read out of a file it was given — has nowhere to go. A name outside the listing comes back as a refusal naming the near misses; a name that traverses comes back as a refusal that echoes nothing.
+Each named file is read from the store and written into the program's working directory under its own name, so `data/sales.csv` is what the program opens. **The caller's listing is the authority**: only a name present in `CallerContext.list_files` is ever shared, so a name the model invented — or read out of a file it was given — has nowhere to go. A name outside the listing comes back as a refusal naming the near misses; a name that traverses comes back as a refusal that echoes nothing.
 
 ### Files out
 
@@ -78,11 +78,11 @@ Either way the kind requires `FILES_OUT` and **never** `FILES_LIST`: it collects
 
 **Nothing is dispatchable from inside.** There is no host-tool registry in this version, and that emptiness is the security story rather than a missing feature: the program cannot open a socket and cannot call a host function, so it initiates nothing. The output sink does not change that — the kind calls it host-side, after the program has exited, and nothing inside the sandbox can reach it. A host wanting a hard stop denies `FILES_OUT`.
 
-**A workspace store is ingress, and it is the host's own.** "Nothing can get in" describes what the *program* can initiate, not what the host puts there. With `workspace_store` wired, caller-selected files are written into the sandbox before the program runs — deliberately, and constrained to the caller's listing, so the model cannot widen the set. What that content *is* remains the host's to know: a workspace file may itself carry text from somewhere untrusted, and a program that parses it is running on input the sandbox did not vet. Wire no store and this paragraph does not apply.
+**A file store is ingress, and it is the host's own.** "Nothing can get in" describes what the *program* can initiate, not what the host puts there. With `file_store` wired, caller-selected files are written into the sandbox before the program runs — deliberately, and constrained to the caller's listing, so the model cannot widen the set. What that content *is* remains the host's to know: a file in the store may itself carry text from somewhere untrusted, and a program that parses it is running on input the sandbox did not vet. Wire no store and this paragraph does not apply.
 
 **The tool declares no `source_integrity`.** The library's default is `"trusted"`, which is right for a workload whose result is a compiler's own diagnostics and wrong for this one: what comes back is whatever a model-written `print(...)` chose to emit. Undeclared, MAF's information-flow tracker applies its untrusted default and the result taints the conversation — the fail-safe direction, and the honest one.
 
-**Isolation is the host's call, and a store changes what that call is about.** This kind does not raise `SandboxSpec.min_isolation`, so the router's floor governs — `MICROVM` unless the host opted down. A kind that ran code influenced by untrusted external content would pin the floor itself, and this one cannot know whether it is one: with no store, the program's only input is source the model wrote, and opting down to `CONTAINER` weighs model-written code against a shared kernel. **With a store, the program also reads whatever those files contain**, so the floor should be chosen against the provenance of the workspace, not against this kind's defaults. Only the host knows that.
+**Isolation is the host's call, and a store changes what that call is about.** This kind does not raise `SandboxSpec.min_isolation`, so the router's floor governs — `MICROVM` unless the host opted down. A kind that ran code influenced by untrusted external content would pin the floor itself, and this one cannot know whether it is one: with no store, the program's only input is source the model wrote, and opting down to `CONTAINER` weighs model-written code against a shared kernel. **With a store, the program also reads whatever those files contain**, so the floor should be chosen against the provenance of the file store, not against this kind's defaults. Only the host knows that.
 
 ## What this version is not
 

@@ -29,7 +29,7 @@ import sys
 from agent_framework import Agent
 from agent_framework.openai import OpenAIChatCompletionClient
 from maf_sandbox import Isolation, SandboxRouter
-from maf_sandbox.maf import make_workspace_context
+from maf_sandbox.maf import make_caller_context
 from maf_sandbox_codeact import make_codeact_tools
 from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
 
@@ -52,7 +52,7 @@ TASK = (
 MODEL_VARS = ("OPENAI_API_KEY", "OPENAI_CHAT_MODEL")
 
 
-def require_environment(names: tuple[str, ...]) -> dict[str, str] | None:
+def require_env_vars(names: tuple[str, ...]) -> dict[str, str] | None:
     """Read `names` from the environment, or report every one that is missing.
 
     Worth doing before anything else, and worth failing on.  `make_codeact_tools`
@@ -72,14 +72,14 @@ def require_environment(names: tuple[str, ...]) -> dict[str, str] | None:
     return {name: os.environ[name] for name in names}
 
 
-async def no_workspace_files(_store: object) -> list[str]:
-    """CodeAct shares no workspace files, so nothing ever enumerates one."""
+async def list_no_files(_store: object) -> list[str]:
+    """CodeAct shares no file store files, so nothing ever enumerates one."""
     return []
 
 
 async def run() -> int:
     """Wire the stack, run one turn, and take the container down again."""
-    env = require_environment(MODEL_VARS)
+    env = require_env_vars(MODEL_VARS)
     if env is None:
         return 2
 
@@ -88,8 +88,8 @@ async def run() -> int:
     # Below the router's default `microvm` floor; opted down explicitly.
     router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
 
-    context = make_workspace_context(
-        no_workspace_files,
+    context = make_caller_context(
+        list_no_files,
         lambda: SCOPE,
         lambda: THREAD_ID,
     )

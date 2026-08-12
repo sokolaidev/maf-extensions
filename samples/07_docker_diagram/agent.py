@@ -48,11 +48,11 @@ from maf_sandbox import (
     SandboxRouter,
     SandboxSpec,
     TransferLimits,
-    WorkspaceContext,
+    CallerContext,
     collect_outputs,
     error_detail,
 )
-from maf_sandbox.maf import SandboxToolSession, make_workspace_context, sandboxed_tool
+from maf_sandbox.maf import SandboxToolSession, make_caller_context, sandboxed_tool
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
 
 if TYPE_CHECKING:
@@ -155,7 +155,7 @@ def diagram_sandbox_spec(image: str | None = None) -> SandboxSpec:
 def make_diagram_tools(
     router: SandboxRouter | None,
     agent_dir: str,
-    context: WorkspaceContext,
+    context: CallerContext,
     sink: OutputSink,
     *,
     image: str | None = None,
@@ -347,7 +347,7 @@ def make_png_sink(output_dir: Path) -> OutputSink:
 # --- Host wiring -----------------------------------------------------------------------------
 
 
-def require_environment(names: tuple[str, ...]) -> dict[str, str] | None:
+def require_env_vars(names: tuple[str, ...]) -> dict[str, str] | None:
     """Read `names` from the environment, or report every one that is missing.
 
     Worth doing before anything else, and worth failing on.  `make_diagram_tools` returns an
@@ -366,14 +366,14 @@ def require_environment(names: tuple[str, ...]) -> dict[str, str] | None:
     return {name: os.environ[name] for name in names}
 
 
-async def no_workspace_files(_store: object) -> list[str]:
-    """This kind shares no workspace files — the model supplies the DOT source directly."""
+async def list_no_files(_store: object) -> list[str]:
+    """This kind shares no file store files — the model supplies the DOT source directly."""
     return []
 
 
 async def run() -> int:
     """Wire the stack, run one turn, and take the container down again."""
-    env = require_environment(SANDBOX_VARS + MODEL_VARS)
+    env = require_env_vars(SANDBOX_VARS + MODEL_VARS)
     if env is None:
         return 2
 
@@ -382,8 +382,8 @@ async def run() -> int:
     # Below the router's default `microvm` floor; opted down explicitly.
     router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
 
-    context = make_workspace_context(
-        no_workspace_files,
+    context = make_caller_context(
+        list_no_files,
         lambda: SCOPE,
         lambda: THREAD_ID,
     )

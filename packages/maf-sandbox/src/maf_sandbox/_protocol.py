@@ -39,7 +39,7 @@ __all__ = [
     "SandboxSpec",
     "SourceIntegrity",
     "TransferLimits",
-    "WorkspaceContext",
+    "CallerContext",
     "meets_floor",
 ]
 
@@ -340,7 +340,7 @@ class SandboxKey:
     ``scope`` is the host's user/tenant scope and ``thread_id`` the conversation; both come
     from the host's request context and never from model input, because a model-supplied
     value here would let one conversation address another's sandbox.  ``agent_dir`` keys the
-    sandbox to a single agent's workspace, so two agents in one conversation do not share a
+    sandbox to a single agent, so two agents in one conversation do not share a
     filesystem.
     """
 
@@ -479,7 +479,7 @@ class Sandbox(Protocol):
 
         - A **sequence** (``["bicep", "build", path]``) is quoted for you before it reaches
           a shell, and is the safe default whenever any element could contain whitespace or
-          a shell metacharacter — a workspace path, in particular, is not agent-controlled
+          a shell metacharacter — a file store path, in particular, is not agent-controlled
           but is still text neither side should have to prove is free of ``;`` or ``$()``.
         - A **string** (``"bicep build … 2>&1 || true"``) is a shell command line, evaluated
           by a shell inside the sandbox. Use it only when the command genuinely needs shell
@@ -525,7 +525,7 @@ class Sandbox(Protocol):
     async def list_dir(self, path: str, *, working_directory: str) -> tuple[SandboxEntry, ...]:
         """Enumerate the entries directly under ``path``.
 
-        Named apart from :attr:`WorkspaceContext.list_files` on purpose: that is the host's
+        Named apart from :attr:`CallerContext.list_files` on purpose: that is the host's
         allowlist and the most trusted enumeration in the system, this is the least trusted
         one, and both are in scope inside a kind's tool body.
 
@@ -609,7 +609,7 @@ class SandboxBackend(Protocol):
 
 
 @dataclass(frozen=True)
-class WorkspaceContext:
+class CallerContext:
     """How the host identifies the caller and enumerates the files it may act on.
 
     ``current_scope`` and ``current_thread_id`` are **callables read at call time** (they are
@@ -617,7 +617,7 @@ class WorkspaceContext:
     :class:`SandboxKey` a property of the host's request context instead of something a
     caller — or a model — can supply.
 
-    ``list_files`` receives the workspace store and returns the paths the caller may act on.
+    ``list_files`` receives the file store and returns the paths the caller may act on.
     Workloads use it as their injection-pinning boundary: only a name present in that listing
     is ever substituted into a command.
     """

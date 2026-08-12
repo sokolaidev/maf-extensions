@@ -402,7 +402,7 @@ class TestConcurrentDispatchesCannotOversubscribeTheLedger:
         entered = asyncio.Event()
         release = asyncio.Event()
 
-        @sandbox_tool(source=None, sink="workspace", identity=None)
+        @sandbox_tool(source=None, sink="file_store", identity=None)
         async def slow(x: int) -> int:
             calls.append(x)
             entered.set()
@@ -439,7 +439,7 @@ class TestConcurrentDispatchesCannotOversubscribeTheLedger:
         a run that loses a slot to one can never deliver the response it was holding."""
         entered = asyncio.Event()
 
-        @sandbox_tool(source=None, sink="workspace", identity=None)
+        @sandbox_tool(source=None, sink="file_store", identity=None)
         async def never() -> int:
             entered.set()
             await asyncio.Event().wait()
@@ -502,7 +502,7 @@ class TestTheResponseLedgerIsCheckedBeforeTheSideEffect:
     def test_an_exhausted_ledger_refuses_without_calling_the_tool(self):
         calls: list[int] = []
 
-        @sandbox_tool(source=None, sink="workspace", identity=None)
+        @sandbox_tool(source=None, sink="file_store", identity=None)
         def writes(x: int) -> int:
             calls.append(x)
             return x
@@ -525,7 +525,7 @@ class TestTheResponseLedgerIsCheckedBeforeTheSideEffect:
         spent, no response of any size fits, and running the body only spends the effect."""
         calls: list[int] = []
 
-        @sandbox_tool(source=None, sink="workspace", identity=None)
+        @sandbox_tool(source=None, sink="file_store", identity=None)
         def writes(x: int) -> str:
             calls.append(x)
             return "y" * 20

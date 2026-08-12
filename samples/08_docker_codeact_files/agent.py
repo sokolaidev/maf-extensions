@@ -6,7 +6,7 @@ Sample 06 with both of CodeAct's file channels wired::
                   ^ maf_sandbox_codeact calls the router
 
 Samples 03, 04 and 06 give `execute_code` nothing to read and take only stdout
-back.  This one passes a `workspace_store`, which grows the tool a `files`
+back.  This one passes a `file_store`, which grows the tool a `files`
 parameter, and an `output_sink` with `CodeactOutputs.DECLARED`, which grows it an
 `outputs` parameter.  The task needs both, so a run that skips either is visibly
 wrong rather than quietly thinner.
@@ -28,7 +28,7 @@ from agent_framework import Agent, InMemoryAgentFileStore
 from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
 from maf_sandbox import Artifact, Isolation, LandedArtifact, OutputSink, SandboxRouter
-from maf_sandbox.maf import make_workspace_context
+from maf_sandbox.maf import make_caller_context
 from maf_sandbox_codeact import CodeactOutputs, make_codeact_tools
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
 
@@ -40,14 +40,14 @@ AGENT_DIR = "data-analyst"
 #: A standard MCR devcontainer image at Python 3.13 — sample 06's, so nothing is built here.
 CODEACT_IMAGE = "mcr.microsoft.com/devcontainers/python:3.13-bookworm"
 
-#: Ships beside this file and is seeded into the agent's workspace under the same name.
-WORKSPACE_FILE = "sales.csv"
+#: Ships beside this file and is seeded into the agent's file store under the same name.
+STORE_FILE = "sales.csv"
 
-#: Where landed artifacts go. Beside the sample, and deliberately *not* the workspace store.
+#: Where landed artifacts go. Beside the sample, and deliberately *not* the file store.
 OUTPUT_DIR = Path(__file__).parent / "out"
 
 TASK = (
-    "The file sales.csv is in your workspace. Using a Python program, compute each "
+    "The file sales.csv is in your file store. Using a Python program, compute each "
     "row's revenue as units * unit_price, total it by region, and also compute the "
     "grand total across all regions. Print the grand total as a single integer on "
     "its own line, and save the per-region totals as summary.md — a Markdown table "
@@ -60,7 +60,7 @@ TASK = (
 MODEL_VARS = ("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_CHAT_MODEL")
 
 
-def require_environment(names: tuple[str, ...]) -> dict[str, str] | None:
+def require_env_vars(names: tuple[str, ...]) -> dict[str, str] | None:
     """Read `names` from the environment, or report every one that is missing.
 
     Worth failing on rather than warning about, for the reason sample 06 gives: an
@@ -77,8 +77,8 @@ def require_environment(names: tuple[str, ...]) -> dict[str, str] | None:
     return {name: os.environ[name] for name in names}
 
 
-async def list_workspace(store: Any) -> list[str]:
-    """Every file in the workspace store, as workspace-relative paths.
+async def list_all_files(store: Any) -> list[str]:
+    """Every file in the file store, as store-relative paths.
 
     This listing is the **authority** for what `files` may name: the kind shares a
     file only if it appears here, so a name the model invented — or read out of a
@@ -132,7 +132,7 @@ def make_markdown_sink(output_dir: Path, delivered: list[str]) -> OutputSink:
 
 async def run() -> int:
     """Wire the stack, run one turn, and take the container down again."""
-    env = require_environment(MODEL_VARS)
+    env = require_env_vars(MODEL_VARS)
     if env is None:
         return 2
 
@@ -141,18 +141,16 @@ async def run() -> int:
     # Below the router's default `microvm` floor; opted down explicitly, as sample 06 does.
     # Worth re-reading that decision here rather than copying it: with a store wired, the
     # program's input is no longer only source the model wrote — it is also whatever those
-    # files contain. The floor should be chosen against the provenance of the workspace.
-    # This sample's workspace holds one CSV that ships in this repository.
+    # files contain. The floor should be chosen against the provenance of the file store.
+    # This sample's file store holds one CSV that ships in this repository.
     router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
 
-    # The agent's workspace. A real host's is backed by a disk or a blob container and
+    # The agent's file store. A real host's is backed by a disk or a blob container and
     # already holds what the agent wrote earlier; here the sample seeds the one file.
     store = InMemoryAgentFileStore()
-    await store.write(
-        WORKSPACE_FILE, (Path(__file__).parent / WORKSPACE_FILE).read_text()
-    )
+    await store.write(STORE_FILE, (Path(__file__).parent / STORE_FILE).read_text())
 
-    context = make_workspace_context(list_workspace, lambda: SCOPE, lambda: THREAD_ID)
+    context = make_caller_context(list_all_files, lambda: SCOPE, lambda: THREAD_ID)
 
     # This turn's deliveries, recorded by the sink as they arrive. Not the same as the
     # contents of `out/`, which also holds whatever an earlier run left there.
@@ -162,8 +160,8 @@ async def run() -> int:
         router,
         AGENT_DIR,
         context,
-        # Files in: the tool grows a `files` parameter, bounded by `list_workspace` above.
-        workspace_store=store,
+        # Files in: the tool grows a `files` parameter, bounded by `list_all_files` above.
+        file_store=store,
         # Files out: a sink and a naming road. `DECLARED` makes the model say what its
         # program will write before it runs, which is the road that can report a name
         # declared and never written — the diagnostic `MANIFEST` cannot have.
