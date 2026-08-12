@@ -117,18 +117,31 @@ jobs:
           git switch -c "$branch"
           git commit -am "$title"
           git push -u origin "$branch"
-          body="Automated by the release workflow when maf-sandbox ${VERSION} was released. **Check that it actually published before merging this.** The upload is dispatched separately and may still be waiting on the pypi environment, or have failed; a floor pointing at a version that never reached PyPI is unresolvable for every consumer.
+          # The body is written to a file through a *quoted* heredoc, so the shell expands
+          # nothing in it. It used to be a double-quoted assignment, and the quotes around
+          # "Approve and run" in the last paragraph closed the string early: the shell read the
+          # rest as commands and the step died with `and: command not found` (run 31603351228).
+          # That fired after the tag and after the publish dispatch, so the release itself was
+          # intact and only the proposal was lost — a branch pushed with no pull request on it.
+          # This prose is long, grows every release, and is written in the same register as the
+          # docs, which means quotes and backticked identifiers will keep arriving in it. Both
+          # are inert here. The version is the one thing that has to vary, so it is substituted
+          # afterwards from a placeholder rather than by letting the whole body expand.
+          cat > "${RUNNER_TEMP}/range-body.md" <<'BODY'
+          Automated by the release workflow when maf-sandbox @VERSION@ was released. **Check that it actually published before merging this.** The upload is dispatched separately and may still be waiting on the pypi environment, or have failed; a floor pointing at a version that never reached PyPI is unresolvable for every consumer.
 
           It carries both ends of the range, because they are one string and two pull requests editing it each reverted the other's half (#195). The two ends are not the same kind of claim, so read them differently:
 
-          **The ceiling is uniform and is a claim about nobody's code.** It widens to admit the minor after ${VERSION}, before that minor exists — which holds either way, since a ceiling admits a version whether or not it has been released. Widening only enlarges an accepted set, so it cannot make a resolution fail. What it buys is that the next core minor can be released without leaving the index unresolvable as a set (#175) and without anyone having to remember step 1 (#177). Nothing here needs your judgement.
+          **The ceiling is uniform and is a claim about nobody's code.** It widens to admit the minor after @VERSION@, before that minor exists — which holds either way, since a ceiling admits a version whether or not it has been released. Widening only enlarges an accepted set, so it cannot make a resolution fail. What it buys is that the next core minor can be released without leaving the index unresolvable as a set (#175) and without anyone having to remember step 1 (#177). Nothing here needs your judgement.
 
-          **The floor is a guess, and usually a wrong one.** It moves in every dependent whose ceiling already admitted ${VERSION} and whose floor was a minor behind — a shape, not evidence that a package's code uses this release. Ceilings are widened for everyone at once, so admitting a version says nothing about needing it. A floor should move only for a package that relies on API or behaviour this release introduced or changed; a new import is the obvious case, but a fixed bug in an existing call counts too. For the rest it pins a version they do not need and over-constrains their consumers.
+          **The floor is a guess, and usually a wrong one.** It moves in every dependent whose ceiling already admitted @VERSION@ and whose floor was a minor behind — a shape, not evidence that a package's code uses this release. Ceilings are widened for everyone at once, so admitting a version says nothing about needing it. A floor should move only for a package that relies on API or behaviour this release introduced or changed; a new import is the obvious case, but a fixed bug in an existing call counts too. For the rest it pins a version they do not need and over-constrains their consumers.
 
           **To decline a floor without losing its ceiling**, edit that line back to the floor it had and leave the new upper bound alone — the two now live in one hunk, so dropping the hunk wholesale would give up the widening too. Retitle it feat:/breaking if adopting the version is more than a patch for a dependent; the title says fix: so the bot does not choose the bump.
 
-          **Then merge it, and let the dependent releases it cuts publish.** The widening is only worth anything once it is on PyPI: that is what the next core release checks before it uploads. Its checks are held at "Approve and run", the same as a Release PR's; clearing them is what starts them."
+          **Then merge it, and let the dependent releases it cuts publish.** The widening is only worth anything once it is on PyPI: that is what the next core release checks before it uploads. Its checks are held at "Approve and run", the same as a Release PR's; clearing them is what starts them.
+          BODY
+          sed -i "s|@VERSION@|${VERSION}|g" "${RUNNER_TEMP}/range-body.md"
           gh pr create --base main --head "$branch" \
             --title "$title" \
-            --body "$body"
+            --body-file "${RUNNER_TEMP}/range-body.md"
           echo "opened ${branch}" >> "$GITHUB_STEP_SUMMARY"
