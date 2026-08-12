@@ -2,6 +2,22 @@
 
 All notable changes to `maf-sandbox-bicep` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.6.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.5.6...maf-sandbox-bicep-v0.6.0) (2026-08-12)
+
+
+### ⚠ BREAKING CHANGES
+
+* "workspace" is gone from the public vocabulary; rename at the call site. `WorkspaceContext` is now `CallerContext`, and `make_workspace_context` is `make_caller_context` — whose first parameter is `list_files` rather than `store_walker`. `bicep_validate_tool` and `execute_code_tool` take `file_store=` where they took `workspace_store=`. `maf_sandbox_bicep.safe_workspace_path` is `safe_listed_path`. `work_dir` and `working_directory` are unchanged: they name the guest's working directory and were never this concept.
+
+### Features
+
+* retire "workspace" from the vocabulary — CallerContext, file_store, list_files ([#240](https://github.com/sokolaidev/maf-extensions/issues/240)) ([e746982](https://github.com/sokolaidev/maf-extensions/commit/e746982d42707e6c4599ba1ec927797b25d360e8))
+
+
+### Bug Fixes
+
+* require maf-sandbox 0.11.0 and admit 0.12 in the dependents' range ([#244](https://github.com/sokolaidev/maf-extensions/issues/244)) ([0968308](https://github.com/sokolaidev/maf-extensions/commit/096830831e4a5b0742206cdff8869ab0f3e4694c))
+
 ## [0.5.6](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.5.5...maf-sandbox-bicep-v0.5.6) (2026-08-12)
 
 
