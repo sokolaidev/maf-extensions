@@ -138,8 +138,7 @@ class _Leaky:
             case ["ln", "-sfn", target, path]:
                 self.links[path] = target
                 return ExecResult(stdout="")
-            case _:
-                return ExecResult(stdout="", stderr="unsupported", exit_code=1)
+        return ExecResult(stdout="", stderr="unsupported", exit_code=1)
 
     async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
         guest = self._confined(path, working_directory)
