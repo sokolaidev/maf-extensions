@@ -329,9 +329,9 @@ class _DockerSandbox:
     async def _refuse_symlinked_parents(self, guest: str, *, working_directory: str) -> None:
         """The protocol's component walk, over this backend's own unconfined stat.
 
-        Paired with :func:`~maf_sandbox.paths.confine_guest_path` at every call site, and not
-        redundant beside it: that check is lexical, so a symlinked *parent* satisfies it, and
-        this is what catches one.  A link is only visible when it is the entry being tarred —
+        The :func:`~maf_sandbox.paths.confine_guest_path` paired with it at every call site is
+        lexical, so a symlinked *parent* satisfies that one; this is what catches it.  A link
+        is only visible when it is the entry being tarred —
         the engine resolves the rest of the path daemon-side — so a symlinked component has to
         be found by walking rather than by judging the path that was asked for.  One header
         read per component.

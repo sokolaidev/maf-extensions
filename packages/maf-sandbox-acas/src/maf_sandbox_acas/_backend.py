@@ -141,17 +141,10 @@ _FIELD_IS_SYMLINK = "isSymlink"
 def _confined(path: str, working_directory: str) -> tuple[str, str]:
     """Resolve ``path`` against ``working_directory``: the guest path, and the relative one.
 
-    Both halves come from :mod:`maf_sandbox.paths`, which owns the protocol's one path grammar.
-    They are paired here because every caller in this module wants the relative half for a
-    :class:`~maf_sandbox.SandboxEntry` the moment the absolute one is confined.  A backslash, or
-    a ``..`` that climbs out of ``working_directory``, raises :class:`ValueError`, which
-    ``maf_sandbox`` translates into ``SandboxOutputNotConfined`` for the caller.
-
-    The ``or ""`` narrows a type rather than covering a case:
-    :func:`~maf_sandbox.paths.guest_path_relative_to` *is* the containment check
-    :func:`~maf_sandbox.paths.confine_guest_path` just made, so it cannot answer ``None`` for a
-    path that survived it, and the one path it answers ``""`` for — the working directory
-    itself — is ``""`` under either reading.
+    Paired because every caller here wants the relative half for a
+    :class:`~maf_sandbox.SandboxEntry` as soon as the absolute one is confined.  That half is
+    never ``None`` — :func:`~maf_sandbox.paths.confine_guest_path` has already refused anything
+    outside — so the ``or ""`` narrows a type rather than covering a case.
     """
     resolved = confine_guest_path(path, working_directory)
     return resolved, guest_path_relative_to(resolved, working_directory) or ""
