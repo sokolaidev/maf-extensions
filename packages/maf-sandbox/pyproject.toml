@@ -1,6 +1,6 @@
 [project]
 name = "maf-sandbox"
-version = "0.11.0"
+version = "0.12.0"
 description = "One seam between an application and any sandbox provider, for Microsoft Agent Framework — reference implementation of agent-framework#7568: backend protocol, selection against a minimum-isolation floor, and a match against the capabilities a workload declares it needs."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
