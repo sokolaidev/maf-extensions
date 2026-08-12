@@ -85,6 +85,22 @@ class TestGuestPathRelativeTo:
     def test_a_base_ending_in_a_separator_does_not_double_it(self):
         assert guest_path_relative_to("/a.txt", "/") == "a.txt"
 
+    @pytest.mark.parametrize(
+        ("path", "base"),
+        [
+            ("/work/../etc/passwd", "/work"),
+            ("/work/sub/../../etc", "/work"),
+            ("/work/./../etc", "/work"),
+        ],
+    )
+    def test_a_traversal_that_leaves_the_base_is_outside_it(self, path: str, base: str):
+        """Both operands are normalised, so a caller using this as its own containment check
+        cannot be walked out of by a `..` that the string comparison would have carried."""
+        assert guest_path_relative_to(path, base) is None
+
+    def test_a_dot_segment_that_stays_inside_is_still_inside(self):
+        assert guest_path_relative_to("/work/./sub/../a.txt", "/work") == "a.txt"
+
 
 class TestGuestDirectoryChain:
     def test_the_chain_starts_above_the_working_directory(self):

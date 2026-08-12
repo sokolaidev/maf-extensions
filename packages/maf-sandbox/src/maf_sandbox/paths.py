@@ -32,15 +32,20 @@ def confine_guest_path(path: str, working_directory: str) -> str:
 def guest_path_relative_to(path: str, base: str) -> str | None:
     """``path`` relative to ``base``, or ``None`` when it does not sit inside ``base``.
 
-    Compares against ``base + "/"``, not ``base``, so a sibling that merely shares a string
-    prefix — ``/work/sub2`` under ``/work/sub`` — is not mistaken for a descendant.
+    Both are normalised first, so a caller using this as its own containment check cannot be
+    walked out of by a ``..`` the string comparison would otherwise carry: ``/work/../etc``
+    is outside ``/work`` and answers ``None``.  Comparison is against ``base + "/"`` rather
+    than ``base``, so a sibling sharing a string prefix — ``/work/sub2`` under ``/work/sub``
+    — is not read as a descendant.
     """
-    if path == base:
+    resolved = posixpath.normpath(path)
+    root = posixpath.normpath(base)
+    if resolved == root:
         return ""
-    prefix = base if base.endswith("/") else base + "/"
-    if not path.startswith(prefix):
+    prefix = root if root.endswith("/") else root + "/"
+    if not resolved.startswith(prefix):
         return None
-    return path[len(prefix) :]
+    return resolved[len(prefix) :]
 
 
 def guest_directory_chain(guest_path: str, working_directory: str) -> tuple[str, ...]:
