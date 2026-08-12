@@ -84,6 +84,12 @@ Either way the kind requires `FILES_OUT` and **never** `FILES_LIST`: it collects
 
 **Isolation is the host's call, and a store changes what that call is about.** This kind does not raise `SandboxSpec.min_isolation`, so the router's floor governs — `MICROVM` unless the host opted down. A kind that ran code influenced by untrusted external content would pin the floor itself, and this one cannot know whether it is one: with no store, the program's only input is source the model wrote, and opting down to `CONTAINER` weighs model-written code against a shared kernel. **With a store, the program also reads whatever those files contain**, so the floor should be chosen against the provenance of the file store, not against this kind's defaults. Only the host knows that.
 
+## Upgrading to 0.3
+
+`0.3.0` follows `maf-sandbox` 0.11, which retired the word `workspace` from the vocabulary. It requires that release.
+
+**`make_codeact_tools` takes `file_store` where it took `workspace_store`.** This one is **keyword-only**, so unlike the Bicep kind's there is no positional call that survives untouched: every host wiring a store has an edit to make. A host that wires none is unaffected, since the parameter defaults to `None`.
+
 ## What this version is not
 
 Host-tool dispatch and the `RUN_CODE` road served by an embedded-interpreter backend are absent on purpose. The design that governs them — capabilities declared by backends and required by specs, and what `HOST_TOOLS` would have to carry before it ships — is [`docs/design/two-axis-sandbox-policy.md`](https://github.com/sokolaidev/maf-extensions/blob/main/docs/design/two-axis-sandbox-policy.md); the file channels above are specified in [`docs/design/files-out.md`](https://github.com/sokolaidev/maf-extensions/blob/main/docs/design/files-out.md).

@@ -140,6 +140,16 @@ A workload whose artifact names are not knowable when its tool is built passes t
 
 One sentence to read before registering anything, because a declaration reads like a control and is not one: **`Identity.APP` is not the safe option, only the declared one.** It is the application's full authority, and the only real bounds on it are the emptiness of the registry and the dispatch cap — least privilege for dispatched tools comes from what a host registers, never from what it declares. `Identity.USER` is declarable but not servable: registering such a tool raises the whole surface to approval-gated, and dispatching one is refused with the prerequisites named.
 
+## Upgrading to 0.11
+
+`0.11.0` retired the word `workspace` from the public vocabulary. It was carrying three unrelated things, and only one of them keeps the stem. Two edits, both mechanical.
+
+**`WorkspaceContext` is `CallerContext`, and `make_workspace_context` is `make_caller_context`.** The type was never a storage concept: two of its three fields are identity, and `list_files` *receives* a store rather than holding one. Its first parameter is now `list_files` where it was `store_walker` — a positional call needs no edit, a keyword one does.
+
+**`work_dir` and `working_directory` are unchanged.** They name the guest's working directory, they are the most common use of the stem by an order of magnitude, and they were never the concept being retired. If you were looking for a rename here, there isn't one.
+
+The dependent packages moved with it: `maf-sandbox-bicep` and `maf-sandbox-codeact` take `file_store` where they took `workspace_store`, and each has its own note.
+
 ## Upgrading from 0.4.x
 
 `0.5.0` replaced the `deployed` boolean with a declared isolation floor, and added a capability axis. Four changes need an edit; nothing else moves.
