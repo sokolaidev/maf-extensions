@@ -72,6 +72,21 @@ Everything in `maf_sandbox` is stdlib-only except `maf_sandbox.maf`, the single 
 
 One documented gotcha worth repeating: the build callback's **docstring is the tool's description**, passed through verbatim, indentation included — define it at module level, because nesting re-indents every line and silently rewrites what the model reads.
 
+## Where shared code lives
+
+**Rule 1 — what kind of shared thing it is.** An invariant is enforced where it cannot be skipped, not merely shared as code: operational content — transport, containers, processes — goes to a sibling package, convenience goes into `maf_sandbox` itself, and the gate for either move is two independent consumers today, not a hypothetical third.
+
+**Rule 2 — where in core.** A promoted piece is reached by name — `import maf_sandbox.paths`, never re-exported from `__init__` — when it carries a dependency core lacks, the way `maf.py` carries `agent_framework`, or an audience core lacks, the way `testing.py` does; anything else is re-exported, because forcing a by-name import on code every consumer of core can already reach buys nothing.
+
+Applied: `maf_sandbox.paths` — `confine_guest_path`, `guest_path_relative_to`, `guest_directory_chain` — is reach-by-name because its audience is kinds and backends, not apps, though the shipped backends keep their own copies of guest-path confinement until a core release moves their pinned dependency floor past this one; a store-listing helper would sit in `maf.py`, the dependency case, since listing a workspace needs `agent_framework`'s store the way `make_workspace_context` already does; a landing sink would be re-exported from `__init__`, since its audience is every app and its only dependency is the standard library.
+
+The pattern this rule reacts to is real: guest-path confinement existed three times with byte-identical error strings, the ancestor walk in `_directory_chain` — itself the fix for a duplication bug — was byte-identical across two backends, and the CONNECT proxy is a byte copy. A sibling operational package for that transport-and-container content is deferred, not rejected: it has two tenants today, the CONNECT proxy and wslc's tar-out ([#125](https://github.com/sokolaidev/maf-extensions/issues/125)), which does not beat a sixth sibling to distribute plus the version matrix across five dependents that made [#174](https://github.com/sokolaidev/maf-extensions/issues/174) painful while it stood open; the trigger to revisit is a third operational tenant, or the mirrored-copy test firing in anger. Hoisting the proxy into core instead is rejected outright rather than deferred — core carries nothing operational, the ruling already stated at the end of the Egress row in "The shipped backends" table below.
+
+Two things that look shared are deliberately not hoisted:
+
+- **A caller context built from constants.** `WorkspaceContext.current_scope` and `.current_thread_id` are callables read at call time; a convenience that took plain values instead would hand a host the exact confused-deputy bug that "Keying, and the confused-deputy defense" above exists to prevent, so no such helper exists.
+- **`require_environment` as a published helper.** It is duplicated in all eight samples (for example `samples/01_acas_bicep/agent.py:66`), but it is sample scaffolding — an app's own startup-validation policy, not a library obligation; two consumers is the gate for library code, and eight copies of a sample's front matter is not the same claim.
+
 ## The shipped backends
 
 | | `maf-sandbox-acas` | `maf-sandbox-wslc` | `maf-sandbox-docker` | `maf_sandbox.testing` |
