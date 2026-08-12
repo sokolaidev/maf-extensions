@@ -74,6 +74,66 @@ Note that the checks answer to different owners. How strong the boundary must be
 router.ensure_can_serve(bicep_sandbox_spec())
 ```
 
+## Getting files back — the declaration, and where it lands
+
+A workload's only return channel used to be `ExecResult.stdout`, which is right for a diagnostic and wrong for a rendered image. `Capability.FILES_OUT` is the pull surface, and it is narrow in two deliberate ways: this library never *discovers* what a workload produced, and it never decides where the bytes go.
+
+**Declare it.** A `DeclaredOutput` names one artifact as a literal path relative to `work_dir`, in `SandboxSpec.declared_outputs`. Literal rather than a glob: resolving a pattern means enumerating a directory, which is the primitive `Capability.FILES_LIST` exists to gate, so a kind that cannot name its outputs in advance requires *that* capability and a backend serving only `FILES_OUT` refuses it. `media_type` is declared rather than sniffed, because sniffing lets guest-produced content decide how the host handles it. `required=False` is how a workload says an absence is normal — a renderer exiting non-zero produces no file, and the model needs that diagnostic rather than a transfer error stacked on top of it. `name` is the spelling the artifact *lands* under and defaults to `path`; the two come apart as soon as a kind writes into a per-call directory, which warm sandbox reuse forces on any kind whose outputs would otherwise persist into the next round.
+
+`disposition` keeps the two flows apart because they answer to different legs of a host's policy: `LAND` goes to the sink and the question is confidentiality, while `CONSUME` is parsed by the kind that asked for it and the question is integrity. A `CONSUME` output is still counted against every cap — `files_out` bounds the collection the spec declared, not the subset of it that lands.
+
+**Receive it.** `await collect_outputs(sandbox, spec, sink=...)` returns `LandedArtifact`s in declaration order. The order of its phases is part of the contract rather than an implementation detail: everything the declaration alone decides — a sink for anything that lands, a valid name for every output, no two landing names that collide — is settled before the sandbox is touched, then every declared output is stat-ed and capped, then the landing ones are read, and only then is anything delivered. Delivery is a push nothing can take back, so a refusal arriving after the first `deliver` could not leave the host as it found it.
+
+`spec.files_out` is a `TransferLimits` and all three of its fields are load-bearing: a byte ceiling alone does not bound a collection, since ten thousand files one byte under the per-file cap cost exactly what the cap was written to prevent. What comes back when a collection does not fit is specific rather than generic — `SandboxTransferCapExceeded` names both the cap and the file that breached it, `SandboxOutputMissing` names a `required` output that was not there, `SandboxOutputSizeUnknown` is a backend that could not say how large something was, and `SandboxArtifactNameCollision` is two landing names that are one file at the destination: identical, or differing only by case or by Unicode form.
+
+**Land it.** An `OutputSink` wraps a single `async def deliver(artifact) -> LandedArtifact`. This library holds no opinion about where an artifact goes — a directory, a blob container, a workspace store — which is what keeps that flow visible to the host's own information-flow policy instead of buried in a dependency. `LandedArtifact.display` is the one line the model is allowed to see; `handle` is the host's own reference, and nothing renders it into the transcript.
+
+**`validate_artifact_name` is lexical, so a sink still has to confine its own destination.** It refuses `..`, absolute paths, backslashes and empty segments, so the *name* cannot traverse — which is not the same as safe, because it says nothing about what is already sitting at the path that name resolves to. A symlink in the output directory carries the write straight out of it: the same failure class as [#142](https://github.com/sokolaidev/maf-extensions/issues/142), on the host side of the boundary. Resolve the destination first, then refuse anything that does not stay under the root. It remains a check rather than a guarantee — resolving and writing are two calls — so a sink taking hostile output wants no-follow primitives underneath it.
+
+```python
+from pathlib import Path
+
+from maf_sandbox import (
+    Artifact, Capability, DeclaredOutput, LandedArtifact, OutputSink, SandboxSpec,
+    TransferLimits, collect_outputs,
+)
+
+def file_system_sink(output_dir: Path) -> OutputSink:
+    root = output_dir.resolve()
+
+    async def deliver(artifact: Artifact) -> LandedArtifact:
+        # `artifact.name` was validated lexically, which is not the same as safe here:
+        # resolve first, and refuse anything that does not stay under `root`.
+        destination = (root / artifact.name).resolve()
+        if not destination.is_relative_to(root):
+            raise ValueError(f"{artifact.name!r} resolves outside {output_dir}")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(artifact.content)
+        return LandedArtifact(
+            name=artifact.name,
+            display=f"{artifact.name} ({len(artifact.content)} bytes)",
+            handle=str(destination),
+        )
+
+    return OutputSink(deliver)
+
+spec = SandboxSpec(
+    kind="diagram",
+    image="diagram-sandbox:1",
+    egress_allow=(),
+    work_dir="/workspace",
+    requires=frozenset({Capability.EXEC, Capability.FILES_IN, Capability.FILES_OUT}),
+    declared_outputs=(DeclaredOutput(path="diagram.png", media_type="image/png", required=False),),
+    files_out=TransferLimits(max_bytes_per_file=8 * 1024 * 1024, max_total_bytes=16 * 1024 * 1024, max_files=4),
+)
+
+landed = await collect_outputs(sandbox, spec, sink=file_system_sink(Path("out")))
+```
+
+A workload whose artifact names are not knowable when its tool is built passes the same `DeclaredOutput` type to `collect_outputs(outputs=...)` instead. That is refused unless the spec sets `outputs_named_at_call_time`: without the flag, the tool was attached with no sink required of it and no outbound cap agreed, and collecting there would land artifacts behind both checks.
+
+[`samples/08_docker_codeact_files`](https://github.com/sokolaidev/maf-extensions/tree/main/samples/08_docker_codeact_files) is all of the above as a runnable program, against a real engine.
+
 ## Host tools — the contract before the capability
 
 `Capability.HOST_TOOLS` is the one capability where trust crosses *outward*: a dispatched function body runs in the host process, with the host's privileges, driven by model-written code, and each dispatched call bypasses whatever middleware the host runs. No shipped backend declares it — what ships first is the safety contract, so it exists before anything can use it: `HostToolRegistry` starts empty (nothing is dispatchable until a developer registers it, and registering emits a one-time, suppressible `MafSandboxHostToolsWarning`); `@sandbox_tool(source=..., sink=..., identity=...)` makes the developer answer every information-flow leg with no defaults (`None` is an answer — "not that role"); a `require_declared` gate refuses unstamped functions at registration, which is the only place the declaration is ever read — `register` captures it, `HostToolRegistry.aggregate()` seals the registry as it derives policy from it, and a stamp swapped or removed afterwards reaches nothing; each run is bounded by a dispatch cap (`DEFAULT_MAX_DISPATCHES_PER_RUN`, refusals included) and by response size caps that reuse `TransferLimits`; arguments are validated host-side at the registry's one door, never in a guest shim; and a host whose posture wants a hard stop rather than awareness passes `denied_capabilities={Capability.HOST_TOOLS}` or `denied_identities={Identity.USER}` to its router.
