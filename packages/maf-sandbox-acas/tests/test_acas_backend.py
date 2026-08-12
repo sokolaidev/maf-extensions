@@ -1148,7 +1148,7 @@ class TestTheWireShape:
 
         sandbox = _sandbox()
         assert _stat(sandbox, "real.txt").kind is EntryKind.FILE
-        assert _stat(sandbox, "link-out.txt").kind is EntryKind.OTHER
+        assert _stat(sandbox, "link-out.txt").kind is EntryKind.SYMLINK
         assert _stat(sandbox, "sub").kind is EntryKind.DIRECTORY
 
     def test_the_typed_fileinfo_cannot_serve_the_confinement_rule(self):
@@ -1401,8 +1401,8 @@ class TestASymlinkedParentEscapesLexicalConfinement:
 
         client = self._client()
         through = asyncio.run(_sandbox(client)._stat_guest("/work/out/hostname", "out/hostname"))
-        assert through.entry.kind is EntryKind.FILE
-        assert through.entry.size_bytes == len(_HOSTNAME)
+        assert through.kind is EntryKind.FILE
+        assert through.size_bytes == len(_HOSTNAME)
         assert asyncio.run(client.read_file("/work/out/hostname")) == _HOSTNAME
 
         listed = asyncio.run(
@@ -1417,10 +1417,10 @@ class TestASymlinkedParentEscapesLexicalConfinement:
         assert [entry["path"] for entry in listed["entries"]] == ["/work/out/hostname"]
 
     def test_a_final_component_link_is_described_rather_than_refused(self):
-        """Only the parents are refused: reporting a link as `OTHER` is how a caller learns."""
+        """Only the parents are refused: reporting a link as `SYMLINK` is how a caller learns."""
         from maf_sandbox import EntryKind
 
-        assert _stat(_sandbox(self._client()), "out").kind is EntryKind.OTHER
+        assert _stat(_sandbox(self._client()), "out").kind is EntryKind.SYMLINK
 
     def test_a_bare_stat_through_a_symlinked_parent_is_refused(self):
         """No bytes escape, but a type and a size do — metadata from outside the boundary."""
@@ -1429,18 +1429,19 @@ class TestASymlinkedParentEscapesLexicalConfinement:
             _stat(_sandbox(client), "out/hostname")
         assert client.gets == [self._stat_route(_WORK_DIR), self._stat_route("/work/out")]
 
-    def test_the_escape_is_decided_by_the_payload_flag_not_by_the_entry_kind(self):
-        """`OTHER` is the protocol's word for every non-regular entry, not a synonym for link.
+    def test_the_escape_is_decided_by_the_payload_flag_the_protocol_now_carries(self):
+        """`isSymlink` reaches the walk as `SYMLINK`, not as a private flag beside the entry.
 
-        So the walk reads `isSymlink`, and a non-directory that is not one stays `ENOTDIR`.
+        Before #214 it could not: `OTHER` is the protocol's word for every non-regular entry,
+        so this backend kept its own `is_symlink` next to each one. The flag is still what
+        decides — a non-directory that is not a link stays `ENOTDIR`.
         """
         from maf_sandbox import EntryKind
 
         sandbox = _sandbox(self._client())
-        link = asyncio.run(sandbox._stat_guest("/work/out", "out"))
-        assert link.is_symlink and link.entry.kind is EntryKind.OTHER
+        assert asyncio.run(sandbox._stat_guest("/work/out", "out")).kind is EntryKind.SYMLINK
         plain = asyncio.run(sandbox._stat_guest("/work/real.txt", "real.txt"))
-        assert not plain.is_symlink
+        assert plain.kind is EntryKind.FILE
 
     def test_a_read_through_a_symlinked_parent_is_refused(self):
         client = self._client()
@@ -1471,6 +1472,88 @@ class TestASymlinkedParentEscapesLexicalConfinement:
             )
 
 
+class _ConformanceSubject:
+    """Plants the shared suite's hostile layout into the live-payload simulator above.
+
+    Not `PosixGuestSubject`: this backend's `exec` goes to a real sandbox service, so there is
+    no `ln` to run here. Planting writes the payloads the service would have answered with,
+    which is the same fidelity the rest of this module runs at — every field copied from a live
+    stat, and `_FakeDataPlaneClient` following a link exactly as the service does.
+    """
+
+    def __init__(self, client: _FakeDataPlaneClient, capabilities) -> None:
+        self._client = client
+        self.sandbox = _sandbox(client)
+        self.working_directory = _WORK_DIR
+        self.capabilities = capabilities
+
+    def _ancestors(self, path: str) -> None:
+        """Directory payloads for every parent, because the component walk stats each one."""
+        walked = ""
+        for segment in [s for s in posixpath.dirname(path).split("/") if s]:
+            walked = f"{walked}/{segment}"
+            self._client._entries.setdefault(
+                walked, {**_LIVE_DIRECTORY, "name": segment, "path": walked}
+            )
+
+    async def plant_file(self, path: str, content: bytes) -> None:
+        self._ancestors(path)
+        self._client._entries[path] = {
+            **_LIVE_REGULAR,
+            "name": posixpath.basename(path),
+            "path": path,
+            "size": len(content),
+        }
+        self._client._contents[path] = content
+
+    async def plant_symlink(self, path: str, target: str) -> None:
+        self._ancestors(path)
+        self._client._entries[path] = {
+            **_LIVE_SYMLINK,
+            "name": posixpath.basename(path),
+            "path": path,
+            # A live stat reports the length of the target *string*, which is why the backend
+            # answers `None` for a link's size rather than passing this on.
+            "size": len(target),
+            "symlinkTarget": target,
+        }
+
+
+class TestTheSharedConformanceSuite:
+    """`maf_sandbox.conformance`, answered by this backend.
+
+    The probes are the rule every backend serving `FILES_OUT` is held to, rather than this
+    package's own reading of it — which is the point, since this package's own reading is what
+    shipped the escape in #142 and passed its own tests while doing so.
+
+    What this leg is worth is bounded and worth stating: the specimen is a simulator built from
+    payloads a live sandbox group actually answered with, not a live sandbox group. The docker
+    backend runs the same probes against a real engine on every pull request; verifying this one
+    live needs a subscription and a preview enrolment a pull request cannot assume (#33), and
+    until it can, this is the closest available and no more than that.
+    """
+
+    @staticmethod
+    def _subject() -> _ConformanceSubject:
+        from maf_sandbox import Capability
+
+        # Empty rather than `_GUEST_FILESYSTEM`: the suite plants everything it attacks, and a
+        # pre-seeded /work would let a probe pass on a file it did not put there.
+        client = _FakeDataPlaneClient(entries={}, contents={})
+        return _ConformanceSubject(client, frozenset({Capability.FILES_OUT, Capability.FILES_LIST}))
+
+    def test_it_answers_every_probe(self):
+        from maf_sandbox.conformance import assert_files_out_conformance
+
+        results = asyncio.run(assert_files_out_conformance(self._subject()))
+        assert [r.skipped for r in results] == [None] * len(results)
+
+    def test_the_capabilities_it_is_probed_against_are_the_ones_it_declares(self):
+        """The suite skips what a backend never claimed, so the claim has to be the real one."""
+        declared = AcasSandboxBackend(_config()).capabilities
+        assert self._subject().capabilities <= declared
+
+
 class _Relisting(_FakeDataPlaneClient):
     """Answers every listing with one entry of the caller's choosing, whatever was asked for."""
 
@@ -1492,7 +1575,7 @@ class TestListDir:
         entries = asyncio.run(_sandbox().list_dir(".", working_directory=_WORK_DIR))
         assert {entry.path: entry.kind for entry in entries} == {
             "real.txt": EntryKind.FILE,
-            "link-out.txt": EntryKind.OTHER,
+            "link-out.txt": EntryKind.SYMLINK,
             "sub": EntryKind.DIRECTORY,
         }
 

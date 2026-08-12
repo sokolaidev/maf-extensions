@@ -591,11 +591,13 @@ class TestStatFile:
         assert entry.kind is EntryKind.FILE
         assert entry.size_bytes == 40
 
-    def test_a_symlink_is_reported_as_other_with_no_size(self):
+    def test_a_symlink_is_reported_as_a_symlink_with_no_size(self):
         sandbox, _ = self._sandbox_streaming(_symlink_tar("link", "/etc/passwd"))
         entry = asyncio.run(sandbox.stat_file("link", working_directory=_WORK))
         assert entry is not None
-        assert entry.kind is EntryKind.OTHER
+        assert entry.kind is EntryKind.SYMLINK
+        # Not the length of "/etc/passwd": what a stat reports for a link is the target string,
+        # and passing it on would answer a size question about a file nobody measured.
         assert entry.size_bytes is None
 
     def test_a_missing_path_is_none(self):
@@ -740,15 +742,15 @@ class TestASymlinkedParentEscapesLexicalConfinement:
         sandbox, _ = self._sandbox()
         through = asyncio.run(sandbox._stat_guest(f"{_WORK}/out/hostname", "out/hostname"))
         assert through is not None
-        assert through.entry.kind is EntryKind.FILE
-        assert through.entry.size_bytes == len(self._HOSTNAME)
+        assert through.kind is EntryKind.FILE
+        assert through.size_bytes == len(self._HOSTNAME)
 
     def test_a_final_component_link_is_described_rather_than_refused(self):
-        """Only the parents are refused: reporting a link as `OTHER` is how a caller learns."""
+        """Only the parents are refused: reporting a link as `SYMLINK` is how a caller learns."""
         sandbox, _ = self._sandbox()
         link = asyncio.run(sandbox.stat_file("out", working_directory=_WORK))
         assert link is not None
-        assert link.kind is EntryKind.OTHER
+        assert link.kind is EntryKind.SYMLINK
 
     def test_a_bare_stat_through_a_symlinked_parent_is_refused(self):
         """No bytes escape, but a type and a size do — metadata from outside the boundary."""
@@ -793,7 +795,7 @@ class TestASymlinkedParentEscapesLexicalConfinement:
             asyncio.run(sandbox.read_file("pipe/child", working_directory=_WORK, max_bytes=1000))
 
     def test_a_fifo_still_stats_as_other(self):
-        """The private tar-type distinction does not widen the protocol's vocabulary."""
+        """`OTHER` keeps what is left after the link split: a fifo, a socket, a device node."""
         sandbox, _ = self._sandbox()
         entry = asyncio.run(sandbox.stat_file("pipe", working_directory=_WORK))
         assert entry is not None

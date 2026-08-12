@@ -1,15 +1,24 @@
-"""Tests for `maf_sandbox.paths` — the guest-path arithmetic kinds and backends share.
+"""Tests for `maf_sandbox.paths` — the guest-path arithmetic kinds and backends share, and
+the component walk written on top of it.
 
-These three functions are the confinement check itself, so they are pinned directly here rather
-than only through the fake that calls them: the cases that matter are the ones where a string
-looks contained and is not.
+These functions are the confinement check itself, so they are pinned directly here rather than
+only through the fake that calls them: the cases that matter are the ones where a string looks
+contained and is not.
 """
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
-from maf_sandbox.paths import confine_guest_path, guest_directory_chain, guest_path_relative_to
+from maf_sandbox import EntryKind, SandboxEntry
+from maf_sandbox.paths import (
+    confine_guest_path,
+    guest_directory_chain,
+    guest_path_relative_to,
+    refuse_symlinked_parents,
+)
 
 _WORK_DIR = "/work"
 
@@ -136,3 +145,62 @@ class TestGuestDirectoryChain:
             "/a/b/work",
             "/a/b/work/out",
         )
+
+
+class TestRefuseSymlinkedParents:
+    """The walk all three implementations of the pull surface now share.
+
+    Its answers are two different refusals, and telling them apart is the whole point: a link
+    is an escape, anything else non-directory is the guest tripping over its own filesystem.
+    """
+
+    @staticmethod
+    def _stat(kinds: dict[str, EntryKind]):
+        """A stat over a literal `{guest path: kind}` map — unconfined and following nothing."""
+        statted: list[str] = []
+
+        async def stat(path: str) -> SandboxEntry | None:
+            statted.append(path)
+            kind = kinds.get(path)
+            return None if kind is None else SandboxEntry(path=path, kind=kind, size_bytes=None)
+
+        return stat, statted
+
+    def test_a_chain_of_real_directories_passes(self):
+        stat, statted = self._stat({"/work": EntryKind.DIRECTORY, "/work/out": EntryKind.DIRECTORY})
+        asyncio.run(refuse_symlinked_parents(stat, "/work/out/a.png", _WORK_DIR))
+        assert statted == ["/work", "/work/out"]
+
+    def test_a_linked_parent_is_an_escape(self):
+        stat, _ = self._stat({"/work": EntryKind.DIRECTORY, "/work/out": EntryKind.SYMLINK})
+        with pytest.raises(ValueError, match="real directory"):
+            asyncio.run(refuse_symlinked_parents(stat, "/work/out/a.png", _WORK_DIR))
+
+    @pytest.mark.parametrize("kind", [EntryKind.FILE, EntryKind.OTHER])
+    def test_any_other_non_directory_parent_is_enotdir(self, kind: EntryKind):
+        stat, _ = self._stat({"/work": EntryKind.DIRECTORY, "/work/out": kind})
+        with pytest.raises(NotADirectoryError):
+            asyncio.run(refuse_symlinked_parents(stat, "/work/out/a.png", _WORK_DIR))
+
+    def test_an_ancestor_above_the_working_directory_is_walked_too(self):
+        """The `/acas -> /` case: a nested work dir has ancestors the guest can replace."""
+        stat, _ = self._stat({"/acas": EntryKind.SYMLINK})
+        with pytest.raises(ValueError, match="real directory"):
+            asyncio.run(refuse_symlinked_parents(stat, "/acas/work/a.png", "/acas/work"))
+
+    def test_a_missing_component_ends_the_walk_without_refusing(self):
+        """A walk that finds nothing must not turn a missing output into a confinement failure."""
+        stat, statted = self._stat({})
+        asyncio.run(refuse_symlinked_parents(stat, "/work/out/a.png", _WORK_DIR))
+        assert statted == ["/work"]
+
+    def test_the_path_itself_is_not_walked_by_default(self):
+        """Stat is `lstat`-like: the final component is described, not refused."""
+        stat, _ = self._stat({"/work": EntryKind.DIRECTORY, "/work/link": EntryKind.SYMLINK})
+        asyncio.run(refuse_symlinked_parents(stat, "/work/link", _WORK_DIR))
+
+    def test_include_self_walks_it(self):
+        """What `list_dir` needs — an enumeration passes through a link as a read does."""
+        stat, _ = self._stat({"/work": EntryKind.DIRECTORY, "/work/link": EntryKind.SYMLINK})
+        with pytest.raises(ValueError, match="real directory"):
+            asyncio.run(refuse_symlinked_parents(stat, "/work/link", _WORK_DIR, include_self=True))

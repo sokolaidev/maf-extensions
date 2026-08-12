@@ -195,14 +195,24 @@ class EntryKind(StrEnum):
 
     No two backends report type the same way: ACAS carries ``is_directory``, a two-way split,
     and leaves everything else in ``mode: str | None``, while Docker's stat carries a Go
-    ``ModeSymlink`` bit and an explicit link target.  :data:`OTHER` is what lets one vocabulary
-    cover both of those and a non-POSIX guest's junctions and reparse points besides.
+    ``ModeSymlink`` bit and an explicit link target.  One vocabulary covers both.
+
+    The four members are the four answers
+    :func:`~maf_sandbox.paths.refuse_symlinked_parents` needs per ancestor: keep walking, or
+    refuse — as an escape for :data:`SYMLINK`, as ``ENOTDIR`` for anything else non-regular.
+    Both are refused either way, so what the split buys is the *reason*, which is the part a
+    caller above the backend cannot reconstruct.  A backend that cannot recognise a link
+    reports :data:`OTHER` and stays honest, losing only the precision; both shipped backends
+    can, so neither does.
     """
 
     #: A regular file — the only kind :meth:`Sandbox.read_file` will serve.
     FILE = "file"
     DIRECTORY = "directory"
-    #: A symlink, junction, reparse point, device, socket or fifo. Never read.
+    #: Anything a reader would follow elsewhere. A Windows junction or reparse point belongs
+    #: here rather than in :data:`OTHER`: for confinement it is an escape like any other link.
+    SYMLINK = "symlink"
+    #: A device, socket or fifo — or a link a backend cannot recognise. Never read.
     OTHER = "other"
 
 
@@ -214,6 +224,9 @@ class SandboxEntry:
     is ``None`` when the backend could not determine it, and **``None`` fails closed**: an
     entry of unknown size is refused rather than read, because coercing it to ``0`` would make
     every size cap read the one file it cannot measure as free.
+
+    A link's ``size_bytes`` is ``None`` for a second reason: what a stat reports for one is
+    the length of the target *string*, not of anything readable.
     """
 
     path: str
@@ -439,6 +452,14 @@ class Sandbox(Protocol):
     discharge it.  Their ``path`` is POSIX-shaped and relative to it, and one resolving outside
     it is refused.  :meth:`write_file` is the residual asymmetry — it takes an absolute guest
     path and has no path grammar — and unifying the two is a larger change than this.
+
+    **Confinement is a duty of all three, and it is not a check on the argument string.**  A
+    path whose *parent* is a link satisfies every lexical test and still reads outside: with
+    ``out -> /etc``, ``out/hostname`` stats as a regular 12-byte file.  Discharge it with
+    :func:`~maf_sandbox.paths.refuse_symlinked_parents` rather than by writing the walk again —
+    it is where the two refusals a caller must be able to tell apart are defined, and
+    :mod:`maf_sandbox.conformance` is the same duty as probes, for holding a backend that
+    writes its own.
     """
 
     async def write_file(self, path: str, content: str | bytes) -> None:
@@ -474,6 +495,11 @@ class Sandbox(Protocol):
         cap or whose ``size_bytes`` came back ``None``, and only then reads.  The alternative —
         counting bytes as they stream — is unavailable on a backend whose SDK buffers the whole
         response internally, which the reference one does.
+
+        Stat is ``lstat``-like: the **final** component is described rather than refused —
+        :data:`EntryKind.SYMLINK` is how a caller learns it is a link.  Its *parents* are still
+        walked, because a stat through one reports a type and a size from outside the working
+        directory even though no byte crosses.
         """
         ...
 
@@ -484,7 +510,8 @@ class Sandbox(Protocol):
         caller already declared the media type.  Only :data:`EntryKind.FILE` is served — a
         symlink is refused whether or not its target would have resolved somewhere legitimate,
         because that judgement is made with the guest's filesystem in view and answered with
-        whichever one the reader can actually see.
+        whichever one the reader can actually see.  Anything else is refused with an
+        :class:`OSError`, and every parent is walked first.
 
         ``max_bytes`` is a **refusal, never a truncation**: half a PNG returned as success is
         an artifact the host cannot tell from a whole one.  Refuse with
@@ -501,6 +528,11 @@ class Sandbox(Protocol):
         Named apart from :attr:`WorkspaceContext.list_files` on purpose: that is the host's
         allowlist and the most trusted enumeration in the system, this is the least trusted
         one, and both are in scope inside a kind's tool body.
+
+        The walk runs one component deeper here — ``include_self`` — because an enumeration
+        passes through a link as readily as a read does.  A listed link is reported as
+        :data:`EntryKind.SYMLINK`, not hidden: a name handed back with its type erased is a
+        name read without the warning.
         """
         ...
 

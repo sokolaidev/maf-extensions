@@ -429,6 +429,89 @@ class TestInProcessSandboxConfinement:
             asyncio.run(sandbox.list_dir("..", working_directory="/work"))
 
 
+class TestInProcessSandboxWalksTheComponents:
+    """The rule a lexical check cannot see: a path whose *parent* is a link leaves the work dir.
+
+    Before this fake grew the walk it could not express the scenario at all — the path simply
+    404'd — so every kind's tests passed it without exercising it, which is the third data
+    point #142 recorded. A fake that cannot host the attack cannot host the conformance suite
+    either.
+    """
+
+    @staticmethod
+    def _sandbox() -> InProcessSandbox:
+        return InProcessSandbox(
+            seed_files={
+                "/work/real.txt": "artifact",
+                "/work/link-dir": EntryKind.SYMLINK,
+                "/work/link-dir/hostname": "a-real-host\n",
+                "/work/pipe": EntryKind.OTHER,
+            }
+        )
+
+    def test_a_stat_through_a_linked_parent_is_refused(self):
+        with pytest.raises(ValueError, match="real directory"):
+            asyncio.run(self._sandbox().stat_file("link-dir/hostname", working_directory="/work"))
+
+    def test_a_read_through_a_linked_parent_is_refused(self):
+        with pytest.raises(ValueError, match="real directory"):
+            asyncio.run(
+                self._sandbox().read_file(
+                    "link-dir/hostname", working_directory="/work", max_bytes=_AMPLE
+                )
+            )
+
+    def test_a_listing_of_a_linked_directory_is_refused(self):
+        """`list_dir` walks one deeper than the other two: enumeration follows a link as well."""
+        with pytest.raises(ValueError, match="real directory"):
+            asyncio.run(self._sandbox().list_dir("link-dir", working_directory="/work"))
+
+    def test_a_linked_working_directory_is_refused_too(self):
+        """The walk starts above the working directory, not at it — the `/acas -> /` case."""
+        with pytest.raises(ValueError, match="real directory"):
+            asyncio.run(self._sandbox().stat_file("hostname", working_directory="/work/link-dir"))
+
+    def test_a_path_through_a_regular_file_is_not_reported_as_an_escape(self):
+        """`ENOTDIR` is not a confinement failure, and only a link makes it one."""
+        with pytest.raises(NotADirectoryError):
+            asyncio.run(self._sandbox().stat_file("real.txt/child", working_directory="/work"))
+
+    def test_a_path_through_a_non_regular_entry_is_not_an_escape_either(self):
+        with pytest.raises(NotADirectoryError):
+            asyncio.run(self._sandbox().stat_file("pipe/child", working_directory="/work"))
+
+    def test_a_final_component_link_is_described_rather_than_refused(self):
+        entry = asyncio.run(self._sandbox().stat_file("link-dir", working_directory="/work"))
+        assert entry == SandboxEntry(path="link-dir", kind=EntryKind.SYMLINK, size_bytes=None)
+
+    def test_a_link_is_listed_rather_than_hidden(self):
+        entries = asyncio.run(self._sandbox().list_dir(".", working_directory="/work"))
+        assert SandboxEntry(path="link-dir", kind=EntryKind.SYMLINK, size_bytes=None) in entries
+
+    def test_a_link_is_never_read(self):
+        with pytest.raises(OSError):
+            asyncio.run(
+                self._sandbox().read_file("link-dir", working_directory="/work", max_bytes=_AMPLE)
+            )
+
+    def test_a_missing_component_leaves_the_refusal_to_the_call_itself(self):
+        """A walk that finds nothing must not turn a missing output into a confinement failure."""
+        with pytest.raises(FileNotFoundError):
+            asyncio.run(
+                self._sandbox().read_file(
+                    "gone/output", working_directory="/work", max_bytes=_AMPLE
+                )
+            )
+
+    def test_the_planting_surface_is_public(self):
+        """`symlinks` and `non_regular` are stores a test writes to, like `contents`."""
+        sandbox = InProcessSandbox()
+        asyncio.run(sandbox.write_file("/work/.keep", ""))
+        sandbox.symlinks.add("/work/late")
+        entry = asyncio.run(sandbox.stat_file("late", working_directory="/work"))
+        assert entry is not None and entry.kind is EntryKind.SYMLINK
+
+
 class TestInProcessSandboxBackendLimits:
     def test_limits_default_to_default_sandbox_limits(self):
         assert InProcessSandboxBackend().limits == DEFAULT_SANDBOX_LIMITS

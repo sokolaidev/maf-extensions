@@ -394,7 +394,20 @@ class TestFileTransferVocabulary:
     """
 
     def test_every_entry_kind_is_accounted_for(self):
-        assert set(EntryKind) == {EntryKind.FILE, EntryKind.DIRECTORY, EntryKind.OTHER}
+        assert set(EntryKind) == {
+            EntryKind.FILE,
+            EntryKind.DIRECTORY,
+            EntryKind.SYMLINK,
+            EntryKind.OTHER,
+        }
+
+    def test_a_link_and_an_unclassifiable_entry_are_separate_members(self):
+        """The distinction #142 needed and #214 added: an escape is not an ENOTDIR.
+
+        Both are refused — only `FILE` is ever read — so what the split buys is the *reason*,
+        which is the part a caller above the backend cannot reconstruct from `OTHER` alone.
+        """
+        assert EntryKind.SYMLINK is not EntryKind.OTHER
 
     def test_every_disposition_is_accounted_for(self):
         assert set(OutputDisposition) == {OutputDisposition.LAND, OutputDisposition.CONSUME}
@@ -404,6 +417,7 @@ class TestFileTransferVocabulary:
         [
             (EntryKind.FILE, "file"),
             (EntryKind.DIRECTORY, "directory"),
+            (EntryKind.SYMLINK, "symlink"),
             (EntryKind.OTHER, "other"),
             (OutputDisposition.LAND, "land"),
             (OutputDisposition.CONSUME, "consume"),
@@ -915,6 +929,7 @@ _PROTOCOL_MODULES = frozenset(
         "_protocol",
         "_purger",
         "_router",
+        "conformance",
         "paths",
         "testing",
     }

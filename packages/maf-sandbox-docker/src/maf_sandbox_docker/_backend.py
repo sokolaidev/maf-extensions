@@ -45,6 +45,7 @@ from maf_sandbox import (
     SandboxTransferCapExceeded,
     TransferLimits,
 )
+from maf_sandbox.paths import refuse_symlinked_parents
 
 from ._config import DockerSandboxConfig
 from ._proxy import build_context
@@ -199,27 +200,6 @@ def _guest_path(working_directory: str, path: str) -> str:
     return resolved
 
 
-def _directory_chain(guest_path: str, working_directory: str) -> tuple[str, ...]:
-    """Every directory from the filesystem root down to ``guest_path``, outermost first.
-
-    The walk starts *above* ``working_directory`` rather than at it: a nested work dir has
-    ancestors the guest can replace, and stat-ing only the work dir follows straight through
-    them — with ``/acas -> /``, ``/acas/etc`` stats as a real directory and reads ``/etc``.
-    ``guest_path`` must already be confined.
-    """
-    base = posixpath.normpath(working_directory)
-    chain: list[str] = []
-    walked = ""
-    for segment in (s for s in base.split(_SEPARATOR) if s):
-        walked = f"{walked}{_SEPARATOR}{segment}"
-        chain.append(walked)
-    relative = _relative_path(guest_path, base)
-    if relative:
-        for segment in relative.split(_SEPARATOR):
-            chain.append(posixpath.join(chain[-1] if chain else _SEPARATOR, segment))
-    return tuple(chain)
-
-
 def _relative_path(guest_path: str, base: str) -> str | None:
     """``guest_path`` relative to ``base``, or ``None`` when it does not sit inside it.
 
@@ -234,38 +214,30 @@ def _relative_path(guest_path: str, base: str) -> str | None:
     return guest_path[len(prefix) :]
 
 
-@dataclass(frozen=True)
-class _GuestStat:
-    """One statted guest path: the protocol's entry, plus what the tar header said it was.
-
-    :data:`~maf_sandbox.EntryKind.OTHER` is the protocol's word for every non-regular,
-    non-directory entry — a symlink, a FIFO and a device node all land on it — so the entry
-    alone cannot tell the component walk whether a path through this component leaves the
-    working directory or is merely ``ENOTDIR``.  The tar header knows, so it is carried here
-    rather than collapsed away before the walk sees it.
-    """
-
-    entry: SandboxEntry
-    is_symlink: bool
-
-
-def _stat_from_tar_header(block: bytes, rel_path: str) -> _GuestStat:
-    """Read one ``docker cp`` tar header into a :class:`_GuestStat`.
+def _stat_from_tar_header(block: bytes, rel_path: str) -> SandboxEntry:
+    """Read one ``docker cp`` tar header into a :class:`~maf_sandbox.SandboxEntry`.
 
     The first 512-byte block of ``docker cp <name>:<path> -`` is the entry's tar header: it
     carries the size, the entry-type flag and the link target, which is everything a stat needs
-    and how this backend stats without a stat command.  A symlink or any non-regular entry maps
-    to :data:`~maf_sandbox.EntryKind.OTHER` with a ``None`` size, so a caller refuses it before
-    ever reading a byte.
+    and how this backend stats without a stat command.  A symlink maps to
+    :data:`~maf_sandbox.EntryKind.SYMLINK` and every other non-regular entry to
+    :data:`~maf_sandbox.EntryKind.OTHER`, both with a ``None`` size, so a caller refuses either
+    before ever reading a byte.
+
+    The split is the protocol's now rather than this file's: the component walk needs to tell a
+    link from an ordinary ``ENOTDIR``, and until :data:`~maf_sandbox.EntryKind.SYMLINK` existed
+    this backend kept a private ``is_symlink`` beside every entry to do it (#214).  A **hard**
+    link stays :data:`~maf_sandbox.EntryKind.OTHER`: it names an inode rather than a path, so
+    it is not a way out of the working directory, and it is refused as non-regular regardless.
     """
     info = tarfile.TarInfo.frombuf(block, encoding="utf-8", errors="surrogateescape")
     if info.isreg():
-        entry = SandboxEntry(path=rel_path, kind=EntryKind.FILE, size_bytes=info.size)
-    elif info.isdir():
-        entry = SandboxEntry(path=rel_path, kind=EntryKind.DIRECTORY, size_bytes=None)
-    else:
-        entry = SandboxEntry(path=rel_path, kind=EntryKind.OTHER, size_bytes=None)
-    return _GuestStat(entry=entry, is_symlink=info.issym())
+        return SandboxEntry(path=rel_path, kind=EntryKind.FILE, size_bytes=info.size)
+    if info.isdir():
+        return SandboxEntry(path=rel_path, kind=EntryKind.DIRECTORY, size_bytes=None)
+    if info.issym():
+        return SandboxEntry(path=rel_path, kind=EntryKind.SYMLINK, size_bytes=None)
+    return SandboxEntry(path=rel_path, kind=EntryKind.OTHER, size_bytes=None)
 
 
 @dataclass(frozen=True)
@@ -372,14 +344,13 @@ class _DockerSandbox:
         metadata from outside the boundary.
 
         The **final** component is described rather than refused: a link reported as
-        :data:`~maf_sandbox.EntryKind.OTHER` is how a caller learns it is one.
+        :data:`~maf_sandbox.EntryKind.SYMLINK` is how a caller learns it is one.
         """
         guest = _guest_path(working_directory, path)
         await self._refuse_symlinked_parents(guest, working_directory=working_directory)
-        stat = await self._stat_guest(guest, posixpath.normpath(path))
-        return stat.entry if stat is not None else None
+        return await self._stat_guest(guest, posixpath.normpath(path))
 
-    async def _stat_guest(self, guest: str, rel: str) -> _GuestStat | None:
+    async def _stat_guest(self, guest: str, rel: str) -> SandboxEntry | None:
         """Stat an absolute guest path, with no confinement check of its own.
 
         Split out because the component walk stats the working directory's own ancestors, which
@@ -397,27 +368,15 @@ class _DockerSandbox:
         return _stat_from_tar_header(result.stdout[:_TAR_BLOCK], rel)
 
     async def _refuse_symlinked_parents(self, guest: str, *, working_directory: str) -> None:
-        """Refuse unless every parent of ``guest``, from the root down, is a real directory.
+        """The protocol's component walk, over this backend's own unconfined stat.
 
-        A link is only visible when it is the entry being tarred, so a symlinked component has
-        to be found by walking, not by judging the path that was asked for.  One header read
-        per component.
-
-        Only a link is a confinement failure.  A FIFO or a device node standing where a
-        directory was expected is an ordinary ``ENOTDIR``, and reporting it as an escape would
-        name a fault the guest did not commit.
+        A link is only visible when it is the entry being tarred — the engine resolves the rest
+        of the path daemon-side — so a symlinked component has to be found by walking rather
+        than by judging the path that was asked for.  One header read per component.
         """
-        for directory in _directory_chain(posixpath.dirname(guest), working_directory):
-            stat = await self._stat_guest(directory, directory)
-            if stat is None:
-                return
-            if stat.is_symlink:
-                raise ValueError(
-                    f"{directory!r} is a link rather than a real directory, so a path through "
-                    f"it does not stay inside working directory {working_directory!r}"
-                )
-            if stat.entry.kind is not EntryKind.DIRECTORY:
-                raise NotADirectoryError(f"{directory!r} is not a directory")
+        await refuse_symlinked_parents(
+            lambda directory: self._stat_guest(directory, directory), guest, working_directory
+        )
 
     async def read_file(self, path: str, *, working_directory: str, max_bytes: int) -> bytes:
         """Read the regular file at ``path``, refusing anything over ``max_bytes``.

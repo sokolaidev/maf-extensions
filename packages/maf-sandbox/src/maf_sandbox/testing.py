@@ -36,34 +36,25 @@ from ._protocol import (
     SandboxLimits,
     SandboxSpec,
 )
-from .paths import confine_guest_path, guest_path_relative_to
+from .paths import confine_guest_path, guest_path_relative_to, refuse_symlinked_parents
 
 __all__ = ["InMemoryStore", "InProcessSandbox", "InProcessSandboxBackend"]
 
 
-def _record_child(
-    children: dict[str, tuple[EntryKind, int | None]],
-    entry_rel: str | None,
-    directory_rel: str,
-    kind: EntryKind,
-    size_bytes: int | None,
-) -> None:
-    """Fold one stored entry into ``children`` if it sits under ``directory_rel``.
+def _child_name(entry_rel: str | None, directory_rel: str) -> str | None:
+    """The immediate child of ``directory_rel`` that ``entry_rel`` sits under, if any.
 
-    A grandchild collapses into a single ``DIRECTORY`` entry for its immediate parent —
-    ``list_dir`` enumerates one level, never the whole subtree.
+    A grandchild names its own parent — ``list_dir`` enumerates one level, never the whole
+    subtree — and the caller classifies that name, so a seeded link with something beneath it
+    is not reported as the directory its children would make it look like.
     """
     if entry_rel is None or entry_rel == directory_rel:
-        return
+        return None
     prefix = "" if directory_rel == "" else directory_rel + "/"
     if not entry_rel.startswith(prefix):
-        return
-    name, _, nested = entry_rel[len(prefix) :].partition("/")
-    child_path = prefix + name
-    if nested:
-        children[child_path] = (EntryKind.DIRECTORY, None)
-    else:
-        children.setdefault(child_path, (kind, size_bytes))
+        return None
+    name, _, _nested = entry_rel[len(prefix) :].partition("/")
+    return prefix + name
 
 
 class InProcessSandbox:
@@ -85,13 +76,15 @@ class InProcessSandbox:
             distinct from ``outputs``, which already means scripted stdout — the same reason
             the design doc spells ``declared_outputs`` apart from it. A ``str`` value is
             UTF-8 encoded like ``write_file``'s; ``bytes`` is stored as given;
-            :data:`~maf_sandbox.EntryKind.OTHER` declares the path as a non-regular entry —
-            no content, never readable — the only way this fake can exercise the
-            symlink-refusal rule.
+            :data:`~maf_sandbox.EntryKind.SYMLINK` declares the path a link and
+            :data:`~maf_sandbox.EntryKind.OTHER` any other non-regular entry — neither has
+            content, neither is readable, and only a link is refused as an escape.
 
     Storage is bytes, and :attr:`contents` **is** that store — the place a caller reading or
     seeding binary content looks. ``write_file`` UTF-8-encodes ``str`` content on the way in.
-    :attr:`files` is a read-only, UTF-8-decoded view of the same store, kept for callers
+    :attr:`symlinks` and :attr:`non_regular` are the stores for entries that have no content:
+    sets of absolute guest paths, seedable above or writable directly to plant one mid-test.
+    :attr:`files` is a read-only, UTF-8-decoded view of :attr:`contents`, kept for callers
     written against the fake's original shape, which only ever wrote text: a write to it
     raises rather than vanishing, and reading it raises ``UnicodeDecodeError`` if anything
     stored is not text — asking for text that was never written is worth an error rather than
@@ -104,6 +97,12 @@ class InProcessSandbox:
     ``FileNotFoundError`` for nothing there, ``IsADirectoryError`` for a directory and
     ``OSError`` for a seeded non-regular entry — and it **refuses** rather than truncates a
     file over its ``max_bytes``, as the protocol requires.
+
+    All three also run :func:`~maf_sandbox.paths.refuse_symlinked_parents` over the components,
+    so a seeded link standing where a directory was expected is refused here as it is on a real
+    backend. What this fake cannot model is the **escape** itself: a seeded link has no target,
+    so nothing reads through one and a test going green here has asserted shape, not safety.
+    Both backend suites carry their own premise test for that reason.
 
     ``exec`` accepts a plain string or an argv sequence (mirroring
     :meth:`~maf_sandbox.Sandbox.exec`). A sequence is joined with :func:`shlex.join` *before*
@@ -122,11 +121,14 @@ class InProcessSandbox:
         seed_files: Mapping[str, str | bytes | EntryKind] | None = None,
     ) -> None:
         self.contents: dict[str, bytes] = {}
-        self._non_regular: set[str] = set()
+        self.symlinks: set[str] = set()
+        self.non_regular: set[str] = set()
         for path, value in (seed_files or {}).items():
             # EntryKind is itself a str subclass, so this must be checked before isinstance(str).
-            if isinstance(value, EntryKind):
-                self._non_regular.add(path)
+            if value is EntryKind.SYMLINK:
+                self.symlinks.add(path)
+            elif isinstance(value, EntryKind):
+                self.non_regular.add(path)
             elif isinstance(value, str):
                 self.contents[path] = value.encode("utf-8")
             else:
@@ -165,26 +167,47 @@ class InProcessSandbox:
 
     def _has_children(self, full_path: str) -> bool:
         prefix = full_path + "/"
-        return any(p.startswith(prefix) for p in self.contents) or any(
-            p.startswith(prefix) for p in self._non_regular
+        return any(
+            p.startswith(prefix) for p in (*self.contents, *self.symlinks, *self.non_regular)
         )
+
+    def _kind_at(self, full_path: str) -> tuple[EntryKind, int | None] | None:
+        """What is stored at an absolute guest path, unconfined and following nothing.
+
+        Unconfined because the component walk classifies the working directory's own ancestors,
+        which sit outside it by definition.
+        """
+        if full_path in self.contents:
+            return EntryKind.FILE, len(self.contents[full_path])
+        if full_path in self.symlinks:
+            return EntryKind.SYMLINK, None
+        if full_path in self.non_regular:
+            return EntryKind.OTHER, None
+        if self._has_children(full_path):
+            return EntryKind.DIRECTORY, None
+        return None
+
+    async def _stat_unconfined(self, full_path: str) -> SandboxEntry | None:
+        found = self._kind_at(full_path)
+        if found is None:
+            return None
+        kind, size_bytes = found
+        return SandboxEntry(path=full_path, kind=kind, size_bytes=size_bytes)
 
     async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
         full_path = confine_guest_path(path, working_directory)
+        await refuse_symlinked_parents(self._stat_unconfined, full_path, working_directory)
         rel = guest_path_relative_to(full_path, posixpath.normpath(working_directory))
         assert rel is not None  # confine_guest_path already refused anything outside it
-        if full_path in self.contents:
-            return SandboxEntry(
-                path=rel, kind=EntryKind.FILE, size_bytes=len(self.contents[full_path])
-            )
-        if full_path in self._non_regular:
-            return SandboxEntry(path=rel, kind=EntryKind.OTHER, size_bytes=None)
-        if self._has_children(full_path):
-            return SandboxEntry(path=rel, kind=EntryKind.DIRECTORY, size_bytes=None)
-        return None
+        found = self._kind_at(full_path)
+        if found is None:
+            return None
+        kind, size_bytes = found
+        return SandboxEntry(path=rel, kind=kind, size_bytes=size_bytes)
 
     async def read_file(self, path: str, *, working_directory: str, max_bytes: int) -> bytes:
         full_path = confine_guest_path(path, working_directory)
+        await refuse_symlinked_parents(self._stat_unconfined, full_path, working_directory)
         if full_path in self.contents:
             content = self.contents[full_path]
             if len(content) > max_bytes:
@@ -194,7 +217,7 @@ class InProcessSandbox:
                     f"{path!r} is {len(content)} bytes and the caller allowed {max_bytes}"
                 )
             return content
-        if full_path in self._non_regular:
+        if full_path in self.symlinks or full_path in self.non_regular:
             raise OSError(f"{path!r} is not a regular file and is refused")
         if self._has_children(full_path):
             raise IsADirectoryError(f"{path!r} is a directory")
@@ -202,31 +225,24 @@ class InProcessSandbox:
 
     async def list_dir(self, path: str, *, working_directory: str) -> tuple[SandboxEntry, ...]:
         full_path = confine_guest_path(path, working_directory)
+        await refuse_symlinked_parents(
+            self._stat_unconfined, full_path, working_directory, include_self=True
+        )
         base = posixpath.normpath(working_directory)
         directory_rel = guest_path_relative_to(full_path, base)
         assert directory_rel is not None  # confine_guest_path already refused anything outside it
 
-        children: dict[str, tuple[EntryKind, int | None]] = {}
-        for stored_path, content in self.contents.items():
-            _record_child(
-                children,
-                guest_path_relative_to(stored_path, base),
-                directory_rel,
-                EntryKind.FILE,
-                len(content),
-            )
-        for stored_path in self._non_regular:
-            _record_child(
-                children,
-                guest_path_relative_to(stored_path, base),
-                directory_rel,
-                EntryKind.OTHER,
-                None,
-            )
-        return tuple(
-            SandboxEntry(path=child_path, kind=kind, size_bytes=size_bytes)
-            for child_path, (kind, size_bytes) in sorted(children.items())
-        )
+        names: set[str] = set()
+        for stored_path in (*self.contents, *self.symlinks, *self.non_regular):
+            child = _child_name(guest_path_relative_to(stored_path, base), directory_rel)
+            if child is not None:
+                names.add(child)
+        entries: list[SandboxEntry] = []
+        for child_path in sorted(names):
+            found = self._kind_at(posixpath.join(base, child_path))
+            if found is not None:
+                entries.append(SandboxEntry(path=child_path, kind=found[0], size_bytes=found[1]))
+        return tuple(entries)
 
 
 class InProcessSandboxBackend:
