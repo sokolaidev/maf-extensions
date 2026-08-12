@@ -36,15 +36,15 @@ logger = logging.getLogger(__name__)
 _LISTING_HINT_MAX = 20
 
 
-def _listing_hint(name: str, ws_files: list[str]) -> str:
+def _listing_hint(name: str, listing: list[str]) -> str:
     """The listing, or its near misses — what resolves a typo without another round trip."""
-    if not ws_files:
+    if not listing:
         return "This tool's listing is empty — no files were shared with it."
-    near = [f for f in ws_files if f.rsplit("/", 1)[-1] == name.rsplit("/", 1)[-1]]
+    near = [f for f in listing if f.rsplit("/", 1)[-1] == name.rsplit("/", 1)[-1]]
     if near and near != [name]:
         return f"Did you mean: {', '.join(sorted(near)[:_LISTING_HINT_MAX])}?"
-    shown = sorted(ws_files)[:_LISTING_HINT_MAX]
-    more = f" (+{len(ws_files) - len(shown)} more)" if len(ws_files) > len(shown) else ""
+    shown = sorted(listing)[:_LISTING_HINT_MAX]
+    more = f" (+{len(listing) - len(shown)} more)" if len(listing) > len(shown) else ""
     return f"Files visible here: {', '.join(shown)}{more}."
 
 
@@ -256,7 +256,7 @@ def _bicep_validate_tool(
         in the file store.
 
         Args:
-            files: Workspace-relative paths to validate — the whole set that compiles
+            files: Store-relative paths to validate — the whole set that compiles
                 together, not just the entry point.  Only ``.bicep`` and ``.bicepparam``
                 extensions are accepted.
 
@@ -282,9 +282,9 @@ def _bicep_validate_tool(
                 )
 
         # Enumerate the file store so paths can be validated and content read.
-        ws_files = await session.list_files(store)
-        if isinstance(ws_files, str):
-            return ws_files
+        listing = await session.list_files(store)
+        if isinstance(listing, str):
+            return listing
 
         # Every call gets a fresh directory, because the sandbox is REUSED across fix rounds
         # and only the named files are written into it.
@@ -305,7 +305,7 @@ def _bicep_validate_tool(
         # Validate each name against that listing (the injection guard).
         validated: list[tuple[str, str]] = []  # (store_path, sandbox_path)
         for name in files:
-            sandbox_path, listing_key, rejection = resolve_listed_path(name, ws_files, round_dir)
+            sandbox_path, listing_key, rejection = resolve_listed_path(name, listing, round_dir)
             if rejection == "unsafe":
                 # No listing echoed back: that would invite a retry with another spelling.
                 return (
@@ -318,12 +318,12 @@ def _bicep_validate_tool(
                     "bicep_validate: %r is not in this tool's file store listing (%d file(s) "
                     "visible) — the store wired here may be narrower than the agent's",
                     name,
-                    len(ws_files),
+                    len(listing),
                 )
                 return (
                     f"Error: {name!r} is not in this tool's file listing, so it was not "
                     f"validated. This listing can be narrower than the files you can read "
-                    f"elsewhere. {_listing_hint(name, ws_files)}"
+                    f"elsewhere. {_listing_hint(name, listing)}"
                 )
             # The listing's key, not the caller's spelling: "./main.bicep" validates but
             # would not read back from a store keyed "main.bicep".

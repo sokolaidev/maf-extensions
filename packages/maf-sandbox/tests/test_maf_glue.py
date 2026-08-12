@@ -126,7 +126,7 @@ def _session(
 # ---------------------------------------------------------------------------
 
 
-class TestMakeWorkspaceContext:
+class TestMakeCallerContext:
     def test_it_wires_each_callable_to_the_field_that_reads_it(self):
         store = InMemoryStore({"a.txt": "1"})
         context = make_caller_context(InMemoryStore.list, lambda: "scope-a", lambda: "thread-1")

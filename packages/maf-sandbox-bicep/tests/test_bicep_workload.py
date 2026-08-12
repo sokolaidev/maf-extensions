@@ -1011,7 +1011,7 @@ class TestCommandTemplates:
 # ---------------------------------------------------------------------------
 
 
-class TestSafeWorkspacePath:
+class TestSafeListedPath:
     def test_returns_sandbox_path_for_valid_file_in_listing(self):
         assert safe_listed_path("main.bicep", ["main.bicep"], "/work") == "/work/main.bicep"
 

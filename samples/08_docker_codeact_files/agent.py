@@ -41,7 +41,7 @@ AGENT_DIR = "data-analyst"
 CODEACT_IMAGE = "mcr.microsoft.com/devcontainers/python:3.13-bookworm"
 
 #: Ships beside this file and is seeded into the agent's file store under the same name.
-WORKSPACE_FILE = "sales.csv"
+STORE_FILE = "sales.csv"
 
 #: Where landed artifacts go. Beside the sample, and deliberately *not* the file store.
 OUTPUT_DIR = Path(__file__).parent / "out"
@@ -148,9 +148,7 @@ async def run() -> int:
     # The agent's file store. A real host's is backed by a disk or a blob container and
     # already holds what the agent wrote earlier; here the sample seeds the one file.
     store = InMemoryAgentFileStore()
-    await store.write(
-        WORKSPACE_FILE, (Path(__file__).parent / WORKSPACE_FILE).read_text()
-    )
+    await store.write(STORE_FILE, (Path(__file__).parent / STORE_FILE).read_text())
 
     context = make_caller_context(list_all_files, lambda: SCOPE, lambda: THREAD_ID)
 

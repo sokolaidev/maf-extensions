@@ -322,7 +322,7 @@ _DESCRIPTION_MANIFEST = f"""**To produce files, write them into the working dire
 _DESCRIPTION_ARG_CODE = """code: The Python source to run.  The standard library, plus
                 whatever the sandbox image ships."""
 
-_DESCRIPTION_ARG_FILES = """files: Workspace-relative paths to share into the sandbox, or
+_DESCRIPTION_ARG_FILES = """files: Store-relative paths to share into the sandbox, or
                 omit for none.  Only files in your file store listing can be shared."""
 
 _DESCRIPTION_ARG_OUTPUTS = """outputs: The file names your program will write into its
