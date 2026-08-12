@@ -4,6 +4,18 @@ All notable changes to `maf-sandbox-acas` are documented here. The format follow
 
 Releases up to and including `0.2.3` were published as **`maf-sandbox-aca`**, and the entries below name it as it was — their tags and compare links point at real history and are left as they were written. `maf-sandbox-aca` is not maintained past `0.2.3`; PyPI names cannot be reused, so the rename is a new distribution rather than a continuation of that one.
 
+## [0.7.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.6.4...maf-sandbox-acas-v0.7.0) (2026-08-12)
+
+
+### Features
+
+* name a symlink in the protocol, and hold every FILES_OUT backend to one conformance suite ([#215](https://github.com/sokolaidev/maf-extensions/issues/215)) ([051c4c2](https://github.com/sokolaidev/maf-extensions/commit/051c4c2a906dcca4f5bd45654834061befc71308))
+
+
+### Bug Fixes
+
+* require maf-sandbox 0.10.0 and admit 0.11 in the dependents' range ([#231](https://github.com/sokolaidev/maf-extensions/issues/231)) ([353c1b3](https://github.com/sokolaidev/maf-extensions/commit/353c1b34f8c2d1d8f5f32dfa260913c27d50ab60))
+
 ## [0.6.4](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.6.3...maf-sandbox-acas-v0.6.4) (2026-08-12)
 
 
