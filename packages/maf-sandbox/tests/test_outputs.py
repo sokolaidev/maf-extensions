@@ -25,6 +25,7 @@ from maf_sandbox import (
     SandboxArtifactNameCollision,
     SandboxArtifactNameInvalid,
     SandboxEntry,
+    SandboxLandingNotConfined,
     SandboxOutputError,
     SandboxOutputMissing,
     SandboxOutputNotConfined,
@@ -36,6 +37,7 @@ from maf_sandbox import (
     SandboxTransferCapExceeded,
     TransferLimits,
     collect_outputs,
+    make_file_system_sink,
     portable_name,
     validate_artifact_name,
 )
@@ -1161,9 +1163,136 @@ class TestRefusalsShareOneBase:
             SandboxOutputSinkRequired,
             SandboxArtifactNameInvalid,
             SandboxArtifactNameCollision,
+            SandboxLandingNotConfined,
         ],
     )
     def test_every_refusal_is_a_sandbox_output_error(self, error: type[Exception]):
         """So a kind that only needs to tell the model "the artifacts did not come back" can
         catch one thing."""
         assert issubclass(error, SandboxOutputError)
+
+
+def _link_dir(link, target) -> bool:
+    """Plant a directory link, however this platform lets one be planted.
+
+    Unprivileged Windows refuses `os.symlink` but allows a junction, and `Path.resolve()`
+    follows both — which is the whole of what the sink's check reads. Answers False when
+    neither works, so the caller skips rather than passing vacuously.
+    """
+    import os
+    import subprocess
+    import sys
+
+    try:
+        os.symlink(target, link, target_is_directory=True)
+        return True
+    except (OSError, NotImplementedError):
+        pass
+    if sys.platform != "win32":
+        return False
+    done = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(target)], capture_output=True
+    )
+    return done.returncode == 0
+
+
+class TestMakeFileSystemSink:
+    """The packaged landing sink: what it writes, and the two escapes it refuses.
+
+    Only one of the two is reachable through `collect_outputs`, so the other is driven
+    through `deliver` directly.
+    """
+
+    def _artifact(self, name: str, content: bytes = b"payload") -> Artifact:
+        return Artifact(name=name, content=content, kind=_KIND, media_type=None)
+
+    def test_it_writes_the_bytes_under_the_root(self, tmp_path):
+        sink = make_file_system_sink(tmp_path / "out")
+        landed = asyncio.run(sink.deliver(self._artifact("a.txt", b"hello")))
+
+        assert (tmp_path / "out" / "a.txt").read_bytes() == b"hello"
+        assert landed.name == "a.txt"
+        assert landed.handle == str((tmp_path / "out" / "a.txt").resolve())
+
+    def test_it_creates_the_parents_a_nested_name_needs(self, tmp_path):
+        """A landing name may carry separators, and nothing upstream creates the directories."""
+        sink = make_file_system_sink(tmp_path / "out")
+        asyncio.run(sink.deliver(self._artifact("deep/er/a.txt", b"hi")))
+
+        assert (tmp_path / "out" / "deep" / "er" / "a.txt").read_bytes() == b"hi"
+
+    def test_the_default_display_names_the_artifact_and_its_size(self, tmp_path):
+        sink = make_file_system_sink(tmp_path / "out")
+        landed = asyncio.run(sink.deliver(self._artifact("a.txt", b"1234")))
+
+        assert landed.display == "a.txt (4 bytes)"
+
+    def test_a_kind_can_supply_its_own_display(self, tmp_path):
+        """Sample 07 introduces its artifacts with a verb and sample 08 deliberately without
+        one, so the line the model sees cannot be the sink's to fix."""
+        sink = make_file_system_sink(
+            tmp_path / "out",
+            display=lambda artifact, path: f"Rendered {artifact.name} in {path.parent.name}/",
+        )
+        landed = asyncio.run(sink.deliver(self._artifact("a.png")))
+
+        assert landed.display == "Rendered a.png in out/"
+
+    def test_a_name_resolving_outside_the_root_is_refused(self, tmp_path):
+        """`validate_artifact_name` refuses `..` upstream, so this is defence the sink owes
+        anyway: it is a public helper and nothing guarantees every caller ran that first."""
+        root = tmp_path / "out"
+        sink = make_file_system_sink(root)
+
+        with pytest.raises(SandboxLandingNotConfined, match="outside"):
+            asyncio.run(sink.deliver(self._artifact("../escaped.txt")))
+
+        assert not (tmp_path / "escaped.txt").exists()
+
+    def test_the_refusal_names_no_host_path(self, tmp_path):
+        """`maf-sandbox-codeact` interpolates this family straight into the tool result the
+        model reads, so a host path in the message reaches the transcript — the leak
+        `LandedArtifact.handle` exists to prevent. Every other member of the family says only
+        the guest-supplied name, and this one has to as well."""
+        root = tmp_path / "out"
+        sink = make_file_system_sink(root)
+
+        with pytest.raises(SandboxLandingNotConfined) as caught:
+            asyncio.run(sink.deliver(self._artifact("../escaped.txt")))
+
+        message = str(caught.value)
+        assert "escaped.txt" in message, "the guest's own name is what a caller can act on"
+        for leaked in (str(root), str(root.resolve()), str(tmp_path)):
+            assert leaked not in message, f"the refusal named a host path: {leaked}"
+
+    def test_a_link_already_in_the_root_is_refused_rather_than_followed(self, tmp_path):
+        """The case the lexical name check cannot see, and the one that made this a helper.
+
+        A name that is perfectly valid lands somewhere else entirely because a component of
+        the destination is a link planted before the run.
+        """
+        root = tmp_path / "out"
+        root.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        if not _link_dir(root / "sub", outside):
+            pytest.skip("this platform will not let the test plant a directory link")
+
+        sink = make_file_system_sink(root)
+        with pytest.raises(SandboxLandingNotConfined):
+            asyncio.run(sink.deliver(self._artifact("sub/a.txt")))
+
+        assert not (outside / "a.txt").exists(), "it wrote through the link before refusing"
+
+    def test_it_lands_a_whole_collection_through_collect_outputs(self, tmp_path):
+        """End to end, because `deliver` alone does not prove the sink is shaped like one."""
+        sandbox = InProcessSandbox()
+        asyncio.run(sandbox.write_file(f"{_WORK_DIR}/report.md", b"# hi"))
+        spec = _spec(DeclaredOutput(path="report.md", media_type="text/markdown"))
+
+        landed = asyncio.run(
+            collect_outputs(sandbox, spec, sink=make_file_system_sink(tmp_path / "out"))
+        )
+
+        assert [a.name for a in landed] == ["report.md"]
+        assert (tmp_path / "out" / "report.md").read_bytes() == b"# hi"

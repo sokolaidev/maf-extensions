@@ -12,7 +12,7 @@ It is **not** re-exported from the package's ``__init__``, on purpose: ``import 
 has to stay cheap and MAF-free for a backend, a workload's own test suite, or anything else
 that only speaks the protocol.  Reach it by name — ``from maf_sandbox.maf import ...``.
 
-Three things live here, and each of them had begun to exist twice before it did:
+Five things live here, and each of them had begun to exist twice before it did:
 
 - :func:`make_caller_context` — how a host says who is calling and which files they own.
 - :func:`sandboxed_tool` — the shape every sandbox workload's tool has: attach nothing when
@@ -21,6 +21,9 @@ Three things live here, and each of them had begun to exist twice before it did:
   a detailed line only the log gets.
 - :class:`~maf_sandbox.SandboxPurger`, re-exported — a host wiring a MAF surface needs the
   thread-delete participant at the same moment it needs the two above.
+- :func:`list_all_files` and :func:`list_no_files` — the listing a caller context is built
+  from, walked from ``list_children`` or declared empty. They are here rather than in core
+  because the walk reads ``FileStoreEntry.type``, which the framework owns.
 """
 
 from __future__ import annotations
@@ -50,6 +53,8 @@ _DEFAULT_LOGGER = logging.getLogger(__name__)
 __all__ = [
     "SandboxPurger",
     "SandboxToolSession",
+    "list_all_files",
+    "list_no_files",
     "make_caller_context",
     "sandbox_tool_declarations",
     "sandboxed_tool",
@@ -458,3 +463,41 @@ def sandboxed_tool(
         additional_properties=properties,
     )
     return [decorate(build(session))]
+
+
+async def list_all_files(store: Any) -> list[str]:
+    """Every file in ``store``, as store-relative paths.
+
+    The listing a workload is given is its **injection-pinning boundary**: only a name that
+    appears in it is ever substituted into a sandbox command, so a path the model invented
+    reaches no shell.  This walks, because ``list_children`` answers one level at a time and
+    the recursion is the host's to do rather than the store's.
+
+    It lives in this module rather than in core for the dependency, not the audience: the
+    entries it walks are ``agent_framework``'s and it reads their ``type``.
+
+    A failure propagates.  Answering an empty list would read as "the store has no files" and
+    refuse every name for the wrong reason.
+    """
+    paths: list[str] = []
+
+    async def walk(directory: str) -> None:
+        for entry in await store.list_children(directory):
+            child = f"{directory}/{entry.name}" if directory else entry.name
+            if entry.type == "directory":
+                await walk(child)
+            else:
+                paths.append(child)
+
+    await walk("")
+    return paths
+
+
+async def list_no_files(_store: object) -> list[str]:
+    """Enumerate nothing — the listing for a workload with no file channel at all.
+
+    Not a stub standing in for unfinished work.  ``CallerContext.list_files`` is required, so
+    a workload that shares nothing still has to answer, and saying so by name keeps that a
+    stated decision rather than an empty lambda the next reader has to interpret.
+    """
+    return []

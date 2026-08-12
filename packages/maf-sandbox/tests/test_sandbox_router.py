@@ -1179,3 +1179,63 @@ class TestOnlyDeclaredDependencies:
             f"package itself, and pyproject.toml's declared dependencies: {offenders}. "
             "Either the import is a mistake, or the dependency belongs in pyproject.toml."
         )
+
+
+class _CountingBackend(InProcessSandboxBackend):
+    """Reports a fixed reclaim count and records every scope it was asked to purge."""
+
+    def __init__(self, *, reclaims: int = 2) -> None:
+        super().__init__()
+        self._reclaims = reclaims
+        self.purged: list[tuple[str, str]] = []
+
+    async def dispose_scope(self, scope: str, thread_id: str) -> int:
+        self.purged.append((scope, thread_id))
+        return self._reclaims
+
+
+class TestScope:
+    """`router.scope()` — disposal that does not depend on the host remembering it.
+
+    Every sample wrote the same try/finally around `dispose_scope`, and the reason it is worth
+    packaging is in that method's own docstring: a sandbox nobody reclaims is a sandbox
+    somebody pays for.
+    """
+
+    def test_it_disposes_when_the_block_ends(self):
+        backend = _CountingBackend()
+        router = SandboxRouter([backend], min_isolation=Isolation.PROCESS)
+
+        async def scenario():
+            async with router.scope("scope-a", "thread-1") as disposal:
+                assert disposal.disposed == 0, "the count means nothing until the block ends"
+            return disposal
+
+        disposal = asyncio.run(scenario())
+        assert backend.purged == [("scope-a", "thread-1")]
+        assert disposal.disposed == 2
+
+    def test_it_disposes_when_the_block_raises_and_does_not_swallow_the_error(self):
+        """A teardown that hid the application's exception would be worse than none."""
+        backend = _CountingBackend()
+        router = SandboxRouter([backend], min_isolation=Isolation.PROCESS)
+
+        async def scenario():
+            async with router.scope("scope-a", "thread-1"):
+                raise ValueError("the workload failed")
+
+        with pytest.raises(ValueError, match="the workload failed"):
+            asyncio.run(scenario())
+        assert backend.purged == [("scope-a", "thread-1")]
+
+    def test_a_backend_that_cannot_purge_does_not_break_the_block(self):
+        """`dispose_scope` already swallows and logs per-backend failures. That is what makes
+        it safe in a `finally`, so it is pinned here rather than assumed."""
+        router = SandboxRouter([_ExplodingBackend()], min_isolation=Isolation.PROCESS)
+
+        async def scenario():
+            async with router.scope("scope-a", "thread-1") as disposal:
+                pass
+            return disposal
+
+        assert asyncio.run(scenario()).disposed == 0
