@@ -224,11 +224,9 @@ def _stat_from_tar_header(block: bytes, rel_path: str) -> SandboxEntry:
     :data:`~maf_sandbox.EntryKind.OTHER`, both with a ``None`` size, so a caller refuses either
     before ever reading a byte.
 
-    The split is the protocol's now rather than this file's: the component walk needs to tell a
-    link from an ordinary ``ENOTDIR``, and until :data:`~maf_sandbox.EntryKind.SYMLINK` existed
-    this backend kept a private ``is_symlink`` beside every entry to do it (#214).  A **hard**
-    link stays :data:`~maf_sandbox.EntryKind.OTHER`: it names an inode rather than a path, so
-    it is not a way out of the working directory, and it is refused as non-regular regardless.
+    A **hard** link stays :data:`~maf_sandbox.EntryKind.OTHER`: it names an inode rather than a
+    path, so it is not a way out of the working directory, and it is refused as non-regular
+    regardless.
     """
     info = tarfile.TarInfo.frombuf(block, encoding="utf-8", errors="surrogateescape")
     if info.isreg():

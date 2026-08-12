@@ -177,11 +177,6 @@ def _stat_from_payload(payload: Mapping[str, Any], relative_path: str) -> Sandbo
     booleans are the whole of this backend's symlink refusal, so a service that stops sending
     them has to break the read loudly rather than degrade confinement to nothing.  ``mode`` is
     not consulted — it carries permission bits only, with no ``S_IFLNK`` or ``S_IFDIR`` in it.
-
-    ``isSymlink`` reaches the caller as :data:`~maf_sandbox.EntryKind.SYMLINK` rather than as a
-    flag beside the entry: the component walk needs to tell a link from an ordinary ``ENOTDIR``,
-    and until the protocol could say so this backend kept a private ``is_symlink`` next to every
-    entry it returned — one of the two copies that made #214 an argument about the protocol.
     """
     is_symlink: Any = payload.get(_FIELD_IS_SYMLINK)
     is_dir: Any = payload.get(_FIELD_IS_DIR)

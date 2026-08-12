@@ -432,10 +432,8 @@ class TestInProcessSandboxConfinement:
 class TestInProcessSandboxWalksTheComponents:
     """The rule a lexical check cannot see: a path whose *parent* is a link leaves the work dir.
 
-    Before this fake grew the walk it could not express the scenario at all — the path simply
-    404'd — so every kind's tests passed it without exercising it, which is the third data
-    point #142 recorded. A fake that cannot host the attack cannot host the conformance suite
-    either.
+    A fake that cannot express the scenario lets every kind's tests pass it without exercising
+    it, and cannot host the conformance suite either (#142).
     """
 
     @staticmethod

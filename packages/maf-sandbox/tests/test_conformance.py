@@ -3,8 +3,7 @@
 It must **pass** against an implementation that discharges the duty — otherwise it is a
 tripwire nobody can clear — and it must **fail**, naming the right probe, against one that does
 not. The second half is the one that matters: a suite written against the same misreading it is
-meant to catch passes everything, which is how the escape in #142 survived two review passes
-and two backends' own test suites.
+meant to catch passes everything (#142).
 
 So there are two specimens here. `InProcessSandbox` is the real fake, which refuses; `_Leaky`
 is written for this file and genuinely resolves through a link, the way a real engine and a
@@ -201,7 +200,7 @@ def _leaky_subject(**kwargs) -> _LeakySubject:
 
 class TestTheSuitePassesAnImplementationThatDischargesTheDuty:
     def test_the_shipped_fake_answers_every_probe(self):
-        """`InProcessSandbox` grew the walk for exactly this — see #142's third data point."""
+        """`InProcessSandbox` runs the shared walk, so it answers the same probes a backend does."""
         subject = _FakeSubject(InProcessSandbox(), _BOTH)
         assert _results(subject) == dict.fromkeys([p.name for p in FILES_OUT_PROBES], None)
 

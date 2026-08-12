@@ -1430,11 +1430,10 @@ class TestASymlinkedParentEscapesLexicalConfinement:
         assert client.gets == [self._stat_route(_WORK_DIR), self._stat_route("/work/out")]
 
     def test_the_escape_is_decided_by_the_payload_flag_the_protocol_now_carries(self):
-        """`isSymlink` reaches the walk as `SYMLINK`, not as a private flag beside the entry.
+        """`isSymlink` reaches the walk as `SYMLINK`, and is still what decides.
 
-        Before #214 it could not: `OTHER` is the protocol's word for every non-regular entry,
-        so this backend kept its own `is_symlink` next to each one. The flag is still what
-        decides — a non-directory that is not a link stays `ENOTDIR`.
+        `OTHER` is the protocol's word for every other non-regular entry, and a non-directory
+        that is not a link stays `ENOTDIR`.
         """
         from maf_sandbox import EntryKind
 
@@ -1523,8 +1522,7 @@ class TestTheSharedConformanceSuite:
     """`maf_sandbox.conformance`, answered by this backend.
 
     The probes are the rule every backend serving `FILES_OUT` is held to, rather than this
-    package's own reading of it — which is the point, since this package's own reading is what
-    shipped the escape in #142 and passed its own tests while doing so.
+    package's own reading of it, which is what its own suite would otherwise agree with (#142).
 
     What this leg is worth is bounded and worth stating: the specimen is a simulator built from
     payloads a live sandbox group actually answered with, not a live sandbox group. The docker
