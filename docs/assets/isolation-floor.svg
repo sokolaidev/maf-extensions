@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 236" width="1000" height="236" role="img" aria-labelledby="floor-title floor-desc" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title id="floor-title">The minimum isolation floor</title>
+  <desc id="floor-desc">Four backends ordered by increasing isolation, drawn with increasing border thickness: in-process fake, local container, container, cloud micro-VM. A vertical line marks the host's minimum isolation floor. The two weaker backends sit below it and are refused; the two stronger ones are admitted.</desc>
+
+  <!-- ── below the floor: refused ──────────────────────────────────────── -->
+  <rect x="40" y="70" width="170" height="64" rx="8" fill="#9aa1ac" fill-opacity="0.10" stroke="#9aa1ac" stroke-width="1" stroke-dasharray="5 4"/>
+  <text x="125" y="97" text-anchor="middle" font-size="13" fill="#9aa1ac">in-process</text>
+  <text x="125" y="114" text-anchor="middle" font-size="13" fill="#9aa1ac">fake</text>
+  <path d="M 117 46 l 16 16 M 133 46 l -16 16" stroke="#cf5a52" stroke-width="2.6" stroke-linecap="round"/>
+
+  <rect x="230" y="70" width="170" height="64" rx="8" fill="#9aa1ac" fill-opacity="0.10" stroke="#9aa1ac" stroke-width="1.4"/>
+  <text x="315" y="97" text-anchor="middle" font-size="13" fill="#9aa1ac">local</text>
+  <text x="315" y="114" text-anchor="middle" font-size="13" fill="#9aa1ac">container</text>
+  <path d="M 307 46 l 16 16 M 323 46 l -16 16" stroke="#cf5a52" stroke-width="2.6" stroke-linecap="round"/>
+
+  <text x="220" y="158" text-anchor="middle" font-size="11.5" fill="#9aa1ac">below the floor — refused</text>
+
+  <!-- ── the floor itself ─────────────────────────────────────────────── -->
+  <text x="460" y="26" text-anchor="middle" font-size="12.5" fill="#7d8694">minimum isolation floor</text>
+  <line x1="460" y1="38" x2="460" y2="168" stroke="#7d8694" stroke-width="4" stroke-linecap="round"/>
+
+  <!-- ── above the floor: admitted ─────────────────────────────────────── -->
+  <rect x="520" y="70" width="170" height="64" rx="8" fill="#2fa8a0" fill-opacity="0.12" stroke="#2fa8a0" stroke-width="2"/>
+  <rect x="526" y="76" width="158" height="52" rx="5" fill="none" stroke="#2fa8a0" stroke-width="1"/>
+  <text x="605" y="107" text-anchor="middle" font-size="13" fill="#7d8694">container</text>
+
+  <rect x="710" y="70" width="170" height="64" rx="8" fill="#2fa8a0" fill-opacity="0.12" stroke="#2fa8a0" stroke-width="4"/>
+  <text x="795" y="97" text-anchor="middle" font-size="13" fill="#7d8694">cloud</text>
+  <text x="795" y="114" text-anchor="middle" font-size="13" fill="#7d8694">micro-vm</text>
+
+  <text x="700" y="158" text-anchor="middle" font-size="11.5" fill="#2fa8a0">admitted</text>
+
+  <!-- ── the whole range ──────────────────────────────────────────────── -->
+  <path d="M 40 198 v 8 h 840 v -8" fill="none" stroke="#7d8694" stroke-width="1.2"/>
+  <text x="460" y="226" text-anchor="middle" font-size="12" fill="#7d8694">any backend</text>
+</svg>
