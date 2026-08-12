@@ -36,37 +36,9 @@ from ._protocol import (
     SandboxLimits,
     SandboxSpec,
 )
+from .paths import confine_guest_path, guest_path_relative_to
 
 __all__ = ["InMemoryStore", "InProcessSandbox", "InProcessSandboxBackend"]
-
-
-def _resolve(path: str, working_directory: str) -> str:
-    """POSIX-join ``path`` onto ``working_directory`` and refuse anything that escapes it.
-
-    A backslash is refused outright: the protocol has one path grammar, and ``\\`` is not a
-    separator in it, whatever the host OS.  ``posixpath`` only, never ``os.path``.
-    """
-    if "\\" in path:
-        raise ValueError(f"path {path!r} contains a backslash, which is not a valid separator")
-    base = posixpath.normpath(working_directory)
-    resolved = posixpath.normpath(posixpath.join(base, path))
-    if _relative(resolved, base) is None:
-        raise ValueError(f"path {path!r} resolves outside working directory {working_directory!r}")
-    return resolved
-
-
-def _relative(full_path: str, base: str) -> str | None:
-    """``full_path`` relative to ``base``, or ``None`` when it does not sit inside ``base``.
-
-    Compares against ``base + "/"``, not ``base``, so a sibling that merely shares a string
-    prefix — ``/work/sub2`` under ``/work/sub`` — is not mistaken for a descendant.
-    """
-    if full_path == base:
-        return ""
-    prefix = base if base.endswith("/") else base + "/"
-    if not full_path.startswith(prefix):
-        return None
-    return full_path[len(prefix) :]
 
 
 def _record_child(
@@ -198,9 +170,9 @@ class InProcessSandbox:
         )
 
     async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
-        full_path = _resolve(path, working_directory)
-        rel = _relative(full_path, posixpath.normpath(working_directory))
-        assert rel is not None  # _resolve already refused anything outside working_directory
+        full_path = confine_guest_path(path, working_directory)
+        rel = guest_path_relative_to(full_path, posixpath.normpath(working_directory))
+        assert rel is not None  # confine_guest_path already refused anything outside it
         if full_path in self.contents:
             return SandboxEntry(
                 path=rel, kind=EntryKind.FILE, size_bytes=len(self.contents[full_path])
@@ -212,7 +184,7 @@ class InProcessSandbox:
         return None
 
     async def read_file(self, path: str, *, working_directory: str, max_bytes: int) -> bytes:
-        full_path = _resolve(path, working_directory)
+        full_path = confine_guest_path(path, working_directory)
         if full_path in self.contents:
             content = self.contents[full_path]
             if len(content) > max_bytes:
@@ -229,19 +201,27 @@ class InProcessSandbox:
         raise FileNotFoundError(f"no such file: {path!r}")
 
     async def list_dir(self, path: str, *, working_directory: str) -> tuple[SandboxEntry, ...]:
-        full_path = _resolve(path, working_directory)
+        full_path = confine_guest_path(path, working_directory)
         base = posixpath.normpath(working_directory)
-        directory_rel = _relative(full_path, base)
-        assert directory_rel is not None  # _resolve already refused anything outside it
+        directory_rel = guest_path_relative_to(full_path, base)
+        assert directory_rel is not None  # confine_guest_path already refused anything outside it
 
         children: dict[str, tuple[EntryKind, int | None]] = {}
         for stored_path, content in self.contents.items():
             _record_child(
-                children, _relative(stored_path, base), directory_rel, EntryKind.FILE, len(content)
+                children,
+                guest_path_relative_to(stored_path, base),
+                directory_rel,
+                EntryKind.FILE,
+                len(content),
             )
         for stored_path in self._non_regular:
             _record_child(
-                children, _relative(stored_path, base), directory_rel, EntryKind.OTHER, None
+                children,
+                guest_path_relative_to(stored_path, base),
+                directory_rel,
+                EntryKind.OTHER,
+                None,
             )
         return tuple(
             SandboxEntry(path=child_path, kind=kind, size_bytes=size_bytes)
