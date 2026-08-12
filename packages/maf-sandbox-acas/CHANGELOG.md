@@ -4,6 +4,13 @@ All notable changes to `maf-sandbox-acas` are documented here. The format follow
 
 Releases up to and including `0.2.3` were published as **`maf-sandbox-aca`**, and the entries below name it as it was — their tags and compare links point at real history and are left as they were written. `maf-sandbox-aca` is not maintained past `0.2.3`; PyPI names cannot be reused, so the rename is a new distribution rather than a continuation of that one.
 
+## [0.6.4](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.6.3...maf-sandbox-acas-v0.6.4) (2026-08-12)
+
+
+### Bug Fixes
+
+* admit maf-sandbox 0.10 in the dependents' range ([#219](https://github.com/sokolaidev/maf-extensions/issues/219)) ([f0b3f94](https://github.com/sokolaidev/maf-extensions/commit/f0b3f942f132cefeb35e4b2d90b98765d2905ffc))
+
 ## [0.6.3](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.6.2...maf-sandbox-acas-v0.6.3) (2026-08-11)
 
 
