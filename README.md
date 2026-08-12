@@ -1,5 +1,7 @@
 # maf-extensions
 
+[![Tests](https://img.shields.io/github/actions/workflow/status/sokolaidev/maf-extensions/tests.yml?branch=main&label=tests)](https://github.com/sokolaidev/maf-extensions/actions/workflows/tests.yml) [![Python](https://img.shields.io/badge/python-3.12%20%7C%203.13%20%7C%203.14-blue)](https://www.python.org/downloads/) [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 Community extensions for [Microsoft Agent Framework](https://aka.ms/AgentFramework), maintained by [SOKOLAI BV](https://www.sokol.ai). **Not affiliated with or endorsed by Microsoft.** Everything here is experimental (0.x): each package warns on import, and every release before 1.0.0 may include breaking changes.
 
 ## The maf-sandbox family — the first extension suite
@@ -8,14 +10,14 @@ Sandboxed code execution for MAF agents, and the first extension suite this repo
 
 [`docs/SANDBOX.md`](docs/SANDBOX.md) is the introduction — what the suite is, how it attaches to a MAF agent, what it buys and what it deliberately is not — written for a reader who does not already know the framework. The table below is the map.
 
-| Package | What it is | Depends on |
-|---|---|---|
-| [`maf-sandbox`](packages/maf-sandbox/) | The backend-neutral protocol (`Sandbox`, `SandboxBackend`, `SandboxSpec`, `SandboxKey`, `Isolation`, `Capability`), the router with its minimum-isolation-floor and capability-match policy, the thread-delete purge participant, a public in-process `testing` backend, and the optional MAF glue module | `agent-framework-core` (protocol modules are import-clean; the glue imports lazily) |
-| [`maf-sandbox-acas`](packages/maf-sandbox-acas/) | [Azure Container Apps Sandboxes](https://learn.microsoft.com/azure/container-apps/sandboxes-overview) as a backend: microVM isolation, Deny-default egress, label-based lifecycle that survives multi-replica hosts | `maf-sandbox`, `azure-identity`, `azure-containerapps-sandbox` (preview) |
-| [`maf-sandbox-bicep`](packages/maf-sandbox-bicep/) | The first workload *kind*: `bicep_validate` — compiler-truth validation of agent-authored Bicep, on any backend | `maf-sandbox`, `agent-framework-core` |
-| [`maf-sandbox-codeact`](packages/maf-sandbox-codeact/) | The CodeAct *kind*: `execute_code` — the model writes a short Python program, it runs in a closed sandbox, and what it printed comes back | `maf-sandbox`, `agent-framework-core` |
-| [`maf-sandbox-docker`](packages/maf-sandbox-docker/) | Plain Docker containers as a backend: container isolation, Closed or Allowlisted egress, and reading declared outputs back out — for a sandbox on any machine with a Docker-compatible engine, and on CI | `maf-sandbox` |
-| [`maf-sandbox-wslc`](packages/maf-sandbox-wslc/) | `wslc` (the container CLI that ships with WSL) as a backend: container isolation, Closed egress, for validating on the developer's own machine | `maf-sandbox` |
+| Package | Released | What it is | Depends on |
+|---|---|---|---|
+| [`maf-sandbox`](packages/maf-sandbox/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox)](https://pypi.org/project/maf-sandbox/) | The backend-neutral protocol (`Sandbox`, `SandboxBackend`, `SandboxSpec`, `SandboxKey`, `Isolation`, `Capability`), the router with its minimum-isolation-floor and capability-match policy, the thread-delete purge participant, a public in-process `testing` backend, and the optional MAF glue module | `agent-framework-core` (protocol modules are import-clean; the glue imports lazily) |
+| [`maf-sandbox-acas`](packages/maf-sandbox-acas/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-acas)](https://pypi.org/project/maf-sandbox-acas/) | [Azure Container Apps Sandboxes](https://learn.microsoft.com/azure/container-apps/sandboxes-overview) as a backend: microVM isolation, Deny-default egress, label-based lifecycle that survives multi-replica hosts | `maf-sandbox`, `azure-identity`, `azure-containerapps-sandbox` (preview) |
+| [`maf-sandbox-bicep`](packages/maf-sandbox-bicep/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-bicep)](https://pypi.org/project/maf-sandbox-bicep/) | The first workload *kind*: `bicep_validate` — compiler-truth validation of agent-authored Bicep, on any backend | `maf-sandbox`, `agent-framework-core` |
+| [`maf-sandbox-codeact`](packages/maf-sandbox-codeact/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-codeact)](https://pypi.org/project/maf-sandbox-codeact/) | The CodeAct *kind*: `execute_code` — the model writes a short Python program, it runs in a closed sandbox, and what it printed comes back | `maf-sandbox`, `agent-framework-core` |
+| [`maf-sandbox-docker`](packages/maf-sandbox-docker/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-docker)](https://pypi.org/project/maf-sandbox-docker/) | Plain Docker containers as a backend: container isolation, Closed or Allowlisted egress, and reading declared outputs back out — for a sandbox on any machine with a Docker-compatible engine, and on CI | `maf-sandbox` |
+| [`maf-sandbox-wslc`](packages/maf-sandbox-wslc/) | [![PyPI](https://img.shields.io/pypi/v/maf-sandbox-wslc)](https://pypi.org/project/maf-sandbox-wslc/) | `wslc` (the container CLI that ships with WSL) as a backend: container isolation, Closed egress, for validating on the developer's own machine | `maf-sandbox` |
 
 ```
 app  ->  maf_sandbox (router)  ->  a backend (maf_sandbox_acas, testing, ...)  ->  the sandbox
