@@ -1,4 +1,5 @@
-"""Guest-path arithmetic for the protocol's one path grammar, shared by kinds and backends.
+"""Guest-path arithmetic for the protocol's one path grammar, shared by kinds and backends,
+and the one confinement rule written on top of it that a backend cannot express without a stat.
 
 A guest path is POSIX whatever the host runs, so everything here goes through ``posixpath``,
 never ``os.path``, and a backslash is refused rather than read as a separator.  For a *host*
@@ -9,8 +10,16 @@ filesystem path this module is the wrong answer — use :meth:`pathlib.Path.reso
 from __future__ import annotations
 
 import posixpath
+from collections.abc import Awaitable, Callable
 
-__all__ = ["confine_guest_path", "guest_directory_chain", "guest_path_relative_to"]
+from ._protocol import EntryKind, SandboxEntry
+
+__all__ = [
+    "confine_guest_path",
+    "guest_directory_chain",
+    "guest_path_relative_to",
+    "refuse_symlinked_parents",
+]
 
 
 def confine_guest_path(path: str, working_directory: str) -> str:
@@ -66,3 +75,37 @@ def guest_directory_chain(guest_path: str, working_directory: str) -> tuple[str,
         for segment in relative.split("/"):
             chain.append(posixpath.join(chain[-1] if chain else "/", segment))
     return tuple(chain)
+
+
+async def refuse_symlinked_parents(
+    stat: Callable[[str], Awaitable[SandboxEntry | None]],
+    guest_path: str,
+    working_directory: str,
+    *,
+    include_self: bool = False,
+) -> None:
+    """Refuse ``guest_path`` unless every directory above it is a real one.
+
+    A link found in the chain raises :class:`ValueError`, the same refusal an unconfined path
+    gets; any other non-directory raises :class:`NotADirectoryError`, because a fifo where a
+    directory was expected is the guest tripping rather than escaping.  A component that is not
+    there ends the walk — there is nothing below it to reach.
+
+    Two things ``stat`` must be, or this answers about the wrong filesystem: **unconfined**,
+    since the chain covers the working directory's own ancestors, and **no-follow**, since a
+    stat that resolves a link describes its target and hides the escape.  ``include_self``
+    extends the walk to ``guest_path`` itself, which an enumeration needs — a listing passes
+    through a link as readily as a read does.
+    """
+    deepest = guest_path if include_self else posixpath.dirname(guest_path)
+    for directory in guest_directory_chain(deepest, working_directory):
+        entry = await stat(directory)
+        if entry is None:
+            return
+        if entry.kind is EntryKind.SYMLINK:
+            raise ValueError(
+                f"{directory!r} is a link rather than a real directory, so a path through "
+                f"it does not stay inside working directory {working_directory!r}"
+            )
+        if entry.kind is not EntryKind.DIRECTORY:
+            raise NotADirectoryError(f"{directory!r} is not a directory")

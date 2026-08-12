@@ -108,6 +108,10 @@ Implement `name`, `isolation`, `egress`, `acquire`, `dispose`, `dispose_scope`. 
 
 Both `dispose` methods are best-effort by contract: purge must never fail a delete.
 
+**If you serve `FILES_OUT`, do not write the confinement walk yourself.** A path whose *parent* is a link satisfies every lexical test and still reads outside, and two backends written independently against the prose shipped that same escape ([#142](https://github.com/sokolaidev/maf-extensions/issues/142)). `maf_sandbox.paths.refuse_symlinked_parents` is that walk, taking your own stat — which must be **unconfined** (it covers the work dir's own ancestors) and **no-follow** (a stat that resolves a link describes its target and hides the escape).
+
+Then check yourself against `maf_sandbox.conformance`, **on a real instance**: probes that plant a hostile layout through your public surface and attack it. Fill in a `ConformanceSubject` — a sandbox, a working directory, and how your guest plants a file and a link, with `PosixGuestSubject` covering a Linux guest that has `ln` — and `await assert_files_out_conformance(subject)`. It imports no test framework, and a failure names every probe that failed rather than the first.
+
 ## Provenance
 
 Extracted from a production agent application, where this seam was written for its first execution surface: a tool that compiles agent-authored infrastructure code in a sandbox. The minimum-isolation floor above is not a preference — it is what a security review concluded when it worked through what a shared-kernel boundary does *not* close for code an agent wrote.

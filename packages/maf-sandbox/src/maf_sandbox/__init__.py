@@ -42,12 +42,17 @@ package writes nothing anywhere.
 
 This package imports no backend and no host application.
 
-One module sits deliberately outside that claim and is deliberately not re-exported here:
-:mod:`maf_sandbox.maf`, the MAF glue (``make_workspace_context``, ``sandboxed_tool``, and the
-purge participant).  It is the only module allowed to import ``agent_framework``, and keeping
-it off this ``__init__`` is what lets ``import maf_sandbox`` stay cheap and framework-free for
-a backend or a test that only speaks the protocol.  Reach it by name —
-``from maf_sandbox.maf import sandboxed_tool``.
+One module sits outside that claim: :mod:`maf_sandbox.maf`, the MAF glue
+(``make_workspace_context``, ``sandboxed_tool``, and the purge participant).  It is the only
+module allowed to import ``agent_framework``, and keeping it off this ``__init__`` is what
+lets ``import maf_sandbox`` stay cheap and framework-free for a backend or a test that only
+speaks the protocol.
+
+Three more are stdlib-only but still reached by name rather than re-exported, each because
+reaching for it is a foreseeable mistake: :mod:`maf_sandbox.testing` in production code,
+:mod:`maf_sandbox.paths` against a *host* filesystem path, and
+:mod:`maf_sandbox.conformance` anywhere but a backend's own test suite.  The rule is in
+``docs/design/sandbox-architecture.md``, under "Where shared code lives".
 """
 
 from __future__ import annotations

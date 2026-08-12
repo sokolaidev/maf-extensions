@@ -114,7 +114,8 @@ Four more decisions, each paying for itself:
 class EntryKind(StrEnum):
     FILE = "file"           # a regular file, the only kind that may be read
     DIRECTORY = "directory"
-    OTHER = "other"         # symlink, junction, reparse point, device, socket, fifo — never read
+    SYMLINK = "symlink"     # a link, junction or reparse point — never read, never walked through
+    OTHER = "other"         # device, socket, fifo — or a link a backend cannot recognise
 
 @dataclass(frozen=True)
 class SandboxEntry:
@@ -132,7 +133,15 @@ class Sandbox(Protocol):
 
 `size_bytes` is `int | None`, and **`None` fails closed**: ACAS's stat payload reports `size` as an optional integer, so coercing unknown to `0` would make a size cap read that file as free — as would passing on a negative, which clears the pre-read check outright and then reduces the collection's running total. An entry whose size cannot be determined, or cannot be believed, is refused rather than read.
 
-`kind` is a **typed field**, not a mode string to parse. ACAS's `FileInfo` carries `is_directory` and nothing else about type — no symlink flag, and `mode` is an int of permission bits with no `S_IFMT` in it — so the backend reads the service's raw payload, which does carry `isSymlink` and `symlinkTarget`; Docker's stat carries both a Go `ModeSymlink` bit and an explicit `linkTarget`. `OTHER` also absorbs Windows junctions and reparse points, so the vocabulary survives a non-POSIX guest.
+`kind` is a **typed field**, not a mode string to parse. ACAS's `FileInfo` carries `is_directory` and nothing else about type — no symlink flag, and `mode` is an int of permission bits with no `S_IFMT` in it — so the backend reads the service's raw payload, which does carry `isSymlink` and `symlinkTarget`; Docker's stat carries both a Go `ModeSymlink` bit and an explicit `linkTarget`. `OTHER` absorbs whatever is left, so the vocabulary survives a non-POSIX guest.
+
+**`SYMLINK` is split out of `OTHER` because the component walk below needs a four-way answer** ([#214](https://github.com/sokolaidev/maf-extensions/issues/214)): regular file, directory (keep walking), link (an escape), anything else non-regular (an ordinary `ENOTDIR`). Both refusals happen either way, so what the split buys is the *reason* — and the reason is what made the walk unshareable. While the signal lived in a private `is_symlink` flag beside each backend's entries, the walk could only be written once per backend, which is what produced two copies of it. With the discriminator in the protocol the walk is one function, `maf_sandbox.paths.refuse_symlinked_parents`, and a backend opts in by calling it.
+
+A Windows junction or reparse point maps to `SYMLINK`, not `OTHER`. For confinement it is an escape like any other link, and leaving it behind would reintroduce the bug on a non-POSIX guest while looking correct.
+
+Two shapes were priced and rejected. `link_target: str | None` — which both backends already have — is more than the walk needs and points the wrong way: it invites a reader to reason about where the link *goes*, a judgement made with the guest's filesystem in view and answered with whichever one the reader can see. `is_symlink: bool = False` is additive and breaks nothing, and that is the problem: a defaulted boolean can simply not be read, which is the failure mode this family of bugs is made of, and it makes `kind=FILE, is_symlink=True` representable.
+
+A backend that cannot recognise a link reports `OTHER`, which stays honest: it fails closed at every read and refuses the same paths, losing only the precision of the refusal. Neither shipped backend needs it.
 
 ### Caps
 
@@ -206,6 +215,12 @@ Only regular files are ever read. A symlink is refused whether or not its target
 The reference backend's defence rests on an undocumented preview shape it has to read past the SDK to reach, and a payload that omits either flag is refused rather than assumed regular. That is acceptable only stated plainly, and it is raised upstream ([#136](https://github.com/sokolaidev/maf-extensions/issues/136)): `FileInfo` ought to carry the entry type the service already sends.
 
 Classifying the last component is not enough on any of them. A symlinked *parent* is invisible in the final entry's stat — `out -> /etc` makes `out/hostname` a regular 12-byte file — so both real backends stat every parent component from the filesystem root down and refuse a link found in the chain, on `stat_file` as much as on the read. Only a link is a confinement failure there; any other non-directory is an ordinary `ENOTDIR`. Neither API offers a no-follow read, so a guest that swaps a stat-ed component between the walk and the read is followed; that residual is stated rather than closed.
+
+That paragraph has now failed twice as prose ([#142](https://github.com/sokolaidev/maf-extensions/issues/142)), so it is a function and a suite as well. **`maf_sandbox.paths.refuse_symlinked_parents` is the walk itself**, taking a backend's own unconfined, no-follow stat — those two properties are the trap, since a confined stat cannot reach the work dir's ancestors and a following one describes the target instead of the link. The three implementations of the pull surface call it; sharing removes the duplication, and only the suite below catches a fourth that never calls it. **`maf_sandbox.conformance` is the same rule as probes**: they plant a hostile layout through a backend's own public surface (a link to a sibling of the working directory, a link as a final component, a regular file standing where a directory was expected) and attack it at `stat_file`, `read_file` and `list_dir`, since the duty lives at all three. Each probe carries the reason it exists, a failure names every probe that failed rather than the first, and a probe requiring a capability the backend never declared is skipped rather than failed. It imports no test framework: the module ships in the wheel.
+
+Two things it deliberately does not do. It does not prove the **premise** — that the provider really does resolve through a link, so the refusals are refusing something reachable — because establishing that means looking under a backend's own public surface, at its unconfined stat or its raw payload, and only that backend can. Each keeps that test at home. And it grades nothing: a backend that cannot recognise a link still refuses every path attacked, and fails the two probes about *naming* what it refused. That is a real gap rather than a tier, and no tier is invented for a backend that does not exist.
+
+Where each leg runs, stated because the legs are not equal: the docker backend answers the probes against a **real engine** on every pull request; the ACAS backend answers them against the live-payload simulator its own suite runs on, which is the closest thing available until a live sandbox is something a pull request can assume ([#33](https://github.com/sokolaidev/maf-extensions/issues/33)); and `InProcessSandbox` answers them in the core suite. That last leg is the weakest and is worth naming as such: the fake now runs the shared walk, so it refuses a seeded link standing where a directory was expected, but a seeded link has no target and nothing reads through one — a green there asserts shape, not safety. Both backends keep their own **premise** test for the half the suite cannot cover: that the provider really does answer through the link, so the refusals are refusing something reachable.
 
 ### Refusing a symlink is not the same as proving a regular file
 

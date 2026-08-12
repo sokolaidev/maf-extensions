@@ -1,13 +1,14 @@
-"""The promoted helpers are copies, and they must stay in step with the backends' private ones.
+"""The promoted confinement helper is a copy, and it must stay in step with the backends' own.
 
-`maf-sandbox-acas` and `maf-sandbox-docker` each carry their own guest-path confinement and their
-own `_directory_chain`, which the promoted versions were lifted from. They cannot adopt the shared
-ones until a core release moves their pinned `maf-sandbox` floor past the one that added them, so
-several copies stand until then; this is the price paid to make drift loud. A fix made in one
-package without the others must fail here, not in production.
+`maf-sandbox-acas` and `maf-sandbox-docker` each carry their own guest-path confinement, which the
+promoted version was lifted from. They cannot adopt the shared one until a core release moves their
+pinned `maf-sandbox` floor past the one that added it, so the copies stand until then; this is the
+price paid to make drift loud. A fix made in one package without the others must fail here, not in
+production.
 
-Both halves are covered — the ancestor walk and the confinement entry point — because a claim that
-drift is caught is worth only the pairs actually compared.
+The ancestor walk was the other half and is gone from both backends, which is what this suite was
+holding the line for: they call `maf_sandbox.paths.refuse_symlinked_parents` now, so there is no
+second copy left to compare against and a mirror asserting nothing is worse than no mirror.
 
 The backends are this package's *dependents*, so they are imported defensively: a wheel-only
 install has neither, and skipping is right there. Only an absent backend skips. An import that
@@ -23,7 +24,7 @@ from types import ModuleType
 
 import pytest
 
-from maf_sandbox.paths import confine_guest_path, guest_directory_chain
+from maf_sandbox.paths import confine_guest_path
 
 _BACKENDS = ("maf_sandbox_acas._backend", "maf_sandbox_docker._backend")
 
@@ -89,25 +90,6 @@ _DRIFTED = (
     "This is a deliberate mirror until the backends' dependency floor lets them import the "
     "shared one, so a change to either must be made to both in the same breath, or this fails."
 )
-
-
-class TestTheAncestorWalkMatchesTheBackendCopies:
-    @pytest.mark.parametrize("module_name", _BACKENDS)
-    @pytest.mark.parametrize(("guest_path", "working_directory"), _CASES)
-    def test_the_promoted_walk_answers_what_the_backend_answers(
-        self, module_name: str, guest_path: str, working_directory: str
-    ):
-        module = _backend(module_name)
-        if module is None:
-            pytest.skip(f"{module_name} is not installed in this environment")
-        # Absent as well as uninstalled: a backend that adopts the shared walk drops its own
-        # copy, and this mirror should stop applying then rather than error on the attribute.
-        theirs = getattr(module, "_directory_chain", None)
-        if theirs is None:
-            pytest.skip(f"{module_name} no longer carries its own walk")
-        assert guest_directory_chain(guest_path, working_directory) == theirs(
-            guest_path, working_directory
-        ), f"{module_name}._directory_chain has drifted. {_DRIFTED}"
 
 
 class TestConfinementMatchesTheBackendCopies:

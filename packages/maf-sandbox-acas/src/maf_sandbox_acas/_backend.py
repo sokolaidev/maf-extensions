@@ -16,7 +16,6 @@ import logging
 import posixpath
 import shlex
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 from hashlib import sha256
 from typing import Any, cast
 
@@ -36,6 +35,7 @@ from maf_sandbox import (
     TransferLimits,
     error_detail,
 )
+from maf_sandbox.paths import refuse_symlinked_parents
 
 from ._config import AcasSandboxConfig
 from ._images import qualify_image_reference, resolve_disk_image_id
@@ -156,27 +156,6 @@ def _confined(path: str, working_directory: str) -> tuple[str, str]:
     return resolved, relative
 
 
-def _directory_chain(guest_path: str, working_directory: str) -> tuple[str, ...]:
-    """Every directory from the filesystem root down to ``guest_path``, outermost first.
-
-    The walk starts *above* ``working_directory`` rather than at it: a nested work dir has
-    ancestors the guest can replace, and stat-ing only the work dir follows straight through
-    them — with ``/acas -> /``, ``/acas/etc`` stats as a real directory and reads ``/etc``.
-    ``guest_path`` must already be confined.
-    """
-    base = posixpath.normpath(working_directory)
-    chain: list[str] = []
-    walked = ""
-    for segment in (s for s in base.split(_SEPARATOR) if s):
-        walked = f"{walked}{_SEPARATOR}{segment}"
-        chain.append(walked)
-    relative = _relative_path(guest_path, base)
-    if relative:
-        for segment in relative.split(_SEPARATOR):
-            chain.append(posixpath.join(chain[-1] if chain else _SEPARATOR, segment))
-    return tuple(chain)
-
-
 def _relative_path(guest_path: str, base: str) -> str | None:
     """``guest_path`` relative to ``base``, or ``None`` when it does not sit inside it.
 
@@ -191,23 +170,8 @@ def _relative_path(guest_path: str, base: str) -> str | None:
     return guest_path[len(prefix) :]
 
 
-@dataclass(frozen=True)
-class _GuestStat:
-    """One statted guest path: the protocol's entry, plus what the payload said it was.
-
-    :data:`~maf_sandbox.EntryKind.OTHER` is the protocol's word for every non-regular,
-    non-directory entry, so the entry alone cannot tell the component walk whether a path
-    through this component leaves the working directory or is merely ``ENOTDIR``.  The
-    payload's ``isSymlink`` knows, so it is carried here rather than collapsed away before
-    the walk sees it.
-    """
-
-    entry: SandboxEntry
-    is_symlink: bool
-
-
-def _stat_from_payload(payload: Mapping[str, Any], relative_path: str) -> _GuestStat:
-    """One raw stat payload as a :class:`_GuestStat`.
+def _stat_from_payload(payload: Mapping[str, Any], relative_path: str) -> SandboxEntry:
+    """One raw stat payload as a :class:`~maf_sandbox.SandboxEntry`.
 
     A payload missing either type flag is **refused**, never read as a regular file: those two
     booleans are the whole of this backend's symlink refusal, so a service that stops sending
@@ -224,14 +188,10 @@ def _stat_from_payload(payload: Mapping[str, Any], relative_path: str) -> _Guest
             "at, so an unknown type is a read of the wrong file."
         )
     if is_symlink:
-        entry = SandboxEntry(path=relative_path, kind=EntryKind.OTHER, size_bytes=None)
-    elif is_dir:
-        entry = SandboxEntry(path=relative_path, kind=EntryKind.DIRECTORY, size_bytes=None)
-    else:
-        entry = SandboxEntry(
-            path=relative_path, kind=EntryKind.FILE, size_bytes=_size_bytes(payload)
-        )
-    return _GuestStat(entry=entry, is_symlink=is_symlink)
+        return SandboxEntry(path=relative_path, kind=EntryKind.SYMLINK, size_bytes=None)
+    if is_dir:
+        return SandboxEntry(path=relative_path, kind=EntryKind.DIRECTORY, size_bytes=None)
+    return SandboxEntry(path=relative_path, kind=EntryKind.FILE, size_bytes=_size_bytes(payload))
 
 
 def _size_bytes(payload: Mapping[str, Any]) -> int | None:
@@ -366,14 +326,13 @@ class _AcasSandbox:
         metadata from outside the boundary.
 
         The **final** component is described rather than refused: a link reported as
-        :data:`~maf_sandbox.EntryKind.OTHER` is how a caller learns it is one.
+        :data:`~maf_sandbox.EntryKind.SYMLINK` is how a caller learns it is one.
         """
         guest, relative = _confined(path, working_directory)
         await self._refuse_symlinked_parents(guest, working_directory=working_directory)
-        stat = await self._stat_guest(guest, relative)
-        return stat.entry if stat is not None else None
+        return await self._stat_guest(guest, relative)
 
-    async def _stat_guest(self, guest: str, relative: str) -> _GuestStat | None:
+    async def _stat_guest(self, guest: str, relative: str) -> SandboxEntry | None:
         """Stat an absolute guest path, with no confinement check of its own.
 
         Split out because the component walk stats the working directory's own ancestors, which
@@ -390,32 +349,20 @@ class _AcasSandbox:
     async def _refuse_symlinked_parents(
         self, guest: str, *, working_directory: str, include_guest: bool = False
     ) -> None:
-        """Refuse unless every parent of ``guest``, from the root down, is a real directory.
+        """The protocol's component walk, over this backend's own unconfined stat.
 
-        A symlinked *parent* is invisible in the final entry's stat: with ``/work/out -> /etc``,
-        ``out/hostname`` stats as a regular 12-byte file and reads ``/etc/hostname``.  So
-        confinement is a walk down the components, not a judgement about the last one — this
-        API offers no no-follow read and no realpath to do it in one call.  One stat each.
-
-        Only a link is a confinement failure.  A FIFO or a device node standing where a
-        directory was expected is an ordinary ``ENOTDIR``, and reporting it as an escape would
-        name a fault the guest did not commit.
-
-        ``include_guest`` extends the walk to ``guest`` itself, which :meth:`list_dir` needs:
-        the service enumerates through a symlinked directory as readily as it reads through one.
+        A symlinked *parent* is invisible in the final entry's stat — with ``/work/out -> /etc``,
+        ``out/hostname`` stats as a regular 12-byte file and reads ``/etc/hostname`` — and this
+        API offers no no-follow read and no realpath to settle it in one call, so it costs one
+        stat per component.  ``include_guest`` is what :meth:`list_dir` needs: the service
+        enumerates through a symlinked directory as readily as it reads through one.
         """
-        deepest = guest if include_guest else posixpath.dirname(guest)
-        for directory in _directory_chain(deepest, working_directory):
-            stat = await self._stat_guest(directory, directory)
-            if stat is None:
-                return
-            if stat.is_symlink:
-                raise ValueError(
-                    f"{directory!r} is a link rather than a real directory, so a path through "
-                    f"it does not stay inside working directory {working_directory!r}"
-                )
-            if stat.entry.kind is not EntryKind.DIRECTORY:
-                raise NotADirectoryError(f"{directory!r} is not a directory")
+        await refuse_symlinked_parents(
+            lambda directory: self._stat_guest(directory, directory),
+            guest,
+            working_directory,
+            include_self=include_guest,
+        )
 
     async def read_file(self, path: str, *, working_directory: str, max_bytes: int) -> bytes:
         """Read the regular file at ``path``, refusing anything over ``max_bytes``.
@@ -438,10 +385,9 @@ class _AcasSandbox:
         guest, relative = _confined(path, working_directory)
         await self._refuse_symlinked_parents(guest, working_directory=working_directory)
         # `_stat_guest` rather than `stat_file`, which would walk the same parents a second time.
-        stat = await self._stat_guest(guest, relative)
-        if stat is None:
+        entry = await self._stat_guest(guest, relative)
+        if entry is None:
             raise FileNotFoundError(f"no such file: {path!r}")
-        entry = stat.entry
         if entry.kind is not EntryKind.FILE:
             raise OSError(
                 f"{path!r} is a {str(entry.kind)!r} entry and only a regular file is ever read. "
@@ -505,7 +451,7 @@ class _AcasSandbox:
         return tuple(
             _stat_from_payload(
                 entry, _listed_entry_path(entry, listed=guest, working_directory=working_directory)
-            ).entry
+            )
             for entry in _listed_entries(payload, path)
         )
 

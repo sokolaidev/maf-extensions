@@ -1,15 +1,16 @@
 """Live tests against a real ``docker`` engine and a real container image.
 
 Skipped unless the ``docker`` client is on ``PATH`` and ``MAF_SANDBOX_DOCKER_E2E_IMAGE`` names
-an image to run. This module is added here but **not yet wired on in CI**: unlike the wslc live
-suite, its gate is satisfiable on this repository's own runners (Docker is preinstalled), so the
-samples-and-CI rollout will set ``MAF_SANDBOX_DOCKER_E2E_IMAGE`` in ``tests.yml`` and turn it on
-for every pull request. Until then it runs only where a developer sets the variable by hand. It
-is the acceptance gate for the ``FILES_OUT`` protocol: the offline suite pins every command
+an image to run. Both are set by the ``docker-e2e`` job in ``tests.yml``, so this runs on
+**every pull request** — the one live backend suite that can, since wslc needs Windows and acas
+needs a billable Azure sandbox. Locally it runs where a developer sets the variables by hand.
+
+It is the acceptance gate for the ``FILES_OUT`` protocol: the offline suite pins every command
 line, and what is left to prove is that a real engine does what this backend believes — that a
 declared output written by a workload stats and comes back byte-identical, that an over-cap
-output is refused before its content moves, and that a symlinked output is refused on the tar
-entry's type bit.
+output is refused before its content moves, that a symlinked output is refused on the tar
+entry's type bit, and that the shared probes in :mod:`maf_sandbox.conformance` come back clean
+against a real daemon rather than against a fake that agrees with this package.
 
 Deliberately lightweight: a tiny image, no model, seconds not minutes. The image is read from
 the environment rather than written down here so a local tag never becomes a committed one; any
@@ -36,6 +37,7 @@ from maf_sandbox import (
     TransferLimits,
     collect_outputs,
 )
+from maf_sandbox.conformance import PosixGuestSubject, assert_files_out_conformance
 
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
 
@@ -176,7 +178,7 @@ class TestFilesOutAgainstARealEngine:
 
             entry = await sandbox.stat_file("link", working_directory=_WORK)
             assert entry is not None
-            assert entry.kind is EntryKind.OTHER  # never FILE
+            assert entry.kind is EntryKind.SYMLINK  # never FILE
 
             with pytest.raises(OSError):
                 await sandbox.read_file("link", working_directory=_WORK, max_bytes=1 << 20)
@@ -208,12 +210,50 @@ class TestFilesOutAgainstARealEngine:
             # engine really does answer through the link — and the public surface now refuses it.
             escaped = await sandbox._stat_guest(f"{_WORK}/out/hostname", "out/hostname")
             assert escaped is not None
-            assert escaped.entry.kind is EntryKind.FILE  # the parent link is invisible here
+            assert escaped.kind is EntryKind.FILE  # the parent link is invisible here
 
             with pytest.raises(ValueError, match="real directory"):
                 await sandbox.stat_file("out/hostname", working_directory=_WORK)
             with pytest.raises(ValueError, match="real directory"):
                 await sandbox.read_file("out/hostname", working_directory=_WORK, max_bytes=1 << 20)
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+    def test_it_answers_the_shared_conformance_probes(self):
+        """`maf_sandbox.conformance`, against a real engine — the suite's whole point.
+
+        Everything else in this class is this backend's own reading of the rule. These probes
+        are the reading every backend serving `FILES_OUT` is held to, planted through the public
+        surface and attacked there, so what passes is the daemon's real resolution behaviour
+        rather than a fake that agrees with whoever wrote it (#142, #214).
+
+        The premise stays at home, in `test_docker_backend.py`: only this package can ask its
+        unconfined `_stat_guest` whether the engine really does answer through the link.
+        """
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(_key(scope), _spec())
+            results = await assert_files_out_conformance(
+                PosixGuestSubject(
+                    sandbox=sandbox,
+                    working_directory=_WORK,
+                    capabilities=backend.capabilities,
+                )
+            )
+            # The listing probes are skipped here and nowhere else: this backend does not
+            # declare FILES_LIST, and a silent change to that would otherwise go green.
+            skipped = {r.probe.name for r in results if r.skipped}
+            assert skipped == {
+                "listing-a-linked-directory",
+                "listing-through-a-linked-parent",
+                "listing-under-a-linked-ancestor",
+                "a-listing-names-its-links",
+            }
 
         try:
             asyncio.run(scenario())
