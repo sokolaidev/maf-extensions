@@ -47,7 +47,9 @@ def _backend_chain(module_name: str) -> Callable[[str, str], tuple[str, ...]] | 
         module = importlib.import_module(module_name)
     except ImportError:
         return None
-    return module._directory_chain
+    # Absent as well as unimportable: a backend that adopts the shared walk drops its own
+    # copy, and this mirror should stop applying then rather than error on the attribute.
+    return getattr(module, "_directory_chain", None)
 
 
 class TestGuestDirectoryChainMatchesTheBackendCopies:
