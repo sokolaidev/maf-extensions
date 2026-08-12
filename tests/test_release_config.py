@@ -17,6 +17,8 @@ from __future__ import annotations
 import fnmatch
 import json
 import re
+import shutil
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -347,6 +349,120 @@ class TestRoutineAutomationDoesNotClaimToCloseAnIssue:
         assert not found, (
             f"release-please.yml emits {found} into a pull request body it writes every "
             "release; the issue it names gets re-referenced forever. Drop the keyword."
+        )
+
+
+class TestTheProposalBodySurvivesTheShell:
+    """The pull request body the release workflow writes must still be prose after bash reads it.
+
+    It was not, once. The body was a multi-line double-quoted assignment, and the quotes around
+    `"Approve and run"` in the last paragraph closed the string: bash read the remainder as
+    commands and the step exited 127 on `and: command not found`. It failed after the tag and
+    after the publish dispatch, so the release was whole and only the proposal was lost — a
+    branch pushed to the remote with no pull request on it, which nothing reports.
+
+    `bash -n` does not catch this; the broken form parses cleanly and only misbehaves when run.
+    So this executes the fragment for real, against a temporary directory, and reads the file
+    it writes. A test that only checked syntax would have passed on the exact bug it was for.
+    """
+
+    _EXPECTED = (
+        # The phrase that broke it. Quotes are the failure mode, so this is the assertion.
+        'held at "Approve and run", the same as a Release PR\'s',
+        "**Check that it actually published before merging this.**",
+        "**The ceiling is uniform and is a claim about nobody's code.**",
+        "**The floor is a guess, and usually a wrong one.**",
+        "**To decline a floor without losing its ceiling**",
+        "**Then merge it, and let the dependent releases it cuts publish.**",
+    )
+
+    def _run_block(self, step_name: str) -> str:
+        """The step's `run:` script, dedented — the same text the runner's shell receives.
+
+        Read as text rather than through a YAML parser, for the reason the module docstring
+        gives: these tests carry no YAML dependency, and a block scalar is unambiguous enough
+        to slice on indentation.
+        """
+        lines = RELEASE_WORKFLOW.read_text(encoding="utf-8").splitlines()
+        start = next(
+            index
+            for index, line in enumerate(lines)
+            if line.strip() == f"- name: {step_name}"
+        )
+        run = next(
+            index
+            for index, line in enumerate(lines[start:], start)
+            if line.strip() == "run: |"
+        )
+        indent = len(lines[run]) - len(lines[run].lstrip()) + 2
+        body: list[str] = []
+        for line in lines[run + 1 :]:
+            if line.strip() and not line.startswith(" " * indent):
+                break
+            body.append(line[indent:])
+        return "\n".join(body)
+
+    def _body_fragment(self) -> str:
+        """Just the heredoc through the substitution — no git, gh or python3 to stand up."""
+        lines = self._run_block("Propose the dependents' range").splitlines()
+        start = next(
+            (i for i, line in enumerate(lines) if line.startswith("cat > ")), None
+        )
+        end = next(
+            (i for i, line in enumerate(lines) if line.startswith("sed -i ")), None
+        )
+        assert start is not None and end is not None, (
+            "the step no longer builds the body in a file — if it has gone back to a shell "
+            "variable, the prose is being parsed by bash again, which is the bug this is for"
+        )
+        assert start < end, "the substitution must follow the heredoc that needs it"
+        return "\n".join(lines[start : end + 1])
+
+    def test_the_body_is_written_intact(self, tmp_path: Path):
+        if shutil.which("bash") is None:
+            pytest.skip("no bash on PATH; the release runner is ubuntu-latest")
+        script = (
+            "set -euo pipefail\n"
+            "VERSION=1.2.3\n"
+            # `.` with the process started in tmp_path, rather than an absolute path: a
+            # Windows checkout may resolve `bash` to one that cannot read `C:/...`, and the
+            # test would then fail on the path instead of testing the body.
+            "RUNNER_TEMP=.\n"
+            f"{self._body_fragment()}\n"
+            'cat "$RUNNER_TEMP/range-body.md"\n'
+        )
+        # Through stdin rather than a path: a Windows checkout would otherwise hand a
+        # drive-lettered path to a shell that does not read one, and skip for the wrong reason.
+        # Bytes rather than `text=True`, because that translates the newlines on the way in and
+        # a shell handed `set -euo pipefail\r` rejects the option instead of the prose.
+        result = subprocess.run(
+            ["bash", "-s"],
+            input=script.encode("utf-8"),
+            capture_output=True,
+            cwd=tmp_path,
+        )
+        stdout = result.stdout.decode("utf-8")
+        assert result.returncode == 0, (
+            f"the body fragment did not survive bash (exit {result.returncode}): "
+            f"{result.stderr.decode('utf-8', 'replace').strip()}"
+        )
+        for phrase in self._EXPECTED:
+            assert phrase in stdout, f"the body lost {phrase!r}"
+        assert "1.2.3" in stdout, "the version was never substituted"
+        assert "@VERSION@" not in stdout, "a placeholder reached the pull request body"
+
+    def test_the_heredoc_does_not_expand(self):
+        """Quoting the delimiter is what makes the prose inert, and it has to stay quoted.
+
+        The test above would pass on an unquoted heredoc too, because nothing in today's body
+        expands. The next paragraph is the risk: this repository writes `maf-sandbox` and
+        `${VERSION}` in backticks everywhere else, and a backtick in an unquoted heredoc is
+        command substitution — the same failure again, with a different character.
+        """
+        fragment = self._body_fragment()
+        assert re.search(r"<<'\w+'", fragment), (
+            "the body heredoc must quote its delimiter (`<<'BODY'`) so nothing in the prose "
+            "is expanded; the version is substituted afterwards instead"
         )
 
 
