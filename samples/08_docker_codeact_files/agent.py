@@ -19,18 +19,24 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import sys
 from pathlib import Path
-from typing import Any
 
 from agent_framework import Agent, InMemoryAgentFileStore
 from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
-from maf_sandbox import Artifact, Isolation, LandedArtifact, OutputSink, SandboxRouter
-from maf_sandbox.maf import make_caller_context
+from maf_sandbox import (
+    Artifact,
+    Isolation,
+    LandedArtifact,
+    OutputSink,
+    SandboxRouter,
+    make_file_system_sink,
+)
+from maf_sandbox.maf import list_all_files, make_caller_context
 from maf_sandbox_codeact import CodeactOutputs, make_codeact_tools
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
+from _scaffold import require_env_vars
 
 # Keyed by (scope, thread_id, agent_dir); constants here since this program serves one request.
 SCOPE = "samples"
@@ -60,72 +66,27 @@ TASK = (
 MODEL_VARS = ("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_CHAT_MODEL")
 
 
-def require_env_vars(names: tuple[str, ...]) -> dict[str, str] | None:
-    """Read `names` from the environment, or report every one that is missing.
+def make_recording_sink(output_dir: Path, delivered: list[str]) -> OutputSink:
+    """`make_file_system_sink`, with this turn's names recorded as they land.
 
-    Worth failing on rather than warning about, for the reason sample 06 gives: an
-    unconfigured router produces an agent with no tools, which answers from the
-    model alone and looks like success.
+    The writing and the confinement are the library's — a sink that joins a validated name
+    onto a directory is still not safe, because the name says nothing about what is already
+    at the path it resolves to.  What is left here is the only part that belongs to the
+    application: `delivered` is *this turn's* record, and the directory cannot stand in for
+    it because it also holds whatever an earlier run left behind.
     """
-    missing = [name for name in names if not os.environ.get(name)]
-    if missing:
-        print("Not configured. These environment variables are unset:", file=sys.stderr)
-        for name in missing:
-            print(f"  {name}", file=sys.stderr)
-        print("\nSee this directory's README.md.", file=sys.stderr)
-        return None
-    return {name: os.environ[name] for name in names}
-
-
-async def list_all_files(store: Any) -> list[str]:
-    """Every file in the file store, as store-relative paths.
-
-    This listing is the **authority** for what `files` may name: the kind shares a
-    file only if it appears here, so a name the model invented — or read out of a
-    file it was given — resolves to nothing.  `list_children` returns entries one
-    level at a time, so walking the tree is the host's job rather than the store's
-    — sample 01's walker, unchanged, because the boundary is the same one.
-    """
-    paths: list[str] = []
-
-    async def walk(directory: str) -> None:
-        for entry in await store.list_children(directory):
-            child = f"{directory}/{entry.name}" if directory else entry.name
-            if entry.type == "directory":
-                await walk(child)
-            else:
-                paths.append(child)
-
-    await walk("")
-    return paths
-
-
-def make_markdown_sink(output_dir: Path, delivered: list[str]) -> OutputSink:
-    """Land each produced file under ``output_dir``, appending its name to ``delivered``.
-
-    ``delivered`` is this turn's record. The directory cannot stand in for it: it also
-    holds whatever an earlier run left behind.
-    """
-    root = output_dir.resolve()
+    landing = make_file_system_sink(
+        output_dir,
+        # No leading verb: the kind introduces this list with "Saved:" of its own.
+        display=lambda artifact, _destination: (
+            f"{artifact.name} ({len(artifact.content)} bytes), in {output_dir.name}/"
+        ),
+    )
 
     async def deliver(artifact: Artifact) -> LandedArtifact:
-        # Resolved and checked before anything is created, because `artifact.name` is
-        # validated only *lexically* upstream — no `..`, not absolute — and a symlink
-        # already sitting in `out/` would carry a write straight out of it. A sink refuses
-        # by raising. Still a check rather than a guarantee: resolving and writing are two
-        # calls, so a production sink wants no-follow primitives (see #142).
-        destination = (output_dir / artifact.name).resolve()
-        if not destination.is_relative_to(root):
-            raise ValueError(f"{artifact.name!r} resolves outside {output_dir.name}/")
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(artifact.content)
-        delivered.append(artifact.name)
-        return LandedArtifact(
-            name=artifact.name,
-            # No leading verb: the kind introduces this list with "Saved:" of its own.
-            display=f"{artifact.name} ({len(artifact.content)} bytes), in {output_dir.name}/",
-            handle=str(destination),
-        )
+        landed = await landing.deliver(artifact)
+        delivered.append(landed.name)
+        return landed
 
     return OutputSink(deliver)
 
@@ -165,7 +126,7 @@ async def run() -> int:
         # Files out: a sink and a naming road. `DECLARED` makes the model say what its
         # program will write before it runs, which is the road that can report a name
         # declared and never written — the diagnostic `MANIFEST` cannot have.
-        output_sink=make_markdown_sink(OUTPUT_DIR, delivered),
+        output_sink=make_recording_sink(OUTPUT_DIR, delivered),
         outputs=CodeactOutputs.DECLARED,
         image=CODEACT_IMAGE,
     )
