@@ -79,6 +79,7 @@ from ._outputs import (
     OutputSink,
     SandboxArtifactNameCollision,
     SandboxArtifactNameInvalid,
+    SandboxLandingNotConfined,
     SandboxOutputError,
     SandboxOutputMissing,
     SandboxOutputNotConfined,
@@ -89,6 +90,7 @@ from ._outputs import (
     SandboxTransferCapExceeded,
     collect_outputs,
     landing_outputs,
+    make_file_system_sink,
     missing_sink_refusal,
     portable_name,
     spec_lands_artifacts,
@@ -129,6 +131,7 @@ from ._router import (
     SandboxIdentityDenied,
     SandboxRouter,
     SandboxTransferLimitsNotPermitted,
+    ScopeDisposal,
 )
 
 __all__ = [
@@ -172,6 +175,7 @@ __all__ = [
     "SandboxEntry",
     "SandboxIdentityDenied",
     "SandboxKey",
+    "SandboxLandingNotConfined",
     "SandboxLimits",
     "SandboxOutputError",
     "SandboxOutputMissing",
@@ -185,6 +189,7 @@ __all__ = [
     "SandboxSpec",
     "SandboxTransferCapExceeded",
     "SandboxTransferLimitsNotPermitted",
+    "ScopeDisposal",
     "SourceIntegrity",
     "TransferLimits",
     "CallerContext",
@@ -192,6 +197,7 @@ __all__ = [
     "declaration_of",
     "error_detail",
     "landing_outputs",
+    "make_file_system_sink",
     "meets_floor",
     "missing_sink_refusal",
     "portable_name",

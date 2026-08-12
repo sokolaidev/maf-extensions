@@ -115,7 +115,9 @@ agent = Agent(client=client, name=agent_dir, instructions=..., tools=tools)
 
 **The request context.** `make_caller_context` takes *callables*, read per call, rather than values. A sandbox is keyed by `(scope, thread_id, agent_dir)`, and a host that builds one agent and serves many conversations with it would — if the scope and thread were captured at construction time — let one conversation address another conversation's sandbox. Nothing in this stack accepts a scope, a thread id or a file path from the model: the file store listing is the boundary that decides what a name is allowed to resolve to.
 
-**Disposal.** `SandboxPurger` participates in thread deletion, so deleting a conversation takes its sandboxes with it, and `dispose_scope` deletes by service-side label — which reclaims sandboxes the calling replica never created.
+`list_all_files` above is `maf_sandbox.maf`'s — it walks the store's `list_children` one level at a time and answers store-relative paths. It sits beside `make_caller_context` rather than in core because it reads `FileStoreEntry.type`, which is the framework's. A workload with no file channel at all passes `list_no_files`, which is a stated decision rather than an empty lambda the next reader has to interpret. Either way a failure to enumerate **propagates**: answering an empty list would read as "the store has no files" and refuse every name for the wrong reason.
+
+**Disposal.** `SandboxPurger` participates in thread deletion, so deleting a conversation takes its sandboxes with it, and `dispose_scope` deletes by service-side label — which reclaims sandboxes the calling replica never created. A host that serves one conversation at a time can let `router.scope(scope, thread_id)` make that call for it: an async context manager that disposes however its block ends, and reports the count afterwards.
 
 Two behaviours are worth knowing before the first call, because both are deliberate and neither is what a host would arrive at by accident:
 

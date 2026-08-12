@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-from collections.abc import Iterable, Sequence
+from collections.abc import AsyncGenerator, Iterable, Sequence
+from contextlib import asynccontextmanager
 
 from ._protocol import (
     DEFAULT_CAPABILITIES,
@@ -41,7 +42,20 @@ __all__ = [
     "SandboxIdentityDenied",
     "SandboxRouter",
     "SandboxTransferLimitsNotPermitted",
+    "ScopeDisposal",
 ]
+
+
+@dataclasses.dataclass
+class ScopeDisposal:
+    """What :meth:`SandboxRouter.scope` reclaimed, filled in once its block has ended.
+
+    Mutable and read afterwards rather than returned, because a context manager's value is
+    bound before the work it wraps has happened.  Inside the block it reads zero and means
+    nothing.
+    """
+
+    disposed: int = 0
 
 
 #: The rungs, weakest first, rendered once for the refusal messages.
@@ -407,6 +421,27 @@ class SandboxRouter:
                 logger.warning(
                     "sandbox router: backend %s failed to dispose: %s", backend.name, exc
                 )
+
+    @asynccontextmanager
+    async def scope(self, scope: str, thread_id: str) -> AsyncGenerator[ScopeDisposal, None]:
+        """Serve one conversation, and reclaim its sandboxes when the block ends.
+
+        :meth:`dispose_scope` is the call every host has to remember and one will not — its own
+        reason says why that matters: a sandbox nobody reclaims is a sandbox somebody pays for.
+        Here it runs however the block ends.
+
+        It cannot mask an application error.  :meth:`dispose_scope` already swallows each
+        backend's failure and logs it, so nothing raised on the way out replaces the exception
+        on its way past — which is the property that makes putting it in a ``finally`` safe.
+
+        The yielded object carries the count *after* the block, because a host that reports
+        what it reclaimed is the one that notices the day the number is zero.
+        """
+        disposal = ScopeDisposal()
+        try:
+            yield disposal
+        finally:
+            disposal.disposed = await self.dispose_scope(scope, thread_id)
 
     async def dispose_scope(self, scope: str, thread_id: str) -> int:
         """Delete every sandbox for ``(scope, thread_id)``, returning how many.

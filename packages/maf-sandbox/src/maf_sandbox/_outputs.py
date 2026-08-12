@@ -26,6 +26,7 @@ import unicodedata
 from collections.abc import Awaitable, Callable, Generator
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 
 from ._protocol import (
     DeclaredOutput,
@@ -44,6 +45,7 @@ __all__ = [
     "OutputSink",
     "SandboxArtifactNameCollision",
     "SandboxArtifactNameInvalid",
+    "SandboxLandingNotConfined",
     "SandboxOutputError",
     "SandboxOutputMissing",
     "SandboxOutputNotConfined",
@@ -54,6 +56,7 @@ __all__ = [
     "SandboxTransferCapExceeded",
     "collect_outputs",
     "landing_outputs",
+    "make_file_system_sink",
     "missing_sink_refusal",
     "portable_name",
     "spec_lands_artifacts",
@@ -137,6 +140,16 @@ class SandboxTransferCapExceeded(SandboxOutputError):
     """A collection asks to move more than the workload's own ``files_out`` caps allow."""
 
 
+class SandboxLandingNotConfined(SandboxOutputError):
+    """A sink refused a destination that resolved outside the root it lands under.
+
+    The host-side counterpart to :class:`SandboxOutputNotConfined`, and a separate name
+    because the remediation is not the same: that one says the *guest* named a path outside
+    its working directory, this one says the host's own landing directory has something in it
+    — a symlink, most likely — carrying a write elsewhere.
+    """
+
+
 class SandboxOutputSinkRequired(SandboxOutputError):
     """A spec declares an output that lands, and no sink was supplied to land it in."""
 
@@ -214,6 +227,57 @@ class OutputSink:
 
     deliver: Callable[[Artifact], Awaitable[LandedArtifact]]
     normalization: NameNormalization = NameNormalization.NFC
+
+
+def _landed_display(artifact: Artifact, _destination: Path) -> str:
+    """The default line a model sees for a landed artifact: its name and its size."""
+    return f"{artifact.name} ({len(artifact.content)} bytes)"
+
+
+def make_file_system_sink(
+    root: Path, *, display: Callable[[Artifact, Path], str] = _landed_display
+) -> OutputSink:
+    """An :class:`OutputSink` that writes each artifact under ``root``, refusing any that would
+    land outside it.
+
+    The refusal is why this exists; the writing is three lines.
+    :func:`validate_artifact_name` is **lexical** — it bounds the name and says nothing about
+    what is already sitting at the path that name resolves to — so a symlink in ``root`` carries
+    a write straight out of it, the host-side twin of the symlinked parent a guest path is
+    walked for.  Every host that lands to a filesystem has to make this check, and the two
+    that wrote it by hand here did not agree on whether to.
+
+    It stays a check rather than a guarantee: resolving and writing are two calls, so a
+    destination replaced in between is followed, and a host landing genuinely hostile output
+    wants no-follow primitives underneath.  What this closes is the standing case — something
+    already in the way when the run started.
+
+    ``display`` is the one line the model is allowed to see, and a kind that introduces its
+    artifacts in its own words supplies its own; ``handle`` is always the host path, which
+    nothing renders into the transcript.
+
+    Raises:
+        SandboxLandingNotConfined: when a destination resolves outside ``root``.
+    """
+    confined_root = root.resolve()
+
+    async def deliver(artifact: Artifact) -> LandedArtifact:
+        destination = (confined_root / artifact.name).resolve()
+        if not destination.is_relative_to(confined_root):
+            raise SandboxLandingNotConfined(
+                f"artifact {artifact.name!r} lands at {destination}, which is outside "
+                f"{confined_root}. Something on that path leaves the landing directory — a "
+                "link, most likely — and writing would follow it."
+            )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(artifact.content)
+        return LandedArtifact(
+            name=artifact.name,
+            display=display(artifact, destination),
+            handle=str(destination),
+        )
+
+    return OutputSink(deliver)
 
 
 def _nfc(name: str) -> str:

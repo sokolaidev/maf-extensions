@@ -50,6 +50,8 @@ _DEFAULT_LOGGER = logging.getLogger(__name__)
 __all__ = [
     "SandboxPurger",
     "SandboxToolSession",
+    "list_all_files",
+    "list_no_files",
     "make_caller_context",
     "sandbox_tool_declarations",
     "sandboxed_tool",
@@ -458,3 +460,41 @@ def sandboxed_tool(
         additional_properties=properties,
     )
     return [decorate(build(session))]
+
+
+async def list_all_files(store: Any) -> list[str]:
+    """Every file in ``store``, as store-relative paths.
+
+    The listing a workload is given is its **injection-pinning boundary**: only a name that
+    appears in it is ever substituted into a sandbox command, so a path the model invented
+    reaches no shell.  This walks, because ``list_children`` answers one level at a time and
+    the recursion is the host's to do rather than the store's.
+
+    It lives in this module rather than in core for the dependency, not the audience: the
+    entries it sorts are ``agent_framework``'s and it reads their ``type``.
+
+    A failure propagates.  Answering an empty list would read as "the store has no files" and
+    refuse every name for the wrong reason.
+    """
+    paths: list[str] = []
+
+    async def walk(directory: str) -> None:
+        for entry in await store.list_children(directory):
+            child = f"{directory}/{entry.name}" if directory else entry.name
+            if entry.type == "directory":
+                await walk(child)
+            else:
+                paths.append(child)
+
+    await walk("")
+    return paths
+
+
+async def list_no_files(_store: object) -> list[str]:
+    """Enumerate nothing — the listing for a workload with no file channel at all.
+
+    Not a stub standing in for unfinished work.  ``CallerContext.list_files`` is required, so
+    a workload that shares nothing still has to answer, and saying so by name keeps that a
+    stated decision rather than an empty lambda the next reader has to interpret.
+    """
+    return []

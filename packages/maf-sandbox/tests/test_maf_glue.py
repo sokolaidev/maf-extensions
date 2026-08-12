@@ -38,6 +38,8 @@ from maf_sandbox import (
 from maf_sandbox.maf import (
     SandboxPurger,
     SandboxToolSession,
+    list_all_files,
+    list_no_files,
     make_caller_context,
     sandbox_tool_declarations,
     sandboxed_tool,
@@ -727,3 +729,70 @@ class TestPurgerReExport:
         backend = InProcessSandboxBackend()
         purger = SandboxPurger(_router(backend))
         assert asyncio.run(purger.purge_scoped_thread("scope-a", "thread-1")) == 1
+
+
+@dataclasses.dataclass(frozen=True)
+class _Entry:
+    """The two `FileStoreEntry` fields the walk reads, and nothing else."""
+
+    name: str
+    type: str
+
+
+class _TreeStore:
+    """An `AgentFileStore` narrowed to `list_children`, answering one level at a time."""
+
+    def __init__(self, tree: dict[str, list[_Entry]], *, fails: Exception | None = None) -> None:
+        self._tree = tree
+        self._fails = fails
+        self.asked: list[str] = []
+
+    async def list_children(self, directory: str) -> list[_Entry]:
+        if self._fails is not None:
+            raise self._fails
+        self.asked.append(directory)
+        return self._tree.get(directory, [])
+
+
+class TestListAllFiles:
+    """The store walk four samples each wrote for themselves."""
+
+    def test_it_returns_every_file_as_a_store_relative_path(self):
+        store = _TreeStore(
+            {
+                "": [_Entry("a.txt", "file"), _Entry("infra", "directory")],
+                "infra": [_Entry("main.bicep", "file"), _Entry("modules", "directory")],
+                "infra/modules": [_Entry("net.bicep", "file")],
+            }
+        )
+
+        assert asyncio.run(list_all_files(store)) == [
+            "a.txt",
+            "infra/main.bicep",
+            "infra/modules/net.bicep",
+        ]
+
+    def test_directories_are_walked_and_never_listed_as_files(self):
+        """A directory in the listing would be a name a workload could substitute into a
+        command, and it is not a file it can act on."""
+        store = _TreeStore({"": [_Entry("infra", "directory")], "infra": []})
+
+        assert asyncio.run(list_all_files(store)) == []
+        assert store.asked == ["", "infra"]
+
+    def test_an_empty_store_lists_nothing(self):
+        assert asyncio.run(list_all_files(_TreeStore({"": []}))) == []
+
+    def test_a_store_failure_propagates_rather_than_reading_as_an_empty_store(self):
+        """The distinction the injection-pinning boundary rests on: "no files" and "could not
+        ask" refuse a name for entirely different reasons, and only one of them is the
+        caller's fault."""
+        store = _TreeStore({}, fails=RuntimeError("store is down"))
+
+        with pytest.raises(RuntimeError, match="store is down"):
+            asyncio.run(list_all_files(store))
+
+
+class TestListNoFiles:
+    def test_it_lists_nothing_whatever_it_is_handed(self):
+        assert asyncio.run(list_no_files(object())) == []

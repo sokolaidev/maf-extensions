@@ -88,34 +88,19 @@ A workload's only return channel used to be `ExecResult.stdout`, which is right 
 
 **Land it.** An `OutputSink` wraps a single `async def deliver(artifact) -> LandedArtifact`. This library holds no opinion about where an artifact goes — a directory, a blob container, a file store — which is what keeps that flow visible to the host's own information-flow policy instead of buried in a dependency. `LandedArtifact.display` is the one line the model is allowed to see; `handle` is the host's own reference, and nothing renders it into the transcript.
 
-**`validate_artifact_name` is lexical, so a sink still has to confine its own destination.** It refuses `..`, absolute paths, backslashes and empty segments, so the *name* cannot traverse — which is not the same as safe, because it says nothing about what is already sitting at the path that name resolves to. A symlink in the output directory carries the write straight out of it: the same failure class as [#142](https://github.com/sokolaidev/maf-extensions/issues/142), on the host side of the boundary. Resolve the destination first, then refuse anything that does not stay under the root. It remains a check rather than a guarantee — resolving and writing are two calls — so a sink taking hostile output wants no-follow primitives underneath it.
+**`validate_artifact_name` is lexical, so a sink still has to confine its own destination.** It refuses `..`, absolute paths, backslashes and empty segments, so the *name* cannot traverse — which is not the same as safe, because it says nothing about what is already sitting at the path that name resolves to. A symlink in the output directory carries the write straight out of it: the same failure class as [#142](https://github.com/sokolaidev/maf-extensions/issues/142), on the host side of the boundary.
+
+**`make_file_system_sink(root)` is that check, packaged.** It resolves each destination, refuses anything leaving `root` with `SandboxLandingNotConfined`, creates the parents a nested name needs, and writes. Reach for it rather than writing the four lines yourself — two samples here wrote them by hand and only one got it right. Pass `display` when the kind introduces its artifacts in its own words. It stays a check rather than a guarantee, and that is a property of the filesystem rather than of the helper: resolving and writing are two calls, so a host landing genuinely hostile output wants no-follow primitives underneath. What it closes is the standing case — something already in the way when the run started.
+
+A sink landing somewhere that is *not* a filesystem — a blob container, a file store, a UI panel — writes its own `deliver` and owns the equivalent question for that destination.
 
 ```python
 from pathlib import Path
 
 from maf_sandbox import (
-    Artifact, Capability, DeclaredOutput, LandedArtifact, OutputSink, SandboxSpec,
-    TransferLimits, collect_outputs,
+    Capability, DeclaredOutput, SandboxSpec, TransferLimits, collect_outputs,
+    make_file_system_sink,
 )
-
-def file_system_sink(output_dir: Path) -> OutputSink:
-    root = output_dir.resolve()
-
-    async def deliver(artifact: Artifact) -> LandedArtifact:
-        # `artifact.name` was validated lexically, which is not the same as safe here:
-        # resolve first, and refuse anything that does not stay under `root`.
-        destination = (root / artifact.name).resolve()
-        if not destination.is_relative_to(root):
-            raise ValueError(f"{artifact.name!r} resolves outside {output_dir}")
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(artifact.content)
-        return LandedArtifact(
-            name=artifact.name,
-            display=f"{artifact.name} ({len(artifact.content)} bytes)",
-            handle=str(destination),
-        )
-
-    return OutputSink(deliver)
 
 spec = SandboxSpec(
     kind="diagram",
@@ -127,7 +112,15 @@ spec = SandboxSpec(
     files_out=TransferLimits(max_bytes_per_file=8 * 1024 * 1024, max_total_bytes=16 * 1024 * 1024, max_files=4),
 )
 
-landed = await collect_outputs(sandbox, spec, sink=file_system_sink(Path("out")))
+landed = await collect_outputs(sandbox, spec, sink=make_file_system_sink(Path("out")))
+```
+
+**Reclaim the sandboxes when the conversation ends.** `router.scope(scope, thread_id)` is an async context manager that calls `dispose_scope` however the block ends, and cannot mask an application error on its way out — `dispose_scope` already swallows and logs each backend's failure. Its own reason is why this is packaged rather than left to every host to remember: *a sandbox nobody reclaims is a sandbox somebody pays for.*
+
+```python
+async with router.scope(scope, thread_id) as reclaimed:
+    ...                                    # attach tools, run the turn
+print(f"Disposed {reclaimed.disposed} sandbox(es).")   # the count arrives after the block
 ```
 
 A workload whose artifact names are not knowable when its tool is built passes the same `DeclaredOutput` type to `collect_outputs(outputs=...)` instead. That is refused unless the spec sets `outputs_named_at_call_time`: without the flag, the tool was attached with no sink required of it and no outbound cap agreed, and collecting there would land artifacts behind both checks.
