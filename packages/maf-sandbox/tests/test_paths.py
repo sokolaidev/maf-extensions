@@ -38,6 +38,23 @@ class TestConfineGuestPath:
             "path '../etc/passwd' resolves outside working directory '/work'"
         )
 
+    def test_a_bare_dot_is_the_working_directory_itself(self):
+        """The base is inside itself, so this is the one accepted path with nothing below it —
+        an emptiness test in place of the `is None` would refuse it."""
+        assert confine_guest_path(".", _WORK_DIR) == "/work"
+
+    def test_an_empty_path_is_the_working_directory_itself(self):
+        assert confine_guest_path("", _WORK_DIR) == "/work"
+
+    def test_a_working_directory_with_a_trailing_separator_is_normalised_first(self):
+        """`working_directory` arrives as whatever the host wrote; unnormalised, `/work/` makes
+        the base its own non-descendant and `.` resolves outside it."""
+        assert confine_guest_path(".", "/work/") == "/work"
+        assert confine_guest_path("a.txt", "/work/") == "/work/a.txt"
+
+    def test_a_working_directory_with_a_dot_segment_is_normalised_first(self):
+        assert confine_guest_path("a.txt", "/work/.") == "/work/a.txt"
+
     def test_a_backslash_is_refused_before_anything_is_joined(self):
         """The protocol has one path grammar and `\\` is not a separator in it, whatever the
         host OS — so this is refused rather than normalised into one."""
@@ -85,3 +102,21 @@ class TestGuestDirectoryChain:
 
     def test_a_root_working_directory_has_no_ancestors_to_walk(self):
         assert guest_directory_chain("/out", "/") == ("/out",)
+
+    def test_a_working_directory_with_a_trailing_separator_is_normalised_first(self):
+        assert guest_directory_chain("/a/b/work/out", "/a/b/work/") == (
+            "/a",
+            "/a/b",
+            "/a/b/work",
+            "/a/b/work/out",
+        )
+
+    def test_a_working_directory_with_a_dot_segment_is_normalised_first(self):
+        """Unnormalised, the `.` becomes a chain entry of its own and the guest path's own
+        ancestors are dropped — the chain would stat everything except what it is for."""
+        assert guest_directory_chain("/a/b/work/out", "/a/b/work/.") == (
+            "/a",
+            "/a/b",
+            "/a/b/work",
+            "/a/b/work/out",
+        )

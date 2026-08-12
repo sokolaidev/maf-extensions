@@ -17,7 +17,8 @@ def confine_guest_path(path: str, working_directory: str) -> str:
     """POSIX-join ``path`` onto ``working_directory`` and refuse anything that escapes it.
 
     Raises a bare :class:`ValueError`, which ``maf_sandbox`` translates into
-    ``SandboxOutputNotConfined`` for the caller.
+    ``SandboxOutputNotConfined`` only on the pull surface — a kind calling this directly gets
+    the ``ValueError``.
     """
     if "\\" in path:
         raise ValueError(f"path {path!r} contains a backslash, which is not a valid separator")
