@@ -45,7 +45,7 @@ from maf_sandbox import (
     SandboxTransferCapExceeded,
     TransferLimits,
 )
-from maf_sandbox.paths import refuse_symlinked_parents
+from maf_sandbox.paths import confine_guest_path, refuse_symlinked_parents
 
 from ._config import DockerSandboxConfig
 from ._proxy import build_context
@@ -173,45 +173,6 @@ def _network_name(container: str) -> str:
 def _proxy_name(container: str) -> str:
     """The egress proxy paired with a sandbox container, derived from its name."""
     return f"{container}{_PROXY_SUFFIX}"
-
-
-#: The protocol's one path grammar, whatever the guest and the host each run.
-_SEPARATOR = "/"
-_BACKSLASH = "\\"
-
-
-def _guest_path(working_directory: str, path: str) -> str:
-    """The absolute guest path a ``working_directory``-relative output resolves to.
-
-    POSIX only — the protocol has one path grammar.  A backslash or a ``..`` that climbs out of
-    ``working_directory`` raises :class:`ValueError`, which :mod:`maf_sandbox._outputs`
-    translates into :class:`~maf_sandbox.SandboxOutputNotConfined` for the caller.  Refused
-    before any subprocess is built, so a traversal never reaches the engine.
-
-    Lexical, and only lexical: a symlinked *parent* satisfies every check here, which is what
-    :meth:`_DockerSandbox._refuse_symlinked_parents` exists to catch.
-    """
-    if _BACKSLASH in path:
-        raise ValueError(f"path {path!r} contains a backslash, which is not a valid separator")
-    base = posixpath.normpath(working_directory)
-    resolved = posixpath.normpath(posixpath.join(base, path))
-    if _relative_path(resolved, base) is None:
-        raise ValueError(f"path {path!r} resolves outside working directory {working_directory!r}")
-    return resolved
-
-
-def _relative_path(guest_path: str, base: str) -> str | None:
-    """``guest_path`` relative to ``base``, or ``None`` when it does not sit inside it.
-
-    Compared against ``base + "/"`` rather than ``base``, so a sibling sharing a string prefix
-    — ``/work/sub2`` under ``/work/sub`` — is not mistaken for a descendant.
-    """
-    if guest_path == base:
-        return ""
-    prefix = base if base.endswith(_SEPARATOR) else base + _SEPARATOR
-    if not guest_path.startswith(prefix):
-        return None
-    return guest_path[len(prefix) :]
 
 
 def _stat_from_tar_header(block: bytes, rel_path: str) -> SandboxEntry:
@@ -344,7 +305,7 @@ class _DockerSandbox:
         The **final** component is described rather than refused: a link reported as
         :data:`~maf_sandbox.EntryKind.SYMLINK` is how a caller learns it is one.
         """
-        guest = _guest_path(working_directory, path)
+        guest = confine_guest_path(path, working_directory)
         await self._refuse_symlinked_parents(guest, working_directory=working_directory)
         return await self._stat_guest(guest, posixpath.normpath(path))
 
@@ -368,9 +329,12 @@ class _DockerSandbox:
     async def _refuse_symlinked_parents(self, guest: str, *, working_directory: str) -> None:
         """The protocol's component walk, over this backend's own unconfined stat.
 
-        A link is only visible when it is the entry being tarred — the engine resolves the rest
-        of the path daemon-side — so a symlinked component has to be found by walking rather
-        than by judging the path that was asked for.  One header read per component.
+        The :func:`~maf_sandbox.paths.confine_guest_path` paired with it at every call site is
+        lexical, so a symlinked *parent* satisfies that one; this is what catches it.  A link
+        is only visible when it is the entry being tarred —
+        the engine resolves the rest of the path daemon-side — so a symlinked component has to
+        be found by walking rather than by judging the path that was asked for.  One header
+        read per component.
         """
         await refuse_symlinked_parents(
             lambda directory: self._stat_guest(directory, directory), guest, working_directory
@@ -389,7 +353,7 @@ class _DockerSandbox:
         The residual that walk cannot close: a guest that turns a stat-ed component into a link
         between the walk and the read wins, since ``docker cp`` has no no-follow form.
         """
-        guest = _guest_path(working_directory, path)
+        guest = confine_guest_path(path, working_directory)
         await self._refuse_symlinked_parents(guest, working_directory=working_directory)
         # Header + the most body the cap allows. A larger file is refused from the header alone,
         # so the extra bytes are never read; a file within the cap is fully present in this bound.
