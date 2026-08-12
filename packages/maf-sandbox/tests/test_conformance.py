@@ -223,9 +223,11 @@ class TestTheSuiteFailsAnImplementationThatDoesNot:
             "stat-through-a-linked-parent",
             "read-through-a-linked-parent",
             "a-linked-working-directory",
+            "a-linked-ancestor-of-the-working-directory",
             "a-plain-parent-is-not-an-escape",
             "listing-a-linked-directory",
             "listing-through-a-linked-parent",
+            "listing-under-a-linked-ancestor",
         }
 
     def test_the_read_probe_says_the_bytes_came_back(self):
@@ -263,8 +265,57 @@ class TestTheSuiteFailsAnImplementationThatDoesNot:
         failure = _results(_PlantsNothing(InProcessSandbox(), _BOTH))
         assert failure["a-legitimate-read-still-works"] is not None
 
+    def test_the_probe_below_a_linked_ancestor_is_the_one_that_reaches_the_acas_case(self):
+        """A walk that starts *at* the work dir passes the work-dir probe and fails this one.
+
+        The two are separate probes because they are separate mistakes, and the specimen here
+        makes only the second: it classifies the work dir it was handed and nothing above it.
+        """
+
+        class _WalksFromTheWorkDir(_Leaky):
+            def _walk(self, guest, working_directory, *, include_self=False):
+                del guest, include_self
+                found = self._classify(posixpath.normpath(working_directory))
+                if found is not None and found[0] is EntryKind.SYMLINK:
+                    raise ValueError("work dir is a link rather than a real directory")
+
+        subject = _LeakySubject(
+            sandbox=_WalksFromTheWorkDir(),
+            working_directory=_WORK,
+            capabilities=_BOTH,
+            exec_timeout=5,
+        )
+        failures = _results(subject)
+        assert failures["a-linked-working-directory"] is None
+        assert failures["a-linked-ancestor-of-the-working-directory"] is not None
+
 
 class TestWhatTheRunnerReports:
+    def test_a_probe_that_raises_something_other_than_an_assertion_still_reports(self):
+        """One backend error must fail its own probe, not take the run down with it.
+
+        A positive control calls the sandbox directly, so a backend answering with its own
+        `RuntimeError` would otherwise escape the runner and report none of the refusals that
+        did work.
+        """
+
+        class _StatExplodes(_Leaky):
+            async def stat_file(self, path: str, *, working_directory: str):
+                raise RuntimeError("the provider fell over")
+
+        subject = _LeakySubject(
+            sandbox=_StatExplodes(), working_directory=_WORK, capabilities=_BOTH, exec_timeout=5
+        )
+        results = asyncio.run(run_files_out_probes(subject))
+        assert len(results) == len(FILES_OUT_PROBES)
+        by_name = {r.probe.name: r.failure for r in results}
+        assert (
+            "raised RuntimeError: the provider fell over"
+            in by_name["a-legitimate-read-still-works"]
+        )
+        # The listing probes never touch `stat_file`, so they still answer for themselves.
+        assert by_name["listing-a-linked-directory"] is None
+
     def test_a_capability_the_backend_never_claimed_is_skipped_not_failed(self):
         subject = _FakeSubject(InProcessSandbox(), frozenset({Capability.FILES_OUT}))
         results = asyncio.run(run_files_out_probes(subject))
@@ -272,6 +323,7 @@ class TestWhatTheRunnerReports:
         assert skipped == {
             "listing-a-linked-directory",
             "listing-through-a-linked-parent",
+            "listing-under-a-linked-ancestor",
             "a-listing-names-its-links",
         }
         assert all(r.failure is None for r in results)
@@ -290,7 +342,7 @@ class TestWhatTheRunnerReports:
         assert "stat-through-a-linked-parent" in message
         assert "read-through-a-linked-parent" in message
         assert "why it is in the suite" in message
-        assert len(raised.value.failures) == 6
+        assert len(raised.value.failures) == 8
 
     def test_a_failure_reads_as_a_failed_assertion_without_a_test_framework(self):
         """This module ships in the wheel, so it imports no test framework to raise from.

@@ -251,6 +251,7 @@ class TestFilesOutAgainstARealEngine:
             assert skipped == {
                 "listing-a-linked-directory",
                 "listing-through-a-linked-parent",
+                "listing-under-a-linked-ancestor",
                 "a-listing-names-its-links",
             }
 

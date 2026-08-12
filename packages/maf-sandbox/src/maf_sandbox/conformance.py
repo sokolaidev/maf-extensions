@@ -157,6 +157,15 @@ class ConformancePaths:
         return f"{self.work}/link-dir"
 
     @property
+    def under_linked_directory(self) -> str:
+        """A working directory one level *inside* the link — the ``/acas -> /`` case.
+
+        Distinct from making the work dir itself the link: an implementation whose walk starts
+        at the work dir passes that one and still reads straight through this.
+        """
+        return f"{self.linked_directory}/sub"
+
+    @property
     def linked_file(self) -> str:
         """``work/link-file -> outside/secret.txt``: the escape, as a final component."""
         return f"{self.work}/link-file"
@@ -308,6 +317,40 @@ async def _probe_a_linked_working_directory(
         "stat against a working directory that is itself a link",
         subject.sandbox.stat_file("secret.txt", working_directory=paths.linked_directory),
     )
+    await _refused_with(
+        ValueError,
+        "read against a working directory that is itself a link",
+        subject.sandbox.read_file(
+            "secret.txt", working_directory=paths.linked_directory, max_bytes=_READ_CAP
+        ),
+    )
+
+
+async def _probe_a_linked_ancestor_of_the_working_directory(
+    subject: ConformanceSubject, paths: ConformancePaths
+) -> None:
+    await _refused_with(
+        ValueError,
+        "stat under a working directory whose own ancestor is a link",
+        subject.sandbox.stat_file("leaf.txt", working_directory=paths.under_linked_directory),
+    )
+    await _refused_with(
+        ValueError,
+        "read under a working directory whose own ancestor is a link",
+        subject.sandbox.read_file(
+            "leaf.txt", working_directory=paths.under_linked_directory, max_bytes=_READ_CAP
+        ),
+    )
+
+
+async def _probe_listing_under_a_linked_ancestor(
+    subject: ConformanceSubject, paths: ConformancePaths
+) -> None:
+    await _refused_with(
+        ValueError,
+        "listing a working directory whose own ancestor is a link",
+        subject.sandbox.list_dir(".", working_directory=paths.under_linked_directory),
+    )
 
 
 async def _probe_a_plain_parent_is_not_an_escape(
@@ -408,12 +451,23 @@ FILES_OUT_PROBES: tuple[Probe, ...] = (
     Probe(
         name="a-linked-working-directory",
         why=(
-            "the walk has to start above the working directory, not at it: a nested work dir "
-            "has ancestors the guest can replace, and stat-ing only the work dir follows "
-            "straight through them."
+            "the working directory is a component too. An implementation that classifies only "
+            "the parents of the path it was handed, relative to the work dir, never looks at "
+            "the work dir it resolved against."
         ),
         requires=frozenset({Capability.FILES_OUT}),
         run=_probe_a_linked_working_directory,
+    ),
+    Probe(
+        name="a-linked-ancestor-of-the-working-directory",
+        why=(
+            "the walk starts above the working directory, not at it: a nested work dir has "
+            "ancestors the guest can replace, and an implementation beginning at the work dir "
+            "stats straight through them. This is the /acas -> / case, and it is the one the "
+            "probe above does not reach."
+        ),
+        requires=frozenset({Capability.FILES_OUT}),
+        run=_probe_a_linked_ancestor_of_the_working_directory,
     ),
     Probe(
         name="a-plain-parent-is-not-an-escape",
@@ -440,6 +494,12 @@ FILES_OUT_PROBES: tuple[Probe, ...] = (
         "back names a caller goes on to read.",
         requires=frozenset({Capability.FILES_OUT, Capability.FILES_LIST}),
         run=_probe_listing_through_a_linked_parent,
+    ),
+    Probe(
+        name="listing-under-a-linked-ancestor",
+        why="the duty at the third entry point, for the ancestor case as well as the path's own.",
+        requires=frozenset({Capability.FILES_OUT, Capability.FILES_LIST}),
+        run=_probe_listing_under_a_linked_ancestor,
     ),
     Probe(
         name="a-listing-names-its-links",
@@ -474,6 +534,10 @@ async def run_files_out_probes(subject: ConformanceSubject) -> tuple[ProbeResult
 
     Every probe runs even after one fails, so a backend is told everything wrong with it at
     once.  One requiring a capability the subject does not declare is skipped, not failed.
+
+    Anything a probe raises is a failure of that probe and nothing else: a backend that answers
+    a positive control with its own ``RuntimeError`` would otherwise take the whole run down
+    and report none of the refusals that did work.
     """
     paths = await plant_layout(subject)
     declared = subject.capabilities
@@ -488,6 +552,10 @@ async def run_files_out_probes(subject: ConformanceSubject) -> tuple[ProbeResult
             await probe.run(subject, paths)
         except AssertionError as failed:
             results.append(ProbeResult(probe=probe, failure=str(failed)))
+        except Exception as raised:
+            results.append(
+                ProbeResult(probe=probe, failure=f"raised {type(raised).__name__}: {raised}")
+            )
         else:
             results.append(ProbeResult(probe=probe))
     return tuple(results)
