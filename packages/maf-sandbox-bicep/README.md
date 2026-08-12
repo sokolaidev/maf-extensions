@@ -41,6 +41,14 @@ What is Bicep-specific — the command templates, the accepted extensions, the S
 
 Its companion artefacts live outside this package, because a container image and a registry are not Python: a pinned Bicep image on Azure Linux, and the registry and pull identity that serve it. The hard-won behaviours of the pinned CLI — SARIF on stderr for `build` but stdout for `lint`, `build-params` for `.bicepparam`, config discovery only by walking up from the source file — are documented where they bite, in [`_tool.py`](https://github.com/sokolaidev/maf-extensions/blob/main/packages/maf-sandbox-bicep/src/maf_sandbox_bicep/_tool.py).
 
+## Upgrading to 0.6
+
+`0.6.0` follows `maf-sandbox` 0.11, which retired the word `workspace` from the vocabulary. It requires that release; there is no version of this package that works against both.
+
+**`make_bicep_tools` takes `file_store` where it took `workspace_store`.** It is the second positional parameter, so a call that passes it positionally needs no edit at all — only a keyword one does.
+
+**`safe_workspace_path` is `safe_listed_path`.** Same signature, same behaviour; it validates a name against the caller's file store listing, which is what the new name says and the old one did not.
+
 ## Provenance
 
 Split out of `maf-sandbox-acas` (which keeps the ACAS backend and nothing else) so this workload's dependency set states its portability: `maf-sandbox` + `agent-framework-core`, nothing more. Extracted from a production agent application, where it runs against real infrastructure code an agent wrote — which is where every behaviour documented above was learned.
