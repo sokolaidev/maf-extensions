@@ -321,10 +321,11 @@ jobs:
     name: samples/08_docker_codeact_files against a live container
     # The first live job to exercise the pull surface end to end — stat, read, cap, land —
     # and the first to assert on something other than stdout. Sample 07 is the other artifact
-    # sample and is not here: it authenticates against a plain OpenAI-compatible endpoint with
-    # a key, and there is no such secret in CI. Same runner economics as sample-06: a Docker
-    # container costs nothing and the model is reached with a federated credential. Runs for
-    # the same three packages, since it is the same router, backend and kind.
+    # sample and is not here: it authenticates the way this one does, but its guest is
+    # `images/diagram-sandbox`, which a job would have to build on the runner first (#191).
+    # Same runner economics as sample-06: a Docker container costs nothing and the model is
+    # reached with a federated credential. Runs for the same three packages, since it is the
+    # same router, backend and kind.
     if: >-
       inputs.package == ''
       || contains(fromJSON('["maf-sandbox", "maf-sandbox-codeact", "maf-sandbox-docker"]'), inputs.package)

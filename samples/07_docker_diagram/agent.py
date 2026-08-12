@@ -19,7 +19,8 @@ nothing reached from inside the library.  Samples 05 and 06 lean on a packaged k
 them.
 
 Nothing here needs Azure.  Any machine with a Docker-compatible engine runs the
-sandbox, and the model is any OpenAI-compatible endpoint, a local server included.
+sandbox, and the model is Azure OpenAI reached with `DefaultAzureCredential` — no
+API key in this program, the same wiring samples 01, 03, 05, 06 and 08 use.
 The boundary is a container, the egress is closed, and the guest image carries a
 renderer and nothing else — this directory's README says what each of those costs.
 Read it, along with the prerequisites and the environment variables, first.
@@ -35,7 +36,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from agent_framework import Agent
-from agent_framework.openai import OpenAIChatCompletionClient
+from agent_framework.openai import OpenAIChatClient
+from azure.identity.aio import DefaultAzureCredential
 from maf_sandbox import (
     Artifact,
     Capability,
@@ -79,9 +81,9 @@ OUTPUT_DIR = Path(__file__).parent / "out"
 #: the backend runs what is on this machine. See the README on why an unqualified tag is safe here.
 SANDBOX_VARS = ("DIAGRAM_SANDBOX_IMAGE",)
 
-#: Everything the chat model needs. `OPENAI_BASE_URL` is optional, so it is read separately:
-#: unset, the client talks to OpenAI.
-MODEL_VARS = ("OPENAI_API_KEY", "OPENAI_CHAT_MODEL")
+#: Everything the chat model needs. No key: auth is `DefaultAzureCredential`, which an
+#: `az login` session or a federated CI credential satisfies.
+MODEL_VARS = ("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_CHAT_MODEL")
 
 
 # --- The diagram-generator kind, written against the published protocol alone ----------------
@@ -398,12 +400,13 @@ async def run() -> int:
         print("No sandbox backend: render_diagram was not attached.", file=sys.stderr)
         return 2
 
+    credential = DefaultAzureCredential()
     try:
         agent = Agent(
-            client=OpenAIChatCompletionClient(
-                model=env["OPENAI_CHAT_MODEL"],
-                api_key=env["OPENAI_API_KEY"],
-                base_url=os.environ.get("OPENAI_BASE_URL"),
+            client=OpenAIChatClient(
+                model=env["AZURE_OPENAI_CHAT_MODEL"],
+                azure_endpoint=env["AZURE_OPENAI_ENDPOINT"],
+                credential=credential,
             ),
             name=AGENT_DIR,
             instructions=(
@@ -419,6 +422,7 @@ async def run() -> int:
     finally:
         deleted = await router.dispose_scope(SCOPE, THREAD_ID)
         print(f"\nDisposed {deleted} sandbox(es).")
+        await credential.close()
 
     return 0
 
