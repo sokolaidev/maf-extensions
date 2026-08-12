@@ -2,6 +2,13 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.12.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.11.0...maf-sandbox-v0.12.0) (2026-08-12)
+
+
+### Features
+
+* package the three app-facing helpers every sample wrote for itself ([#239](https://github.com/sokolaidev/maf-extensions/issues/239)) ([a0e77c0](https://github.com/sokolaidev/maf-extensions/commit/a0e77c0924d36bd8515eeb939f6b2a3e70e2ec4d))
+
 ## [0.11.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.10.0...maf-sandbox-v0.11.0) (2026-08-12)
 
 
