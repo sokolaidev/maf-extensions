@@ -1,20 +1,25 @@
 name: Verify (live)
 
-# Installs the PUBLISHED wheels into a clean environment and runs four samples, each asserting
-# its own workload actually ran: samples/01_acas_bicep (the compiler's diagnostics came back),
-# samples/03_acas_codeact (the 100th Fibonacci number came back from code run in the sandbox),
-# samples/06_docker_codeact (the same, in a Docker container instead of an Azure microVM), and
-# samples/08_docker_codeact_files (a workspace file went in and a declared artifact came back
-# out — the only one that asserts on something other than stdout).
+# Installs the PUBLISHED wheels into a clean environment and runs six samples, each asserting its
+# own workload actually ran: samples/01_acas_bicep and samples/05_docker_bicep (the compiler's
+# diagnostics came back), samples/03_acas_codeact and samples/06_docker_codeact (the 100th
+# Fibonacci number came back from code run in the sandbox), and samples/07_docker_diagram and
+# samples/08_docker_codeact_files (a file came back out — a rendered PNG and a declared summary,
+# the two that assert on something other than stdout). Each pair is one workload against a
+# billable Azure microVM and against a container, so a red on one side alone names the backend.
 # This is the half of issue #33 that runs after a release rather than on a pull request. The two
-# ACAS jobs each create a billable Azure sandbox and need a subscription; the two docker jobs
+# ACAS jobs each create a billable Azure sandbox and need a subscription; the four docker jobs
 # create no billable sandbox — their sandbox is a container on the runner — and need no sandbox
 # configuration at all. It runs on demand, and once after each release that could change what a
 # sample exercises (dispatched by publish-packages.yml).
 #
+# Samples 02 and 04 are the two with no job, and structurally: `wslc` needs Windows with a WSL
+# that ships it, which the Linux runners are not.
+#
 # Authentication is OIDC federation to Azure — no stored secret, matching how publishing works.
 # Everything each sample reads is non-secret configuration (endpoints and ids), held as
-# environment variables on the `live-verify` environment; the docker job reads only the model's.
+# environment variables on the `live-verify` environment; the docker jobs read only the model's,
+# and the two whose guest is built here read not even that.
 # See docs/maintainers.md.
 on:
   workflow_dispatch:
@@ -229,6 +234,89 @@ jobs:
           # stdlib-only, so the runner's own python3 runs it — no dependency on the venv above.
           python3 scripts/check_live_codeact_sample.py /tmp/sample03-out.txt
 
+  sample-05:
+    name: samples/05_docker_bicep against a live container
+    # Sample 01's workload and its `main.bicep`, in a Docker container on this runner instead of
+    # a billable Azure microVM — so the assertion is sample 01's too, and a red here while
+    # sample-01 is green is a statement about the backend rather than about the compiler. Runs
+    # for the router (maf-sandbox), the backend (maf-sandbox-docker) and its own kind
+    # (maf-sandbox-bicep); an acas, codeact or wslc release cannot change what this sample does.
+    if: >-
+      inputs.package == ''
+      || contains(fromJSON('["maf-sandbox", "maf-sandbox-bicep", "maf-sandbox-docker"]'), inputs.package)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # For the model only: `live-verify` holds the non-secret Azure OpenAI configuration and is
+    # half the federated-credential subject. The image this sample runs is built below rather
+    # than configured, so there is no sandbox variable to read.
+    environment: live-verify
+    permissions:
+      # Mints the OIDC token azure/login exchanges. No secret is involved.
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Install the published wheels into a clean environment
+        run: |
+          set -euo pipefail
+          uv venv /tmp/live
+          # `azure-identity` and `azure-core[aio]` are explicit for the reason sample 06's job
+          # gives: the docker backend depends on neither, and the sample authenticates the
+          # model with the async `DefaultAzureCredential`.
+          uv pip install --python /tmp/live/bin/python \
+            maf-sandbox-docker maf-sandbox-bicep agent-framework-openai \
+            azure-identity "azure-core[aio]"
+          uv pip list --python /tmp/live/bin/python
+
+      - name: Check the live configuration is present
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
+            AZURE_OPENAI_ENDPOINT AZURE_OPENAI_CHAT_MODEL; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::the live-verify environment is missing variables: ${missing[*]}. See docs/maintainers.md."
+            exit 1
+          fi
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # Where samples 06 and 08 run an MCR image that `docker run` pulls, this one's guest is
+      # built from this repository — the same context sample 01 imports into an Azure sandbox
+      # group, so the two jobs compile with one Bicep CLI and one rule set. The tag is local and
+      # unqualified because the backend runs what is already on the machine.
+      - name: Build the sandbox image
+        run: docker build -t bicep-sandbox:local images/bicep-sandbox
+
+      - name: Run sample 05 and assert the diagnostics came back
+        env:
+          BICEP_SANDBOX_IMAGE: bicep-sandbox:local
+          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+        run: |
+          set -euo pipefail
+          /tmp/live/bin/python samples/05_docker_bicep/agent.py | tee /tmp/sample05-out.txt
+          # Sample 01's assertion, unchanged: the same file compiled by the same CLI produces
+          # the same two rule ids, whatever ran it.
+          python3 scripts/check_live_sample.py /tmp/sample05-out.txt
+
   sample-06:
     name: samples/06_docker_codeact against a live container
     # The same task and assertion as sample-03, but the sandbox is a Docker container on this
@@ -317,15 +405,97 @@ jobs:
           # The same assertion as sample 03: same task, same one right answer, same disposal line.
           python3 scripts/check_live_codeact_sample.py /tmp/sample06-out.txt
 
+  sample-07:
+    name: samples/07_docker_diagram against a live container
+    # The pull surface driven by a kind defined in the sample rather than installed from a
+    # package — `sandboxed_tool`, `collect_outputs`, `OutputSink` and `DeclaredOutput` used the
+    # way a third party writing a kind uses them. That is what this job gates and sample-08
+    # does not. No kind package is involved, so a codeact, acas, bicep or wslc release cannot
+    # change what it does; the router and the backend can.
+    if: >-
+      inputs.package == ''
+      || contains(fromJSON('["maf-sandbox", "maf-sandbox-docker"]'), inputs.package)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # For the model only, as in sample-05: the guest image is built below, not configured.
+    environment: live-verify
+    permissions:
+      # Mints the OIDC token azure/login exchanges. No secret is involved.
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Install the published wheels into a clean environment
+        run: |
+          set -euo pipefail
+          uv venv /tmp/live
+          # No workload package: this sample's kind is its own source, written against
+          # `maf-sandbox` — which arrives as a dependency of the backend. That is the claim the
+          # job checks, so installing a kind package here would defeat it.
+          uv pip install --python /tmp/live/bin/python \
+            maf-sandbox-docker agent-framework-openai \
+            azure-identity "azure-core[aio]"
+          uv pip list --python /tmp/live/bin/python
+
+      - name: Check the live configuration is present
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
+            AZURE_OPENAI_ENDPOINT AZURE_OPENAI_CHAT_MODEL; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::the live-verify environment is missing variables: ${missing[*]}. See docs/maintainers.md."
+            exit 1
+          fi
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # Graphviz on a Debian base, built from this repository like sample-05's guest. Nothing
+      # pushes it anywhere: the backend runs what is on the machine.
+      - name: Build the sandbox image
+        run: docker build -t diagram-sandbox:local images/diagram-sandbox
+
+      - name: Run sample 07 and assert a rendered PNG came back out
+        env:
+          DIAGRAM_SANDBOX_IMAGE: diagram-sandbox:local
+          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+        run: |
+          set -euo pipefail
+          # As in sample-08: an image left behind by an earlier run would satisfy the on-disk
+          # half without this run having rendered anything.
+          rm -rf samples/07_docker_diagram/out
+          /tmp/live/bin/python samples/07_docker_diagram/agent.py | tee /tmp/sample07-out.txt
+          # The model's prose is not evidence a renderer ran, so the assertion is the disposal
+          # line and the PNG itself.
+          python3 scripts/check_live_diagram_sample.py \
+            /tmp/sample07-out.txt samples/07_docker_diagram/out/diagram.png
+
   sample-08:
     name: samples/08_docker_codeact_files against a live container
-    # The first live job to exercise the pull surface end to end — stat, read, cap, land —
-    # and the first to assert on something other than stdout. Sample 07 is the other artifact
-    # sample and is not here: it authenticates the way this one does, but its guest is
-    # `images/diagram-sandbox`, which a job would have to build on the runner first (#191).
-    # Same runner economics as sample-06: a Docker container costs nothing and the model is
-    # reached with a federated credential. Runs for the same three packages, since it is the
-    # same router, backend and kind.
+    # Both of the packaged CodeAct kind's file channels, in one turn: a workspace file in and a
+    # declared output back out. Sample-07 gates the same pull surface through a hand-written
+    # kind; this one gates what an adopter reaches for first, the channels the package itself
+    # exposes. Same runner economics as sample-06: a Docker container costs nothing and the
+    # model is reached with a federated credential. Runs for the same three packages, since it
+    # is the same router, backend and kind.
     if: >-
       inputs.package == ''
       || contains(fromJSON('["maf-sandbox", "maf-sandbox-codeact", "maf-sandbox-docker"]'), inputs.package)

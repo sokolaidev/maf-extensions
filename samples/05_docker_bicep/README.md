@@ -74,6 +74,8 @@ Three diagnostics, the same three sample 01 gets from a microVM in Azure. Sample
 
 There is not even a difference in where the config came from: sample 01, sample 02 and this one all run [the same image](../../images/bicep-sandbox/), and its `bicepconfig.json` sits at `/acas/work` — the work-dir root `maf-sandbox-bicep` fixes in its spec, and the only place Bicep will find it, because Bicep resolves that file solely by walking up from the source it is compiling.
 
+That sameness is what makes this sample worth gating: `verify-live.yml` builds the image on the runner and runs this and sample 01 against **sample 01's assertion**, on demand and once after each release of `maf-sandbox`, `maf-sandbox-bicep` or `maf-sandbox-docker`. One workload, one compiler, two backends — so a red here while sample 01 is green is a statement about the Docker backend, not about Bicep.
+
 ## Troubleshooting
 
 **The image is not found** — build it, from the repository root:
