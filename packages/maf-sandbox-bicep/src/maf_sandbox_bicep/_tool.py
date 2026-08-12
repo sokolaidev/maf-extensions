@@ -19,10 +19,10 @@ from time import perf_counter
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from maf_sandbox import SandboxRouter, SandboxSpec, WorkspaceContext, error_detail
+from maf_sandbox import CallerContext, SandboxRouter, SandboxSpec, error_detail
 from maf_sandbox.maf import SandboxToolSession, sandboxed_tool
 
-from ._paths import resolve_workspace_path
+from ._paths import resolve_listed_path
 from ._sarif import count_restore_failures, format_diagnostics, parse_sarif
 
 if TYPE_CHECKING:
@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-#: Capped so a large workspace cannot flood the model's context.
+#: Capped so a large file store cannot flood the model's context.
 _LISTING_HINT_MAX = 20
 
 
@@ -116,7 +116,7 @@ _MODULE_INDEX_HOST = "live-data.bicep.azure.com"
 _WORK_DIR = "/acas/work"
 
 # Fixed bicep command templates — no agent text interpolated.
-# {path} is substituted only after the path is validated against the workspace listing.
+# {path} is substituted only after the path is validated against the file store listing.
 # "|| true" ensures the exec exit code is always 0 (bicep exits non-zero on any diagnostic);
 # diagnostics come from the SARIF blob.
 # Note: `bicep build` emits SARIF on stderr; `2>&1` merges it into stdout so both legs read
@@ -166,9 +166,9 @@ def bicep_sandbox_spec(image: str | None = None, image_id: str | None = None) ->
 
 def make_bicep_tools(
     router: SandboxRouter | None,
-    workspace_store: "AgentFileStore",
+    file_store: "AgentFileStore",
     agent_dir: str,
-    context: WorkspaceContext,
+    context: CallerContext,
     *,
     image: str | None = None,
     image_id: str | None = None,
@@ -187,19 +187,19 @@ def make_bicep_tools(
 
     Args:
         router: The sandbox router, or ``None`` when sandboxing is not configured.
-        workspace_store: The agent's workspace store; file content is read from here and
+        file_store: The agent's file store; file content is read from here and
             written into the sandbox before the compiler runs.
         agent_dir: The agent's directory name. Baked into the sandbox key at factory time
             rather than taken from the model at call time.
         context: How to read the caller's scope and thread, and how to enumerate the
-            workspace.
+            file store.
         image: OCI reference of the Bicep sandbox image.
         image_id: A backend-native disk-image id, skipping resolution.
         exec_timeout_seconds: Per-command bound. A sandbox that stops answering must not
             hold the caller's turn open.
     """
     return sandboxed_tool(
-        lambda session: _bicep_validate_tool(session, workspace_store, exec_timeout_seconds),
+        lambda session: _bicep_validate_tool(session, file_store, exec_timeout_seconds),
         router=router,
         context=context,
         agent_dir=agent_dir,
@@ -253,7 +253,7 @@ def _bicep_validate_tool(
 
         Validating one file at a time is the common mistake here and produces
         ``BCP091 … could not find a part of the path`` for files that exist perfectly well
-        in the workspace.
+        in the file store.
 
         Args:
             files: Workspace-relative paths to validate — the whole set that compiles
@@ -281,7 +281,7 @@ def _bicep_validate_tool(
                     f"rejected: {name!r}"
                 )
 
-        # Enumerate the workspace so paths can be validated and content read.
+        # Enumerate the file store so paths can be validated and content read.
         ws_files = await session.list_files(store)
         if isinstance(ws_files, str):
             return ws_files
@@ -289,9 +289,9 @@ def _bicep_validate_tool(
         # Every call gets a fresh directory, because the sandbox is REUSED across fix rounds
         # and only the named files are written into it.
         #
-        # Without this, a file deleted from the workspace between rounds survives in the
+        # Without this, a file deleted from the file store between rounds survives in the
         # sandbox, and a template still referencing it *compiles* — the tool reports "no
-        # diagnostics" for something that cannot build from the actual workspace. A false
+        # diagnostics" for something that cannot build from the actual file store. A false
         # green, from the one tool whose entire purpose is compiler truth.
         #
         # A fresh directory rather than wiping the old one: `bicepconfig.json` lives at the
@@ -303,9 +303,9 @@ def _bicep_validate_tool(
         round_dir = f"{session.spec.work_dir}/{uuid4().hex[:12]}"
 
         # Validate each name against that listing (the injection guard).
-        validated: list[tuple[str, str]] = []  # (workspace_path, sandbox_path)
+        validated: list[tuple[str, str]] = []  # (store_path, sandbox_path)
         for name in files:
-            sandbox_path, listing_key, rejection = resolve_workspace_path(name, ws_files, round_dir)
+            sandbox_path, listing_key, rejection = resolve_listed_path(name, ws_files, round_dir)
             if rejection == "unsafe":
                 # No listing echoed back: that would invite a retry with another spelling.
                 return (
@@ -315,7 +315,7 @@ def _bicep_validate_tool(
             if rejection == "missing" or sandbox_path is None:
                 # Logged so hosts can count listing misses.
                 logger.warning(
-                    "bicep_validate: %r is not in this tool's workspace listing (%d file(s) "
+                    "bicep_validate: %r is not in this tool's file store listing (%d file(s) "
                     "visible) — the store wired here may be narrower than the agent's",
                     name,
                     len(ws_files),
@@ -356,15 +356,17 @@ def _bicep_validate_tool(
             try:
                 content = await store.read(name)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("bicep_validate: could not read %r from workspace: %s", name, exc)
-                results.append(f"Error: could not read {name!r} from workspace")
+                logger.warning(
+                    "bicep_validate: could not read %r from the file store: %s", name, exc
+                )
+                results.append(f"Error: could not read {name!r} from the file store")
                 continue
             if content is None:
                 # A store read can miss without raising (the file was listed, then removed).
                 # Writing `None` through would put the string "None" into the sandbox and
                 # report a syntax error against a file the agent never wrote.
                 logger.warning("bicep_validate: %r is listed but has no content", name)
-                results.append(f"Error: {name!r} is listed in the workspace but has no content")
+                results.append(f"Error: {name!r} is listed in the file store but has no content")
                 continue
 
             try:

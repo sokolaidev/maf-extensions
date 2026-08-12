@@ -24,6 +24,7 @@ from maf_sandbox import (
     DEFAULT_TRANSFER_LIMITS,
     MAX_ARTIFACT_NAME_BYTES,
     Artifact,
+    CallerContext,
     Capability,
     EntryKind,
     ExecResult,
@@ -36,7 +37,6 @@ from maf_sandbox import (
     SandboxOutputSinkRequired,
     SandboxRouter,
     TransferLimits,
-    WorkspaceContext,
 )
 from maf_sandbox.testing import InMemoryStore, InProcessSandbox, InProcessSandboxBackend
 
@@ -237,8 +237,8 @@ async def _listing(store: Any) -> list[str]:
     return [] if store is None else await store.list()
 
 
-def _context(*, thread_id: str | None = "thread-1") -> WorkspaceContext:
-    return WorkspaceContext(
+def _context(*, thread_id: str | None = "thread-1") -> CallerContext:
+    return CallerContext(
         current_scope=lambda: "scope-a",
         current_thread_id=lambda: thread_id,
         list_files=_listing,
@@ -571,7 +571,7 @@ class TestToolDescription:
         assert _MANIFEST_FILENAME not in plain
 
     def test_the_files_channel_is_described_when_it_exists(self):
-        described = self._description(workspace_store=InMemoryStore({}))
+        described = self._description(file_store=InMemoryStore({}))
         assert "``files``" in described
 
     def test_the_declared_outputs_channel_names_the_parameter(self):
@@ -604,7 +604,7 @@ class TestFilesIn:
     def test_a_listed_file_is_shared_under_its_own_name(self):
         sandbox = _ScriptedSandbox()
         store = InMemoryStore({"data/sales.csv": "a,b\n1,2\n"})
-        tool = _tool(_backend(sandbox), workspace_store=store)
+        tool = _tool(_backend(sandbox), file_store=store)
 
         _run(tool, "print('hi')", files=["data/sales.csv"])
         assert self._shared(sandbox) == {"data/sales.csv": "a,b\n1,2\n"}
@@ -614,7 +614,7 @@ class TestFilesIn:
         out of a file it was given, has nowhere to go."""
         sandbox = _ScriptedSandbox()
         store = InMemoryStore({"data/sales.csv": "x"})
-        tool = _tool(_backend(sandbox), workspace_store=store)
+        tool = _tool(_backend(sandbox), file_store=store)
 
         out = _run(tool, "print('hi')", files=["data/secrets.csv"])
         assert "not in this tool's file listing" in out
@@ -626,7 +626,7 @@ class TestFilesIn:
         """Echoing it would invite a retry with another spelling."""
         sandbox = _ScriptedSandbox()
         store = InMemoryStore({name: "x", "data/sales.csv": "y"})
-        tool = _tool(_backend(sandbox), workspace_store=store)
+        tool = _tool(_backend(sandbox), file_store=store)
 
         out = _run(tool, "print('hi')", files=[name])
         assert "cannot be shared" in out
@@ -642,7 +642,7 @@ class TestFilesIn:
         backslash that its name satisfies everything the tool asked for."""
         sandbox = _ScriptedSandbox()
         store = InMemoryStore({name: "x"})
-        tool = _tool(_backend(sandbox), workspace_store=store)
+        tool = _tool(_backend(sandbox), file_store=store)
 
         out = _run(tool, "print('hi')", files=[name])
         assert reason in out
@@ -655,7 +655,7 @@ class TestFilesIn:
         sandbox = _ScriptedSandbox()
         nested = f"{_PROGRAM_FILENAME}/data.csv"
         store = InMemoryStore({nested: "x"})
-        tool = _tool(_backend(sandbox), workspace_store=store)
+        tool = _tool(_backend(sandbox), file_store=store)
 
         out = _run(tool, "print('hi')", files=[nested])
         assert "cannot be shared" in out
@@ -665,7 +665,7 @@ class TestFilesIn:
         """`program.py.bak` shares no directory with it, so refusing it would be overreach."""
         sandbox = _ScriptedSandbox()
         store = InMemoryStore({f"{_PROGRAM_FILENAME}.bak": "x"})
-        tool = _tool(_backend(sandbox), workspace_store=store)
+        tool = _tool(_backend(sandbox), file_store=store)
 
         _run(tool, "print('hi')", files=[f"{_PROGRAM_FILENAME}.bak"])
         run_dir = _run_dirs(sandbox)[0]
@@ -674,7 +674,7 @@ class TestFilesIn:
     def test_the_program_file_cannot_be_shadowed_by_a_shared_file(self):
         sandbox = _ScriptedSandbox()
         store = InMemoryStore({_PROGRAM_FILENAME: "print('theirs')"})
-        tool = _tool(_backend(sandbox), workspace_store=store)
+        tool = _tool(_backend(sandbox), file_store=store)
 
         out = _run(tool, "print('mine')", files=[_PROGRAM_FILENAME])
         assert "cannot be shared" in out
@@ -685,7 +685,7 @@ class TestFilesIn:
         input would otherwise be read by the next program as a live one."""
         sandbox = _ScriptedSandbox()
         store = InMemoryStore({"a.csv": "1", "b.csv": "2"})
-        tool = _tool(_backend(sandbox), workspace_store=store)
+        tool = _tool(_backend(sandbox), file_store=store)
 
         _run(tool, "print(1)", files=["a.csv", "b.csv"])
         del store.files["a.csv"]
@@ -699,7 +699,7 @@ class TestFilesIn:
         """A store read can miss without raising — the file was listed, then removed. Writing
         `None` through would put the string "None" into the sandbox for the program to parse."""
         sandbox = _ScriptedSandbox()
-        tool = _tool(_backend(sandbox), workspace_store=_ListedButGoneStore("gone.csv"))
+        tool = _tool(_backend(sandbox), file_store=_ListedButGoneStore("gone.csv"))
 
         out = _run(tool, "print('hi')", files=["gone.csv"])
         assert "no content" in out
@@ -715,7 +715,7 @@ class TestTheInboundCapsAreEnforcedHere:
     none. Every refusal lands before the sandbox is acquired, and before any write."""
 
     def _tool(self, sandbox, store, **kw):
-        return _tool(_backend(sandbox), workspace_store=store, **kw)
+        return _tool(_backend(sandbox), file_store=store, **kw)
 
     def test_more_files_than_the_count_allows_are_refused(self):
         sandbox = _ScriptedSandbox()
@@ -765,7 +765,7 @@ class TestTheInboundCapsAreEnforcedHere:
         store = InMemoryStore({"a": "1", "b": "2"})
         tool = _tool(
             backend,
-            workspace_store=store,
+            file_store=store,
             files_in=replace(DEFAULT_TRANSFER_LIMITS, max_files=1),
         )
 

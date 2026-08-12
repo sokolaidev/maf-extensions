@@ -107,13 +107,13 @@ A host wires three things.
 
 ```python
 router = SandboxRouter([AcasSandboxBackend(config)])
-context = make_workspace_context(list_workspace, lambda: scope, lambda: thread_id)
+context = make_caller_context(list_all_files, lambda: scope, lambda: thread_id)
 tools = make_bicep_tools(router, store, agent_dir, context, image=image)
 
 agent = Agent(client=client, name=agent_dir, instructions=..., tools=tools)
 ```
 
-**The request context.** `make_workspace_context` takes *callables*, read per call, rather than values. A sandbox is keyed by `(scope, thread_id, agent_dir)`, and a host that builds one agent and serves many conversations with it would — if the scope and thread were captured at construction time — let one conversation address another conversation's sandbox. Nothing in this stack accepts a scope, a thread id or a file path from the model: the workspace listing is the boundary that decides what a name is allowed to resolve to.
+**The request context.** `make_caller_context` takes *callables*, read per call, rather than values. A sandbox is keyed by `(scope, thread_id, agent_dir)`, and a host that builds one agent and serves many conversations with it would — if the scope and thread were captured at construction time — let one conversation address another conversation's sandbox. Nothing in this stack accepts a scope, a thread id or a file path from the model: the file store listing is the boundary that decides what a name is allowed to resolve to.
 
 **Disposal.** `SandboxPurger` participates in thread deletion, so deleting a conversation takes its sandboxes with it, and `dispose_scope` deletes by service-side label — which reclaims sandboxes the calling replica never created.
 

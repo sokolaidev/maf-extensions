@@ -9,7 +9,7 @@ pull surface, so the same tool runs unchanged against ACA Sandboxes, a Docker co
 in-process fake.
 
 Three channels, and the host chooses which of them exist.  Stdout is always there.  A
-**workspace store** adds a ``files`` parameter, so a program can transform files that already
+**file store** adds a ``files`` parameter, so a program can transform files that already
 exist rather than only data the model wrote into its own source.  An **output sink** plus a
 :class:`CodeactOutputs` mode adds a way for files the program produces to reach host state.
 Wire neither and this is the stdout-only kind it has always been, with nothing dispatchable
@@ -28,6 +28,7 @@ from uuid import uuid4
 
 from maf_sandbox import (
     DEFAULT_TRANSFER_LIMITS,
+    CallerContext,
     Capability,
     DeclaredOutput,
     ExecResult,
@@ -38,7 +39,6 @@ from maf_sandbox import (
     SandboxRouter,
     SandboxSpec,
     TransferLimits,
-    WorkspaceContext,
     collect_outputs,
     error_detail,
     validate_artifact_name,
@@ -159,9 +159,9 @@ def codeact_sandbox_spec(
 def make_codeact_tools(
     router: SandboxRouter | None,
     agent_dir: str,
-    context: WorkspaceContext,
+    context: CallerContext,
     *,
-    workspace_store: "AgentFileStore | None" = None,
+    file_store: "AgentFileStore | None" = None,
     output_sink: OutputSink | None = None,
     outputs: CodeactOutputs = CodeactOutputs.NONE,
     outbound_max_confidentiality: str | None = None,
@@ -174,15 +174,15 @@ def make_codeact_tools(
     """Return the ``[execute_code]`` tool list, or ``[]`` when no sandbox is available.
 
     The tool's *signature* follows the channels the host wired: ``files`` appears only with a
-    ``workspace_store``, and ``outputs`` only under :data:`CodeactOutputs.DECLARED`.  A model is
+    ``file_store``, and ``outputs`` only under :data:`CodeactOutputs.DECLARED`.  A model is
     never shown a parameter this deployment cannot honour.
 
     Args:
         router: The sandbox router, or ``None`` when sandboxing is not configured.
         agent_dir: The agent's directory name. Baked into the sandbox key at factory time
             rather than taken from the model at call time.
-        context: How to read the caller's scope and thread, and how to enumerate the workspace.
-        workspace_store: The agent's workspace store. Given one, the tool takes a ``files``
+        context: How to read the caller's scope and thread, and how to enumerate the file store.
+        file_store: The agent's file store. Given one, the tool takes a ``files``
             parameter and shares those files into the sandbox; the caller's listing is the
             authority on which names exist, exactly as it is for the Bicep kind.
         output_sink: Where produced files land. Required by any mode but
@@ -255,7 +255,7 @@ def make_codeact_tools(
         image, image_id, outputs=outputs, files_in=files_in, files_out=files_out
     )
     return sandboxed_tool(
-        lambda session: _execute_code_tool(session, workspace_store, outputs, exec_timeout_seconds),
+        lambda session: _execute_code_tool(session, file_store, outputs, exec_timeout_seconds),
         router=router,
         context=context,
         agent_dir=agent_dir,
@@ -323,7 +323,7 @@ _DESCRIPTION_ARG_CODE = """code: The Python source to run.  The standard library
                 whatever the sandbox image ships."""
 
 _DESCRIPTION_ARG_FILES = """files: Workspace-relative paths to share into the sandbox, or
-                omit for none.  Only files in your workspace listing can be shared."""
+                omit for none.  Only files in your file store listing can be shared."""
 
 _DESCRIPTION_ARG_OUTPUTS = """outputs: The file names your program will write into its
                 working directory, or omit if it writes none."""
@@ -369,7 +369,7 @@ def _execute_code_tool(
     """Build the ``execute_code`` body for one attached tool.
 
     Four signatures over one implementation, because MAF derives the tool's schema from the
-    function's parameters: a host that wired no workspace store must not be shown ``files``.
+    function's parameters: a host that wired no file store must not be shown ``files``.
     """
 
     async def run(code: str, files: list[str] | None, declared: list[str] | None) -> str:
@@ -455,10 +455,10 @@ async def _execute(
     if over_cap is not None:
         return over_cap
     if store is not None:
-        resolved = await _resolve_workspace_files(session, store, files, reserved=reserved)
+        resolved = await _resolve_listed_files(session, store, files, reserved=reserved)
         if isinstance(resolved, str):
             return resolved
-        read = await _read_workspace_files(store, resolved, tally)
+        read = await _read_listed_files(store, resolved, tally)
         if isinstance(read, str):
             return read
         shared = read
@@ -513,7 +513,7 @@ async def _execute(
 # --- Files in ------------------------------------------------------------------------------
 
 
-async def _resolve_workspace_files(
+async def _resolve_listed_files(
     session: SandboxToolSession,
     store: "AgentFileStore",
     files: list[str],
@@ -553,7 +553,7 @@ async def _resolve_workspace_files(
             return f"Error: {name!r} was listed twice."
         if name not in known:
             logger.warning(
-                "execute_code: %r is not in this tool's workspace listing (%d file(s) visible) "
+                "execute_code: %r is not in this tool's file store listing (%d file(s) visible) "
                 "— the store wired here may be narrower than the agent's",
                 name,
                 len(listing),
@@ -566,7 +566,7 @@ async def _resolve_workspace_files(
     return resolved
 
 
-#: Capped so a large workspace cannot flood the model's context.
+#: Capped so a large file store cannot flood the model's context.
 _LISTING_HINT_MAX = 20
 
 
@@ -582,7 +582,7 @@ def _listing_hint(name: str, listing: list[str]) -> str:
     return f"Files visible here: {', '.join(shown)}{more}."
 
 
-async def _read_workspace_files(
+async def _read_listed_files(
     store: "AgentFileStore", names: list[str], tally: "_InboundTally"
 ) -> list[tuple[str, str]] | str:
     """Read every requested file into memory, or answer with the refusal.
@@ -601,14 +601,14 @@ async def _read_workspace_files(
         try:
             content = await store.read(name)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("execute_code: could not read %r from workspace: %s", name, exc)
-            return f"Error: could not read {name!r} from workspace"
+            logger.warning("execute_code: could not read %r from the file store: %s", name, exc)
+            return f"Error: could not read {name!r} from the file store"
         if content is None:
             # A store read can miss without raising (the file was listed, then removed). Writing
             # `None` through would put the string "None" into the sandbox for the program to
             # parse.
             logger.warning("execute_code: %r is listed but has no content", name)
-            return f"Error: {name!r} is listed in the workspace but has no content"
+            return f"Error: {name!r} is listed in the file store but has no content"
         over_cap = tally.add(name, content)
         if over_cap is not None:
             return over_cap
@@ -677,7 +677,7 @@ class _InboundTally:
 
 
 async def _write_shared(sandbox: "Sandbox", name: str, guest_path: str, content: str) -> str | None:
-    """Put one already-read workspace file into the run's directory, or answer with the refusal."""
+    """Put one already-read file store file into the run's directory, or answer with the refusal."""
     try:
         await sandbox.write_file(guest_path, content)
     except Exception as exc:  # noqa: BLE001

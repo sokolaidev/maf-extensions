@@ -30,7 +30,7 @@ from agent_framework import Agent
 from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
 from maf_sandbox import SandboxRouter
-from maf_sandbox.maf import make_workspace_context
+from maf_sandbox.maf import make_caller_context
 from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
 from maf_sandbox_codeact import make_codeact_tools
 
@@ -62,7 +62,7 @@ SANDBOX_VARS = (
 MODEL_VARS = ("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_CHAT_MODEL")
 
 
-def require_environment(names: tuple[str, ...]) -> dict[str, str] | None:
+def require_env_vars(names: tuple[str, ...]) -> dict[str, str] | None:
     """Read `names` from the environment, or report every one that is missing.
 
     Worth doing before anything else, and worth failing on.  `make_codeact_tools`
@@ -82,14 +82,14 @@ def require_environment(names: tuple[str, ...]) -> dict[str, str] | None:
     return {name: os.environ[name] for name in names}
 
 
-async def no_workspace_files(_store: object) -> list[str]:
-    """CodeAct shares no workspace files, so nothing ever enumerates one."""
+async def list_no_files(_store: object) -> list[str]:
+    """CodeAct shares no file store files, so nothing ever enumerates one."""
     return []
 
 
 async def run() -> int:
     """Wire the stack, run one turn, and take the sandbox down again."""
-    env = require_environment(SANDBOX_VARS + MODEL_VARS)
+    env = require_env_vars(SANDBOX_VARS + MODEL_VARS)
     if env is None:
         return 2
 
@@ -105,8 +105,8 @@ async def run() -> int:
     # No `min_isolation`: the default floor is `Isolation.MICROVM`, which this backend meets.
     router = SandboxRouter([backend])
 
-    context = make_workspace_context(
-        no_workspace_files,
+    context = make_caller_context(
+        list_no_files,
         lambda: SCOPE,
         lambda: THREAD_ID,
     )

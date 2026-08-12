@@ -114,7 +114,7 @@ def _smoke_maf_sandbox_acas() -> str:
 
 
 def _smoke_maf_sandbox_bicep() -> str:
-    from maf_sandbox import Isolation, SandboxRouter, WorkspaceContext
+    from maf_sandbox import Isolation, SandboxRouter, CallerContext
     from maf_sandbox.testing import (
         InMemoryStore,
         InProcessSandbox,
@@ -123,7 +123,7 @@ def _smoke_maf_sandbox_bicep() -> str:
     from maf_sandbox_bicep import BICEP_VALIDATE_TOOL_NAME, make_bicep_tools
 
     def _bicep_tool(store: InMemoryStore, backend: InProcessSandboxBackend):
-        context = WorkspaceContext(
+        context = CallerContext(
             current_scope=lambda: "smoke",
             current_thread_id=lambda: "thread",
             list_files=InMemoryStore.list,
@@ -207,7 +207,7 @@ def _smoke_maf_sandbox_codeact() -> str:
         OutputSink,
         SandboxCapabilityNotSupported,
         SandboxRouter,
-        WorkspaceContext,
+        CallerContext,
     )
     from maf_sandbox.testing import (
         InMemoryStore,
@@ -223,7 +223,7 @@ def _smoke_maf_sandbox_codeact() -> str:
     async def _listing(store):
         return [] if store is None else await store.list()
 
-    context = WorkspaceContext(
+    context = CallerContext(
         current_scope=lambda: "smoke",
         current_thread_id=lambda: "thread",
         list_files=_listing,
@@ -272,7 +272,7 @@ def _smoke_maf_sandbox_codeact() -> str:
             _router(shared),
             "data-analyst",
             context,
-            workspace_store=store,
+            file_store=store,
             image="registry.invalid/python:3",
         )
     )

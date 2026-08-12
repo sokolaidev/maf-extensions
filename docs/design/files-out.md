@@ -10,9 +10,9 @@ The obvious framing — "`FILES_IN` already works, do the same thing backwards" 
 
 | | `FILES_IN` | `FILES_OUT` |
 |---|---|---|
-| Who chooses the **name** | The host: only a path present in `WorkspaceContext.list_files` is ever substituted, which is the injection-pinning boundary | The **guest**: whatever ran inside decided, which for a CodeAct-class kind means the model decided |
+| Who chooses the **name** | The host: only a path present in `CallerContext.list_files` is ever substituted, which is the injection-pinning boundary | The **guest**: whatever ran inside decided, which for a CodeAct-class kind means the model decided |
 | Who chooses the **content** | The host: bytes already inside the trust boundary | The guest: bytes produced by the thing the sandbox exists to contain |
-| Where it **ends up** | Inside the sandbox, which is disposable | Host state — a transcript, a workspace, a blob container — which is not |
+| Where it **ends up** | Inside the sandbox, which is disposable | Host state — a transcript, a file store, a blob container — which is not |
 
 So this is the first channel in the stack where guest-chosen names and guest-produced bytes reach host state. Everything below follows from that sentence.
 
@@ -127,7 +127,7 @@ class Sandbox(Protocol):
     async def list_dir(self, path: str, *, working_directory: str) -> tuple[SandboxEntry, ...]: ...
 ```
 
-`list_dir`, not `list_files`: `WorkspaceContext.list_files` is the host's allowlist and the most trusted enumeration in the system, while this is the least trusted one, and both are in scope inside a kind's tool body. Giving them one name makes confusing them a security bug that reads perfectly well.
+`list_dir`, not `list_files`: `CallerContext.list_files` is the host's allowlist and the most trusted enumeration in the system, while this is the least trusted one, and both are in scope inside a kind's tool body. Giving them one name makes confusing them a security bug that reads perfectly well.
 
 `SandboxEntry` is shared with `FILES_OUT`, because `stat_file` returns one.
 
@@ -256,7 +256,7 @@ A sequence protects against *quoting*, not against paths inside the arguments. A
 
 ### The host writes; the library never does
 
-A workspace store, a blob container, a UI artifacts panel, a scratch directory — the destination is a property of the application, and `maf_sandbox` is stdlib-only by design. The host supplies a callback, which is the pattern `WorkspaceContext` already is:
+A file store, a blob container, a UI artifacts panel, a scratch directory — the destination is a property of the application, and `maf_sandbox` is stdlib-only by design. The host supplies a callback, which is the pattern `CallerContext` already is:
 
 ```python
 @dataclass(frozen=True)
@@ -300,7 +300,7 @@ The second consequence is weaker than an earlier draft claimed, and the differen
 
 ### Names: what the library guarantees, and what it does not
 
-The library enforces a **narrow invariant** and no more: relative, no traversal, no separators beyond the declared output's own, no segment that names nothing (`a//b` and `a/./b` are `a/b`, and delivering both spellings would land two artifacts for one file), no control character, bounded length, valid UTF-8. It does not guarantee the name is legal at the destination, because it cannot: legal names differ between a blob container, NTFS, and a workspace store. **Hosts still own their own namespace rules.**
+The library enforces a **narrow invariant** and no more: relative, no traversal, no separators beyond the declared output's own, no segment that names nothing (`a//b` and `a/./b` are `a/b`, and delivering both spellings would land two artifacts for one file), no control character, bounded length, valid UTF-8. It does not guarantee the name is legal at the destination, because it cannot: legal names differ between a blob container, NTFS, and a file store. **Hosts still own their own namespace rules.**
 
 Control characters are the one rule that reaches past the guest's own grammar, and it is not overreach: no filesystem anywhere accepts a NUL or a newline in a name, so refusing them decides nothing a destination might have decided differently. The length bound is checked against the name **as it will be delivered**, after normalization — NFC is not length-non-increasing (85 × U+0958 is 255 bytes decomposed and 510 composed), so checking the declared spelling would be checking a different name.
 
@@ -344,7 +344,7 @@ One further hazard, which is the same shape as the bug this section fixes: `sand
 
 **It is not `HOST_TOOLS`.** Nothing inside the sandbox dispatches the landing callback; the kind calls it host-side after the run. The empty-dispatch property a CodeAct-class kind rests on survives intact. A host wanting a hard stop denies `FILES_OUT`.
 
-**It is not a second write path into the workspace.** A kind that lands artifacts where the agent's own file tools write has given model-written code an unapproved `file_access_write`, and one that can overwrite has given it a way to influence a *different* kind on the next call. `(key, kind)` sandbox identity ([#84](https://github.com/sokolaidev/maf-extensions/issues/84)) separates sandboxes; it does nothing about host state they both touch.
+**It is not a second write path into the file store.** A kind that lands artifacts where the agent's own file tools write has given model-written code an unapproved `file_access_write`, and one that can overwrite has given it a way to influence a *different* kind on the next call. `(key, kind)` sandbox identity ([#84](https://github.com/sokolaidev/maf-extensions/issues/84)) separates sandboxes; it does nothing about host state they both touch.
 
 **It does not change backend selection.** `SandboxRouter` resolves a backend by name or by position and checks only the isolation floor; the capability match happens afterwards and **raises `SandboxCapabilityNotSupported`** rather than choosing a different backend. Capability-based selection is a separate, unimplemented proposal. So a host whose only backend lacks `FILES_OUT` gets an exception out of its agent factory, not a quietly-unattached tool.
 
@@ -395,7 +395,7 @@ The DOT source goes in through `FILES_IN` as file content, so no shell sees mode
 3. **Docker, first and as the acceptance gate.** The backend declares `FILES_OUT` from the day it exists, and its e2e is what proves the protocol: write, exec, stat, read back, cap refusal, symlink refusal. It goes first because it is the only suite that runs on a GitHub runner with no subscription, no login and no disk-image import — and the only backend a contributor can exercise on the machine in front of them.
 4. **ACAS** — natively, including the raw-payload symlink read. It remains the *reference* for shape, since it is the only backend that can serve `FILES_LIST`; it follows Docker because verifying it requires infrastructure a pull request cannot assume.
 5. **The diagram kind and `samples/07`** — end to end.
-5b. **The CodeAct workspace channel** ([#132](https://github.com/sokolaidev/maf-extensions/issues/132)) — files in, and the two call-time naming roads above.
+5b. **The CodeAct file store channel** ([#132](https://github.com/sokolaidev/maf-extensions/issues/132)) — files in, and the two call-time naming roads above.
 6. ~~**wslc** — the bytes seam first, then tar-out.~~ **Deferred** ([#125](https://github.com/sokolaidev/maf-extensions/issues/125)): there is no tar-out to reach. See the backend section above; the two upstream gaps that would reopen it are [microsoft/WSL#41309](https://github.com/microsoft/WSL/issues/41309) and [microsoft/WSL#41310](https://github.com/microsoft/WSL/issues/41310).
 
 Reference and gate are deliberately different roles. ACAS defines what the surface should look like; Docker decides whether it actually works, because it is the one that runs everywhere. Splitting them keeps the richest backend from quietly setting requirements the portable ones cannot meet — the mistake the `FILES_LIST` split already corrected once.

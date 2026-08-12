@@ -35,14 +35,14 @@ from agent_framework import Agent, InMemoryAgentFileStore
 from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
 from maf_sandbox import Isolation, SandboxRouter
-from maf_sandbox.maf import make_workspace_context
+from maf_sandbox.maf import make_caller_context
 from maf_sandbox_bicep import make_bicep_tools
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
 
 # A sandbox is keyed by (scope, thread_id, agent_dir).  A host reads the first two
 # from its own request context — a user/tenant and a conversation.  This program
 # serves exactly one request, so they are constants here, but they are still named
-# rather than inlined: the whole point of `make_workspace_context` below is that
+# rather than inlined: the whole point of `make_caller_context` below is that
 # they belong to the request, not to the agent.
 SCOPE = "samples"
 THREAD_ID = "05-docker-bicep"
@@ -60,7 +60,7 @@ SANDBOX_VARS = ("BICEP_SANDBOX_IMAGE",)
 MODEL_VARS = ("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_CHAT_MODEL")
 
 
-def require_environment(names: tuple[str, ...]) -> dict[str, str] | None:
+def require_env_vars(names: tuple[str, ...]) -> dict[str, str] | None:
     """Read `names` from the environment, or report every one that is missing.
 
     Worth doing before anything else, and worth failing on.  `make_bicep_tools`
@@ -80,8 +80,8 @@ def require_environment(names: tuple[str, ...]) -> dict[str, str] | None:
     return {name: os.environ[name] for name in names}
 
 
-async def list_workspace(store: Any) -> list[str]:
-    """Return every file in the workspace store, as workspace-relative paths.
+async def list_all_files(store: Any) -> list[str]:
+    """Return every file in the file store, as store-relative paths.
 
     This listing is the workload's **injection-pinning boundary**: only a name
     that appears in it is ever substituted into a sandbox command, so a path the
@@ -104,7 +104,7 @@ async def list_workspace(store: Any) -> list[str]:
 
 async def run() -> int:
     """Wire the stack, run one turn, and take the container down again."""
-    env = require_environment(SANDBOX_VARS + MODEL_VARS)
+    env = require_env_vars(SANDBOX_VARS + MODEL_VARS)
     if env is None:
         return 2
 
@@ -116,8 +116,8 @@ async def run() -> int:
     store = InMemoryAgentFileStore()
     await store.write(BICEP_FILE, (Path(__file__).parent / BICEP_FILE).read_text())
 
-    context = make_workspace_context(
-        list_workspace,
+    context = make_caller_context(
+        list_all_files,
         lambda: SCOPE,
         lambda: THREAD_ID,
     )

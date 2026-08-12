@@ -19,6 +19,7 @@ import pytest
 from maf_sandbox import (
     DEFAULT_CAPABILITIES,
     Artifact,
+    CallerContext,
     Capability,
     DeclaredOutput,
     Egress,
@@ -33,12 +34,11 @@ from maf_sandbox import (
     SandboxOutputSinkRequired,
     SandboxRouter,
     SandboxSpec,
-    WorkspaceContext,
 )
 from maf_sandbox.maf import (
     SandboxPurger,
     SandboxToolSession,
-    make_workspace_context,
+    make_caller_context,
     sandbox_tool_declarations,
     sandboxed_tool,
 )
@@ -96,7 +96,7 @@ def _pulling_backend():
 
 
 def _context(scope="scope-a", thread_id="thread-1", lister=None):
-    return WorkspaceContext(
+    return CallerContext(
         current_scope=lambda: scope,
         current_thread_id=lambda: thread_id,
         list_files=lister or InMemoryStore.list,
@@ -122,14 +122,14 @@ def _session(
 
 
 # ---------------------------------------------------------------------------
-# make_workspace_context
+# make_caller_context
 # ---------------------------------------------------------------------------
 
 
 class TestMakeWorkspaceContext:
     def test_it_wires_each_callable_to_the_field_that_reads_it(self):
         store = InMemoryStore({"a.txt": "1"})
-        context = make_workspace_context(InMemoryStore.list, lambda: "scope-a", lambda: "thread-1")
+        context = make_caller_context(InMemoryStore.list, lambda: "scope-a", lambda: "thread-1")
 
         assert context.current_scope() == "scope-a"
         assert context.current_thread_id() == "thread-1"
@@ -143,7 +143,7 @@ class TestMakeWorkspaceContext:
         list was assembled — which is exactly the cross-conversation reach the key prevents.
         """
         current = {"scope": "scope-a", "thread": "thread-1"}
-        context = make_workspace_context(
+        context = make_caller_context(
             InMemoryStore.list,
             lambda: current["scope"],
             lambda: current["thread"],
@@ -161,7 +161,7 @@ class TestMakeWorkspaceContext:
             calls.append("list")
             return []
 
-        make_workspace_context(
+        make_caller_context(
             _lister,
             lambda: calls.append("scope") or "s",  # type: ignore[func-returns-value]
             lambda: calls.append("thread") or "t",  # type: ignore[func-returns-value]
@@ -169,7 +169,7 @@ class TestMakeWorkspaceContext:
         assert calls == []
 
     def test_a_none_thread_survives_the_round_trip(self):
-        context = make_workspace_context(InMemoryStore.list, lambda: "scope-a", lambda: None)
+        context = make_caller_context(InMemoryStore.list, lambda: "scope-a", lambda: None)
         assert context.current_thread_id() is None
 
 
@@ -260,7 +260,7 @@ class TestSessionKey:
         """No thread means no key at all — not a key built from a half-resolved context."""
         calls: list[str] = []
 
-        context = WorkspaceContext(
+        context = CallerContext(
             current_scope=lambda: calls.append("scope") or "s",  # type: ignore[func-returns-value]
             current_thread_id=lambda: None,
             list_files=InMemoryStore.list,
@@ -271,7 +271,7 @@ class TestSessionKey:
     def test_the_key_follows_the_context_between_calls(self):
         current = {"thread": "thread-1"}
         session = _session(
-            context=WorkspaceContext(
+            context=CallerContext(
                 current_scope=lambda: "scope-a",
                 current_thread_id=lambda: current["thread"],
                 list_files=InMemoryStore.list,
@@ -293,14 +293,14 @@ class TestSessionListFiles:
         assert sorted(asyncio.run(_session().list_files(store))) == ["a.bicep", "b/c.bicep"]
 
     def test_a_failure_is_a_refusal_rather_than_an_empty_listing(self):
-        """An empty list would read as "the workspace is empty" and refuse for the wrong reason."""
+        """An empty list would read as "the file store is empty" and refuse for the wrong reason."""
 
         async def _boom(store):
             raise RuntimeError("store is down")
 
         session = _session(context=_context(lister=_boom))
         assert asyncio.run(session.list_files(InMemoryStore({}))) == (
-            "Error: could not list workspace files: store is down"
+            "Error: could not list the file store: store is down"
         )
 
 

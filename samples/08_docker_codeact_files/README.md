@@ -13,7 +13,7 @@ Sample 07 also lands an artifact, and gets there by defining a kind inline again
 
 Two channels, three arguments to `make_codeact_tools` — the second channel takes two of them, and they are not separable:
 
-- **`workspace_store=store`** adds `files`. Each named file is read from the store and written into the program's working directory under its own name. **The caller's listing is the authority**: only a path returned by `WorkspaceContext.list_files` is ever shared, so a name the model invented — or read out of a file it was given — has nowhere to go.
+- **`file_store=store`** adds `files`. Each named file is read from the store and written into the program's working directory under its own name. **The caller's listing is the authority**: only a path returned by `CallerContext.list_files` is ever shared, so a name the model invented — or read out of a file it was given — has nowhere to go.
 - **`output_sink=...` *and* `outputs=CodeactOutputs.DECLARED`** together add `outputs`. The model says what its program will write *before* it runs; names are validated and capped up front, and one declared but never written is reported back by name rather than dropped. Produced files never return as bytes — they go to the sink, and the model gets the sentence the sink returned.
 
 The mode is not optional once a sink is passed. `outputs` defaults to `CodeactOutputs.NONE`, and a sink under that default is refused where you wrote it rather than ignored at run time:
@@ -26,7 +26,7 @@ Everything else is sample 06 unchanged: the same image, the same backend, the sa
 
 ## What to watch
 
-**The program opens `sales.csv` by that name.** Every call gets a fresh directory inside the sandbox and the shared file is written into it, so a bare relative name is what the program uses — no run id, no absolute path. That freshness is load-bearing rather than hygiene: `acquire` is get-or-create, so one sandbox serves every call in a conversation, and without a per-call directory a file deleted from the workspace between rounds would still be there for the next program to read as current. A nested workspace path works the same way — seed the store with `data/sales.csv` and the program opens `data/sales.csv`.
+**The program opens `sales.csv` by that name.** Every call gets a fresh directory inside the sandbox and the shared file is written into it, so a bare relative name is what the program uses — no run id, no absolute path. That freshness is load-bearing rather than hygiene: `acquire` is get-or-create, so one sandbox serves every call in a conversation, and without a per-call directory a file deleted from the file store between rounds would still be there for the next program to read as current. A nested store path works the same way — seed the store with `data/sales.csv` and the program opens `data/sales.csv`.
 
 **The summary lands as `summary.md`, not `<run-id>/summary.md`.** Inside the sandbox the file lives under the run directory; the delivered name is a separate field. This is the one place that distinction is visible from outside — on disk, in `out/`.
 
@@ -34,7 +34,7 @@ Everything else is sample 06 unchanged: the same image, the same backend, the sa
 
 ## Where the sink points, and why it is the interesting decision
 
-`make_markdown_sink` writes under this directory's `out/`. The agent's workspace is a separate `InMemoryAgentFileStore`, and **the two are deliberately not the same place**.
+`make_markdown_sink` writes under this directory's `out/`. The agent's file store is a separate `InMemoryAgentFileStore`, and **the two are deliberately not the same place**.
 
 That matters more here than for any other kind, because these bytes were authored by model-written code. A host that points the sink at the store the agent's own file tools write to has handed that code an unapproved `file_access_write`; one that lets it overwrite has given it a way to influence a *different* tool on the next call. Point the sink somewhere the agent cannot otherwise reach — which is what this sample does, and the reason `out/` is a plain directory on the host rather than another store.
 
@@ -107,7 +107,7 @@ A name that *traverses* never reaches the listing check — the name validator r
 Error: '../secrets.env' cannot be shared — artifact name '../secrets.env' contains a '..' traversal segment
 ```
 
-Note what that refusal does **not** carry: the listing. Telling a caller which names exist, in answer to a name that tried to leave the workspace, is an invitation to keep trying spellings until one lands.
+Note what that refusal does **not** carry: the listing. Telling a caller which names exist, in answer to a name that tried to leave the store, is an invitation to keep trying spellings until one lands.
 
 **A declared output that was never written.** The program ran, exited cleanly, and a name it promised is not there — reported by name, with whatever *was* written still saved:
 

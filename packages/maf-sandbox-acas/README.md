@@ -30,7 +30,7 @@ backend = AcasSandboxBackend(AcasSandboxConfig(endpoint="https://management.<reg
 router = SandboxRouter([backend])  # microVM isolation meets the router's default floor
 ```
 
-[`samples/01_acas_bicep`](https://github.com/sokolaidev/maf-extensions/tree/main/samples/01_acas_bicep) runs that pair end to end: the same two lines, plus the workspace context and the workload tool they exist to serve, in a program that validates a Bicep file and disposes the sandbox afterwards.
+[`samples/01_acas_bicep`](https://github.com/sokolaidev/maf-extensions/tree/main/samples/01_acas_bicep) runs that pair end to end: the same two lines, plus the caller context and the workload tool they exist to serve, in a program that validates a Bicep file and disposes the sandbox afterwards.
 
 `azure-containerapps-sandbox` — the data-plane SDK this backend calls — is a hard dependency (it is still a preview, `0.1.0bN`, package; pin it in your own lockfile if you need reproducibility beyond the range this package declares). Authentication is `DefaultAzureCredential`; see [Azure Identity's docs](https://learn.microsoft.com/python/api/overview/azure/identity-readme) for how it resolves credentials in your environment.
 

@@ -1,6 +1,6 @@
 # 01 — validate a Bicep file in an ACA sandbox
 
-A one-turn agent. It puts `main.bicep` into a workspace store, hands the agent the `bicep_validate` tool, asks it to validate the file once, prints the answer, and deletes the sandbox.
+A one-turn agent. It puts `main.bicep` into a file store, hands the agent the `bicep_validate` tool, asks it to validate the file once, prints the answer, and deletes the sandbox.
 
 ```
 app  ->  maf_sandbox (router)  ->  maf_sandbox_acas  ->  the sandbox

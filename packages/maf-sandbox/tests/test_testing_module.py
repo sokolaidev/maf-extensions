@@ -15,6 +15,7 @@ import pytest
 from maf_sandbox import (
     DEFAULT_CAPABILITIES,
     DEFAULT_SANDBOX_LIMITS,
+    CallerContext,
     Capability,
     Egress,
     EntryKind,
@@ -28,7 +29,6 @@ from maf_sandbox import (
     SandboxSpec,
     SandboxTransferCapExceeded,
     TransferLimits,
-    WorkspaceContext,
 )
 from maf_sandbox.testing import InMemoryStore, InProcessSandbox, InProcessSandboxBackend
 
@@ -203,10 +203,10 @@ class TestInMemoryStore:
         store.files["b.bicep"] = "y"
         assert "b.bicep" not in source
 
-    def test_the_unbound_list_method_matches_workspace_context_list_files(self):
+    def test_the_unbound_list_method_matches_caller_context_list_files(self):
         """`list_files=InMemoryStore.list` must work directly, with no wrapper."""
         store = InMemoryStore({"a.bicep": "x", "b.bicep": "y"})
-        context = WorkspaceContext(
+        context = CallerContext(
             current_scope=lambda: "scope-a",
             current_thread_id=lambda: "thread-1",
             list_files=InMemoryStore.list,

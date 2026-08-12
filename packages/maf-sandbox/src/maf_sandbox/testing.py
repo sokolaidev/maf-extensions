@@ -352,7 +352,7 @@ class InMemoryStore:
     """The slice of ``AgentFileStore`` a sandbox kind's tests need — duck-typed, zero imports.
 
     Args:
-        files: The initial ``{workspace path: content}`` mapping. Copied on construction, so
+        files: The initial ``{store path: content}`` mapping. Copied on construction, so
             mutating the caller's original dict afterward does not reach into the store.
 
     ``read`` mirrors ``AgentFileStore.read``'s real contract: a miss returns ``None`` rather
@@ -360,7 +360,7 @@ class InMemoryStore:
     not as an exception.
 
     ``list`` is deliberately ``async def list(self) -> list[str]`` — no other parameter — so
-    the *unbound* method matches :class:`~maf_sandbox.WorkspaceContext`'s
+    the *unbound* method matches :class:`~maf_sandbox.CallerContext`'s
     ``list_files: Callable[[Any], Awaitable[list[str]]]`` exactly.
     ``list_files=InMemoryStore.list`` works with no wrapper.
     """

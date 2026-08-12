@@ -21,7 +21,7 @@ import json
 import logging
 
 import pytest
-from maf_sandbox import Isolation, SandboxRouter, WorkspaceContext
+from maf_sandbox import CallerContext, Isolation, SandboxRouter
 from maf_sandbox.testing import InMemoryStore, InProcessSandbox, InProcessSandboxBackend
 
 from maf_sandbox_bicep import (
@@ -31,7 +31,7 @@ from maf_sandbox_bicep import (
     format_diagnostics,
     make_bicep_tools,
     parse_sarif,
-    safe_workspace_path,
+    safe_listed_path,
 )
 from maf_sandbox_bicep._tool import _BUILD_CMD, _LINT_CMD
 
@@ -88,8 +88,8 @@ def _fake_backend(
     )
 
 
-def _context(store: InMemoryStore, *, thread_id: str | None = "thread-1") -> WorkspaceContext:
-    return WorkspaceContext(
+def _context(store: InMemoryStore, *, thread_id: str | None = "thread-1") -> CallerContext:
+    return CallerContext(
         current_scope=lambda: "scope-a",
         current_thread_id=lambda: thread_id,
         list_files=InMemoryStore.list,
@@ -116,8 +116,8 @@ def _tool(
     return tools[0]
 
 
-def _workspace_part(sandbox_path: str) -> str:
-    """Strip `<work dir>/<per-call dir>/` off a sandbox path, leaving the workspace path."""
+def _store_part(sandbox_path: str) -> str:
+    """Strip `<work dir>/<per-call dir>/` off a sandbox path, leaving the store path."""
     from maf_sandbox_bicep._tool import _WORK_DIR
 
     return sandbox_path.removeprefix(f"{_WORK_DIR}/").split("/", 1)[1]
@@ -414,9 +414,9 @@ class TestEndToEnd:
         backend = _fake_backend()
         out = _run(_tool(store, backend), ["a.bicep", "b.bicep"])
 
-        # Paths are <work dir>/<per-call dir>/<workspace path>; assert the last part rather
+        # Paths are <work dir>/<per-call dir>/<store path>; assert the last part rather
         # than pinning a directory that changes every call (see TestStaleFilesAcrossRounds).
-        assert {_workspace_part(p) for p in backend.sandbox.files} == {"a.bicep", "b.bicep"}
+        assert {_store_part(p) for p in backend.sandbox.files} == {"a.bicep", "b.bicep"}
         assert out.count("no diagnostics") == 4  # build + lint, per file
 
     def test_the_key_carries_the_hosts_scope_and_thread_not_model_input(self):
@@ -449,10 +449,10 @@ class TestStaleFilesAcrossRounds:
     """A reused sandbox must not let last round's files influence this round's build.
 
     The sandbox is keyed per `(scope, thread, agent)` and reused across fix rounds, but only
-    the *named* files are written into it. Delete a file from the workspace between rounds
+    the *named* files are written into it. Delete a file from the file store between rounds
     while a template still references it and, without isolation, the stale copy on the
     sandbox disk makes `bicep build` succeed — the tool reports "no diagnostics" for
-    something that cannot build from the actual workspace. A false green from the one tool
+    something that cannot build from the actual file store. A false green from the one tool
     whose entire purpose is compiler truth.
     """
 
@@ -464,7 +464,7 @@ class TestStaleFilesAcrossRounds:
         _run(tool, ["main.bicep", "modules/storage.bicep"])
         first = set(backend.sandbox.files)
 
-        # Round two: the module is gone from the workspace and is not named.
+        # Round two: the module is gone from the file store and is not named.
         store.files.pop("modules/storage.bicep")
         _run(tool, ["main.bicep"])
         second = set(backend.sandbox.files) - first
@@ -536,7 +536,7 @@ class TestConcurrentRounds:
         self._both(tool, ["a.bicep"], ["b.bicep"])
 
         written = list(backend.sandbox.files)
-        assert sorted(_workspace_part(p) for p in written) == ["a.bicep", "b.bicep"]
+        assert sorted(_store_part(p) for p in written) == ["a.bicep", "b.bicep"]
         assert len({p.rsplit("/", 1)[0] for p in written}) == 2
         # Nothing compiled outside the directory it was written into, and both survived to
         # be compiled — a sibling wipe would leave one of these commands with no source.
@@ -740,7 +740,7 @@ class TestEndToEndRefusals:
         assert "only accepts .bicep and .bicepparam" in out
         assert backend.keys == []
 
-    def test_rejects_a_file_that_is_not_in_the_workspace_listing(self):
+    def test_rejects_a_file_that_is_not_in_the_file_store_listing(self):
         """A listing miss is a wiring problem, and must not read like a refusal."""
         store = InMemoryStore({"main.bicep": "x"})
         backend = _fake_backend()
@@ -776,7 +776,7 @@ class TestEndToEndRefusals:
         assert missing != unsafe
         assert "listing" in missing and "listing" not in unsafe
 
-    def test_rejects_an_injection_attempt_that_is_really_in_the_workspace(self):
+    def test_rejects_an_injection_attempt_that_is_really_in_the_file_store(self):
         """Being in the listing is not evidence a name is safe to interpolate.
 
         The name has to end in `.bicep` to get this far: the extension check runs first, so
@@ -1007,29 +1007,29 @@ class TestCommandTemplates:
 
 
 # ---------------------------------------------------------------------------
-# safe_workspace_path — injection-pinning guard
+# safe_listed_path — injection-pinning guard
 # ---------------------------------------------------------------------------
 
 
 class TestSafeWorkspacePath:
     def test_returns_sandbox_path_for_valid_file_in_listing(self):
-        assert safe_workspace_path("main.bicep", ["main.bicep"], "/work") == "/work/main.bicep"
+        assert safe_listed_path("main.bicep", ["main.bicep"], "/work") == "/work/main.bicep"
 
     def test_normalises_leading_slash(self):
-        assert safe_workspace_path("/main.bicep", ["main.bicep"], "/work") == "/work/main.bicep"
+        assert safe_listed_path("/main.bicep", ["main.bicep"], "/work") == "/work/main.bicep"
 
     def test_normalises_dot_slash(self):
-        assert safe_workspace_path("./main.bicep", ["main.bicep"], "/work") == "/work/main.bicep"
+        assert safe_listed_path("./main.bicep", ["main.bicep"], "/work") == "/work/main.bicep"
 
     def test_accepts_subpath(self):
-        result = safe_workspace_path("infra/main.bicep", ["infra/main.bicep"], "/work")
+        result = safe_listed_path("infra/main.bicep", ["infra/main.bicep"], "/work")
         assert result == "/work/infra/main.bicep"
 
     def test_rejects_file_not_in_listing(self):
-        assert safe_workspace_path("other.bicep", ["main.bicep"], "/work") is None
+        assert safe_listed_path("other.bicep", ["main.bicep"], "/work") is None
 
     def test_rejects_empty_name(self):
-        assert safe_workspace_path("", ["main.bicep", ""], "/work") is None
+        assert safe_listed_path("", ["main.bicep", ""], "/work") is None
 
     @pytest.mark.parametrize(
         "malicious",
@@ -1043,11 +1043,11 @@ class TestSafeWorkspacePath:
         ],
     )
     def test_rejects_shell_metacharacters_even_when_present_in_the_listing(self, malicious):
-        assert safe_workspace_path(malicious, [malicious], "/work") is None
+        assert safe_listed_path(malicious, [malicious], "/work") is None
 
     @pytest.mark.parametrize("traversal", ["../../etc/passwd", "infra/../../../etc/passwd"])
     def test_rejects_parent_traversal(self, traversal):
-        assert safe_workspace_path(traversal, [traversal], "/work") is None
+        assert safe_listed_path(traversal, [traversal], "/work") is None
 
 
 # ---------------------------------------------------------------------------

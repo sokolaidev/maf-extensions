@@ -178,7 +178,7 @@ def main(argv: list[str]) -> int:
             print(f"  - {reason}", file=sys.stderr)
         return 1
     print(
-        "OK  the CodeAct sample read a workspace file in a live container and landed its "
+        "OK  the CodeAct sample read a file from the store in a live container and landed its "
         "declared summary against the published wheels"
     )
     return 0

@@ -1,6 +1,6 @@
 """Landing an artifact from a sandbox in host state — the sink half of ``FILES_OUT``.
 
-This package never writes anything itself: a workspace store, a blob container, a UI panel or
+This package never writes anything itself: a file store, a blob container, a UI panel or
 a scratch directory is a property of the application, so the host supplies a callback and this
 module decides only *what* reaches it and *when*.  Two of those decisions are load-bearing:
 
@@ -227,7 +227,7 @@ def validate_artifact_name(name: str) -> None:
     Relative, no traversal segment, no backslash, no segment that names nothing (``a//b``,
     ``a/./b``), no control character, at most :data:`MAX_ARTIFACT_NAME_BYTES` bytes of valid
     UTF-8 — and deliberately nothing further.  What is *legal* at the destination differs
-    between a blob container, NTFS and a workspace store, so a library that guessed would be
+    between a blob container, NTFS and a file store, so a library that guessed would be
     wrong for two of the three; hosts still own their own namespace rules.
 
     Call it on the spelling that will actually be **delivered**: NFC is not

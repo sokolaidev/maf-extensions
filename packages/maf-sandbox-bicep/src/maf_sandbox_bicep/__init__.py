@@ -12,7 +12,7 @@ this package, because a container image and a registry are not Python.
 
 from __future__ import annotations
 
-from ._paths import safe_workspace_path
+from ._paths import safe_listed_path
 from ._sarif import RESTORE_FAILURE_RULES, count_restore_failures, format_diagnostics, parse_sarif
 from ._tool import (
     BICEP_KIND,
@@ -33,7 +33,7 @@ __all__ = [
     "format_diagnostics",
     "make_bicep_tools",
     "parse_sarif",
-    "safe_workspace_path",
+    "safe_listed_path",
 ]
 
 # --- Experimental-package notice ---------------------------------------------------------
