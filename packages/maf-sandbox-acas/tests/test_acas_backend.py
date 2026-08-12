@@ -1137,7 +1137,7 @@ class TestTheWireShape:
     """The payload this backend depends on, pinned so a change to it fails here.
 
     The backend reads the raw data-plane JSON because the SDK's `FileInfo` drops the fields
-    the confinement rule needs (#136, upstream Azure/azure-sdk-for-python#48523). That is a
+    the confinement rule needs (#136, upstream microsoft/azure-container-apps#1806). That is a
     dependency on an undocumented preview shape, and the point of these assertions is that the
     day it moves, the failure is a red test rather than a symlink quietly typing as a regular
     file.
