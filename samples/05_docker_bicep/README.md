@@ -32,11 +32,10 @@ No Azure subscription, no preview enrolment, no billable sandbox. A run that is 
 
 ## Install
 
-From PyPI, not from this workspace:
+Dependencies are declared in `agent.py` itself, in a [PEP 723](https://peps.python.org/pep-0723/) block, so there is nothing to install and nothing to keep in step with this page — [uv](https://docs.astral.sh/uv/) reads them and builds a throwaway environment for the run. From PyPI, never from this workspace:
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install maf-sandbox-docker maf-sandbox-bicep agent-framework-openai azure-identity "azure-core[aio]"
+uv run agent.py
 ```
 
 `maf-sandbox` arrives as a dependency, and nothing Azure does — the backend drives the `docker` client and imports only the standard library. `agent-framework-openai` is separate because the framework's core ships no model connector.
@@ -52,10 +51,6 @@ pip install maf-sandbox-docker maf-sandbox-bicep agent-framework-openai azure-id
 With any of the first three unset the program says which and exits non-zero, rather than running. That is deliberate: `make_bicep_tools` returns an empty list when the router has no backend, so a half-configured run does not crash — it produces an agent with no tools, which answers from the model alone. That failure looks exactly like success.
 
 ## Run
-
-```bash
-python agent.py
-```
 
 The first call pays for creating and starting the container — a fraction of a second on a warm engine, against the minutes a microVM-isolated sandbox needs; if the image is not local yet, an explicit pull happens first. The model writes its own prose around them, but the diagnostics it is reporting look like this:
 

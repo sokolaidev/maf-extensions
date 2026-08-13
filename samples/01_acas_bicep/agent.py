@@ -19,6 +19,16 @@ Running it needs a real Azure subscription and **creates a billable sandbox** â€
 this directory's README for the prerequisites and the environment variables.
 """
 
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#     "agent-framework-openai",
+#     "maf-sandbox-acas",
+#     "maf-sandbox-bicep",
+#     "maf-sandbox>=0.12",
+# ]
+# ///
+
 from __future__ import annotations
 
 import asyncio

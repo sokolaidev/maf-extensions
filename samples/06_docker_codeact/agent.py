@@ -22,6 +22,18 @@ this directory's README says what it costs and, for this workload, what it does
 not.  Read it, along with the prerequisites and the environment variables, first.
 """
 
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#     "agent-framework-openai",
+#     "azure-core[aio]",
+#     "azure-identity",
+#     "maf-sandbox-codeact",
+#     "maf-sandbox-docker",
+#     "maf-sandbox>=0.12",
+# ]
+# ///
+
 from __future__ import annotations
 
 import asyncio

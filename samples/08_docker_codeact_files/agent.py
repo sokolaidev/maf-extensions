@@ -15,6 +15,18 @@ This directory's README is the walkthrough — what to watch for, and where the
 sink should point, which is the security-relevant decision here.  Read it first.
 """
 
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#     "agent-framework-openai",
+#     "azure-core[aio]",
+#     "azure-identity",
+#     "maf-sandbox-codeact",
+#     "maf-sandbox-docker",
+#     "maf-sandbox>=0.12",
+# ]
+# ///
+
 from __future__ import annotations
 
 import asyncio
