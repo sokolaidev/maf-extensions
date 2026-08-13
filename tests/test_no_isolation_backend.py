@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -303,3 +304,50 @@ def test_backend_declares_the_floor_and_temporary_egress():
     # CLOSED is the temporary misuse, not enforced; #265 tracks switching back to UNRESTRICTED.
     assert b.egress is Egress.CLOSED
     assert "network" not in {c.value for c in b.capabilities}
+
+
+def test_seed_files_reject_a_key_that_escapes_the_root():
+    """A seed key with ``..`` or an absolute path is refused, not written outside the root.
+
+    ``seed_files`` are placed under the host root the way ``write_file`` places a guest path;
+    without the check, ``host_root / "/etc/x"`` discards the root (an absolute right side wins)
+    and ``host_root / "../x"`` climbs above it. The sample only ever passes ``bicepconfig.json``
+    (a safe relative key), but the backend's docstring says everything stays under its root, so
+    a key that escapes raises before anything is written.
+    """
+
+    async def body() -> None:
+        escaping = NoIsolationBackend(seed_files={"../escape.bicep": "x"})
+        with pytest.raises(ValueError):
+            await escaping.acquire(_key(), _spec())
+        absolute = NoIsolationBackend(seed_files={"/etc/passwd": "x"})
+        with pytest.raises(ValueError):
+            await absolute.acquire(_key(), _spec())
+
+    asyncio.run(body())
+
+
+def test_acquire_removes_the_host_root_when_seeding_fails(monkeypatch, tmp_path):
+    """A seeding failure removes the temp directory it just created — no leak on a half-build.
+
+    ``mkdtemp`` creates the root before seeding runs; if a seed key then raises, the root is
+    not yet in ``_sandboxes``, so disposal could never reach it. The except branch rmtrees it
+    before re-raising. ``mkdtemp`` is patched to a path the test can see (and to actually create
+    it, the way the real one does) — so without the cleanup the directory would persist and the
+    assertion fail, and with it the directory is gone.
+    """
+    captured = tmp_path / "no-iso-root"
+
+    def fake_mkdtemp(*, prefix=""):  # noqa: ARG001 — signature matches tempfile.mkdtemp
+        captured.mkdir(parents=True, exist_ok=False)
+        return str(captured)
+
+    monkeypatch.setattr(tempfile, "mkdtemp", fake_mkdtemp)
+    backend = NoIsolationBackend(seed_files={"../escape.bicep": "x"})
+
+    async def body() -> None:
+        with pytest.raises(ValueError):
+            await backend.acquire(_key(), _spec())
+        assert not captured.exists()
+
+    asyncio.run(body())

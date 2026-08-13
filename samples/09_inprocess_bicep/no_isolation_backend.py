@@ -112,6 +112,13 @@ class NoIsolationSandbox:
             shell = False
         # `subprocess.run` blocks, so run it in a worker thread and keep the event loop free
         # for the concurrent tool calls the protocol permits.
+        #
+        # Known edge, not guarded: on a timeout, `subprocess.run` kills the one process it
+        # started — for the shell form that is the shell, and a shell-spawned child (bicep)
+        # may outlive it on the host. The argv form has no shell, so it reaps cleanly. This
+        # is not guarded in the sample because bicep finishes in well under a second against
+        # the workload's 120s per-command timeout, so the orphan path is never walked; a real
+        # process-group teardown is disproportionate for a sample and is not unit-pinnable.
         try:
             completed = await asyncio.to_thread(  # noqa: S603 — the string form needs a shell
                 subprocess.run,
@@ -222,13 +229,28 @@ class NoIsolationBackend:
             sandbox = self._sandboxes.get(ident)
             if sandbox is None:
                 host_root = Path(tempfile.mkdtemp(prefix="no-isolation-"))
-                for rel, content in self._seed_files.items():
-                    target = host_root / rel
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    if isinstance(content, str):
-                        target.write_text(content, encoding="utf-8")
-                    else:
-                        target.write_bytes(content)
+                try:
+                    for rel, content in self._seed_files.items():
+                        # Seed keys are relative to the work root the way a guest
+                        # path is, so confine them the same way: an absolute key or a
+                        # ``..`` key would land outside the temp directory the
+                        # docstring says everything stays under.
+                        target = host_root / rel
+                        if not target.resolve().is_relative_to(host_root.resolve()):
+                            raise ValueError(
+                                f"seed file {rel!r} escapes the work directory"
+                            )
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        if isinstance(content, str):
+                            target.write_text(content, encoding="utf-8")
+                        else:
+                            target.write_bytes(content)
+                except BaseException:
+                    # A seeding failure leaves the just-created temp directory
+                    # unreachable by disposal (it is not in ``_sandboxes`` yet), so
+                    # remove it before re-raising — no leak on a half-built sandbox.
+                    shutil.rmtree(host_root, ignore_errors=True)
+                    raise
                 sandbox = NoIsolationSandbox(host_root, spec.work_dir)
                 self._sandboxes[ident] = sandbox
             return sandbox
