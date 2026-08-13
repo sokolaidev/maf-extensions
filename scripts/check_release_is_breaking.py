@@ -23,10 +23,10 @@ import re
 import sys
 from pathlib import Path
 
-#: Matched leniently on the wording alone. The decoration is release-please configuration and
-#: the words are not, so a heading whose ⚠ was dropped still counts: reading it as "not
-#: breaking" is the wrong way to be wrong.
-_BREAKING = re.compile(r"^#{3,} .*\bBREAKING CHANGES?\b", re.MULTILINE)
+#: release-please's heading, at its own level and nothing around the words. The decoration is
+#: configuration and the words are not, so any run of non-word characters stands in for the ⚠
+#: — a heading that lost it must still count.
+_BREAKING = re.compile(r"^###(?!#) *[^\w\n]*BREAKING CHANGES\s*$", re.MULTILINE)
 _NEXT_VERSION = re.compile(r"^## ", re.MULTILINE)
 
 

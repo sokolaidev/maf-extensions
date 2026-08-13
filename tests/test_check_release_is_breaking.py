@@ -30,6 +30,8 @@ _spec.loader.exec_module(check)
 
 _ARGV0 = "scripts/check_release_is_breaking.py"
 _VERSION_HEADING = re.compile(r"^## \[(\d+(?:\.\d+)*)\]", re.MULTILINE)
+#: The heading as release-please writes it, spelled out here rather than imported.
+_RELEASE_PLEASE_HEADING = "### ⚠ BREAKING CHANGES"
 
 
 def _changelogs() -> list[Path]:
@@ -68,13 +70,15 @@ class TestTheReleasesThisRepositoryHasActuallyMade:
     def test_every_heading_in_every_changelog_lands_in_exactly_one_section(self):
         """No section claims a heading that is not its own, and none loses the one that is.
 
-        Counting both ways is what makes this a check on the slicing rather than on the search.
+        The count on the left is a literal string search, deliberately not the module's own
+        pattern: comparing the pattern against itself would hold just as well if it stopped
+        recognising the heading release-please writes.
         """
         total_headings = 0
         total_breaking = 0
         for path in _changelogs():
             text = path.read_text("utf-8")
-            headings = len(check._BREAKING.findall(text))
+            headings = text.count(_RELEASE_PLEASE_HEADING)
             breaking = sum(
                 check.is_breaking(check.section(text, release) or "")
                 for release in _VERSION_HEADING.findall(text)
@@ -147,17 +151,36 @@ class TestFindingTheSection:
 
 
 class TestReadingTheHeading:
-    def test_the_heading_release_please_writes(self):
-        assert check.is_breaking("### ⚠ BREAKING CHANGES\n\n* gone\n")
+    """Strict on the level and the words, indifferent to what decorates them."""
 
-    def test_the_same_heading_without_its_decoration(self):
-        assert check.is_breaking("### BREAKING CHANGES\n")
+    @pytest.mark.parametrize(
+        "heading",
+        [
+            "### ⚠ BREAKING CHANGES\n\n* gone\n",
+            "### BREAKING CHANGES\n",
+            "### 💥 BREAKING CHANGES\n",
+            "###  ⚠  BREAKING CHANGES  \n",
+        ],
+    )
+    def test_release_pleases_heading_however_it_is_decorated(self, heading: str):
+        assert check.is_breaking(heading)
 
-    def test_a_bullet_that_quotes_the_words_is_not_a_heading(self):
-        assert not check.is_breaking("* restores the BREAKING CHANGES section (#1)\n")
-
-    def test_a_section_with_no_such_heading(self):
-        assert not check.is_breaking("### Features\n\n* something\n")
+    @pytest.mark.parametrize(
+        "not_a_heading",
+        [
+            # Words in front of the phrase turn a heading into prose about one.
+            "### Not BREAKING CHANGES\n",
+            "### A note on the BREAKING CHANGES entry above\n",
+            # A deeper heading is something nested inside a section, not the section's own.
+            "#### ⚠ BREAKING CHANGES\n",
+            # The singular is the commit footer's wording, never the heading's.
+            "### BREAKING CHANGE\n",
+            "* restores the BREAKING CHANGES section (#1)\n",
+            "### Features\n\n* something\n",
+        ],
+    )
+    def test_what_is_not_that_heading(self, not_a_heading: str):
+        assert not check.is_breaking(not_a_heading)
 
 
 class TestTheChangelogItLooksFor:
