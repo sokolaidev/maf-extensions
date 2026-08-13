@@ -10,9 +10,9 @@ app  ->  maf_sandbox (router)  ->  maf_sandbox_docker  ->  the container
 
 ## The workload is defined in the sample, not in a package — and that is the point
 
-Samples 05 and 06 lean on a packaged kind: `maf_sandbox_bicep`'s `bicep_validate`, `maf_sandbox_codeact`'s `execute_code`. This one defines its kind — `render_diagram` — **inline in [`agent.py`](agent.py)**, and imports nothing from a workload package. Everything it needs is public in `maf_sandbox`: the `SandboxSpec` that says what sandbox to ask for, the `OutputSink` that lands bytes in host state, `sandboxed_tool` that wires the tool onto an agent, and `collect_outputs` that pulls the declared file back. So this file is what a third party writing their **own** sandbox kind against the published protocol would write — with nothing reached from inside the library. It is the layer beneath samples 05 and 06, shown once.
+Samples 05 and 06 lean on a packaged kind: `maf_sandbox_bicep`'s `bicep_validate`, `maf_sandbox_codeact`'s `execute_code`. This one defines its kind — `render_diagram` — in **[`diagram_kind.py`](diagram_kind.py)** beside `agent.py`, and imports nothing from a workload package. Everything it needs is public in `maf_sandbox`: the `SandboxSpec` that says what sandbox to ask for, the `OutputSink` that lands bytes in host state, `sandboxed_tool` that wires the tool onto an agent, and `collect_outputs` that pulls the declared file back. So that file is what a third party writing their **own** sandbox kind against the published protocol would write — with nothing reached from inside the library. It is the layer beneath samples 05 and 06, shown once.
 
-A kind is three things, and they are all in `agent.py`:
+A kind is three things, and `diagram_kind.py` is all three and nothing else — `agent.py` beside it is the same host wiring as every other sample, and imports one name from it:
 
 - **`diagram_sandbox_spec()`** — a `SandboxSpec` with `kind="diagram-generator"`, closed egress, and one `DeclaredOutput` (`diagram.png`, `image/png`, `required=False`). It `requires` `EXEC`, `FILES_IN` and — the new one — `FILES_OUT`, so the router refuses any backend without a pull surface before a container is ever created.
 - **`render_diagram(dot)`** — the tool body. It writes the DOT in with `write_file`, runs `dot -Tpng` as a fixed argv (no shell, the model's source is a file argument), and on success calls `collect_outputs(...)` to land the PNG. A `dot` that rejects malformed DOT exits non-zero and produces no file; the body hands its diagnostic back for the model to fix, which is exactly why the output is `required=False`.
@@ -49,7 +49,7 @@ Dependencies are declared in `agent.py` itself, in a [PEP 723](https://peps.pyth
 uv run agent.py
 ```
 
-There is **no workload package** to install — the kind is in `agent.py`, which is the point of the sample. `maf-sandbox` arrives as a dependency of the backend, which otherwise drives the `docker` client and imports only the standard library. `agent-framework-openai` is separate because the framework's core ships no model connector.
+There is **no workload package** to install — the kind is `diagram_kind.py`, right here, which is the point of the sample. `maf-sandbox` arrives as a dependency of the backend, which otherwise drives the `docker` client and imports only the standard library. `agent-framework-openai` is separate because the framework's core ships no model connector.
 
 ## Environment
 

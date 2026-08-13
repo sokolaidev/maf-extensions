@@ -60,29 +60,31 @@ def test_every_library_import_is_declared(sample: Path):
     A sample that grows an import of another kind, and forgets the block, resolves fine in this
     workspace — every sibling is already on the path — and fails for the reader who follows the
     README. That is the exact failure the samples exist to not have.
+
+    **Every** `.py` in the directory, not just `agent.py`. `uv run agent.py` builds one
+    environment for whatever that run imports, so a module beside it — `diagram_kind.py`,
+    `_scaffold.py` — is resolved from the same block and gets no say in it. Checking only the
+    entry point would have gone blind the moment a sample grew a second file.
     """
     declared = {
         re.match(r"[A-Za-z0-9._-]+", dep).group(0)
         for dep in _metadata(sample / "agent.py")["dependencies"]
     }
-    tree = ast.parse((sample / "agent.py").read_text(encoding="utf-8"))
-    imported = {
-        _distribution(node.module)
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom)
-        and node.module
-        and node.module.startswith("maf_sandbox")
-    } | {
-        _distribution(alias.name)
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Import)
-        for alias in node.names
-        if alias.name.startswith("maf_sandbox")
-    }
-    missing = sorted(imported - declared)
+    imported: dict[str, str] = {}
+    for module in sorted(sample.glob("*.py")):
+        tree = ast.parse(module.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                if node.module.startswith("maf_sandbox"):
+                    imported.setdefault(_distribution(node.module), module.name)
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.startswith("maf_sandbox"):
+                        imported.setdefault(_distribution(alias.name), module.name)
+    missing = sorted(set(imported) - declared)
     assert not missing, (
-        f"{sample.name}/agent.py imports {', '.join(missing)} and its PEP 723 block does not "
-        f"declare it. Declared: {', '.join(sorted(declared))}."
+        f"{sample.name} imports {', '.join(f'{d} (in {imported[d]})' for d in missing)} and its "
+        f"PEP 723 block does not declare it. Declared: {', '.join(sorted(declared))}."
     )
 
 
