@@ -1,6 +1,6 @@
 # `bicep-sandbox` — the image `bicep_validate` runs in
 
-Two layers on Azure Linux: a pinned Bicep CLI, and a [`bicepconfig.json`](bicepconfig.json) at `/acas/work`. That is the whole image. It carries no agent code, no Python, and nothing of the host application — the sandbox runs a compiler and nothing else, and *what* to compile arrives at run time as files the tool writes in.
+Two layers on Azure Linux: a pinned Bicep CLI, and a [`bicepconfig.json`](bicepconfig.json) at `/maf-sandbox/work`. That is the whole image. It carries no agent code, no Python, and nothing of the host application — the sandbox runs a compiler and nothing else, and *what* to compile arrives at run time as files the tool writes in.
 
 Both samples run this one image. [`samples/01_acas_bicep`](../../samples/01_acas_bicep/) boots it as a disk image in an Azure Container Apps sandbox group; [`samples/02_wslc_bicep`](../../samples/02_wslc_bicep/) runs it as a local container under `wslc`. Sharing it is deliberate: the two samples exist to show that only the backend changes, and they would not be comparable if each validated against a compiler of its own.
 
@@ -12,15 +12,15 @@ Both samples run this one image. [`samples/01_acas_bicep`](../../samples/01_acas
 | `icu` | Without it the CLI aborts at startup: `Couldn't find a valid ICU package`. It is not optional for a .NET single-file binary unless you set the invariant-globalization switch |
 | `ca-certificates` | Module restore is HTTPS to MCR. Without them every `br/public:` reference fails to restore |
 | Bicep CLI, pinned to `v0.46.1` | The pin is the point. Diagnostic wording, built-in rule levels and the API-version cut-off all follow the compiler, so an unpinned image would let a sample's documented output drift underneath it |
-| `bicepconfig.json` at `/acas/work` | The lint rule set, at the one path Bicep will look for it |
+| `bicepconfig.json` at `/maf-sandbox/work` | The lint rule set, at the one path Bicep will look for it |
 
 ## The config path is the fragile part
 
-`/acas/work` is not a convention — it is `maf_sandbox_bicep`'s `_WORK_DIR`, the root its `SandboxSpec` fixes for every validation. Bicep resolves `bicepconfig.json` **only** by walking up from the source file, and the pinned CLI has no `--config-file` flag on either `build` or `lint`. The tool writes each round into a fresh subdirectory of that root — `/acas/work/<round>/main.bicep` — so the walk up finds the config in a single step.
+`/maf-sandbox/work` is not a convention — it is `maf_sandbox_bicep`'s `_WORK_DIR`, the root its `SandboxSpec` fixes for every validation. Bicep resolves `bicepconfig.json` **only** by walking up from the source file, and the pinned CLI has no `--config-file` flag on either `build` or `lint`. The tool writes each round into a fresh subdirectory of that root — `/maf-sandbox/work/<round>/main.bicep` — so the walk up finds the config in a single step.
 
 Put the file anywhere else and nothing goes red. Measured against this image, on sample 01's `main.bicep`:
 
-| | Compiled under `/acas/work` | Compiled elsewhere |
+| | Compiled under `/maf-sandbox/work` | Compiled elsewhere |
 |---|---|---|
 | `no-unused-params` | `"level": "error"` | no `level` at all — the rule's built-in default, `warning` |
 | `use-recent-api-versions` | reported, with the age in days | **absent** — the config is what switches it on |

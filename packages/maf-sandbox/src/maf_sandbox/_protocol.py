@@ -373,7 +373,7 @@ class SandboxSpec:
     derives absolute paths from this field and passes them into :meth:`Sandbox.exec`'s argv,
     and a backend cannot find a path inside an opaque argv without parsing arbitrary command
     lines.  An argv *sequence* protects against quoting, not against paths within the
-    arguments.  ``/work`` is a default, not a requirement.  A workload must not read the
+    arguments.  ``/maf-sandbox/work`` is a default, not a requirement.  A workload must not read the
     guest's platform *out* of this field, and nothing here validates it against one — that a
     kind can depend on its guest's OS, and that no axis yet declares or matches it, is a gap
     kept deliberately additive so a platform axis lands without a breaking change (issue
@@ -408,7 +408,7 @@ class SandboxSpec:
     image: str | None = None
     image_id: str | None = None
     egress_allow: tuple[str, ...] = ()
-    work_dir: str = "/work"
+    work_dir: str = "/maf-sandbox/work"
     # `dict[str, str]` rather than a bare `dict` as the factory: the bare builtin gives a
     # strict type checker `dict[Unknown, Unknown]` to work with, and this package's own
     # pyright config is strict. The subscripted form is callable and constructs the

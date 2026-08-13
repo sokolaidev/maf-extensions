@@ -69,7 +69,7 @@ class NoIsolationSandbox:
         """Translate a guest path under ``work_dir`` to a path under the host root.
 
         ``relative_to`` is lexical and keeps ``..`` segments, so a guest path like
-        ``/acas/work/../../etc/x`` would join to a path *outside* the host root. The bicep kind
+        ``/maf-sandbox/work/../../etc/x`` would join to a path *outside* the host root. The bicep kind
         rejects ``..`` before a path reaches the backend (``_tool.py``), but the docstring says
         paths are rewritten *under* the root, so verify it. The check resolves to collapse ``..``
         and any symlink in the path; the lexical path is still returned, so the host root's string

@@ -254,7 +254,7 @@ def _smoke_maf_sandbox_codeact() -> str:
         raise SystemExit(f"FAIL: the tool rendered {out!r}")
     # Each call gets a directory of its own under the work dir, so the path is not fixed.
     written = list(backend.sandbox.files.items())
-    if len(written) != 1 or not written[0][0].startswith("/work/"):
+    if len(written) != 1 or not written[0][0].startswith("/maf-sandbox/work/"):
         raise SystemExit(
             f"FAIL: the program never reached the sandbox: {backend.sandbox.files}"
         )

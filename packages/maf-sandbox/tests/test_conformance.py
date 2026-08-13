@@ -28,7 +28,7 @@ from maf_sandbox.conformance import (
 )
 from maf_sandbox.testing import InProcessSandbox
 
-_WORK = "/work"
+_WORK = "/maf-sandbox/work"
 _BOTH = frozenset({Capability.FILES_OUT, Capability.FILES_LIST})
 
 
@@ -231,7 +231,7 @@ class TestTheSuiteFailsAnImplementationThatDoesNot:
         }
 
     def test_the_read_probe_says_the_bytes_came_back(self):
-        """Not merely 'no exception': the specimen returns `/work-outside/secret.txt`."""
+        """Not merely 'no exception': the specimen returns `/maf-sandbox/work-outside/secret.txt`."""
         failure = _results(_leaky_subject(walks=False))["read-through-a-linked-parent"]
         assert failure is not None and "returned instead of raising" in failure
 
@@ -362,14 +362,16 @@ class TestWhatTheRunnerReports:
 
 class TestTheLayout:
     def test_outside_is_a_sibling_that_shares_a_prefix_with_the_working_directory(self):
-        """`/work-outside` is outside `/work` and starts with it — a prefix check without the
+        """`/maf-sandbox/work-outside` is outside `/maf-sandbox/work` and starts with it — a prefix check without the
         separator passes it, which is the bug this layout is shaped to catch."""
-        paths = ConformancePaths.under("/work")
+        paths = ConformancePaths.under("/maf-sandbox/work")
         assert paths.outside.startswith(paths.work)
         assert not paths.outside.startswith(paths.work + "/")
 
     def test_a_trailing_slash_on_the_working_directory_does_not_change_the_layout(self):
-        assert ConformancePaths.under("/work/") == ConformancePaths.under("/work")
+        assert ConformancePaths.under("/maf-sandbox/work/") == ConformancePaths.under(
+            "/maf-sandbox/work"
+        )
 
     def test_the_specimens_really_are_sandboxes(self):
         assert isinstance(_Leaky(), Sandbox)

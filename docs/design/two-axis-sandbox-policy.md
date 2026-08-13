@@ -159,7 +159,7 @@ A hypothetical `maf-sandbox-codeact`, written to show every axis doing work. The
 ```python
 CODEACT_KIND = "codeact"
 EXECUTE_CODE_TOOL_NAME = "execute_code"
-_WORK_DIR = "/work"
+_WORK_DIR = "/maf-sandbox/work"
 _OUTPUT_SUBDIR = "out"
 _FILES_IN_CAP = 4 * 1024 * 1024    # named constants — the caps are workload statements,
 _FILES_OUT_CAP = 8 * 1024 * 1024   # and the backend refuses specs above its own maxima

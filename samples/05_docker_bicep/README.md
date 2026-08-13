@@ -20,7 +20,7 @@ Two things are genuinely weaker here, and neither is hidden.
 ## Prerequisites
 
 - **A Docker-compatible engine, reachable through the `docker` client.** Docker Desktop (macOS, Linux, Windows with WSL 2) or Docker Engine (Linux). `docker version` confirms the client can reach a running daemon. Colima, OrbStack, Rancher Desktop and Podman expose Docker-compatible sockets and may work through the same client, but they are not officially supported and nothing here is verified against them.
-- **The sandbox image**, built from [`images/bicep-sandbox`](../../images/bicep-sandbox/) — the same image sample 01 runs in Azure, two layers on `mcr.microsoft.com/azurelinux/base/core:3.0`: the Bicep CLI, pinned, plus `bicepconfig.json` at `/acas/work` — sample-grade, deliberately; production replaces it with a hardened build you own (minimal, digest-pinned, scanned, rebuilt on your patch cadence) built the same way. Run this from the repository root:
+- **The sandbox image**, built from [`images/bicep-sandbox`](../../images/bicep-sandbox/) — the same image sample 01 runs in Azure, two layers on `mcr.microsoft.com/azurelinux/base/core:3.0`: the Bicep CLI, pinned, plus `bicepconfig.json` at `/maf-sandbox/work` — sample-grade, deliberately; production replaces it with a hardened build you own (minimal, digest-pinned, scanned, rebuilt on your patch cadence) built the same way. Run this from the repository root:
 
   ```bash
   docker build -t bicep-sandbox:local images/bicep-sandbox
@@ -67,7 +67,7 @@ Disposed 1 sandbox(es).
 
 Three diagnostics, the same three sample 01 gets from a microVM in Azure. Sample 01's README reads them closely and that reading applies here unchanged; the short version is that `no-unused-params` printing as `[error]` rather than its built-in `[warning]` is the visible proof that `bicepconfig.json` was discovered, `BCP035` really is a warning in current Bicep, and the day count in the last one climbs on its own.
 
-There is not even a difference in where the config came from: sample 01, sample 02 and this one all run [the same image](../../images/bicep-sandbox/), and its `bicepconfig.json` sits at `/acas/work` — the work-dir root `maf-sandbox-bicep` fixes in its spec, and the only place Bicep will find it, because Bicep resolves that file solely by walking up from the source it is compiling.
+There is not even a difference in where the config came from: sample 01, sample 02 and this one all run [the same image](../../images/bicep-sandbox/), and its `bicepconfig.json` sits at `/maf-sandbox/work` — the work-dir root `maf-sandbox-bicep` fixes in its spec, and the only place Bicep will find it, because Bicep resolves that file solely by walking up from the source it is compiling.
 
 That sameness is what makes this sample worth gating: `verify-live.yml` builds the image on the runner and runs this and sample 01 against **sample 01's assertion**, on demand and once after each release of `maf-sandbox`, `maf-sandbox-bicep` or `maf-sandbox-docker`. One workload, one compiler, two backends — so a red here while sample 01 is green is a statement about the Docker backend, not about Bicep.
 
@@ -87,4 +87,4 @@ docker build -t bicep-sandbox:local images/bicep-sandbox
 
 **`MODULE RESTORE FAILED` and `BCP192` on every `br/public:` reference** — the closed egress described above, working as designed. Nothing is misconfigured, and the banner is the tool refusing to let an incomplete validation read as a clean one. If you need module restore, configure an egress-proxy image on the backend, or use sample 01's backend, which can allow those four hosts and deny everything else.
 
-**`no-unused-params` reports as `[warning]`** — `bicepconfig.json` was not found, so every linter rule is at its built-in default and the rule set is weaker than intended. Check the image really has the file at `/acas/work/bicepconfig.json`; a build that skipped the `COPY` leaves a run that looks entirely healthy.
+**`no-unused-params` reports as `[warning]`** — `bicepconfig.json` was not found, so every linter rule is at its built-in default and the rule set is weaker than intended. Check the image really has the file at `/maf-sandbox/work/bicepconfig.json`; a build that skipped the `COPY` leaves a run that looks entirely healthy.

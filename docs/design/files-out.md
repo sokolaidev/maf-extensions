@@ -199,7 +199,7 @@ Named exceptions under one base, so backends do not diverge and a kind can map f
 Reads are confined to the working directory, and the confinement that matters is not the one on the argument string:
 
 ```python
-os.symlink("/", "/work/out/root")           # inside the guest, one line of the program
+os.symlink("/", "/maf-sandbox/work/out/root")           # inside the guest, one line of the program
 ```
 
 A reader that follows that link reads whatever *it* can see — on a backend that streams from inside the guest, the guest's filesystem; on a sync-mount backend, where the output directory is a host directory the guest writes into, the **host's**.

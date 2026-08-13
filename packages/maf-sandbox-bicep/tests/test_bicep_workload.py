@@ -921,7 +921,7 @@ class TestBicepSandboxSpec:
 
     def test_work_dir_is_a_dedicated_root(self):
         """Everything shared with the sandbox lives here, on a path nothing else owns."""
-        assert bicep_sandbox_spec().work_dir == "/acas/work"
+        assert bicep_sandbox_spec().work_dir == "/maf-sandbox/work"
 
     def test_kind_is_bicep(self):
         assert bicep_sandbox_spec().kind == "bicep"
@@ -1013,23 +1013,32 @@ class TestCommandTemplates:
 
 class TestSafeListedPath:
     def test_returns_sandbox_path_for_valid_file_in_listing(self):
-        assert safe_listed_path("main.bicep", ["main.bicep"], "/work") == "/work/main.bicep"
+        assert (
+            safe_listed_path("main.bicep", ["main.bicep"], "/maf-sandbox/work")
+            == "/maf-sandbox/work/main.bicep"
+        )
 
     def test_normalises_leading_slash(self):
-        assert safe_listed_path("/main.bicep", ["main.bicep"], "/work") == "/work/main.bicep"
+        assert (
+            safe_listed_path("/main.bicep", ["main.bicep"], "/maf-sandbox/work")
+            == "/maf-sandbox/work/main.bicep"
+        )
 
     def test_normalises_dot_slash(self):
-        assert safe_listed_path("./main.bicep", ["main.bicep"], "/work") == "/work/main.bicep"
+        assert (
+            safe_listed_path("./main.bicep", ["main.bicep"], "/maf-sandbox/work")
+            == "/maf-sandbox/work/main.bicep"
+        )
 
     def test_accepts_subpath(self):
-        result = safe_listed_path("infra/main.bicep", ["infra/main.bicep"], "/work")
-        assert result == "/work/infra/main.bicep"
+        result = safe_listed_path("infra/main.bicep", ["infra/main.bicep"], "/maf-sandbox/work")
+        assert result == "/maf-sandbox/work/infra/main.bicep"
 
     def test_rejects_file_not_in_listing(self):
-        assert safe_listed_path("other.bicep", ["main.bicep"], "/work") is None
+        assert safe_listed_path("other.bicep", ["main.bicep"], "/maf-sandbox/work") is None
 
     def test_rejects_empty_name(self):
-        assert safe_listed_path("", ["main.bicep", ""], "/work") is None
+        assert safe_listed_path("", ["main.bicep", ""], "/maf-sandbox/work") is None
 
     @pytest.mark.parametrize(
         "malicious",
@@ -1043,11 +1052,11 @@ class TestSafeListedPath:
         ],
     )
     def test_rejects_shell_metacharacters_even_when_present_in_the_listing(self, malicious):
-        assert safe_listed_path(malicious, [malicious], "/work") is None
+        assert safe_listed_path(malicious, [malicious], "/maf-sandbox/work") is None
 
     @pytest.mark.parametrize("traversal", ["../../etc/passwd", "infra/../../../etc/passwd"])
     def test_rejects_parent_traversal(self, traversal):
-        assert safe_listed_path(traversal, [traversal], "/work") is None
+        assert safe_listed_path(traversal, [traversal], "/maf-sandbox/work") is None
 
 
 # ---------------------------------------------------------------------------
@@ -1113,13 +1122,18 @@ class TestAgainstRealBicepOutput:
         assert {d["level"] for d in diagnostics} == {"error"}
 
     def test_rendering_strips_the_sandbox_path(self):
-        """The model should see the name it asked about, not the sandbox's internals."""
-        out = format_diagnostics(
-            parse_sarif(self._real()) or [], "lint(main.bicep)", strip_prefix="/acas/work/r2"
-        )
+        """The model should see the name it asked about, not the sandbox's internals.
+
+        The strip prefix is read from the fixture's own URIs rather than hardcoded to the
+        production work_dir, so the test still proves the strip after a re-record with no edit here.
+        """
+        diagnostics = parse_sarif(self._real()) or []
+        first_uri = diagnostics[0]["locations"][0]["file"]
+        strip_prefix = first_uri.removeprefix("file://").rsplit("/", 1)[0]
+        out = format_diagnostics(diagnostics, "lint(main.bicep)", strip_prefix=strip_prefix)
 
         assert "main.bicep:1" in out
-        assert "/acas/work" not in out
+        assert strip_prefix not in out
         assert "file://" not in out
 
     def test_rendering_omits_a_column_bicep_does_not_provide(self):

@@ -11,7 +11,7 @@ One layer on Debian: Graphviz, and nothing else. That is the whole image. It car
 | `debian:bookworm-slim` | A small, stock Debian with `apt`. Nothing in the tool depends on the distribution — it runs `dot` and reads a PNG back |
 | `graphviz` (`--no-install-recommends`) | Provides `dot`, the only program the sandbox runs. `--no-install-recommends` keeps the layer to the renderer and its libraries; the apt lists are dropped afterwards so nothing but the package survives |
 
-There is no working-directory `COPY` and no fixed config: the tool writes its DOT source into `/work` at run time (the `SandboxSpec`'s `work_dir`), which the backend creates as it writes the first file. `render_diagram` names the output format on the `dot` command line, so the image holds no state of its own between the source going in and the image coming out.
+There is no working-directory `COPY` and no fixed config: the tool writes its DOT source into `/maf-sandbox/work` at run time (the `SandboxSpec`'s `work_dir`), which the backend creates as it writes the first file. `render_diagram` names the output format on the `dot` command line, so the image holds no state of its own between the source going in and the image coming out.
 
 ## Build
 

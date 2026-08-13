@@ -331,7 +331,7 @@ class _AcasSandbox:
     ) -> None:
         """The protocol's component walk, over this backend's own unconfined stat.
 
-        A symlinked *parent* is invisible in the final entry's stat — with ``/work/out -> /etc``,
+        A symlinked *parent* is invisible in the final entry's stat — with ``/maf-sandbox/work/out -> /etc``,
         ``out/hostname`` stats as a regular 12-byte file and reads ``/etc/hostname`` — and this
         API offers no no-follow read and no realpath to settle it in one call, so it costs one
         stat per component.  ``include_guest`` is what :meth:`list_dir` needs: the service

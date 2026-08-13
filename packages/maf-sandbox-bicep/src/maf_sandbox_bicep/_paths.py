@@ -33,9 +33,9 @@ def safe_listed_path(name: str, listing: list[str], work_dir: str) -> str | None
     Prefer :func:`resolve_listed_path`: this collapses two unrelated reasons into
     ``None``, so a caller can only describe the failure in a way that is half wrong.
 
-    >>> safe_listed_path("main.bicep", ["main.bicep"], "/work")
-    '/work/main.bicep'
-    >>> safe_listed_path("main.bicep; rm -rf /", ["main.bicep; rm -rf /"], "/work") is None
+    >>> safe_listed_path("main.bicep", ["main.bicep"], "/maf-sandbox/work")
+    '/maf-sandbox/work/main.bicep'
+    >>> safe_listed_path("main.bicep; rm -rf /", ["main.bicep; rm -rf /"], "/maf-sandbox/work") is None
     True
     """
     path, _, _ = resolve_listed_path(name, listing, work_dir)
@@ -54,11 +54,11 @@ def resolve_listed_path(
     hostile name. The character class runs first, so a hostile name reads as hostile
     whether or not it is listed.
 
-    >>> resolve_listed_path("./main.bicep", ["main.bicep"], "/work")
-    ('/work/main.bicep', 'main.bicep', None)
-    >>> resolve_listed_path("main.bicep", [], "/work")
+    >>> resolve_listed_path("./main.bicep", ["main.bicep"], "/maf-sandbox/work")
+    ('/maf-sandbox/work/main.bicep', 'main.bicep', None)
+    >>> resolve_listed_path("main.bicep", [], "/maf-sandbox/work")
     (None, None, 'missing')
-    >>> resolve_listed_path("main.bicep; rm -rf /", ["main.bicep; rm -rf /"], "/work")
+    >>> resolve_listed_path("main.bicep; rm -rf /", ["main.bicep; rm -rf /"], "/maf-sandbox/work")
     (None, None, 'unsafe')
     """
     if not name or _UNSAFE_CHARS.search(name):

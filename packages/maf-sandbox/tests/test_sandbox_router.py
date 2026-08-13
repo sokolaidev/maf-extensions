@@ -840,7 +840,7 @@ class TestSpecDefaults:
 
     def test_work_dir_defaults_to_a_conventional_root(self):
         """A default, not a requirement — see `TestWorkDirIsPlatformNeutral` for why it is only that."""
-        assert SandboxSpec(kind="test").work_dir == "/work"
+        assert SandboxSpec(kind="test").work_dir == "/maf-sandbox/work"
 
 
 class TestWorkDirIsPlatformNeutral:
@@ -854,7 +854,7 @@ class TestWorkDirIsPlatformNeutral:
     @pytest.mark.parametrize(
         "work_dir",
         [
-            "C:/agent/work",  # a Windows guest's drive-rooted path
+            "C:/agent/maf-sandbox/work",  # a Windows guest's drive-rooted path
             "/opt/somewhere/else",  # a different POSIX root
             r"D:\agent\work",  # a Windows guest's own separator — raw, or `\a` is a bell
         ],

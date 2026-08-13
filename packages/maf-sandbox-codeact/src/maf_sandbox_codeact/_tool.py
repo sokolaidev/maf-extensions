@@ -67,7 +67,7 @@ EXECUTE_CODE_TOOL_NAME = "execute_code"
 CODEACT_KIND = "codeact"
 
 #: Where every run's directory is created — a dedicated root rather than the image's own tree.
-_WORK_DIR = "/work"
+_WORK_DIR = "/maf-sandbox/work"
 
 #: One fixed name inside each run's own directory.
 _PROGRAM_FILENAME = "program.py"

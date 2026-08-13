@@ -32,9 +32,7 @@ sys.path.insert(0, str(_SAMPLE))
 
 from no_isolation_backend import NoIsolationBackend, NoIsolationSandbox  # noqa: E402
 
-_GUEST_WORK_DIR = (
-    "/acas/work"  # the bicep kind's constant — a path that is not real on the host
-)
+_GUEST_WORK_DIR = "/maf-sandbox/work"  # the bicep kind's constant — a path that is not real on the host
 
 
 def _key(agent_dir: str = "devops-engineer") -> SandboxKey:
@@ -77,7 +75,7 @@ def test_host_path_rejects_a_guest_path_that_escapes_the_root():
     """A ``..`` segment that climbs above the work directory is refused, not written outside it.
 
     ``PurePosixPath.relative_to`` is lexical and keeps ``..``, so without a resolve-and-check a
-    guest path like ``/acas/work/../../x`` would land outside the host root. The bicep kind
+    guest path like ``/maf-sandbox/work/../../x`` would land outside the host root. The bicep kind
     rejects ``..`` before it reaches the backend, but the backend says paths stay *under* its
     root — so a path that escapes raises, and a ``..`` that resolves back under the root is fine.
     """

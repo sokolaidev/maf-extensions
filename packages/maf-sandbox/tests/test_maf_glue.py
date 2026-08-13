@@ -46,8 +46,8 @@ from maf_sandbox.maf import (
 )
 from maf_sandbox.testing import InMemoryStore, InProcessSandbox, InProcessSandboxBackend
 
-_SPEC = SandboxSpec(kind="test", egress_allow=("example.invalid",), work_dir="/work")
-_NO_EGRESS_SPEC = SandboxSpec(kind="test", work_dir="/work")
+_SPEC = SandboxSpec(kind="test", egress_allow=("example.invalid",), work_dir="/maf-sandbox/work")
+_NO_EGRESS_SPEC = SandboxSpec(kind="test", work_dir="/maf-sandbox/work")
 _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent-1")
 
 #: A spec that declares outputs must require the capability that reads them back — the pull
@@ -58,13 +58,13 @@ _PULLS = DEFAULT_CAPABILITIES | {Capability.FILES_OUT}
 #: read as carrying nothing out of the conversation.
 _LANDING_SPEC = SandboxSpec(
     kind="test",
-    work_dir="/work",
+    work_dir="/maf-sandbox/work",
     requires=_PULLS,
     declared_outputs=(DeclaredOutput(path="out.png", media_type="image/png"),),
 )
 _CONSUME_SPEC = SandboxSpec(
     kind="test",
-    work_dir="/work",
+    work_dir="/maf-sandbox/work",
     requires=_PULLS,
     declared_outputs=(DeclaredOutput(path="report.sarif", disposition=OutputDisposition.CONSUME),),
 )
@@ -72,7 +72,7 @@ _CONSUME_SPEC = SandboxSpec(
 #: The CodeAct shape: it knows it lands artifacts and cannot say what they will be called, so
 #: `declared_outputs` alone would answer every attach-time question wrongly.
 _CALL_TIME_SPEC = SandboxSpec(
-    kind="test", work_dir="/work", requires=_PULLS, outputs_named_at_call_time=True
+    kind="test", work_dir="/maf-sandbox/work", requires=_PULLS, outputs_named_at_call_time=True
 )
 
 
@@ -558,7 +558,7 @@ class TestAttachedToolRuns:
 
         assert _call(tool, target="thing") == "ok"
         assert backend.keys == [SandboxKey("scope-a", "thread-1", "agent-1")]
-        assert backend.sandbox.commands == [("echo thing", "/work", 5)]
+        assert backend.sandbox.commands == [("echo thing", "/maf-sandbox/work", 5)]
 
     def test_a_refusal_is_returned_as_the_tools_answer(self):
         backend = InProcessSandboxBackend()

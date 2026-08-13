@@ -304,7 +304,7 @@ class TestCodeactSandboxSpec:
         assert codeact_sandbox_spec().kind == CODEACT_KIND == "codeact"
 
     def test_work_dir_is_the_programs_own_root(self):
-        assert codeact_sandbox_spec().work_dir == _WORK_DIR == "/work"
+        assert codeact_sandbox_spec().work_dir == _WORK_DIR == "/maf-sandbox/work"
 
     def test_egress_is_closed(self):
         """The empty allowlist is half of what makes running model-written code defensible.

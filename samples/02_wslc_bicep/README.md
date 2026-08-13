@@ -18,7 +18,7 @@ Two things are genuinely weaker here, and neither is hidden.
 ## Prerequisites
 
 - **Windows with WSL 2.9.3 or later.** `wslc` is WSL's container CLI and ships with it; `wsl --version` reports the version, `wslc --version` confirms the CLI is on `PATH`. Nothing else needs installing — no Docker, no daemon, no login.
-- **The sandbox image**, built from [`images/bicep-sandbox`](../../images/bicep-sandbox/) — the same image sample 01 runs in Azure, two layers on `mcr.microsoft.com/azurelinux/base/core:3.0`: the Bicep CLI, pinned, plus `bicepconfig.json` at `/acas/work` — sample-grade, deliberately; production replaces it with a hardened build you own (minimal, digest-pinned, scanned, rebuilt on your patch cadence) built the same way. Run this from the repository root:
+- **The sandbox image**, built from [`images/bicep-sandbox`](../../images/bicep-sandbox/) — the same image sample 01 runs in Azure, two layers on `mcr.microsoft.com/azurelinux/base/core:3.0`: the Bicep CLI, pinned, plus `bicepconfig.json` at `/maf-sandbox/work` — sample-grade, deliberately; production replaces it with a hardened build you own (minimal, digest-pinned, scanned, rebuilt on your patch cadence) built the same way. Run this from the repository root:
 
   ```bash
   wslc build -t bicep-sandbox:local images/bicep-sandbox
@@ -66,7 +66,7 @@ Disposed 1 sandbox(es).
 
 Three diagnostics, the same three sample 01 gets from a microVM in Azure. Sample 01's README reads them closely and that reading applies here unchanged; the short version is that `no-unused-params` printing as `[error]` rather than its built-in `[warning]` is the visible proof that `bicepconfig.json` was discovered, `BCP035` really is a warning in current Bicep, and the day count in the last one climbs on its own.
 
-There is not even a difference in where the config came from: both samples run [the same image](../../images/bicep-sandbox/), and its `bicepconfig.json` sits at `/acas/work` — the work-dir root `maf-sandbox-bicep` fixes in its spec, and the only place Bicep will find it, because Bicep resolves that file solely by walking up from the source it is compiling.
+There is not even a difference in where the config came from: both samples run [the same image](../../images/bicep-sandbox/), and its `bicepconfig.json` sits at `/maf-sandbox/work` — the work-dir root `maf-sandbox-bicep` fixes in its spec, and the only place Bicep will find it, because Bicep resolves that file solely by walking up from the source it is compiling.
 
 ## Troubleshooting
 
@@ -82,4 +82,4 @@ wslc build -t bicep-sandbox:local images/bicep-sandbox
 
 **`MODULE RESTORE FAILED` and `BCP192` on every `br/public:` reference** — the closed egress described above, working as designed. Nothing is misconfigured, and the banner is the tool refusing to let an incomplete validation read as a clean one. If you need module restore, sample 01's backend is the one that can allow those four hosts and deny everything else.
 
-**`no-unused-params` reports as `[warning]`** — `bicepconfig.json` was not found, so every linter rule is at its built-in default and the rule set is weaker than intended. Check the image really has the file at `/acas/work/bicepconfig.json`; a build that skipped the `COPY` leaves a run that looks entirely healthy.
+**`no-unused-params` reports as `[warning]`** — `bicepconfig.json` was not found, so every linter rule is at its built-in default and the rule set is weaker than intended. Check the image really has the file at `/maf-sandbox/work/bicepconfig.json`; a build that skipped the `COPY` leaves a run that looks entirely healthy.

@@ -10,4 +10,4 @@ RUN tdnf install -y ca-certificates curl icu \
     && chmod +x /usr/local/bin/bicep
 
 # maf-sandbox-bicep's fixed spec work_dir, and the only place Bicep looks for this file.
-COPY bicepconfig.json /acas/work/bicepconfig.json
+COPY bicepconfig.json /maf-sandbox/work/bicepconfig.json
