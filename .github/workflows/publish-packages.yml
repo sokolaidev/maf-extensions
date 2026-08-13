@@ -345,14 +345,12 @@ jobs:
               --verify-tag
           fi
 
-  # PyPI does not serve a just-uploaded version the instant it lands — there is a propagation
-  # lag. The 0.11.0 release's first verify-live run hit it: dispatched 44 seconds after upload,
-  # it resolved the previous core, and every sample failed on import for no defect (#249). Poll
-  # the index here, before the verify call, so verify-live resolves the version that was
-  # actually just published. A poll, not a fixed sleep: the lag is not bounded, and a sleep is
-  # both slow when the index is quick and unreliable when it is not. Gated identically to
-  # `verify` so it is never skipped when verify would run, which lets verify simply `needs:` it.
-  # (#271.)
+  # Poll the installer-facing Simple API (what uv resolves through, not the metadata JSON
+  # endpoint, which is cached separately) until the just-published version lists, before the
+  # verify call — so verify-live resolves the version that was actually just published. A poll,
+  # not a fixed sleep: the propagation lag is not bounded, and a sleep is both slow when the
+  # index is quick and unreliable when it is not. Gated identically to `verify` so it is never
+  # skipped when verify would run, which lets verify simply `needs:` it. (#271.)
   wait-for-propagation:
     name: Wait for the index to show the new version
     needs: [build, publish]
@@ -367,17 +365,17 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           set -euo pipefail
-          url="https://pypi.org/pypi/${PACKAGE}/${VERSION}/json"
+          url="https://pypi.org/simple/${PACKAGE}/"
           deadline=$((SECONDS + 600))
           while [ "$SECONDS" -lt "$deadline" ]; do
-            if python3 -c "import urllib.request; urllib.request.urlopen('${url}', timeout=15).read()" 2>/dev/null; then
-              echo "${PACKAGE} ${VERSION} is visible on the index"
+            if python3 -c "import json,sys,urllib.request; r=urllib.request.Request('${url}',headers={'Accept':'application/vnd.pypi.simple.v1+json'}); d=json.loads(urllib.request.urlopen(r,timeout=15).read()); sys.exit(0 if '${VERSION}' in d['versions'] else 1)" 2>/dev/null; then
+              echo "${PACKAGE} ${VERSION} is visible on the Simple index"
               exit 0
             fi
             echo "not visible yet; polling..."
             sleep 15
           done
-          echo "::error::${PACKAGE} ${VERSION} did not appear on the index within ten minutes"
+          echo "::error::${PACKAGE} ${VERSION} did not appear on the Simple index within ten minutes"
           exit 1
 
   # The happy-path half of issue #33: once a real publish lands, run the samples verify-live.yml
