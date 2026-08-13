@@ -27,15 +27,15 @@ Small, self-contained programs, each showing one wiring end to end. The package 
 
 **Every image here is sample-grade, chosen for prototyping.** The dev-container image is a convenience, and even the purpose-built Bicep image is only a pinned CLI on a stock base. A production deployment replaces them with hardened images your organization builds and owns — minimal base, digest-pinned, nothing installed the workload does not use, scanned and rebuilt on your patch cadence — supplied through the same `image`/`image_id` spec fields; nothing else in a sample's wiring changes.
 
-**Each sample installs from PyPI**, not from this workspace:
+**Each sample installs from PyPI**, not from this workspace, and says so itself. Every `agent.py` carries a [PEP 723](https://peps.python.org/pep-0723/) `# /// script` block naming what it needs, so the whole of running one is:
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install maf-sandbox-acas maf-sandbox-bicep agent-framework-openai
-python samples/01_acas_bicep/agent.py
+cd samples/01_acas_bicep && uv run agent.py
 ```
 
-That is deliberate. A sample that only runs inside this repository would be demonstrating something a consumer of the published wheels does not get — an import that resolved because every sibling package happened to be on the path.
+[uv](https://docs.astral.sh/uv/) reads that block, resolves it against the index and builds a throwaway environment — nothing is installed into yours, and no list on this page can drift from what the sample actually imports.
+
+That the wheels come from PyPI is deliberate. A sample that only ran inside this repository would demonstrate something a consumer of the published wheels does not get: an import that resolved because every sibling package happened to be on the path.
 
 **Two model clients, and the split is deliberate.** Every sample but two uses `OpenAIChatClient` against an Azure OpenAI deployment with `DefaultAzureCredential` — no key anywhere in the tree, and the same wiring a host is likely to deploy. **Samples 02 and 04 keep `OpenAIChatCompletionClient`** with a key and an optional `OPENAI_BASE_URL`, because they are the local-model road: chat-completions is the surface a local server (Ollama, vLLM, LM Studio) implements well, where newer-API support is often partial in ways that surface as an empty final answer. They pair that with `wslc`, so together they are the sample you can run with nothing rented — a container on your own machine and a model on your own machine.
 

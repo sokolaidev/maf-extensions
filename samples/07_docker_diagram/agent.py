@@ -26,11 +26,21 @@ renderer and nothing else — this directory's README says what each of those co
 Read it, along with the prerequisites and the environment variables, first.
 """
 
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#     "agent-framework-openai",
+#     "azure-core[aio]",
+#     "azure-identity",
+#     "maf-sandbox-docker",
+#     "maf-sandbox>=0.12",
+# ]
+# ///
+
 from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -39,21 +49,26 @@ from agent_framework import Agent
 from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
 from maf_sandbox import (
-    Artifact,
     Capability,
     DeclaredOutput,
     Isolation,
-    LandedArtifact,
     OutputSink,
     SandboxRouter,
     SandboxSpec,
     TransferLimits,
     CallerContext,
     collect_outputs,
+    make_file_system_sink,
     error_detail,
 )
-from maf_sandbox.maf import SandboxToolSession, make_caller_context, sandboxed_tool
+from maf_sandbox.maf import (
+    SandboxToolSession,
+    list_no_files,
+    make_caller_context,
+    sandboxed_tool,
+)
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
+from _scaffold import require_env_vars
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -320,55 +335,7 @@ def _render_failed(exit_code: int, stderr: str) -> str:
     )
 
 
-def make_png_sink(output_dir: Path) -> OutputSink:
-    """A sink that lands each rendered image as a file under ``output_dir``.
-
-    ``deliver`` writes the bytes and reports back: ``display`` is the one line the model is
-    allowed to see — where the image landed, and nothing guest-derived — and ``handle`` is the
-    host's own path, which nothing renders into the transcript.  ``artifact.name`` is validated
-    relative before it reaches here (no traversal, not absolute), so joining it under
-    ``output_dir`` stays inside ``output_dir``.
-    """
-
-    async def deliver(artifact: Artifact) -> LandedArtifact:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        destination = output_dir / artifact.name
-        destination.write_bytes(artifact.content)
-        return LandedArtifact(
-            name=artifact.name,
-            display=f"Rendered {artifact.name} ({artifact.media_type}); saved under "
-            f"{output_dir.name}/.",
-            handle=str(destination),
-        )
-
-    return OutputSink(deliver)
-
-
 # --- Host wiring -----------------------------------------------------------------------------
-
-
-def require_env_vars(names: tuple[str, ...]) -> dict[str, str] | None:
-    """Read `names` from the environment, or report every one that is missing.
-
-    Worth doing before anything else, and worth failing on.  `make_diagram_tools` returns an
-    empty list when the router has no backend, so a half-configured run does not crash — it
-    quietly produces an agent with no tools, which answers from the model alone.  That is the T0
-    behaviour this sample exists to contrast with, and it is indistinguishable from success
-    unless someone says so out loud.
-    """
-    missing = [name for name in names if not os.environ.get(name)]
-    if missing:
-        print("Not configured. These environment variables are unset:", file=sys.stderr)
-        for name in missing:
-            print(f"  {name}", file=sys.stderr)
-        print("\nSee this directory's README.md.", file=sys.stderr)
-        return None
-    return {name: os.environ[name] for name in names}
-
-
-async def list_no_files(_store: object) -> list[str]:
-    """This kind shares no file store files — the model supplies the DOT source directly."""
-    return []
 
 
 async def run() -> int:
@@ -387,7 +354,14 @@ async def run() -> int:
         lambda: SCOPE,
         lambda: THREAD_ID,
     )
-    sink = make_png_sink(OUTPUT_DIR)
+    # The library writes and confines; the sample supplies only the sentence the model sees,
+    # which this kind phrases with a verb because nothing introduces the line for it.
+    sink = make_file_system_sink(
+        OUTPUT_DIR,
+        display=lambda artifact, _destination: (
+            f"Rendered {artifact.name} ({artifact.media_type}); saved under {OUTPUT_DIR.name}/."
+        ),
+    )
 
     tools = make_diagram_tools(
         router,

@@ -19,21 +19,30 @@ Running it needs a real Azure subscription and **creates a billable sandbox** �
 this directory's README for the prerequisites and the environment variables.
 """
 
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#     "agent-framework-openai",
+#     "maf-sandbox-acas",
+#     "maf-sandbox-bicep",
+#     "maf-sandbox>=0.12",
+# ]
+# ///
+
 from __future__ import annotations
 
 import asyncio
-import os
 import sys
 from pathlib import Path
-from typing import Any
 
 from agent_framework import Agent, InMemoryAgentFileStore
 from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
 from maf_sandbox import SandboxRouter
-from maf_sandbox.maf import make_caller_context
+from maf_sandbox.maf import list_all_files, make_caller_context
 from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
 from maf_sandbox_bicep import make_bicep_tools
+from _scaffold import require_env_vars
 
 # A sandbox is keyed by (scope, thread_id, agent_dir).  A host reads the first two
 # from its own request context — a user/tenant and a conversation.  This program
@@ -61,48 +70,6 @@ SANDBOX_VARS = (
 #: Everything the chat model needs. Auth is `DefaultAzureCredential`, so there is
 #: no key here — `az login` is enough.
 MODEL_VARS = ("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_CHAT_MODEL")
-
-
-def require_env_vars(names: tuple[str, ...]) -> dict[str, str] | None:
-    """Read `names` from the environment, or report every one that is missing.
-
-    Worth doing before anything else, and worth failing on.  `make_bicep_tools`
-    returns an empty list when the router has no backend, so a half-configured
-    run does not crash — it quietly produces an agent with no tools, which
-    answers the question from the model alone.  That is the T0 behaviour this
-    sample exists to contrast with, and it is indistinguishable from success
-    unless someone says so out loud.
-    """
-    missing = [name for name in names if not os.environ.get(name)]
-    if missing:
-        print("Not configured. These environment variables are unset:", file=sys.stderr)
-        for name in missing:
-            print(f"  {name}", file=sys.stderr)
-        print("\nSee this directory's README.md.", file=sys.stderr)
-        return None
-    return {name: os.environ[name] for name in names}
-
-
-async def list_all_files(store: Any) -> list[str]:
-    """Return every file in the file store, as store-relative paths.
-
-    This listing is the workload's **injection-pinning boundary**: only a name
-    that appears in it is ever substituted into a sandbox command, so a path the
-    model invented reaches no shell.  `list_children` returns bare names one
-    level at a time, so walking it is the host's job rather than the store's.
-    """
-    paths: list[str] = []
-
-    async def walk(directory: str) -> None:
-        for entry in await store.list_children(directory):
-            child = f"{directory}/{entry.name}" if directory else entry.name
-            if entry.type == "directory":
-                await walk(child)
-            else:
-                paths.append(child)
-
-    await walk("")
-    return paths
 
 
 async def run() -> int:

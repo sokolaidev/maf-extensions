@@ -60,10 +60,10 @@ Nothing is built. The image is `mcr.microsoft.com/devcontainers/python:3.13-book
 
 ## Running it
 
+Dependencies are declared in `agent.py` itself, in a [PEP 723](https://peps.python.org/pep-0723/) block, so there is nothing to install and nothing to keep in step with this page — [uv](https://docs.astral.sh/uv/) reads them and builds a throwaway environment for the run. From PyPI, never from this workspace:
+
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install maf-sandbox-docker maf-sandbox-codeact agent-framework-openai azure-identity "azure-core[aio]"
-python samples/08_docker_codeact_files/agent.py
+uv run agent.py
 ```
 
 Expected shape — the grand total over `sales.csv` is **1124**:
