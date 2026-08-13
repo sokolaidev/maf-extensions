@@ -1124,11 +1124,8 @@ class TestAgainstRealBicepOutput:
     def test_rendering_strips_the_sandbox_path(self):
         """The model should see the name it asked about, not the sandbox's internals.
 
-        The fixture was recorded under the pre-consolidation ``/acas/work`` work dir (#266 moved
-        the bicep kind to ``/maf-sandbox/work``) and is kept as genuine-compiler output, so the
-        strip prefix is read from the fixture's own URIs rather than hardcoded to the production
-        work_dir — the test still proves the strip happens, and a future re-record under
-        ``/maf-sandbox/work`` needs no edit here.
+        The strip prefix is read from the fixture's own URIs rather than hardcoded to the
+        production work_dir, so the test still proves the strip after a re-record with no edit here.
         """
         diagnostics = parse_sarif(self._real()) or []
         first_uri = diagnostics[0]["locations"][0]["file"]
