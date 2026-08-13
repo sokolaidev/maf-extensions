@@ -1,6 +1,6 @@
 # 09 — validate a Bicep file against a backend that is not isolated
 
-Sample 02 with the backend swapped for one this sample defines — `NoIsolationBackend` — that really runs the bicep CLI on the host. Same agent, same tool, the same `main.bicep` as samples 01/02/05 — but the sandbox is a host work directory and a real subprocess, not a container or a VM. No image, no billable anything, and no boundary either: this is the floor of the isolation ladder (`Isolation.PROCESS`, "same process as the host, no boundary at all"), the rung for tests and local fakes, here carrying a real compiler instead of a scripted one.
+Sample 02 with the backend swapped for one this sample defines — `NoIsolationBackend` — that really runs the bicep CLI on the host. Same agent, same tool, the same `main.bicep` as samples 01/02/05 — but the sandbox is a host work directory and a real subprocess, not a container or a VM. No image, no container runtime, and no boundary either: this is the floor of the isolation ladder (`Isolation.PROCESS`, "same process as the host, no boundary at all"), the rung for tests and local fakes, here carrying a real compiler instead of a scripted one. The *sandbox* costs nothing to run — no image to pull, no container runtime, no Azure subscription for the backend; the model is a separate cost, and the default is a cloud one.
 
 ```
 app  ->  maf_sandbox (router)  ->  NoIsolationBackend (this sample)  ->  bicep, on the host
@@ -21,8 +21,9 @@ A backend with no boundary honestly cannot confine egress, which is `Egress.UNRE
 
 - **The bicep CLI on PATH.** The container images bake the binary in; this backend shells out to whatever `bicep` resolves to on your machine, so it has to be installed. The Azure docs cover the install, or match the pin the images use ([`images/bicep-sandbox/Dockerfile`](../../images/bicep-sandbox/Dockerfile) pins `v0.46.1`). `bicep --version` is the quickest check it is there and that the host has the ICU libraries the binary needs.
 - **A model endpoint.** Locally, an [Ollama](https://ollama.com/) server on its default port — `ollama serve` and a one-time `ollama signin`, because the default model is a cloud one served through the local daemon (nothing to `pull`). Even the model name is optional because the sample defaults it. In CI, an Azure OpenAI deployment reached with a federated credential, no key stored anywhere. The model needs to be able to call a tool; beyond that this sample asks nothing unusual of it.
+- **A POSIX shell and a space-free temp directory.** The backend runs the bicep command templates as-is — `bicep build {path} ... 2>&1 || true` — which are the container's `/bin/sh` idiom, so it assumes a POSIX shell; the Linux CI runner's `/tmp` satisfies this. Don't point `TMPDIR` at a path containing spaces: the host root is substituted into the command as a bare token, and a space would split the argument the compiler receives.
 
-No sandbox image, no container runtime, no Azure subscription, no billable anything. The "sandbox" is a host temp directory that lives for one turn.
+No sandbox image, no container runtime, no Azure subscription for the *sandbox* — it is a host temp directory that lives for one turn. The model is a separate cost: the default is a cloud model served through the local Ollama daemon, and the CI path uses Azure OpenAI, so inference is whatever your endpoint charges — the backend is free, the model path is not.
 
 ## Install
 

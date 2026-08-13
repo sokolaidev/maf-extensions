@@ -21,7 +21,7 @@ param storageAccountName string
 param environmentName string
 
 // FAULT 1 — `sku` is required on a storage account and is missing.
-// `bicep build` reports `BCP035` (an error): the declaration is missing the
+// `bicep build` reports `BCP035` (a warning): the declaration is missing the
 // required property "sku".
 //
 // The API version below is deliberately a real one. An unrecognised
