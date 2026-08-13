@@ -2,10 +2,11 @@
 
 A backend this sample defines that runs workloads on the host with no boundary at all:
 ``write_file`` writes to a host temp directory and ``exec`` shells out to a real binary on this
-machine — the floor of the isolation ladder (:data:`~maf_sandbox.Isolation.PROCESS`), carrying
-the real bicep compiler rather than a scripted fake. The full story — the guest-path mapping,
-the ``bicepconfig.json`` seeding, and the egress temporary-misuse — is in ``agent.py``'s
-docstring and the sample README; this module is the implementation.
+machine — the floor of the isolation ladder (:data:`~maf_sandbox.Isolation.PROCESS`). A backend
+is independent of the kinds it serves: this module only knows how to put a file into a host
+work directory and run a command there. The workload-specific framing — what this backend is
+asked to run, and why — is in ``agent.py``'s docstring and the sample README; this module is
+the kind-agnostic implementation.
 """
 
 from __future__ import annotations
@@ -36,22 +37,24 @@ class NoIsolationSandbox:
 
     The floor of the isolation ladder: ``write_file`` writes to a host directory and ``exec``
     shells out to a real binary on this machine, and the result is whatever that binary prints.
-    There is no container, no VM, no separate filesystem — only the host. That is the point of
-    this sample: the same bicep workload that runs in a container (samples 01/02/05) runs here
-    unchanged, against a backend with no boundary.
+    There is no container, no VM, no separate filesystem — only the host — so a workload
+    written against :class:`~maf_sandbox.Sandbox` runs here unchanged, against a backend with
+    no boundary.
 
-    The bicep kind fixes a guest ``work_dir`` (``/acas/work``) and embeds that literal path in
-    its command templates. A host backend cannot make ``/acas/work`` a real rootless path, so
-    this sandbox maps the spec's ``work_dir`` to a host temp directory: every guest path is
-    rewritten under it, and ``exec`` substitutes it into the command. The mapping is honest
-    because ``work_dir`` is known from the spec, not parsed out of an opaque argv — the one
-    accommodation a host backend makes, narrower than what the protocol otherwise leaves to a
-    kind.
+    A kind fixes a guest ``work_dir`` (an absolute guest path) and may embed that literal path
+    in its command templates. A host backend cannot make an arbitrary absolute guest path real
+    on the host, so this sandbox maps the spec's ``work_dir`` to a host temp directory: every
+    guest path is rewritten under it, and ``exec`` substitutes it into the command. The mapping
+    is honest because ``work_dir`` is known from the spec, not parsed out of an opaque argv —
+    the one accommodation a host backend makes, narrower than what the protocol otherwise
+    leaves to a kind.
 
-    Only ``write_file`` and ``exec`` are exercised by the bicep workload. The pull surface
-    (``stat_file`` / ``read_file`` / ``list_dir``) raises: the workload's spec requires only
-    ``EXEC`` and ``FILES_IN``, never ``FILES_OUT``, so a backend that does not implement the
-    pull surface is refused no workload it is asked to serve.
+    Only ``write_file`` and ``exec`` are implemented meaningfully. The pull surface
+    (``stat_file`` / ``read_file`` / ``list_dir``) raises :exc:`NotImplementedError`: this
+    backend declares only :data:`~maf_sandbox.DEFAULT_CAPABILITIES` (``EXEC`` and
+    ``FILES_IN``), so the router refuses any workload whose spec requires ``FILES_OUT`` before
+    it reaches the backend — the pull surface is never exercised by a workload this backend
+    serves.
     """
 
     def __init__(self, host_root: Path, guest_work_dir: str) -> None:
@@ -80,10 +83,10 @@ class NoIsolationSandbox:
     ) -> ExecResult:
         host_cwd = self._host_path(working_directory)
         host_cwd.mkdir(parents=True, exist_ok=True)
-        # A string command carries shell features (`2>&1`, `|| true`) the bicep templates need,
-        # so it runs through a shell; a sequence is an argv list and runs without one. The only
-        # interpolated content in the bicep command is the file path, which the workload
-        # validated to [A-Za-z0-9._/-] before it reached here — not agent-controlled.
+        # The protocol's string form is for commands that need shell operators (`2>&1`,
+        # `|| true`), so it runs through a shell; a sequence is an argv list and runs without
+        # one. A string command is the kind's to build — what it interpolates, and whether
+        # that is safe under a shell, is the kind's responsibility, not the backend's.
         if isinstance(command, str):
             cmd: str | list[str] = command.replace(
                 self._guest_work_dir, str(self._host_root)
@@ -93,7 +96,7 @@ class NoIsolationSandbox:
             cmd = list(command)
             shell = False
         try:
-            completed = subprocess.run(  # noqa: S603 — shell only for the string form, above
+            completed = subprocess.run(  # noqa: S603 — the protocol's string form needs a shell
                 cmd,
                 shell=shell,
                 cwd=str(host_cwd),
@@ -113,24 +116,24 @@ class NoIsolationSandbox:
         self, path: str, *, working_directory: str
     ) -> SandboxEntry | None:
         raise NotImplementedError(
-            "NoIsolationSandbox does not implement the pull surface; the bicep workload "
-            "uses only write_file and exec"
+            "NoIsolationSandbox does not implement the pull surface "
+            "(stat_file/read_file/list_dir)"
         )
 
     async def read_file(
         self, path: str, *, working_directory: str, max_bytes: int
     ) -> bytes:
         raise NotImplementedError(
-            "NoIsolationSandbox does not implement the pull surface; the bicep workload "
-            "uses only write_file and exec"
+            "NoIsolationSandbox does not implement the pull surface "
+            "(stat_file/read_file/list_dir)"
         )
 
     async def list_dir(
         self, path: str, *, working_directory: str
     ) -> tuple[SandboxEntry, ...]:
         raise NotImplementedError(
-            "NoIsolationSandbox does not implement the pull surface; the bicep workload "
-            "uses only write_file and exec"
+            "NoIsolationSandbox does not implement the pull surface "
+            "(stat_file/read_file/list_dir)"
         )
 
 
@@ -138,23 +141,22 @@ class NoIsolationBackend:
     """A :class:`~maf_sandbox.SandboxBackend` that runs workloads on the host with no boundary.
 
     The floor of the isolation ladder — :data:`~maf_sandbox.Isolation.PROCESS`, "same process
-    as the host, no boundary at all" — carrying a real compiler rather than a scripted fake.
-    Each ``acquire`` creates a host temp directory and hands back a :class:`NoIsolationSandbox`
-    that runs commands there; ``dispose_scope`` deletes them. Get-or-create is keyed by
-    ``(SandboxKey, spec.kind)`` and guarded by a lock, the way the protocol asks.
+    as the host, no boundary at all". Each ``acquire`` creates a host temp directory and hands
+    back a :class:`NoIsolationSandbox` that runs commands there; ``dispose_scope`` deletes them.
+    Get-or-create is keyed by ``(SandboxKey, spec.kind)`` and guarded by a lock, the way the
+    protocol asks.
 
     ``seed_files`` are written to the work-directory root on acquire — the host's stand-in for
-    the files a container image bakes in. The bicep workload expects ``bicepconfig.json`` at
-    the work-directory root (bicep finds it by walking up from the source file), so the sample
-    seeds it here to lint under the same rule set as samples 01/02/05.
+    the files a container image bakes in. Whether a workload needs such a file is the
+    workload's concern; the backend simply places whatever the sample passes.
 
     The egress declaration is a **temporary misuse**: a backend with no boundary honestly
     cannot confine egress, which is :data:`~maf_sandbox.Egress.UNRESTRICTED` — and the router
     refuses ``UNRESTRICTED`` for any workload today. ``CLOSED`` is worn only to pass the
-    router's gate; it is not enforced, and it is safe here only because ``main.bicep``
-    references no modules and makes no egress calls. Switch back to ``UNRESTRICTED`` once the
-    core allows it for workloads that don't require :data:`~maf_sandbox.Capability.NETWORK`
-    (#265).
+    router's gate; it is not enforced, and it cannot be. Whether that unenforced gap is inert
+    is a property of the workload, not the backend, and is argued in ``agent.py``. Switch back
+    to ``UNRESTRICTED`` once the core allows it for workloads that don't require
+    :data:`~maf_sandbox.Capability.NETWORK` (#265).
     """
 
     def __init__(

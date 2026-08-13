@@ -11,7 +11,7 @@ app  ->  maf_sandbox (router)  ->  NoIsolationBackend (this sample)  ->  bicep, 
 
 This is the fourth comparable Bicep sample (01, 02, 05, 09): one compiler, one lint rule set (the repo [`bicepconfig.json`](bicepconfig.json) seeded into the work directory the way the images bake it in), a different backend underneath. The protocol's central claim — a workload written against `maf_sandbox` runs unchanged on another backend — is shown rather than asserted, at the weakest boundary that can still run it.
 
-One accommodation a host backend makes, and it is named in the code: the bicep kind fixes a guest `work_dir` (`/acas/work`) and embeds that literal path in its command templates. `/acas/work` cannot be a real rootless host path, so `NoIsolationSandbox` maps the spec's `work_dir` to a host temp directory — every guest path is rewritten under it, and `exec` substitutes it into the command. The mapping is honest because `work_dir` is known from the spec, not parsed out of an opaque argv — the narrow version of what the protocol otherwise leaves to a kind.
+One accommodation a host backend makes, and it is named in the code: the bicep kind fixes a guest `work_dir` (an absolute guest path, set on the spec) and builds its `bicep build` / `bicep lint` commands under it. That path is not a real path on this host, so `NoIsolationSandbox` maps the spec's `work_dir` to a host temp directory — every guest path is rewritten under it, and `exec` substitutes it into the command. The mapping is honest because `work_dir` is known from the spec, not parsed out of an opaque argv — the narrow version of what the protocol otherwise leaves to a kind.
 
 ## A temporary misuse, called out plainly
 
@@ -20,7 +20,7 @@ A backend with no boundary honestly cannot confine egress, which is `Egress.UNRE
 ## Prerequisites
 
 - **The bicep CLI on PATH.** The container images bake the binary in; this backend shells out to whatever `bicep` resolves to on your machine, so it has to be installed. The Azure docs cover the install, or match the pin the images use ([`images/bicep-sandbox/Dockerfile`](../../images/bicep-sandbox/Dockerfile) pins `v0.46.1`). `bicep --version` is the quickest check it is there and that the host has the ICU libraries the binary needs.
-- **A model endpoint.** Locally, an [Ollama](https://ollama.com/) server on its default port — `ollama serve` and `ollama pull minimax-m3:cloud` (or whatever model you prefer) is the entire setup, and even the model name is optional because the sample defaults it. In CI, an Azure OpenAI deployment reached with a federated credential, no key stored anywhere. The model needs to be able to call a tool; beyond that this sample asks nothing unusual of it.
+- **A model endpoint.** Locally, an [Ollama](https://ollama.com/) server on its default port — `ollama serve` and a one-time `ollama signin`, because the default model is a cloud one served through the local daemon (nothing to `pull`). Even the model name is optional because the sample defaults it. In CI, an Azure OpenAI deployment reached with a federated credential, no key stored anywhere. The model needs to be able to call a tool; beyond that this sample asks nothing unusual of it.
 
 No sandbox image, no container runtime, no Azure subscription, no billable anything. The "sandbox" is a host temp directory that lives for one turn.
 
@@ -40,7 +40,7 @@ uv run agent.py
 |---|---|
 | `AZURE_OPENAI_ENDPOINT` | *Optional.* Set it to reach Azure OpenAI in CI (with a federated credential — no key). Unset, the client talks to a local Ollama server. The two paths are mutually exclusive and this one variable is the branch |
 | `AZURE_OPENAI_CHAT_MODEL` | Required **only** when `AZURE_OPENAI_ENDPOINT` is set. The Azure deployment name |
-| `OPENAI_CHAT_MODEL` | *Optional, local only.* Model name. Defaults to `minimax-m3:cloud`, so a running Ollama server with that model pulled is the whole of configuration |
+| `OPENAI_CHAT_MODEL` | *Optional, local only.* Model name. Defaults to `minimax-m3:cloud`, a cloud model — so a running Ollama server and a one-time `ollama signin` is the whole of configuration |
 | `OPENAI_BASE_URL` | *Optional, local only.* An OpenAI-compatible base URL. Defaults to `http://localhost:11434/v1`, Ollama's endpoint |
 
 Local mode needs none of them — an unset `AZURE_OPENAI_ENDPOINT`, a running `ollama serve`, and `bicep` on PATH is enough. Azure mode needs the first two and exits non-zero if `AZURE_OPENAI_CHAT_MODEL` is missing, rather than running. That is deliberate: `make_bicep_tools` returns an empty list when the router has no backend, so a half-configured run does not crash — it produces an agent with no tools, which answers from the model alone. That failure looks exactly like success.
@@ -71,7 +71,7 @@ The day count and the acceptable-version list in `use-recent-api-versions` move 
 
 **`Connection refused` at `localhost:11434`** — Ollama is not running. `ollama serve` starts it; the sample's default base URL points there. Point `OPENAI_BASE_URL` at a different server if you run another.
 
-**`model not found`** — Ollama does not have the model. `ollama pull minimax-m3:cloud` fetches the default, or set `OPENAI_CHAT_MODEL` to one you already have.
+**Cloud model not authorized (`model not found`, or a cloud/auth error)** — the default is a cloud model served through the local daemon; run `ollama signin` once to authorize it, or set `OPENAI_CHAT_MODEL` to a local model you already have.
 
 **`Azure OpenAI client requires either an API key or an Azure AD token provider`** — the CI path was taken (`AZURE_OPENAI_ENDPOINT` is set) but the credential resolved to nothing. An `az login` (or a federated CI credential) is what satisfies `DefaultAzureCredential`; check that the federated identity is configured for this branch's subject, the way the other Azure samples do.
 
