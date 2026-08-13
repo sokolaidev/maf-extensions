@@ -25,6 +25,15 @@ name: Verify (live)
 # environment variables on the `live-verify` environment; the docker jobs read only the model's,
 # and the two whose guest is built here read not even that.
 # See docs/maintainers.md.
+#
+# Each job runs its sample with `uv run --no-project samples/NN/agent.py`, which resolves the
+# sample's PEP 723 `# /// script` block from PyPI into a throwaway environment — no local
+# workspace fallback, which is the whole point: a consumer installs the published wheels, not
+# this checkout. The block carries a direct `maf-sandbox>=0.12` floor, so a mid-release index
+# (the published set not yet caught up to `main`) fails at resolution — "no version of
+# maf-sandbox>=0.12" — instead of an `ImportError` inside the sample (#249). The dependency
+# list itself lives in each sample's block, not here; the workflow no longer carries a second
+# copy that can drift from the imports it describes.
 on:
   workflow_dispatch:
     inputs:
@@ -75,17 +84,6 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
-
-      # From PyPI, no local fallback — the whole point is to exercise what a consumer installs,
-      # at the versions just released, not this checkout. The sample's own files (agent.py,
-      # main.bicep) come from the checkout; only the packages come from the index.
-      - name: Install the published wheels into a clean environment
-        run: |
-          set -euo pipefail
-          uv venv /tmp/live
-          uv pip install --python /tmp/live/bin/python \
-            maf-sandbox-acas maf-sandbox-bicep agent-framework-openai
-          uv pip list --python /tmp/live/bin/python
 
       # Fail early and by name if the environment was never configured — azure/login's own
       # error for an empty client-id does not say which field is missing.
@@ -140,8 +138,8 @@ jobs:
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
-          /tmp/live/bin/python samples/01_acas_bicep/agent.py | tee /tmp/sample-out.txt
-          # stdlib-only, so the runner's own python3 runs it — no dependency on the venv above.
+          uv run --no-project samples/01_acas_bicep/agent.py | tee /tmp/sample-out.txt
+          # stdlib-only, so the runner's own python3 runs it — uv run's env is not on its path.
           python3 scripts/check_live_sample.py /tmp/sample-out.txt
 
   sample-03:
@@ -176,17 +174,6 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
-
-      # From PyPI, no local fallback — the whole point is to exercise what a consumer installs,
-      # at the versions just released, not this checkout. The sample's own file (agent.py)
-      # comes from the checkout; only the packages come from the index.
-      - name: Install the published wheels into a clean environment
-        run: |
-          set -euo pipefail
-          uv venv /tmp/live
-          uv pip install --python /tmp/live/bin/python \
-            maf-sandbox-acas maf-sandbox-codeact agent-framework-openai
-          uv pip list --python /tmp/live/bin/python
 
       # Fail early and by name if the environment was never configured — azure/login's own
       # error for an empty client-id does not say which field is missing. Only the six
@@ -234,8 +221,8 @@ jobs:
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
-          /tmp/live/bin/python samples/03_acas_codeact/agent.py | tee /tmp/sample03-out.txt
-          # stdlib-only, so the runner's own python3 runs it — no dependency on the venv above.
+          uv run --no-project samples/03_acas_codeact/agent.py | tee /tmp/sample03-out.txt
+          # stdlib-only, so the runner's own python3 runs it — uv run's env is not on its path.
           python3 scripts/check_live_codeact_sample.py /tmp/sample03-out.txt
 
   sample-05:
@@ -263,18 +250,6 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
-
-      - name: Install the published wheels into a clean environment
-        run: |
-          set -euo pipefail
-          uv venv /tmp/live
-          # `azure-identity` and `azure-core[aio]` are explicit for the reason sample 06's job
-          # gives: the docker backend depends on neither, and the sample authenticates the
-          # model with the async `DefaultAzureCredential`.
-          uv pip install --python /tmp/live/bin/python \
-            maf-sandbox-docker maf-sandbox-bicep agent-framework-openai \
-            azure-identity "azure-core[aio]"
-          uv pip list --python /tmp/live/bin/python
 
       - name: Check the live configuration is present
         env:
@@ -316,7 +291,7 @@ jobs:
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
-          /tmp/live/bin/python samples/05_docker_bicep/agent.py | tee /tmp/sample05-out.txt
+          uv run --no-project samples/05_docker_bicep/agent.py | tee /tmp/sample05-out.txt
           # Sample 01's assertion, unchanged: the same file compiled by the same CLI produces
           # the same two rule ids, whatever ran it.
           python3 scripts/check_live_sample.py /tmp/sample05-out.txt
@@ -347,23 +322,6 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
-
-      # From PyPI, no local fallback. `azure-identity` is explicit here: unlike sample 03, the
-      # docker backend does not depend on it, and the sample authenticates the model with
-      # `DefaultAzureCredential`.
-      - name: Install the published wheels into a clean environment
-        run: |
-          set -euo pipefail
-          uv venv /tmp/live
-          # `azure-core[aio]` is not decoration: the sample authenticates with
-          # `azure.identity.aio.DefaultAzureCredential`, whose async pipeline needs an async
-          # transport, and neither `azure-identity` nor this backend brings one. Sample 03
-          # gets `aiohttp` transitively through the ACAS SDK; the Docker backend has no
-          # dependency beyond `maf-sandbox` by design, so this environment must ask for it.
-          uv pip install --python /tmp/live/bin/python \
-            maf-sandbox-docker maf-sandbox-codeact agent-framework-openai \
-            azure-identity "azure-core[aio]"
-          uv pip list --python /tmp/live/bin/python
 
       # The federation inputs azure/login needs and the two model variables the sample reads —
       # there is no sandbox configuration for this backend. azure/login's own error for an empty
@@ -405,7 +363,7 @@ jobs:
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
-          /tmp/live/bin/python samples/06_docker_codeact/agent.py | tee /tmp/sample06-out.txt
+          uv run --no-project samples/06_docker_codeact/agent.py | tee /tmp/sample06-out.txt
           # The same assertion as sample 03: same task, same one right answer, same disposal line.
           python3 scripts/check_live_codeact_sample.py /tmp/sample06-out.txt
 
@@ -432,18 +390,6 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
-
-      - name: Install the published wheels into a clean environment
-        run: |
-          set -euo pipefail
-          uv venv /tmp/live
-          # No workload package: this sample's kind is its own source, written against
-          # `maf-sandbox` — which arrives as a dependency of the backend. That is the claim the
-          # job checks, so installing a kind package here would defeat it.
-          uv pip install --python /tmp/live/bin/python \
-            maf-sandbox-docker agent-framework-openai \
-            azure-identity "azure-core[aio]"
-          uv pip list --python /tmp/live/bin/python
 
       - name: Check the live configuration is present
         env:
@@ -486,7 +432,7 @@ jobs:
           # As in sample-08: an image left behind by an earlier run would satisfy the on-disk
           # half without this run having rendered anything.
           rm -rf samples/07_docker_diagram/out
-          /tmp/live/bin/python samples/07_docker_diagram/agent.py | tee /tmp/sample07-out.txt
+          uv run --no-project samples/07_docker_diagram/agent.py | tee /tmp/sample07-out.txt
           # The model's prose is not evidence a renderer ran, so the assertion is the disposal
           # line and the PNG itself.
           python3 scripts/check_live_diagram_sample.py \
@@ -515,17 +461,6 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
-
-      # Sample 06's line exactly — same backend, same kind, same credential stack, and
-      # `azure-core[aio]` for the same reason its comment gives.
-      - name: Install the published wheels into a clean environment
-        run: |
-          set -euo pipefail
-          uv venv /tmp/live
-          uv pip install --python /tmp/live/bin/python \
-            maf-sandbox-docker maf-sandbox-codeact agent-framework-openai \
-            azure-identity "azure-core[aio]"
-          uv pip list --python /tmp/live/bin/python
 
       - name: Check the live configuration is present
         env:
@@ -563,7 +498,7 @@ jobs:
           # the assertion mean anything: a summary left by an earlier run would pass it without
           # this run having landed a thing.
           rm -rf samples/08_docker_codeact_files/out
-          /tmp/live/bin/python samples/08_docker_codeact_files/agent.py | tee /tmp/sample08-out.txt
+          uv run --no-project samples/08_docker_codeact_files/agent.py | tee /tmp/sample08-out.txt
           # Two halves, and the second is the point: the right total in stdout, and the declared
           # summary actually on disk under its declared name.
           python3 scripts/check_live_codeact_files_sample.py \
@@ -596,21 +531,6 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
-
-      # From PyPI, no local fallback. `maf-sandbox` is not named explicitly: it arrives as a
-      # dependency of `maf-sandbox-bicep`, carrying the router the sample wires. The backend
-      # itself is sample-defined (`NoIsolationBackend` in `no_isolation_backend.py`), so
-      # no extra package serves it. `azure-identity` and `azure-core[aio]` are explicit for the same reason sample-06's
-      # job gives: the sample authenticates the model with the async `DefaultAzureCredential`,
-      # and nothing else here brings that pipeline's transport.
-      - name: Install the published wheels into a clean environment
-        run: |
-          set -euo pipefail
-          uv venv /tmp/live
-          uv pip install --python /tmp/live/bin/python \
-            maf-sandbox-bicep agent-framework-openai \
-            azure-identity "azure-core[aio]"
-          uv pip list --python /tmp/live/bin/python
 
       # The backend shells out to the real bicep CLI on this runner, so the binary must be on
       # PATH — the container images bake it in (`images/bicep-sandbox/Dockerfile` pins v0.46.1);
@@ -661,7 +581,7 @@ jobs:
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
-          /tmp/live/bin/python samples/09_inprocess_bicep/agent.py | tee /tmp/sample09-out.txt
+          uv run --no-project samples/09_inprocess_bicep/agent.py | tee /tmp/sample09-out.txt
           # Sample 01's assertion, unchanged: the same file compiled by the same CLI produces the
           # same two rule ids, whatever ran it. stdlib-only, so the runner's own python3 runs it.
           python3 scripts/check_live_sample.py /tmp/sample09-out.txt
