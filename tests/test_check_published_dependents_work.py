@@ -5,12 +5,8 @@ check reads each dependent's ceiling and refuses if it excludes the version goin
 installs the candidate core wheel beside each dependent that admits it and refuses if the
 dependent no longer imports. Its at-risk filter and its verdict are pure functions of metadata,
 so both are tested here; only the venv install and the import are not — the one impure step is
-passed in as a fake.
-
-The numbers in the fixtures are 0.11.0's. That release renamed ``WorkspaceContext`` to
-``CallerContext`` in the core; bicep's ceiling ``<0.13`` admitted it, so a latest-only check run
-at the time would have installed bicep against 0.11.0 and watched the import fail. The filter
-keeps that dependent and drops one whose ``<0.11`` correctly excluded the breaking release.
+passed in as a fake. The subprocess sequence that step runs is pinned here by mocking
+``subprocess.run``, so no venv is created and uv is never invoked. No network.
 """
 
 from __future__ import annotations
@@ -125,6 +121,102 @@ class TestBreaks:
         failures = check.breaks(Path("core.whl"), candidates, _breaks_bicep)
         assert len(failures) == 1
         assert "docker" not in failures[0]
+
+
+class _CompletedProcess:
+    """The slice of ``subprocess.CompletedProcess`` the script reads: returncode, stdout, stderr."""
+
+    def __init__(self, returncode: int, stdout: str = "", stderr: str = "") -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+class TestInstallAndImport:
+    """The subprocess sequence that builds the venv, installs, and imports.
+
+    The verdict tests above pass a fake for the whole step; these pin the argv the real one builds
+    and the branch each failure returns, by mocking ``subprocess.run``. No network and no real venv
+    — uv is never invoked.
+    """
+
+    def _patch(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        results: list[_CompletedProcess],
+    ) -> list[list[str]]:
+        calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str], **_kwargs: object) -> _CompletedProcess:
+            calls.append(cmd)
+            return results[len(calls) - 1]
+
+        monkeypatch.setattr(check.subprocess, "run", fake_run)
+        return calls
+
+    def test_the_success_sequence_imports_and_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        calls = self._patch(
+            monkeypatch,
+            [_CompletedProcess(0), _CompletedProcess(0), _CompletedProcess(0)],
+        )
+        assert (
+            check.install_and_import(tmp_path / "core.whl", "maf-sandbox-bicep") is None
+        )
+        assert len(calls) == 3
+        assert calls[0][:2] == ["uv", "venv"]
+        assert calls[1][:4] == ["uv", "pip", "install", "--python"]
+        assert str(tmp_path / "core.whl") in calls[1]
+        assert "maf-sandbox-bicep" in calls[1]
+        assert calls[2][1] == "-c"
+        assert "import maf_sandbox_bicep" in calls[2]
+
+    def test_a_venv_creation_failure_is_reported(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        self._patch(monkeypatch, [_CompletedProcess(1, stderr="uv: boom")])
+        error = check.install_and_import(tmp_path / "core.whl", "maf-sandbox-bicep")
+        assert error == "uv venv failed: uv: boom"
+
+    def test_an_install_failure_is_reported(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        self._patch(
+            monkeypatch,
+            [_CompletedProcess(0), _CompletedProcess(1, stderr="No solution found")],
+        )
+        error = check.install_and_import(tmp_path / "core.whl", "maf-sandbox-bicep")
+        assert error == "install failed: No solution found"
+
+    def test_an_import_failure_reports_the_last_traceback_line(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        stderr = (
+            "Traceback (most recent call last):\n"
+            '  File "<string>", line 1, in <module>\n'
+            "ImportError: cannot import name 'CallerContext'\n"
+        )
+        self._patch(
+            monkeypatch,
+            [
+                _CompletedProcess(0),
+                _CompletedProcess(0),
+                _CompletedProcess(1, stderr=stderr),
+            ],
+        )
+        error = check.install_and_import(tmp_path / "core.whl", "maf-sandbox-bicep")
+        assert error == "ImportError: cannot import name 'CallerContext'"
+
+    def test_an_import_failure_with_no_output_still_names_the_module(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        self._patch(
+            monkeypatch,
+            [_CompletedProcess(0), _CompletedProcess(0), _CompletedProcess(1)],
+        )
+        error = check.install_and_import(tmp_path / "core.whl", "maf-sandbox-bicep")
+        assert error == "import maf_sandbox_bicep failed"
 
 
 class TestMain:

@@ -3,23 +3,16 @@
     python scripts/check_published_dependents_work.py <version> <core-wheel>
 
 The admit check (`check_published_dependents_admit.py`) asks only whether each dependent's
-ceiling permits the version going out. It never runs the dependent, so a core that removed a name
-the dependent imports passes that check and ships — the 0.11.0 incident: the core renamed
-``WorkspaceContext`` to ``CallerContext`` and every published bicep importing the old name broke
-at install time for everyone who already had it. This is the missing half: install the candidate
+ceiling permits the version going out; it never runs the dependent, so a core that removed a name
+a dependent imports passes that check and ships. This is the missing half: install the candidate
 core wheel alongside each published dependent that admits it and confirm the dependent still
-imports. A break IS the signal — no changelog inference, no guessing whether a ``feat:`` was
-actually breaking.
+imports. A break is the signal — no changelog inference.
 
-Only the LATEST published version of each dependent is tested. That would have caught 0.11.0 at
-release time (the latest bicep then was the breaking one); it does not reproduce 0.11.0 today only
-because bicep has since shipped a fixed version, and that trade is accepted. Old published
-versions that still admit the candidate but break are not caught by this check.
-
-A dependent whose ceiling excludes the version is the admit check's concern and is skipped here;
-a dependent not yet on PyPI has nothing to contradict and is skipped. A network failure is fatal
-rather than skipped: passing because PyPI could not be reached is the one outcome that would make
-this check worthless — the same stance as the admit check.
+Only the LATEST published version of each dependent is tested; old published versions that still
+admit the candidate but break are not caught. A dependent whose ceiling excludes the version is
+the admit check's concern and is skipped here, and one not yet on PyPI is skipped too. A network
+failure is fatal rather than skipped: passing because PyPI could not be reached is the one outcome
+that would make this check worthless — the same stance as the admit check.
 """
 
 from __future__ import annotations

@@ -175,11 +175,10 @@ jobs:
           echo "$contents" | grep -q "\.dist-info/licenses/LICENSE"
 
       # The admit check only asks whether the ceiling permits this version; it never runs the
-      # dependent, so a core that removed a name a dependent imports passes that check and ships
-      # (the 0.11.0 rename). Install the candidate core wheel beside each admitting published
-      # dependent and confirm it still imports — a break is the signal, not a changelog guess.
-      # Only for the core on the real index: a dependent's own release is what fixes such a break,
-      # and a TestPyPI rehearsal stays frictionless.
+      # dependent. Install the candidate core wheel beside each admitting published dependent and
+      # confirm it still imports, so a removed name is caught before the core ships. Only for the
+      # core on the real index: a dependent's own release is what fixes such a break, and a
+      # TestPyPI rehearsal stays frictionless.
       - name: Verify the published dependents import against this core
         if: >-
           steps.resolve.outputs.package == 'maf-sandbox'
