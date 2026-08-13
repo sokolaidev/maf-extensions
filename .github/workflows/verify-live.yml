@@ -564,3 +564,86 @@ jobs:
           # summary actually on disk under its declared name.
           python3 scripts/check_live_codeact_files_sample.py \
             /tmp/sample08-out.txt samples/08_docker_codeact_files/out/summary.md
+
+  sample-09:
+    name: samples/09_inprocess_bicep against a live model
+    # The one sample whose backend is not real: the in-process fake from maf_sandbox.testing,
+    # scripted to answer the two fixed bicep commands. No sandbox, no container, no image — so
+    # this job creates no billable resource and builds nothing; the only cloud dependency is the
+    # model, reached with a federated credential the way sample-06 does. Runs for an empty input
+    # or a package it actually exercises: the router and the fake both live in maf-sandbox, and
+    # the workload in maf-sandbox-bicep; a codeact, acas, docker or wslc release cannot change
+    # what this sample does.
+    if: >-
+      inputs.package == ''
+      || contains(fromJSON('["maf-sandbox", "maf-sandbox-bicep"]'), inputs.package)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # For the model only, as in sample-06: `live-verify` holds the non-secret Azure OpenAI
+    # configuration and is half the federated-credential subject. There is no sandbox
+    # configuration to hold — the backend is in-process.
+    environment: live-verify
+    permissions:
+      # Mints the OIDC token azure/login exchanges. No secret is involved.
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      # From PyPI, no local fallback. `maf-sandbox` is not named explicitly: it arrives as a
+      # dependency of `maf-sandbox-bicep`, and that transitiveness is part of what this job
+      # checks — the published `maf-sandbox` wheel carries the in-process fake the sample
+      # imports from `maf_sandbox.testing`. `azure-identity` and `azure-core[aio]` are explicit
+      # for the same reason sample-06's job gives: the sample authenticates the model with the
+      # async `DefaultAzureCredential`, and nothing else here brings that pipeline's transport.
+      - name: Install the published wheels into a clean environment
+        run: |
+          set -euo pipefail
+          uv venv /tmp/live
+          uv pip install --python /tmp/live/bin/python \
+            maf-sandbox-bicep agent-framework-openai \
+            azure-identity "azure-core[aio]"
+          uv pip list --python /tmp/live/bin/python
+
+      - name: Check the live configuration is present
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
+            AZURE_OPENAI_ENDPOINT AZURE_OPENAI_CHAT_MODEL; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::the live-verify environment is missing variables: ${missing[*]}. See docs/maintainers.md."
+            exit 1
+          fi
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # No container to build and no sandbox to configure — the backend is in-process. The
+      # sample authenticates the model with DefaultAzureCredential, which the az login above
+      # satisfies; the AZURE_CLIENT_ID/TENANT/SUBSCRIPTION values are login inputs only and are
+      # deliberately not exported here, so DefaultAzureCredential resolves through the CLI.
+      - name: Run sample 09 and assert the scripted diagnostic came back
+        env:
+          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+        run: |
+          set -euo pipefail
+          /tmp/live/bin/python samples/09_inprocess_bicep/agent.py | tee /tmp/sample09-out.txt
+          # stdlib-only, so the runner's own python3 runs it — no dependency on the venv above.
+          python3 scripts/check_live_inprocess_sample.py /tmp/sample09-out.txt
