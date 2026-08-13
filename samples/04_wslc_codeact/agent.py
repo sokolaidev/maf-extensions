@@ -29,9 +29,10 @@ import sys
 from agent_framework import Agent
 from agent_framework.openai import OpenAIChatCompletionClient
 from maf_sandbox import Isolation, SandboxRouter
-from maf_sandbox.maf import make_caller_context
+from maf_sandbox.maf import list_no_files, make_caller_context
 from maf_sandbox_codeact import make_codeact_tools
 from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
+from _scaffold import require_env_vars
 
 # Keyed by (scope, thread_id, agent_dir) — see sample 03's agent.py.
 SCOPE = "samples"
@@ -50,31 +51,6 @@ TASK = (
 #: Everything the chat model needs. `OPENAI_BASE_URL` is optional, so it is read
 #: separately: unset, the client talks to OpenAI.
 MODEL_VARS = ("OPENAI_API_KEY", "OPENAI_CHAT_MODEL")
-
-
-def require_env_vars(names: tuple[str, ...]) -> dict[str, str] | None:
-    """Read `names` from the environment, or report every one that is missing.
-
-    Worth doing before anything else, and worth failing on.  `make_codeact_tools`
-    returns an empty list when the router has no backend, so a half-configured
-    run does not crash — it quietly produces an agent with no tools, which
-    answers the question from the model alone.  That is the T0 behaviour this
-    sample exists to contrast with, and it is indistinguishable from success
-    unless someone says so out loud.
-    """
-    missing = [name for name in names if not os.environ.get(name)]
-    if missing:
-        print("Not configured. These environment variables are unset:", file=sys.stderr)
-        for name in missing:
-            print(f"  {name}", file=sys.stderr)
-        print("\nSee this directory's README.md.", file=sys.stderr)
-        return None
-    return {name: os.environ[name] for name in names}
-
-
-async def list_no_files(_store: object) -> list[str]:
-    """CodeAct shares no file store files, so nothing ever enumerates one."""
-    return []
 
 
 async def run() -> int:
