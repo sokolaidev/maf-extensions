@@ -20,6 +20,16 @@ README says what each of them costs — read it, along with the prerequisites an
 the environment variables, before running this.
 """
 
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#     "agent-framework-openai",
+#     "maf-sandbox-bicep",
+#     "maf-sandbox-wslc",
+#     "maf-sandbox>=0.12",
+# ]
+# ///
+
 from __future__ import annotations
 
 import asyncio

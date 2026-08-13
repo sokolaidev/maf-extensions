@@ -20,6 +20,16 @@ does not.  Read it, along with the prerequisites and the environment variables,
 before running this.
 """
 
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#     "agent-framework-openai",
+#     "maf-sandbox-codeact",
+#     "maf-sandbox-wslc",
+#     "maf-sandbox>=0.12",
+# ]
+# ///
+
 from __future__ import annotations
 
 import asyncio

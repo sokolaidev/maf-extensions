@@ -36,11 +36,10 @@ Read these first; none of them is quick to arrange halfway through.
 
 ## Install
 
-From PyPI, not from this workspace:
+Dependencies are declared in `agent.py` itself, in a [PEP 723](https://peps.python.org/pep-0723/) block, so there is nothing to install and nothing to keep in step with this page — [uv](https://docs.astral.sh/uv/) reads them and builds a throwaway environment for the run. From PyPI, never from this workspace:
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install maf-sandbox-acas maf-sandbox-codeact agent-framework-openai
+uv run agent.py
 ```
 
 `azure-identity` and `agent-framework-core` arrive as dependencies. `agent-framework-openai` is separate because the framework's core ships no model connector.
@@ -61,10 +60,6 @@ There is no `ACAS_SANDBOX_REGISTRY` here, unlike sample 01: `agent.py` names the
 With any of these unset the program says which and exits non-zero, rather than running. That is deliberate: `make_codeact_tools` returns an empty list when the router has no backend, so a half-configured run does not crash — it produces an agent with no tools, which answers from the model alone. That failure looks exactly like success.
 
 ## Run
-
-```bash
-python agent.py
-```
 
 The first call is slow — the sandbox is created and booted before the interpreter runs. `agent.py` prints only the model's reply and the disposal line — never `execute_code`'s own result — so what you see looks something like this:
 

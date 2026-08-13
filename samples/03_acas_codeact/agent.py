@@ -20,6 +20,16 @@ see this directory's README for the prerequisites, the environment variables, an
 how to import the sandbox image into your sandbox group.
 """
 
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#     "agent-framework-openai",
+#     "maf-sandbox-acas",
+#     "maf-sandbox-codeact",
+#     "maf-sandbox>=0.12",
+# ]
+# ///
+
 from __future__ import annotations
 
 import asyncio
