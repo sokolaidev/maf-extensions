@@ -85,18 +85,25 @@ class NoIsolationSandbox:
         host_cwd.mkdir(parents=True, exist_ok=True)
         # The protocol's string form is for commands that need shell operators (`2>&1`,
         # `|| true`), so it runs through a shell; a sequence is an argv list and runs without
-        # one. A string command is the kind's to build — what it interpolates, and whether
-        # that is safe under a shell, is the kind's responsibility, not the backend's.
+        # one. Either way, a guest work-directory path embedded in the command must be rewritten
+        # to the host root, or the binary runs against a path that does not exist here. A string
+        # command is the kind's to build — what it interpolates, and whether that is safe under a
+        # shell, is the kind's responsibility, not the backend's.
         if isinstance(command, str):
             cmd: str | list[str] = command.replace(
                 self._guest_work_dir, str(self._host_root)
             )
             shell = True
         else:
-            cmd = list(command)
+            guest = str(self._guest_work_dir)
+            host = str(self._host_root)
+            cmd = [arg.replace(guest, host) for arg in command]
             shell = False
+        # `subprocess.run` blocks, so run it in a worker thread and keep the event loop free
+        # for the concurrent tool calls the protocol permits.
         try:
-            completed = subprocess.run(  # noqa: S603 — the protocol's string form needs a shell
+            completed = await asyncio.to_thread(  # noqa: S603 — the string form needs a shell
+                subprocess.run,
                 cmd,
                 shell=shell,
                 cwd=str(host_cwd),
@@ -152,10 +159,10 @@ class NoIsolationBackend:
 
     The egress declaration is a **temporary misuse**: a backend with no boundary honestly
     cannot confine egress, which is :data:`~maf_sandbox.Egress.UNRESTRICTED` — and the router
-    refuses ``UNRESTRICTED`` for any workload today. ``CLOSED`` is worn only to pass the
-    router's gate; it is not enforced, and it cannot be. Whether that unenforced gap is inert
-    is a property of the workload, not the backend, and is argued in ``agent.py``. Switch back
-    to ``UNRESTRICTED`` once the core allows it for workloads that don't require
+    refuses ``UNRESTRICTED`` for any workload today. ``CLOSED`` is worn only to pass that
+    gate; it is not enforced, and it cannot be. What that unenforced gap means for a given
+    workload is the workload's concern, not the backend's, and is argued in the sample README.
+    Switch back to ``UNRESTRICTED`` once the core allows it for workloads that don't require
     :data:`~maf_sandbox.Capability.NETWORK` (#265).
     """
 

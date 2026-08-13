@@ -15,7 +15,7 @@ One accommodation a host backend makes, and it is named in the code: the bicep k
 
 ## A temporary misuse, called out plainly
 
-A backend with no boundary honestly cannot confine egress, which is `Egress.UNRESTRICTED` — and the router refuses `UNRESTRICTED` for any workload today, so the backend declares `Egress.CLOSED` only to pass that gate. It does not enforce it; it cannot. That is safe here only because [`main.bicep`](main.bicep) references no modules and makes no egress calls, so the unenforced gap is inert. The plan is to switch back to `UNRESTRICTED` once the core allows it for workloads that don't require `Capability.NETWORK` ([#265](https://github.com/sokolaidev/maf-extensions/issues/265)); the separate question of telling "said nothing" (`UNDEFINED`) from "said I confine nothing" is [#264](https://github.com/sokolaidev/maf-extensions/issues/264). The `egress` property in `no_isolation_backend.py` carries the comment that tracks this.
+A backend with no boundary honestly cannot confine egress, which is `Egress.UNRESTRICTED` — and the router refuses `UNRESTRICTED` for any workload today, so the backend declares `Egress.CLOSED` only to pass that gate. It does not enforce it; it cannot. That gap is not inert: the bicep compiler fetches the public module *index* on every `bicep build` and every `bicep lint` regardless of whether the source references modules, so it is exercised on every run. It is still safe to ship because the four hosts the compiler reaches are the kind's own `egress_allow` — Microsoft-operated, public, unauthenticated, with no ARM endpoint and no ambient identity on the host to reach — so a no-boundary backend cannot widen what the workload was already going to touch, and containment holds in substance by the compiler's own behavior, not by this backend. The plan is to switch back to `UNRESTRICTED` once the core allows it for workloads that don't require `Capability.NETWORK` ([#265](https://github.com/sokolaidev/maf-extensions/issues/265)); the separate question of telling "said nothing" (`UNDEFINED`) from "said I confine nothing" is [#264](https://github.com/sokolaidev/maf-extensions/issues/264). The `egress` property in `no_isolation_backend.py` carries the comment that tracks this.
 
 ## Prerequisites
 
@@ -65,7 +65,7 @@ The day count and the acceptable-version list in `use-recent-api-versions` move 
 
 ## Troubleshooting
 
-**`bicep: command not found` / `bicep` not recognized** — the CLI is not on PATH. Install it (see Prerequisites). The backend shells out to `bicep`; without it, `exec` returns an empty SARIF and the agent reports a clean file.
+**`bicep: command not found` / `bicep` not recognized** — the CLI is not on PATH. Install it (see Prerequisites). The backend shells out to `bicep`; without it, the shell prints an error where SARIF was expected, the SARIF parser rejects it, and the agent reports `Error: could not parse SARIF output` — not a clean file.
 
 **`Couldn't find a valid ICU package`** — the bicep binary needs ICU libraries and the host does not have them. The container image installs `icu` for exactly this reason; on a minimal host, install the equivalent (e.g. `libicu` on Debian/Ubuntu, `icu` elsewhere).
 

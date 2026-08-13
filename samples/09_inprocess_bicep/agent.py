@@ -1,45 +1,16 @@
 """One turn of an agent that validates Bicep against a backend that is not isolated.
 
-Sample 02 with the backend swapped for one this sample defines — ``NoIsolationBackend``
-(defined in ``no_isolation_backend.py``) — that really runs the bicep CLI on the host::
+Sample 02's ``bicep_validate`` workload unchanged, behind ``NoIsolationBackend`` (in
+``no_isolation_backend.py``): a host work directory and a real ``bicep`` subprocess — the
+floor of the isolation ladder (:data:`~maf_sandbox.Isolation.PROCESS`, no boundary at all).
 
-    app  ->  maf_sandbox (router)  ->  NoIsolationBackend (this sample)  ->  bicep, on the host
-                  ^ maf_sandbox_bicep calls the router
+The ``egress`` declaration is a **temporary misuse** — a no-boundary backend cannot confine
+egress and the router refuses the honest ``UNRESTRICTED`` today, so ``CLOSED`` is worn only
+to pass the gate; why it is still safe to ship is argued in ``README.md`` (#265 tracks the
+real fix). One ``OpenAIChatCompletionClient`` serves Azure OpenAI in CI and a local Ollama
+server by default, branched on ``AZURE_OPENAI_ENDPOINT``.
 
-The workload is sample 02's unchanged — ``make_bicep_tools``, the fixed ``bicep build`` and
-``bicep lint`` command templates, the SARIF parser — and ``main.bicep`` is the same file
-samples 01/02/05 ship, byte-identical, two real faults in it.  What sits behind the router is
-not a container or a VM
-but a backend that shells out to the bicep binary on this machine: ``write_file`` drops the
-file in a host work directory, ``exec`` runs the real compiler, the real SARIF comes back and
-is parsed.  No image, no billable anything — and no boundary either: this is the floor of
-the isolation ladder (``Isolation.PROCESS``, "same process as the host, no boundary at all"),
-the rung for tests and local fakes, here carrying a real compiler instead of a scripted one.
-
-That makes this the fourth comparable Bicep sample (01, 02, 05, 09): one compiler, one lint
-rule set (the repo ``bicepconfig.json`` seeded into the work directory), a different backend
-underneath.  The protocol's central claim — a workload written against ``maf_sandbox`` runs
-unchanged on another backend — is shown rather than asserted, at the weakest boundary that
-can still run it.
-
-The egress declaration is a temporary misuse worth naming.  A backend with no boundary
-honestly cannot confine egress, which is ``Egress.UNRESTRICTED`` — and the router refuses
-``UNRESTRICTED`` for any workload today, so the backend declares ``CLOSED`` only to pass that
-gate.  It does not enforce it; it cannot.  That is safe here only because ``main.bicep``
-references no modules and makes no egress calls, so the unenforced gap is inert.  The plan is
-to switch back to ``UNRESTRICTED`` once the core allows it for workloads that do not require
-``Capability.NETWORK`` (#265); the separate question of telling "said nothing" (``UNDEFINED``)
-from "said I confine nothing" is #264.
-
-One client class, two endpoints.  CI sets ``AZURE_OPENAI_ENDPOINT`` and the client reaches
-Azure OpenAI with a federated ``DefaultAzureCredential`` — no key, the same wiring sample 06
-uses.  A developer's machine leaves it unset and the client talks to a local Ollama server on
-its default port, with a placeholder key the server ignores — zero configuration, not even a
-model name, because the model defaults when it is not provided.  The two paths are mutually
-exclusive and the branch is one environment variable.
-
-This directory's README is the walkthrough — what the backend really does, what to watch for,
-and the environment variables.  Read it first.
+The walkthrough and environment variables are in ``README.md``; read it first.
 """
 
 # /// script

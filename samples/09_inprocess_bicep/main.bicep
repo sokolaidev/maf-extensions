@@ -16,7 +16,7 @@ param location string = resourceGroup().location
 param storageAccountName string
 
 // FAULT 2 — nothing references this parameter.
-// `bicep lint` reports it as `no-unused-params` (a warning).
+// `bicep lint` reports it as `no-unused-params` (an error — the repo config promotes it).
 @description('Not used anywhere below. The linter should say so.')
 param environmentName string
 
