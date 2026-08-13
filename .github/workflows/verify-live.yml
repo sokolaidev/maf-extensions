@@ -26,14 +26,8 @@ name: Verify (live)
 # and the two whose guest is built here read not even that.
 # See docs/maintainers.md.
 #
-# Each job runs its sample with `uv run --no-project samples/NN/agent.py`, which resolves the
-# sample's PEP 723 `# /// script` block from PyPI into a throwaway environment — no local
-# workspace fallback, which is the whole point: a consumer installs the published wheels, not
-# this checkout. The block carries a direct `maf-sandbox>=0.12` floor, so a mid-release index
-# (the published set not yet caught up to `main`) fails at resolution — "no version of
-# maf-sandbox>=0.12" — instead of an `ImportError` inside the sample (#249). The dependency
-# list itself lives in each sample's block, not here; the workflow no longer carries a second
-# copy that can drift from the imports it describes.
+# PEP 723 metadata is the single dependency source; `--no-project` ensures uv resolves its
+# published packages rather than this checkout's workspace.
 on:
   workflow_dispatch:
     inputs:
