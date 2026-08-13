@@ -72,11 +72,36 @@ def test_write_file_places_content_under_the_host_root():
     asyncio.run(body())
 
 
-def test_exec_string_form_runs_a_real_subprocess():
-    """The string form runs through a shell and returns the process's real stdout/exit code.
+def test_host_path_rejects_a_guest_path_that_escapes_the_root():
+    """A ``..`` segment that climbs above the work directory is refused, not written outside it.
 
-    The guest ``work_dir`` in the command is rewritten to the host root, so the rewritten path
-    is what ``echo`` prints back.
+    ``PurePosixPath.relative_to`` is lexical and keeps ``..``, so without a resolve-and-check a
+    guest path like ``/acas/work/../../x`` would land outside the host root. The bicep kind
+    rejects ``..`` before it reaches the backend, but the backend says paths stay *under* its
+    root — so a path that escapes raises, and a ``..`` that resolves back under the root is fine.
+    """
+
+    async def body() -> None:
+        backend, sandbox = await _fresh()
+        try:
+            with pytest.raises(ValueError):
+                await sandbox.write_file(f"{_GUEST_WORK_DIR}/../../escaped.bicep", "x")
+            # A `..` that resolves back under the root is allowed.
+            await sandbox.write_file(f"{_GUEST_WORK_DIR}/sub/../ok.bicep", "x")
+            assert (sandbox._host_root / "ok.bicep").read_text(encoding="utf-8") == "x"  # noqa: SLF001
+        finally:
+            await _drop(backend)
+
+    asyncio.run(body())
+
+
+def test_exec_translates_the_host_root_back_to_the_guest_work_dir():
+    """The command is rewritten guest→host so the binary runs, then the output is reversed.
+
+    A ``file://`` URI (or any path the binary prints) would carry the host temp root, which the
+    workload cannot strip — it strips the *guest* ``work_dir``. So both output streams are
+    translated host→guest before return. ``echo {guest_work_dir}`` becomes ``echo {host_root}``
+    to the shell, and the host root it prints comes back as the guest work_dir.
     """
 
     async def body() -> None:
@@ -86,7 +111,9 @@ def test_exec_string_form_runs_a_real_subprocess():
                 f"echo {_GUEST_WORK_DIR}", working_directory=_GUEST_WORK_DIR, timeout=10
             )
             assert result.exit_code == 0
-            assert str(sandbox._host_root) in result.stdout  # noqa: SLF001
+            assert _GUEST_WORK_DIR in result.stdout
+            # The host temp root must not leak into the output the workload renders.
+            assert str(sandbox._host_root) not in result.stdout  # noqa: SLF001
         finally:
             await _drop(backend)
 

@@ -66,9 +66,20 @@ class NoIsolationSandbox:
         shutil.rmtree(self._host_root, ignore_errors=True)
 
     def _host_path(self, guest_path: str) -> Path:
-        """Translate a guest path under ``work_dir`` to a path under the host root."""
+        """Translate a guest path under ``work_dir`` to a path under the host root.
+
+        ``relative_to`` is lexical and keeps ``..`` segments, so a guest path like
+        ``/acas/work/../../etc/x`` would join to a path *outside* the host root. The bicep kind
+        rejects ``..`` before a path reaches the backend (``_tool.py``), but the docstring says
+        paths are rewritten *under* the root, so verify it. The check resolves to collapse ``..``
+        and any symlink in the path; the lexical path is still returned, so the host root's string
+        form matches what the subprocess prints — the output translation in ``exec`` depends on it.
+        """
         rel = PurePosixPath(guest_path).relative_to(self._guest_work_dir)
-        return self._host_root.joinpath(*rel.parts)
+        host_path = self._host_root.joinpath(*rel.parts)
+        if not host_path.resolve().is_relative_to(self._host_root.resolve()):
+            raise ValueError(f"guest path {guest_path!r} escapes the work directory")
+        return host_path
 
     async def write_file(self, path: str, content: str | bytes) -> None:
         host_path = self._host_path(path)
@@ -113,9 +124,16 @@ class NoIsolationSandbox:
             )
         except subprocess.TimeoutExpired as exc:
             raise TimeoutError(str(exc)) from exc
+        # The command was rewritten guest→host, so the binary ran against the host root and prints
+        # it back: bicep's SARIF carries `file://` URIs for the host path, and every diagnostic
+        # would render with `/tmp/no-isolation-…` where the workload expects to strip the guest
+        # `work_dir` and leave `main.bicep`. Reverse the translation in both streams so the guest
+        # path the workload strips is the one that appears.
+        guest = str(self._guest_work_dir)
+        host = str(self._host_root)
         return ExecResult(
-            stdout=completed.stdout or "",
-            stderr=completed.stderr or "",
+            stdout=(completed.stdout or "").replace(host, guest),
+            stderr=(completed.stderr or "").replace(host, guest),
             exit_code=completed.returncode,
         )
 
