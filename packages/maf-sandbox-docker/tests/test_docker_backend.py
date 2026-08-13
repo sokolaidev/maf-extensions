@@ -43,7 +43,7 @@ from maf_sandbox_docker._backend import (
 _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
 _SPEC = SandboxSpec(kind="bicep", image="bicep-sandbox:local")
 _NAME = _container_name(_KEY, _SPEC.kind)
-_WORK = "/work"
+_WORK = "/maf-sandbox/work"
 
 
 def _tar_bytes(path: str, data: bytes) -> bytes:
@@ -94,9 +94,13 @@ def _cp(guest: str) -> tuple[str, ...]:
     return ("cp", f"{_NAME}:{guest}")
 
 
-#: Every stat and every read walks the components from the root down, so a fake engine that
-#: cannot answer for `/work` itself refuses both as a path through a non-directory.
-_WORK_IS_A_DIRECTORY = {_cp(_WORK): _DockerResult(0, _directory_tar(_WORK.lstrip("/")), "")}
+#: Every stat and every read walks the components from the root down: `/maf-sandbox` then
+#: `/maf-sandbox/work`. A fake engine that cannot answer for either refuses both as a path
+#: through a non-directory, so both are seeded as directories here.
+_WORK_IS_A_DIRECTORY = {
+    _cp("/maf-sandbox"): _DockerResult(0, _directory_tar("maf-sandbox"), ""),
+    _cp(_WORK): _DockerResult(0, _directory_tar(_WORK.lstrip("/")), ""),
+}
 
 
 class _Recorded:
@@ -533,35 +537,35 @@ class TestWriteFile:
 
     def test_the_copy_targets_the_container_root(self):
         sandbox, fake = self._sandbox()
-        asyncio.run(sandbox.write_file("/work/main.bicep", "x"))
+        asyncio.run(sandbox.write_file("/maf-sandbox/work/main.bicep", "x"))
         assert fake.only("cp", "-").args == ("cp", "-", f"{_NAME}:/")
 
     def test_the_entry_is_the_path_without_its_leading_slash(self):
         sandbox, fake = self._sandbox()
-        asyncio.run(sandbox.write_file("/work/main.bicep", "content"))
+        asyncio.run(sandbox.write_file("/maf-sandbox/work/main.bicep", "content"))
         stdin = fake.only("cp", "-").stdin
         assert stdin is not None
         with tarfile.open(fileobj=io.BytesIO(stdin)) as archive:
-            assert archive.getnames() == ["work/main.bicep"]
+            assert archive.getnames() == ["maf-sandbox/work/main.bicep"]
 
     def test_str_content_round_trips_as_utf8(self):
         sandbox, fake = self._sandbox()
-        asyncio.run(sandbox.write_file("/work/f", "héllo"))
+        asyncio.run(sandbox.write_file("/maf-sandbox/work/f", "héllo"))
         stdin = fake.only("cp", "-").stdin
         assert stdin is not None
         with tarfile.open(fileobj=io.BytesIO(stdin)) as archive:
-            member = archive.extractfile("work/f")
+            member = archive.extractfile("maf-sandbox/work/f")
             assert member is not None
             assert member.read().decode("utf-8") == "héllo"
 
     def test_bytes_content_is_written_as_given(self):
         sandbox, fake = self._sandbox()
         payload = b"\x89PNG\r\n\x1a\n"
-        asyncio.run(sandbox.write_file("/work/img.png", payload))
+        asyncio.run(sandbox.write_file("/maf-sandbox/work/img.png", payload))
         stdin = fake.only("cp", "-").stdin
         assert stdin is not None
         with tarfile.open(fileobj=io.BytesIO(stdin)) as archive:
-            member = archive.extractfile("work/img.png")
+            member = archive.extractfile("maf-sandbox/work/img.png")
             assert member is not None
             assert member.read() == payload
 
@@ -570,7 +574,7 @@ class TestWriteFile:
         backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
         sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
         with pytest.raises(RuntimeError, match="could not write"):
-            asyncio.run(sandbox.write_file("/work/f", "x"))
+            asyncio.run(sandbox.write_file("/maf-sandbox/work/f", "x"))
 
 
 # ---------------------------------------------------------------------------
@@ -601,7 +605,9 @@ class TestStatFile:
         assert entry.size_bytes is None
 
     def test_a_missing_path_is_none(self):
-        sandbox, _ = self._sandbox_streaming(b"", rc=1, stderr="Could not find the file /work/x")
+        sandbox, _ = self._sandbox_streaming(
+            b"", rc=1, stderr="Could not find the file /maf-sandbox/work/x"
+        )
         assert asyncio.run(sandbox.stat_file("x", working_directory=_WORK)) is None
 
     def test_the_stat_bounds_the_transfer_to_one_tar_block(self):
@@ -610,14 +616,14 @@ class TestStatFile:
 
         sandbox, fake = self._sandbox_streaming(_tar_bytes("out.png", b"x" * 100000))
         asyncio.run(sandbox.stat_file("out.png", working_directory=_WORK))
-        # By path: the parent walk stats `/work` first, and it is the entry's own cp under test.
+        # By path: the parent walk stats `/maf-sandbox` then `/maf-sandbox/work`, and it is the entry's own cp under test.
         cp = fake.only(*_cp(f"{_WORK}/out.png"))
         assert cp.read_limit == _TAR_BLOCK
 
     def test_the_rel_path_is_correct_even_for_a_non_normalized_working_directory(self):
-        """A base like `/work/.` must not shift the reported path — normalize before slicing."""
+        """A base like `/maf-sandbox/work/.` must not shift the reported path — normalize before slicing."""
         sandbox, _ = self._sandbox_streaming(_tar_bytes("out.txt", b"x" * 5))
-        entry = asyncio.run(sandbox.stat_file("out.txt", working_directory="/work/."))
+        entry = asyncio.run(sandbox.stat_file("out.txt", working_directory="/maf-sandbox/work/."))
         assert entry is not None
         assert entry.path == "out.txt"
 
@@ -686,15 +692,15 @@ class TestReadFile:
 class TestASymlinkedAncestorOfTheWorkingDirectory:
     """A nested work dir has ancestors above it, and the guest can replace those too.
 
-    `maf-sandbox-bicep` really does use `/acas/work`, so this is not a hypothetical shape.
+    `maf-sandbox-bicep` really does use `/maf-sandbox/work`, so this is not a hypothetical shape.
     """
 
     _HOSTNAME = b"7eebe863ee42\n"
-    _NESTED = "/acas/etc"
+    _NESTED = "/maf-sandbox/etc"
 
     def test_an_ancestor_link_above_the_working_directory_is_refused(self):
         overrides = {
-            _cp("/acas"): _DockerResult(0, _symlink_tar("acas", "/"), ""),
+            _cp("/maf-sandbox"): _DockerResult(0, _symlink_tar("maf-sandbox", "/"), ""),
             _cp(self._NESTED): _DockerResult(0, _directory_tar("etc"), ""),
             _cp(f"{self._NESTED}/hostname"): _DockerResult(
                 0, _tar_bytes("hostname", self._HOSTNAME), ""
@@ -706,11 +712,11 @@ class TestASymlinkedAncestorOfTheWorkingDirectory:
         with pytest.raises(ValueError, match="real directory"):
             asyncio.run(sandbox.read_file("hostname", working_directory=self._NESTED, max_bytes=99))
         # Stopped at the ancestor: the entry itself was never fetched.
-        assert [c.args for c in fake.matching("cp")] == [(*_cp("/acas"), "-")]
+        assert [c.args for c in fake.matching("cp")] == [(*_cp("/maf-sandbox"), "-")]
 
 
 class TestASymlinkedParentEscapesLexicalConfinement:
-    """``ln -sfn /etc /work/out``: the entry reads as a regular file, the parent link does not.
+    """``ln -sfn /etc /maf-sandbox/work/out``: the entry reads as a regular file, the parent link does not.
 
     The premise test below pins that the engine really does answer through the link, so the
     refusal tests are not passing against a fake that simply cannot reach outside.
@@ -758,6 +764,7 @@ class TestASymlinkedParentEscapesLexicalConfinement:
         with pytest.raises(ValueError, match="real directory"):
             asyncio.run(sandbox.stat_file("out/hostname", working_directory=_WORK))
         assert [c.args for c in fake.matching("cp")] == [
+            (*_cp("/maf-sandbox"), "-"),
             (*_cp(_WORK), "-"),
             (*_cp(f"{_WORK}/out"), "-"),
         ]
@@ -767,18 +774,25 @@ class TestASymlinkedParentEscapesLexicalConfinement:
         with pytest.raises(ValueError, match="real directory"):
             asyncio.run(sandbox.read_file("out/hostname", working_directory=_WORK, max_bytes=1000))
         assert [c.args for c in fake.matching("cp")] == [
+            (*_cp("/maf-sandbox"), "-"),
             (*_cp(_WORK), "-"),
             (*_cp(f"{_WORK}/out"), "-"),
         ]
 
     def test_a_symlinked_working_directory_is_refused_too(self):
-        """``ln -sfn /etc /work`` is the same escape one level up, so the walk starts at the base."""
-        overrides = {_cp(_WORK): _DockerResult(0, _symlink_tar("work", "/etc"), "")}
+        """``ln -sfn /etc /maf-sandbox/work`` is the same escape one level up, so the walk starts at the base."""
+        overrides = {
+            _cp("/maf-sandbox"): _DockerResult(0, _directory_tar("maf-sandbox"), ""),
+            _cp(_WORK): _DockerResult(0, _symlink_tar("work", "/etc"), ""),
+        }
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
         sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
         with pytest.raises(ValueError, match="real directory"):
             asyncio.run(sandbox.read_file("hostname", working_directory=_WORK, max_bytes=1000))
-        assert [c.args for c in fake.matching("cp")] == [(*_cp(_WORK), "-")]
+        assert [c.args for c in fake.matching("cp")] == [
+            (*_cp("/maf-sandbox"), "-"),
+            (*_cp(_WORK), "-"),
+        ]
 
     def test_a_path_through_a_regular_file_is_not_reported_as_an_escape(self):
         """``ENOTDIR`` is not a confinement failure, and only a link makes it one."""

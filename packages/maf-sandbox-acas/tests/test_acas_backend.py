@@ -377,10 +377,14 @@ class TestFileWrites:
 
         client = _RecordingClient()
         asyncio.run(
-            _AcasSandbox(client, 30.0).write_file("/work/infra/main.bicep", "param x string")
+            _AcasSandbox(client, 30.0).write_file(
+                "/maf-sandbox/work/infra/main.bicep", "param x string"
+            )
         )
 
-        assert client.calls == [("/work/infra/main.bicep", "param x string", {"create_dirs": True})]
+        assert client.calls == [
+            ("/maf-sandbox/work/infra/main.bicep", "param x string", {"create_dirs": True})
+        ]
 
 
 class TestExecArgv:
@@ -411,7 +415,9 @@ class TestExecArgv:
 
         client = self._RecordingClient()
         asyncio.run(
-            _AcasSandbox(client, 30.0).exec("echo hi", working_directory="/work", timeout=5)
+            _AcasSandbox(client, 30.0).exec(
+                "echo hi", working_directory="/maf-sandbox/work", timeout=5
+            )
         )
         assert client.calls == ["echo hi"]
 
@@ -422,7 +428,9 @@ class TestExecArgv:
 
         client = self._RecordingClient()
         argv = ["echo", "a; rm -rf /", "$(id)", "`id`", "it's mine", 'say "hi"']
-        asyncio.run(_AcasSandbox(client, 30.0).exec(argv, working_directory="/work", timeout=5))
+        asyncio.run(
+            _AcasSandbox(client, 30.0).exec(argv, working_directory="/maf-sandbox/work", timeout=5)
+        )
 
         assert client.calls == [shlex.join(argv)]
         # Round-tripping through shlex.split recovers the exact argv — proof the quoted
@@ -436,8 +444,16 @@ class TestExecArgv:
         from maf_sandbox_acas._backend import _AcasSandbox
 
         client = self._RecordingClient()
-        argv = ["bicep", "build", "/acas/work/r1/main.bicep", "--diagnostics-format", "sarif"]
-        asyncio.run(_AcasSandbox(client, 30.0).exec(argv, working_directory="/work", timeout=5))
+        argv = [
+            "bicep",
+            "build",
+            "/maf-sandbox/work/r1/main.bicep",
+            "--diagnostics-format",
+            "sarif",
+        ]
+        asyncio.run(
+            _AcasSandbox(client, 30.0).exec(argv, working_directory="/maf-sandbox/work", timeout=5)
+        )
 
         assert shlex.split(client.calls[0]) == argv
 
@@ -924,7 +940,7 @@ class TestEgressPolicy:
 # The pull surface — FILES_OUT and FILES_LIST
 # ---------------------------------------------------------------------------
 
-_WORK_DIR = "/work"
+_WORK_DIR = "/maf-sandbox/work"
 _SBX_PATH = "/subscriptions/sub/resourceGroups/rg/sandboxGroups/grp/sandboxes/sbx-1"
 _API_VERSION = "2026-02-01-preview"
 
@@ -941,7 +957,7 @@ _REAL_CONTENT = b"hello world\n"
 # `/etc/hostname`, the target *string*, not of anything readable.
 _LIVE_REGULAR = {
     "name": "real.txt",
-    "path": "/work/real.txt",
+    "path": "/maf-sandbox/work/real.txt",
     "size": 12,
     "mode": 420,
     "isDir": False,
@@ -950,7 +966,7 @@ _LIVE_REGULAR = {
 }
 _LIVE_SYMLINK = {
     "name": "link-out.txt",
-    "path": "/work/link-out.txt",
+    "path": "/maf-sandbox/work/link-out.txt",
     "size": 13,
     "mode": 511,
     "isDir": False,
@@ -960,7 +976,7 @@ _LIVE_SYMLINK = {
 }
 _LIVE_DIRECTORY = {
     "name": "sub",
-    "path": "/work/sub",
+    "path": "/maf-sandbox/work/sub",
     "size": 4096,
     "mode": 493,
     "isDir": True,
@@ -969,7 +985,7 @@ _LIVE_DIRECTORY = {
 }
 _LIVE_NESTED = {
     "name": "child.txt",
-    "path": "/work/sub/child.txt",
+    "path": "/maf-sandbox/work/sub/child.txt",
     "size": 5,
     "mode": 420,
     "isDir": False,
@@ -985,11 +1001,20 @@ _LIVE_WORK_DIR = {
     "isSymlink": False,
     "modifiedTime": 1786404028,
 }
-#: `ln -sfn /etc /work/out` inside the guest. `size` is 4 — the length of `/etc`, the target
+_LIVE_MAFSANDBOX = {
+    "name": "maf-sandbox",
+    "path": "/maf-sandbox",
+    "size": 4096,
+    "mode": 493,
+    "isDir": True,
+    "isSymlink": False,
+    "modifiedTime": 1786404028,
+}
+#: `ln -sfn /etc /maf-sandbox/work/out` inside the guest. `size` is 4 — the length of `/etc`, the target
 #: *string*. The link itself types as OTHER; a path *through* it carries nothing that says so.
 _LIVE_SYMLINK_DIR = {
     "name": "out",
-    "path": "/work/out",
+    "path": "/maf-sandbox/work/out",
     "size": 4,
     "mode": 511,
     "isDir": False,
@@ -1020,17 +1045,18 @@ _LIVE_ETC_HOSTNAME = {
 #: where a live listing returned 121 — because it is what a symlink out of the working
 #: directory reaches, and what no read or listing may ever answer with.
 _GUEST_FILESYSTEM = {
+    "/maf-sandbox": _LIVE_MAFSANDBOX,
     _WORK_DIR: _LIVE_WORK_DIR,
-    "/work/real.txt": _LIVE_REGULAR,
-    "/work/link-out.txt": _LIVE_SYMLINK,
-    "/work/sub": _LIVE_DIRECTORY,
-    "/work/sub/child.txt": _LIVE_NESTED,
+    "/maf-sandbox/work/real.txt": _LIVE_REGULAR,
+    "/maf-sandbox/work/link-out.txt": _LIVE_SYMLINK,
+    "/maf-sandbox/work/sub": _LIVE_DIRECTORY,
+    "/maf-sandbox/work/sub/child.txt": _LIVE_NESTED,
     "/etc": _LIVE_ETC,
     "/etc/hostname": _LIVE_ETC_HOSTNAME,
 }
 _GUEST_CONTENTS = {
-    "/work/real.txt": _REAL_CONTENT,
-    "/work/sub/child.txt": b"child",
+    "/maf-sandbox/work/real.txt": _REAL_CONTENT,
+    "/maf-sandbox/work/sub/child.txt": b"child",
     "/etc/hostname": _HOSTNAME,
 }
 
@@ -1173,12 +1199,14 @@ class TestTheWireShape:
         client = _FakeDataPlaneClient()
         _stat(_sandbox(client), "real.txt")
 
-        # `/work` first: a stat walks its parents before describing the entry itself.
+        # `/maf-sandbox` then `/maf-sandbox/work` first: a stat walks every parent of the working
+        # directory before describing the entry itself.
         assert client.gets == [
+            (f"{_SBX_PATH}/files/stat", {"path": "/maf-sandbox", "api-version": _API_VERSION}),
             (f"{_SBX_PATH}/files/stat", {"path": _WORK_DIR, "api-version": _API_VERSION}),
             (
                 f"{_SBX_PATH}/files/stat",
-                {"path": "/work/real.txt", "api-version": _API_VERSION},
+                {"path": "/maf-sandbox/work/real.txt", "api-version": _API_VERSION},
             ),
         ]
 
@@ -1198,7 +1226,9 @@ class TestStatFile:
         assert _stat(_sandbox(), "sub/child.txt").path == "sub/child.txt"
 
     def test_a_non_normalized_working_directory_still_resolves(self):
-        assert _stat(_sandbox(), "real.txt", working_directory="/work/").path == "real.txt"
+        assert (
+            _stat(_sandbox(), "real.txt", working_directory="/maf-sandbox/work/").path == "real.txt"
+        )
 
     def test_a_traversal_is_refused_before_the_service_is_asked(self):
         client = _FakeDataPlaneClient()
@@ -1217,7 +1247,7 @@ class TestStatFile:
 
     def test_a_sibling_sharing_a_prefix_is_not_read_as_a_descendant(self):
         with pytest.raises(ValueError, match="outside working directory"):
-            _stat(_sandbox(), "/work2/real.txt")
+            _stat(_sandbox(), "/maf-sandbox/work2/real.txt")
 
 
 class TestFailsClosedOnAMissingTypeFlag:
@@ -1233,7 +1263,7 @@ class TestFailsClosedOnAMissingTypeFlag:
 
     def _without(self, field):
         payload = {k: v for k, v in _LIVE_REGULAR.items() if k != field}
-        return _FakeDataPlaneClient(entries={"/work/real.txt": payload})
+        return _FakeDataPlaneClient(entries={"/maf-sandbox/work/real.txt": payload})
 
     def test_a_payload_without_the_symlink_flag_is_refused(self):
         with pytest.raises(AcasEntryPayloadIncomplete, match="isSymlink"):
@@ -1246,7 +1276,7 @@ class TestFailsClosedOnAMissingTypeFlag:
     def test_a_non_boolean_flag_is_refused(self):
         """A string `"false"` is truthy, so type-checking the flag is not pedantry."""
         payload = {**_LIVE_REGULAR, "isSymlink": "false"}
-        client = _FakeDataPlaneClient(entries={"/work/real.txt": payload})
+        client = _FakeDataPlaneClient(entries={"/maf-sandbox/work/real.txt": payload})
         with pytest.raises(AcasEntryPayloadIncomplete, match="isSymlink"):
             _stat(_sandbox(client), "real.txt")
 
@@ -1257,12 +1287,14 @@ class TestFailsClosedOnAMissingTypeFlag:
     def test_an_absent_size_is_unknown_rather_than_zero(self):
         """`None` fails closed upstream; zero would make every cap read that file as free."""
         payload = {k: v for k, v in _LIVE_REGULAR.items() if k != "size"}
-        client = _FakeDataPlaneClient(entries={"/work/real.txt": payload})
+        client = _FakeDataPlaneClient(entries={"/maf-sandbox/work/real.txt": payload})
         assert _stat(_sandbox(client), "real.txt").size_bytes is None
 
     def test_a_negative_size_is_unknown_too(self):
         """Worse than zero: it clears every cap and is then subtracted from the running total."""
-        client = _FakeDataPlaneClient(entries={"/work/real.txt": {**_LIVE_REGULAR, "size": -1}})
+        client = _FakeDataPlaneClient(
+            entries={"/maf-sandbox/work/real.txt": {**_LIVE_REGULAR, "size": -1}}
+        )
         assert _stat(_sandbox(client), "real.txt").size_bytes is None
 
 
@@ -1277,7 +1309,7 @@ class TestReadFile:
     def test_the_service_really_does_follow_a_symlink(self):
         """The premise of the refusal below: without it, this read leaves the working directory."""
         client = _FakeDataPlaneClient()
-        assert asyncio.run(client.read_file("/work/link-out.txt")) == _HOSTNAME
+        assert asyncio.run(client.read_file("/maf-sandbox/work/link-out.txt")) == _HOSTNAME
 
     def test_a_symlink_is_refused_and_never_read(self):
         client = _FakeDataPlaneClient()
@@ -1312,7 +1344,7 @@ class TestReadFile:
         """A stat is a promise about a file the guest is still free to rewrite."""
         from maf_sandbox import SandboxTransferCapExceeded
 
-        client = _FakeDataPlaneClient(contents={"/work/real.txt": b"x" * 4096})
+        client = _FakeDataPlaneClient(contents={"/maf-sandbox/work/real.txt": b"x" * 4096})
         with pytest.raises(SandboxTransferCapExceeded, match="read back"):
             asyncio.run(
                 _sandbox(client).read_file(
@@ -1324,7 +1356,7 @@ class TestReadFile:
         from maf_sandbox import SandboxOutputSizeUnknown
 
         payload = {k: v for k, v in _LIVE_REGULAR.items() if k != "size"}
-        client = _FakeDataPlaneClient(entries={"/work/real.txt": payload})
+        client = _FakeDataPlaneClient(entries={"/maf-sandbox/work/real.txt": payload})
         with pytest.raises(SandboxOutputSizeUnknown):
             asyncio.run(
                 _sandbox(client).read_file("real.txt", working_directory=_WORK_DIR, max_bytes=64)
@@ -1335,7 +1367,10 @@ class TestReadFile:
         from maf_sandbox import SandboxOutputSizeUnknown
 
         client = _FakeDataPlaneClient(
-            entries={**_GUEST_FILESYSTEM, "/work/real.txt": {**_LIVE_REGULAR, "size": -1}}
+            entries={
+                **_GUEST_FILESYSTEM,
+                "/maf-sandbox/work/real.txt": {**_LIVE_REGULAR, "size": -1},
+            }
         )
         with pytest.raises(SandboxOutputSizeUnknown):
             asyncio.run(
@@ -1350,14 +1385,14 @@ class TestReadFile:
                 "./sub/../real.txt", working_directory=_WORK_DIR, max_bytes=64
             )
         )
-        assert client.reads == ["/work/real.txt"]
+        assert client.reads == ["/maf-sandbox/work/real.txt"]
 
     def test_a_nested_path_through_real_directories_still_reads(self):
         """The component walk refuses links, not depth."""
         content = asyncio.run(
             _sandbox().read_file("sub/child.txt", working_directory=_WORK_DIR, max_bytes=64)
         )
-        assert content == _GUEST_CONTENTS["/work/sub/child.txt"]
+        assert content == _GUEST_CONTENTS["/maf-sandbox/work/sub/child.txt"]
 
     def test_a_file_that_vanishes_after_the_stat_is_a_file_not_found(self):
         """The SDK answers a late deletion with `ResourceNotFoundError`, which is no `OSError`.
@@ -1370,11 +1405,11 @@ class TestReadFile:
             asyncio.run(
                 _sandbox(client).read_file("real.txt", working_directory=_WORK_DIR, max_bytes=64)
             )
-        assert client.reads == ["/work/real.txt"]
+        assert client.reads == ["/maf-sandbox/work/real.txt"]
 
 
 class TestASymlinkedParentEscapesLexicalConfinement:
-    """`ln -sfn /etc /work/out`, the escape a lexical check cannot see.
+    """`ln -sfn /etc /maf-sandbox/work/out`, the escape a lexical check cannot see.
 
     Verified against a live sandbox group: `stat out` is OTHER, but `stat out/hostname` is a
     regular 12-byte file, reading it returns `/etc/hostname`, and listing `out` enumerates
@@ -1384,7 +1419,9 @@ class TestASymlinkedParentEscapesLexicalConfinement:
 
     @staticmethod
     def _client():
-        return _FakeDataPlaneClient(entries={**_GUEST_FILESYSTEM, "/work/out": _LIVE_SYMLINK_DIR})
+        return _FakeDataPlaneClient(
+            entries={**_GUEST_FILESYSTEM, "/maf-sandbox/work/out": _LIVE_SYMLINK_DIR}
+        )
 
     @staticmethod
     def _stat_route(path):
@@ -1400,21 +1437,23 @@ class TestASymlinkedParentEscapesLexicalConfinement:
         from maf_sandbox import EntryKind
 
         client = self._client()
-        through = asyncio.run(_sandbox(client)._stat_guest("/work/out/hostname", "out/hostname"))
+        through = asyncio.run(
+            _sandbox(client)._stat_guest("/maf-sandbox/work/out/hostname", "out/hostname")
+        )
         assert through.kind is EntryKind.FILE
         assert through.size_bytes == len(_HOSTNAME)
-        assert asyncio.run(client.read_file("/work/out/hostname")) == _HOSTNAME
+        assert asyncio.run(client.read_file("/maf-sandbox/work/out/hostname")) == _HOSTNAME
 
         listed = asyncio.run(
             client._dp_get(
                 f"{_SBX_PATH}/files/list",
-                params={"path": "/work/out", "api-version": _API_VERSION},
+                params={"path": "/maf-sandbox/work/out", "api-version": _API_VERSION},
             )
         )
         # Live-verified: the service echoes the REQUESTED prefix, so every escaped entry looks
         # like it sits under the working directory. The per-entry check cannot fire on these —
         # the component walk is the only thing standing between a kind and /etc.
-        assert [entry["path"] for entry in listed["entries"]] == ["/work/out/hostname"]
+        assert [entry["path"] for entry in listed["entries"]] == ["/maf-sandbox/work/out/hostname"]
 
     def test_a_final_component_link_is_described_rather_than_refused(self):
         """Only the parents are refused: reporting a link as `SYMLINK` is how a caller learns."""
@@ -1427,7 +1466,11 @@ class TestASymlinkedParentEscapesLexicalConfinement:
         client = self._client()
         with pytest.raises(ValueError, match="real directory"):
             _stat(_sandbox(client), "out/hostname")
-        assert client.gets == [self._stat_route(_WORK_DIR), self._stat_route("/work/out")]
+        assert client.gets == [
+            self._stat_route("/maf-sandbox"),
+            self._stat_route(_WORK_DIR),
+            self._stat_route("/maf-sandbox/work/out"),
+        ]
 
     def test_the_escape_is_decided_by_the_payload_flag_the_protocol_now_carries(self):
         """`isSymlink` reaches the walk as `SYMLINK`, and is still what decides.
@@ -1438,8 +1481,11 @@ class TestASymlinkedParentEscapesLexicalConfinement:
         from maf_sandbox import EntryKind
 
         sandbox = _sandbox(self._client())
-        assert asyncio.run(sandbox._stat_guest("/work/out", "out")).kind is EntryKind.SYMLINK
-        plain = asyncio.run(sandbox._stat_guest("/work/real.txt", "real.txt"))
+        assert (
+            asyncio.run(sandbox._stat_guest("/maf-sandbox/work/out", "out")).kind
+            is EntryKind.SYMLINK
+        )
+        plain = asyncio.run(sandbox._stat_guest("/maf-sandbox/work/real.txt", "real.txt"))
         assert plain.kind is EntryKind.FILE
 
     def test_a_read_through_a_symlinked_parent_is_refused(self):
@@ -1451,14 +1497,22 @@ class TestASymlinkedParentEscapesLexicalConfinement:
                 )
             )
         assert client.reads == []
-        assert client.gets == [self._stat_route(_WORK_DIR), self._stat_route("/work/out")]
+        assert client.gets == [
+            self._stat_route("/maf-sandbox"),
+            self._stat_route(_WORK_DIR),
+            self._stat_route("/maf-sandbox/work/out"),
+        ]
 
     def test_a_listing_through_a_symlinked_directory_is_refused(self):
         """The listing is never requested: the walk covers the directory named, not only its parents."""
         client = self._client()
         with pytest.raises(ValueError, match="real directory"):
             asyncio.run(_sandbox(client).list_dir("out", working_directory=_WORK_DIR))
-        assert client.gets == [self._stat_route(_WORK_DIR), self._stat_route("/work/out")]
+        assert client.gets == [
+            self._stat_route("/maf-sandbox"),
+            self._stat_route(_WORK_DIR),
+            self._stat_route("/maf-sandbox/work/out"),
+        ]
 
     def test_a_path_through_a_regular_file_is_not_reported_as_an_escape(self):
         """`ENOTDIR` is not a confinement failure, and only a link makes it one."""
@@ -1536,7 +1590,7 @@ class TestTheSharedConformanceSuite:
         from maf_sandbox import Capability
 
         # Empty rather than `_GUEST_FILESYSTEM`: the suite plants everything it attacks, and a
-        # pre-seeded /work would let a probe pass on a file it did not put there.
+        # pre-seeded /maf-sandbox/work would let a probe pass on a file it did not put there.
         client = _FakeDataPlaneClient(entries={}, contents={})
         return _ConformanceSubject(client, frozenset({Capability.FILES_OUT, Capability.FILES_LIST}))
 
@@ -1596,7 +1650,7 @@ class TestListDir:
     def test_a_listed_entry_outside_the_working_directory_fails_the_listing(self):
         escaped = {**_LIVE_REGULAR, "path": "/etc/hostname"}
         client = _FakeDataPlaneClient(
-            entries={_WORK_DIR: _LIVE_WORK_DIR, "/work/real.txt": escaped}
+            entries={_WORK_DIR: _LIVE_WORK_DIR, "/maf-sandbox/work/real.txt": escaped}
         )
         with pytest.raises(ValueError, match="outside working directory"):
             asyncio.run(_sandbox(client).list_dir(".", working_directory=_WORK_DIR))
@@ -1604,7 +1658,7 @@ class TestListDir:
     def test_a_listed_entry_without_a_type_flag_is_refused(self):
         payload = {k: v for k, v in _LIVE_REGULAR.items() if k != "isSymlink"}
         client = _FakeDataPlaneClient(
-            entries={_WORK_DIR: _LIVE_WORK_DIR, "/work/real.txt": payload}
+            entries={_WORK_DIR: _LIVE_WORK_DIR, "/maf-sandbox/work/real.txt": payload}
         )
         with pytest.raises(AcasEntryPayloadIncomplete, match="isSymlink"):
             asyncio.run(_sandbox(client).list_dir(".", working_directory=_WORK_DIR))
@@ -1640,7 +1694,7 @@ class TestListDir:
         """Where an entry sits is as load-bearing as what it is, and as absent from the payload."""
         payload = {k: v for k, v in _LIVE_REGULAR.items() if k != "path"}
         client = _FakeDataPlaneClient(
-            entries={_WORK_DIR: _LIVE_WORK_DIR, "/work/real.txt": payload}
+            entries={_WORK_DIR: _LIVE_WORK_DIR, "/maf-sandbox/work/real.txt": payload}
         )
         with pytest.raises(AcasEntryPayloadIncomplete, match="no 'path'"):
             asyncio.run(_sandbox(client).list_dir(".", working_directory=_WORK_DIR))
@@ -1650,7 +1704,7 @@ class TestListDir:
             asyncio.run(_sandbox().list_dir("/etc", working_directory=_WORK_DIR))
 
     def test_a_listed_sibling_of_the_directory_is_refused(self):
-        """`list_dir("sub")` enumerates one level, so `/work/real.txt` is not an answer to it."""
+        """`list_dir("sub")` enumerates one level, so `/maf-sandbox/work/real.txt` is not an answer to it."""
         with pytest.raises(AcasEntryPayloadIncomplete, match="one level"):
             asyncio.run(
                 _sandbox(_Relisting(_LIVE_REGULAR)).list_dir("sub", working_directory=_WORK_DIR)
@@ -1738,7 +1792,7 @@ class TestThroughCollectOutputs:
 
         payload = {k: v for k, v in _LIVE_REGULAR.items() if k != "isSymlink"}
         client = _FakeDataPlaneClient(
-            entries={_WORK_DIR: _LIVE_WORK_DIR, "/work/real.txt": payload}
+            entries={_WORK_DIR: _LIVE_WORK_DIR, "/maf-sandbox/work/real.txt": payload}
         )
         sink, _ = self._sink()
         with pytest.raises(AcasEntryPayloadIncomplete):

@@ -46,7 +46,7 @@ RENDER_DIAGRAM_TOOL_NAME = "render_diagram"
 
 #: Where the source is written and the image is produced — a dedicated root, not the image's own
 #: tree.
-_WORK_DIR = "/work"
+_WORK_DIR = "/maf-sandbox/work"
 
 _RENDERER = "dot"
 #: The output format, single-sourced: it is `dot`'s `-T` value and the image's file extension.

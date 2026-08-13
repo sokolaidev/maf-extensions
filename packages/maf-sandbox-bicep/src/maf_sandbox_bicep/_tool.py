@@ -113,7 +113,7 @@ _MODULE_INDEX_HOST = "live-data.bicep.azure.com"
 #: healthy: SARIF still parses, diagnostics still render, just against a weaker rule set than
 #: the repo asked for.  `TestConfigDiscovery` pins the image against this constant, and the
 #: sandbox CI checks the built image really contains the file, so neither can drift.
-_WORK_DIR = "/acas/work"
+_WORK_DIR = "/maf-sandbox/work"
 
 # Fixed bicep command templates — no agent text interpolated.
 # {path} is substituted only after the path is validated against the file store listing.

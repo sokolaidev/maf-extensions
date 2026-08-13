@@ -85,7 +85,7 @@ def format_diagnostics(
 
     ``strip_prefix`` is the in-sandbox directory the sources were written to.  Real Bicep
     reports locations as absolute ``file://`` URIs, so without it every diagnostic reads
-    ``file:///acas/work/8f2c1d/main.bicep`` — which puts the sandbox's internal layout into
+    ``file:///maf-sandbox/work/8f2c1d/main.bicep`` — which puts the sandbox's internal layout into
     the model's context, and gives the *same* file a different path on every round because
     the directory is per-call.  Stripped, it reads ``main.bicep``: the name the agent used.
     """

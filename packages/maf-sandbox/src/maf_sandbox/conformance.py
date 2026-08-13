@@ -1,6 +1,6 @@
 """The attacks a backend serving ``FILES_OUT`` has to survive, written once for all of them.
 
-    await assert_files_out_conformance(MySubject(sandbox, "/work"))
+    await assert_files_out_conformance(MySubject(sandbox, "/maf-sandbox/work"))
 
 **Run it against a real instance.**  A backend's own suite fakes its provider seam, and a faked
 seam agrees with whatever its author believed; these probes plant a hostile layout through the
@@ -116,8 +116,8 @@ class PosixGuestSubject:
 class ConformancePaths:
     """The hostile layout, derived from a subject's working directory.
 
-    ``outside`` is a **sibling** rather than a child of the root: ``/work-outside`` shares a
-    string prefix with ``/work`` and is still outside it, so a backend comparing prefixes
+    ``outside`` is a **sibling** rather than a child of the root: ``/maf-sandbox/work-outside`` shares a
+    string prefix with ``/maf-sandbox/work`` and is still outside it, so a backend comparing prefixes
     without the separator fails here rather than in production.  Every path is absolute,
     because planting goes through :meth:`Sandbox.write_file`; the probes attack with paths
     relative to ``work``.
@@ -158,7 +158,7 @@ class ConformancePaths:
 
     @property
     def under_linked_directory(self) -> str:
-        """A working directory one level *inside* the link — the ``/acas -> /`` case.
+        """A working directory one level *inside* the link — the ``/maf-sandbox -> /`` case.
 
         Distinct from making the work dir itself the link: an implementation whose walk starts
         at the work dir passes that one and still reads straight through this.
@@ -463,7 +463,7 @@ FILES_OUT_PROBES: tuple[Probe, ...] = (
         why=(
             "the walk starts above the working directory, not at it: a nested work dir has "
             "ancestors the guest can replace, and an implementation beginning at the work dir "
-            "stats straight through them. This is the /acas -> / case, and it is the one the "
+            "stats straight through them. This is the /maf-sandbox -> / case, and it is the one the "
             "probe above does not reach."
         ),
         requires=frozenset({Capability.FILES_OUT}),

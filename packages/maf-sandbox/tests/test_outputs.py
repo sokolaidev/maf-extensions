@@ -43,7 +43,7 @@ from maf_sandbox import (
 )
 from maf_sandbox.testing import InProcessSandbox
 
-_WORK_DIR = "/work"
+_WORK_DIR = "/maf-sandbox/work"
 _KIND = "diagram-generator"
 _PNG = "image/png"
 
@@ -333,7 +333,7 @@ class TestPortableName:
 
     def test_it_is_never_applied_for_you(self):
         """The library's own invariant accepts `CON`; only a host that asks gets it rewritten."""
-        sandbox = InProcessSandbox(seed_files={"/work/CON": b"x"})
+        sandbox = InProcessSandbox(seed_files={"/maf-sandbox/work/CON": b"x"})
         recorder = _RecordingSink()
         asyncio.run(collect_outputs(sandbox, _spec(DeclaredOutput(path="CON")), sink=recorder.sink))
         assert recorder.names == ["CON"]
@@ -341,7 +341,9 @@ class TestPortableName:
 
 class TestCollectOutputs:
     def test_lands_every_declared_output_in_declaration_order(self):
-        sandbox = InProcessSandbox(seed_files={"/work/a.png": b"aa", "/work/b.png": b"bbb"})
+        sandbox = InProcessSandbox(
+            seed_files={"/maf-sandbox/work/a.png": b"aa", "/maf-sandbox/work/b.png": b"bbb"}
+        )
         recorder = _RecordingSink()
         landed = asyncio.run(
             collect_outputs(
@@ -354,7 +356,7 @@ class TestCollectOutputs:
         assert recorder.names == ["b.png", "a.png"]
 
     def test_the_artifact_carries_the_spec_kind_and_the_declared_media_type(self):
-        sandbox = InProcessSandbox(seed_files={"/work/a.png": b"\x89PNG"})
+        sandbox = InProcessSandbox(seed_files={"/maf-sandbox/work/a.png": b"\x89PNG"})
         recorder = _RecordingSink()
         asyncio.run(
             collect_outputs(
@@ -367,7 +369,7 @@ class TestCollectOutputs:
         assert (artifact.kind, artifact.media_type, artifact.content) == (_KIND, _PNG, b"\x89PNG")
 
     def test_a_declared_output_keeps_its_own_separators(self):
-        sandbox = InProcessSandbox(seed_files={"/work/out/diagram.png": b"x"})
+        sandbox = InProcessSandbox(seed_files={"/maf-sandbox/work/out/diagram.png": b"x"})
         recorder = _RecordingSink()
         asyncio.run(
             collect_outputs(
@@ -377,7 +379,7 @@ class TestCollectOutputs:
         assert recorder.names == ["out/diagram.png"]
 
     def test_what_the_host_returned_is_what_the_caller_gets(self):
-        sandbox = InProcessSandbox(seed_files={"/work/a.png": b"x"})
+        sandbox = InProcessSandbox(seed_files={"/maf-sandbox/work/a.png": b"x"})
         recorder = _RecordingSink()
         landed = asyncio.run(
             collect_outputs(sandbox, _spec(DeclaredOutput(path="a.png")), sink=recorder.sink)
@@ -390,7 +392,7 @@ class TestCollectOutputs:
         assert asyncio.run(collect_outputs(InProcessSandbox(), _spec())) == ()
 
     def test_the_result_is_a_tuple(self):
-        sandbox = InProcessSandbox(seed_files={"/work/a.png": b"x"})
+        sandbox = InProcessSandbox(seed_files={"/maf-sandbox/work/a.png": b"x"})
         recorder = _RecordingSink()
         landed = asyncio.run(
             collect_outputs(sandbox, _spec(DeclaredOutput(path="a.png")), sink=recorder.sink)
@@ -404,7 +406,7 @@ class TestCollectionOrderIsNormative:
         its first artifact, every refusal this module can raise has already been settled."""
         log: list[tuple[str, str]] = []
         sandbox = _RecordingSandbox(
-            log=log, seed_files={"/work/a.png": b"aa", "/work/b.png": b"bb"}
+            log=log, seed_files={"/maf-sandbox/work/a.png": b"aa", "/maf-sandbox/work/b.png": b"bb"}
         )
         recorder = _RecordingSink(log=log)
         asyncio.run(
@@ -428,7 +430,9 @@ class TestDisposition:
     def test_a_consume_output_never_reaches_the_sink_and_is_never_read(self):
         """Its bytes are the kind's own `read_file` call — a source, answering to integrity,
         not a sink answering to confidentiality."""
-        sandbox = _RecordingSandbox(seed_files={"/work/result.sarif": b"{}", "/work/a.png": b"x"})
+        sandbox = _RecordingSandbox(
+            seed_files={"/maf-sandbox/work/result.sarif": b"{}", "/maf-sandbox/work/a.png": b"x"}
+        )
         recorder = _RecordingSink()
         landed = asyncio.run(
             collect_outputs(
@@ -444,7 +448,7 @@ class TestDisposition:
         assert ("read", "result.sarif") not in sandbox.calls
 
     def test_a_consume_only_spec_needs_no_sink(self):
-        sandbox = InProcessSandbox(seed_files={"/work/result.sarif": b"{}"})
+        sandbox = InProcessSandbox(seed_files={"/maf-sandbox/work/result.sarif": b"{}"})
         spec = _spec(DeclaredOutput(path="result.sarif", disposition=OutputDisposition.CONSUME))
         assert asyncio.run(collect_outputs(sandbox, spec)) == ()
 
@@ -456,7 +460,9 @@ class TestDisposition:
     def test_a_consume_output_counts_against_max_files(self):
         """`files_out` bounds the collection the spec declared, not the subset that lands: a
         kind that reads its own outputs still moves those bytes out of the sandbox."""
-        sandbox = InProcessSandbox(seed_files={"/work/result.sarif": b"{}", "/work/a.png": b"x"})
+        sandbox = InProcessSandbox(
+            seed_files={"/maf-sandbox/work/result.sarif": b"{}", "/maf-sandbox/work/a.png": b"x"}
+        )
         recorder = _RecordingSink()
         limits = TransferLimits(max_bytes_per_file=100, max_total_bytes=100, max_files=1)
         with pytest.raises(SandboxTransferCapExceeded, match="max_files=1"):
@@ -474,7 +480,9 @@ class TestDisposition:
         assert recorder.delivered == []
 
     def test_a_consume_output_counts_against_max_total_bytes(self):
-        sandbox = InProcessSandbox(seed_files={"/work/result.sarif": b"{}{}", "/work/a.png": b"xx"})
+        sandbox = InProcessSandbox(
+            seed_files={"/maf-sandbox/work/result.sarif": b"{}{}", "/maf-sandbox/work/a.png": b"xx"}
+        )
         recorder = _RecordingSink()
         limits = TransferLimits(max_bytes_per_file=100, max_total_bytes=5, max_files=10)
         with pytest.raises(SandboxTransferCapExceeded, match="max_total_bytes"):
@@ -505,7 +513,7 @@ class TestDisposition:
     def test_a_consume_path_is_held_to_the_narrow_invariant_as_well(self):
         """It is still a path this library hands to a backend. Unvalidated, the refusal would
         come back as that backend's own exception rather than as one a kind can catch."""
-        sandbox = _RecordingSandbox(seed_files={"/work/a.png": b"x"})
+        sandbox = _RecordingSandbox(seed_files={"/maf-sandbox/work/a.png": b"x"})
         spec = _spec(DeclaredOutput(path="../escape.sarif", disposition=OutputDisposition.CONSUME))
         with pytest.raises(SandboxArtifactNameInvalid, match="traversal"):
             asyncio.run(collect_outputs(sandbox, spec))
@@ -526,7 +534,7 @@ class TestPresence:
         assert recorder.delivered == []
 
     def test_a_missing_optional_output_is_simply_absent(self):
-        sandbox = InProcessSandbox(seed_files={"/work/a.png": b"x"})
+        sandbox = InProcessSandbox(seed_files={"/maf-sandbox/work/a.png": b"x"})
         recorder = _RecordingSink()
         landed = asyncio.run(
             collect_outputs(
@@ -555,7 +563,7 @@ class TestPresence:
 
 class TestEntryKindAndSize:
     def test_a_non_regular_entry_is_refused(self):
-        sandbox = InProcessSandbox(seed_files={"/work/out.png": EntryKind.OTHER})
+        sandbox = InProcessSandbox(seed_files={"/maf-sandbox/work/out.png": EntryKind.OTHER})
         recorder = _RecordingSink()
         with pytest.raises(SandboxOutputNotRegular, match="out.png"):
             asyncio.run(
@@ -564,7 +572,7 @@ class TestEntryKindAndSize:
         assert recorder.delivered == []
 
     def test_a_directory_is_refused(self):
-        sandbox = InProcessSandbox(seed_files={"/work/out/a.png": b"x"})
+        sandbox = InProcessSandbox(seed_files={"/maf-sandbox/work/out/a.png": b"x"})
         recorder = _RecordingSink()
         with pytest.raises(SandboxOutputNotRegular, match="directory"):
             asyncio.run(
@@ -588,7 +596,7 @@ class TestEntryKindAndSize:
 
 class TestCaps:
     def test_max_bytes_per_file_names_the_cap_and_the_file(self):
-        sandbox = InProcessSandbox(seed_files={"/work/big.png": b"0123456789"})
+        sandbox = InProcessSandbox(seed_files={"/maf-sandbox/work/big.png": b"0123456789"})
         recorder = _RecordingSink()
         limits = TransferLimits(max_bytes_per_file=4, max_total_bytes=100, max_files=10)
         with pytest.raises(SandboxTransferCapExceeded, match="max_bytes_per_file.*4"):
@@ -602,7 +610,9 @@ class TestCaps:
         assert recorder.delivered == []
 
     def test_max_files_names_the_cap_and_the_file(self):
-        sandbox = InProcessSandbox(seed_files={"/work/a.png": b"a", "/work/b.png": b"b"})
+        sandbox = InProcessSandbox(
+            seed_files={"/maf-sandbox/work/a.png": b"a", "/maf-sandbox/work/b.png": b"b"}
+        )
         recorder = _RecordingSink()
         limits = TransferLimits(max_bytes_per_file=100, max_total_bytes=100, max_files=1)
         with pytest.raises(SandboxTransferCapExceeded, match="b.png.*max_files=1"):
@@ -622,7 +632,9 @@ class TestCaps:
     def test_max_total_bytes_bounds_the_collection_not_the_file(self):
         """Ten thousand files one byte under the per-file ceiling cost exactly what the
         ceiling was written to prevent."""
-        sandbox = InProcessSandbox(seed_files={"/work/a.png": b"aaa", "/work/b.png": b"bbb"})
+        sandbox = InProcessSandbox(
+            seed_files={"/maf-sandbox/work/a.png": b"aaa", "/maf-sandbox/work/b.png": b"bbb"}
+        )
         recorder = _RecordingSink()
         limits = TransferLimits(max_bytes_per_file=100, max_total_bytes=5, max_files=10)
         with pytest.raises(SandboxTransferCapExceeded, match="max_total_bytes"):
@@ -640,7 +652,9 @@ class TestCaps:
         assert recorder.delivered == []
 
     def test_a_cap_breach_leaves_nothing_landed_even_when_the_first_file_fits(self):
-        sandbox = InProcessSandbox(seed_files={"/work/a.png": b"a", "/work/big.png": b"0123456"})
+        sandbox = InProcessSandbox(
+            seed_files={"/maf-sandbox/work/a.png": b"a", "/maf-sandbox/work/big.png": b"0123456"}
+        )
         recorder = _RecordingSink()
         limits = TransferLimits(max_bytes_per_file=3, max_total_bytes=100, max_files=10)
         with pytest.raises(SandboxTransferCapExceeded):
@@ -731,7 +745,7 @@ class TestTheReadBudget:
     def test_a_backend_that_can_enforce_the_bound_refuses_rather_than_truncating(self):
         """Half a PNG returned as success is an artifact the host cannot tell from a whole
         one, so the fake — like the protocol — refuses instead."""
-        sandbox = _ShrinkingStatSandbox(seed_files={"/work/a.png": b"0123"})
+        sandbox = _ShrinkingStatSandbox(seed_files={"/maf-sandbox/work/a.png": b"0123"})
         recorder = _RecordingSink()
         with pytest.raises(SandboxTransferCapExceeded, match="a.png"):
             asyncio.run(
@@ -755,7 +769,7 @@ class TestBackendFailuresJoinTheFamily:
 
     def test_a_path_the_backend_resolves_outside_the_working_directory(self):
         with pytest.raises(SandboxOutputNotConfined, match="a.png"):
-            self._collect(_RaisingSandbox(ValueError("resolves outside /work")))
+            self._collect(_RaisingSandbox(ValueError("resolves outside /maf-sandbox/work")))
 
     def test_a_file_that_went_away_between_the_stat_and_the_read(self):
         with pytest.raises(SandboxOutputUnreachable, match="a.png"):
@@ -774,7 +788,7 @@ class TestNames:
     def test_a_landing_name_is_held_to_the_narrow_invariant(self):
         """Settled from the spec alone, so the refusal does not depend on what the guest
         happened to produce — the sandbox is never touched."""
-        sandbox = _RecordingSandbox(seed_files={"/work/a.png": b"x"})
+        sandbox = _RecordingSandbox(seed_files={"/maf-sandbox/work/a.png": b"x"})
         recorder = _RecordingSink()
         with pytest.raises(SandboxArtifactNameInvalid, match="traversal"):
             asyncio.run(
@@ -784,7 +798,7 @@ class TestNames:
         assert sandbox.calls == []
 
     def test_names_are_normalized_to_nfc_before_deliver_sees_them(self):
-        sandbox = InProcessSandbox(seed_files={f"/work/{_DECOMPOSED}": b"x"})
+        sandbox = InProcessSandbox(seed_files={f"/maf-sandbox/work/{_DECOMPOSED}": b"x"})
         recorder = _RecordingSink()
         asyncio.run(
             collect_outputs(sandbox, _spec(DeclaredOutput(path=_DECOMPOSED)), sink=recorder.sink)
@@ -792,7 +806,7 @@ class TestNames:
         assert recorder.names == [_COMPOSED]
 
     def test_none_writes_what_was_asked_for_byte_exactly(self):
-        sandbox = InProcessSandbox(seed_files={f"/work/{_DECOMPOSED}": b"x"})
+        sandbox = InProcessSandbox(seed_files={f"/maf-sandbox/work/{_DECOMPOSED}": b"x"})
         recorder = _RecordingSink(normalization=NameNormalization.NONE)
         asyncio.run(
             collect_outputs(sandbox, _spec(DeclaredOutput(path=_DECOMPOSED)), sink=recorder.sink)
@@ -803,7 +817,10 @@ class TestNames:
         """Two files on Linux and one on Windows and default macOS — and the host, handed
         artifacts one at a time, could never see it."""
         sandbox = InProcessSandbox(
-            seed_files={"/work/Diagram.png": b"a", "/work/diagram.png": b"b"}
+            seed_files={
+                "/maf-sandbox/work/Diagram.png": b"a",
+                "/maf-sandbox/work/diagram.png": b"b",
+            }
         )
         recorder = _RecordingSink()
         with pytest.raises(SandboxArtifactNameCollision, match="Diagram.png"):
@@ -824,7 +841,9 @@ class TestNames:
         """`str.casefold` maps `ß` to `ss` and `ﬁ` (U+FB01) to `fi`, so folding would refuse
         these pairs — which are two distinct files on Linux, NTFS and case-insensitive APFS
         alike, and would fail the whole collection with a reason that is not true."""
-        sandbox = InProcessSandbox(seed_files={f"/work/{first}": b"a", f"/work/{second}": b"b"})
+        sandbox = InProcessSandbox(
+            seed_files={f"/maf-sandbox/work/{first}": b"a", f"/maf-sandbox/work/{second}": b"b"}
+        )
         recorder = _RecordingSink()
         landed = asyncio.run(
             collect_outputs(
@@ -839,7 +858,7 @@ class TestNames:
     def test_two_spellings_of_one_path_cannot_both_be_delivered(self, twin: str):
         """`a/b`, `a//b` and `a/./b` are one file in the guest, and the collision check used
         to key on the raw string — so all three landed, as three artifacts."""
-        sandbox = InProcessSandbox(seed_files={"/work/a/b": b"x"})
+        sandbox = InProcessSandbox(seed_files={"/maf-sandbox/work/a/b": b"x"})
         recorder = _RecordingSink()
         with pytest.raises(SandboxOutputError):
             asyncio.run(
@@ -854,7 +873,7 @@ class TestNames:
     def test_the_byte_ceiling_judges_the_name_that_is_actually_delivered(self):
         """NFC is not length-non-increasing: 85 × U+0958 is 255 bytes as declared and 510 as
         composed, so a check made before the rewrite is a check of a different name."""
-        sandbox = InProcessSandbox(seed_files={f"/work/{_NFC_GROWS}": b"x"})
+        sandbox = InProcessSandbox(seed_files={f"/maf-sandbox/work/{_NFC_GROWS}": b"x"})
         recorder = _RecordingSink()
         with pytest.raises(SandboxArtifactNameInvalid, match="ceiling"):
             asyncio.run(
@@ -864,7 +883,7 @@ class TestNames:
 
     def test_the_same_name_is_accepted_by_a_sink_that_rewrites_nothing(self):
         """Which is the point: what is judged is the spelling the host is handed."""
-        sandbox = InProcessSandbox(seed_files={f"/work/{_NFC_GROWS}": b"x"})
+        sandbox = InProcessSandbox(seed_files={f"/maf-sandbox/work/{_NFC_GROWS}": b"x"})
         recorder = _RecordingSink(normalization=NameNormalization.NONE)
         asyncio.run(
             collect_outputs(sandbox, _spec(DeclaredOutput(path=_NFC_GROWS)), sink=recorder.sink)
@@ -875,7 +894,10 @@ class TestNames:
         """Opting out disables the rewrite and nothing else: compare normalized, write what
         was asked for."""
         sandbox = InProcessSandbox(
-            seed_files={f"/work/{_DECOMPOSED}": b"a", f"/work/{_COMPOSED}": b"b"}
+            seed_files={
+                f"/maf-sandbox/work/{_DECOMPOSED}": b"a",
+                f"/maf-sandbox/work/{_COMPOSED}": b"b",
+            }
         )
         recorder = _RecordingSink(normalization=NameNormalization.NONE)
         with pytest.raises(SandboxArtifactNameCollision):
@@ -891,12 +913,12 @@ class TestNames:
 
 class TestSinkIsRequiredForAnythingThatLands:
     def test_a_landing_output_without_a_sink_is_refused(self):
-        sandbox = InProcessSandbox(seed_files={"/work/a.png": b"x"})
+        sandbox = InProcessSandbox(seed_files={"/maf-sandbox/work/a.png": b"x"})
         with pytest.raises(SandboxOutputSinkRequired, match="a.png"):
             asyncio.run(collect_outputs(sandbox, _spec(DeclaredOutput(path="a.png"))))
 
     def test_it_is_refused_before_the_sandbox_is_touched(self):
-        sandbox = _RecordingSandbox(seed_files={"/work/a.png": b"x"})
+        sandbox = _RecordingSandbox(seed_files={"/maf-sandbox/work/a.png": b"x"})
         with pytest.raises(SandboxOutputSinkRequired):
             asyncio.run(collect_outputs(sandbox, _spec(DeclaredOutput(path="a.png"))))
         assert sandbox.calls == []
@@ -904,7 +926,7 @@ class TestSinkIsRequiredForAnythingThatLands:
     def test_a_call_time_output_without_a_sink_is_refused_and_named(self):
         """By the time a collection runs the names exist, so the refusal states them — it is
         `sandboxed_tool`, refusing at attach, that has nothing yet to name."""
-        sandbox = _RecordingSandbox(seed_files={"/work/a.png": b"x"})
+        sandbox = _RecordingSandbox(seed_files={"/maf-sandbox/work/a.png": b"x"})
         with pytest.raises(SandboxOutputSinkRequired, match="a.png"):
             asyncio.run(
                 collect_outputs(
@@ -920,7 +942,7 @@ class TestTheLandingNameIsNotAlwaysTheGuestPath:
     """A kind writing into a per-call directory must not land `<run-id>/report.csv`."""
 
     def test_the_declared_name_is_what_the_sink_receives(self):
-        sandbox = InProcessSandbox(seed_files={"/work/run-1/report.csv": b"x"})
+        sandbox = InProcessSandbox(seed_files={"/maf-sandbox/work/run-1/report.csv": b"x"})
         recorder = _RecordingSink()
         landed = asyncio.run(
             collect_outputs(
@@ -933,7 +955,7 @@ class TestTheLandingNameIsNotAlwaysTheGuestPath:
         assert [item.name for item in landed] == ["report.csv"]
 
     def test_the_guest_path_is_still_what_is_read(self):
-        sandbox = _RecordingSandbox(seed_files={"/work/run-1/report.csv": b"x"})
+        sandbox = _RecordingSandbox(seed_files={"/maf-sandbox/work/run-1/report.csv": b"x"})
         recorder = _RecordingSink()
         asyncio.run(
             collect_outputs(
@@ -946,7 +968,7 @@ class TestTheLandingNameIsNotAlwaysTheGuestPath:
 
     def test_it_defaults_to_the_path_so_every_kind_written_before_it_is_unchanged(self):
         assert DeclaredOutput(path="a.png").name is None
-        sandbox = InProcessSandbox(seed_files={"/work/a.png": b"x"})
+        sandbox = InProcessSandbox(seed_files={"/maf-sandbox/work/a.png": b"x"})
         recorder = _RecordingSink()
         asyncio.run(
             collect_outputs(sandbox, _spec(DeclaredOutput(path="a.png")), sink=recorder.sink)
@@ -954,7 +976,7 @@ class TestTheLandingNameIsNotAlwaysTheGuestPath:
         assert recorder.names == ["a.png"]
 
     def test_the_landing_name_is_held_to_the_narrow_invariant(self):
-        sandbox = _RecordingSandbox(seed_files={"/work/run-1/report.csv": b"x"})
+        sandbox = _RecordingSandbox(seed_files={"/maf-sandbox/work/run-1/report.csv": b"x"})
         recorder = _RecordingSink()
         with pytest.raises(SandboxArtifactNameInvalid, match="traversal"):
             asyncio.run(
@@ -968,7 +990,7 @@ class TestTheLandingNameIsNotAlwaysTheGuestPath:
 
     def test_the_guest_path_is_held_to_it_too(self):
         """Both halves cross a boundary: the path goes to a backend, the name to the host."""
-        sandbox = _RecordingSandbox(seed_files={"/work/a.png": b"x"})
+        sandbox = _RecordingSandbox(seed_files={"/maf-sandbox/work/a.png": b"x"})
         recorder = _RecordingSink()
         with pytest.raises(SandboxArtifactNameInvalid, match="traversal"):
             asyncio.run(
@@ -983,7 +1005,10 @@ class TestTheLandingNameIsNotAlwaysTheGuestPath:
     def test_two_run_directories_landing_one_name_collide(self):
         """The paths differ, so keying the collision check on them would have missed it."""
         sandbox = InProcessSandbox(
-            seed_files={"/work/run-1/report.csv": b"a", "/work/run-2/report.csv": b"b"}
+            seed_files={
+                "/maf-sandbox/work/run-1/report.csv": b"a",
+                "/maf-sandbox/work/run-2/report.csv": b"b",
+            }
         )
         recorder = _RecordingSink()
         with pytest.raises(SandboxArtifactNameCollision) as refusal:
@@ -1008,7 +1033,10 @@ class TestTheLandingNameIsNotAlwaysTheGuestPath:
         """The other half: two names that really are variants keep the explanation that makes
         the refusal understandable, since nothing about them looks wrong on Linux."""
         sandbox = InProcessSandbox(
-            seed_files={"/work/run-1/a.png": b"a", "/work/run-2/b.png": b"b"}
+            seed_files={
+                "/maf-sandbox/work/run-1/a.png": b"a",
+                "/maf-sandbox/work/run-2/b.png": b"b",
+            }
         )
         recorder = _RecordingSink()
         with pytest.raises(SandboxArtifactNameCollision, match="differing only by case") as ref:
@@ -1025,7 +1053,7 @@ class TestTheLandingNameIsNotAlwaysTheGuestPath:
         assert "Report.png" in str(ref.value) and "report.png" in str(ref.value)
 
     def test_a_consume_output_lands_nothing_however_it_is_named(self):
-        sandbox = InProcessSandbox(seed_files={"/work/run-1/manifest.json": b"{}"})
+        sandbox = InProcessSandbox(seed_files={"/maf-sandbox/work/run-1/manifest.json": b"{}"})
         recorder = _RecordingSink()
         landed = asyncio.run(
             collect_outputs(
@@ -1049,7 +1077,10 @@ class TestCallTimeOutputs:
 
     def test_they_are_collected_alongside_what_the_spec_declared(self):
         sandbox = InProcessSandbox(
-            seed_files={"/work/fixed.png": b"a", "/work/run-1/report.csv": b"bb"}
+            seed_files={
+                "/maf-sandbox/work/fixed.png": b"a",
+                "/maf-sandbox/work/run-1/report.csv": b"bb",
+            }
         )
         recorder = _RecordingSink()
         asyncio.run(
@@ -1064,7 +1095,7 @@ class TestCallTimeOutputs:
 
     def test_a_spec_that_does_not_admit_them_refuses_them(self):
         """Such a tool was attached with no sink required and no outbound cap written."""
-        sandbox = _RecordingSandbox(seed_files={"/work/a.png": b"x"})
+        sandbox = _RecordingSandbox(seed_files={"/maf-sandbox/work/a.png": b"x"})
         recorder = _RecordingSink()
         with pytest.raises(ValueError, match="outputs_named_at_call_time"):
             asyncio.run(
@@ -1079,7 +1110,7 @@ class TestCallTimeOutputs:
 
     def test_the_flag_alone_collects_nothing(self):
         """It is a declaration about the workload, not an instruction to go looking."""
-        sandbox = _RecordingSandbox(seed_files={"/work/a.png": b"x"})
+        sandbox = _RecordingSandbox(seed_files={"/maf-sandbox/work/a.png": b"x"})
         recorder = _RecordingSink()
         landed = asyncio.run(collect_outputs(sandbox, _spec(at_call_time=True), sink=recorder.sink))
         assert landed == ()
@@ -1088,7 +1119,9 @@ class TestCallTimeOutputs:
     def test_one_cap_counts_both_sources(self):
         """One from each side, so a separate tally per source would still pass the cap and
         deliver twice what the workload allowed."""
-        sandbox = InProcessSandbox(seed_files={"/work/a.png": b"a", "/work/b.png": b"b"})
+        sandbox = InProcessSandbox(
+            seed_files={"/maf-sandbox/work/a.png": b"a", "/maf-sandbox/work/b.png": b"b"}
+        )
         recorder = _RecordingSink()
         limits = TransferLimits(max_bytes_per_file=8, max_total_bytes=8, max_files=1)
         with pytest.raises(SandboxTransferCapExceeded, match="max_files=1"):
@@ -1104,7 +1137,9 @@ class TestCallTimeOutputs:
 
     def test_the_byte_ceiling_counts_both_sources_too(self):
         """`max_files` alone would pass with a generous count and two large files."""
-        sandbox = InProcessSandbox(seed_files={"/work/a.png": b"aaaa", "/work/b.png": b"bbbb"})
+        sandbox = InProcessSandbox(
+            seed_files={"/maf-sandbox/work/a.png": b"aaaa", "/maf-sandbox/work/b.png": b"bbbb"}
+        )
         recorder = _RecordingSink()
         limits = TransferLimits(max_bytes_per_file=8, max_total_bytes=6, max_files=8)
         with pytest.raises(SandboxTransferCapExceeded, match="max_total_bytes"):
@@ -1121,7 +1156,9 @@ class TestCallTimeOutputs:
 
 class TestDeliveryFailure:
     def test_a_deliver_that_raises_on_the_first_artifact_lands_nothing(self):
-        sandbox = InProcessSandbox(seed_files={"/work/a.png": b"a", "/work/b.png": b"b"})
+        sandbox = InProcessSandbox(
+            seed_files={"/maf-sandbox/work/a.png": b"a", "/maf-sandbox/work/b.png": b"b"}
+        )
         recorder = _RecordingSink(fail_on=0)
         with pytest.raises(RuntimeError, match="the store refused"):
             asyncio.run(
@@ -1137,7 +1174,9 @@ class TestDeliveryFailure:
         """The one residue the library cannot cover, pinned so it is a known property rather
         than a surprise: a push callback cannot be un-called, which is why every check that
         can be made is made before the first delivery."""
-        sandbox = InProcessSandbox(seed_files={"/work/a.png": b"a", "/work/b.png": b"b"})
+        sandbox = InProcessSandbox(
+            seed_files={"/maf-sandbox/work/a.png": b"a", "/maf-sandbox/work/b.png": b"b"}
+        )
         recorder = _RecordingSink(fail_on=1)
         with pytest.raises(RuntimeError, match="the store refused"):
             asyncio.run(

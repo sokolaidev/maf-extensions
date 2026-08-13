@@ -49,7 +49,7 @@ pytestmark = pytest.mark.skipif(
     reason="needs the docker client on PATH and MAF_SANDBOX_DOCKER_E2E_IMAGE naming a runnable image",
 )
 
-_WORK = "/work"
+_WORK = "/maf-sandbox/work"
 
 
 def _spec(**kw) -> SandboxSpec:
@@ -79,7 +79,9 @@ class TestALiveContainer:
 
         async def scenario() -> None:
             sandbox = await backend.acquire(_key(scope), _spec())
-            await sandbox.write_file("/work/nested/deep/main.txt", "param naïve string\n")
+            await sandbox.write_file(
+                "/maf-sandbox/work/nested/deep/main.txt", "param naïve string\n"
+            )
 
             read_back = await sandbox.exec(
                 ["cat", "nested/deep/main.txt"], working_directory=_WORK, timeout=60
@@ -132,7 +134,7 @@ class TestFilesOutAgainstARealEngine:
 
         async def scenario() -> None:
             sandbox = await backend.acquire(_key(scope), _spec())
-            await sandbox.write_file("/work/out.png", payload)
+            await sandbox.write_file("/maf-sandbox/work/out.png", payload)
 
             entry = await sandbox.stat_file("out.png", working_directory=_WORK)
             assert entry is not None
@@ -153,7 +155,7 @@ class TestFilesOutAgainstARealEngine:
 
         async def scenario() -> None:
             sandbox = await backend.acquire(_key(scope), _spec())
-            await sandbox.write_file("/work/big.bin", b"x" * 5000)
+            await sandbox.write_file("/maf-sandbox/work/big.bin", b"x" * 5000)
             with pytest.raises(SandboxTransferCapExceeded):
                 await sandbox.read_file("big.bin", working_directory=_WORK, max_bytes=100)
 
@@ -170,9 +172,11 @@ class TestFilesOutAgainstARealEngine:
             sandbox = await backend.acquire(_key(scope), _spec())
             # A kind's first write creates the working directory (docker cp makes the parents);
             # exec's -w needs it to exist, exactly as it does for a real workload.
-            await sandbox.write_file("/work/.keep", "")
+            await sandbox.write_file("/maf-sandbox/work/.keep", "")
             made = await sandbox.exec(
-                ["ln", "-s", "/etc/passwd", "/work/link"], working_directory=_WORK, timeout=60
+                ["ln", "-s", "/etc/passwd", "/maf-sandbox/work/link"],
+                working_directory=_WORK,
+                timeout=60,
             )
             assert made.exit_code == 0, made.stderr
 
@@ -189,7 +193,7 @@ class TestFilesOutAgainstARealEngine:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
     def test_a_stat_or_read_through_a_symlinked_parent_is_refused(self):
-        """``ln -sfn /etc /work/out``: the final entry stats as a regular file and reads /etc.
+        """``ln -sfn /etc /maf-sandbox/work/out``: the final entry stats as a regular file and reads /etc.
 
         The engine resolves the path daemon-side, so only the component walk sees the link.
         Both halves of the pull surface walk it: a stat moves no byte of ``/etc``, but it does
@@ -200,9 +204,9 @@ class TestFilesOutAgainstARealEngine:
 
         async def scenario() -> None:
             sandbox = await backend.acquire(_key(scope), _spec())
-            await sandbox.write_file("/work/.keep", "")
+            await sandbox.write_file("/maf-sandbox/work/.keep", "")
             made = await sandbox.exec(
-                ["ln", "-sfn", "/etc", "/work/out"], working_directory=_WORK, timeout=60
+                ["ln", "-sfn", "/etc", "/maf-sandbox/work/out"], working_directory=_WORK, timeout=60
             )
             assert made.exit_code == 0, made.stderr
 
@@ -289,8 +293,8 @@ class TestFilesOutAgainstARealEngine:
         async def scenario() -> None:
             sandbox = await router.acquire(_key(scope), spec)
             # Seed the working directory the way a real kind does — its first write_file is what
-            # creates /work before any exec -w into it.
-            await sandbox.write_file("/work/.keep", "")
+            # creates /maf-sandbox/work before any exec -w into it.
+            await sandbox.write_file("/maf-sandbox/work/.keep", "")
             await sandbox.exec(
                 ["sh", "-c", "echo rendered > result.txt"], working_directory=_WORK, timeout=60
             )
@@ -346,7 +350,7 @@ class TestAllowlistEgress:
         sandbox = asyncio.run(backend.acquire(_key(scope), spec))
         net = sandbox.container_name + "-net"
         # A kind's first write creates the working directory that exec -w needs.
-        asyncio.run(sandbox.write_file("/work/.keep", ""))
+        asyncio.run(sandbox.write_file("/maf-sandbox/work/.keep", ""))
         try:
             assert _network_present(net)
             allowed_rc, allowed_status = self._curl_status(sandbox, "https://mcr.microsoft.com/v2/")

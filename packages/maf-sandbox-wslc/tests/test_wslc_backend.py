@@ -362,10 +362,10 @@ class TestExecArgv:
         backend, fake = _backend_with(_machine(running=[_NAME]))
         sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
         argv = ["echo", "a; rm -rf /", "$(id)"]
-        asyncio.run(sandbox.exec(argv, working_directory="/acas/work", timeout=5))
+        asyncio.run(sandbox.exec(argv, working_directory="/maf-sandbox/work", timeout=5))
 
         args = fake.only("container", "exec").args
-        assert args == ("container", "exec", "-w", "/acas/work", _NAME, *argv)
+        assert args == ("container", "exec", "-w", "/maf-sandbox/work", _NAME, *argv)
         assert "sh" not in args
 
     def test_a_string_is_run_by_a_shell(self):
@@ -470,26 +470,26 @@ class TestWriteFile:
 
     def test_the_copy_targets_the_container_root(self):
         """A `cp` destination must already exist, and `/` is the only path that always does."""
-        call, _ = self._sent("/acas/work/main.bicep", "x")
+        call, _ = self._sent("/maf-sandbox/work/main.bicep", "x")
         assert call.args == ("container", "cp", "-", f"{_NAME}:/")
 
     def test_the_entry_is_the_path_without_its_leading_slash(self):
-        _, archive = self._sent("/acas/work/r1/main.bicep", "x")
-        assert archive.getnames() == ["acas/work/r1/main.bicep"]
+        _, archive = self._sent("/maf-sandbox/work/r1/main.bicep", "x")
+        assert archive.getnames() == ["maf-sandbox/work/r1/main.bicep"]
 
     def test_a_relative_path_is_left_alone(self):
-        _, archive = self._sent("acas/work/main.bicep", "x")
-        assert archive.getnames() == ["acas/work/main.bicep"]
+        _, archive = self._sent("maf-sandbox/work/main.bicep", "x")
+        assert archive.getnames() == ["maf-sandbox/work/main.bicep"]
 
     def test_the_content_round_trips_as_utf8(self):
-        _, archive = self._sent("/acas/work/main.bicep", "param naïve string\n")
-        member = archive.extractfile("acas/work/main.bicep")
+        _, archive = self._sent("/maf-sandbox/work/main.bicep", "param naïve string\n")
+        member = archive.extractfile("maf-sandbox/work/main.bicep")
         assert member is not None
         assert member.read().decode("utf-8") == "param naïve string\n"
 
     def test_the_entry_is_readable(self):
-        _, archive = self._sent("/acas/work/main.bicep", "x")
-        assert archive.getmember("acas/work/main.bicep").mode == 0o644
+        _, archive = self._sent("/maf-sandbox/work/main.bicep", "x")
+        assert archive.getmember("maf-sandbox/work/main.bicep").mode == 0o644
 
     def test_a_failed_copy_raises(self):
         """A write that silently did nothing would surface as a compiler error about a file
@@ -499,7 +499,7 @@ class TestWriteFile:
         sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
 
         with pytest.raises(RuntimeError, match="WSLC_E_PATH_NOT_FOUND"):
-            asyncio.run(sandbox.write_file("/acas/work/main.bicep", "x"))
+            asyncio.run(sandbox.write_file("/maf-sandbox/work/main.bicep", "x"))
 
 
 # ---------------------------------------------------------------------------

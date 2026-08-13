@@ -62,21 +62,25 @@ class TestALiveContainer:
 
         async def scenario() -> None:
             sandbox = await backend.acquire(_key(scope), _spec())
-            await sandbox.write_file("/acas/work/nested/deep/main.bicep", "param naïve string\n")
+            await sandbox.write_file(
+                "/maf-sandbox/work/nested/deep/main.bicep", "param naïve string\n"
+            )
 
             read_back = await sandbox.exec(
-                ["cat", "nested/deep/main.bicep"], working_directory="/acas/work", timeout=60
+                ["cat", "nested/deep/main.bicep"], working_directory="/maf-sandbox/work", timeout=60
             )
             assert read_back.exit_code == 0, read_back.stderr
             assert read_back.stdout == "param naïve string\n"
 
-            failing = await sandbox.exec("exit 7", working_directory="/acas/work", timeout=60)
+            failing = await sandbox.exec(
+                "exit 7", working_directory="/maf-sandbox/work", timeout=60
+            )
             assert failing.exit_code == 7
 
             warm = await backend.acquire(_key(scope), _spec())
             assert warm.container_name == sandbox.container_name
             still_there = await warm.exec(
-                ["cat", "nested/deep/main.bicep"], working_directory="/acas/work", timeout=60
+                ["cat", "nested/deep/main.bicep"], working_directory="/maf-sandbox/work", timeout=60
             )
             assert still_there.stdout == "param naïve string\n"
 
@@ -140,7 +144,7 @@ class TestAllowlistEgress:
         result = asyncio.run(
             sandbox.exec(
                 ["sh", "-c", f"curl -s -o /dev/null -w '%{{http_code}}' --max-time 25 {url}"],
-                working_directory="/acas/work",
+                working_directory="/maf-sandbox/work",
                 timeout=45,
             )
         )
