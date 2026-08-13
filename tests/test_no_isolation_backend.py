@@ -198,24 +198,31 @@ def test_exec_propagates_timeout_as_timeouterror():
 
 
 def test_pull_surface_is_not_implemented():
-    """The pull surface raises — the backend declares only EXEC and FILES_IN, so it never serves it."""
+    """The pull surface raises — the backend declares only EXEC and FILES_IN, so it never serves it.
+
+    Each call is awaited inside its own ``pytest.raises`` rather than built into a tuple and
+    iterated: the tuple form constructs all three coroutines before any is awaited, which a
+    static analyzer reads as coroutines that may never run. The three explicit blocks make the
+    await unconditional and keep the assertions identical.
+    """
 
     async def body() -> None:
         backend, sandbox = await _fresh()
         try:
-            for coro in (
-                sandbox.stat_file(
+            with pytest.raises(NotImplementedError):
+                await sandbox.stat_file(
                     f"{_GUEST_WORK_DIR}/x", working_directory=_GUEST_WORK_DIR
-                ),
-                sandbox.read_file(
+                )
+            with pytest.raises(NotImplementedError):
+                await sandbox.read_file(
                     f"{_GUEST_WORK_DIR}/x",
                     working_directory=_GUEST_WORK_DIR,
                     max_bytes=1,
-                ),
-                sandbox.list_dir(_GUEST_WORK_DIR, working_directory=_GUEST_WORK_DIR),
-            ):
-                with pytest.raises(NotImplementedError):
-                    await coro
+                )
+            with pytest.raises(NotImplementedError):
+                await sandbox.list_dir(
+                    f"{_GUEST_WORK_DIR}/x", working_directory=_GUEST_WORK_DIR
+                )
         finally:
             await _drop(backend)
 
