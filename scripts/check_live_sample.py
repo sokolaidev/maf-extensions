@@ -1,9 +1,12 @@
-"""Assert that a live `samples/01_acas_bicep` run actually validated the file.
+"""Assert that a live Bicep-sample run actually validated the file.
 
-The live workflow installs the *published* wheels, runs the sample against a real Azure
-sandbox, and pipes its output here. This script is the assertion: it proves the compiler's
-diagnostics survived the round trip through router, backend, image and workload — the whole
-point of the run — without pinning anything that drifts on its own.
+The live workflow installs the *published* wheels, runs one of the Bicep samples —
+`samples/01_acas_bicep` against Azure, `samples/05_docker_bicep` in a local container,
+`samples/09_inprocess_bicep` in-process — and pipes its output here. They all compile the
+same `main.bicep` with the same CLI, so the same two rule ids come back whatever ran them;
+one assertion serves every Bicep sample. This script is that assertion: it proves the
+compiler's diagnostics survived the round trip through router, backend, image and workload
+— the whole point of the run — without pinning anything that drifts on its own.
 
     python samples/01_acas_bicep/agent.py | tee out.txt
     python scripts/check_live_sample.py out.txt   # or: ... | python scripts/check_live_sample.py
@@ -85,7 +88,9 @@ def main(argv: list[str]) -> int:
         for reason in failures:
             print(f"  - {reason}", file=sys.stderr)
         return 1
-    print("OK  sample 01 validated main.bicep against the published wheels and a live sandbox")
+    print(
+        "OK  the Bicep sample validated main.bicep against the published wheels and a live sandbox"
+    )
     return 0
 
 
