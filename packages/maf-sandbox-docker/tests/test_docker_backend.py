@@ -1112,3 +1112,32 @@ class TestPurgeIsConfigIndependent:
         backend, fake = _backend_with(_machine(overrides=overrides))
         asyncio.run(backend.dispose_scope("scope-a", "thread-1"))
         assert fake.matching("network", "rm", _AL_NET) != []
+
+
+class TestRemoveNetworkNotFound:
+    def test_a_missing_network_is_a_no_op_not_a_warning(self, caplog):
+        """Docker reports a missing network as 'not found', not the 'no such' a missing container
+        yields — the daemon uses a different noun per object type. A purge that tries a workload's
+        network whether or not that workload had one must not log a failure for the benign absence.
+        """
+        overrides = {
+            ("network", "rm"): _DockerResult(
+                1, b"", "Error response from daemon: network some-net not found"
+            )
+        }
+        backend, fake = _backend_with(_machine(overrides=overrides))
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox_docker._backend"):
+            removed = asyncio.run(backend._remove_network("some-net"))
+        assert removed is False
+        assert fake.only("network", "rm").args == ("network", "rm", "some-net")
+        assert not any("failed to remove network" in r.message for r in caplog.records)
+
+    def test_a_real_removal_failure_still_warns(self, caplog):
+        """A failure that is not the benign not-found wording — 'has active endpoints', say — is a
+        real leak and must still warn, so the not-found carve-out cannot mask a genuine error."""
+        overrides = {("network", "rm"): _DockerResult(1, b"", "has active endpoints")}
+        backend, _ = _backend_with(_machine(overrides=overrides))
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox_docker._backend"):
+            removed = asyncio.run(backend._remove_network("some-net"))
+        assert removed is False
+        assert any("failed to remove network" in r.message for r in caplog.records)
