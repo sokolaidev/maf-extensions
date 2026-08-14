@@ -488,8 +488,11 @@ jobs:
   # a maf-sandbox-wslc release touches none, so it triggers nothing. Which samples actually run
   # is the called workflow's decision: `package` tells it which package was just released, and
   # each job runs only if that release could affect it — so a maf-sandbox-docker release runs
-  # both docker jobs (neither creates a billable sandbox) and not the ACAS ones. A batch releasing more than one package runs this once per package;
-  # each run is independent and safe.
+  # both docker jobs (neither creates a billable sandbox) and not the ACAS ones. A batch releasing
+  # more than one package runs this once per package; each run is independent and safe, which holds
+  # because the called workflow's concurrency group is keyed per package. It was not always: under a
+  # single global group the calls contended, and since a group holds one pending run rather than a
+  # queue, a batch of four ran roughly two of them (#325).
   #
   # `breaking != 'true'` is the one case where a release deliberately gets no live check: the
   # published dependents cannot work against a breaking core until they ship again, and their
@@ -508,3 +511,28 @@ jobs:
       # Passed down to the called workflow, which mints the Azure OIDC token.
       id-token: write
       contents: read
+
+  # A live check that never started cannot say so itself: a run displaced from its concurrency
+  # group is cancelled while still pending, before a single step executes. Nor can the cancellation
+  # be softened here — `continue-on-error` is not among the keys a job that `uses:` a reusable
+  # workflow accepts — so the run is coloured cancelled either way. Keying that group per package
+  # (#325) makes the displacement rare rather than impossible, since two runs for the *same* package
+  # still share a group, and the damage when it happens is a lost signal and nothing more: the
+  # upload has already happened and been recorded by the time this runs. So say that, rather than
+  # leave a cancelled called workflow reading as a release that broke.
+  verify-superseded:
+    name: Explain a live check that did not run
+    needs: [build, verify]
+    if: always() && needs.verify.result == 'cancelled'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Say the live check was superseded
+        env:
+          PACKAGE: ${{ needs.build.outputs.package }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          {
+            echo "### The live check did not run"
+            echo
+            echo "\`${PACKAGE}\` ${VERSION} published successfully — the upload happens before this check and is untouched by it. The check itself was superseded by a later live run for the same package and cancelled while it was still queued, so it never started. Re-run it from Actions → **Verify (live)** → **Run workflow** with \`package: ${PACKAGE}\`. See [#325](https://github.com/sokolaidev/maf-extensions/issues/325)."
+          } >> "$GITHUB_STEP_SUMMARY"
