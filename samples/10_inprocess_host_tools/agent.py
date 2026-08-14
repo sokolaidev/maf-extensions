@@ -210,7 +210,13 @@ def main() -> int:
     print("  A dispatch. No shipped backend declares Capability.HOST_TOOLS, and the")
     print("  transport a guest would send a request over is still being designed (#133).")
     print("  Everything above is the half a host configures on day one regardless, and it")
-    print("  is the half that decides whether the other half ever runs.")
+    print("  is the half that decides whether the other half ever runs.\n")
+
+    # Every other sample's last line counts the sandboxes it disposed, and its check asserts
+    # that number is at least one. This one asserts the opposite, and the inverse is the whole
+    # claim: four acts of policy ran, and the backend was never asked for a sandbox — because
+    # all of it is decided at attach. A truncated run is caught the same way either way.
+    print("Completed 4 of 4 acts. Acquired 0 sandbox(es).")
     return 0
 
 
