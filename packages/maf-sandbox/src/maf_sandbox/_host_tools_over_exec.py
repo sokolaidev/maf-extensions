@@ -1,0 +1,384 @@
+"""A host-tool transport an ``EXEC`` backend can implement honestly — request and response files.
+
+:mod:`maf_sandbox._host_tools` says what may be dispatched and on whose authority.  It does not
+say how a dispatch *reaches* the host, and the shipped backends have no channel for one: their
+guests speak an exit code, stdout, and a stat-and-read pull surface.  This is that channel,
+built from those primitives and nothing else.
+
+The shape, in one paragraph.  A kind writes the guest program, the generated shim beside it,
+and a launcher, into a **fresh per-run directory**; :func:`dispatch_over_exec` starts the
+launcher detached and then supervises — polling for the next request file, resolving it through
+:class:`~maf_sandbox.HostToolRegistry`, and writing the answer back — until the program leaves
+its exit marker or the deadline passes.
+
+**The shim is not a control.** It runs in the guest, where model-written code can read, edit or
+ignore it: a program that writes request files itself is served identically, and that is by
+design rather than an oversight. Every gate that matters — resolution, the declaration check,
+argument validation, the dispatch cap, the response ceiling — is host-side in
+:meth:`~maf_sandbox.HostToolRun.dispatch`, which this module calls and never reimplements.
+
+Three costs, named here rather than discovered later:
+
+- **One round trip per call, at minimum.** On a remote backend that is an HTTP call each way,
+  so a call-heavy program can cost more round trips than the direct tool-calling this replaces.
+  Whether it is worth it is a measurement, not an assumption (#133).
+- **One outstanding call at a time.** The supervisor polls for the *next* request by name
+  rather than enumerating a directory, because the backend that most needs this transport
+  (`maf-sandbox-docker`) serves ``FILES_OUT`` and not ``FILES_LIST``. A guest that fires two
+  calls concurrently has the second answered only after the first.
+- **The files outlive the call.** Nothing in the protocol deletes, so requests and responses
+  sit in the guest filesystem until the sandbox is disposed of. A fresh per-run directory is
+  what keeps one run's traffic out of the next one's; it is the caller's to provide, and
+  :func:`guest_run_layout` names the paths inside it.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import posixpath
+import time
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, cast
+
+from ._error_detail import error_detail
+from ._protocol import EntryKind, ExecResult
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
+
+    from ._host_tools import HostToolRun
+    from ._protocol import Sandbox
+
+logger = logging.getLogger(__name__)
+
+#: The subdirectory a run's request and response files live in, under the run directory.
+CALLS_DIRECTORY = "host_tool_calls"
+
+#: Where the launcher redirects the program's own output, and where it records its exit code.
+OUTPUT_FILE = "program_output.txt"
+EXIT_FILE = "program_exit_code"
+
+#: The module a guest program imports to reach the host. Written beside the program.
+SHIM_MODULE = "maf_host_tools.py"
+
+_LAUNCHER = "run_program.sh"
+
+#: How long the guest blocks on one call before giving up on the host, and how often it looks.
+#: The guest's patience has to outlast the host's poll interval by a wide margin or a slow
+#: supervisor reads as a dead one; the host's own deadline is what actually bounds a run.
+_GUEST_CALL_TIMEOUT = 300.0
+_GUEST_POLL_SECONDS = 0.05
+
+
+@dataclass(frozen=True)
+class GuestRunLayout:
+    """Where one run's files live inside the guest, as absolute guest paths."""
+
+    directory: str
+    program: str
+    shim: str
+    launcher: str
+    calls: str
+    output: str
+    exit_code: str
+
+
+def guest_run_layout(run_directory: str, *, program: str = "program.py") -> GuestRunLayout:
+    """The paths :func:`dispatch_over_exec` expects, derived from one run's directory.
+
+    A kind writes ``program`` and :attr:`GuestRunLayout.shim`; everything else is written here.
+    ``run_directory`` must be fresh per run — see this module's docstring on why nothing
+    deletes.
+    """
+    return GuestRunLayout(
+        directory=run_directory,
+        program=posixpath.join(run_directory, program),
+        shim=posixpath.join(run_directory, SHIM_MODULE),
+        launcher=posixpath.join(run_directory, _LAUNCHER),
+        calls=posixpath.join(run_directory, CALLS_DIRECTORY),
+        output=posixpath.join(run_directory, OUTPUT_FILE),
+        exit_code=posixpath.join(run_directory, EXIT_FILE),
+    )
+
+
+def host_tool_shim(names: frozenset[str] | set[str] | tuple[str, ...] = ()) -> str:
+    """The guest-side module source: ``call(name, **arguments)``, and one function per name.
+
+    Written into the guest by the kind, imported by the program. It blocks on a response file
+    and raises :class:`HostToolError` — defined in the generated source — on a refusal, so a
+    program can catch one call's refusal and carry on, which is what the cap's *finish and
+    report* refusal is for.
+
+    ``names`` only adds convenience wrappers; it grants nothing. Resolution happens host-side
+    against the registry, so a name omitted here is still callable through :func:`call` and a
+    name invented here still resolves to a refusal.
+    """
+    wrappers = "\n\n".join(
+        f"def {name}(**arguments):\n"
+        f'    """Dispatch to the host tool {name!r}."""\n'
+        f"    return call({name!r}, **arguments)"
+        for name in sorted(names)
+        if name.isidentifier()
+    )
+    return _SHIM_SOURCE.format(
+        calls=CALLS_DIRECTORY,
+        timeout=_GUEST_CALL_TIMEOUT,
+        poll=_GUEST_POLL_SECONDS,
+        wrappers=f"\n\n{wrappers}\n" if wrappers else "",
+    )
+
+
+_SHIM_SOURCE = '''\
+"""Host tools, over files. Generated by maf-sandbox — editing this changes nothing host-side.
+
+Every call is validated, gated and capped in the host process. This module's job is to write a
+request where the supervisor is looking and to wait for the answer.
+"""
+
+import json
+import os
+import time
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_CALLS = os.path.join(_HERE, "{calls}")
+_TIMEOUT = {timeout}
+_POLL = {poll}
+_counter = 0
+
+
+class HostToolError(RuntimeError):
+    """A refusal from the host, or the host never answering. The sentence is the message."""
+
+
+def call(name, **arguments):
+    """Dispatch ``name`` with keyword ``arguments`` and return its value."""
+    global _counter
+    _counter += 1
+    identifier = "%04d" % _counter
+    os.makedirs(_CALLS, exist_ok=True)
+    request = os.path.join(_CALLS, identifier + ".request.json")
+    response = os.path.join(_CALLS, identifier + ".response.json")
+    payload = json.dumps({{"id": identifier, "name": name, "arguments": arguments}})
+    with open(request, "w", encoding="utf-8") as handle:
+        handle.write(payload)
+    deadline = time.monotonic() + _TIMEOUT
+    while time.monotonic() < deadline:
+        try:
+            with open(response, encoding="utf-8") as handle:
+                answered = json.load(handle)
+        except (OSError, ValueError):
+            # Absent, or caught mid-write: the supervisor writes the whole file in one call,
+            # but a backend is free to make that visible in pieces.
+            time.sleep(_POLL)
+            continue
+        if "value" in answered:
+            return answered["value"]
+        raise HostToolError(answered.get("refusal", "Error: the host refused this call"))
+    raise HostToolError(
+        "Error: the host did not answer this call within %d seconds" % int(_TIMEOUT)
+    )
+{wrappers}'''
+
+
+def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str:
+    """The shell the guest runs: start the program detached, then record how it ended.
+
+    Detached is the whole point — ``exec`` blocks until its command returns, so a program that
+    waits for the host would deadlock against a supervisor that has not started. The launcher
+    returns immediately and leaves two facts behind: the program's output, and its exit code in
+    a file whose appearance is what tells the supervisor the run is over.
+
+    POSIX shell, and a guest that has ``nohup``. A Windows guest or a distroless image needs a
+    different launcher; that is a backend's business, and this one is a helper rather than a
+    protocol.
+    """
+    return (
+        "#!/bin/sh\n"
+        f"cd {_quote(layout.directory)}\n"
+        f"nohup sh -c '{interpreter} {_quote(layout.program)} "
+        f"> {_quote(layout.output)} 2>&1; printf %s $? > {_quote(layout.exit_code)}' "
+        ">/dev/null 2>&1 &\n"
+    )
+
+
+def _quote(path: str) -> str:
+    """Single-quote a guest path for `sh`. Paths here come from a kind, not from a guest."""
+    return "'" + path.replace("'", "'\\''") + "'"
+
+
+async def dispatch_over_exec(
+    sandbox: Sandbox,
+    run: HostToolRun,
+    layout: GuestRunLayout,
+    *,
+    timeout: float,
+    poll_interval: float = 0.2,
+    interpreter: str = "python3",
+) -> ExecResult:
+    """Run the guest program detached and serve its host-tool calls until it exits.
+
+    The caller has already written :attr:`GuestRunLayout.program` and
+    :attr:`GuestRunLayout.shim`; this writes the launcher, starts it, and supervises.
+
+    Args:
+        sandbox: Must serve ``EXEC``, ``FILES_IN`` and ``FILES_OUT`` — the supervisor stats and
+            reads requests and writes responses. ``FILES_LIST`` is deliberately not required.
+        run: One run's dispatch context. Every request goes through
+            :meth:`~maf_sandbox.HostToolRun.dispatch`, which is where the contract lives.
+        layout: From :func:`guest_run_layout`, on a directory used by this run alone.
+        timeout: Seconds for the **whole program**, not one command. A wedged guest is bounded
+            by this and nothing else, since a detached process outlives the ``exec`` that
+            started it.
+        poll_interval: How often to look for the next request or the exit marker.
+        interpreter: The guest's Python.
+
+    Returns:
+        The program's own :class:`~maf_sandbox.ExecResult` — its redirected output as
+        ``stdout`` and the exit code it recorded.
+
+    Raises:
+        TimeoutError: The program left no exit marker before the deadline. Its output up to
+            that point is in the message; the process may still be running, and disposing of
+            the sandbox is what stops it.
+    """
+    await sandbox.write_file(layout.launcher, launcher_script(layout, interpreter))
+    started = await sandbox.exec(
+        f"sh {_quote(layout.launcher)}",
+        working_directory=layout.directory,
+        timeout=timeout,
+    )
+    if started.exit_code != 0:
+        return ExecResult(
+            stdout=started.stdout,
+            stderr=started.stderr or "the launcher did not start the program",
+            exit_code=started.exit_code,
+        )
+
+    deadline = time.monotonic() + timeout
+    served = 0
+    while True:
+        finished = await _read_if_present(sandbox, layout, layout.exit_code, cap=32)
+        if finished is not None:
+            output = await _read_if_present(sandbox, layout, layout.output, cap=_output_cap(run))
+            return ExecResult(
+                stdout=_as_text(output),
+                stderr="",
+                exit_code=_exit_code_from(finished),
+            )
+        served = await _serve_next_request(sandbox, run, layout, served)
+        if time.monotonic() >= deadline:
+            output = await _read_if_present(sandbox, layout, layout.output, cap=_output_cap(run))
+            raise TimeoutError(
+                f"the guest program did not finish within {timeout:g}s. Output so far: "
+                f"{_as_text(output)[:2000]}"
+            )
+        await asyncio.sleep(poll_interval)
+
+
+async def _serve_next_request(
+    sandbox: Sandbox, run: HostToolRun, layout: GuestRunLayout, served: int
+) -> int:
+    """Answer request ``served + 1`` if it is there, and say how many have now been answered.
+
+    By name rather than by enumeration, so a backend serving ``FILES_OUT`` without
+    ``FILES_LIST`` can host this. Sequential ids also make a replayed one unreachable: the
+    supervisor never looks at an id it has already answered, so a guest rewriting an old
+    request file cannot spend a second dispatch on it.
+    """
+    identifier = f"{served + 1:04d}"
+    request_path = posixpath.join(layout.calls, f"{identifier}.request.json")
+    body = await _read_if_present(sandbox, layout, request_path, cap=_request_cap(run))
+    if body is None:
+        return served
+    response_path = posixpath.join(layout.calls, f"{identifier}.response.json")
+    await sandbox.write_file(response_path, await _answer(run, body, identifier))
+    return served + 1
+
+
+async def _answer(run: HostToolRun, body: str | _TooLarge, identifier: str) -> str:
+    """One request's JSON answer: the tool's value, or a sentence the guest may read."""
+    if isinstance(body, _TooLarge):
+        return json.dumps(
+            {
+                "refusal": "Error: this host-tool request is larger than the host will read — "
+                "pass less, or write what you have to a file instead"
+            }
+        )
+    try:
+        parsed = cast(object, json.loads(body))
+    except ValueError:
+        logger.warning("host tools: request %s is not JSON, refusing it", identifier)
+        return json.dumps({"refusal": "Error: this host-tool request is not valid JSON"})
+    if not isinstance(parsed, dict):
+        return json.dumps({"refusal": "Error: a host-tool request must be a JSON object"})
+    request = cast("dict[str, object]", parsed)
+    # Handed over as-is, casts and all: `dispatch` is where guest data is checked, and it
+    # takes `object` to its own `isinstance` gates for exactly this reason. Narrowing here
+    # would be a second validation in the wrong process's file — and the annotations describe
+    # the contract a *host* calls under, not what a transport can promise about a JSON blob.
+    name = cast(str, request.get("name"))
+    arguments = cast("Mapping[str, Any] | None", request.get("arguments"))
+    result = await run.dispatch(name, arguments)
+    if not result.ok:
+        return json.dumps({"refusal": result.refusal})
+    # `value_json` is already the serialized return value, capped host-side. Splicing it into
+    # the envelope as text keeps those exact bytes rather than re-serializing a parse of them.
+    return '{"value": ' + (result.value_json or "null") + "}"
+
+
+class _TooLarge:
+    """Sentinel: the file is there and the host will not read it at that size."""
+
+
+async def _read_if_present(
+    sandbox: Sandbox, layout: GuestRunLayout, path: str, *, cap: int
+) -> str | _TooLarge | None:
+    """Stat, then read within ``cap`` — or ``None`` when the file is not there yet.
+
+    Stat-before-read is the pull surface's own rule, and it is what makes polling affordable:
+    the common case is one stat that answers ``None``.
+    """
+    entry = await sandbox.stat_file(path, working_directory=layout.directory)
+    if entry is None or entry.kind is not EntryKind.FILE:
+        return None
+    if entry.size_bytes is None or entry.size_bytes > cap:
+        logger.warning(
+            "host tools: %s is %s bytes against a %s cap, refusing to read it",
+            posixpath.basename(path),
+            entry.size_bytes,
+            cap,
+        )
+        return _TooLarge()
+    try:
+        raw = await sandbox.read_file(path, working_directory=layout.directory, max_bytes=cap)
+    except Exception as failure:  # noqa: BLE001 — a read that fails is a poll that missed
+        logger.warning("host tools: reading %s failed: %s", path, error_detail(failure))
+        return None
+    return raw.decode("utf-8", errors="replace")
+
+
+def _as_text(value: str | _TooLarge | None) -> str:
+    """The text, or nothing — an absent or over-cap file reads as no output rather than a type."""
+    return value if isinstance(value, str) else ""
+
+
+def _request_cap(run: HostToolRun) -> int:
+    """The request ceiling, borrowed from the response one — the same concern, one vocabulary."""
+    return run.registry.response_limits.max_bytes_per_file
+
+
+def _output_cap(run: HostToolRun) -> int:
+    """What the host will read back of the program's own output."""
+    return run.registry.response_limits.max_total_bytes
+
+
+def _exit_code_from(recorded: str | _TooLarge) -> int:
+    """The exit code the launcher wrote, or 1 when it is not a number this can trust."""
+    if isinstance(recorded, _TooLarge):
+        return 1
+    try:
+        return int(recorded.strip())
+    except ValueError:
+        return 1

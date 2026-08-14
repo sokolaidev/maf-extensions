@@ -71,6 +71,14 @@ from ._host_tools import (
     declaration_of,
     sandbox_tool,
 )
+from ._host_tools_over_exec import (
+    CALLS_DIRECTORY,
+    SHIM_MODULE,
+    GuestRunLayout,
+    dispatch_over_exec,
+    guest_run_layout,
+    host_tool_shim,
+)
 from ._outputs import (
     MAX_ARTIFACT_NAME_BYTES,
     Artifact,
@@ -135,6 +143,7 @@ from ._router import (
 )
 
 __all__ = [
+    "CALLS_DIRECTORY",
     "DEFAULT_CAPABILITIES",
     "DEFAULT_MAX_DISPATCHES_PER_RUN",
     "DEFAULT_SANDBOX_LIMITS",
@@ -143,6 +152,7 @@ __all__ = [
     "INTEGRITY_RANK",
     "ISOLATION_RANK",
     "MAX_ARTIFACT_NAME_BYTES",
+    "SHIM_MODULE",
     "Artifact",
     "Capability",
     "DeclaredOutput",
@@ -150,6 +160,7 @@ __all__ = [
     "Egress",
     "EntryKind",
     "ExecResult",
+    "GuestRunLayout",
     "HostToolAggregate",
     "HostToolDeclaration",
     "HostToolNotDeclared",
@@ -195,7 +206,10 @@ __all__ = [
     "CallerContext",
     "collect_outputs",
     "declaration_of",
+    "dispatch_over_exec",
     "error_detail",
+    "guest_run_layout",
+    "host_tool_shim",
     "landing_outputs",
     "make_file_system_sink",
     "meets_floor",

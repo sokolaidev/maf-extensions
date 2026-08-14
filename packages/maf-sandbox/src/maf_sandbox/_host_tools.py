@@ -540,6 +540,16 @@ class HostToolRun:
         self._delivered = 0
         self._delivered_bytes = 0
 
+    @property
+    def registry(self) -> HostToolRegistry:
+        """The registry this run resolves through, whose ceilings a transport also answers to.
+
+        Read-only, and read by :func:`~maf_sandbox.dispatch_over_exec` for one reason: the size
+        a response may be is the size a *request* may be, and a transport inventing its own
+        number would be a second ceiling for one concern.
+        """
+        return self._registry
+
     async def dispatch(
         self, name: str, arguments: Mapping[str, Any] | None = None
     ) -> DispatchResult:
