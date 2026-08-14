@@ -4,15 +4,19 @@
 check reads each dependent's ceiling and refuses if it excludes the version going out; this one
 installs the candidate core wheel beside each dependent *version* that admits it and refuses if
 that version no longer imports. Its at-risk filter and its verdict are pure functions of
-metadata, so both are tested here; only the venv install and the import are not — the one impure
-step is passed in as a fake. The subprocess sequence that step runs is pinned here by mocking
-``subprocess.run``, so no venv is created and uv is never invoked. No network.
+metadata, so both are tested here; the PyPI fetches and the venv install/import are the impure
+steps — the fetches are pinned by mocking ``urllib.request.urlopen`` and the install/import by
+mocking ``subprocess.run``, so no venv is created, uv is never invoked, and no network is hit.
 """
 
 from __future__ import annotations
 
+import email.message
 import importlib.util
+import io
+import json
 import sys
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -70,8 +74,8 @@ class TestAtRisk:
         assert check.at_risk(published, (0, 11, 0)) == [("maf-sandbox-bicep", "0.5.6")]
 
     def test_an_old_loose_ceiling_version_is_at_risk_even_when_latest_moved_on(self):
-        # #248 symptom 2: docker 0.2.0 (<0.12) admits 0.11.0 though docker's latest has ratcheted
-        # past it — latest-only would never test 0.2.0. The whole point of the all-versions widening.
+        # Both an old and a current admitting version are selected — the old one is the case
+        # latest-only misses, so it must appear alongside the current one.
         published = {
             "maf-sandbox-docker": [
                 ("0.2.0", ["maf-sandbox<0.12,>=0.10.0"]),  # admits 0.11.0
@@ -123,6 +127,256 @@ class TestAtRisk:
         ]
 
 
+def _http_error(code: int) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(
+        "https://pypi.org/", code, "err", email.message.Message(), io.BytesIO(b"")
+    )
+
+
+class _Response:
+    """The slice of an HTTP response ``json.load`` reads: a ``read()`` returning JSON bytes."""
+
+    def __init__(self, payload: object) -> None:
+        self._body = json.dumps(payload).encode()
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self) -> _Response:
+        return self
+
+    def __exit__(self, *_args: object) -> bool:
+        return False
+
+
+def _patch_urlopen(
+    monkeypatch: pytest.MonkeyPatch,
+    routes: dict[str, object],
+) -> None:
+    """Route a URL to a payload dict (success) or an ``HTTPError`` (raise).
+
+    Keys are matched as substrings, longest first, so a per-version segment like
+    ``bicep/0.2.0/json`` is not shadowed by the top-level ``bicep/json``.
+    """
+
+    def fake_urlopen(url: str, timeout: int | None = None) -> _Response:
+        for key in sorted(routes, key=len, reverse=True):
+            if key in url:
+                result = routes[key]
+                if isinstance(result, urllib.error.HTTPError):
+                    raise result
+                return _Response(result)
+        raise AssertionError(f"unexpected url {url}")
+
+    monkeypatch.setattr(check.urllib.request, "urlopen", fake_urlopen)
+
+
+class TestFetchLatest:
+    """``fetch_latest`` reads one top-level JSON and honours yanked + 404 + fatal errors."""
+
+    def test_returns_the_latest_version_and_its_requirements(self, monkeypatch):
+        _patch_urlopen(
+            monkeypatch,
+            {
+                "maf-sandbox-bicep/json": {
+                    "info": {
+                        "version": "0.6.0",
+                        "requires_dist": ["maf-sandbox<0.13,>=0.11.0"],
+                        "yanked": False,
+                    }
+                }
+            },
+        )
+        assert check.fetch_latest("maf-sandbox-bicep") == (
+            "0.6.0",
+            ["maf-sandbox<0.13,>=0.11.0"],
+        )
+
+    def test_a_yanked_latest_is_treated_as_absent(self, monkeypatch):
+        _patch_urlopen(
+            monkeypatch,
+            {"maf-sandbox-bicep/json": {"info": {"version": "0.6.0", "yanked": True}}},
+        )
+        assert check.fetch_latest("maf-sandbox-bicep") is None
+
+    def test_a_never_released_distribution_returns_none(self, monkeypatch):
+        _patch_urlopen(monkeypatch, {"maf-sandbox-bicep/json": _http_error(404)})
+        assert check.fetch_latest("maf-sandbox-bicep") is None
+
+    def test_a_non_404_error_is_fatal(self, monkeypatch):
+        _patch_urlopen(monkeypatch, {"maf-sandbox-bicep/json": _http_error(500)})
+        with pytest.raises(urllib.error.HTTPError):
+            check.fetch_latest("maf-sandbox-bicep")
+
+
+class TestFetchRequiresDistForVersion:
+    """``fetch_requires_dist_for_version`` reads one per-version JSON, same yanked/404 rules."""
+
+    def test_returns_that_versions_requirements(self, monkeypatch):
+        _patch_urlopen(
+            monkeypatch,
+            {
+                "maf-sandbox-bicep/0.2.0/json": {
+                    "info": {
+                        "requires_dist": ["maf-sandbox<0.12,>=0.10.0"],
+                        "yanked": False,
+                    }
+                }
+            },
+        )
+        assert check.fetch_requires_dist_for_version("maf-sandbox-bicep", "0.2.0") == [
+            "maf-sandbox<0.12,>=0.10.0"
+        ]
+
+    def test_a_yanked_version_is_skipped(self, monkeypatch):
+        _patch_urlopen(
+            monkeypatch,
+            {
+                "maf-sandbox-bicep/0.2.0/json": {
+                    "info": {"requires_dist": ["maf-sandbox<0.12"], "yanked": True}
+                }
+            },
+        )
+        assert (
+            check.fetch_requires_dist_for_version("maf-sandbox-bicep", "0.2.0") is None
+        )
+
+    def test_a_missing_version_is_skipped(self, monkeypatch):
+        _patch_urlopen(monkeypatch, {"maf-sandbox-bicep/0.2.0/json": _http_error(404)})
+        assert (
+            check.fetch_requires_dist_for_version("maf-sandbox-bicep", "0.2.0") is None
+        )
+
+    def test_a_non_404_error_is_fatal(self, monkeypatch):
+        _patch_urlopen(monkeypatch, {"maf-sandbox-bicep/0.2.0/json": _http_error(500)})
+        with pytest.raises(urllib.error.HTTPError):
+            check.fetch_requires_dist_for_version("maf-sandbox-bicep", "0.2.0")
+
+
+class TestFetchVersionRequirements:
+    """``fetch_version_requirements`` reuses the latest from the top-level fetch and fills the rest."""
+
+    def test_the_latest_reuses_top_level_info_and_others_are_fetched_per_version(
+        self, monkeypatch
+    ):
+        _patch_urlopen(
+            monkeypatch,
+            {
+                "maf-sandbox-bicep/json": {
+                    "info": {
+                        "version": "0.6.0",
+                        "requires_dist": ["maf-sandbox<0.13,>=0.11.0"],
+                        "yanked": False,
+                    },
+                    "releases": {"0.6.0": [{}], "0.2.0": [{}]},
+                },
+                "maf-sandbox-bicep/0.2.0/json": {
+                    "info": {
+                        "requires_dist": ["maf-sandbox<0.12,>=0.10.0"],
+                        "yanked": False,
+                    }
+                },
+            },
+        )
+        assert check.fetch_version_requirements("maf-sandbox-bicep") == {
+            "0.6.0": ["maf-sandbox<0.13,>=0.11.0"],
+            "0.2.0": ["maf-sandbox<0.12,>=0.10.0"],
+        }
+
+    def test_a_yanked_latest_is_excluded_but_other_versions_still_returned(
+        self, monkeypatch
+    ):
+        _patch_urlopen(
+            monkeypatch,
+            {
+                "maf-sandbox-bicep/json": {
+                    "info": {
+                        "version": "0.6.0",
+                        "requires_dist": ["maf-sandbox<0.13"],
+                        "yanked": True,
+                    },
+                    "releases": {"0.6.0": [{}], "0.2.0": [{}]},
+                },
+                "maf-sandbox-bicep/0.2.0/json": {
+                    "info": {
+                        "requires_dist": ["maf-sandbox<0.12,>=0.10.0"],
+                        "yanked": False,
+                    }
+                },
+            },
+        )
+        assert check.fetch_version_requirements("maf-sandbox-bicep") == {
+            "0.2.0": ["maf-sandbox<0.12,>=0.10.0"]
+        }
+
+    def test_a_yanked_non_latest_is_skipped(self, monkeypatch):
+        _patch_urlopen(
+            monkeypatch,
+            {
+                "maf-sandbox-bicep/json": {
+                    "info": {
+                        "version": "0.6.0",
+                        "requires_dist": ["maf-sandbox<0.13"],
+                        "yanked": False,
+                    },
+                    "releases": {"0.6.0": [{}], "0.2.0": [{}]},
+                },
+                "maf-sandbox-bicep/0.2.0/json": {
+                    "info": {"requires_dist": ["maf-sandbox<0.12"], "yanked": True}
+                },
+            },
+        )
+        assert check.fetch_version_requirements("maf-sandbox-bicep") == {
+            "0.6.0": ["maf-sandbox<0.13"]
+        }
+
+    def test_a_per_version_404_is_skipped_not_fatal(self, monkeypatch):
+        _patch_urlopen(
+            monkeypatch,
+            {
+                "maf-sandbox-bicep/json": {
+                    "info": {
+                        "version": "0.6.0",
+                        "requires_dist": ["maf-sandbox<0.13"],
+                        "yanked": False,
+                    },
+                    "releases": {"0.6.0": [{}], "0.2.0": [{}]},
+                },
+                "maf-sandbox-bicep/0.2.0/json": _http_error(404),
+            },
+        )
+        assert check.fetch_version_requirements("maf-sandbox-bicep") == {
+            "0.6.0": ["maf-sandbox<0.13"]
+        }
+
+    def test_a_never_released_distribution_returns_none(self, monkeypatch):
+        _patch_urlopen(monkeypatch, {"maf-sandbox-bicep/json": _http_error(404)})
+        assert check.fetch_version_requirements("maf-sandbox-bicep") is None
+
+    def test_a_non_404_error_on_the_top_level_is_fatal(self, monkeypatch):
+        _patch_urlopen(monkeypatch, {"maf-sandbox-bicep/json": _http_error(500)})
+        with pytest.raises(urllib.error.HTTPError):
+            check.fetch_version_requirements("maf-sandbox-bicep")
+
+    def test_a_non_404_error_on_a_per_version_fetch_is_fatal(self, monkeypatch):
+        _patch_urlopen(
+            monkeypatch,
+            {
+                "maf-sandbox-bicep/json": {
+                    "info": {
+                        "version": "0.6.0",
+                        "requires_dist": ["maf-sandbox<0.13"],
+                        "yanked": False,
+                    },
+                    "releases": {"0.6.0": [{}], "0.2.0": [{}]},
+                },
+                "maf-sandbox-bicep/0.2.0/json": _http_error(500),
+            },
+        )
+        with pytest.raises(urllib.error.HTTPError):
+            check.fetch_version_requirements("maf-sandbox-bicep")
+
+
 def _ok(_core_wheel: Path, _distribution: str, _version: str) -> str | None:
     return None
 
@@ -130,7 +384,7 @@ def _ok(_core_wheel: Path, _distribution: str, _version: str) -> str | None:
 def _breaks_docker_020(
     _core_wheel: Path, distribution: str, version_str: str
 ) -> str | None:
-    # The 0.11.0 incident's second red run: the OLD docker 0.2.0 imports a name the core removed.
+    # Breaks only the old admitting version; any other (distribution, version) imports clean.
     if distribution == "maf-sandbox-docker" and version_str == "0.2.0":
         return "ImportError: cannot import name 'CallerContext' from 'maf_sandbox'"
     return None
@@ -300,8 +554,8 @@ class TestMain:
         tmp_path: Path,
         capsys: pytest.CaptureFixture[str],
     ):
-        # docker 0.2.0 (<0.12) admits 0.11.0 and breaks — the #248 symptom-2 path, caught at build
-        # time because build runs all-versions. The latest docker 0.6.0 admits too but imports clean.
+        # The old admitting version breaks and is reported; the current admitting version imports
+        # clean and is not. Both admit, so only the all-versions filter surfaces the breaking one.
         def fake_fetch(distribution: str) -> dict[str, list[str]]:
             if distribution == "maf-sandbox-docker":
                 return {

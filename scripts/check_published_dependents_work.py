@@ -12,12 +12,15 @@ By default every published version of each dependent whose ceiling admits the ca
 tested, not just the latest. A dependent's old releases sit on PyPI with the ceilings they
 shipped with, and an old version with a loose ceiling can admit a breaking core the latest has
 already moved off — exactly the case latest-only misses. ``--latest-only`` restricts the test to
-the latest version per dependent: the fast re-check used at upload time, where old versions are
-immutable (already tested at build time) and the only new risk during the approval wait is a
-newly published latest. A dependent whose ceiling excludes the version is the admit check's
-concern and is skipped here, and one not yet on PyPI is skipped too. A network failure is fatal
-rather than skipped: passing because PyPI could not be reached is the one outcome that would make
-this check worthless — the same stance as the admit check.
+the latest version per dependent: the fast re-check used at upload time, with reduced coverage
+rather than a complete re-run. Old versions are immutable and were tested at build time, so the
+common new risk during the approval wait is a newly published latest; narrower races — a yanked
+version unyanked in the window, or a newly uploaded non-latest version — are not caught by it,
+and closing them means re-running every version at upload, which the build/upload split exists to
+avoid. A dependent whose ceiling excludes the version is the admit check's concern and is skipped
+here, and one not yet on PyPI is skipped too. A network failure is fatal rather than skipped:
+passing because PyPI could not be reached is the one outcome that would make this check
+worthless — the same stance as the admit check.
 """
 
 from __future__ import annotations
@@ -60,8 +63,10 @@ def fetch_latest(distribution: str) -> tuple[str, list[str]] | None:
     """The latest published version and its ``requires_dist``, or None if never released.
 
     One top-level fetch reuses the index's ``info`` block, which already carries the latest
-    version and its requirements. A yanked latest has nothing stable to test, so it is treated
-    as absent — latest-only mode would otherwise report an install failure uv refuses to run.
+    version and its requirements. A yanked latest is skipped because a real user never lands on
+    one: normal unpinned resolution ignores yanked releases, so a break there is not a real-user
+    break. The ``==`` pin this script uses would still install a yanked release (PEP 592), so
+    skipping is what aligns the test with what users actually run.
     """
     payload = _fetch_project(distribution)
     if payload is None:
@@ -78,8 +83,10 @@ def fetch_requires_dist_for_version(
     """One version's ``requires_dist``, or None if that version is gone or yanked.
 
     The top-level index JSON carries ``requires_dist`` only for the latest version; every other
-    version needs its own per-version fetch. A yanked version is skipped — uv refuses to install
-    it, so testing it would report an install failure that is not a break.
+    version needs its own per-version fetch. A yanked version is skipped — not because the ``==``
+    pin cannot install it (PEP 592 allows that, with a warning) but because normal unpinned
+    resolution never selects a yanked release, so a user does not land on one and a break there
+    is not a real-user break.
     """
     url = f"https://pypi.org/pypi/{distribution}/{version_str}/json"
     try:

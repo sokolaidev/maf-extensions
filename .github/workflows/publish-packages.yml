@@ -285,8 +285,11 @@ jobs:
       # The build job ran the thorough all-versions check; this is the fast re-check that decides.
       # The `pypi` environment holds here for as long as a reviewer takes, and a dependent can ship
       # a breaking latest version in that window — the import verdict reached before the wait can
-      # go stale, so re-run it. Latest-only is enough here: old versions are immutable and were
-      # already tested at build time, so the only new risk is a newly published breaking latest.
+      # go stale, so re-run it. Latest-only is the fast re-check, not a complete re-run: old
+      # versions are immutable and were tested at build time, so the common new risk is a newly
+      # published breaking latest. Narrower races (a yanked version unyanked in the window, a newly
+      # uploaded non-latest version) are not caught here; re-running all versions is the cost the
+      # build/upload split exists to avoid.
       - name: Re-verify the published dependents import against this core
         if: >-
           needs.build.outputs.package == 'maf-sandbox'
