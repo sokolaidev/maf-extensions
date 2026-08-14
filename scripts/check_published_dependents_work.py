@@ -1,6 +1,7 @@
 """Refuse to publish a maf-sandbox the already-published dependents can no longer import.
 
-    python scripts/check_published_dependents_work.py <version> <core-wheel> [--latest-only]
+    python scripts/check_published_dependents_work.py <version> <core-wheel> \
+        [--emit-snapshot <path> | --since-snapshot <path>]
 
 The admit check (`check_published_dependents_admit.py`) asks only whether each dependent's
 ceiling permits the version going out; it never runs the dependent, so a core that removed a name
@@ -8,19 +9,19 @@ a dependent imports passes that check and ships. This is the missing half: insta
 core wheel alongside each published dependent that admits it and confirm the dependent still
 imports. A break is the signal — no changelog inference.
 
-By default every published version of each dependent whose ceiling admits the candidate is
-tested, not just the latest. A dependent's old releases sit on PyPI with the ceilings they
-shipped with, and an old version with a loose ceiling can admit a breaking core the latest has
-already moved off — exactly the case latest-only misses. ``--latest-only`` restricts the test to
-the latest version per dependent: the fast re-check used at upload time, with reduced coverage
-rather than a complete re-run. Old versions are immutable and were tested at build time, so the
-common new risk during the approval wait is a newly published latest; narrower races — a yanked
-version unyanked in the window, or a newly uploaded non-latest version — are not caught by it,
-and closing them means re-running every version at upload, which the build/upload split exists to
-avoid. A dependent whose ceiling excludes the version is the admit check's concern and is skipped
-here, and one not yet on PyPI is skipped too. A network failure is fatal rather than skipped:
-passing because PyPI could not be reached is the one outcome that would make this check
-worthless — the same stance as the admit check.
+Every published version of each dependent whose ceiling admits the candidate is tested, not just
+the latest. A dependent's old releases sit on PyPI with the ceilings they shipped with, and an old
+version with a loose ceiling can admit a breaking core the latest has already moved off. The build
+job runs this thorough pass and records the ``(distribution, version)`` pairs it tested with
+``--emit-snapshot``; the upload job loads that snapshot with ``--since-snapshot`` and re-tests only
+the versions admitting now that were not in it. A published wheel is immutable, so a version the
+build already tested imports the same at upload and needs no re-run; the only new risk in the
+approval window is a version that was not testable at build — one uploaded in the window, or a
+yanked version unyanked in it — and the diff catches exactly those. The common case, where nothing
+new appeared, installs nothing. A dependent whose ceiling excludes the version is the admit
+check's concern and is skipped here, and one not yet on PyPI is skipped too. A network failure is
+fatal rather than skipped: passing because PyPI could not be reached is the one outcome that would
+make this check worthless — the same stance as the admit check.
 """
 
 from __future__ import annotations
@@ -57,24 +58,6 @@ def _fetch_project(distribution: str) -> dict[str, Any] | None:
         if exc.code == 404:
             return None
         raise
-
-
-def fetch_latest(distribution: str) -> tuple[str, list[str]] | None:
-    """The latest published version and its ``requires_dist``, or None if never released.
-
-    One top-level fetch reuses the index's ``info`` block, which already carries the latest
-    version and its requirements. A yanked latest is skipped because a real user never lands on
-    one: normal unpinned resolution ignores yanked releases, so a break there is not a real-user
-    break. The ``==`` pin this script uses would still install a yanked release (PEP 592), so
-    skipping is what aligns the test with what users actually run.
-    """
-    payload = _fetch_project(distribution)
-    if payload is None:
-        return None
-    info = payload["info"]
-    if info.get("yanked"):
-        return None
-    return info["version"], list(info.get("requires_dist") or [])
 
 
 def fetch_requires_dist_for_version(
@@ -226,16 +209,6 @@ def install_and_import(
     return None
 
 
-def _latest_versions(
-    latest: tuple[str, list[str]] | None,
-) -> list[tuple[str, list[str]]] | None:
-    """The latest-only shape: one ``(version, requires_dist)`` pair, or None if unpublished."""
-    if latest is None:
-        return None
-    version_str, requires_dist = latest
-    return [(version_str, requires_dist)]
-
-
 def _all_versions(
     by_version: dict[str, list[str]] | None,
 ) -> list[tuple[str, list[str]]] | None:
@@ -245,50 +218,151 @@ def _all_versions(
     return list(by_version.items())
 
 
+def write_snapshot(path: Path, candidates: list[tuple[str, str]]) -> None:
+    """Record the ``(distribution, version)`` pairs build tested, as a JSON list of pairs.
+
+    ``candidates`` is already sorted by ``at_risk`` (distribution then version), so the file is
+    stable and diffable. The upload job reads it back with ``read_snapshot`` and re-tests only the
+    admitting versions not in it.
+    """
+    path.write_text(json.dumps([[d, v] for d, v in candidates]))
+
+
+def read_snapshot(path: Path) -> list[tuple[str, str]]:
+    """Load a snapshot written by ``write_snapshot``, as ``list[(distribution, version)]``.
+
+    A missing or malformed snapshot is fatal rather than treated as empty: an empty diff would let
+    a real new admitting version ship untested, so a snapshot that cannot be trusted fails closed.
+    Raises ``ValueError`` so ``main`` can print the reason and exit 1 without a bare ``SystemExit``
+    escaping the test harness.
+    """
+    try:
+        raw = json.loads(path.read_text())
+    except FileNotFoundError as exc:
+        raise ValueError(
+            f"snapshot not found at {path}: cannot diff without it"
+        ) from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"snapshot at {path} is not valid JSON: {exc}") from exc
+    if not isinstance(raw, list):
+        raise ValueError(
+            f"snapshot at {path} is not a list of [distribution, version] pairs"
+        )
+    pairs: list[tuple[str, str]] = []
+    for entry in raw:
+        if (
+            not isinstance(entry, list)
+            or len(entry) != 2
+            or not all(isinstance(part, str) for part in entry)
+        ):
+            raise ValueError(
+                f"snapshot at {path} is not a list of [distribution, version] pairs"
+            )
+        pairs.append((entry[0], entry[1]))
+    return pairs
+
+
+def newly_admitting(
+    current: list[tuple[str, str]], snapshot: list[tuple[str, str]]
+) -> list[tuple[str, str]]:
+    """The admitting versions in ``current`` that are not in ``snapshot``, in ``current``'s order.
+
+    ``current`` is what admits the candidate now; ``snapshot`` is what build tested. A version in
+    the snapshot but no longer in ``current`` (yanked again, or its ceiling now excluded — neither
+    moves) is ignored: it is not installable now, so it is not a risk to re-test.
+    """
+    seen = set(snapshot)
+    return [pair for pair in current if pair not in seen]
+
+
+def _usage(prog: str) -> int:
+    print(
+        f"usage: {prog} <version> <core-wheel> "
+        "[--emit-snapshot <path> | --since-snapshot <path>]",
+        file=sys.stderr,
+    )
+    return 2
+
+
 def main(argv: list[str]) -> int:
     args = list(argv[1:])
-    latest_only = False
-    if args and args[-1] == "--latest-only":
-        latest_only = True
-        args = args[:-1]
-    if len(args) != 2:
-        print(
-            f"usage: {argv[0]} <version> <core-wheel> [--latest-only]", file=sys.stderr
-        )
-        return 2
-    released = version(args[0])
-    core_wheel = Path(args[1])
+    positionals: list[str] = []
+    emit_snapshot: Path | None = None
+    since_snapshot: Path | None = None
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg == "--emit-snapshot":
+            i += 1
+            if i >= len(args):
+                return _usage(argv[0])
+            emit_snapshot = Path(args[i])
+        elif arg == "--since-snapshot":
+            i += 1
+            if i >= len(args):
+                return _usage(argv[0])
+            since_snapshot = Path(args[i])
+        else:
+            positionals.append(arg)
+        i += 1
+    if len(positionals) != 2 or (
+        emit_snapshot is not None and since_snapshot is not None
+    ):
+        return _usage(argv[0])
+    released = version(positionals[0])
+    core_wheel = Path(positionals[1])
     if not core_wheel.is_file():
         print(f"no core wheel at {core_wheel}", file=sys.stderr)
         return 1
     repo_root = Path(__file__).resolve().parent.parent
     distributions = dependent_distributions(repo_root)
-    if latest_only:
-        published = {
-            distribution: _latest_versions(fetch_latest(distribution))
-            for distribution in distributions
-        }
-    else:
-        published = {
-            distribution: _all_versions(fetch_version_requirements(distribution))
-            for distribution in distributions
-        }
+    published = {
+        distribution: _all_versions(fetch_version_requirements(distribution))
+        for distribution in distributions
+    }
     candidates = at_risk(published, released)
-    if not candidates:
-        print(f"no published dependent admits maf-sandbox {args[0]}; nothing to verify")
-        return 0
-    failures = breaks(core_wheel, candidates, install_and_import)
+
+    if since_snapshot is not None:
+        try:
+            snapshot = read_snapshot(since_snapshot)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        to_test = newly_admitting(candidates, snapshot)
+        if not to_test:
+            print(
+                f"no published dependent admits maf-sandbox {positionals[0]} "
+                "that was not already tested at build; nothing to re-verify"
+            )
+            return 0
+    else:
+        if emit_snapshot is not None:
+            write_snapshot(emit_snapshot, candidates)
+        to_test = candidates
+        if not to_test:
+            print(
+                f"no published dependent admits maf-sandbox {positionals[0]}; nothing to verify"
+            )
+            return 0
+
+    failures = breaks(core_wheel, to_test, install_and_import)
     if not failures:
-        names = ", ".join(f"{d}=={v}" for d, v in candidates)
-        print(
-            f"every published dependent that admits maf-sandbox {args[0]} imports against it "
-            f"({names})"
-        )
+        names = ", ".join(f"{d}=={v}" for d, v in to_test)
+        if since_snapshot is not None:
+            print(
+                f"every published dependent newly admitting maf-sandbox {positionals[0]} "
+                f"imports against it ({names})"
+            )
+        else:
+            print(
+                f"every published dependent that admits maf-sandbox {positionals[0]} "
+                f"imports against it ({names})"
+            )
         return 0
     for failure in failures:
         print(failure, file=sys.stderr)
     print(
-        f"\nPublishing maf-sandbox {args[0]} breaks the dependents above at import time. "
+        f"\nPublishing maf-sandbox {positionals[0]} breaks the dependents above at import time. "
         "Release a core that keeps them importing, or widen and re-release the dependents first: "
         "RELEASING.md, Release order.",
         file=sys.stderr,
