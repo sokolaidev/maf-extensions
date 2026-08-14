@@ -59,9 +59,7 @@ def assess(output: str, image: bytes | None) -> list[str]:
 
     disposed = _DISPOSED.search(output)
     if disposed is None:
-        failures.append(
-            "no 'Disposed N sandbox(es)' line — the sample did not run to completion"
-        )
+        failures.append("no 'Disposed N sandbox(es)' line — the sample did not run to completion")
     elif int(disposed.group(1)) < 1:
         failures.append(
             "'Disposed 0 sandbox(es)' — no sandbox was ever created, so the model answered "
@@ -93,6 +91,7 @@ def assess(output: str, image: bytes | None) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
+    """CLI entry: read the sample output and the landed image, run ``assess``, and print OK or FAIL."""
     if len(argv) != 3:
         print(f"usage: {argv[0]} <output-file> <landed-image-path>", file=sys.stderr)
         return 2

@@ -16,14 +16,8 @@ from pathlib import Path
 
 import pytest
 
-_SCRIPT = (
-    Path(__file__).resolve().parent.parent
-    / "scripts"
-    / "check_live_codeact_files_sample.py"
-)
-_spec = importlib.util.spec_from_file_location(
-    "check_live_codeact_files_sample", _SCRIPT
-)
+_SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "check_live_codeact_files_sample.py"
+_spec = importlib.util.spec_from_file_location("check_live_codeact_files_sample", _SCRIPT)
 assert _spec and _spec.loader
 check = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(check)
@@ -141,9 +135,7 @@ class TestASignBelongsToTheNumber:
             for reason in check.assess(_HEALTHY.replace("1124", signed), _SUMMARY)
         )
 
-    @pytest.mark.parametrize(
-        "signed", ["-390", "\u2212390"], ids=["hyphen-minus", "minus-sign"]
-    )
+    @pytest.mark.parametrize("signed", ["-390", "\u2212390"], ids=["hyphen-minus", "minus-sign"])
     def test_a_signed_region_total_fails(self, signed: str):
         negative = _SUMMARY.replace("| north | 390 |", f"| north | {signed} |")
         assert any("north" in reason for reason in check.assess(_HEALTHY, negative))
@@ -181,8 +173,7 @@ class TestNamesAreWholeWords:
         that never delivered it."""
         comma = _HEALTHY.replace('["summary.md"]', json.dumps(["notes, summary.md"]))
         assert any(
-            "did not reach the sink this turn" in reason
-            for reason in check.assess(comma, _SUMMARY)
+            "did not reach the sink this turn" in reason for reason in check.assess(comma, _SUMMARY)
         )
 
     def test_a_delivery_line_that_is_not_json_fails(self):
@@ -211,16 +202,12 @@ class TestATotalBelongsToItsOwnRegion:
     def test_a_region_named_without_its_total_says_so(self):
         partial = _SUMMARY.replace("| east | 84 |", "| east | (pending) |")
         assert any(
-            "names the east region but not its total" in r
-            for r in check.assess(_HEALTHY, partial)
+            "names the east region but not its total" in r for r in check.assess(_HEALTHY, partial)
         )
 
     def test_a_region_left_out_entirely_says_that_instead(self):
         missing = _SUMMARY.replace("| east | 84 |\n", "")
-        assert any(
-            "does not mention the east region" in r
-            for r in check.assess(_HEALTHY, missing)
-        )
+        assert any("does not mention the east region" in r for r in check.assess(_HEALTHY, missing))
 
 
 class TestTheRunThatAnsweredAndSavedNothing:
@@ -239,32 +226,21 @@ class TestTheRunThatAnsweredAndSavedNothing:
             'Delivered this turn into out/: ["summary.md"]',
             "Delivered this turn into out/: []",
         )
-        assert any(
-            "did not reach the sink this turn" in r
-            for r in check.assess(nothing, _SUMMARY)
-        )
+        assert any("did not reach the sink this turn" in r for r in check.assess(nothing, _SUMMARY))
 
     def test_a_run_that_never_reached_its_final_report_fails(self):
-        truncated = _HEALTHY.replace(
-            'Delivered this turn into out/: ["summary.md"]', ""
-        )
-        assert any(
-            "did not reach its final report" in r
-            for r in check.assess(truncated, _SUMMARY)
-        )
+        truncated = _HEALTHY.replace('Delivered this turn into out/: ["summary.md"]', "")
+        assert any("did not reach its final report" in r for r in check.assess(truncated, _SUMMARY))
 
 
 class TestTheRunThatNeverRanASandbox:
     def test_no_disposal_line_fails(self):
         without = _HEALTHY.replace("Disposed 1 sandbox(es).", "")
-        assert any(
-            "did not run to completion" in r for r in check.assess(without, _SUMMARY)
-        )
+        assert any("did not run to completion" in r for r in check.assess(without, _SUMMARY))
 
     def test_disposing_none_fails(self):
         """Answering without ever creating a sandbox is the T0 behaviour, not a pass."""
         none_disposed = _HEALTHY.replace("Disposed 1", "Disposed 0")
         assert any(
-            "no sandbox was ever created" in r
-            for r in check.assess(none_disposed, _SUMMARY)
+            "no sandbox was ever created" in r for r in check.assess(none_disposed, _SUMMARY)
         )

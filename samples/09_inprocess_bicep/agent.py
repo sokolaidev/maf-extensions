@@ -31,12 +31,12 @@ import os
 import sys
 from pathlib import Path
 
+from _scaffold import require_env_vars
 from agent_framework import Agent, InMemoryAgentFileStore
 from agent_framework.openai import OpenAIChatCompletionClient
 from maf_sandbox import Isolation, SandboxRouter
 from maf_sandbox.maf import list_all_files, make_caller_context
 from maf_sandbox_bicep import make_bicep_tools
-from _scaffold import require_env_vars
 from no_isolation_backend import NoIsolationBackend
 
 # Keyed by (scope, thread_id, agent_dir); constants here since this program serves one request.
@@ -66,9 +66,7 @@ async def run() -> int:
     # and the real bicep compiler a shell-out away. No container, no VM, no image.
     backend = NoIsolationBackend(
         seed_files={
-            BICEPCONFIG_FILE: (Path(__file__).parent / BICEPCONFIG_FILE).read_text(
-                encoding="utf-8"
-            )
+            BICEPCONFIG_FILE: (Path(__file__).parent / BICEPCONFIG_FILE).read_text(encoding="utf-8")
         }
     )
 
@@ -123,9 +121,7 @@ async def run() -> int:
             ),
             tools=tools,
         )
-        response = await agent.run(
-            f"Validate {BICEP_FILE} and list every diagnostic you get back."
-        )
+        response = await agent.run(f"Validate {BICEP_FILE} and list every diagnostic you get back.")
         print(response.text)
     finally:
         deleted = await router.dispose_scope(SCOPE, THREAD_ID)

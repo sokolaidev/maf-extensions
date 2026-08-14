@@ -22,9 +22,7 @@ from pathlib import Path
 import pytest
 
 _SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
-sys.path.insert(
-    0, str(_SCRIPTS)
-)  # the script imports its siblings for shared comparisons
+sys.path.insert(0, str(_SCRIPTS))  # the script imports its siblings for shared comparisons
 _spec = importlib.util.spec_from_file_location(
     "check_published_dependents_work", _SCRIPTS / "check_published_dependents_work.py"
 )
@@ -113,12 +111,8 @@ class TestAtRisk:
 
     def test_it_is_the_inverse_of_the_admit_check_refusals(self):
         published = {
-            "maf-sandbox-acas": [
-                ("0.5.0", ["maf-sandbox<0.7,>=0.6.0"])
-            ],  # excludes 0.11.0
-            "maf-sandbox-bicep": [
-                ("0.5.6", ["maf-sandbox<0.13,>=0.10.0"])
-            ],  # admits 0.11.0
+            "maf-sandbox-acas": [("0.5.0", ["maf-sandbox<0.7,>=0.6.0"])],  # excludes 0.11.0
+            "maf-sandbox-bicep": [("0.5.6", ["maf-sandbox<0.13,>=0.10.0"])],  # admits 0.11.0
             "maf-sandbox-docker": [("0.6.0", ["maf-sandbox>=0.6.0"])],  # unbounded
         }
         assert check.at_risk(published, (0, 11, 0)) == [
@@ -199,15 +193,11 @@ class TestFetchRequiresDistForVersion:
                 }
             },
         )
-        assert (
-            check.fetch_requires_dist_for_version("maf-sandbox-bicep", "0.2.0") is None
-        )
+        assert check.fetch_requires_dist_for_version("maf-sandbox-bicep", "0.2.0") is None
 
     def test_a_missing_version_is_skipped(self, monkeypatch):
         _patch_urlopen(monkeypatch, {"maf-sandbox-bicep/0.2.0/json": _http_error(404)})
-        assert (
-            check.fetch_requires_dist_for_version("maf-sandbox-bicep", "0.2.0") is None
-        )
+        assert check.fetch_requires_dist_for_version("maf-sandbox-bicep", "0.2.0") is None
 
     def test_a_non_404_error_is_fatal(self, monkeypatch):
         _patch_urlopen(monkeypatch, {"maf-sandbox-bicep/0.2.0/json": _http_error(500)})
@@ -218,9 +208,7 @@ class TestFetchRequiresDistForVersion:
 class TestFetchVersionRequirements:
     """``fetch_version_requirements`` reuses the latest from the top-level fetch and fills the rest."""
 
-    def test_the_latest_reuses_top_level_info_and_others_are_fetched_per_version(
-        self, monkeypatch
-    ):
+    def test_the_latest_reuses_top_level_info_and_others_are_fetched_per_version(self, monkeypatch):
         _patch_urlopen(
             monkeypatch,
             {
@@ -245,9 +233,7 @@ class TestFetchVersionRequirements:
             "0.2.0": ["maf-sandbox<0.12,>=0.10.0"],
         }
 
-    def test_a_yanked_latest_is_excluded_but_other_versions_still_returned(
-        self, monkeypatch
-    ):
+    def test_a_yanked_latest_is_excluded_but_other_versions_still_returned(self, monkeypatch):
         _patch_urlopen(
             monkeypatch,
             {
@@ -343,9 +329,7 @@ def _ok(_core_wheel: Path, _distribution: str, _version: str) -> str | None:
     return None
 
 
-def _breaks_docker_020(
-    _core_wheel: Path, distribution: str, version_str: str
-) -> str | None:
+def _breaks_docker_020(_core_wheel: Path, distribution: str, version_str: str) -> str | None:
     # Breaks only the old admitting version; any other (distribution, version) imports clean.
     if distribution == "maf-sandbox-docker" and version_str == "0.2.0":
         return "ImportError: cannot import name 'CallerContext' from 'maf_sandbox'"
@@ -409,9 +393,7 @@ class TestNewlyAdmitting:
         current = [("maf-sandbox-bicep", "0.5.6"), ("maf-sandbox-docker", "0.7.0")]
         snapshot = [("maf-sandbox-bicep", "0.5.6"), ("maf-sandbox-docker", "0.6.0")]
         # 0.7.0 is the newly uploaded non-latest admitting version — the race #284 closes.
-        assert check.newly_admitting(current, snapshot) == [
-            ("maf-sandbox-docker", "0.7.0")
-        ]
+        assert check.newly_admitting(current, snapshot) == [("maf-sandbox-docker", "0.7.0")]
 
     def test_a_version_gone_from_current_is_ignored(self):
         # A version build tested that is no longer admitting (yanked again, or excluded) is not a
@@ -508,12 +490,7 @@ class TestInstallAndImport:
             monkeypatch,
             [_CompletedProcess(0), _CompletedProcess(0), _CompletedProcess(0)],
         )
-        assert (
-            check.install_and_import(
-                tmp_path / "core.whl", "maf-sandbox-bicep", "0.5.6"
-            )
-            is None
-        )
+        assert check.install_and_import(tmp_path / "core.whl", "maf-sandbox-bicep", "0.5.6") is None
         assert len(calls) == 3
         assert calls[0][:2] == ["uv", "venv"]
         assert calls[1][:4] == ["uv", "pip", "install", "--python"]
@@ -526,21 +503,15 @@ class TestInstallAndImport:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ):
         self._patch(monkeypatch, [_CompletedProcess(1, stderr="uv: boom")])
-        error = check.install_and_import(
-            tmp_path / "core.whl", "maf-sandbox-bicep", "0.5.6"
-        )
+        error = check.install_and_import(tmp_path / "core.whl", "maf-sandbox-bicep", "0.5.6")
         assert error == "uv venv failed: uv: boom"
 
-    def test_an_install_failure_is_reported(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ):
+    def test_an_install_failure_is_reported(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         self._patch(
             monkeypatch,
             [_CompletedProcess(0), _CompletedProcess(1, stderr="No solution found")],
         )
-        error = check.install_and_import(
-            tmp_path / "core.whl", "maf-sandbox-bicep", "0.5.6"
-        )
+        error = check.install_and_import(tmp_path / "core.whl", "maf-sandbox-bicep", "0.5.6")
         assert error == "install failed: No solution found"
 
     def test_an_import_failure_reports_the_last_traceback_line(
@@ -559,9 +530,7 @@ class TestInstallAndImport:
                 _CompletedProcess(1, stderr=stderr),
             ],
         )
-        error = check.install_and_import(
-            tmp_path / "core.whl", "maf-sandbox-bicep", "0.5.6"
-        )
+        error = check.install_and_import(tmp_path / "core.whl", "maf-sandbox-bicep", "0.5.6")
         assert error == "ImportError: cannot import name 'CallerContext'"
 
     def test_an_import_failure_with_no_output_still_names_the_module(
@@ -571,9 +540,7 @@ class TestInstallAndImport:
             monkeypatch,
             [_CompletedProcess(0), _CompletedProcess(0), _CompletedProcess(1)],
         )
-        error = check.install_and_import(
-            tmp_path / "core.whl", "maf-sandbox-bicep", "0.5.6"
-        )
+        error = check.install_and_import(tmp_path / "core.whl", "maf-sandbox-bicep", "0.5.6")
         assert error == "import maf_sandbox_bicep failed"
 
 
@@ -610,12 +577,7 @@ class TestMain:
     def test_a_flag_without_its_path_argument_is_wrong(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ):
-        assert (
-            check.main(
-                [_ARGV0, "0.11.0", str(self._wheel(tmp_path)), "--emit-snapshot"]
-            )
-            == 2
-        )
+        assert check.main([_ARGV0, "0.11.0", str(self._wheel(tmp_path)), "--emit-snapshot"]) == 2
         assert "usage:" in capsys.readouterr().err
 
     def test_emit_and_since_snapshot_together_are_wrong(
@@ -638,9 +600,7 @@ class TestMain:
         )
         assert "usage:" in capsys.readouterr().err
 
-    def test_a_missing_core_wheel(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ):
+    def test_a_missing_core_wheel(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]):
         assert check.main([_ARGV0, "0.11.0", str(tmp_path / "no-such.whl")]) == 1
         assert "no core wheel" in capsys.readouterr().err
 
@@ -709,9 +669,7 @@ class TestMain:
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
     ):
-        monkeypatch.setattr(
-            check, "fetch_version_requirements", _fake_fetch_with_docker_020
-        )
+        monkeypatch.setattr(check, "fetch_version_requirements", _fake_fetch_with_docker_020)
         monkeypatch.setattr(check, "install_and_import", _ok)
         snap = tmp_path / "snap.json"
         assert (
@@ -738,9 +696,7 @@ class TestMain:
     ):
         # Build refuses on a break, but the snapshot of what it tested is still on disk — only
         # relevant if a later step reads it, and the workflow only uploads it on build success.
-        monkeypatch.setattr(
-            check, "fetch_version_requirements", _fake_fetch_with_docker_020
-        )
+        monkeypatch.setattr(check, "fetch_version_requirements", _fake_fetch_with_docker_020)
         monkeypatch.setattr(check, "install_and_import", _breaks_docker_020)
         snap = tmp_path / "snap.json"
         assert (
@@ -766,9 +722,7 @@ class TestMain:
     ):
         # The common case: the admitting set at upload matches what build tested, so the diff is
         # empty and install_and_import is never called.
-        monkeypatch.setattr(
-            check, "fetch_version_requirements", _fake_fetch_with_docker_020
-        )
+        monkeypatch.setattr(check, "fetch_version_requirements", _fake_fetch_with_docker_020)
 
         calls: list[tuple[str, str]] = []
 
@@ -848,9 +802,7 @@ class TestMain:
 
         monkeypatch.setattr(check, "fetch_version_requirements", fake_fetch)
 
-        def _breaks_070(
-            _wheel: Path, distribution: str, version_str: str
-        ) -> str | None:
+        def _breaks_070(_wheel: Path, distribution: str, version_str: str) -> str | None:
             if distribution == "maf-sandbox-docker" and version_str == "0.7.0":
                 return "ImportError: cannot import name 'CallerContext'"
             return None

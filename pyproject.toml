@@ -20,21 +20,25 @@ dev = [
 ]
 
 # Lint rules for the tree *outside* packages/* — samples/, tests/, scripts/, which belong to no
-# package. ruff resolves [tool.ruff] per file from the nearest ancestor that has one, so each
-# package still answers to its own section and nothing here reaches it; their self-containment is
-# what it was. Those 43 files previously answered to ruff's defaults — no `UP` — which is how a
-# quoted annotation in samples/07 outlived the same cleanup inside the packages.
+# package. ruff resolves [tool.ruff] per file from the nearest ancestor that has one, so this root
+# section reaches that tree while each package still answers to its own; their self-containment is
+# what it was. Without it these files would fall back to ruff's defaults — the gap #274 closed.
 #
-# `UP` and nothing more, deliberately. No `line-length`: this tree passes `ruff format --check`
-# at ruff's default width only because nothing sets one here, and moving it to the packages' 100
-# reformats 27 files — a diff worth reviewing on its own rather than inside a change about
-# quotes. `I` (13 findings) and the `D` docstring rules (43, none of them in samples/) are the
-# same kind of question. #292 carries the measurements and the proposal.
+# The rules mirror every package's: `I`, `UP`, and the `D100`/`D101`/`D103`/`D104` docstring rules,
+# at `line-length = 100`. `tests/**` is ignored for `D101`/`D103` for the same reason each package
+# ignores its own tests — the repo's `tests/` is repository-level wiring, no different in kind
+# from a package's, not API surface. #292 carries the decision and the measurements behind it.
 [tool.ruff]
+line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
-extend-select = ["UP"]
+extend-select = ["I", "UP", "D100", "D101", "D103", "D104"]
+
+# Mirrors each package's own `tests/**` ignore: the repo-level tests/ is wiring, not API surface,
+# so ruff resolves it from this root section the same way a package's tests resolve from its own.
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D101", "D103"]
 
 # Repo-level pyright for the code the per-package strict configs do not cover: scripts/ and the
 # test trees. Package src/ stays on its own per-package strict config (uv run pyright -p

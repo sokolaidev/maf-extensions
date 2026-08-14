@@ -45,9 +45,11 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from _scaffold import require_env_vars
 from agent_framework import Agent
 from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
+from diagram_kind import make_diagram_tools
 from maf_sandbox import (
     Isolation,
     SandboxRouter,
@@ -58,8 +60,6 @@ from maf_sandbox.maf import (
     make_caller_context,
 )
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
-from _scaffold import require_env_vars
-from diagram_kind import make_diagram_tools
 
 if TYPE_CHECKING:
     pass

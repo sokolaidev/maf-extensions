@@ -60,9 +60,7 @@ def _fetch_project(distribution: str) -> dict[str, Any] | None:
         raise
 
 
-def fetch_requires_dist_for_version(
-    distribution: str, version_str: str
-) -> list[str] | None:
+def fetch_requires_dist_for_version(distribution: str, version_str: str) -> list[str] | None:
     """One version's ``requires_dist``, or None if that version is gone or yanked.
 
     The top-level index JSON carries ``requires_dist`` only for the latest version; every other
@@ -125,9 +123,7 @@ def at_risk(
     for distribution, versions in sorted(published.items()):
         if versions is None:
             continue
-        for version_str, requires_dist in sorted(
-            versions, key=lambda vr: version(vr[0])
-        ):
+        for version_str, requires_dist in sorted(versions, key=lambda vr: version(vr[0])):
             ceiling = ceiling_of(requires_dist)
             if ceiling is None or admits(released, ceiling):
                 found.append((distribution, version_str))
@@ -164,9 +160,7 @@ def _venv_python(venv: Path) -> Path:
     return venv / "bin" / "python"
 
 
-def install_and_import(
-    core_wheel: Path, distribution: str, version_str: str
-) -> str | None:
+def install_and_import(core_wheel: Path, distribution: str, version_str: str) -> str | None:
     """Install the core wheel and the pinned dependent into a throwaway venv, then import it.
 
     The local wheel is what gets imported: it and the dependent are resolved in one
@@ -180,9 +174,7 @@ def install_and_import(
     with tempfile.TemporaryDirectory() as root:
         venv = Path(root) / "venv"
         python = _venv_python(venv)
-        create = subprocess.run(
-            ["uv", "venv", str(venv)], capture_output=True, text=True
-        )
+        create = subprocess.run(["uv", "venv", str(venv)], capture_output=True, text=True)
         if create.returncode != 0:
             return f"uv venv failed: {create.stderr.strip() or create.stdout.strip()}"
         install = subprocess.run(
@@ -239,15 +231,11 @@ def read_snapshot(path: Path) -> list[tuple[str, str]]:
     try:
         raw = json.loads(path.read_text())
     except FileNotFoundError as exc:
-        raise ValueError(
-            f"snapshot not found at {path}: cannot diff without it"
-        ) from exc
+        raise ValueError(f"snapshot not found at {path}: cannot diff without it") from exc
     except json.JSONDecodeError as exc:
         raise ValueError(f"snapshot at {path} is not valid JSON: {exc}") from exc
     if not isinstance(raw, list):
-        raise ValueError(
-            f"snapshot at {path} is not a list of [distribution, version] pairs"
-        )
+        raise ValueError(f"snapshot at {path} is not a list of [distribution, version] pairs")
     pairs: list[tuple[str, str]] = []
     for entry in raw:
         if (
@@ -255,9 +243,7 @@ def read_snapshot(path: Path) -> list[tuple[str, str]]:
             or len(entry) != 2
             or not all(isinstance(part, str) for part in entry)
         ):
-            raise ValueError(
-                f"snapshot at {path} is not a list of [distribution, version] pairs"
-            )
+            raise ValueError(f"snapshot at {path} is not a list of [distribution, version] pairs")
         pairs.append((entry[0], entry[1]))
     return pairs
 
@@ -277,14 +263,14 @@ def newly_admitting(
 
 def _usage(prog: str) -> int:
     print(
-        f"usage: {prog} <version> <core-wheel> "
-        "[--emit-snapshot <path> | --since-snapshot <path>]",
+        f"usage: {prog} <version> <core-wheel> [--emit-snapshot <path> | --since-snapshot <path>]",
         file=sys.stderr,
     )
     return 2
 
 
 def main(argv: list[str]) -> int:
+    """CLI entry: build the at-risk candidate set, install and import each against the candidate core wheel, and print OK or FAIL (with optional snapshot diffing)."""
     args = list(argv[1:])
     positionals: list[str] = []
     emit_snapshot: Path | None = None
@@ -305,9 +291,7 @@ def main(argv: list[str]) -> int:
         else:
             positionals.append(arg)
         i += 1
-    if len(positionals) != 2 or (
-        emit_snapshot is not None and since_snapshot is not None
-    ):
+    if len(positionals) != 2 or (emit_snapshot is not None and since_snapshot is not None):
         return _usage(argv[0])
     released = version(positionals[0])
     core_wheel = Path(positionals[1])
@@ -340,9 +324,7 @@ def main(argv: list[str]) -> int:
             write_snapshot(emit_snapshot, candidates)
         to_test = candidates
         if not to_test:
-            print(
-                f"no published dependent admits maf-sandbox {positionals[0]}; nothing to verify"
-            )
+            print(f"no published dependent admits maf-sandbox {positionals[0]}; nothing to verify")
             return 0
 
     failures = breaks(core_wheel, to_test, install_and_import)

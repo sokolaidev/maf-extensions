@@ -41,9 +41,7 @@ class TestHealthyRun:
 
     def test_the_day_count_and_version_are_not_matched(self):
         """Changing the drifting parts must not change the verdict."""
-        drifted = _HEALTHY.replace("1287 days", "3650 days").replace(
-            "2023-01-01", "2019-04-01"
-        )
+        drifted = _HEALTHY.replace("1287 days", "3650 days").replace("2023-01-01", "2019-04-01")
         assert check.assess(drifted) == []
 
 
@@ -55,8 +53,7 @@ class TestABrokenStackFails:
             _HEALTHY.replace("Disposed 1 sandbox(es).", "Disposed 0 sandbox(es).")
         )
         assert any(
-            "no sandbox was ever created" in r.lower() or "0 sandbox" in r
-            for r in reasons
+            "no sandbox was ever created" in r.lower() or "0 sandbox" in r for r in reasons
         ), reasons
 
     def test_missing_diagnostics_fail_by_name(self):
@@ -80,16 +77,12 @@ class TestABrokenStackFails:
     def test_a_warning_alone_does_not_satisfy_the_severity_check(self):
         # It keys on `error`, not on any severity word, so a run that rendered only a warning
         # still fails — which is what keeps the check off the drift-prone `use-recent` warning.
-        reasons = check.assess(
-            "[warning] BCP035 and no-unused-params\nDisposed 1 sandbox(es).\n"
-        )
+        reasons = check.assess("[warning] BCP035 and no-unused-params\nDisposed 1 sandbox(es).\n")
         assert any("error" in r.lower() for r in reasons), reasons
 
     def test_an_incomplete_run_has_no_disposed_line(self):
         reasons = check.assess("[error] no-unused-params\n[warning] BCP035\n")
-        assert any("Disposed" in r or "run to completion" in r for r in reasons), (
-            reasons
-        )
+        assert any("Disposed" in r or "run to completion" in r for r in reasons), reasons
 
     def test_empty_output_fails_rather_than_passing_vacuously(self):
         assert check.assess("") != []

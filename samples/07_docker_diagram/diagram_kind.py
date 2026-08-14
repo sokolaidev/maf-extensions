@@ -21,8 +21,8 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from maf_sandbox import (
-    Capability,
     CallerContext,
+    Capability,
     DeclaredOutput,
     OutputSink,
     SandboxRouter,
@@ -85,9 +85,7 @@ def diagram_sandbox_spec(image: str | None = None) -> SandboxSpec:
         image=image,
         egress_allow=(),
         work_dir=_WORK_DIR,
-        requires=frozenset(
-            {Capability.EXEC, Capability.FILES_IN, Capability.FILES_OUT}
-        ),
+        requires=frozenset({Capability.EXEC, Capability.FILES_IN, Capability.FILES_OUT}),
         declared_outputs=(
             DeclaredOutput(
                 path=_OUTPUT_FILENAME,
@@ -232,9 +230,7 @@ def _render_diagram_tool(
                 # source. The declared output is required=False, so an absent file here is not a
                 # transfer error.
                 logger.info("render_diagram: dot exited %d", result.exit_code)
-                return _render_failed(
-                    result.exit_code, (result.stderr or "").rstrip("\n")
-                )
+                return _render_failed(result.exit_code, (result.stderr or "").rstrip("\n"))
 
             try:
                 landed = await collect_outputs(sandbox, session.spec, sink=sink)
@@ -262,6 +258,4 @@ def _render_failed(exit_code: int, stderr: str) -> str:
     """
     if stderr:
         return f"dot could not render the diagram (exit {exit_code}):\n{stderr}"
-    return (
-        f"dot could not render the diagram (exit {exit_code}) and wrote no diagnostic."
-    )
+    return f"dot could not render the diagram (exit {exit_code}) and wrote no diagnostic."

@@ -24,7 +24,6 @@ import tempfile
 from pathlib import Path
 
 import pytest
-
 from maf_sandbox import Egress, Isolation, SandboxKey, SandboxSpec
 
 _SAMPLE = Path(__file__).resolve().parent.parent / "samples" / "09_inprocess_bicep"
@@ -32,7 +31,9 @@ sys.path.insert(0, str(_SAMPLE))
 
 from no_isolation_backend import NoIsolationBackend, NoIsolationSandbox  # noqa: E402
 
-_GUEST_WORK_DIR = "/maf-sandbox/work"  # the bicep kind's constant — a path that is not real on the host
+_GUEST_WORK_DIR = (
+    "/maf-sandbox/work"  # the bicep kind's constant — a path that is not real on the host
+)
 
 
 def _key(agent_dir: str = "devops-engineer") -> SandboxKey:
@@ -60,9 +61,7 @@ def test_write_file_places_content_under_the_host_root():
     async def body() -> None:
         backend, sandbox = await _fresh()
         try:
-            await sandbox.write_file(
-                f"{_GUEST_WORK_DIR}/main.bicep", "param location string"
-            )
+            await sandbox.write_file(f"{_GUEST_WORK_DIR}/main.bicep", "param location string")
             host_file = sandbox._host_root / "main.bicep"  # noqa: SLF001
             assert host_file.read_text(encoding="utf-8") == "param location string"
         finally:
@@ -169,9 +168,7 @@ def test_exec_does_not_block_the_event_loop():
             await asyncio.sleep(0.05)  # needs the loop; blocked if exec holds it
             elapsed = loop.time() - t0
             await exec_task
-            assert elapsed < 0.3, (
-                f"event loop was blocked for {elapsed:.2f}s during exec"
-            )
+            assert elapsed < 0.3, f"event loop was blocked for {elapsed:.2f}s during exec"
         finally:
             await _drop(backend)
 
@@ -209,9 +206,7 @@ def test_pull_surface_is_not_implemented():
         backend, sandbox = await _fresh()
         try:
             with pytest.raises(NotImplementedError):
-                await sandbox.stat_file(
-                    f"{_GUEST_WORK_DIR}/x", working_directory=_GUEST_WORK_DIR
-                )
+                await sandbox.stat_file(f"{_GUEST_WORK_DIR}/x", working_directory=_GUEST_WORK_DIR)
             with pytest.raises(NotImplementedError):
                 await sandbox.read_file(
                     f"{_GUEST_WORK_DIR}/x",
@@ -219,9 +214,7 @@ def test_pull_surface_is_not_implemented():
                     max_bytes=1,
                 )
             with pytest.raises(NotImplementedError):
-                await sandbox.list_dir(
-                    f"{_GUEST_WORK_DIR}/x", working_directory=_GUEST_WORK_DIR
-                )
+                await sandbox.list_dir(f"{_GUEST_WORK_DIR}/x", working_directory=_GUEST_WORK_DIR)
         finally:
             await _drop(backend)
 
@@ -238,9 +231,7 @@ def test_acquire_is_get_or_create_keyed_by_scope_thread_kind():
             same_again = await backend.acquire(_key(), _spec(kind="bicep"))
             assert same is same_again
 
-            other_agent = await backend.acquire(
-                _key(agent_dir="other"), _spec(kind="bicep")
-            )
+            other_agent = await backend.acquire(_key(agent_dir="other"), _spec(kind="bicep"))
             assert other_agent is not same
 
             other_kind = await backend.acquire(_key(), _spec(kind="diagram"))

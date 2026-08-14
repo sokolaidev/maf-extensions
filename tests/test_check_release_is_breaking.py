@@ -83,9 +83,7 @@ class TestTheReleasesThisRepositoryHasActuallyMade:
                 check.is_breaking(check.section(text, release) or "")
                 for release in _VERSION_HEADING.findall(text)
             )
-            assert breaking == headings, (
-                f"{path.name}: {breaking} sections, {headings} headings"
-            )
+            assert breaking == headings, f"{path.name}: {breaking} sections, {headings} headings"
             total_headings += headings
             total_breaking += breaking
         assert total_breaking == total_headings > 0
@@ -94,9 +92,7 @@ class TestTheReleasesThisRepositoryHasActuallyMade:
 class TestWhenItCannotAnswer:
     """Loud, and never `breaking=false`."""
 
-    def test_a_version_that_is_not_in_the_changelog(
-        self, capsys: pytest.CaptureFixture[str]
-    ):
+    def test_a_version_that_is_not_in_the_changelog(self, capsys: pytest.CaptureFixture[str]):
         assert check.main([_ARGV0, "maf-sandbox", "99.0.0"]) == 1
         captured = capsys.readouterr()
         assert "no section for 99.0.0" in captured.err
@@ -108,9 +104,7 @@ class TestWhenItCannotAnswer:
         assert "no changelog at" in captured.err
         assert "breaking=" not in captured.out
 
-    @pytest.mark.parametrize(
-        "argv", [[_ARGV0], [_ARGV0, "maf-sandbox"], [_ARGV0, "a", "b", "c"]]
-    )
+    @pytest.mark.parametrize("argv", [[_ARGV0], [_ARGV0, "maf-sandbox"], [_ARGV0, "a", "b", "c"]])
     def test_the_wrong_number_of_arguments(
         self, argv: list[str], capsys: pytest.CaptureFixture[str]
     ):

@@ -35,6 +35,7 @@ import asyncio
 import sys
 from pathlib import Path
 
+from _scaffold import require_env_vars
 from agent_framework import Agent, InMemoryAgentFileStore
 from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
@@ -42,7 +43,6 @@ from maf_sandbox import SandboxRouter
 from maf_sandbox.maf import list_all_files, make_caller_context
 from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
 from maf_sandbox_bicep import make_bicep_tools
-from _scaffold import require_env_vars
 
 # A sandbox is keyed by (scope, thread_id, agent_dir).  A host reads the first two
 # from its own request context — a user/tenant and a conversation.  This program
@@ -149,9 +149,7 @@ async def run() -> int:
             ),
             tools=tools,
         )
-        response = await agent.run(
-            f"Validate {BICEP_FILE} and list every diagnostic you get back."
-        )
+        response = await agent.run(f"Validate {BICEP_FILE} and list every diagnostic you get back.")
         print(response.text)
     finally:
         # Delete the sandbox rather than leaving it to the lifecycle timers.

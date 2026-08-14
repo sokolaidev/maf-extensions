@@ -63,9 +63,7 @@ class TestTheHostApplicationIsNeverNamed:
 
     def test_no_tracked_file_names_it(self):
         hits = [
-            f"{name}:{number}"
-            for name, number, line in tracked_lines()
-            if names_the_host(line)
+            f"{name}:{number}" for name, number, line in tracked_lines() if names_the_host(line)
         ]
         assert not hits, f"the host repository is named at: {', '.join(hits)}"
 
@@ -97,9 +95,7 @@ class TestTheGuardItselfWorks:
         assert not names_the_host(f"{THIS_REPO} is fine")
 
     def test_a_link_to_another_repository_is_flagged(self):
-        assert foreign_repos(f"https://github.com/{OWNER}/somewhere/issues/1") == [
-            "somewhere"
-        ]
+        assert foreign_repos(f"https://github.com/{OWNER}/somewhere/issues/1") == ["somewhere"]
 
     def test_a_link_to_this_repository_is_not(self):
         assert foreign_repos(f"https://github.com/{OWNER}/{THIS_REPO}/issues/1") == []

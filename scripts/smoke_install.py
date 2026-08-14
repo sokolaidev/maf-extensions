@@ -60,9 +60,7 @@ def _check_typing_marker(module) -> None:
     """`py.typed` is invisible to every test in this repository and breaks consumers."""
     marker = pathlib.Path(module.__file__).parent / "py.typed"
     if not marker.is_file():
-        raise SystemExit(
-            f"FAIL: {module.__name__} installed without py.typed at {marker}"
-        )
+        raise SystemExit(f"FAIL: {module.__name__} installed without py.typed at {marker}")
 
 
 def _smoke_maf_sandbox() -> str:
@@ -114,7 +112,7 @@ def _smoke_maf_sandbox_acas() -> str:
 
 
 def _smoke_maf_sandbox_bicep() -> str:
-    from maf_sandbox import Isolation, SandboxRouter, CallerContext
+    from maf_sandbox import CallerContext, Isolation, SandboxRouter
     from maf_sandbox.testing import (
         InMemoryStore,
         InProcessSandbox,
@@ -137,20 +135,13 @@ def _smoke_maf_sandbox_bicep() -> str:
             context,
             image="registry.invalid/bicep:1",
         )
-        if (
-            len(tools) != 1
-            or getattr(tools[0], "name", None) != BICEP_VALIDATE_TOOL_NAME
-        ):
-            raise SystemExit(
-                f"FAIL: expected one {BICEP_VALIDATE_TOOL_NAME} tool, got {tools}"
-            )
+        if len(tools) != 1 or getattr(tools[0], "name", None) != BICEP_VALIDATE_TOOL_NAME:
+            raise SystemExit(f"FAIL: expected one {BICEP_VALIDATE_TOOL_NAME} tool, got {tools}")
         tool = tools[0]
         return getattr(tool, "func", None) or getattr(tool, "__wrapped__", None) or tool
 
     # The happy path: the file reaches the sandbox, both phases run, diagnostics render.
-    store = InMemoryStore(
-        {"main.bicep": "param location string = resourceGroup().location"}
-    )
+    store = InMemoryStore({"main.bicep": "param location string = resourceGroup().location"})
     backend = InProcessSandboxBackend(
         InProcessSandbox(outputs={"bicep build": _SARIF}, default_stdout=_EMPTY_SARIF)
     )
@@ -160,18 +151,14 @@ def _smoke_maf_sandbox_bicep() -> str:
     if not backend.sandbox.files:
         raise SystemExit("FAIL: the workload never wrote the file into the sandbox")
     if len(backend.keys) != 1:
-        raise SystemExit(
-            f"FAIL: the happy path acquired {len(backend.keys)} sandbox(es), not 1"
-        )
+        raise SystemExit(f"FAIL: the happy path acquired {len(backend.keys)} sandbox(es), not 1")
 
     # The failure paths (#22, #33): the message an agent receives is the whole product here,
     # and both return before a sandbox is acquired — the free half of "verify the published
     # package" that a workspace test cannot make, because in the workspace the wheel resolves
     # whether or not its build included these modules.
     miss_store = InMemoryStore({"main.bicep": "x"})
-    miss_backend = InProcessSandboxBackend(
-        InProcessSandbox(default_stdout=_EMPTY_SARIF)
-    )
+    miss_backend = InProcessSandboxBackend(InProcessSandbox(default_stdout=_EMPTY_SARIF))
     miss = asyncio.run(_bicep_tool(miss_store, miss_backend)(files=["absent.bicep"]))
     if "not in this tool's file listing" not in miss:
         raise SystemExit(f"FAIL: a listing miss did not say so: {miss!r}")
@@ -182,9 +169,7 @@ def _smoke_maf_sandbox_bicep() -> str:
     # safe to interpolate into a shell command.
     hostile = "a;$(id).bicep"
     unsafe_store = InMemoryStore({hostile: "x"})
-    unsafe_backend = InProcessSandboxBackend(
-        InProcessSandbox(default_stdout=_EMPTY_SARIF)
-    )
+    unsafe_backend = InProcessSandboxBackend(InProcessSandbox(default_stdout=_EMPTY_SARIF))
     unsafe = asyncio.run(_bicep_tool(unsafe_store, unsafe_backend)(files=[hostile]))
     if "[A-Za-z0-9._/-]" not in unsafe:
         raise SystemExit(f"FAIL: an unsafe name was not named as such: {unsafe!r}")
@@ -202,13 +187,13 @@ def _smoke_maf_sandbox_bicep() -> str:
 def _smoke_maf_sandbox_codeact() -> str:
     from maf_sandbox import (
         DEFAULT_CAPABILITIES,
+        CallerContext,
         Capability,
         Isolation,
         LandedArtifact,
         OutputSink,
         SandboxCapabilityNotSupported,
         SandboxRouter,
-        CallerContext,
     )
     from maf_sandbox.testing import (
         InMemoryStore,
@@ -237,9 +222,7 @@ def _smoke_maf_sandbox_codeact() -> str:
 
     def _body(tools):
         if len(tools) != 1 or getattr(tools[0], "name", None) != EXECUTE_CODE_TOOL_NAME:
-            raise SystemExit(
-                f"FAIL: expected one {EXECUTE_CODE_TOOL_NAME} tool, got {tools}"
-            )
+            raise SystemExit(f"FAIL: expected one {EXECUTE_CODE_TOOL_NAME} tool, got {tools}")
         tool = tools[0]
         return getattr(tool, "func", None) or getattr(tool, "__wrapped__", None) or tool
 
@@ -256,9 +239,7 @@ def _smoke_maf_sandbox_codeact() -> str:
     # Each call gets a directory of its own under the work dir, so the path is not fixed.
     written = list(backend.sandbox.files.items())
     if len(written) != 1 or not written[0][0].startswith("/maf-sandbox/work/"):
-        raise SystemExit(
-            f"FAIL: the program never reached the sandbox: {backend.sandbox.files}"
-        )
+        raise SystemExit(f"FAIL: the program never reached the sandbox: {backend.sandbox.files}")
     program_path, source = written[0]
     if not program_path.endswith("/program.py") or source != "print(3 + 4)":
         raise SystemExit(f"FAIL: the program landed at {program_path!r} as {source!r}")
@@ -280,9 +261,7 @@ def _smoke_maf_sandbox_codeact() -> str:
     )
     asyncio.run(with_files(code="print(1)", files=["data.csv"]))
     if not any(path.endswith("/data.csv") for path in shared.sandbox.files):
-        raise SystemExit(
-            f"FAIL: the listed file was not shared: {shared.sandbox.files}"
-        )
+        raise SystemExit(f"FAIL: the listed file was not shared: {shared.sandbox.files}")
     refused = asyncio.run(with_files(code="print(1)", files=["absent.csv"]))
     if "not in this tool's file listing" not in refused:
         raise SystemExit(f"FAIL: an unlisted file was not refused: {refused!r}")
@@ -319,9 +298,7 @@ def _smoke_maf_sandbox_codeact() -> str:
     )
     saved = asyncio.run(with_outputs(code="print(1)", outputs=["report.csv"]))
     if landed != ["report.csv"] or "saved report.csv" not in saved:
-        raise SystemExit(
-            f"FAIL: the declared output did not land: {landed} / {saved!r}"
-        )
+        raise SystemExit(f"FAIL: the declared output did not land: {landed} / {saved!r}")
 
     # The spec's `requires` has to travel in the wheel: a backend that cannot run a command
     # is refused as the tool attaches, not when the model first calls it.
@@ -331,9 +308,7 @@ def _smoke_maf_sandbox_codeact() -> str:
     except SandboxCapabilityNotSupported:
         pass
     else:
-        raise SystemExit(
-            "FAIL: a backend that cannot exec was allowed to serve execute_code"
-        )
+        raise SystemExit("FAIL: a backend that cannot exec was allowed to serve execute_code")
 
     return (
         "execute_code wrote the program into a directory of its own and ran the interpreter "
@@ -353,18 +328,14 @@ def _smoke_maf_sandbox_wslc() -> str:
     # Constructed, not called: CI runners have no `wslc`, and reaching it would not test packaging.
     backend = WslcSandboxBackend(WslcSandboxConfig())
     if backend.isolation != Isolation.CONTAINER:
-        raise SystemExit(
-            f"FAIL: wslc backend declares {backend.isolation!r}, expected container"
-        )
+        raise SystemExit(f"FAIL: wslc backend declares {backend.isolation!r}, expected container")
     allowlisting = WslcSandboxBackend(WslcSandboxConfig(egress_proxy_image="x:1"))
     if backend.egress != Egress.CLOSED or allowlisting.egress != Egress.ALLOWLIST:
         raise SystemExit(f"FAIL: egress {backend.egress!r}/{allowlisting.egress!r}")
     # The proxy recipe is data, not code: a wheel that drops it breaks allowlist mode only here.
     dockerfile = proxy_build_context() / "Dockerfile"
     if not dockerfile.is_file():
-        raise SystemExit(
-            f"FAIL: the proxy build context is missing its Dockerfile ({dockerfile})"
-        )
+        raise SystemExit(f"FAIL: the proxy build context is missing its Dockerfile ({dockerfile})")
     return "backend constructs, declares its egress, and ships the proxy recipe"
 
 
@@ -380,24 +351,18 @@ def _smoke_maf_sandbox_docker() -> str:
     # venv, and reaching one would not test packaging.
     backend = DockerSandboxBackend(DockerSandboxConfig())
     if backend.isolation != Isolation.CONTAINER:
-        raise SystemExit(
-            f"FAIL: docker backend declares {backend.isolation!r}, expected container"
-        )
+        raise SystemExit(f"FAIL: docker backend declares {backend.isolation!r}, expected container")
     if backend.capabilities != frozenset(
         {Capability.EXEC, Capability.FILES_IN, Capability.FILES_OUT}
     ):
-        raise SystemExit(
-            f"FAIL: docker backend declares {sorted(backend.capabilities)!r}"
-        )
+        raise SystemExit(f"FAIL: docker backend declares {sorted(backend.capabilities)!r}")
     allowlisting = DockerSandboxBackend(DockerSandboxConfig(egress_proxy_image="x:1"))
     if backend.egress != Egress.CLOSED or allowlisting.egress != Egress.ALLOWLIST:
         raise SystemExit(f"FAIL: egress {backend.egress!r}/{allowlisting.egress!r}")
     # The proxy recipe is data, not code: a wheel that drops it breaks allowlist mode only here.
     dockerfile = proxy_build_context() / "Dockerfile"
     if not dockerfile.is_file():
-        raise SystemExit(
-            f"FAIL: the proxy build context is missing its Dockerfile ({dockerfile})"
-        )
+        raise SystemExit(f"FAIL: the proxy build context is missing its Dockerfile ({dockerfile})")
     return "backend constructs, declares FILES_OUT and its egress, and ships the proxy recipe"
 
 
@@ -412,6 +377,7 @@ _SMOKES = {
 
 
 def main(argv: list[str]) -> int:
+    """CLI entry: import the named distribution, assert it resolved under ``site-packages``, check ``py.typed``, run the per-package smoke, and print SMOKE OK."""
     if len(argv) != 2 or argv[1] not in _PACKAGES:
         print(f"usage: {argv[0]} <{'|'.join(_PACKAGES)}>", file=sys.stderr)
         return 2
@@ -424,9 +390,7 @@ def main(argv: list[str]) -> int:
     # nothing about the artifact.
     location = pathlib.Path(module.__file__).resolve()
     if "site-packages" not in location.parts:
-        raise SystemExit(
-            f"FAIL: {module_name} imported from {location}, not an installation"
-        )
+        raise SystemExit(f"FAIL: {module_name} imported from {location}, not an installation")
 
     _check_typing_marker(module)
     detail = _SMOKES[name]()

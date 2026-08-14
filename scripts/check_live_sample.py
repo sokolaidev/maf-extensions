@@ -56,9 +56,7 @@ def assess(output: str) -> list[str]:
 
     disposed = _DISPOSED.search(output)
     if disposed is None:
-        failures.append(
-            "no 'Disposed N sandbox(es)' line — the sample did not run to completion"
-        )
+        failures.append("no 'Disposed N sandbox(es)' line — the sample did not run to completion")
     elif int(disposed.group(1)) < 1:
         failures.append(
             "'Disposed 0 sandbox(es)' — no sandbox was ever created, so nothing was validated in one"
@@ -68,10 +66,9 @@ def assess(output: str) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
+    """CLI entry: read the sample output from a file or stdin, run ``assess``, and print OK or FAIL."""
     if len(argv) > 2:
-        print(
-            f"usage: {argv[0]} [output-file]  (reads stdin if omitted)", file=sys.stderr
-        )
+        print(f"usage: {argv[0]} [output-file]  (reads stdin if omitted)", file=sys.stderr)
         return 2
     output = (
         sys.stdin.read()
@@ -88,9 +85,7 @@ def main(argv: list[str]) -> int:
         for reason in failures:
             print(f"  - {reason}", file=sys.stderr)
         return 1
-    print(
-        "OK  sample 01 validated main.bicep against the published wheels and a live sandbox"
-    )
+    print("OK  sample 01 validated main.bicep against the published wheels and a live sandbox")
     return 0
 
 
