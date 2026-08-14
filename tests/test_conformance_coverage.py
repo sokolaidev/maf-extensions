@@ -45,19 +45,37 @@ def _capability_members(node: ast.AST) -> frozenset[str]:
 
 
 def _module_constants(tree: ast.Module) -> dict[str, ast.expr]:
-    constants: dict[str, ast.expr] = {}
-    for node in tree.body:
+    """Module names bound exactly once, unconditionally, at the top level.
+
+    A name written more than once is not a constant and is dropped rather than resolved to
+    whichever write this happened to see last — ``_CAPABILITIES = DEFAULT_CAPABILITIES``
+    followed by a rebinding under an ``if`` is a runtime declaration wearing a constant's
+    clothes, and reading the first half of it is how a backend declares ``FILES_OUT`` while
+    this file records the default.
+    """
+    written: dict[str, list[ast.expr | None]] = {}
+
+    def note(target: ast.expr, value: ast.expr | None, top_level: bool) -> None:
+        if isinstance(target, ast.Name):
+            written.setdefault(target.id, []).append(value if top_level else None)
+
+    for node in ast.walk(tree):
+        top_level = node in tree.body
         if isinstance(node, ast.Assign):
             for target in node.targets:
-                if isinstance(target, ast.Name):
-                    constants[target.id] = node.value
-        elif (
-            isinstance(node, ast.AnnAssign)
-            and isinstance(node.target, ast.Name)
-            and node.value
-        ):
-            constants[node.target.id] = node.value
-    return constants
+                note(target, node.value, top_level)
+        elif isinstance(node, ast.AnnAssign) and node.value:
+            note(node.target, node.value, top_level)
+        elif isinstance(node, ast.AugAssign | ast.NamedExpr):
+            # An augmented or walrus write says the name changes; either way it is not one
+            # value this file can read off the page.
+            note(node.target, None, top_level=False)
+
+    return {
+        name: values[0]
+        for name, values in written.items()
+        if len(values) == 1 and values[0] is not None
+    }
 
 
 def _capabilities_of(
@@ -184,19 +202,29 @@ def _collected_calls(module: Path) -> frozenset[str]:
     """
     called: set[str] = set()
 
-    def visit(node: ast.AST, classes: tuple[str, ...], inside_test: bool) -> None:
+    def collectable_class(klass: ast.ClassDef) -> bool:
+        """pytest's rule, both halves: named ``Test*``, and no constructor.
+
+        The second half is not a detail — a `Test*` class that grows an ``__init__`` is warned
+        about and **skipped**, so an initializer added for convenience silently stops the suite
+        running while every name still reads like a test.
+        """
+        return klass.name.startswith("Test") and not any(
+            isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+            and node.name in {"__init__", "__new__"}
+            for node in klass.body
+        )
+
+    def visit(node: ast.AST, in_class: bool, inside_test: bool) -> None:
         for child in ast.iter_child_nodes(node):
             collected = inside_test
             if isinstance(child, ast.ClassDef):
-                visit(child, (*classes, child.name), inside_test)
+                visit(child, in_class and collectable_class(child), inside_test)
                 continue
             if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef):
-                # pytest's defaults: `Test*` classes, `test*` functions, and a class it collects
-                # from has no `__init__`. A nested def inside a collected test runs with it.
-                collected = inside_test or (
-                    child.name.startswith("test")
-                    and all(name.startswith("Test") for name in classes)
-                )
+                # A `test*` function pytest reaches, or anything nested inside one — a helper
+                # defined in a collected test runs when that test does.
+                collected = inside_test or (child.name.startswith("test") and in_class)
             if isinstance(child, ast.Call) and collected:
                 callee = child.func
                 name = (
@@ -208,9 +236,10 @@ def _collected_calls(module: Path) -> frozenset[str]:
                 )
                 if name:
                     called.add(name)
-            visit(child, classes, collected)
+            visit(child, in_class, collected)
 
-    visit(ast.parse(module.read_text(encoding="utf-8")), (), False)
+    # `in_class` starts true: a module-level `test*` function has no class to disqualify it.
+    visit(ast.parse(module.read_text(encoding="utf-8")), True, False)
     return frozenset(called)
 
 
