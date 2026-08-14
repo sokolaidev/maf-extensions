@@ -206,17 +206,66 @@ def _backends(root: Path) -> list[tuple[str, str, frozenset[str] | None]]:
     return found
 
 
-def _collectable_class(klass: ast.ClassDef) -> bool:
-    """pytest's rule, both halves: named ``Test*``, and no constructor.
+def _defines_a_constructor(
+    klass: ast.ClassDef,
+    by_name: dict[str, ast.ClassDef],
+    seen: frozenset[str] = frozenset(),
+) -> bool:
+    """Whether pytest would see a constructor on ``klass`` — **inherited ones included**.
 
-    The second half is not a detail — a ``Test*`` class that grows an ``__init__`` is warned
-    about and **skipped**, so an initializer added for convenience silently stops the test
-    running while every name still reads like one.
+    pytest resolves the attribute rather than reading the class body, so a `Test*` class
+    inheriting ``__init__`` from a base is warned about and skipped exactly like one defining
+    it. A base this file cannot resolve in the same module answers *yes*: refusing to count a
+    class whose bases are unknown loses coverage of that class, and guessing loses the guard.
     """
-    return klass.name.startswith("Test") and not any(
+    if any(
         isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
         and node.name in {"__init__", "__new__"}
         for node in klass.body
+    ):
+        return True
+    for base in klass.bases:
+        name = (
+            base.id
+            if isinstance(base, ast.Name)
+            else base.attr
+            if isinstance(base, ast.Attribute)
+            else None
+        )
+        if name == "object":
+            continue
+        resolved = by_name.get(name) if name else None
+        if resolved is None or name in seen:
+            return True
+        if _defines_a_constructor(resolved, by_name, seen | {name}):
+            return True
+    return False
+
+
+def _collectable_class(klass: ast.ClassDef, by_name: dict[str, ast.ClassDef]) -> bool:
+    """pytest's rule, both halves: named ``Test*``, and no constructor it can see."""
+    return klass.name.startswith("Test") and not _defines_a_constructor(klass, by_name)
+
+
+def _expects_a_raise(node: ast.AST) -> bool:
+    """Whether ``node`` is a ``pytest.raises`` context or call.
+
+    What happens under one did not finish. A suite invocation there is a *rejection* test —
+    the refusal of a bad subject is exactly such a test, added on this branch — and counting
+    it would let a package satisfy this guard while never running the probes at all.
+    """
+    calls = (
+        [item.context_expr for item in node.items]
+        if isinstance(node, ast.With | ast.AsyncWith)
+        else [node]
+        if isinstance(node, ast.Call)
+        else []
+    )
+    return any(
+        isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr == "raises"
+        for call in calls
     )
 
 
@@ -225,12 +274,16 @@ def _names_used(node: ast.AST) -> frozenset[str]:
 
     A nested definition is only that: defining ``scenario`` does not run it. Its body is
     reached through :func:`_reachable_calls` if something executes it, and not otherwise.
+    Anything under a ``pytest.raises`` is skipped for the same reason from the other end: it
+    was written not to complete.
     """
     used: set[str] = set()
     for child in ast.iter_child_nodes(node):
         if isinstance(
             child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.Lambda
         ):
+            continue
+        if _expects_a_raise(child):
             continue
         if isinstance(child, ast.Call):
             callee = child.func
@@ -265,18 +318,22 @@ def _reachable_calls(test: ast.FunctionDef | ast.AsyncFunctionDef) -> frozenset[
 def _collected_calls(module: Path) -> frozenset[str]:
     """Every name a test pytest collects in ``module`` reaches when it runs.
 
-    Two conditions, and the guard is only as good as the weaker one. **Collected**: a `test*`
-    function, with `Test*` and no constructor for every class around it. **Reached**: called
-    from the test's own body, or from a local helper the body executes — because a call sitting
-    in a nested function nobody invokes never runs, and counting it is the failure mode of
-    every grep-shaped check.
+    Three conditions, and the guard is only as good as the weakest. **Collected**: a `test*`
+    function, with `Test*` and no constructor — inherited included — for every class around it.
+    **Reached**: called from the test's own body, or from a local helper the body executes,
+    because a call in a nested function nobody invokes never runs. **Completed**: not under a
+    ``pytest.raises``, which is where a call goes when it is written to fail.
     """
+    tree = ast.parse(module.read_text(encoding="utf-8"))
+    by_name = {
+        node.name: node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)
+    }
     called: set[str] = set()
 
     def visit(node: ast.AST, in_class: bool) -> None:
         for child in ast.iter_child_nodes(node):
             if isinstance(child, ast.ClassDef):
-                visit(child, in_class and _collectable_class(child))
+                visit(child, in_class and _collectable_class(child, by_name))
             elif isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef):
                 if child.name.startswith("test") and in_class:
                     called.update(_reachable_calls(child))
@@ -284,7 +341,7 @@ def _collected_calls(module: Path) -> frozenset[str]:
                 visit(child, in_class)
 
     # `in_class` starts true: a module-level `test*` function has no class to disqualify it.
-    visit(ast.parse(module.read_text(encoding="utf-8")), True)
+    visit(tree, True)
     return frozenset(called)
 
 
