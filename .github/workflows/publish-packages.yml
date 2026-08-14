@@ -62,6 +62,7 @@ jobs:
       package: ${{ steps.resolve.outputs.package }}
       version: ${{ steps.resolve.outputs.version }}
       target: ${{ steps.resolve.outputs.target }}
+      breaking: ${{ steps.breaking.outputs.breaking }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
@@ -98,6 +99,43 @@ jobs:
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "target=${target}" >> "$GITHUB_OUTPUT"
           echo "publishing ${package} ${version} to ${target}"
+
+      # Whether `verify` below is worth dispatching at all. A breaking core release strands the
+      # published dependents until each of them ships again, and `main`'s samples already speak
+      # the new vocabulary — so the run in that window can only go red, for a reason nobody
+      # needs it to report. The changelog is the signal because the number cannot be:
+      # `bump-minor-pre-major` makes a breaking change a minor like any `feat:`. (#273.)
+      #
+      # Core releases only — a dependent's own publish strands nothing above it — and only for
+      # the real index, matching `verify`'s own gate. A verdict this step never reaches leaves
+      # the output empty, which reads as "not breaking" and dispatches: that is the status quo,
+      # and holding a run back on a guess is worse than paying for one.
+      - name: Check whether this release is breaking
+        id: breaking
+        if: >-
+          steps.resolve.outputs.package == 'maf-sandbox'
+          && steps.resolve.outputs.target == 'pypi'
+        env:
+          PACKAGE: ${{ steps.resolve.outputs.package }}
+          VERSION: ${{ steps.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          verdict=false
+          if answer="$(python3 scripts/check_release_is_breaking.py "$PACKAGE" "$VERSION")"; then
+            if [ "$answer" = "breaking=true" ]; then
+              verdict=true
+            fi
+          else
+            echo "::warning::could not read whether ${PACKAGE} ${VERSION} declares breaking changes; the live check will run anyway"
+          fi
+          echo "breaking=${verdict}" >> "$GITHUB_OUTPUT"
+          if [ "$verdict" = true ]; then
+            {
+              echo "### The live check is being skipped"
+              echo
+              echo "\`${PACKAGE}\` ${VERSION} declares breaking changes, so the published dependents cannot work against it until each of them releases again. Those releases dispatch the live check themselves, which is when its answer starts meaning something. See [#273](https://github.com/sokolaidev/maf-extensions/issues/273)."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       # Fails the run rather than the release: PyPI uploads are immutable, so a mismatched
       # tag can't be corrected after the fact.
@@ -391,12 +429,14 @@ jobs:
   # verify call — so verify-live resolves the version that was actually just published. A poll,
   # not a fixed sleep: the propagation lag is not bounded, and a sleep is both slow when the
   # index is quick and unreliable when it is not. Gated identically to `verify` so it is never
-  # skipped when verify would run, which lets verify simply `needs:` it. (#271.)
+  # skipped when verify would run, which lets verify simply `needs:` it — keep the two `if:`
+  # blocks the same text. (#271.)
   wait-for-propagation:
     name: Wait for the index to show the new version
     needs: [build, publish]
     if: >-
       needs.build.outputs.target == 'pypi'
+      && needs.build.outputs.breaking != 'true'
       && contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-bicep", "maf-sandbox-codeact", "maf-sandbox-docker"]'), needs.build.outputs.package)
     runs-on: ubuntu-latest
     steps:
@@ -428,11 +468,16 @@ jobs:
   # each job runs only if that release could affect it — so a maf-sandbox-docker release runs
   # both docker jobs (neither creates a billable sandbox) and not the ACAS ones. A batch releasing more than one package runs this once per package;
   # each run is independent and safe.
+  #
+  # `breaking != 'true'` is the one case where a release deliberately gets no live check: the
+  # published dependents cannot work against a breaking core until they ship again, and their
+  # own publishes dispatch this then. The build job's summary says so when it happens.
   verify:
     name: Verify against a live sandbox
     needs: [build, publish, wait-for-propagation]
     if: >-
       needs.build.outputs.target == 'pypi'
+      && needs.build.outputs.breaking != 'true'
       && contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-bicep", "maf-sandbox-codeact", "maf-sandbox-docker"]'), needs.build.outputs.package)
     uses: ./.github/workflows/verify-live.yml
     with:
