@@ -84,8 +84,8 @@ _SINK = OutputSink(deliver=_deliver)
 
 
 def _router(*backends, **kwargs):
-    """Every fake here declares `process` isolation, so these routers opt below the floor."""
-    return SandboxRouter(list(backends), min_isolation=Isolation.PROCESS, **kwargs)
+    """Every fake here declares `none` isolation, so these routers opt below the floor."""
+    return SandboxRouter(list(backends), min_isolation=Isolation.NONE, **kwargs)
 
 
 def _pulling_backend():

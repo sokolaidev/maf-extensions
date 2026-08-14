@@ -73,7 +73,7 @@ def _smoke_maf_sandbox() -> str:
 
     backend = InProcessSandboxBackend(InProcessSandbox(default_stdout="ok"))
     # Below the default microvm floor: this part proves acquire/exec, not the floor.
-    router = SandboxRouter([backend], min_isolation=Isolation.PROCESS)
+    router = SandboxRouter([backend], min_isolation=Isolation.NONE)
     key = SandboxKey(scope="s", thread_id="t", agent_dir="a")
     sandbox = asyncio.run(router.acquire(key, SandboxSpec(kind="smoke")))
     result = asyncio.run(sandbox.exec("true", working_directory="/w", timeout=5))
@@ -128,7 +128,7 @@ def _smoke_maf_sandbox_bicep() -> str:
         )
         tools = make_bicep_tools(
             # Below the default floor, as in _smoke_maf_sandbox: exercises the workload.
-            SandboxRouter([backend], min_isolation=Isolation.PROCESS),
+            SandboxRouter([backend], min_isolation=Isolation.NONE),
             # InMemoryStore provides the AgentFileStore subset this smoke test exercises.
             store,  # type: ignore[arg-type]
             "devops-engineer",
@@ -216,9 +216,9 @@ def _smoke_maf_sandbox_codeact() -> str:
     )
 
     def _router(backend):
-        # Process isolation, opted below the default microvm floor: the floor itself is
+        # The bottom rung, opted below the default microvm floor: the floor itself is
         # _smoke_maf_sandbox's subject, and a bare SandboxRouter([backend]) is refused there.
-        return SandboxRouter([backend], min_isolation=Isolation.PROCESS)
+        return SandboxRouter([backend], min_isolation=Isolation.NONE)
 
     def _body(tools):
         if len(tools) != 1 or getattr(tools[0], "name", None) != EXECUTE_CODE_TOOL_NAME:

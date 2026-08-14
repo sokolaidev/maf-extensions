@@ -258,7 +258,7 @@ class InProcessSandboxBackend:
             by name.
         isolation: Returned by the :attr:`isolation` property — configurable because the
             router's minimum-isolation floor is exercised against fakes claiming every
-            :class:`~maf_sandbox.Isolation` rung, not only ``PROCESS``.
+            :class:`~maf_sandbox.Isolation` rung, not only ``NONE``.
         egress: Returned by the :attr:`egress` property. Defaults to
             :data:`~maf_sandbox.Egress.ALLOWLIST` so a workload under test attaches as it
             would against a live backend, rather than every offline test becoming a test of
@@ -294,7 +294,7 @@ class InProcessSandboxBackend:
         sandbox: InProcessSandbox | None = None,
         *,
         name: str = "in-process",
-        isolation: Isolation = Isolation.PROCESS,
+        isolation: Isolation = Isolation.NONE,
         egress: Egress = Egress.ALLOWLIST,
         capabilities: frozenset[Capability] = DEFAULT_CAPABILITIES,
         limits: SandboxLimits = DEFAULT_SANDBOX_LIMITS,

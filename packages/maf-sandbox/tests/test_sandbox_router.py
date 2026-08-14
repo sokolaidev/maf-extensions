@@ -70,7 +70,7 @@ class TestProtocolConformance:
 
 
 class TestSelection:
-    """Every fake here declares `process` isolation, so these routers opt below the floor."""
+    """Every fake here declares `none` isolation, so these routers opt below the floor."""
 
     def test_no_backends_means_not_enabled(self):
         router = SandboxRouter([])
@@ -82,7 +82,7 @@ class TestSelection:
             InProcessSandboxBackend(name="first"),
             InProcessSandboxBackend(name="second"),
         )
-        router = SandboxRouter([first, second], min_isolation=Isolation.PROCESS)
+        router = SandboxRouter([first, second], min_isolation=Isolation.NONE)
         assert router.backend is first
         assert router.enabled is True
 
@@ -91,14 +91,14 @@ class TestSelection:
             InProcessSandboxBackend(name="first"),
             InProcessSandboxBackend(name="second"),
         )
-        router = SandboxRouter([first, second], min_isolation=Isolation.PROCESS, selected="second")
+        router = SandboxRouter([first, second], min_isolation=Isolation.NONE, selected="second")
         assert router.backend is second
 
     def test_unknown_name_raises_with_the_registered_ones_named(self):
         with pytest.raises(NoSandboxBackend, match="registered: aca, fake"):
             SandboxRouter(
                 [InProcessSandboxBackend(name="fake"), InProcessSandboxBackend(name="aca")],
-                min_isolation=Isolation.PROCESS,
+                min_isolation=Isolation.NONE,
                 selected="docker",
             )
 
@@ -108,7 +108,7 @@ class TestSelection:
 
     def test_acquire_delegates_to_the_selected_backend(self):
         backend = InProcessSandboxBackend()
-        router = SandboxRouter([backend], min_isolation=Isolation.PROCESS)
+        router = SandboxRouter([backend], min_isolation=Isolation.NONE)
         sandbox = asyncio.run(router.acquire(_KEY, _SPEC))
         assert backend.keys == [_KEY]
         assert sandbox is backend.sandbox
@@ -126,7 +126,7 @@ class TestIsolationLadder:
 
     def test_the_order_runs_from_no_boundary_to_the_strongest_one(self):
         assert list(ISOLATION_RANK) == [
-            Isolation.PROCESS,
+            Isolation.NONE,
             Isolation.RUNTIME,
             Isolation.CONTAINER,
             Isolation.HARDENED_CONTAINER,
@@ -144,6 +144,20 @@ class TestIsolationLadder:
         """The constructor's `ValueError` *is* the refuse-unknown policy."""
         with pytest.raises(ValueError, match="quantum"):
             Isolation("quantum")
+
+    def test_the_old_bottom_rung_is_gone_rather_than_aliased(self):
+        """`"process"` has to fail here, and keep failing until the rung it names is a real one.
+
+        The bottom rung was `PROCESS` and meant no boundary at all. That spelling is reserved
+        for a genuine separate-OS-process rung a minor from now, two ranks above the one it
+        used to name. An alias would make the reuse silent: a backend that declared
+        `"process"` *because* it drew no boundary would come back ranked above `RUNTIME`,
+        having claimed a boundary it never had. This `ValueError` is the whole of what turns
+        that re-ranking into a refusal.
+        """
+        assert not hasattr(Isolation, "PROCESS")
+        with pytest.raises(ValueError, match="process"):
+            Isolation("process")
 
     @pytest.mark.parametrize(
         ("declared", "permitted"),
@@ -174,7 +188,7 @@ class TestIsolationFloor:
     @pytest.mark.parametrize(
         "isolation",
         [
-            Isolation.PROCESS,
+            Isolation.NONE,
             Isolation.RUNTIME,
             Isolation.CONTAINER,
             Isolation.HARDENED_CONTAINER,
@@ -208,7 +222,21 @@ class TestIsolationFloor:
         with pytest.raises(SandboxBackendNotPermitted, match="not a rung"):
             SandboxRouter(
                 [InProcessSandboxBackend(name="lab", isolation="quantum")],
-                min_isolation=Isolation.PROCESS,
+                min_isolation=Isolation.NONE,
+            )
+
+    def test_a_backend_still_declaring_the_removed_process_rung_is_refused(self):
+        """What a backend written against the old vocabulary meets: a refusal, not a promotion.
+
+        Down the same path as any unknown value, which is the point — `"process"` is not
+        special-cased, it is simply not a rung any more. So such a backend is turned away
+        rather than ranked above `RUNTIME` on the strength of a word it meant the opposite
+        way.
+        """
+        with pytest.raises(SandboxBackendNotPermitted, match="not a rung"):
+            SandboxRouter(
+                [InProcessSandboxBackend(name="legacy", isolation="process")],
+                min_isolation=Isolation.NONE,
             )
 
     @pytest.mark.parametrize("bad", ["MICROVM", "micro-vm"])
@@ -263,10 +291,10 @@ class TestSpecFloorRaise:
         is `test_a_spec_asking_above_the_backends_rung_is_refused`, above.
         """
         router = self._router(Isolation.MICROVM, Isolation.MICROVM)
-        router.ensure_can_serve(SandboxSpec(kind="codeact", min_isolation=Isolation.PROCESS))
+        router.ensure_can_serve(SandboxSpec(kind="codeact", min_isolation=Isolation.NONE))
 
     def test_a_spec_with_no_opinion_leaves_the_floor_to_the_host(self):
-        self._router(Isolation.PROCESS, Isolation.PROCESS).ensure_can_serve(_SPEC)
+        self._router(Isolation.NONE, Isolation.NONE).ensure_can_serve(_SPEC)
 
 
 class _BackendWithoutCapabilities:
@@ -299,7 +327,7 @@ class TestCapabilityMatch:
     """
 
     def _router(self, **kwargs) -> SandboxRouter:
-        return SandboxRouter([InProcessSandboxBackend(**kwargs)], min_isolation=Isolation.PROCESS)
+        return SandboxRouter([InProcessSandboxBackend(**kwargs)], min_isolation=Isolation.NONE)
 
     def test_a_capability_compares_as_its_string_value(self):
         assert Capability.RUN_CODE == "run_code"
@@ -343,7 +371,7 @@ class TestRouterDenials:
         backend = InProcessSandboxBackend(
             capabilities=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS}
         )
-        return SandboxRouter([backend], min_isolation=Isolation.PROCESS, **kwargs)
+        return SandboxRouter([backend], min_isolation=Isolation.NONE, **kwargs)
 
     def test_a_denied_capability_is_refused_even_when_the_backend_has_it(self):
         router = self._router(denied_capabilities={Capability.HOST_TOOLS})
@@ -523,7 +551,7 @@ class TestTransferLimitMatch:
     _CEILING = SandboxLimits(files_in=_TIGHT_LIMITS, files_out=_TIGHT_LIMITS)
 
     def _router(self, backend) -> SandboxRouter:
-        return SandboxRouter([backend], min_isolation=Isolation.PROCESS)
+        return SandboxRouter([backend], min_isolation=Isolation.NONE)
 
     def test_the_two_fixtures_really_are_one_declared_and_one_silent(self):
         """A `getattr` fallback nobody is on the far side of would pass by accident forever.
@@ -603,14 +631,14 @@ class TestAMalformedLimitsDeclarationIsRefused:
     @pytest.mark.parametrize("declared", [_TIGHT_LIMITS, None], ids=["a-TransferLimits", "None"])
     def test_a_declaration_that_is_not_a_sandbox_limits_is_refused_and_named(self, declared):
         router = SandboxRouter(
-            [_BackendDeclaringTheWrongLimits(declared)], min_isolation=Isolation.PROCESS
+            [_BackendDeclaringTheWrongLimits(declared)], min_isolation=Isolation.NONE
         )
         with pytest.raises(SandboxTransferLimitsNotPermitted, match="SandboxLimits"):
             router.ensure_can_serve(_SPEC)
 
     def test_acquire_refuses_it_too(self):
         router = SandboxRouter(
-            [_BackendDeclaringTheWrongLimits(None)], min_isolation=Isolation.PROCESS
+            [_BackendDeclaringTheWrongLimits(None)], min_isolation=Isolation.NONE
         )
         with pytest.raises(SandboxTransferLimitsNotPermitted):
             asyncio.run(router.acquire(_KEY, _SPEC))
@@ -618,7 +646,7 @@ class TestAMalformedLimitsDeclarationIsRefused:
     def test_the_default_ceilings_are_still_what_silence_means(self):
         """The guard refuses a declaration it cannot read — it does not make one mandatory."""
         SandboxRouter(
-            [_BackendWithoutCapabilities()], min_isolation=Isolation.PROCESS
+            [_BackendWithoutCapabilities()], min_isolation=Isolation.NONE
         ).ensure_can_serve(_SPEC)
 
 
@@ -653,9 +681,7 @@ class TestEgressRule:
     _CLOSED_SPEC = SandboxSpec(kind="bicep")
 
     def _router(self, egress: str) -> SandboxRouter:
-        return SandboxRouter(
-            [InProcessSandboxBackend(egress=egress)], min_isolation=Isolation.PROCESS
-        )
+        return SandboxRouter([InProcessSandboxBackend(egress=egress)], min_isolation=Isolation.NONE)
 
     @pytest.mark.parametrize("spec", [_ALLOWLIST_SPEC, _CLOSED_SPEC])
     def test_an_allowlist_backend_serves_any_spec(self, spec: SandboxSpec):
@@ -713,7 +739,7 @@ class TestAcquireEnforcesPolicy:
             asyncio.run(router.acquire(_KEY, spec))
 
     def test_acquire_refuses_a_missing_capability(self):
-        router = SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.PROCESS)
+        router = SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE)
         spec = SandboxSpec(
             kind="codeact", requires=frozenset({Capability.EXEC, Capability.RUN_CODE})
         )
@@ -722,14 +748,14 @@ class TestAcquireEnforcesPolicy:
 
     def test_acquire_refuses_an_unrestricted_egress_backend(self):
         router = SandboxRouter(
-            [InProcessSandboxBackend(egress=Egress.UNRESTRICTED)], min_isolation=Isolation.PROCESS
+            [InProcessSandboxBackend(egress=Egress.UNRESTRICTED)], min_isolation=Isolation.NONE
         )
         with pytest.raises(SandboxEgressNotEnforced):
             asyncio.run(router.acquire(_KEY, _SPEC))
 
     def test_a_closed_backend_warns_on_ensure_can_serve_but_not_on_acquire(self, caplog):
         router = SandboxRouter(
-            [InProcessSandboxBackend(egress=Egress.CLOSED)], min_isolation=Isolation.PROCESS
+            [InProcessSandboxBackend(egress=Egress.CLOSED)], min_isolation=Isolation.NONE
         )
         spec = SandboxSpec(kind="bicep", egress_allow=("example.invalid",))
 
@@ -750,28 +776,26 @@ class TestPurge:
             InProcessSandboxBackend(name="first"),
             InProcessSandboxBackend(name="second"),
         )
-        router = SandboxRouter([first, second], min_isolation=Isolation.PROCESS)
+        router = SandboxRouter([first, second], min_isolation=Isolation.NONE)
         total = asyncio.run(router.dispose_scope("scope-a", "thread-1"))
         assert total == 2
         assert first.purged == second.purged == [("scope-a", "thread-1")]
 
     def test_a_failing_backend_does_not_stop_the_others(self):
         good = InProcessSandboxBackend(name="good")
-        router = SandboxRouter(
-            [_ExplodingBackend(name="bad"), good], min_isolation=Isolation.PROCESS
-        )
+        router = SandboxRouter([_ExplodingBackend(name="bad"), good], min_isolation=Isolation.NONE)
         total = asyncio.run(router.dispose_scope("scope-a", "thread-1"))
         assert total == 1
         assert good.purged == [("scope-a", "thread-1")]
 
     def test_dispose_never_raises(self):
-        router = SandboxRouter([_ExplodingBackend()], min_isolation=Isolation.PROCESS)
+        router = SandboxRouter([_ExplodingBackend()], min_isolation=Isolation.NONE)
         asyncio.run(router.dispose(_KEY))
 
     def test_purger_is_duck_typed_on_purge_scoped_thread(self):
         """The host awaits this without importing the class, so the name is the contract."""
         backend = InProcessSandboxBackend()
-        purger = SandboxPurger(SandboxRouter([backend], min_isolation=Isolation.PROCESS))
+        purger = SandboxPurger(SandboxRouter([backend], min_isolation=Isolation.NONE))
         assert asyncio.run(purger.purge_scoped_thread("scope-a", "thread-1")) == 1
         assert backend.purged == [("scope-a", "thread-1")]
 
@@ -791,7 +815,7 @@ class TestSpecDefaults:
         assert SandboxSpec(kind="test").requires == DEFAULT_CAPABILITIES
 
     def test_it_states_no_isolation_opinion(self):
-        """`None`, not `PROCESS` — the second would be an opinion, and the weakest one."""
+        """`None`, not `Isolation.NONE` — the second would be an opinion, and the weakest one."""
         assert SandboxSpec(kind="test").min_isolation is None
 
     def test_it_exercises_no_identities(self):
@@ -1204,7 +1228,7 @@ class TestScope:
 
     def test_it_disposes_when_the_block_ends(self):
         backend = _CountingBackend()
-        router = SandboxRouter([backend], min_isolation=Isolation.PROCESS)
+        router = SandboxRouter([backend], min_isolation=Isolation.NONE)
 
         async def scenario():
             async with router.scope("scope-a", "thread-1") as disposal:
@@ -1218,7 +1242,7 @@ class TestScope:
     def test_it_disposes_when_the_block_raises_and_does_not_swallow_the_error(self):
         """A teardown that hid the application's exception would be worse than none."""
         backend = _CountingBackend()
-        router = SandboxRouter([backend], min_isolation=Isolation.PROCESS)
+        router = SandboxRouter([backend], min_isolation=Isolation.NONE)
 
         async def scenario():
             async with router.scope("scope-a", "thread-1"):
@@ -1231,7 +1255,7 @@ class TestScope:
     def test_a_backend_that_cannot_purge_does_not_break_the_block(self):
         """`dispose_scope` already swallows and logs per-backend failures. That is what makes
         it safe in a `finally`, so it is pinned here rather than assumed."""
-        router = SandboxRouter([_ExplodingBackend()], min_isolation=Isolation.PROCESS)
+        router = SandboxRouter([_ExplodingBackend()], min_isolation=Isolation.NONE)
 
         async def scenario():
             async with router.scope("scope-a", "thread-1") as disposal:

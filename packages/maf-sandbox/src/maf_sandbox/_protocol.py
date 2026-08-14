@@ -51,8 +51,14 @@ class Isolation(StrEnum):
     and :class:`~maf_sandbox._router.SandboxRouter` refuses anything below the declared floor.
     """
 
-    #: Same process as the host: no boundary at all. Tests and local fakes.
-    PROCESS = "process"
+    #: No boundary at all: the workload runs in the host process, with the host's authority.
+    #: Tests and local fakes. Named for what it provides rather than for where it runs — the
+    #: rung this replaces was ``PROCESS``, which reads as a real boundary and meant the absence
+    #: of one. ``PROCESS`` is deliberately *not* an alias for this: that spelling is reserved
+    #: for the genuine separate-OS-process rung, which lands between :data:`RUNTIME` and
+    #: :data:`CONTAINER` a minor from now, so a declaration written against the old meaning has
+    #: to fail loudly here rather than be re-ranked upward in silence later.
+    NONE = "none"
     #: A software boundary inside the host process — a restricted interpreter, a WASM
     #: runtime's fault isolation.
     RUNTIME = "runtime"
@@ -73,7 +79,7 @@ ISOLATION_RANK: Mapping[Isolation, int] = {
     level: rank
     for rank, level in enumerate(
         (
-            Isolation.PROCESS,
+            Isolation.NONE,
             Isolation.RUNTIME,
             Isolation.CONTAINER,
             Isolation.HARDENED_CONTAINER,
@@ -381,8 +387,10 @@ class SandboxSpec:
 
     ``requires`` names the capabilities the workload cannot run without, and ``min_isolation``
     the weakest boundary it accepts anywhere.  A spec may **raise** the host's floor and never
-    lower it, and ``None`` means no opinion — not the same as :data:`Isolation.PROCESS`, which
-    would be the weakest opinion there is.
+    lower it, and ``None`` means no opinion — which is not :data:`Isolation.NONE`, however
+    alike the two now read.  ``None`` declines to constrain the floor at all; ``Isolation.NONE``
+    constrains it to the bottom rung, which is the weakest opinion there is rather than the
+    absence of one.
 
     ``declared_outputs`` names the artifacts the workload produces, literally and in advance;
     it is spelled long because ``outputs=`` already means marker-keyed scripted stdout on the
