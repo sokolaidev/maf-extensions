@@ -36,6 +36,32 @@ target-version = "py312"
 [tool.ruff.lint]
 extend-select = ["UP"]
 
+# Repo-level pyright for the code the per-package strict configs do not cover: scripts/ and the
+# test trees. Package src/ stays on its own per-package strict config (uv run pyright -p
+# packages/<pkg>, include = ["src"]), which -p selects directly; this config never applies to src.
+[tool.pyright]
+include = ["scripts", "tests", "packages/*/tests/**"]
+typeCheckingMode = "standard"
+# scripts/ is under no execution environment, so it stays at full standard — the phase-1
+# behavior, unchanged. Each test tree is its own execution environment (root takes a single
+# path, not a glob) that relaxes the four rules which fire on intentional loose fakes to
+# warnings: protocol-skipping backends (reportArgumentType), Optional attribute access on fake
+# returns (reportOptionalMemberAccess), fake subclasses overriding with incompatible signatures
+# (reportIncompatibleMethodOverride), and `in`/`not in` on Optional results (reportOperatorIssue).
+# They warn rather than error so the pass stays green on known fakes without going silent on
+# them; every other rule stays an error and catches real drift. reportMissingImports is
+# deliberately not relaxed. The tests/ env also puts sample 09 on extraPaths so pyright can
+# resolve the runtime sys.path import in test_no_isolation_backend.py instead of suppressing it.
+executionEnvironments = [
+  { root = "tests", extraPaths = ["samples/09_inprocess_bicep"], reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
+  { root = "packages/maf-sandbox/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
+  { root = "packages/maf-sandbox-acas/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
+  { root = "packages/maf-sandbox-bicep/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
+  { root = "packages/maf-sandbox-codeact/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
+  { root = "packages/maf-sandbox-docker/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
+  { root = "packages/maf-sandbox-wslc/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
+]
+
 # From-the-root test runs. Each package also carries its own [tool.pytest.ini_options] for
 # in-package runs; pytest binds exactly one rootdir per invocation, so running from here
 # uses this list and running inside a package uses that package's own configuration.
