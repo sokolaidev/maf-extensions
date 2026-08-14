@@ -109,6 +109,54 @@ def publish_tag_globs() -> list[str]:
     return re.findall(r"\"([^\"]+)\"", block.group(1))
 
 
+def run_block(workflow: Path, step_name: str) -> str:
+    """A step's `run:` script, dedented — the same text the runner's shell receives.
+
+    Read as text rather than through a YAML parser, for the reason the module docstring gives:
+    these tests carry no YAML dependency, and a block scalar is unambiguous enough to slice on
+    indentation.
+    """
+    lines = workflow.read_text(encoding="utf-8").splitlines()
+    start = next(
+        index
+        for index, line in enumerate(lines)
+        if line.strip() == f"- name: {step_name}"
+    )
+    run = next(
+        index
+        for index, line in enumerate(lines[start:], start)
+        if line.strip() == "run: |"
+    )
+    indent = len(lines[run]) - len(lines[run].lstrip()) + 2
+    body: list[str] = []
+    for line in lines[run + 1 :]:
+        if line.strip() and not line.startswith(" " * indent):
+            break
+        body.append(line[indent:])
+    return "\n".join(body)
+
+
+def condition_after(workflow: Path, anchor: str) -> str:
+    """The first `if: >-` folded block below `anchor`, as one whitespace-normalised line.
+
+    `anchor` is a stripped line — a job's `name:` key or a step's `- name: …`.
+    """
+    lines = workflow.read_text(encoding="utf-8").splitlines()
+    start = next(index for index, line in enumerate(lines) if line.strip() == anchor)
+    marker = next(
+        index
+        for index, line in enumerate(lines[start:], start)
+        if line.strip() == "if: >-"
+    )
+    indent = len(lines[marker]) - len(lines[marker].lstrip()) + 2
+    body: list[str] = []
+    for line in lines[marker + 1 :]:
+        if not line.startswith(" " * indent):
+            break
+        body.append(line.strip())
+    return " ".join(body)
+
+
 def accepted_title_types() -> list[str]:
     """The commit types the PR title check allows, from its `types: |` block scalar."""
     workflow = PR_TITLE_WORKFLOW.read_text(encoding="utf-8")
@@ -376,35 +424,11 @@ class TestTheProposalBodySurvivesTheShell:
         "**Then merge it, and let the dependent releases it cuts publish.**",
     )
 
-    def _run_block(self, step_name: str) -> str:
-        """The step's `run:` script, dedented — the same text the runner's shell receives.
-
-        Read as text rather than through a YAML parser, for the reason the module docstring
-        gives: these tests carry no YAML dependency, and a block scalar is unambiguous enough
-        to slice on indentation.
-        """
-        lines = RELEASE_WORKFLOW.read_text(encoding="utf-8").splitlines()
-        start = next(
-            index
-            for index, line in enumerate(lines)
-            if line.strip() == f"- name: {step_name}"
-        )
-        run = next(
-            index
-            for index, line in enumerate(lines[start:], start)
-            if line.strip() == "run: |"
-        )
-        indent = len(lines[run]) - len(lines[run].lstrip()) + 2
-        body: list[str] = []
-        for line in lines[run + 1 :]:
-            if line.strip() and not line.startswith(" " * indent):
-                break
-            body.append(line[indent:])
-        return "\n".join(body)
-
     def _body_fragment(self) -> str:
         """Just the heredoc through the substitution — no git, gh or python3 to stand up."""
-        lines = self._run_block("Propose the dependents' range").splitlines()
+        lines = run_block(
+            RELEASE_WORKFLOW, "Propose the dependents' range"
+        ).splitlines()
         start = next(
             (i for i, line in enumerate(lines) if line.startswith("cat > ")), None
         )
@@ -511,3 +535,116 @@ class TestTheConstraintCommentsDoNotNameAVersion:
         assert checked, (
             "expected at least one package to carry a maf-sandbox constraint"
         )
+
+
+class TestABreakingCoreReleaseHoldsBackTheLiveCheck:
+    """The one release that deliberately gets no live check, and the ways that could go wrong.
+
+    A breaking core strands the published dependents until each of them ships again, so the run
+    in that window can only go red. `publish-packages.yml` reads the changelog and skips the
+    dispatch. What has to hold: the two jobs stay gated alike, an unanswered question dispatches
+    rather than holds, and the shell says so out loud instead of failing the release.
+
+    The script is executed for real, with `python3` shadowed by a shell function, because the
+    failure that matters is one bash makes rather than one the text shows: `set -e` is on, so
+    reading the verdict as a plain `answer="$(…)"` assignment ends the whole step when the
+    detector cannot answer — failing a release over a decision about a later job.
+    """
+
+    _STEP = "Check whether this release is breaking"
+    _GATED_JOBS = ("wait-for-propagation:", "verify:")
+
+    def _run(self, tmp_path: Path, stub: str) -> subprocess.CompletedProcess[bytes]:
+        if shutil.which("bash") is None:
+            pytest.skip("no bash on PATH; the release runner is ubuntu-latest")
+        script = (
+            "PACKAGE=maf-sandbox\n"
+            "VERSION=0.13.0\n"
+            "GITHUB_OUTPUT=out.txt\n"
+            "GITHUB_STEP_SUMMARY=summary.md\n"
+            ": > out.txt\n"
+            ": > summary.md\n"
+            # A function, not a file on PATH: no exec bit to set, and it shadows the command
+            # the step calls on any runner.
+            f"{stub}\n"
+            f"{run_block(PUBLISH_WORKFLOW, self._STEP)}\n"
+        )
+        # Bytes rather than `text=True`: that translates the newlines on the way in, and a
+        # shell handed `set -euo pipefail\r` rejects the option instead of running the script.
+        return subprocess.run(
+            ["bash", "-s"],
+            input=script.encode("utf-8"),
+            capture_output=True,
+            cwd=tmp_path,
+        )
+
+    def _wrote(self, tmp_path: Path) -> tuple[str, str]:
+        return (
+            (tmp_path / "out.txt").read_text("utf-8"),
+            (tmp_path / "summary.md").read_text("utf-8"),
+        )
+
+    def test_a_breaking_release_holds_the_run_back_and_says_why(self, tmp_path: Path):
+        result = self._run(tmp_path, 'python3() { echo "breaking=true"; }')
+        assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+        output, summary = self._wrote(tmp_path)
+        assert output.strip() == "breaking=true"
+        assert "273" in summary, (
+            "a skipped run has to point at the reason it was skipped"
+        )
+        assert "maf-sandbox" in summary and "0.13.0" in summary
+
+    def test_an_ordinary_release_dispatches_and_stays_quiet(self, tmp_path: Path):
+        result = self._run(tmp_path, 'python3() { echo "breaking=false"; }')
+        assert result.returncode == 0, (
+            "the step ended non-zero on the ordinary answer, which fails the release over a "
+            f"dispatch decision: {result.stderr.decode('utf-8', 'replace')}"
+        )
+        output, summary = self._wrote(tmp_path)
+        assert output.strip() == "breaking=false"
+        assert summary == "", (
+            "nothing was skipped, so the summary has nothing to report"
+        )
+
+    def test_a_detector_that_cannot_answer_dispatches_rather_than_holds(
+        self, tmp_path: Path
+    ):
+        result = self._run(
+            tmp_path, 'python3() { echo "no section for 0.13.0" >&2; return 1; }'
+        )
+        assert result.returncode == 0, (
+            "an unanswerable question must not fail the release: the upload is the point of "
+            "the run, and the dispatch is a decision on top of it"
+        )
+        output, summary = self._wrote(tmp_path)
+        assert output.strip() == "breaking=false"
+        assert "::warning::" in result.stdout.decode("utf-8", "replace")
+        assert summary == ""
+
+    def test_a_verdict_the_step_never_reached_still_dispatches(self):
+        """A skipped step leaves the output empty, and empty has to mean "go".
+
+        The step only runs for a real core release, so every other publish reaches the gate
+        with `breaking` unset. `!= 'true'` is what makes that dispatch; `== 'false'` would
+        silently stop the live check for every dependent release.
+        """
+        for job in self._GATED_JOBS:
+            condition = condition_after(PUBLISH_WORKFLOW, job)
+            assert "needs.build.outputs.breaking != 'true'" in condition, job
+
+    def test_the_two_jobs_are_gated_alike(self):
+        """`verify` needs `wait-for-propagation`, so a gate on one and not the other is a trap.
+
+        Waiting for the index is only ever worth doing for a run that follows it. The two `if:`
+        blocks are kept as one text so neither can drift into holding the other open.
+        """
+        conditions = {
+            job: condition_after(PUBLISH_WORKFLOW, job) for job in self._GATED_JOBS
+        }
+        assert len(set(conditions.values())) == 1, conditions
+
+    def test_the_detector_only_runs_for_a_real_core_release(self):
+        """A dependent's own publish strands nothing above it, and a rehearsal stays frictionless."""
+        condition = condition_after(PUBLISH_WORKFLOW, f"- name: {self._STEP}")
+        assert "steps.resolve.outputs.package == 'maf-sandbox'" in condition
+        assert "steps.resolve.outputs.target == 'pypi'" in condition
