@@ -1,25 +1,13 @@
 """A package that implements the pull surface must call `maf_sandbox.conformance`'s suite.
 
-#142's failure was two backends, written independently against the same sentence, shipping the
-same confinement escape — twice each. What answers it is the shared suite (#214, #215); what
-was missing is anything holding a backend to it. This is that, and it is a **wiring check**.
+Two traps, both worth knowing before trusting this.
 
-Read the claim before trusting it. This file proves that a package which implements
-``stat_file`` and ``read_file`` also *writes* a call to the suite it imported. It does not
-prove the call ran: a maintainer who marks that test skipped, disables its class, or shadows
-the name has disabled the check, and this will not notice. That is deliberate. The failure this
-repository actually had was two people forgetting a rule, and a check against forgetting has to
-be simple enough to stay right; an earlier draft of this file modelled pytest's collection
-rules to catch a deliberately disabled test, and every round of review found another way
-through, because that is an arms race a hundred lines of `ast` cannot win. Disabling a
-conformance test is a choice, and review is where choices are caught.
+**It is a wiring check.** It proves a serving package *writes* a call to the suite it imported,
+not that the call ran — skipping, disabling or shadowing that test defeats it, and review
+rather than this file is where that gets caught (#142).
 
-**Implementing the surface is the trigger, not declaring it.** A declaration can be spelled a
-dozen ways — a property, a class attribute, a constant, a union, an augmented assignment — and
-reading them all is the same losing game. A method with a body is a fact: nothing serves
-``FILES_OUT`` without one, whatever it declares or forgets to. Today that reading agrees
-exactly with what each backend declares, `maf-sandbox-docker`'s unimplemented ``list_dir``
-included.
+**Implementing the surface is the trigger, not declaring it.** A declaration has a dozen
+spellings; a method with a body is a fact, and nothing serves ``FILES_OUT`` without one.
 """
 
 from __future__ import annotations
@@ -51,11 +39,12 @@ CORE = "maf-sandbox"
 
 
 def _implements(method: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    """Whether this method does something, as opposed to refusing.
+    """Whether this method does something, as opposed to declaring or refusing.
 
-    A body of one ``raise`` is the protocol's own way of saying *not served* — `samples/09`
-    writes all three that way. Anything more counts, including a ``raise`` with a line of
-    logging above it: over-counting asks a package for a suite run it may not need, and
+    Two bodies mean *not served*: a lone ``raise``, which is how `samples/09` writes all three,
+    and nothing at all — a ``...`` is a Protocol saying the method exists, and `maf_sandbox`'s
+    own ``Sandbox`` is written that way. Anything else counts, a ``raise`` with a line of
+    logging above it included: over-counting asks for a suite run that may not be needed, and
     under-counting lets a real surface past.
     """
     body = [
@@ -63,12 +52,22 @@ def _implements(method: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
         for statement in method.body
         if not (isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant))
     ]
+    if not body:
+        return False
     return not (len(body) == 1 and isinstance(body[0], ast.Raise))
 
 
-def _serving(root: Path) -> list[str]:
-    """``class (module)`` for every class under ``root`` that implements the pull surface."""
-    found: list[str] = []
+def _serving(root: Path) -> dict[str, list[str]]:
+    """Where each pull-surface method is implemented under ``root`` — empty unless all of them are.
+
+    Aggregated over the whole tree rather than per class. A base or a mixin holding
+    ``stat_file`` while the subclass holds ``read_file`` serves the surface between them, and
+    moving one method into a base is an ordinary refactor that must not be able to switch this
+    off. The cost is over-counting — two unrelated classes with one method each read as serving
+    — which asks for a suite run that may not be needed, and that is the direction to be wrong
+    in.
+    """
+    found: dict[str, list[str]] = {}
     for module in sorted(root.rglob("*.py")):
         if ".venv" in module.parts:
             continue
@@ -76,16 +75,15 @@ def _serving(root: Path) -> list[str]:
         for klass in ast.walk(tree):
             if not isinstance(klass, ast.ClassDef):
                 continue
-            implemented = {
-                node.name
-                for node in klass.body
-                if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
-                and node.name in PULL_SURFACE
-                and _implements(node)
-            }
-            if implemented == set(PULL_SURFACE):
-                found.append(f"{klass.name} ({module.relative_to(REPO_ROOT).as_posix()})")
-    return found
+            for node in klass.body:
+                if (
+                    isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+                    and node.name in PULL_SURFACE
+                    and _implements(node)
+                ):
+                    where = f"{klass.name} ({module.relative_to(REPO_ROOT).as_posix()})"
+                    found.setdefault(node.name, []).append(where)
+    return found if set(found) >= set(PULL_SURFACE) else {}
 
 
 def _callee_key(callee: ast.expr) -> str | None:
@@ -166,8 +164,9 @@ def test_a_backend_that_serves_the_pull_surface_answers_the_suite(package: Path)
     serving = _serving(package / "src")
     if not serving:
         pytest.skip(f"{package.name} implements no pull surface")
+    where = "; ".join(f"{method} in {', '.join(sorted(set(at)))}" for method, at in serving.items())
     assert _calls_the_suite(package / "tests"), (
-        f"{package.name} implements the pull surface in {', '.join(serving)} and nothing in its "
+        f"{package.name} implements the pull surface — {where} — and nothing in its "
         f"tests imports {SUITE} from {SUITE_MODULE} and calls it. Two backends written against "
         "the prose alone shipped the same confinement escape (#142); the probes are what that "
         "cost bought. Fill in a `ConformanceSubject` — `PosixGuestSubject` if the guest is Linux "
@@ -228,8 +227,9 @@ def test_no_package_builds_on_a_sibling_that_serves_the_pull_surface():
 def test_no_sample_implements_the_pull_surface():
     """A tripwire: `samples/09`'s backend is copyable, and refuses all three methods today."""
     serving = _serving(SAMPLES)
+    where = "; ".join(f"{method} in {', '.join(sorted(set(at)))}" for method, at in serving.items())
     assert not serving, (
-        f"{', '.join(serving)} implements the pull surface. Hold it to `maf_sandbox.conformance` "
+        f"a sample implements the pull surface — {where}. Hold it to `maf_sandbox.conformance` "
         "the way the packages are — from `tests/` at the root, where the sample's own tests "
         "live — and then relax this test to require that rather than to forbid the surface."
     )
