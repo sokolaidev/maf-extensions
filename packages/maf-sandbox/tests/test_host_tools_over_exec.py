@@ -17,6 +17,7 @@ import asyncio
 import importlib.util
 import json
 import posixpath
+import shlex
 import threading
 import time
 from pathlib import Path
@@ -38,6 +39,7 @@ from maf_sandbox import (
     dispatch_over_exec,
     guest_run_layout,
     host_tool_shim,
+    launcher_script,
     sandbox_tool,
 )
 
@@ -344,3 +346,103 @@ class TestTheGeneratedShim:
         assert "not an identifier" not in source
         # `call` reaches anything; resolution is the registry's, host-side.
         assert "def call(name, **arguments)" in source
+
+
+class TestWhatReviewFound:
+    """Five defects from #327's review, each pinned where it would come back."""
+
+    def test_a_tool_named_like_a_keyword_does_not_break_the_shim(self):
+        """`def class(...)` is a SyntaxError, and one bad wrapper takes every call with it."""
+        source = host_tool_shim({"class", "lookup", "import"})
+        compile(source, SHIM_MODULE, "exec")  # the whole point: it still parses
+        assert "def lookup(" in source
+        assert "def class(" not in source and "def import(" not in source
+
+    def test_a_tool_cannot_shadow_the_shim_s_own_machinery(self):
+        source = host_tool_shim({"call", "json", "_CALLS", "lookup"})
+        assert source.count("def call(name, **arguments)") == 1
+        assert "def json(" not in source
+        assert "def _CALLS(" not in source
+        assert "def lookup(" in source
+
+    def test_the_launcher_passes_one_argument_to_sh_however_the_path_reads(self):
+        """Quoting fragments inside an already quoted `sh -c '…'` ends the outer argument."""
+        layout = guest_run_layout("/maf-sandbox/work/run 1")
+        command = launcher_script(layout).splitlines()[-1]
+        tokens = shlex.split(command.removesuffix(" &"))
+        assert tokens[:3] == ["nohup", "sh", "-c"]
+        assert layout.program in tokens[3], "the inner command did not survive as one argument"
+        assert layout.output in tokens[3]
+
+    def test_the_shim_publishes_a_request_only_once_it_is_whole(self, tmp_path: Path):
+        """`open` creates the file empty; a poll in that window would refuse a valid call."""
+        source = host_tool_shim()
+        assert "os.replace(" in source, "the request is published without an atomic rename"
+        module_path = tmp_path / SHIM_MODULE
+        module_path.write_text(source, encoding="utf-8")
+        spec = importlib.util.spec_from_file_location("maf_host_tools_atomic", module_path)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        request = tmp_path / CALLS_DIRECTORY / "0001.request.json"
+        seen: list[str] = []
+
+        def poll_like_the_supervisor() -> None:
+            """Read the first thing that appears, then answer — whatever it turned out to be.
+
+            Answering unconditionally is what keeps this test *fast* when it fails: a watcher
+            that gave up on an unparseable request would leave `call` blocking for the shim's
+            own five-minute patience, and a hang reads as a hung suite rather than as a defect.
+            """
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if request.exists():
+                    seen.append(request.read_text(encoding="utf-8"))
+                    (tmp_path / CALLS_DIRECTORY / "0001.response.json").write_text(
+                        json.dumps({"value": None}), encoding="utf-8"
+                    )
+                    return
+                time.sleep(0.001)
+
+        watcher = threading.Thread(target=poll_like_the_supervisor)
+        watcher.start()
+        module.call("anything", padding="x" * 200_000)
+        watcher.join(timeout=5)
+        assert seen, "nothing was ever published"
+        try:
+            published = json.loads(seen[0])
+        except json.JSONDecodeError:
+            pytest.fail(
+                f"the supervisor saw a request that was not yet whole: {seen[0][:40]!r} — a "
+                "valid call would have been answered with a refusal it could never retry"
+            )
+        assert published["name"] == "anything"
+
+    def test_starting_the_program_spends_the_same_deadline_the_run_does(self):
+        """A slow launcher must not hand supervision a second full timeout."""
+
+        class _SlowToStart(_ScriptedGuest):
+            async def exec(self, command, *, working_directory: str, timeout: float):
+                await asyncio.sleep(0.15)
+                return await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+
+        guest = _SlowToStart([], finish=False)
+        began = time.monotonic()
+        with pytest.raises(TimeoutError):
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert time.monotonic() - began < 0.35, "the launcher's time was not the run's time"
+
+    def test_the_poll_never_sleeps_past_the_deadline(self):
+        """A long interval against a short bound: the deadline is what has to win."""
+        guest = _ScriptedGuest([], finish=False)
+        began = time.monotonic()
+        with pytest.raises(TimeoutError):
+            asyncio.run(
+                dispatch_over_exec(
+                    guest, HostToolRun(_registry()), _LAYOUT, timeout=0.05, poll_interval=5.0
+                )
+            )
+        assert time.monotonic() - began < 1.0, "one poll interval outlasted the whole timeout"

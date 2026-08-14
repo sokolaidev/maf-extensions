@@ -78,6 +78,7 @@ from ._host_tools_over_exec import (
     dispatch_over_exec,
     guest_run_layout,
     host_tool_shim,
+    launcher_script,
 )
 from ._outputs import (
     MAX_ARTIFACT_NAME_BYTES,
@@ -210,6 +211,7 @@ __all__ = [
     "error_detail",
     "guest_run_layout",
     "host_tool_shim",
+    "launcher_script",
     "landing_outputs",
     "make_file_system_sink",
     "meets_floor",

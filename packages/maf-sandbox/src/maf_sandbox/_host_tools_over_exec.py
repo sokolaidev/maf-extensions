@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import keyword
 import logging
 import posixpath
 import time
@@ -113,14 +114,15 @@ def host_tool_shim(names: frozenset[str] | set[str] | tuple[str, ...] = ()) -> s
 
     ``names`` only adds convenience wrappers; it grants nothing. Resolution happens host-side
     against the registry, so a name omitted here is still callable through :func:`call` and a
-    name invented here still resolves to a refusal.
+    name invented here still resolves to a refusal. That is what makes the filtering below
+    safe: a name this cannot spell as a function is not a name a guest cannot reach.
     """
     wrappers = "\n\n".join(
         f"def {name}(**arguments):\n"
         f'    """Dispatch to the host tool {name!r}."""\n'
         f"    return call({name!r}, **arguments)"
         for name in sorted(names)
-        if name.isidentifier()
+        if _spellable(name)
     )
     return _SHIM_SOURCE.format(
         calls=CALLS_DIRECTORY,
@@ -128,6 +130,35 @@ def host_tool_shim(names: frozenset[str] | set[str] | tuple[str, ...] = ()) -> s
         poll=_GUEST_POLL_SECONDS,
         wrappers=f"\n\n{wrappers}\n" if wrappers else "",
     )
+
+
+#: Names the generated module needs for itself. A wrapper called `call` would replace the one
+#: function every dispatch goes through; one called `json` or `_CALLS` would shadow machinery
+#: just as completely, and the failure would look like a broken tool rather than a name clash.
+_SHIM_RESERVED = frozenset(
+    {
+        "call",
+        "json",
+        "os",
+        "time",
+        "HostToolError",
+        "_HERE",
+        "_CALLS",
+        "_TIMEOUT",
+        "_POLL",
+        "_counter",
+    }
+)
+
+
+def _spellable(name: str) -> bool:
+    """Whether ``name`` can be a function in the generated module without breaking it.
+
+    A keyword is the sharp case: ``def class(...)`` is a ``SyntaxError``, so one registered
+    tool named ``class`` would take the whole shim down and with it every other call. Soft
+    keywords (``match``, ``case``, ``type``) parse as function names and are allowed.
+    """
+    return name.isidentifier() and not keyword.iskeyword(name) and name not in _SHIM_RESERVED
 
 
 _SHIM_SOURCE = '''\
@@ -161,8 +192,13 @@ def call(name, **arguments):
     request = os.path.join(_CALLS, identifier + ".request.json")
     response = os.path.join(_CALLS, identifier + ".response.json")
     payload = json.dumps({{"id": identifier, "name": name, "arguments": arguments}})
-    with open(request, "w", encoding="utf-8") as handle:
+    # Written aside and renamed: `open` creates the file empty, and a supervisor polling in
+    # that window would read no JSON and answer this call with a refusal it can never retry.
+    # `os.replace` is atomic on every platform this runs on.
+    staged = request + ".part"
+    with open(staged, "w", encoding="utf-8") as handle:
         handle.write(payload)
+    os.replace(staged, request)
     deadline = time.monotonic() + _TIMEOUT
     while time.monotonic() < deadline:
         try:
@@ -194,18 +230,23 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
     different launcher; that is a backend's business, and this one is a helper rather than a
     protocol.
     """
+    # Built whole, then quoted once. Quoting the fragments and pasting them inside an already
+    # quoted `sh -c '…'` is the classic version of this bug: the first inner quote *ends* the
+    # outer argument, so a run directory with a space in it splits the command and the program
+    # never starts.
+    inner = (
+        f"{interpreter} {_quote(layout.program)} > {_quote(layout.output)} 2>&1; "
+        f"printf %s $? > {_quote(layout.exit_code)}"
+    )
     return (
-        "#!/bin/sh\n"
-        f"cd {_quote(layout.directory)}\n"
-        f"nohup sh -c '{interpreter} {_quote(layout.program)} "
-        f"> {_quote(layout.output)} 2>&1; printf %s $? > {_quote(layout.exit_code)}' "
-        ">/dev/null 2>&1 &\n"
+        f"#!/bin/sh\ncd {_quote(layout.directory)}\nnohup sh -c {_quote(inner)} >/dev/null 2>&1 &\n"
     )
 
 
-def _quote(path: str) -> str:
-    """Single-quote a guest path for `sh`. Paths here come from a kind, not from a guest."""
-    return "'" + path.replace("'", "'\\''") + "'"
+def _quote(text: str) -> str:
+    """Single-quote for `sh`, escaping any quote inside — safe to nest, because it is applied
+    to the finished string rather than to its parts."""
+    return "'" + text.replace("'", "'\\''") + "'"
 
 
 async def dispatch_over_exec(
@@ -243,6 +284,9 @@ async def dispatch_over_exec(
             that point is in the message; the process may still be running, and disposing of
             the sandbox is what stops it.
     """
+    # Before `exec`, not after: the bound is on the whole program, and a launcher that takes
+    # most of it would otherwise hand supervision a second full timeout to spend.
+    deadline = time.monotonic() + timeout
     await sandbox.write_file(layout.launcher, launcher_script(layout, interpreter))
     started = await sandbox.exec(
         f"sh {_quote(layout.launcher)}",
@@ -256,7 +300,6 @@ async def dispatch_over_exec(
             exit_code=started.exit_code,
         )
 
-    deadline = time.monotonic() + timeout
     served = 0
     while True:
         finished = await _read_if_present(sandbox, layout, layout.exit_code, cap=32)
@@ -274,7 +317,9 @@ async def dispatch_over_exec(
                 f"the guest program did not finish within {timeout:g}s. Output so far: "
                 f"{_as_text(output)[:2000]}"
             )
-        await asyncio.sleep(poll_interval)
+        # Clamped: an unclamped sleep overruns the deadline by a whole interval, so a 0.1s
+        # bound with a 10s interval would wait ten seconds to notice it had passed.
+        await asyncio.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
 
 
 async def _serve_next_request(
