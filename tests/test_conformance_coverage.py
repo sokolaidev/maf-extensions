@@ -33,17 +33,6 @@ CORE = "maf-sandbox"
 DEFAULT_CAPABILITY_NAMES = frozenset({"EXEC", "FILES_IN"})
 
 
-def _capability_members(node: ast.AST) -> frozenset[str]:
-    """Every ``Capability.X`` named anywhere under ``node``."""
-    return frozenset(
-        child.attr
-        for child in ast.walk(node)
-        if isinstance(child, ast.Attribute)
-        and isinstance(child.value, ast.Name)
-        and child.value.id == "Capability"
-    )
-
-
 def _module_constants(tree: ast.Module) -> dict[str, ast.expr]:
     """Module names bound exactly once, unconditionally, at the top level.
 
@@ -79,24 +68,48 @@ def _module_constants(tree: ast.Module) -> dict[str, ast.expr]:
 
 
 def _capabilities_of(
-    value: ast.expr, constants: dict[str, ast.expr]
+    value: ast.expr, constants: dict[str, ast.expr], seen: frozenset[str] = frozenset()
 ) -> frozenset[str] | None:
     """What one declaring expression says, or ``None`` when this file cannot tell.
 
-    Three shapes: the members written out, core's ``DEFAULT_CAPABILITIES``, and a module-level
-    constant holding either. The indirections are read because a name is as much a declaration
-    as a literal, and a guard a rename switches off is not one. Anything else — a call, a
-    parameter, a set built at runtime — is unreadable, which fails.
+    A grammar, matched **whole**, rather than a search for members inside it. Four shapes: a
+    literal collection of ``Capability`` members, ``frozenset(...)`` or ``set(...)`` around
+    one, a name — ``DEFAULT_CAPABILITIES`` or a module constant — and a union of those.
+
+    Whole matters more than the shapes do. Reading the members out of an expression and
+    ignoring the rest accepts ``frozenset({Capability.EXEC}) | _decided_at_runtime()`` as
+    ``{EXEC}``, and a runtime half that adds ``FILES_OUT`` then declares a pull surface this
+    file has already filed as absent. Anything the grammar does not cover answers ``None``.
     """
-    members = _capability_members(value)
-    if members:
-        return members
+    if isinstance(value, ast.Set | ast.List | ast.Tuple):
+        members = frozenset(
+            element.attr
+            for element in value.elts
+            if isinstance(element, ast.Attribute)
+            and isinstance(element.value, ast.Name)
+            and element.value.id == "Capability"
+        )
+        return members if len(members) == len(value.elts) else None
+    if isinstance(value, ast.Call):
+        callee = value.func
+        wrapper = isinstance(callee, ast.Name) and callee.id in {"frozenset", "set"}
+        if not wrapper or value.keywords or len(value.args) > 1:
+            return None
+        return (
+            frozenset()
+            if not value.args
+            else _capabilities_of(value.args[0], constants, seen)
+        )
+    if isinstance(value, ast.BinOp) and isinstance(value.op, ast.BitOr):
+        left = _capabilities_of(value.left, constants, seen)
+        right = _capabilities_of(value.right, constants, seen)
+        return None if left is None or right is None else left | right
     if isinstance(value, ast.Name):
         if value.id == "DEFAULT_CAPABILITIES":
             return DEFAULT_CAPABILITY_NAMES
         constant = constants.get(value.id)
-        if constant is not None and not isinstance(constant, ast.Name):
-            return _capabilities_of(constant, constants)
+        if constant is not None and value.id not in seen:
+            return _capabilities_of(constant, constants, seen | {value.id})
     return None
 
 
@@ -193,53 +206,85 @@ def _backends(root: Path) -> list[tuple[str, str, frozenset[str] | None]]:
     return found
 
 
-def _collected_calls(module: Path) -> frozenset[str]:
-    """Every function called from inside a test pytest would collect in ``module``.
+def _collectable_class(klass: ast.ClassDef) -> bool:
+    """pytest's rule, both halves: named ``Test*``, and no constructor.
 
-    Lexical containment in a collected test, not merely presence in the file. A call left
-    behind in a helper whose test was renamed away still parses, and a guard that counts it
-    goes green while the suite no longer runs — the failure mode of every grep-shaped check.
+    The second half is not a detail — a ``Test*`` class that grows an ``__init__`` is warned
+    about and **skipped**, so an initializer added for convenience silently stops the test
+    running while every name still reads like one.
+    """
+    return klass.name.startswith("Test") and not any(
+        isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        and node.name in {"__init__", "__new__"}
+        for node in klass.body
+    )
+
+
+def _names_used(node: ast.AST) -> frozenset[str]:
+    """Every name called or referenced in ``node``'s own body, **not** inside a nested def.
+
+    A nested definition is only that: defining ``scenario`` does not run it. Its body is
+    reached through :func:`_reachable_calls` if something executes it, and not otherwise.
+    """
+    used: set[str] = set()
+    for child in ast.iter_child_nodes(node):
+        if isinstance(
+            child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.Lambda
+        ):
+            continue
+        if isinstance(child, ast.Call):
+            callee = child.func
+            if isinstance(callee, ast.Name):
+                used.add(callee.id)
+            elif isinstance(callee, ast.Attribute):
+                used.add(callee.attr)
+        elif isinstance(child, ast.Name):
+            # A bare reference counts: `asyncio.run(scenario())` calls it, and
+            # `loop.run_until_complete(scenario())` or a bare `run(scenario)` hands it on.
+            used.add(child.id)
+        used |= _names_used(child)
+    return frozenset(used)
+
+
+def _reachable_calls(test: ast.FunctionDef | ast.AsyncFunctionDef) -> frozenset[str]:
+    """What running ``test`` reaches: its own body, plus local helpers it actually executes."""
+    helpers = {
+        node.name: node
+        for node in ast.walk(test)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node is not test
+    }
+    reached = set(_names_used(test))
+    expanded: set[str] = set()
+    while pending := {name for name in reached if name in helpers} - expanded:
+        for name in pending:
+            expanded.add(name)
+            reached |= _names_used(helpers[name])
+    return frozenset(reached)
+
+
+def _collected_calls(module: Path) -> frozenset[str]:
+    """Every name a test pytest collects in ``module`` reaches when it runs.
+
+    Two conditions, and the guard is only as good as the weaker one. **Collected**: a `test*`
+    function, with `Test*` and no constructor for every class around it. **Reached**: called
+    from the test's own body, or from a local helper the body executes — because a call sitting
+    in a nested function nobody invokes never runs, and counting it is the failure mode of
+    every grep-shaped check.
     """
     called: set[str] = set()
 
-    def collectable_class(klass: ast.ClassDef) -> bool:
-        """pytest's rule, both halves: named ``Test*``, and no constructor.
-
-        The second half is not a detail — a `Test*` class that grows an ``__init__`` is warned
-        about and **skipped**, so an initializer added for convenience silently stops the suite
-        running while every name still reads like a test.
-        """
-        return klass.name.startswith("Test") and not any(
-            isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
-            and node.name in {"__init__", "__new__"}
-            for node in klass.body
-        )
-
-    def visit(node: ast.AST, in_class: bool, inside_test: bool) -> None:
+    def visit(node: ast.AST, in_class: bool) -> None:
         for child in ast.iter_child_nodes(node):
-            collected = inside_test
             if isinstance(child, ast.ClassDef):
-                visit(child, in_class and collectable_class(child), inside_test)
-                continue
-            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef):
-                # A `test*` function pytest reaches, or anything nested inside one — a helper
-                # defined in a collected test runs when that test does.
-                collected = inside_test or (child.name.startswith("test") and in_class)
-            if isinstance(child, ast.Call) and collected:
-                callee = child.func
-                name = (
-                    callee.id
-                    if isinstance(callee, ast.Name)
-                    else callee.attr
-                    if isinstance(callee, ast.Attribute)
-                    else None
-                )
-                if name:
-                    called.add(name)
-            visit(child, in_class, collected)
+                visit(child, in_class and _collectable_class(child))
+            elif isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef):
+                if child.name.startswith("test") and in_class:
+                    called.update(_reachable_calls(child))
+            else:
+                visit(child, in_class)
 
     # `in_class` starts true: a module-level `test*` function has no class to disqualify it.
-    visit(ast.parse(module.read_text(encoding="utf-8")), True, False)
+    visit(ast.parse(module.read_text(encoding="utf-8")), True)
     return frozenset(called)
 
 
