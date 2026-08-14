@@ -5,9 +5,9 @@ say how a dispatch *reaches* the host, and the shipped backends have no channel 
 guests speak an exit code, stdout, and a stat-and-read pull surface.  This is that channel,
 built from those primitives and nothing else.
 
-The shape, in one paragraph.  A kind writes the guest program, the generated shim beside it,
-and a launcher, into a **fresh per-run directory**; :func:`dispatch_over_exec` starts the
-launcher detached and then supervises — polling for the next request file, resolving it through
+The shape, in one paragraph.  A kind writes the guest program and the generated shim beside
+it, into a **fresh per-run directory**; :func:`dispatch_over_exec` writes the launcher, starts
+it detached, and then supervises — polling for the next request file, resolving it through
 :class:`~maf_sandbox.HostToolRegistry`, and writing the answer back — until the program leaves
 its exit marker or the deadline passes.
 
@@ -34,12 +34,14 @@ Three costs, named here rather than discovered later:
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 import keyword
 import logging
 import posixpath
 import time
+import unicodedata
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
@@ -132,37 +134,60 @@ def host_tool_shim(names: frozenset[str] | set[str] | tuple[str, ...] = ()) -> s
     )
 
 
-#: Names the generated module needs for itself. A wrapper called `call` would replace the one
-#: function every dispatch goes through; one called `json` or `_CALLS` would shadow machinery
-#: just as completely, and the failure would look like a broken tool rather than a name clash.
-_SHIM_RESERVED = frozenset(
-    {
-        "call",
-        "json",
-        "os",
-        "time",
-        "open",
-        "OSError",
-        "ValueError",
-        "int",
-        "HostToolError",
-        "_HERE",
-        "_CALLS",
-        "_TIMEOUT",
-        "_POLL",
-        "_counter",
-    }
-)
+def _shim_globals() -> frozenset[str]:
+    """Every global name the generated shim reads, taken from the shim itself.
+
+    Derived rather than listed. A hand-kept list is a second copy of the shim's dependencies
+    that nothing updates: `open`, `OSError`, `ValueError` and `int` were each missing from one,
+    and each would have replaced machinery a dispatch needs — a tool named `open` breaks every
+    call at `with open(...)`, before a request is ever published.
+    """
+    tree = ast.parse(_SHIM_SOURCE.format(calls="", timeout=0.0, poll=0.0, wrappers=""))
+    return (
+        frozenset(
+            node.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+        )
+        | frozenset(
+            node.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)
+        )
+        | frozenset(
+            alias.asname or alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Import | ast.ImportFrom)
+            for alias in node.names
+        )
+        | frozenset(
+            target.id
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            for target in node.targets
+            if isinstance(target, ast.Name)
+        )
+    )
 
 
 def _spellable(name: str) -> bool:
     """Whether ``name`` can be a function in the generated module without breaking it.
 
-    A keyword is the sharp case: ``def class(...)`` is a ``SyntaxError``, so one registered
-    tool named ``class`` would take the whole shim down and with it every other call. Soft
-    keywords (``match``, ``case``, ``type``) parse as function names and are allowed.
+    Three ways it cannot. A **keyword**: `def class(...)` is a `SyntaxError`, so one tool named
+    that takes the whole shim down and every other call with it. A name the shim **uses
+    itself**: a wrapper called `open` or `json` replaces machinery every dispatch needs, and
+    the failure reads as a broken tool rather than a name clash. And a name that **normalises
+    onto** one of those: Python NFKC-normalises identifiers at compile time, so `ｃall`
+    is written `call` by the time it is a global.
+
+    Soft keywords (`match`, `case`, `type`) parse as function names and are allowed.
     """
-    return name.isidentifier() and not keyword.iskeyword(name) and name not in _SHIM_RESERVED
+    normalised = unicodedata.normalize("NFKC", name)
+    return (
+        name.isidentifier()
+        and not keyword.iskeyword(normalised)
+        and normalised not in _shim_globals()
+    )
 
 
 _SHIM_SOURCE = '''\
@@ -239,7 +264,7 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
     # outer argument, so a run directory with a space in it splits the command and the program
     # never starts.
     inner = (
-        f"{interpreter} {_quote(layout.program)} > {_quote(layout.output)} 2>&1; "
+        f"{_quote(interpreter)} {_quote(layout.program)} > {_quote(layout.output)} 2>&1; "
         f"printf %s $? > {_quote(layout.exit_code)}"
     )
     return (
@@ -287,6 +312,13 @@ async def dispatch_over_exec(
         TimeoutError: The program left no exit marker before the deadline. Its output up to
             that point is in the message; the process may still be running, and disposing of
             the sandbox is what stops it.
+
+    **A dispatch already under way is never cancelled**, and the deadline is checked before
+    starting one rather than during it. A dispatched body runs in the host process and may
+    have acted already — written a row, sent a message — so cancelling it mid-effect would
+    leave the effect and lose the record of it. The cost is stated rather than hidden: a tool
+    that blocks forever holds the supervisor past ``timeout``, and bounding *that* belongs to
+    the host tool, which is the only code that knows what it is waiting on.
     """
     # Before `exec`, not after: the bound is on the whole program, and a launcher that takes
     # most of it would otherwise hand supervision a second full timeout to spend.
@@ -295,7 +327,9 @@ async def dispatch_over_exec(
     started = await sandbox.exec(
         f"sh {_quote(layout.launcher)}",
         working_directory=layout.directory,
-        timeout=timeout,
+        # What is left after writing the launcher, not another full bound: on a remote backend
+        # that upload is a round trip, and handing `exec` the original would add it back.
+        timeout=max(0.0, deadline - time.monotonic()),
     )
     if started.exit_code != 0:
         return ExecResult(
@@ -314,7 +348,11 @@ async def dispatch_over_exec(
                 stderr="",
                 exit_code=_exit_code_from(finished),
             )
-        served = await _serve_next_request(sandbox, run, layout, served)
+        if time.monotonic() < deadline:
+            # Before serving, not only after. Serving awaits the tool, and a request arriving
+            # a millisecond before the deadline would otherwise start one — so the bound would
+            # be enforced next time round the loop, which is whenever that tool returns.
+            served = await _serve_next_request(sandbox, run, layout, served)
         if time.monotonic() >= deadline:
             output = await _read_if_present(sandbox, layout, layout.output, cap=_output_cap(run))
             raise TimeoutError(
@@ -357,7 +395,10 @@ async def _answer(run: HostToolRun, body: str | _TooLarge, identifier: str) -> s
         )
     try:
         parsed = cast(object, json.loads(body))
-    except ValueError:
+    except (ValueError, RecursionError):
+        # `RecursionError` is not a `ValueError`: a deeply nested payload, well under the size
+        # cap, would otherwise escape the supervisor and leave the detached guest waiting for
+        # an answer that is never written.
         logger.warning("host tools: request %s is not JSON, refusing it", identifier)
         return json.dumps({"refusal": "Error: this host-tool request is not valid JSON"})
     if not isinstance(parsed, dict):

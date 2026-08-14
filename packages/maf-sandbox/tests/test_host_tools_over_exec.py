@@ -278,6 +278,94 @@ class TestTheSupervisorsOwnBounds:
         _run(guest, HostToolRun(_registry()))
         assert guest.answers[0]["value"] == 2
 
+    def test_starting_the_program_spends_the_same_deadline_the_run_does(self):
+        """A slow launcher must not hand supervision a second full timeout."""
+
+        class _SlowToStart(_ScriptedGuest):
+            async def exec(self, command, *, working_directory: str, timeout: float):
+                await asyncio.sleep(0.15)
+                return await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+
+        guest = _SlowToStart([], finish=False)
+        began = time.monotonic()
+        with pytest.raises(TimeoutError):
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert time.monotonic() - began < 0.35, "the launcher's time was not the run's time"
+
+    def test_the_poll_never_sleeps_past_the_deadline(self):
+        """A long interval against a short bound: the deadline is what has to win."""
+        guest = _ScriptedGuest([], finish=False)
+        began = time.monotonic()
+        with pytest.raises(TimeoutError):
+            asyncio.run(
+                dispatch_over_exec(
+                    guest, HostToolRun(_registry()), _LAYOUT, timeout=0.05, poll_interval=5.0
+                )
+            )
+        assert time.monotonic() - began < 1.0, "one poll interval outlasted the whole timeout"
+
+    def test_the_launcher_upload_is_spent_from_the_same_budget(self):
+        """`exec` gets what is left after writing the launcher, not another full timeout."""
+        seen: list[float] = []
+
+        class _SlowUpload(_ScriptedGuest):
+            async def write_file(self, path: str, content):
+                await asyncio.sleep(0.1)
+                await super().write_file(path, content)
+
+            async def exec(self, command, *, working_directory: str, timeout: float):
+                seen.append(timeout)
+                return await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+
+        guest = _SlowUpload([])
+        _run(guest, HostToolRun(_registry()), timeout=1.0)
+        assert seen and seen[0] < 1.0, "the upload's time was handed back to `exec`"
+
+    def test_a_request_is_not_served_once_the_deadline_has_passed(self):
+        """Serving awaits the tool, so the check has to happen before it, not after."""
+        dispatched: list[str] = []
+
+        def counting(left: int, right: int) -> int:
+            dispatched.append("add")
+            return left + right
+
+        stamped = sandbox_tool(source=SourceIntegrity.TRUSTED, sink=None, identity=Identity.APP)
+        registry = HostToolRegistry()
+        registry.register(stamped(counting), name="add")
+
+        guest = _ScriptedGuest([("add", {"left": 1, "right": 1})], finish=False)
+        with pytest.raises(TimeoutError):
+            asyncio.run(
+                dispatch_over_exec(
+                    guest, HostToolRun(registry), _LAYOUT, timeout=0.0, poll_interval=0.0
+                )
+            )
+        assert dispatched == [], "a dispatch was started after the run's own deadline"
+
+
+class TestTheLauncher:
+    """What the guest is actually asked to run, and whether a shell can read it."""
+
+    def test_it_passes_one_argument_to_sh_however_the_path_reads(self):
+        """Quoting fragments inside an already quoted `sh -c '…'` ends the outer argument."""
+        layout = guest_run_layout("/maf-sandbox/work/run 1")
+        command = launcher_script(layout).splitlines()[-1]
+        tokens = shlex.split(command.removesuffix(" &"))
+        assert tokens[:3] == ["nohup", "sh", "-c"]
+        assert layout.program in tokens[3], "the inner command did not survive as one argument"
+        assert layout.output in tokens[3]
+
+    def test_the_interpreter_is_a_shell_word_like_every_path(self):
+        """An interpreter path with a space is split unless it is quoted like the rest."""
+        layout = guest_run_layout("/maf-sandbox/work/run-1")
+        command = launcher_script(layout, "/opt/py 3.12/bin/python3").splitlines()[-1]
+        inner = shlex.split(command.removesuffix(" &"))[3]
+        assert shlex.split(inner)[0] == "/opt/py 3.12/bin/python3"
+
 
 class TestTheGeneratedShim:
     """The guest half, run for real — the seam where a name mismatch would hide."""
@@ -347,10 +435,6 @@ class TestTheGeneratedShim:
         # `call` reaches anything; resolution is the registry's, host-side.
         assert "def call(name, **arguments)" in source
 
-
-class TestWhatReviewFound:
-    """Five defects from #327's review, each pinned where it would come back."""
-
     def test_a_tool_named_like_a_keyword_does_not_break_the_shim(self):
         """`def class(...)` is a SyntaxError, and one bad wrapper takes every call with it."""
         source = host_tool_shim({"class", "lookup", "import"})
@@ -364,15 +448,6 @@ class TestWhatReviewFound:
         assert "def json(" not in source
         assert "def _CALLS(" not in source
         assert "def lookup(" in source
-
-    def test_the_launcher_passes_one_argument_to_sh_however_the_path_reads(self):
-        """Quoting fragments inside an already quoted `sh -c '…'` ends the outer argument."""
-        layout = guest_run_layout("/maf-sandbox/work/run 1")
-        command = launcher_script(layout).splitlines()[-1]
-        tokens = shlex.split(command.removesuffix(" &"))
-        assert tokens[:3] == ["nohup", "sh", "-c"]
-        assert layout.program in tokens[3], "the inner command did not survive as one argument"
-        assert layout.output in tokens[3]
 
     def test_the_shim_publishes_a_request_only_once_it_is_whole(self, tmp_path: Path):
         """`open` creates the file empty; a poll in that window would refuse a valid call."""
@@ -419,30 +494,28 @@ class TestWhatReviewFound:
             )
         assert published["name"] == "anything"
 
-    def test_starting_the_program_spends_the_same_deadline_the_run_does(self):
-        """A slow launcher must not hand supervision a second full timeout."""
 
-        class _SlowToStart(_ScriptedGuest):
-            async def exec(self, command, *, working_directory: str, timeout: float):
-                await asyncio.sleep(0.15)
-                return await super().exec(
-                    command, working_directory=working_directory, timeout=timeout
-                )
+class TestNamesThatAreNotWhatTheyLookLike:
+    """Identifier normalisation, where a wrapper name and a shim global can be the same name."""
 
-        guest = _SlowToStart([], finish=False)
-        began = time.monotonic()
-        with pytest.raises(TimeoutError):
-            _run(guest, HostToolRun(_registry()), timeout=0.2)
-        assert time.monotonic() - began < 0.35, "the launcher's time was not the run's time"
+    def test_a_fullwidth_spelling_cannot_shadow_the_machinery(self):
+        """Python NFKC-normalises identifiers at compile time; `ｃａｌｌ` becomes `call`."""
+        source = host_tool_shim({"\uff43\uff41\uff4c\uff4c", "lookup"})
+        assert source.count("def call(name, **arguments)") == 1
+        assert "\uff43\uff41\uff4c\uff4c" not in source
+        assert "def lookup(" in source
+        compile(source, SHIM_MODULE, "exec")
 
-    def test_the_poll_never_sleeps_past_the_deadline(self):
-        """A long interval against a short bound: the deadline is what has to win."""
-        guest = _ScriptedGuest([], finish=False)
-        began = time.monotonic()
-        with pytest.raises(TimeoutError):
-            asyncio.run(
-                dispatch_over_exec(
-                    guest, HostToolRun(_registry()), _LAYOUT, timeout=0.05, poll_interval=5.0
-                )
-            )
-        assert time.monotonic() - began < 1.0, "one poll interval outlasted the whole timeout"
+    def test_two_names_that_normalise_together_produce_one_wrapper(self):
+        source = host_tool_shim({"lookup", "\uff4co\uff4fkup"})
+        assert source.count("def lookup(") == 1
+
+
+class TestWhatTheSupervisorRefusesToParse:
+    def test_a_deeply_nested_request_is_refused_rather_than_raised(self):
+        """`json.loads` raises `RecursionError`, not `ValueError`, and it is under the size cap."""
+        nested = ("[" * 60_000 + "]" * 60_000).encode("utf-8")
+        limits = TransferLimits(max_bytes_per_file=1 << 20, max_total_bytes=1 << 20, max_files=8)
+        guest = _ScriptedGuest([("add", {"left": 1, "right": 1})], raw_request=nested)
+        _run(guest, HostToolRun(_registry(response_limits=limits)))
+        assert "not valid JSON" in guest.answers[0]["refusal"]
