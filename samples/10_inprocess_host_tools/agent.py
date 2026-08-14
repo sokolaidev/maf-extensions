@@ -111,7 +111,7 @@ def act_two_aggregate(registry: HostToolRegistry) -> frozenset[Identity]:
     return aggregate.identities
 
 
-def act_three_permitted(identities: frozenset[Identity]) -> None:
+def act_three_permitted(identities: frozenset[Identity]) -> InProcessSandboxBackend:
     """A router that permits this, and the spec the aggregate feeds.
 
     `identities` is not re-derived from the registry here — it is carried from the aggregate,
@@ -138,9 +138,12 @@ def act_three_permitted(identities: frozenset[Identity]) -> None:
     print(f"  ensure_can_serve({KIND!r}) returned. The kind may attach.")
     print("  One call is the whole of a host's wiring test — and the whole of this sample's")
     print("  happy path, because what a dispatch would do next has no transport yet.\n")
+    # Handed back so `main` can read what it recorded rather than assert what it expects:
+    # `InProcessSandboxBackend` appends to `keys` on every `acquire`.
+    return backend
 
 
-def act_four_refused(identities: frozenset[Identity]) -> None:
+def act_four_refused(identities: frozenset[Identity]) -> InProcessSandboxBackend:
     """The two ways a host says no, on the two axes, both before a sandbox exists."""
     print("== 4. The two refusals ==\n")
 
@@ -207,14 +210,26 @@ def act_four_refused(identities: frozenset[Identity]) -> None:
     print("    and the same denied_identities router serves the spec built from it.")
     print("    Least privilege is what a host registers, and the cost of that is real:")
     print("    the spec is frozen, the registry sealed, and there is no unregister.\n")
+    return backend
 
 
 def main() -> int:
     """Four acts, in the order a host meets them."""
+    # Both counts in the footer are read back from real state rather than written down. The
+    # acts, because a literal would still say four after one stopped running; the sandboxes,
+    # because a literal zero is not an observation of anything — and that number is the
+    # sample's central claim, so it is the last one that may be asserted rather than measured.
+    done: list[str] = []
+    backends: list[InProcessSandboxBackend] = []
+
     registry = act_one_registration()
+    done.append("registration")
     identities = act_two_aggregate(registry)
-    act_three_permitted(identities)
-    act_four_refused(identities)
+    done.append("aggregate")
+    backends.append(act_three_permitted(identities))
+    done.append("permitted")
+    backends.append(act_four_refused(identities))
+    done.append("refused")
 
     print("== What is not here ==\n")
     print("  A dispatch. No shipped backend declares Capability.HOST_TOOLS, and the")
@@ -222,11 +237,12 @@ def main() -> int:
     print("  Everything above is the half a host configures on day one regardless, and it")
     print("  is the half that decides whether the other half ever runs.\n")
 
-    # Every other sample's last line counts the sandboxes it disposed, and its check asserts
-    # that number is at least one. This one asserts the opposite, and the inverse is the whole
-    # claim: four acts of policy ran, and the backend was never asked for a sandbox — because
-    # all of it is decided at attach. A truncated run is caught the same way either way.
-    print("Completed 4 of 4 acts. Acquired 0 sandbox(es).")
+    # `InProcessSandboxBackend` appends to `keys` on every `acquire`, so this counts what the
+    # backends were actually asked for. Every other sample's footer counts the sandboxes it
+    # disposed and its check requires at least one; this one requires zero, because the claim
+    # is that all four acts are answered at attach and no backend is ever reached.
+    acquired = sum(len(backend.keys) for backend in backends)
+    print(f"Completed {len(done)} of 4 acts. Acquired {acquired} sandbox(es).")
     return 0
 
 

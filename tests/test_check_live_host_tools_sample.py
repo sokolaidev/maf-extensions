@@ -99,7 +99,7 @@ class TestTheRegistrationGate:
             "  registered: fetch_changelog",
             "  registered: rerun_failed_jobs, fetch_changelog",
         )
-        assert any("rerun_failed_jobs" in r and "must refuse" in r for r in check.assess(leaked)), (
+        assert any("unexpected ['rerun_failed_jobs']" in r for r in check.assess(leaked)), (
             check.assess(leaked)
         )
 
@@ -159,6 +159,56 @@ class TestTheTwoRefusals:
         assert any("permitted path" in r for r in check.assess(dropped))
 
 
+class TestWideningIsCaught:
+    """Equal, not contains — the distinction the whole "strict check" claim rests on.
+
+    A membership test sees a value disappear and cannot see one appear, so every case here
+    passed before the parsing was made exact. Widening a published surface is the direction
+    that matters: a tool nobody classified, an identity nobody denied, a confidentiality cap
+    nobody reconciled.
+    """
+
+    def test_an_extra_identity_does_not_pass_on_the_two_it_kept(self):
+        reasons = check.assess(_HEALTHY.replace("{app, user}", "{app, service, user}"))
+        assert any("expected exactly ['app', 'user']" in r for r in reasons), reasons
+
+    def test_a_second_outbound_cap_is_caught(self):
+        # The diagnostic always claimed caps "must arrive exactly as declared"; the code did
+        # not enforce it, so the message and the check disagreed.
+        reasons = check.assess(_HEALTHY.replace("{'public'}", "{'public', 'private'}"))
+        assert any("expected exactly ['public']" in r for r in reasons), reasons
+
+    def test_an_extra_registered_tool_is_caught(self):
+        reasons = check.assess(
+            _HEALTHY.replace("registered: fetch_changelog", "registered: sneaky, fetch_changelog")
+        )
+        assert any("unexpected ['sneaky']" in r for r in reasons), reasons
+
+    def test_a_renamed_tool_does_not_satisfy_the_original(self):
+        # `fetch_changelog_backup` contains `fetch_changelog`, so a substring test read the
+        # renamed tool as the one it replaced.
+        reasons = check.assess(_HEALTHY.replace("fetch_changelog,", "fetch_changelog_backup,"))
+        assert any("missing ['fetch_changelog']" in r for r in reasons), reasons
+
+    def test_a_scalar_leg_is_compared_as_a_token(self):
+        for original, tampered in (
+            ("result_integrity:  untrusted", "result_integrity:  not-untrusted"),
+            ("requires_approval: True", "requires_approval: True-ish"),
+        ):
+            reasons = check.assess(_HEALTHY.replace(original, tampered))
+            assert any("expected exactly" in r for r in reasons), (tampered, reasons)
+
+    def test_the_explanatory_suffix_is_still_allowed(self):
+        # `has_undeclared: False  (the gate refused the fourth)` — exact on the token, not on
+        # the rest of the line, or the sample could not annotate its own output.
+        assert check.assess(_HEALTHY) == []
+        annotated = _HEALTHY.replace(
+            "has_undeclared:    False  (the gate refused the fourth)",
+            "has_undeclared:    False  (because the gate turned the fourth away)",
+        )
+        assert check.assess(annotated) == []
+
+
 class TestTheNarrowedRegistry:
     """Act 4's way out: a smaller surface registered from the start, run rather than described.
 
@@ -182,11 +232,16 @@ class TestTheNarrowedRegistry:
         reasons = check.assess(
             _HEALTHY.replace("requires_approval=False", "requires_approval=True")
         )
-        assert any("requires_approval=False" in r for r in reasons), reasons
+        assert any("expected exactly 'False'" in r for r in reasons), reasons
+
+    def test_the_comma_the_sample_prints_is_not_read_as_the_value(self):
+        # `requires_approval=False,` sits mid-sentence, so the token carries the clause's comma.
+        # A verdict that turned on punctuation would be red on every healthy run.
+        assert check.assess(_HEALTHY) == []
 
     def test_user_surviving_the_narrowing_is_caught(self):
         reasons = check.assess(_HEALTHY.replace("identities={app}", "identities={app, user}"))
-        assert any("identities={app}" in r for r in reasons), reasons
+        assert any("expected exactly ['app']" in r for r in reasons), reasons
 
 
 class TestTheRunCompleted:
