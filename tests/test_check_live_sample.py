@@ -7,7 +7,10 @@ run that feeds it happens only on dispatch and after a release.
 
 These pin the two things that make the check worth having: it passes on a healthy run whose
 diagnostics carry the day counts and version lists that drift on their own, and it fails —
-naming the reason — on the two shapes a broken stack produces: no diagnostics, and no sandbox.
+naming the reason — on the shapes a broken stack produces: no diagnostics, no sandbox, and a
+run that linted against the CLI's built-in defaults because `bicepconfig.json` was never found
+(#308). That last one is the only shape here that looks entirely healthy, so it is the one the
+unit test has to carry: it costs nothing to catch here and a billable run to catch anywhere else.
 """
 
 from __future__ import annotations
@@ -30,6 +33,22 @@ I validated main.bicep and the Bicep compiler returned three diagnostics.
 - [error] no-unused-params @ main.bicep:21 — Parameter "environmentName" is declared but never used.
 - [warning] BCP035 @ main.bicep:31 — The "resource" declaration is missing the required property "sku".
 - [warning] use-recent-api-versions @ main.bicep:31 — '2023-01-01' is 1287 days old; use a newer API version.
+
+Disposed 1 sandbox(es).
+"""
+
+# The same run against an image whose `bicepconfig.json` is not at the root the tool writes to.
+# Bicep finds that file only by walking up from the source, so it is simply never read and every
+# rule falls back to its built-in default: `no-unused-params` reports at `warning` instead of the
+# configured `error`, and `use-recent-api-versions` — which the config switches on — is gone. The
+# compiler ran, SARIF parsed, diagnostics rendered, the sandbox came up and went away again. The
+# prose says "error" the way a model summarising two warnings would, so even the loose severity
+# match is satisfied. Nothing about this output is unhealthy except the rule set behind it.
+_STALE_IMAGE = """\
+I validated main.bicep and the Bicep compiler returned two diagnostics. Neither one is an error.
+
+- [warning] no-unused-params @ main.bicep:21 — Parameter "environmentName" is declared but never used.
+- [warning] BCP035 @ main.bicep:31 — The "resource" declaration is missing the required property "sku".
 
 Disposed 1 sandbox(es).
 """
@@ -59,8 +78,13 @@ class TestABrokenStackFails:
     def test_missing_diagnostics_fail_by_name(self):
         cleaned = "The file looks fine to me.\n\nDisposed 1 sandbox(es).\n"
         reasons = check.assess(cleaned)
-        assert any("no-unused-params" in r for r in reasons), reasons
-        assert any("BCP035" in r for r in reasons), reasons
+        # Keyed on the missing-rule wording rather than on the rule name alone: this output
+        # also trips the config check, whose message names `no-unused-params` too, and a bare
+        # substring test would pass on that reason even if this loop stopped running.
+        assert any("diagnostic 'no-unused-params' is not in the output" in r for r in reasons), (
+            reasons
+        )
+        assert any("diagnostic 'BCP035' is not in the output" in r for r in reasons), reasons
 
     def test_a_dropped_rule_is_named(self):
         reasons = check.assess(_HEALTHY.replace("no-unused-params", "some-other-rule"))
@@ -71,14 +95,16 @@ class TestABrokenStackFails:
 
     def test_a_run_with_no_error_severity_is_caught(self):
         # Rule ids present but no severity rendered — the level is half of what an agent acts on.
+        # Keyed on the severity check's own wording: the config check fails on this output too
+        # and its message contains `[error]`, so `"error" in r` alone would prove nothing.
         reasons = check.assess("no-unused-params and BCP035\nDisposed 1 sandbox(es).\n")
-        assert any("error" in r.lower() for r in reasons), reasons
+        assert any("no 'error' severity anywhere in the output" in r for r in reasons), reasons
 
     def test_a_warning_alone_does_not_satisfy_the_severity_check(self):
         # It keys on `error`, not on any severity word, so a run that rendered only a warning
-        # still fails — which is what keeps the check off the drift-prone `use-recent` warning.
+        # still fails.
         reasons = check.assess("[warning] BCP035 and no-unused-params\nDisposed 1 sandbox(es).\n")
-        assert any("error" in r.lower() for r in reasons), reasons
+        assert any("no 'error' severity anywhere in the output" in r for r in reasons), reasons
 
     def test_an_incomplete_run_has_no_disposed_line(self):
         reasons = check.assess("[error] no-unused-params\n[warning] BCP035\n")
@@ -86,3 +112,75 @@ class TestABrokenStackFails:
 
     def test_empty_output_fails_rather_than_passing_vacuously(self):
         assert check.assess("") != []
+
+
+class TestTheRuleSetTheRepositoryAskedFor:
+    """#308: a run that found no `bicepconfig.json` and linted against built-in defaults.
+
+    The failure the rest of this file cannot see. Sample 01 boots a disk image, which is a
+    snapshot of a registry tag rather than a live reference to it, so an image built before the
+    work-dir root moved keeps booting after the tool stops writing there. Nothing goes red on
+    its own: the compiler is real, the diagnostics are real, and only the rule set is weaker
+    than the repository asked for.
+    """
+
+    def test_a_stale_image_run_is_caught(self):
+        reasons = check.assess(_STALE_IMAGE)
+        assert any("bicepconfig.json was not discovered" in r for r in reasons), reasons
+
+    def test_a_stale_image_run_passes_every_other_assertion(self):
+        """Why this check had to exist rather than tightening one of the others.
+
+        Both required rule ids come back, a sandbox is created and disposed, and the word
+        `error` renders. Exactly one thing is wrong with the run, and before #308 nothing here
+        was looking at it.
+        """
+        assert len(check.assess(_STALE_IMAGE)) == 1, check.assess(_STALE_IMAGE)
+
+    def test_the_switched_on_rule_alone_is_enough(self):
+        # The model laid the severities out somewhere this cannot read, but kept the rule list.
+        # `use-recent-api-versions` cannot be reported at all without the config, so its
+        # presence settles the question on its own.
+        assert check.config_was_discovered(
+            "Diagnostics: no-unused-params, BCP035, use-recent-api-versions."
+        )
+
+    def test_the_promoted_severity_alone_is_enough(self):
+        # The mirror case: the drift-prone rule is missing from the summary and the promotion is
+        # still visible. A healthy run must not go red for dropping the one rule this check has
+        # never been allowed to depend on.
+        dropped = (
+            "\n".join(
+                line for line in _HEALTHY.splitlines() if "use-recent-api-versions" not in line
+            )
+            + "\n"
+        )
+        assert check.config_was_discovered(dropped)
+        assert check.assess(dropped) == []
+
+    def test_a_reformatted_table_row_still_counts(self):
+        # The workload renders `[<level>] <rule> @ <loc>`, but a model asked to list diagnostics
+        # may tabulate them. Line-scoped rather than adjacent, so both shapes read the same.
+        assert check.config_was_discovered(
+            "| no-unused-params | [error] | main.bicep:21 | declared but never used |"
+        )
+
+    def test_prose_denying_the_error_does_not_count(self):
+        # Why the brackets are matched and not the bare word. Without the config this sentence
+        # is *true* of that rule, and it is the kind of thing a model writes unprompted.
+        assert not check.config_was_discovered(
+            "- [warning] no-unused-params @ main.bicep:21 — not an error, only a warning."
+        )
+
+    def test_an_error_on_another_line_does_not_count(self):
+        # Some other diagnostic being an error says nothing about whether this one was promoted.
+        assert not check.config_was_discovered(
+            "- [error] BCP057 @ main.bicep:9 — the name 'foo' does not exist.\n"
+            "- [warning] no-unused-params @ main.bicep:21 — declared but never used.\n"
+        )
+
+    def test_a_healthy_run_shows_both_tells(self):
+        # The premise the either-or rests on: on a good run neither signal is doing the work
+        # alone, so losing one to model formatting costs nothing.
+        assert check._CONFIG_ONLY_RULE in _HEALTHY
+        assert check._PROMOTED_LINT_ERROR.search(_HEALTHY) is not None

@@ -26,7 +26,9 @@ Put the file anywhere else and nothing goes red. Measured against this image, on
 | `use-recent-api-versions` | reported, with the age in days | **absent** — the config is what switches it on |
 | SARIF | parses, diagnostics render | parses, diagnostics render |
 
-Both runs look entirely healthy. The second is simply linting against a weaker rule set than the repository asked for, and the only visible tell is a severity one step lower than it should be — which is why both samples' READMEs tell you to read that severity, and why `TestConfigDiscovery` in `maf-sandbox-bicep` reaches out of the package to read this `Dockerfile` and assert its `COPY` line against the published `_WORK_DIR` constant. The image and the tool cannot drift apart without a test noticing.
+Both runs look entirely healthy. The second is simply linting against a weaker rule set than the repository asked for, and the tells are the two rows above — which is why both samples' READMEs tell you to read that severity, why `scripts/check_live_sample.py` fails a live run that shows neither tell, and why `TestConfigDiscovery` in `maf-sandbox-bicep` reaches out of the package to read this `Dockerfile` and assert its `COPY` line against the published `_WORK_DIR` constant.
+
+Those three cover the source tree and a live run. They do **not** cover the artifact sample 01 actually boots. A disk image is a snapshot taken from this `Dockerfile`'s output at one moment, it lives in a sandbox group rather than in git, and no test can reach it — so it is the one copy that can still be wrong while the `Dockerfile` and the constant agree with each other. Keeping it current is a deploy step, and the tagging rule below is what makes that step work.
 
 ## Build
 
@@ -36,7 +38,7 @@ From the repository root, so the build context is this directory:
 wslc build -t bicep-sandbox:local images/bicep-sandbox
 ```
 
-That is sample 02, and it is the whole story there — `wslc` runs what is already on the machine, so there is nothing to push and nothing to import. Docker and podman take the same arguments (`docker build -t bicep-sandbox:0.46.1 images/bicep-sandbox`).
+That is sample 02, and it is the whole story there — `wslc` runs what is already on the machine, so there is nothing to push and nothing to import. Docker and podman take the same arguments (`docker build -t bicep-sandbox:local images/bicep-sandbox`).
 
 Everything below is sample 01: getting the same image into an Azure sandbox group, which takes two more steps than people expect.
 
@@ -45,18 +47,28 @@ Everything below is sample 01: getting the same image into an Azure sandbox grou
 In the registry, with no local container runtime at all:
 
 ```bash
-az acr build --registry <name> --image bicep-sandbox:0.46.1 images/bicep-sandbox
+az acr build --registry <name> --image bicep-sandbox:0.46.1-1 images/bicep-sandbox
 ```
 
 Or build locally and push:
 
 ```bash
 az acr login --name <name>
-docker build -t <name>.azurecr.io/bicep-sandbox:0.46.1 images/bicep-sandbox
-docker push <name>.azurecr.io/bicep-sandbox:0.46.1
+docker build -t <name>.azurecr.io/bicep-sandbox:0.46.1-1 images/bicep-sandbox
+docker push <name>.azurecr.io/bicep-sandbox:0.46.1-1
 ```
 
-Tag with the Bicep version rather than `latest`. That tag is what `BICEP_SANDBOX_IMAGE` names and what the disk image is derived from, so a moving tag turns "which compiler produced this diagnostic" into a question nobody can answer afterwards.
+Tag `<bicep-version>-<revision>`, and never `latest`. That tag is what `BICEP_SANDBOX_IMAGE` names and what the disk image is derived from, so a moving tag turns "which compiler produced this diagnostic" into a question nobody can answer afterwards.
+
+The revision is the half people leave off, and leaving it off is what [#308](https://github.com/sokolaidev/maf-extensions/issues/308) was. Everything in this image except the CLI can change while the CLI stays put — `bicepconfig.json`, the path it sits at, the base layer — so the Bicep version alone does not identify a build. Start at `-1` and bump it on any change that is not a CLI upgrade; a CLI upgrade resets it:
+
+| Change | Tag |
+|---|---|
+| Bicep 0.46.1, first build | `bicep-sandbox:0.46.1-1` |
+| the config, or the path it is copied to, changes | `bicep-sandbox:0.46.1-2` |
+| Bicep upgraded to 0.47.0 | `bicep-sandbox:0.47.0-1` |
+
+**Never overwrite a tag that has been imported.** Not as a style preference — the import below will not notice. Its idempotency check compares the OCI reference string, so re-running it against an overwritten tag prints `already imported`, exits 0, and leaves the old snapshot serving traffic. You get a success message and no new image.
 
 ## Import it into the sandbox group
 
@@ -79,7 +91,7 @@ The token above is what works instead. `az acr login --expose-token` warns that 
 
 The portal is the third way, and the one that needs nothing installed: [sandboxes.azure.com](https://sandboxes.azure.com) → your sandbox group → **Disk Images** → **Create** takes the same OCI reference in **Base Image URL**, with **Registry Authentication** set to a username and token or a managed identity for a private registry like this one. It also states plainly what the flag list does not: a disk image is a snapshot, and changing the source tag afterwards does not touch disk images already created.
 
-If you would rather not install the CLI, this repository ships the equivalent as a script with explicit arguments instead of environment variables — see [`packages/maf-sandbox-acas/scripts/README.md`](../../packages/maf-sandbox-acas/scripts/README.md). It is idempotent, and it prints the resolved disk-image id.
+If you would rather not install the CLI, this repository ships the equivalent as a script with explicit arguments instead of environment variables — see [`packages/maf-sandbox-acas/scripts/README.md`](../../packages/maf-sandbox-acas/scripts/README.md). It prints the resolved disk-image id. It is idempotent *on the reference string*, which is the footgun described above: give it a tag it has already imported and it reports success without importing anything, whatever that tag now points at.
 
 Whichever route you take, an identity doing the pull has to be attached to the sandbox group and hold `Container Registry Repository Reader` on a registry in RBAC + ABAC permissions mode, or `AcrPull` on a classic-mode one — `az acr show --query roleAssignmentMode` tells you which. Satisfying both is necessary and, on the evidence above, not sufficient, so treat it as the floor rather than the fix: a private registry answers an unauthenticated pull by failing the import rather than the run.
 
@@ -93,7 +105,7 @@ Build time is a different question and a different machine: the `Dockerfile` dow
 
 ## Changing the rule set
 
-[`bicepconfig.json`](bicepconfig.json) is the rule set both samples report against, so editing it changes their output. Two rules are deliberately away from their defaults: `no-unused-params` is raised to `error`, because that severity is the samples' visible proof the config was discovered at all, and `use-recent-api-versions` is switched on with `maxAgeInDays: 730`. Rebuild, push and import under a new tag afterwards — a disk image already imported does not change when the tag it came from is overwritten.
+[`bicepconfig.json`](bicepconfig.json) is the rule set both samples report against, so editing it changes their output. Two rules are deliberately away from their defaults: `no-unused-params` is raised to `error`, because that severity is the samples' visible proof the config was discovered at all, and `use-recent-api-versions` is switched on with `maxAgeInDays: 730`. Rebuild, push and import under the next revision afterwards (`0.46.1-1` → `0.46.1-2`) — a disk image already imported does not change when the tag it came from is overwritten, and the import will not tell you so.
 
 ## Reproducibility
 
