@@ -194,11 +194,38 @@ class TestTheRuleSetTheRepositoryAskedFor:
         ):
             assert not check.config_was_discovered(prose), prose
 
-    def test_an_unbracketed_severity_is_not_a_rendered_diagnostic(self):
-        # The workload always brackets the level, so a bare word beside a rule id is prose. This
-        # is the one thing adjacency alone does not reject.
+    def test_an_undelimited_severity_is_not_a_rendered_diagnostic(self):
+        # A bare word beside a rule id is prose. This is the one thing adjacency alone does not
+        # reject, and it is why the level has to carry markup of some kind.
         assert not check.config_was_discovered("no-unused-params error main.bicep:21")
         assert check.config_was_discovered("no-unused-params [error] main.bicep:21")
+
+    def test_the_level_may_be_emphasised_rather_than_bracketed(self):
+        """Brackets are not the only markup a model reaches for.
+
+        The published `maf-sandbox-bicep` 0.7.0 run emitted `**error**` and this check called
+        it prose, reporting the config as undiscovered on a run that had discovered it. What
+        distinguishes a field from a sentence is that the level is set apart at all.
+        """
+        for marked in ("**error**", "*error*", "`error`"):
+            assert check.config_was_discovered(f"1. {marked} `no-unused-params` — `main.bicep:21`")
+
+    def test_the_run_that_failed_a_healthy_bicep_0_7_0_release(self):
+        # Verbatim from the sample-01 job of run 31819345243, which had every reason to pass:
+        # `no-unused-params` promoted to error and `use-recent-api-versions` reported at all.
+        assert (
+            check.assess(
+                "Diagnostics for `main.bicep`:\n\n"
+                "1. **error** `no-unused-params` — `main.bicep:21`\n"
+                '   Parameter "environmentName" is declared but never used.\n\n'
+                "2. **warning** `BCP035` — `main.bicep:31`\n"
+                '   The specified "resource" declaration is missing the required properties: "sku".\n\n'
+                "3. **warning** `use-recent-api-versions` — `main.bicep:31`\n"
+                "   Use more recent API version for 'Microsoft.Storage/storageAccounts'.\n\n"
+                "Disposed 1 sandbox(es).\n"
+            )
+            == []
+        )
 
     def test_an_error_on_another_line_does_not_count(self):
         # Some other diagnostic being an error says nothing about whether this one was promoted.
