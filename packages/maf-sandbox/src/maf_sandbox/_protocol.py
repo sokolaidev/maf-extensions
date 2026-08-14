@@ -54,14 +54,30 @@ class Isolation(StrEnum):
     #: No boundary at all: the workload runs in the host process, with the host's authority.
     #: Tests and local fakes. Named for what it provides rather than for where it runs — the
     #: rung this replaces was ``PROCESS``, which reads as a real boundary and meant the absence
-    #: of one. ``PROCESS`` is deliberately *not* an alias for this: that spelling is reserved
-    #: for the genuine separate-OS-process rung, which lands between :data:`RUNTIME` and
-    #: :data:`CONTAINER` a minor from now, so a declaration written against the old meaning has
-    #: to fail loudly here rather than be re-ranked upward in silence later.
+    #: of one. :data:`PROCESS` now names a real one, two ranks above this; it took the
+    #: attribute back but deliberately not the string, so a declaration written against the
+    #: old meaning still fails rather than being re-ranked upward in silence.
     NONE = "none"
     #: A software boundary inside the host process — a restricted interpreter, a WASM
     #: runtime's fault isolation.
     RUNTIME = "runtime"
+    #: A separate OS process: a kernel-enforced address space, sharing the host's kernel and
+    #: filesystem with no namespaces. Stronger than a software boundary drawn inside the host's
+    #: own address space, where an escape lands beside the host's memory and credentials;
+    #: weaker than :data:`CONTAINER`, which is this plus namespaces and cgroups.
+    #:
+    #: No backend in this package provides it. It is vocabulary for one that does — without it
+    #: a backend running untrusted code in a subprocess has no honest rung to declare, and must
+    #: either understate itself as :data:`RUNTIME` or overstate itself as :data:`CONTAINER`.
+    #:
+    #: The value is ``"os_process"`` rather than ``"process"``, and that is the point. This
+    #: attribute named the bottom rung until 0.14 and meant the absence of a boundary. Reusing
+    #: the name is safe because it is resolved when the code is written; reusing the string
+    #: would not be, because a declaration crosses into this vocabulary through
+    #: ``Isolation(raw)`` at run time, out of configuration nobody re-reads. So
+    #: ``Isolation("process")`` keeps raising :exc:`ValueError` and the old spelling is refused
+    #: rather than promoted two ranks into a claim it never made.
+    PROCESS = "os_process"
     #: Shared-kernel namespaces and cgroups: the host kernel is in the attack surface.
     CONTAINER = "container"
     #: Syscall interception in a userspace kernel (gVisor-class), between namespaces and hardware.
@@ -81,6 +97,7 @@ ISOLATION_RANK: Mapping[Isolation, int] = {
         (
             Isolation.NONE,
             Isolation.RUNTIME,
+            Isolation.PROCESS,
             Isolation.CONTAINER,
             Isolation.HARDENED_CONTAINER,
             Isolation.MICROVM,

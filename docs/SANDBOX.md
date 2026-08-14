@@ -128,7 +128,7 @@ Two behaviours are worth knowing before the first call, because both are deliber
 
 **Truth in place of plausibility.** The agent stops reporting that a template looks valid and starts reporting what the compiler said. Everything else here is what it costs to get that safely.
 
-**Isolation declared rather than hoped for.** A host sets a minimum isolation floor on an ordered ladder — `none`, `runtime`, `container`, `hardened_container`, `microvm`, `vm` — and a backend below it is refused *at construction*, not at the first tool call, so a misconfigured deployment cannot start with the feature apparently enabled and quietly unsafe. The default is `microvm`, the production posture; a workload's spec may raise the floor and can never lower it.
+**Isolation declared rather than hoped for.** A host sets a minimum isolation floor on an ordered ladder — `none`, `runtime`, `os_process`, `container`, `hardened_container`, `microvm`, `vm` — and a backend below it is refused *at construction*, not at the first tool call, so a misconfigured deployment cannot start with the feature apparently enabled and quietly unsafe. The default is `microvm`, the production posture; a workload's spec may raise the floor and can never lower it.
 
 ![Four backends ordered by increasing isolation and drawn with increasing border thickness: in-process fake, local container, container, cloud micro-VM. A vertical line marks the host's minimum isolation floor; the two weaker backends sit below it and are refused, the two stronger ones are admitted.](assets/isolation-floor.svg)
 
