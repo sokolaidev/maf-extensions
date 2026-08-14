@@ -25,11 +25,11 @@ dev = [
 # what it was. Those 43 files previously answered to ruff's defaults — no `UP` — which is how a
 # quoted annotation in samples/07 outlived the same cleanup inside the packages.
 #
-# `UP` and nothing more, deliberately. No `line-length`: this tree is formatted at ruff's default
-# width, and raising it to the packages' 100 would reformat 27 files to no purpose. `I` (13
-# findings) and the `D` docstring rules (43) are a larger question than the one that added this,
-# and a sample is not a package — whether it should document like one is worth deciding on its
-# own rather than as a side effect.
+# `UP` and nothing more, deliberately. No `line-length`: this tree passes `ruff format --check`
+# at ruff's default width only because nothing sets one here, and moving it to the packages' 100
+# reformats 27 files — a diff worth reviewing on its own rather than inside a change about
+# quotes. `I` (13 findings) and the `D` docstring rules (43, none of them in samples/) are the
+# same kind of question. #292 carries the measurements and the proposal.
 [tool.ruff]
 target-version = "py312"
 
