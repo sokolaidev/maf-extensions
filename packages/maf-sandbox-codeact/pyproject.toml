@@ -1,6 +1,6 @@
 [project]
 name = "maf-sandbox-codeact"
-version = "0.4.1"
+version = "0.4.2"
 description = "CodeAct as a Microsoft Agent Framework tool — the model writes a short Python program and it runs inside a sandbox — written against maf-sandbox so it runs on any sandbox backend."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
