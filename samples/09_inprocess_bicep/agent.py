@@ -20,7 +20,10 @@ The walkthrough and environment variables are in ``README.md``; read it first.
 #     "azure-core[aio]",
 #     "azure-identity",
 #     "maf-sandbox-bicep",
-#     "maf-sandbox>=0.12",
+#     # 0.14 for Isolation.NONE, which this sample and its backend both name. The rung existed
+#     # as Isolation.PROCESS before that and was removed rather than aliased (#262), so an older
+#     # core does not merely lack the name — it resolves and then fails at attribute access.
+#     "maf-sandbox>=0.14",
 # ]
 # ///
 
