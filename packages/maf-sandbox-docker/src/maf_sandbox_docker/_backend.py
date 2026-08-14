@@ -958,10 +958,7 @@ class DockerSandboxBackend:
             return False
         if result.returncode == 0:
             return True
-        # Docker reports a missing network as "not found", not the "no such" a missing container
-        # yields (`_NO_SUCH`); the daemon uses a different noun per object type. Keeping the two
-        # wordings separate — rather than widening `_NO_SUCH` — stops either path swallowing more
-        # than it intends, the way :322 and :368 already carry their own "could not find" variant.
+        # Keep the network-only wording local so container failures remain visible.
         if _NO_SUCH not in result.stderr.lower() and "not found" not in result.stderr.lower():
             logger.warning(
                 "docker backend: failed to remove network %s: %s", net, result.stderr.strip()
