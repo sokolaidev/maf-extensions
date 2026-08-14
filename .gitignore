@@ -8,3 +8,11 @@ dist/
 
 # Sample runs land artifacts here; the sink is a host directory, not the repository.
 samples/*/out/
+
+# Claude Code's per-developer settings, and the git worktrees it creates *inside* the
+# repository. Named rather than ignoring `.claude/` whole: a shared `.claude/settings.json`
+# belongs in review like any other configuration, and a blanket rule would drop it silently.
+# The worktree line is the load-bearing one — a checkout under `.claude/worktrees/` is a
+# repository inside this one, and `git add -A` stages it as an embedded submodule.
+.claude/settings.local.json
+.claude/worktrees/
