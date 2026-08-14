@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.3.1...maf-sandbox-docker-v0.3.2) (2026-08-14)
+
+
+### Bug Fixes
+
+* admit maf-sandbox 0.15 in the dependents' range ([#335](https://github.com/sokolaidev/maf-extensions/issues/335)) ([fc2ad7c](https://github.com/sokolaidev/maf-extensions/commit/fc2ad7c4f24edaa1a4b1c4501056195525de41b5))
+
 ## [0.3.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.3.0...maf-sandbox-docker-v0.3.1) (2026-08-14)
 
 
