@@ -2,6 +2,18 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.13.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.12.0...maf-sandbox-v0.13.0) (2026-08-14)
+
+
+### Features
+
+* consolidate every work_dir onto /maf-sandbox/work ([#267](https://github.com/sokolaidev/maf-extensions/issues/267)) ([0f5c6c2](https://github.com/sokolaidev/maf-extensions/commit/0f5c6c2a91e611fbf58927618f848887cb2bc683))
+
+
+### Bug Fixes
+
+* refuse a conformance subject that declares no FILES_OUT, and hold every backend that serves it to the suite ([#298](https://github.com/sokolaidev/maf-extensions/issues/298)) ([ce855a5](https://github.com/sokolaidev/maf-extensions/commit/ce855a525ec0a5ba0bd8a0e231b3f93d3c99c1b2))
+
 ## [0.12.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.11.0...maf-sandbox-v0.12.0) (2026-08-12)
 
 
