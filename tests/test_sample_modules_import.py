@@ -1,28 +1,24 @@
-"""Every sample module still imports — the check nothing else in this repository makes.
+"""Every sample module still imports.
 
-`samples/` is outside `[tool.pyright]`'s `include`, and no suite imports a sample's `agent.py`,
-so a sample referring to an attribute the library no longer has is caught by nothing offline.
-It goes green through the whole gate and raises the first time the sample actually runs, which
-is on the live path, after a release.
+`samples/` is outside `[tool.pyright]`'s `include` and no other suite imports a sample, so a
+sample naming a library attribute that no longer exists is caught by nothing offline — it goes
+green through the whole gate and raises the first time the sample runs, on the live path after
+a release. Importing is what looks: a sample's module level is imports, constants and function
+definitions, with the work behind `if __name__ == "__main__"`.
 
-That is not hypothetical. `Isolation.PROCESS` was renamed to `NONE` in #331, and
-`samples/11_router_two_backends` kept the old spelling through a full green run — `1583 passed`,
-ruff clean, pyright 0 errors — because importing it is the only thing that would have looked.
-
-Importing is the whole test. Every sample's module-level code is imports, constants and
-function definitions, with the work behind `if __name__ == "__main__"`, so an import executes
-exactly the lines that name library attributes and nothing that costs anything.
-
-A sample whose dependencies this workspace does not install is skipped by name rather than
-passed. Most samples need `agent_framework`, which is not a workspace member; the ones reachable
-today are those importing only `maf_sandbox*`. Skipping keeps the suite honest about its own
-coverage instead of quietly reporting a pass it did not earn.
+A sample is skipped only when a distribution its own PEP 723 block declares is absent from this
+workspace. Whether to skip is therefore decided *before* importing, never from the exception an
+import raised: `from maf_sandbox import Removed` and a missing `agent-framework-openai` are both
+`ImportError`, and only the second is a reason to look away.
 """
 
 from __future__ import annotations
 
+import importlib.metadata
 import importlib.util
+import re
 import sys
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -30,10 +26,39 @@ import pytest
 _SAMPLES = Path(__file__).resolve().parent.parent / "samples"
 _SAMPLE_DIRS = sorted(path for path in _SAMPLES.glob("[0-9][0-9]_*") if path.is_dir())
 
+#: PEP 723, as the spec writes it. The same shape `test_sample_metadata.py` parses — that suite
+#: owns validating the block against the imports, and this one only reads what it declares.
+_BLOCK = re.compile(r"(?m)^# /// script\s*$\s(?P<body>(?:^#(?:| .*)$\s)+)^# ///\s*$")
+
 
 def test_the_sample_directories_were_found():
     """A glob that matched nothing would make every parametrized case vacuously true."""
     assert len(_SAMPLE_DIRS) >= 10, f"found {len(_SAMPLE_DIRS)} sample directories"
+
+
+def _declared(sample: Path) -> list[str]:
+    """The distribution names a sample's PEP 723 block asks for, version specifiers stripped."""
+    match = _BLOCK.search((sample / "agent.py").read_text(encoding="utf-8"))
+    assert match, f"{sample.name}/agent.py has no PEP 723 block"
+    body = "".join(
+        line[2:] if line.startswith("# ") else line[1:]
+        for line in match.group("body").splitlines(keepends=True)
+    )
+    return [
+        re.match(r"[A-Za-z0-9._-]+", dep).group(0)
+        for dep in tomllib.loads(body).get("dependencies", [])
+    ]
+
+
+def _absent(sample: Path) -> list[str]:
+    """Which of a sample's declared distributions this workspace does not install."""
+    missing: list[str] = []
+    for dist in _declared(sample):
+        try:
+            importlib.metadata.distribution(dist)
+        except importlib.metadata.PackageNotFoundError:
+            missing.append(dist)
+    return missing
 
 
 def _import(path: Path, sample: Path) -> None:
@@ -55,29 +80,16 @@ def _import(path: Path, sample: Path) -> None:
 
 @pytest.mark.parametrize("sample", _SAMPLE_DIRS, ids=lambda path: path.name)
 def test_every_module_imports(sample: Path):
-    entry_point_reached = False
-    unreachable: list[str] = []
+    absent = _absent(sample)
+    if absent:
+        pytest.skip(f"{sample.name} declares {', '.join(absent)}, absent from this workspace")
+
     for path in sorted(sample.glob("*.py")):
         try:
             _import(path, sample)
-        except ImportError as exc:
-            # A dependency this workspace does not install — `agent_framework` and friends.
-            # Recorded per module rather than abandoning the sample, or one unreachable
-            # `agent.py` would take its importable siblings with it: `09_inprocess_bicep` keeps
-            # its backend in `no_isolation_backend.py`, which needs nothing outside the
-            # workspace and is checked here whatever `agent.py` does.
-            unreachable.append(f"{path.name} needs {exc.name or exc}")
-        except Exception as exc:  # noqa: BLE001 - the point is to surface whatever it was
+        except Exception as exc:  # noqa: BLE001 - every failure here is the point
             pytest.fail(
                 f"{sample.name}/{path.name} does not import: {type(exc).__name__}: {exc}. "
-                "A sample that cannot be imported cannot be run, and nothing else in this "
-                "repository would have noticed."
+                "Its declared dependencies are all installed, so this is the sample's own "
+                "problem — and nothing else in this repository would have noticed."
             )
-        else:
-            entry_point_reached |= path.name == "agent.py"
-
-    # Every sample carries `_scaffold.py`, which imports anywhere. Reporting a pass on that
-    # while `agent.py` — the module that names the library — went unimported would be the
-    # coverage illusion this suite exists to avoid, so the verdict follows the entry point.
-    if not entry_point_reached:
-        pytest.skip(f"{sample.name}/agent.py unreachable here — {'; '.join(unreachable)}")
