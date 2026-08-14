@@ -71,6 +71,12 @@ It does not prove compatibility. A name that still exists but changed its call s
 
 [SemVer](https://semver.org/), and every package is below `1.0.0` — so a minor bump may break API. Say so in the changelog when it does; at `0.x` the version number alone warns nobody.
 
+When an API has to change rather than merely break, prefer a deprecation cycle to a hard removal: keep the old name for one minor behind a warning shim that emits a `DeprecationWarning` on use — a delegating wrapper, or a module `__getattr__` hook that warns when the old name is looked up, not a plain re-export — name the removal minor in the changelog, and remove it the next minor. A plain re-export such as `Old = New` keeps the name but runs no warning logic, so it preserves the surface while silently violating the warn requirement; the kept name has to warn. Hard removal is still permitted at 0.x; a deprecation cycle is the kinder default when the old surface can be kept.
+
+It is also what lets the publish gate fail less often. A deprecated name still imports, so the gate passes the deprecating minor and only bites at the removal minor — by which time dependent authors have had a cycle's notice. The gate does not make deprecation redundant: the gate is reactive, catching a break in progress; deprecation is proactive, giving notice so the break lands on an audience that has had a cycle to move. The 0.11.0 `CallerContext` removal — the break at the root of #248 and #275 — would have been one: keep the name in 0.11.0, remove it in 0.12.0, and the published bicep keeps importing through 0.11.0 while its author updates before the 0.12.0 removal.
+
+This is distinct from `MafSandboxExperimentalWarning`, a `UserWarning` the package emits on import to say the whole package is experimental and may change without notice. That is the blanket, pre-1.0 notice; a `DeprecationWarning` is the per-API, per-cycle notice that names the removal and fires at the call site. When you deprecate, switch the tests to the replacement and keep a focused test for the deprecated name and its warning; both are removed with the name.
+
 Packages version independently. There is no lockstep release, and a fix in one is not a reason to bump the others.
 
 ## What the workflow refuses to do
