@@ -42,7 +42,7 @@ This package draws no isolation boundary itself — it is protocol and policy ov
 | `SandboxRouter` | picks the backend, enforces the minimum-isolation floor, the capability match, and the egress rule |
 | `SandboxPurger` | duck-typed `purge_scoped_thread(scope, thread_id)` for a host's delete path |
 
-`Isolation`, weakest to strongest: `process < runtime < container < hardened_container < microvm < vm`. `SandboxRouter`'s default `min_isolation` is `microvm`; an unrecognised rung refuses rather than guesses which side of the floor it falls on.
+`Isolation`, weakest to strongest: `none < runtime < container < hardened_container < microvm < vm`. `SandboxRouter`'s default `min_isolation` is `microvm`; an unrecognised rung refuses rather than guesses which side of the floor it falls on.
 
 `SandboxKey`'s scope and thread come from the host's request context through `CallerContext`, whose fields are **callables read at call time** rather than values. That is deliberate: a key a caller can supply is a key a *model* can supply, and that would let one conversation address another's sandbox.
 
@@ -159,7 +159,7 @@ The dependent packages moved with it: `maf-sandbox-bicep` and `maf-sandbox-codea
 
 **`DEPLOYED_ISOLATION` is removed.** The policy it expressed is `min_isolation`'s default.
 
-**`Isolation` and `Egress` are `StrEnum`s, and the ladder grew.** Values are unchanged, so `backend.isolation == "vm"` and any stored configuration keep working. The ladder is now `process < runtime < container < hardened_container < microvm < vm`; a declared value outside it is refused at construction rather than silently permitted.
+**`Isolation` and `Egress` are `StrEnum`s, and the ladder grew.** Values are unchanged, so `backend.isolation == "vm"` and any stored configuration keep working. The ladder is now `process < runtime < container < hardened_container < microvm < vm`; a declared value outside it is refused at construction rather than silently permitted. (The bottom rung was renamed to `none` in 0.14 — see *Upgrading to 0.14* above. This note describes the ladder as 0.5.0 shipped it.)
 
 **`AcasSandboxBackend` now declares `microvm`, not `vm`.** ACA Sandboxes are hardware-isolated micro-VMs; `vm` now means a dedicated, full VM on remote infrastructure. A host that pinned `min_isolation=Isolation.VM` expecting ACA Sandboxes to satisfy it should use `Isolation.MICROVM` — the default, and the rung the micro-VM standard defines.
 
