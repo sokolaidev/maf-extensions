@@ -8,9 +8,12 @@ counts and router return values, not a retelling of them.
 
 Two assertions carry the sample and they fail in opposite directions. **Containers left behind
 must be 0** — a sample about not leaking that leaks is worse than no sample. And the purger
-must find **1** on the abandoned thread: that is the only line proving the delete path does
-something no other disposal moment would have done. A purger wired to nothing also finds 0
+must find **1** on the never-scoped thread: that is the only line proving the delete path
+does something no other disposal moment would have. A purger wired to nothing also finds 0
 everywhere, which is why the tidy thread's 0 cannot be the only zero checked.
+
+The counts it reads come from `docker ps -a`, so a container stopped but not removed still
+counts as left behind — which is the shape a half-finished purge actually leaves.
 
 Exits non-zero listing every reason it failed.
 """
@@ -26,25 +29,23 @@ from pathlib import Path
 #: same Python object, which it does not and which backends do differently. Paired with the
 #: container count, because a second container would also serve a file if both were written to.
 _REUSED_STATE = "still here"
-_REUSE_COUNT = re.compile(r"containers running for this thread:\s*(\d+)", re.IGNORECASE)
+_REUSE_COUNT = re.compile(r"containers for this thread:\s*(\d+)", re.IGNORECASE)
 
 #: Act 3: what the router reported disposing when the `scope` block ended, and what `docker ps`
 #: saw afterwards. The first is the library's claim, the second is the machine's answer.
 _SCOPE_DISPOSED = re.compile(r"block ended -> router reports\s+(\d+)\s+disposed", re.IGNORECASE)
-_SCOPE_REMAINING = re.compile(r"and docker agrees -> containers running:\s*(\d+)", re.IGNORECASE)
+_SCOPE_REMAINING = re.compile(r"and docker agrees -> containers:\s*(\d+)", re.IGNORECASE)
 
-#: Act 4, both threads, plus the container count before the delete path runs on the abandoned
-#: one — without that the purger's 1 could be a number it made up.
+#: Act 4, both threads, plus the container count before the delete path runs on the
+#: never-scoped one — without that the purger's 1 could be a number it made up.
 _TIDY = re.compile(r"already purged per turn -> purger found\s+(\d+)", re.IGNORECASE)
-_ABANDONED_BEFORE = re.compile(
-    r"abandoned mid-turn\s+-> containers running:\s*(\d+)", re.IGNORECASE
-)
-_ABANDONED_FOUND = re.compile(r"deletes the conversation -> purger found\s+(\d+)", re.IGNORECASE)
+_UNSCOPED_BEFORE = re.compile(r"never scoped per turn\s+-> containers:\s*(\d+)", re.IGNORECASE)
+_UNSCOPED_FOUND = re.compile(r"deletes the conversation\s+-> purger found\s+(\d+)", re.IGNORECASE)
 
 #: The footer, all three numbers read back from what the run observed.
 _FOOTER = re.compile(
     r"Completed\s+(\d+)\s+of\s+4\s+acts\.\s+Purger found\s+(\d+)\s+on a purged thread and\s+"
-    r"(\d+)\s+on an abandoned one\.\s+Containers left behind:\s*(\d+)\.",
+    r"(\d+)\s+on an unscoped one\.\s+Containers left behind:\s*(\d+)\.",
     re.IGNORECASE,
 )
 
@@ -99,20 +100,20 @@ def assess(output: str) -> list[str]:
             "sandbox twice"
         )
 
-    before = _one(_ABANDONED_BEFORE, output)
-    found = _one(_ABANDONED_FOUND, output)
+    before = _one(_UNSCOPED_BEFORE, output)
+    found = _one(_UNSCOPED_FOUND, output)
     if before is None or found is None:
-        failures.append("act 4 did not report the abandoned thread — the backstop is unshown")
+        failures.append("act 4 did not report the never-scoped thread — the backstop is unshown")
     else:
         if int(before) != 1:
             failures.append(
-                f"the abandoned thread had {before} container(s) running before the delete path, "
+                f"the never-scoped thread had {before} container(s) before the delete path, "
                 "expected exactly 1 — with nothing there the purger's result proves nothing"
             )
         if int(found) != 1:
             failures.append(
-                f"the purger found {found} on the abandoned thread, expected exactly 1 — this is "
-                "the only line showing the delete path reclaiming something no other disposal "
+                f"the purger found {found} on the never-scoped thread, expected exactly 1 — this "
+                "is the only line showing the delete path reclaiming something no other disposal "
                 "moment would have, and a purger wired to nothing also reports 0"
             )
 
@@ -124,13 +125,13 @@ def _assess_footer(output: str) -> list[str]:
     footer = _FOOTER.search(output)
     if footer is None:
         return ["no footer line — the sample did not run to completion"]
-    acts, tidy, abandoned, leftover = (int(group) for group in footer.groups())
+    acts, tidy, unscoped, leftover = (int(group) for group in footer.groups())
     failures: list[str] = []
     if acts != 4:
         failures.append(f"only {acts} of 4 acts completed — the sample stopped part-way")
-    if (tidy, abandoned) != (0, 1):
+    if (tidy, unscoped) != (0, 1):
         failures.append(
-            f"the footer reports {tidy} and {abandoned} where the acts reported 0 and 1 — the "
+            f"the footer reports {tidy} and {unscoped} where the acts reported 0 and 1 — the "
             "summary and the run disagree"
         )
     if leftover != 0:

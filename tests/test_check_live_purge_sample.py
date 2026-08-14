@@ -17,31 +17,20 @@ _spec.loader.exec_module(check)
 
 _HEALTHY = """\
 == 1. Within a turn: get-or-create is the point ==
-
-  wrote a file through the first acquire, read it through the second:
     'still here'
-  containers running for this thread: 1
-
+  containers for this thread: 1
 == 2. Between turns: it survives, and that is a decision ==
-
-  turn ended without disposing -> containers still running: 1
-
+  turn ended without disposing -> containers still there: 1
 == 3. End of turn: `router.scope` disposes however the block ends ==
-
-  inside the turn -> containers running: 1
+  inside the turn -> containers: 1
   block ended -> router reports 1 disposed
-  and docker agrees -> containers running: 0
-
+  and docker agrees -> containers: 0
 == 4. Thread delete: the backstop ==
-
   a thread already purged per turn -> purger found 0
-
-  a thread abandoned mid-turn  -> containers running: 1
-  user deletes the conversation -> purger found 1
-  and docker agrees            -> containers running: 0
-
-Completed 4 of 4 acts. Purger found 0 on a purged thread and 1 on an abandoned one. \
-Containers left behind: 0.
+  a thread never scoped per turn -> containers: 1
+  user deletes the conversation  -> purger found 1
+  and docker agrees              -> containers: 0
+Completed 4 of 4 acts. Purger found 0 on a purged thread and 1 on an unscoped one. Containers left behind: 0.
 """
 
 
@@ -65,9 +54,7 @@ class TestReuseWithinATurn:
         # Two acquires that each created a container would still serve the file back from
         # whichever one was written to, so the count is what separates reuse from duplication.
         reasons = check.assess(
-            _HEALTHY.replace(
-                "containers running for this thread: 1", "containers running for this thread: 2"
-            )
+            _HEALTHY.replace("containers for this thread: 1", "containers for this thread: 2")
         )
         assert any("expected exactly 1" in r for r in reasons), reasons
 
@@ -83,34 +70,31 @@ class TestEndOfTurnDisposal:
         # The router's count is its own claim; this is docker's answer, and they can disagree.
         reasons = check.assess(
             _HEALTHY.replace(
-                "and docker agrees -> containers running: 0",
-                "and docker agrees -> containers running: 1",
+                "and docker agrees -> containers: 0",
+                "and docker agrees -> containers: 1",
             )
         )
         assert any("still running after the scope block" in r for r in reasons), reasons
 
 
 class TestTheDeletePath:
-    def test_the_purger_finding_nothing_on_the_abandoned_thread_is_caught(self):
+    def test_the_purger_finding_nothing_on_the_never_scoped_thread_is_caught(self):
         """The one line proving the delete path does something nothing else would.
 
         A purger wired to nothing reports 0 everywhere, and the tidy thread's 0 is expected —
         so without this the whole act would pass with the hook disconnected.
         """
-        reasons = check.assess(
-            _HEALTHY.replace(
-                "deletes the conversation -> purger found 1",
-                "deletes the conversation -> purger found 0",
-            )
-        )
+        tampered = _HEALTHY.replace("purger found 1", "purger found 0")
+        assert tampered != _HEALTHY, "the substitution matched nothing — the fixture moved"
+        reasons = check.assess(tampered)
         assert any("purger wired to nothing also reports 0" in r for r in reasons), reasons
 
-    def test_an_abandoned_thread_with_nothing_running_is_caught(self):
+    def test_a_never_scoped_thread_with_nothing_running_is_caught(self):
         # If nothing was there, the purger reclaiming it proves nothing either way.
         reasons = check.assess(
             _HEALTHY.replace(
-                "abandoned mid-turn  -> containers running: 1",
-                "abandoned mid-turn  -> containers running: 0",
+                "never scoped per turn -> containers: 1",
+                "never scoped per turn -> containers: 0",
             )
         )
         assert any("proves nothing" in r for r in reasons), reasons

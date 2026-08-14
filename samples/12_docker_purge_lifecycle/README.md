@@ -8,7 +8,7 @@ That leaves a host three moments where a sandbox can go away, and choosing betwe
 |---|---|---|
 | Within a turn | `acquire` is get-or-create | the second tool call does not pay for a second boot |
 | End of turn | `async with router.scope(scope, thread)` | on a billable backend, the only sane default |
-| Thread delete | `SandboxPurger.purge_scoped_thread` | the backstop, and the only thing that catches an abandoned conversation |
+| Thread delete | `SandboxPurger.purge_scoped_thread` | the backstop, and the only thing that reclaims a conversation whose turns were never scoped |
 
 ## The end-of-turn decision is where the money is
 
@@ -24,13 +24,17 @@ Act 4 runs the purger against two conversations.
 
 The first was purged at the end of its turn, so the purger finds **0**. That is the right answer, not a broken hook: a host that purges per turn should expect its delete path to find nothing almost every time.
 
-The second was abandoned mid-turn — the user stopped replying, and `router.scope` never got its exit. The purger finds **1**, and nothing else would have. No turn is coming to clean it up, and the only thing after this is the backend's own auto-delete timer, which on ACAS is ten minutes of billing away.
+The second ran with no `router.scope` around it — a host that never wired per-turn disposal, or a sandbox left by a worker that died before it could. The purger finds **1**, and nothing else would have.
+
+Worth being precise about what that second case is *not*, because the tempting description is wrong: it is not an abandoned `async with`. That block disposes however it exits, exception included, so a scope once entered cannot orphan anything. The only way to reach a delete with work outstanding is never to have entered one.
+
+What makes the delete path able to find it at all is that `dispose_scope` selects on the labels the backend stamped, not on anything the process remembers — so it reclaims sandboxes a replica never created, including a crashed worker's. After it there is only the backend's own timer, which on ACAS is ten minutes of billing away.
 
 That asymmetry is the argument for wiring the purger even when you already purge per turn.
 
 ## Counted, not claimed
 
-Every number here comes from `docker ps --filter label=maf-sandbox.thread=…`, the same labels `dispose_scope` selects on. The library's return values say what it *believes* it disposed; the container count is what is actually on the machine, and only the second means anything for a leak. Where both appear, the sample prints them side by side so a disagreement would be visible.
+Every number here comes from `docker ps -a --filter label=maf-sandbox.thread=…`, the same labels `dispose_scope` selects on and the same `-a` the backend itself lists with when it purges. Without `-a` a container stopped but not removed would be invisible here while still sitting on the machine — the leak this sample exists to rule out, hidden from the check that rules it out. The library's return values say what it *believes* it disposed; the container count is what is actually on the machine, and only the second means anything for a leak. Where both appear, the sample prints them side by side so a disagreement would be visible.
 
 The footer reports containers left behind, and the live check requires that number to be **0** — a sample about reclaiming sandboxes does not get to leak while saying so.
 

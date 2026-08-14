@@ -38,16 +38,23 @@ _LABEL_SCOPE = "maf-sandbox.scope"
 _LABEL_THREAD = "maf-sandbox.thread"
 
 
-def running(thread_id: str) -> int:
+def containers(thread_id: str) -> int:
     """How many containers Docker itself reports for ``thread_id`` — the outside view.
 
     The counts the library returns say what it believes it disposed. This says what is actually
     on the machine, which is the only evidence that means anything for a leak.
+
+    ``-a``, so stopped containers count. Without it a purge that stopped a container without
+    removing it would leave a labelled container on the machine while every count here read
+    zero — the leak this sample exists to rule out, invisible to the check that rules it out.
+    The backend lists the same way when it purges (``docker ps -a``), so this asks the question
+    it answers.
     """
     result = subprocess.run(  # noqa: S603 - a fixed argv, no shell, values from this file
         [
             "docker",
             "ps",
+            "-a",
             "--quiet",
             "--filter",
             f"label={_LABEL_SCOPE}={SCOPE}",
@@ -79,12 +86,8 @@ async def act_one_reuse_within_a_turn(router: SandboxRouter) -> None:
 
     key = SandboxKey(scope=SCOPE, thread_id="t-reuse", agent_dir=AGENT_DIR)
 
-    # Reuse means the same *sandbox*, which is not the same as the same Python object. The
-    # protocol says `acquire` returns "a running sandbox for `key`, creating one if needed",
-    # and backends satisfy that differently: the in-process one hands back one object, the
-    # docker one a fresh handle over the same container. So the claim is tested the way a
-    # workload would feel it — state written through the first handle is there through the
-    # second — rather than with `is`, which would be an implementation detail passing for it.
+    # Tested as state surviving rather than with `is`: the protocol promises the same sandbox,
+    # not the same object, and the docker backend hands back a fresh handle over one container.
     first = await router.acquire(key, spec())
     await first.write_file(f"{spec().work_dir}/from-first-acquire", "still here\n")
 
@@ -95,7 +98,7 @@ async def act_one_reuse_within_a_turn(router: SandboxRouter) -> None:
 
     print("  wrote a file through the first acquire, read it through the second:")
     print(f"    {read_back.stdout.strip()!r}")
-    print(f"  containers running for this thread: {running('t-reuse')}")
+    print(f"  containers for this thread: {containers('t-reuse')}")
     print("  One container, and the second acquire did not pay for a boot. This is what")
     print("  `acquire` being get-or-create is for, and it is not in question below — what is")
     print("  in question is how long the sandbox should outlive the turn.\n")
@@ -110,7 +113,7 @@ async def act_two_between_turns(router: SandboxRouter) -> None:
     key = SandboxKey(scope=SCOPE, thread_id="t-kept", agent_dir=AGENT_DIR)
     await one_turn(router, key)
 
-    print(f"  turn ended without disposing -> containers still running: {running('t-kept')}")
+    print(f"  turn ended without disposing -> containers still there: {containers('t-kept')}")
     print("  Nothing is wrong with that on Docker: an idle container on your own machine is")
     print("  free, and the next turn starts warm.")
     print()
@@ -132,18 +135,18 @@ async def act_three_purge_at_end_of_turn(router: SandboxRouter) -> None:
     thread = "t-perturn"
     async with router.scope(SCOPE, thread) as disposal:
         await one_turn(router, SandboxKey(scope=SCOPE, thread_id=thread, agent_dir=AGENT_DIR))
-        print(f"  inside the turn -> containers running: {running(thread)}")
+        print(f"  inside the turn -> containers: {containers(thread)}")
 
     print(f"  block ended -> router reports {disposal.disposed} disposed")
-    print(f"  and docker agrees -> containers running: {running(thread)}")
+    print(f"  and docker agrees -> containers: {containers(thread)}")
     print("  The count is read after the block, which is what lets a host log what it")
     print("  reclaimed and notice the day that number is zero. Disposal runs however the")
     print("  block ends, so a turn that raises still reclaims.\n")
 
 
 async def act_four_thread_delete(router: SandboxRouter) -> tuple[int, int]:
-    """`SandboxPurger` on the delete path — a backstop, and the only thing that catches an
-    abandoned conversation.
+    """`SandboxPurger` on the delete path — a backstop, and the only thing that reclaims a
+    conversation whose turns were never scoped.
 
     Returns what the purger found for each of the two threads, so the footer reports
     measurements rather than the numbers this file expects.
@@ -160,18 +163,24 @@ async def act_four_thread_delete(router: SandboxRouter) -> tuple[int, int]:
     print("  Zero is the right answer, not a broken hook. A host that purges at end of turn")
     print("  should expect the delete path to find nothing almost every time.\n")
 
-    # A conversation the user simply stopped replying to, mid-turn.
-    abandoned = "t-abandoned"
-    await one_turn(router, SandboxKey(scope=SCOPE, thread_id=abandoned, agent_dir=AGENT_DIR))
-    print(f"  a thread abandoned mid-turn  -> containers running: {running(abandoned)}")
-    abandoned_found = await purger.purge_scoped_thread(SCOPE, abandoned)
-    print(f"  user deletes the conversation -> purger found {abandoned_found}")
-    print(f"  and docker agrees            -> containers running: {running(abandoned)}")
-    print("  Nothing else would have reclaimed this one. `router.scope` never got its exit,")
-    print("  and no turn is coming. The delete path is the last thing a host owns before the")
-    print("  backend's own auto-delete timer, which on ACAS is ten minutes of billing away.\n")
+    # A turn that ran with no `router.scope` around it — a host that never wired per-turn
+    # disposal, or a sandbox left by a worker that died before it could. Note what this is
+    # *not*: an abandoned `async with`. That block disposes however it exits, so a scope once
+    # entered cannot orphan anything, and the only way to reach a delete with work outstanding
+    # is never to have entered one.
+    unscoped = "t-unscoped"
+    await one_turn(router, SandboxKey(scope=SCOPE, thread_id=unscoped, agent_dir=AGENT_DIR))
+    print(f"  a thread never scoped per turn -> containers: {containers(unscoped)}")
+    unscoped_found = await purger.purge_scoped_thread(SCOPE, unscoped)
+    print(f"  user deletes the conversation  -> purger found {unscoped_found}")
+    print(f"  and docker agrees              -> containers: {containers(unscoped)}")
+    print("  Nothing else would have reclaimed this one, and no turn is coming back for it.")
+    print("  `dispose_scope` selects on the labels the backend stamped rather than on anything")
+    print("  this process remembers, which is what lets the delete path reclaim sandboxes a")
+    print("  replica never created — a crashed worker's, or an older deployment's. After it")
+    print("  there is only the backend's own timer: on ACAS, ten minutes of billing away.\n")
 
-    return tidy_found, abandoned_found
+    return tidy_found, unscoped_found
 
 
 async def main() -> int:
@@ -182,19 +191,19 @@ async def main() -> int:
         await act_one_reuse_within_a_turn(router)
         await act_two_between_turns(router)
         await act_three_purge_at_end_of_turn(router)
-        tidy_found, abandoned_found = await act_four_thread_delete(router)
+        tidy_found, unscoped_found = await act_four_thread_delete(router)
     finally:
         # Whatever any act left behind, however it ended. The sample is about not leaking, so
         # it does not get to leak while saying so.
-        for thread in ("t-reuse", "t-kept", "t-perturn", "t-tidy", "t-abandoned"):
+        for thread in ("t-reuse", "t-kept", "t-perturn", "t-tidy", "t-unscoped"):
             await router.dispose_scope(SCOPE, thread)
 
     leftover = sum(
-        running(thread) for thread in ("t-reuse", "t-kept", "t-perturn", "t-tidy", "t-abandoned")
+        containers(thread) for thread in ("t-reuse", "t-kept", "t-perturn", "t-tidy", "t-unscoped")
     )
     print(
         f"Completed 4 of 4 acts. Purger found {tidy_found} on a purged thread and "
-        f"{abandoned_found} on an abandoned one. Containers left behind: {leftover}."
+        f"{unscoped_found} on an unscoped one. Containers left behind: {leftover}."
     )
     return 0
 
