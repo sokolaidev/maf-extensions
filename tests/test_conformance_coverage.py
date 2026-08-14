@@ -95,11 +95,7 @@ def _capabilities_of(
         wrapper = isinstance(callee, ast.Name) and callee.id in {"frozenset", "set"}
         if not wrapper or value.keywords or len(value.args) > 1:
             return None
-        return (
-            frozenset()
-            if not value.args
-            else _capabilities_of(value.args[0], constants, seen)
-        )
+        return frozenset() if not value.args else _capabilities_of(value.args[0], constants, seen)
     if isinstance(value, ast.BinOp) and isinstance(value.op, ast.BitOr):
         left = _capabilities_of(value.left, constants, seen)
         right = _capabilities_of(value.right, constants, seen)
@@ -142,8 +138,7 @@ def _declaring_expressions(klass: ast.ClassDef) -> list[ast.expr]:
             ):
                 found.append(node.value)
         elif (
-            isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
-            and node.name == "capabilities"
+            isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == "capabilities"
         ):
             # The return *expression*, not the body: a `Capability` mentioned in a log line or a
             # docstring example is not a declaration, and reading the whole body lets one hide
@@ -157,14 +152,9 @@ def _declaring_expressions(klass: ast.ClassDef) -> list[ast.expr]:
     return found
 
 
-def _method(
-    klass: ast.ClassDef, name: str
-) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+def _method(klass: ast.ClassDef, name: str) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
     for node in klass.body:
-        if (
-            isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
-            and node.name == name
-        ):
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == name:
             return node
     return None
 
@@ -200,9 +190,7 @@ def _backends(root: Path) -> list[tuple[str, str, frozenset[str] | None]]:
                 capabilities = None
             else:
                 capabilities = DEFAULT_CAPABILITY_NAMES
-            found.append(
-                (module.relative_to(REPO_ROOT).as_posix(), klass.name, capabilities)
-            )
+            found.append((module.relative_to(REPO_ROOT).as_posix(), klass.name, capabilities))
     return found
 
 
@@ -234,10 +222,10 @@ def _defines_a_constructor(
         )
         if name == "object":
             continue
-        resolved = by_name.get(name) if name else None
-        if resolved is None or name in seen:
+        if name is None or name in seen:
             return True
-        if _defines_a_constructor(resolved, by_name, seen | {name}):
+        resolved = by_name.get(name)
+        if resolved is None or _defines_a_constructor(resolved, by_name, seen | {name}):
             return True
     return False
 
@@ -293,9 +281,7 @@ def _names_used(node: ast.AST) -> frozenset[str]:
     """
     used: set[str] = set()
     for child in ast.iter_child_nodes(node):
-        if isinstance(
-            child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.Lambda
-        ):
+        if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.Lambda):
             continue
         if _expects_a_raise(child):
             continue
@@ -335,9 +321,7 @@ def _collected_calls(module: Path) -> frozenset[str]:
     ``pytest.raises``, which is where a call goes when it is written to fail.
     """
     tree = ast.parse(module.read_text(encoding="utf-8"))
-    by_name = {
-        node.name: node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)
-    }
+    by_name = {node.name: node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)}
     called: set[str] = set()
 
     def visit(node: ast.AST, in_class: bool) -> None:
@@ -411,9 +395,7 @@ def test_this_guard_can_read_every_backend_it_walks(package: Path):
 
 def test_the_guard_still_finds_the_backends_that_exist():
     """A rule matching nothing passes every time; this is what stops that going unnoticed."""
-    serving = {
-        package.name for package in BACKEND_PACKAGES if _serving(package / "src")
-    }
+    serving = {package.name for package in BACKEND_PACKAGES if _serving(package / "src")}
     assert {"maf-sandbox-acas", "maf-sandbox-docker"} <= serving, (
         f"expected the two backends that serve FILES_OUT to be found; found {sorted(serving)}. "
         "Either one of them stopped declaring the capability — in which case say so here — or "
