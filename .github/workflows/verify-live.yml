@@ -709,3 +709,42 @@ jobs:
           # stdout, so the printed values are the library's own answers rather than a
           # retelling of them. stdlib-only, so the runner's own python3 runs it.
           python3 "$HARNESS"/scripts/check_live_host_tools_sample.py /tmp/sample10-out.txt
+
+  sample-11:
+    name: samples/11_router_two_backends against a live container
+    # The router's own job — which backend serves, what it refuses, and who disposal reaches.
+    # Only the router (maf-sandbox) and the backend it selects (maf-sandbox-docker) can change
+    # what this exercises; no kind package is involved, since the sample runs `echo`-grade work
+    # to prove a container was really reached rather than to compute anything.
+    if: >-
+      inputs.package == ''
+      || contains(fromJSON('["maf-sandbox", "maf-sandbox-docker"]'), inputs.package)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # No `environment:` and no `permissions:` block, for sample 10's reason: this one calls no
+    # model either. It does create a container, so unlike sample 10 it is not quite free — but
+    # a container on the runner costs nothing billable, and there is no credential to mint.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # Only when `HARNESS` points at it — see the `env` block above for why the checks come
+      # from somewhere other than the samples. Sparse, because `scripts/` is all that is read.
+      - name: Check out the checks from the default branch
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch || 'main' }}
+          path: .harness
+          sparse-checkout: scripts
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Run sample 11 and assert the router chose, refused and disposed
+        run: |
+          set -euo pipefail
+          uv run --no-project samples/11_router_two_backends/agent.py | tee /tmp/sample11-out.txt
+          # Strict, like sample 10's: no model stands between the library and stdout. The
+          # assertion that matters is the disposal count — 2, one per registered backend, when
+          # only one of them was serving. stdlib-only, so the runner's own python3 runs it.
+          python3 "$HARNESS"/scripts/check_live_router_sample.py /tmp/sample11-out.txt
