@@ -68,7 +68,7 @@ The revision is the half people leave off, and leaving it off is what [#308](htt
 | the config, or the path it is copied to, changes | `bicep-sandbox:0.46.1-2` |
 | Bicep upgraded to 0.47.0 | `bicep-sandbox:0.47.0-1` |
 
-**Never overwrite a tag that has been imported.** Not as a style preference — the import below will not notice. Its idempotency check compares the OCI reference string, so re-running it against an overwritten tag prints `already imported`, exits 0, and leaves the old snapshot serving traffic. You get a success message and no new image.
+**Never overwrite a tag that has been imported.** Not as a style preference — nothing downstream can recover from it. The import below will not notice: its idempotency check compares the OCI reference string, so re-running it against an overwritten tag prints `already imported`, exits 0, and leaves the old snapshot serving traffic. You get a success message and no new image. Import a second one past that check — through the portal or the `aca` CLI, neither of which checks — and it is no better, because `resolve_disk_image_id` returns the *first* disk image whose base matches the reference, and nothing fixes that iteration order. Which of the two boots is then unspecified.
 
 ## Import it into the sandbox group
 
