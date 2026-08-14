@@ -2,6 +2,17 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.14.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.13.0...maf-sandbox-v0.14.0) (2026-08-14)
+
+
+### ⚠ BREAKING CHANGES
+
+* rename Isolation.PROCESS to NONE, and reserve the old spelling ([#331](https://github.com/sokolaidev/maf-extensions/issues/331))
+
+### Features
+
+* rename Isolation.PROCESS to NONE, and reserve the old spelling ([#331](https://github.com/sokolaidev/maf-extensions/issues/331)) ([647e7a2](https://github.com/sokolaidev/maf-extensions/commit/647e7a2bd3d72abf0c2cf13ed2c8172dccfdfc32))
+
 ## [0.13.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.12.0...maf-sandbox-v0.13.0) (2026-08-14)
 
 
