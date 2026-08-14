@@ -99,9 +99,7 @@ def assess(title: str, paths: list[str], repo_root: Path) -> list[str]:
     if proposed is None:
         return []
     excluded = sorted(
-        package
-        for package, ceiling in ceilings(repo_root).items()
-        if not admits(proposed, ceiling)
+        package for package, ceiling in ceilings(repo_root).items() if not admits(proposed, ceiling)
     )
     if not excluded:
         return []

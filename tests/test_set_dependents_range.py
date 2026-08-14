@@ -45,9 +45,7 @@ class TestTheTarget:
             ((1, 2, 0), (1, 4)),
         ],
     )
-    def test_it_admits_the_next_minor(
-        self, released: tuple[int, ...], expected: tuple[int, ...]
-    ):
+    def test_it_admits_the_next_minor(self, released: tuple[int, ...], expected: tuple[int, ...]):
         assert ranges.target_ceiling(released) == expected
 
     def test_one_minor_up_would_exclude_the_release_it_is_for(self):
@@ -175,9 +173,7 @@ class TestOverATree:
         package = tmp_path / "packages" / name
         package.mkdir(parents=True)
         path = package / "pyproject.toml"
-        path.write_text(
-            f'[project]\nname = "{name}"\ndependencies = ["{dependency}"]\n', "utf-8"
-        )
+        path.write_text(f'[project]\nname = "{name}"\ndependencies = ["{dependency}"]\n', "utf-8")
         return path
 
     def test_it_edits_the_dependents_and_not_the_core(self, tmp_path: Path):
@@ -220,9 +216,7 @@ class TestOverATree:
         with pytest.raises(SystemExit):
             ranges.run("0.8.0", tmp_path)
 
-    def test_a_package_that_does_not_depend_on_the_core_is_skipped(
-        self, tmp_path: Path
-    ):
+    def test_a_package_that_does_not_depend_on_the_core_is_skipped(self, tmp_path: Path):
         self._write(tmp_path, "unrelated", "httpx>=1")
         assert ranges.run("0.8.0", tmp_path) == []
 
@@ -246,9 +240,7 @@ class TestOverATree:
         self._write(tmp_path, "dep-a", "maf-sandbox-acas>=0.2.0,<0.3")
         assert ranges.run("0.8.0", tmp_path) == []
 
-    def test_a_dependent_on_both_edits_the_base_and_ignores_the_sibling(
-        self, tmp_path: Path
-    ):
+    def test_a_dependent_on_both_edits_the_base_and_ignores_the_sibling(self, tmp_path: Path):
         package = tmp_path / "packages" / "dep-a"
         package.mkdir(parents=True)
         path = package / "pyproject.toml"

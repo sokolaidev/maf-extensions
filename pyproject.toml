@@ -30,11 +30,12 @@ dev = [
 # tests — the repo's `tests/` is repository-level wiring, no different in kind from a package's, so
 # the 23 undocumented classes and 9 undocumented functions there are exempt by consistency rather
 # than by writing them. That left 13 unsorted imports (auto-fixed) and 11 undocumented public
-# functions in `scripts/`, which gained one-line docstrings. `line-length` is still unset here —
-# the default 88 — so `ruff format --check` stays green; moving to the packages' 100 reformats 27
-# files and is a separate, reformat-only commit rather than one mixed with these rule changes.
+# functions in `scripts/`, which gained one-line docstrings. `line-length` is 100, matching the
+# packages; the 27 files that reformatted at that width landed as a separate formatter-only
+# commit, so the diff is reviewable as one mechanical change rather than mixed with these rules.
 # #292 carries the measurements and the proposal for both.
 [tool.ruff]
+line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]

@@ -113,9 +113,7 @@ async def run() -> int:
             ),
             tools=tools,
         )
-        response = await agent.run(
-            f"Validate {BICEP_FILE} and list every diagnostic you get back."
-        )
+        response = await agent.run(f"Validate {BICEP_FILE} and list every diagnostic you get back.")
         print(response.text)
     finally:
         deleted = await router.dispose_scope(SCOPE, THREAD_ID)

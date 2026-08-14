@@ -17,9 +17,7 @@ import struct
 import zlib
 from pathlib import Path
 
-_SCRIPT = (
-    Path(__file__).resolve().parent.parent / "scripts" / "check_live_diagram_sample.py"
-)
+_SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "check_live_diagram_sample.py"
 _spec = importlib.util.spec_from_file_location("check_live_diagram_sample", _SCRIPT)
 assert _spec and _spec.loader
 check = importlib.util.module_from_spec(_spec)
@@ -68,9 +66,7 @@ class TestTheSandboxHalf:
 
     def test_disposing_none_fails(self):
         """The shape this check exists for: an answer with no tool call behind it."""
-        output = (
-            "Here is your diagram, showing three stages.\n\nDisposed 0 sandbox(es).\n"
-        )
+        output = "Here is your diagram, showing three stages.\n\nDisposed 0 sandbox(es).\n"
         failures = check.assess(output, _png(640, 480))
         assert any("no sandbox was ever created" in reason for reason in failures)
 
@@ -112,10 +108,7 @@ class TestDimensions:
         assert check.dimensions(_png(1920, 1080)) == (1920, 1080)
 
     def test_it_refuses_anything_it_cannot_read(self):
-        assert (
-            check.dimensions(b"not a png at all, but long enough to reach the offsets")
-            is None
-        )
+        assert check.dimensions(b"not a png at all, but long enough to reach the offsets") is None
 
 
 class TestEveryReasonIsReported:

@@ -58,9 +58,7 @@ def _text(version: tuple[int, ...]) -> str:
 def _admits(version: tuple[int, ...], ceiling: tuple[int, ...]) -> bool:
     """Whether ``version`` is below the ``<ceiling`` bound, comparing at equal width."""
     width = max(len(version), len(ceiling))
-    return version + (0,) * (width - len(version)) < ceiling + (0,) * (
-        width - len(ceiling)
-    )
+    return version + (0,) * (width - len(version)) < ceiling + (0,) * (width - len(ceiling))
 
 
 def parse_constraint(constraint: str) -> tuple[tuple[int, ...], tuple[int, ...]] | None:
@@ -108,9 +106,7 @@ def set_range(text: str, released: tuple[int, ...]) -> tuple[str, frozenset[str]
 
     if not moved:
         return text, frozenset()
-    new_text = _CONSTRAINT.sub(
-        f"maf-sandbox>={floor_text},<{ceiling_text}", text, count=1
-    )
+    new_text = _CONSTRAINT.sub(f"maf-sandbox>={floor_text},<{ceiling_text}", text, count=1)
     return new_text, frozenset(moved)
 
 
@@ -177,8 +173,7 @@ def title(released_text: str, moved: frozenset[str]) -> str:
     admits = f"{admitted[0]}.{admitted[1] - 1}"
     if moved == frozenset({FLOOR, CEILING}):
         return (
-            f"fix: require maf-sandbox {released_text} and admit {admits} in the "
-            "dependents' range"
+            f"fix: require maf-sandbox {released_text} and admit {admits} in the dependents' range"
         )
     if moved == frozenset({CEILING}):
         return f"fix: admit maf-sandbox {admits} in the dependents' range"

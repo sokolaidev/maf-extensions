@@ -27,9 +27,7 @@ _REGION_TOTALS = {"north": "390", "south": "200", "east": "84", "west": "450"}
 _SUMMARY_NAME = "summary.md"
 
 _DISPOSED = re.compile(r"Disposed\s+(\d+)\s+sandbox", re.IGNORECASE)
-_DELIVERED = re.compile(
-    r"^Delivered this turn[^:]*:\s*(.+)$", re.IGNORECASE | re.MULTILINE
-)
+_DELIVERED = re.compile(r"^Delivered this turn[^:]*:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
 
 
 #: What a model may put between thousands: a comma, a plain space, a no-break space or a
@@ -116,9 +114,7 @@ def assess(output: str, summary: str | None) -> list[str]:
 
     disposed = _DISPOSED.search(output)
     if disposed is None:
-        failures.append(
-            "no 'Disposed N sandbox(es)' line — the sample did not run to completion"
-        )
+        failures.append("no 'Disposed N sandbox(es)' line — the sample did not run to completion")
     elif int(disposed.group(1)) < 1:
         failures.append(
             "'Disposed 0 sandbox(es)' — no sandbox was ever created, so nothing ran in one"
@@ -126,9 +122,7 @@ def assess(output: str, summary: str | None) -> list[str]:
 
     delivered = _DELIVERED.search(output)
     if delivered is None:
-        failures.append(
-            "no 'Delivered this turn' line — the sample did not reach its final report"
-        )
+        failures.append("no 'Delivered this turn' line — the sample did not reach its final report")
     elif _SUMMARY_NAME not in _delivered_names(delivered.group(1)):
         failures.append(
             f"the host recorded delivering {delivered.group(1).strip()!r}, which does not "

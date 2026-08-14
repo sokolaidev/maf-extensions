@@ -57,9 +57,9 @@ class TestWhichTitlesCutWhichRelease:
 
     def test_the_patch_types_are_the_releasing_types_that_are_not_feat(self):
         sections = json.loads(
-            (
-                Path(__file__).resolve().parent.parent / "release-please-config.json"
-            ).read_text("utf-8")
+            (Path(__file__).resolve().parent.parent / "release-please-config.json").read_text(
+                "utf-8"
+            )
         )["changelog-sections"]
         releasing = {s["type"] for s in sections if not s.get("hidden")}
         assert check._PATCH_TYPES == releasing - {"feat"}, (
@@ -67,9 +67,7 @@ class TestWhichTitlesCutWhichRelease:
             "release-please actually releases"
         )
 
-    @pytest.mark.parametrize(
-        "title", ["chore: a thing", "ci: a thing", "refactor: a thing"]
-    )
+    @pytest.mark.parametrize("title", ["chore: a thing", "ci: a thing", "refactor: a thing"])
     def test_the_silent_types_cut_nothing(self, title: str):
         assert check.next_version((0, 6, 1), title) is None
 
@@ -108,18 +106,14 @@ class TestAssess:
     """The whole gate: refuse only when a real minor meets a ceiling that excludes it."""
 
     def test_a_core_feat_is_refused_while_a_ceiling_excludes_it(self, tmp_path: Path):
-        repo = _repo(
-            tmp_path, "0.6.1", {"maf-sandbox-acas": "0.7", "maf-sandbox-wslc": "0.7"}
-        )
+        repo = _repo(tmp_path, "0.6.1", {"maf-sandbox-acas": "0.7", "maf-sandbox-wslc": "0.7"})
         problems = check.assess("feat: a thing", [_CORE_FILE], repo)
         assert problems, "a 0.7.0 release under a <0.7 ceiling must be refused"
         assert "maf-sandbox-acas, maf-sandbox-wslc" in problems[0]
         assert "0.7.0" in problems[0]
 
     def test_it_names_only_the_dependents_that_exclude_it(self, tmp_path: Path):
-        repo = _repo(
-            tmp_path, "0.6.1", {"maf-sandbox-acas": "0.8", "maf-sandbox-wslc": "0.7"}
-        )
+        repo = _repo(tmp_path, "0.6.1", {"maf-sandbox-acas": "0.8", "maf-sandbox-wslc": "0.7"})
         problems = check.assess("feat: a thing", [_CORE_FILE], repo)
         assert "maf-sandbox-wslc" in problems[0]
         assert "maf-sandbox-acas" not in problems[0]
@@ -136,9 +130,7 @@ class TestAssess:
         repo = _repo(tmp_path, "0.6.1", {"maf-sandbox-acas": "0.7"})
         assert check.assess("fix!: a thing", [_CORE_FILE], repo) != []
 
-    def test_a_feat_that_touches_no_core_file_is_not_this_gate_s_business(
-        self, tmp_path: Path
-    ):
+    def test_a_feat_that_touches_no_core_file_is_not_this_gate_s_business(self, tmp_path: Path):
         repo = _repo(tmp_path, "0.6.1", {"maf-sandbox-acas": "0.7"})
         changed = ["packages/maf-sandbox-acas/src/maf_sandbox_acas/_backend.py"]
         assert check.assess("feat: a thing", changed, repo) == []

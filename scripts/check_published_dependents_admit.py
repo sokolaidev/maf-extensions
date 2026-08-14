@@ -77,9 +77,7 @@ def dependent_distributions(repo_root: Path) -> list[str]:
     return found
 
 
-def refusals(
-    published: dict[str, list[str] | None], released: tuple[int, ...]
-) -> list[str]:
+def refusals(published: dict[str, list[str] | None], released: tuple[int, ...]) -> list[str]:
     """One line per published dependent whose ceiling excludes `released`."""
     shown = ".".join(str(part) for part in released)
     out: list[str] = []
@@ -89,9 +87,7 @@ def refusals(
         ceiling = ceiling_of(requires_dist)
         if ceiling is not None and not admits(released, ceiling):
             bound = ".".join(str(part) for part in ceiling)
-            out.append(
-                f"{distribution} on PyPI declares maf-sandbox<{bound}, excluding {shown}"
-            )
+            out.append(f"{distribution} on PyPI declares maf-sandbox<{bound}, excluding {shown}")
     return out
 
 

@@ -101,9 +101,7 @@ class NoIsolationSandbox:
         # command is the kind's to build — what it interpolates, and whether that is safe under a
         # shell, is the kind's responsibility, not the backend's.
         if isinstance(command, str):
-            cmd: str | list[str] = command.replace(
-                self._guest_work_dir, str(self._host_root)
-            )
+            cmd: str | list[str] = command.replace(self._guest_work_dir, str(self._host_root))
             shell = True
         else:
             guest = str(self._guest_work_dir)
@@ -144,28 +142,19 @@ class NoIsolationSandbox:
             exit_code=completed.returncode,
         )
 
-    async def stat_file(
-        self, path: str, *, working_directory: str
-    ) -> SandboxEntry | None:
+    async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
         raise NotImplementedError(
-            "NoIsolationSandbox does not implement the pull surface "
-            "(stat_file/read_file/list_dir)"
+            "NoIsolationSandbox does not implement the pull surface (stat_file/read_file/list_dir)"
         )
 
-    async def read_file(
-        self, path: str, *, working_directory: str, max_bytes: int
-    ) -> bytes:
+    async def read_file(self, path: str, *, working_directory: str, max_bytes: int) -> bytes:
         raise NotImplementedError(
-            "NoIsolationSandbox does not implement the pull surface "
-            "(stat_file/read_file/list_dir)"
+            "NoIsolationSandbox does not implement the pull surface (stat_file/read_file/list_dir)"
         )
 
-    async def list_dir(
-        self, path: str, *, working_directory: str
-    ) -> tuple[SandboxEntry, ...]:
+    async def list_dir(self, path: str, *, working_directory: str) -> tuple[SandboxEntry, ...]:
         raise NotImplementedError(
-            "NoIsolationSandbox does not implement the pull surface "
-            "(stat_file/read_file/list_dir)"
+            "NoIsolationSandbox does not implement the pull surface (stat_file/read_file/list_dir)"
         )
 
 
@@ -237,9 +226,7 @@ class NoIsolationBackend:
                         # docstring says everything stays under.
                         target = host_root / rel
                         if not target.resolve().is_relative_to(host_root.resolve()):
-                            raise ValueError(
-                                f"seed file {rel!r} escapes the work directory"
-                            )
+                            raise ValueError(f"seed file {rel!r} escapes the work directory")
                         target.parent.mkdir(parents=True, exist_ok=True)
                         if isinstance(content, str):
                             target.write_text(content, encoding="utf-8")

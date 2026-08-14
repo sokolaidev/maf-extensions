@@ -47,9 +47,7 @@ PACKAGE_PATHS = sorted(
 
 
 def pyproject(package_path: str) -> dict:
-    return tomllib.loads(
-        (REPO_ROOT / package_path / "pyproject.toml").read_text("utf-8")
-    )
+    return tomllib.loads((REPO_ROOT / package_path / "pyproject.toml").read_text("utf-8"))
 
 
 def declared_version(package_path: str) -> str:
@@ -95,9 +93,7 @@ def locked_version(distribution: str) -> str | None:
 
 def lock_updater(package_path: str) -> dict:
     entries = CONFIG["packages"][package_path].get("extra-files", [])
-    assert len(entries) == 1, (
-        f"{package_path}: expected one extra-files entry, got {entries}"
-    )
+    assert len(entries) == 1, f"{package_path}: expected one extra-files entry, got {entries}"
     return entries[0]
 
 
@@ -105,9 +101,7 @@ def publish_tag_globs() -> list[str]:
     """The `on.push.tags` globs, read out of the workflow without a YAML dependency."""
     workflow = PUBLISH_WORKFLOW.read_text(encoding="utf-8")
     block = re.search(r"^ *tags:\n((?: *- *\"[^\"]+\"\n)+)", workflow, re.MULTILINE)
-    assert block is not None, (
-        f"no `on.push.tags` block found in {PUBLISH_WORKFLOW.name}"
-    )
+    assert block is not None, f"no `on.push.tags` block found in {PUBLISH_WORKFLOW.name}"
     return re.findall(r"\"([^\"]+)\"", block.group(1))
 
 
@@ -120,15 +114,9 @@ def run_block(workflow: Path, step_name: str) -> str:
     """
     lines = workflow.read_text(encoding="utf-8").splitlines()
     start = next(
-        index
-        for index, line in enumerate(lines)
-        if line.strip() == f"- name: {step_name}"
+        index for index, line in enumerate(lines) if line.strip() == f"- name: {step_name}"
     )
-    run = next(
-        index
-        for index, line in enumerate(lines[start:], start)
-        if line.strip() == "run: |"
-    )
+    run = next(index for index, line in enumerate(lines[start:], start) if line.strip() == "run: |")
     indent = len(lines[run]) - len(lines[run].lstrip()) + 2
     body: list[str] = []
     for line in lines[run + 1 :]:
@@ -154,9 +142,7 @@ def condition_after(workflow: Path, anchor: str) -> str:
         if line.strip() and len(line) - len(line.lstrip()) <= depth:
             break
         mapping.append(line)
-    marker = next(
-        (index for index, line in enumerate(mapping) if line.strip() == "if: >-"), None
-    )
+    marker = next((index for index, line in enumerate(mapping) if line.strip() == "if: >-"), None)
     assert marker is not None, (
         f"{anchor} carries no `if: >-` block in {workflow.name}; if its gate was removed, "
         "that is the change to look at rather than this helper"
@@ -259,9 +245,7 @@ class TestEveryPackageUpdatesTheLockWhenItReleases:
 
     @pytest.mark.parametrize("package_path", PACKAGE_PATHS)
     def test_the_updater_selects_this_package_entry(self, package_path: str):
-        assert lock_updater(package_path)["jsonpath"] == lock_jsonpath(
-            declared_name(package_path)
-        )
+        assert lock_updater(package_path)["jsonpath"] == lock_jsonpath(declared_name(package_path))
 
 
 class TestComponentMatchesDistributionName:
@@ -298,9 +282,7 @@ class TestTagsResolveToExactlyOnePackage:
     @pytest.mark.parametrize("package_path", PACKAGE_PATHS)
     def test_each_package_tag_matches_exactly_one_glob(self, package_path: str):
         tag = release_tag(package_path)
-        matched = [
-            glob for glob in publish_tag_globs() if fnmatch.fnmatchcase(tag, glob)
-        ]
+        matched = [glob for glob in publish_tag_globs() if fnmatch.fnmatchcase(tag, glob)]
         assert matched == [f"{configured_component(package_path)}-v*"], (
             f"tag {tag} matched {matched}"
         )
@@ -400,8 +382,7 @@ class TestDependentsPinMafSandboxInAShapeTheRangeScriptCanRead:
 
     def test_every_dependent_is_pinned_in_the_readable_shape(self):
         constraints = {
-            package_path: self._base_constraint(package_path)
-            for package_path in PACKAGE_PATHS
+            package_path: self._base_constraint(package_path) for package_path in PACKAGE_PATHS
         }
         dependents = {p: c for p, c in constraints.items() if c is not None}
         assert dependents, "expected at least one package to depend on maf-sandbox"
@@ -422,9 +403,7 @@ class TestRoutineAutomationDoesNotClaimToCloseAnIssue:
     a body a workflow re-emits.
     """
 
-    _CLOSING_KEYWORD = re.compile(
-        r"\b(?:closes|closed|fixes|fixed|resolves|resolved)\s+#\d+", re.I
-    )
+    _CLOSING_KEYWORD = re.compile(r"\b(?:closes|closed|fixes|fixed|resolves|resolved)\s+#\d+", re.I)
 
     def test_the_release_workflow_writes_no_closing_keyword(self):
         text = RELEASE_WORKFLOW.read_text(encoding="utf-8")
@@ -461,15 +440,9 @@ class TestTheProposalBodySurvivesTheShell:
 
     def _body_fragment(self) -> str:
         """Just the heredoc through the substitution — no git, gh or python3 to stand up."""
-        lines = run_block(
-            RELEASE_WORKFLOW, "Propose the dependents' range"
-        ).splitlines()
-        start = next(
-            (i for i, line in enumerate(lines) if line.startswith("cat > ")), None
-        )
-        end = next(
-            (i for i, line in enumerate(lines) if line.startswith("sed -i ")), None
-        )
+        lines = run_block(RELEASE_WORKFLOW, "Propose the dependents' range").splitlines()
+        start = next((i for i, line in enumerate(lines) if line.startswith("cat > ")), None)
+        end = next((i for i, line in enumerate(lines) if line.startswith("sed -i ")), None)
         assert start is not None and end is not None, (
             "the step no longer builds the body in a file — if it has gone back to a shell "
             "variable, the prose is being parsed by bash again, which is the bug this is for"
@@ -538,11 +511,7 @@ class TestTheConstraintCommentsDoNotNameAVersion:
     _ZERO_VERSION = re.compile(r"0\.\d+\.\d+")
 
     def _comment_block_above_the_constraint(self, package_path: str) -> list[str]:
-        lines = (
-            (REPO_ROOT / package_path / "pyproject.toml")
-            .read_text("utf-8")
-            .splitlines()
-        )
+        lines = (REPO_ROOT / package_path / "pyproject.toml").read_text("utf-8").splitlines()
         for index, line in enumerate(lines):
             if "maf-sandbox>=" not in line:
                 continue
@@ -567,9 +536,7 @@ class TestTheConstraintCommentsDoNotNameAVersion:
                     "script moves the constraint and not this comment, so the number goes "
                     "stale — say which release the floor is for, not which release that is."
                 )
-        assert checked, (
-            "expected at least one package to carry a maf-sandbox constraint"
-        )
+        assert checked, "expected at least one package to carry a maf-sandbox constraint"
 
 
 class TestReleasingNamesEveryPackageThatDispatchesTheLiveCheck:
@@ -617,8 +584,7 @@ class TestReadingAGateOutOfTheWorkflow:
     def test_a_gated_job_reads_its_own(self, tmp_path: Path):
         condition = condition_after(self._workflow(tmp_path), "gated:")
         assert condition == (
-            "needs.build.outputs.target == 'pypi' "
-            "&& needs.build.outputs.breaking != 'true'"
+            "needs.build.outputs.target == 'pypi' && needs.build.outputs.breaking != 'true'"
         )
 
 
@@ -674,9 +640,7 @@ class TestABreakingCoreReleaseHoldsBackTheLiveCheck:
         assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
         output, summary = self._wrote(tmp_path)
         assert output.strip() == "breaking=true"
-        assert "273" in summary, (
-            "a skipped run has to point at the reason it was skipped"
-        )
+        assert "273" in summary, "a skipped run has to point at the reason it was skipped"
         assert "maf-sandbox" in summary and "0.13.0" in summary
 
     def test_an_ordinary_release_dispatches_and_stays_quiet(self, tmp_path: Path):
@@ -687,16 +651,10 @@ class TestABreakingCoreReleaseHoldsBackTheLiveCheck:
         )
         output, summary = self._wrote(tmp_path)
         assert output.strip() == "breaking=false"
-        assert summary == "", (
-            "nothing was skipped, so the summary has nothing to report"
-        )
+        assert summary == "", "nothing was skipped, so the summary has nothing to report"
 
-    def test_a_detector_that_cannot_answer_dispatches_rather_than_holds(
-        self, tmp_path: Path
-    ):
-        result = self._run(
-            tmp_path, 'python3() { echo "no section for 0.13.0" >&2; return 1; }'
-        )
+    def test_a_detector_that_cannot_answer_dispatches_rather_than_holds(self, tmp_path: Path):
+        result = self._run(tmp_path, 'python3() { echo "no section for 0.13.0" >&2; return 1; }')
         assert result.returncode == 0, (
             "an unanswerable question must not fail the release: the upload is the point of "
             "the run, and the dispatch is a decision on top of it"
@@ -723,9 +681,7 @@ class TestABreakingCoreReleaseHoldsBackTheLiveCheck:
         Waiting for the index is only ever worth doing for a run that follows it. The two `if:`
         blocks are kept as one text so neither can drift into holding the other open.
         """
-        conditions = {
-            job: condition_after(PUBLISH_WORKFLOW, job) for job in self._GATED_JOBS
-        }
+        conditions = {job: condition_after(PUBLISH_WORKFLOW, job) for job in self._GATED_JOBS}
         assert len(set(conditions.values())) == 1, conditions
 
     def test_the_detector_only_runs_for_a_real_core_release(self):

@@ -19,9 +19,7 @@ from pathlib import Path
 import pytest
 
 _SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
-sys.path.insert(
-    0, str(_SCRIPTS)
-)  # the script imports its sibling for one shared comparison
+sys.path.insert(0, str(_SCRIPTS))  # the script imports its sibling for one shared comparison
 _spec = importlib.util.spec_from_file_location(
     "check_published_dependents_admit", _SCRIPTS / "check_published_dependents_admit.py"
 )
@@ -40,9 +38,7 @@ class TestReadingTheCeilingOutOfPublishedMetadata:
         assert check.ceiling_of(["maf-sandbox>=0.6.0,<0.7"]) == (0, 7)
 
     def test_a_marker_does_not_hide_it(self):
-        assert check.ceiling_of(
-            ['maf-sandbox<0.7,>=0.6.0; python_version >= "3.12"']
-        ) == (0, 7)
+        assert check.ceiling_of(['maf-sandbox<0.7,>=0.6.0; python_version >= "3.12"']) == (0, 7)
 
     def test_a_sibling_sharing_the_prefix_is_not_read_as_the_core(self):
         assert check.ceiling_of(["maf-sandbox-acas<0.7,>=0.6.0"]) is None
@@ -54,9 +50,7 @@ class TestReadingTheCeilingOutOfPublishedMetadata:
         assert check.ceiling_of(["maf-sandbox<=0.7.0,>=0.6.0"]) is None
 
     def test_other_requirements_are_ignored(self):
-        assert check.ceiling_of(
-            ["azure-identity<2,>=1.25.1", "maf-sandbox<0.8,>=0.6.0"]
-        ) == (0, 8)
+        assert check.ceiling_of(["azure-identity<2,>=1.25.1", "maf-sandbox<0.8,>=0.6.0"]) == (0, 8)
 
 
 class TestTheVerdict:
@@ -110,7 +104,5 @@ class TestRequirementNames:
             ('azure-core[aio]>=1.0; extra == "x"', "azure-core"),
         ],
     )
-    def test_the_name_is_read_without_its_constraint(
-        self, requirement: str, expected: str
-    ):
+    def test_the_name_is_read_without_its_constraint(self, requirement: str, expected: str):
         assert check._requirement_name(requirement) == expected

@@ -28,9 +28,7 @@ _SAMPLE_DIRS = sorted(path for path in _SAMPLES.glob("[0-9][0-9]_*") if path.is_
 
 def test_the_sample_directories_were_found():
     """A glob that matches nothing would make every assertion below vacuously true."""
-    assert len(_SAMPLE_DIRS) >= 8, (
-        f"found {len(_SAMPLE_DIRS)} sample directories under {_SAMPLES}"
-    )
+    assert len(_SAMPLE_DIRS) >= 8, f"found {len(_SAMPLE_DIRS)} sample directories under {_SAMPLES}"
 
 
 @pytest.mark.parametrize("sample", _SAMPLE_DIRS, ids=lambda path: path.name)
