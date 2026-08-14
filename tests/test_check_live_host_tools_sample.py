@@ -1,16 +1,7 @@
-"""The match logic behind the host-tools sample check.
+"""The match logic behind `scripts/check_live_host_tools_sample.py`, tested on every PR.
 
-`scripts/check_live_host_tools_sample.py` runs on a real `samples/10_inprocess_host_tools`
-run. Its `assess` is a pure function, so the matching is tested here on every PR while the
-live run happens only on dispatch and after a release — the pattern every `check_live_*`
-script in this repository follows.
-
-What makes this one different from its siblings is worth stating, because it changes what the
-tests have to cover: no model stands between the library and stdout, so the check matches
-exact values rather than loosely. That removes the drift these suites usually spend their
-assertions on, and replaces it with a different risk — a check strict enough to go red on
-rewording rather than on behaviour. `_HEALTHY` below is the sample's real output, and several
-tests reword its prose to prove the verdict does not move.
+`_HEALTHY` is a real run's output, trimmed — checked against one rather than written from
+memory, since a fixture that has drifted makes every assertion below pass against a fiction.
 """
 
 from __future__ import annotations

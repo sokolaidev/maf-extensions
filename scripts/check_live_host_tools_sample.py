@@ -2,23 +2,15 @@
 
 The live workflow installs the *published* wheels, runs the sample and pipes its output here.
 
-This is the one check in the set that can match strictly, and the reason is worth stating: no
-model stands between the library and stdout. Every other live check reads a model's retelling
-of what a tool returned, so it matches rule ids and severities loosely and lives with the
-looseness. Here the printed values *are* the library's answers — `registry.names()`, each leg
-of `HostToolAggregate`, the class name of the exception the router raised — so a mismatch is a
-behaviour change in `maf-sandbox`, not a paraphrase.
-
     python samples/10_inprocess_host_tools/agent.py | tee out.txt
     python scripts/check_live_host_tools_sample.py out.txt   # or: ... | python …
 
-Strictly means *equal*, not *contains*. A set is parsed and compared whole, so a surface that
-grew a member fails rather than passing on the members it kept; a scalar is compared as a
-token, so `untrusted` does not accept `not-untrusted`. Widening is the failure this exists to
-notice, and a membership test cannot see it.
-
-What it does *not* pin is prose. Explanatory lines and the library's refusal sentences are
-free to be reworded; every assertion below keys on a name or a value that is API.
+Alone in this set it matches *strictly*, because no model stands between the library and
+stdout: the printed values are `maf-sandbox`'s own answers, so a mismatch is a behaviour
+change rather than a paraphrase. Strictly means **equal, not contains** — sets are parsed and
+compared whole, scalars as tokens. Widening is the failure this exists to notice, and a
+membership test cannot see it. Prose is not pinned: every assertion keys on a name or a value
+that is API.
 
 Exits non-zero listing every reason it failed.
 """
