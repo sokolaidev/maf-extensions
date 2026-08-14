@@ -53,6 +53,17 @@ concurrency:
 permissions:
   contents: read
 
+# Where the `scripts/check_live_*.py` assertions are read from, which is not where the samples
+# are read from. The samples are the thing under test and belong at the ref that triggered the
+# run — for a post-release call that is the release tag, so they are the code that shipped. The
+# checks are the *test*, and a test has no business being frozen with its subject: a tagged run
+# would otherwise assert with the checker as it stood at the tag, so a fix to it could never
+# reach a release already cut, and a checker bug found mid-train keeps costing for the rest of
+# that train. `.` for any other ref, so dispatching from a branch still runs that branch's
+# checks — which is how a change to one gets tried out. (#318.)
+env:
+  HARNESS: ${{ startsWith(github.ref, 'refs/tags/') && '.harness' || '.' }}
+
 jobs:
   sample-01:
     name: samples/01_acas_bicep against a live sandbox
@@ -75,6 +86,16 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # Only when `HARNESS` points at it — see the `env` block above for why the checks come
+      # from somewhere other than the samples. Sparse, because `scripts/` is all that is read.
+      - name: Check out the checks from the default branch
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch || 'main' }}
+          path: .harness
+          sparse-checkout: scripts
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
@@ -134,7 +155,7 @@ jobs:
           set -euo pipefail
           uv run --no-project samples/01_acas_bicep/agent.py | tee /tmp/sample-out.txt
           # stdlib-only, so the runner's own python3 runs it — uv run's env is not on its path.
-          python3 scripts/check_live_sample.py /tmp/sample-out.txt
+          python3 "$HARNESS"/scripts/check_live_sample.py /tmp/sample-out.txt
 
   sample-03:
     name: samples/03_acas_codeact against a live sandbox
@@ -165,6 +186,16 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # Only when `HARNESS` points at it — see the `env` block above for why the checks come
+      # from somewhere other than the samples. Sparse, because `scripts/` is all that is read.
+      - name: Check out the checks from the default branch
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch || 'main' }}
+          path: .harness
+          sparse-checkout: scripts
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
@@ -217,7 +248,7 @@ jobs:
           set -euo pipefail
           uv run --no-project samples/03_acas_codeact/agent.py | tee /tmp/sample03-out.txt
           # stdlib-only, so the runner's own python3 runs it — uv run's env is not on its path.
-          python3 scripts/check_live_codeact_sample.py /tmp/sample03-out.txt
+          python3 "$HARNESS"/scripts/check_live_codeact_sample.py /tmp/sample03-out.txt
 
   sample-05:
     name: samples/05_docker_bicep against a live container
@@ -241,6 +272,16 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # Only when `HARNESS` points at it — see the `env` block above for why the checks come
+      # from somewhere other than the samples. Sparse, because `scripts/` is all that is read.
+      - name: Check out the checks from the default branch
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch || 'main' }}
+          path: .harness
+          sparse-checkout: scripts
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
@@ -288,7 +329,7 @@ jobs:
           uv run --no-project samples/05_docker_bicep/agent.py | tee /tmp/sample05-out.txt
           # Sample 01's assertion, unchanged: the same file compiled by the same CLI produces
           # the same two rule ids, whatever ran it.
-          python3 scripts/check_live_sample.py /tmp/sample05-out.txt
+          python3 "$HARNESS"/scripts/check_live_sample.py /tmp/sample05-out.txt
 
   sample-06:
     name: samples/06_docker_codeact against a live container
@@ -313,6 +354,16 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # Only when `HARNESS` points at it — see the `env` block above for why the checks come
+      # from somewhere other than the samples. Sparse, because `scripts/` is all that is read.
+      - name: Check out the checks from the default branch
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch || 'main' }}
+          path: .harness
+          sparse-checkout: scripts
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
@@ -359,7 +410,7 @@ jobs:
           set -euo pipefail
           uv run --no-project samples/06_docker_codeact/agent.py | tee /tmp/sample06-out.txt
           # The same assertion as sample 03: same task, same one right answer, same disposal line.
-          python3 scripts/check_live_codeact_sample.py /tmp/sample06-out.txt
+          python3 "$HARNESS"/scripts/check_live_codeact_sample.py /tmp/sample06-out.txt
 
   sample-07:
     name: samples/07_docker_diagram against a live container
@@ -381,6 +432,16 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # Only when `HARNESS` points at it — see the `env` block above for why the checks come
+      # from somewhere other than the samples. Sparse, because `scripts/` is all that is read.
+      - name: Check out the checks from the default branch
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch || 'main' }}
+          path: .harness
+          sparse-checkout: scripts
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
@@ -429,7 +490,7 @@ jobs:
           uv run --no-project samples/07_docker_diagram/agent.py | tee /tmp/sample07-out.txt
           # The model's prose is not evidence a renderer ran, so the assertion is the disposal
           # line and the PNG itself.
-          python3 scripts/check_live_diagram_sample.py \
+          python3 "$HARNESS"/scripts/check_live_diagram_sample.py \
             /tmp/sample07-out.txt samples/07_docker_diagram/out/diagram.png
 
   sample-08:
@@ -452,6 +513,16 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # Only when `HARNESS` points at it — see the `env` block above for why the checks come
+      # from somewhere other than the samples. Sparse, because `scripts/` is all that is read.
+      - name: Check out the checks from the default branch
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch || 'main' }}
+          path: .harness
+          sparse-checkout: scripts
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
@@ -495,7 +566,7 @@ jobs:
           uv run --no-project samples/08_docker_codeact_files/agent.py | tee /tmp/sample08-out.txt
           # Two halves, and the second is the point: the right total in stdout, and the declared
           # summary actually on disk under its declared name.
-          python3 scripts/check_live_codeact_files_sample.py \
+          python3 "$HARNESS"/scripts/check_live_codeact_files_sample.py \
             /tmp/sample08-out.txt samples/08_docker_codeact_files/out/summary.md
 
   sample-09:
@@ -522,6 +593,16 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # Only when `HARNESS` points at it — see the `env` block above for why the checks come
+      # from somewhere other than the samples. Sparse, because `scripts/` is all that is read.
+      - name: Check out the checks from the default branch
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch || 'main' }}
+          path: .harness
+          sparse-checkout: scripts
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
@@ -578,4 +659,4 @@ jobs:
           uv run --no-project samples/09_inprocess_bicep/agent.py | tee /tmp/sample09-out.txt
           # Sample 01's assertion, unchanged: the same file compiled by the same CLI produces the
           # same two rule ids, whatever ran it. stdlib-only, so the runner's own python3 runs it.
-          python3 scripts/check_live_sample.py /tmp/sample09-out.txt
+          python3 "$HARNESS"/scripts/check_live_sample.py /tmp/sample09-out.txt
