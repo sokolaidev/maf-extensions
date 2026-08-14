@@ -76,7 +76,7 @@ cd samples/10_inprocess_host_tools && uv run agent.py
 
 No environment variables, no `az login`, no container engine, no model. The [PEP 723](https://peps.python.org/pep-0723/) block names one dependency.
 
-This is the only sample that reads no configuration — its `verify-live.yml` job is the only one with no `environment:` and no `permissions:` block for the same reason — so the `_scaffold.py` copy every sample carries goes unused here. It stays because [`tests/test_sample_scaffold.py`](../../tests/test_sample_scaffold.py) holds all ten copies byte-identical, and a sample that dropped it would be the one that drifts.
+This is the only sample that reads no configuration — its `verify-live.yml` job is the only one with no `environment:` and no `permissions:` block for the same reason — so the `_scaffold.py` copy every sample carries goes unused here. It stays because [`tests/test_sample_scaffold.py`](../../tests/test_sample_scaffold.py) holds all eleven copies byte-identical, and a sample that dropped it would be the one that drifts.
 
 ## Where this sits
 
