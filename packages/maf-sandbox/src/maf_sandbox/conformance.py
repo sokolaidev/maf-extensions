@@ -538,9 +538,20 @@ async def run_files_out_probes(subject: ConformanceSubject) -> tuple[ProbeResult
     Anything a probe raises is a failure of that probe and nothing else: a backend that answers
     a positive control with its own ``RuntimeError`` would otherwise take the whole run down
     and report none of the refusals that did work.
+
+    A subject that does not declare :data:`~maf_sandbox.Capability.FILES_OUT` is refused rather
+    than run.  Skipping is right for a capability a backend never claimed — ``FILES_LIST`` is
+    the case it exists for — but skipping *everything* and returning success is a green run
+    that attacked nothing, which is worse than no run at all.
     """
-    paths = await plant_layout(subject)
     declared = subject.capabilities
+    if Capability.FILES_OUT not in declared:
+        raise ValueError(
+            "this subject declares no FILES_OUT, so every probe would be skipped and the run "
+            "would report success having attacked nothing. Pass the backend's own "
+            "`capabilities` — the frozenset the router reads — rather than a narrower set."
+        )
+    paths = await plant_layout(subject)
     results: list[ProbeResult] = []
     for probe in FILES_OUT_PROBES:
         missing = probe.requires - declared

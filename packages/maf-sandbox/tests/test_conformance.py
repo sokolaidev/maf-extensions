@@ -329,6 +329,19 @@ class TestWhatTheRunnerReports:
         assert all(r.failure is None for r in results)
         assert all("files_list" in (r.skipped or "") for r in results if r.skipped)
 
+    def test_a_subject_without_files_out_is_refused_rather_than_skipped_into_success(self):
+        """Skipping one capability is the feature; skipping all of them is a green run of nothing.
+
+        The distinction matters wherever a *call* to the suite is taken as evidence — a subject
+        built with the wrong capabilities, or with `DEFAULT_CAPABILITIES`, would otherwise plant
+        the layout, attack none of it, and return a full set of skips as success.
+        """
+        subject = _FakeSubject(InProcessSandbox(), frozenset({Capability.FILES_LIST}))
+        with pytest.raises(ValueError, match="declares no FILES_OUT"):
+            asyncio.run(run_files_out_probes(subject))
+        with pytest.raises(ValueError, match="declares no FILES_OUT"):
+            asyncio.run(assert_files_out_conformance(subject))
+
     def test_every_probe_runs_even_after_one_fails(self):
         """A backend fixing one refusal at a time learns nothing from a suite that stops early."""
         results = asyncio.run(run_files_out_probes(_leaky_subject(walks=False)))

@@ -30,6 +30,7 @@ Some tests exist to stop a specific mistake, and their failure messages say whic
 - **`TestOnlyDeclaredDependencies`** — every module imports only the standard library, its own package, or something its `pyproject.toml` declares. An undeclared import works fine here and breaks the first person to `pip install` the package alone.
 - **`TestZeroDependencies`** (`maf-sandbox`) — the protocol modules import nothing but the standard library. That layer exists to keep backends and workloads apart; a dependency there defeats it.
 - **`TestNoDirectAzureImport`** (`maf-sandbox-bicep`, `maf-sandbox-codeact`) — a workload reaches a sandbox through the protocol, never through a backend, which is what lets the same tool run on Azure, on Docker, or on the in-process fake.
+- **`test_conformance_coverage.py`** — a package that implements the pull surface (`stat_file` and `read_file`, with a body rather than a `raise`) has to call `maf_sandbox.conformance`'s suite from its own tests. Two backends written against the prose alone shipped the same confinement escape, twice each ([#142](https://github.com/sokolaidev/maf-extensions/issues/142)); the probes are what that cost bought, and this keeps a third backend from being held to prose again. It is a wiring check and says so: it proves the call is written, not that it ran, so disabling a conformance test is caught in review rather than here.
 
 If a change genuinely needs to cross one of those lines, say so in the PR — the boundary may be wrong, but it should move deliberately.
 
