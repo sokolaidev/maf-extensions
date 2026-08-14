@@ -28,7 +28,6 @@ from maf_sandbox import (
     Capability,
     EntryKind,
     ExecResult,
-    Isolation,
     LandedArtifact,
     NameNormalization,
     OutputSink,
@@ -247,8 +246,10 @@ def _context(*, thread_id: str | None = "thread-1") -> CallerContext:
 
 def _tool(backend: InProcessSandboxBackend, *, thread_id: str | None = "thread-1", **kw):
     tools = make_codeact_tools(
-        # Below the default floor: this suite exercises the workload, not the floor check.
-        SandboxRouter([backend], min_isolation=Isolation.PROCESS),
+        # Below the default floor: this suite exercises the workload, not the floor check. Read
+        # off the backend rather than named, so renaming the ladder's bottom rung is not a
+        # change to this package.
+        SandboxRouter([backend], min_isolation=backend.isolation),
         "data-analyst",
         _context(thread_id=thread_id),
         image="registry.invalid/python:3.13",
