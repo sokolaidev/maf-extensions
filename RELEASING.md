@@ -61,6 +61,12 @@ Between steps 1 and 4 a dependent's constraint is wider than what its code has b
 
 Each package gets its own Release PR, so ordering is a matter of which you merge first — but merging now publishes, so **let one finish before merging the next**. The hazard this guards against runs the opposite way to the one it used to: a dependent released at step 2 has not moved its floor, so it resolves against the core already on PyPI and its smoke gate is in no danger. What fails now is starting step 3 too early. Merge `maf-sandbox`'s Release PR while a dependent's publish is still in flight and the upload-time guard reads an index that has not caught up, and refuses. That refusal is safe and re-runnable — the version number is only spent once the upload succeeds — but it is noise you avoid by letting each dependent finish.
 
+### What the publish gate proves
+
+A core release runs two checks before it ships. The admit check refuses if a published dependent's ceiling excludes the version; the import check installs the candidate core wheel beside each admitting published dependent and confirms the dependent still imports — every admitting version at build time, the latest only at upload. A pass proves one thing: every admitting published dependent imports the candidate core, so a core name removed or renamed at module load is caught before the core is public, including an old version with a loose ceiling the latest has moved off.
+
+It does not prove compatibility. A name that still exists but changed its call signature, or a behavioural change, imports clean and ships. Those are caught after release instead: verify-live runs the samples against real backends on demand and after each release, and its dispatch gate skips a doomed run when a break has already shipped — the checks that need a model or an engine, kept off the publish path on purpose. The gate is import-only by that design, not by oversight.
+
 ## Versioning
 
 [SemVer](https://semver.org/), and every package is below `1.0.0` — so a minor bump may break API. Say so in the changelog when it does; at `0.x` the version number alone warns nobody.
