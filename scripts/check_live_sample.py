@@ -17,6 +17,11 @@ the very drift it is meant to catch. Rule ids and severities are matched instead
 ids are opaque tokens the model is instructed to echo verbatim, so their presence is evidence
 the compiler ran and its findings reached the end, not that the model agreed with itself.
 
+It also checks the compiler found `bicepconfig.json`, because nothing else can. A guest
+carrying that file at a work-dir root the tool no longer writes to lints against the CLI's
+built-in defaults and still satisfies every other assertion here — same rule ids, same
+sandbox, weaker rule set (#308).
+
 Exits non-zero listing every reason it failed. A run that never created a sandbox
 (`Disposed 0`) or never produced these diagnostics is a broken stack, not a clean file.
 """
@@ -27,14 +32,51 @@ import re
 import sys
 from pathlib import Path
 
-#: Two findings the sample's `main.bicep` always produces: `no-unused-params` (a lint finding)
-#: and `BCP035` (a build finding, the missing `sku`). Their rule ids are opaque tokens the
-#: model is told to echo verbatim, so requiring both is strong evidence the compiler ran and
-#: its findings reached the end. `use-recent-api-versions` is produced too but not required —
-#: it is the one the README calls out as drifting, and the point is to not depend on it.
+#: Rule ids `main.bicep` always produces — a lint finding and a build finding. Opaque tokens
+#: the model is told to echo verbatim, so their presence is evidence the compiler ran. Neither
+#: says which rule set ran; `_CONFIG_TELLS` is for that.
 _REQUIRED_RULES = ("no-unused-params", "BCP035")
 
+
+#: A source location, the third field of a rendered diagnostic. Prose about a rule carries the
+#: first two — "the expected [warning] use-recent-api-versions is missing" — and not this one.
+_LOCATION = r"[\w./\\-]*\.bicep:\d+"
+
+
+def _reported(rule: str, level: str = r"error|warning|info|note") -> re.Pattern[str]:
+    """Match ``rule`` *rendered as a diagnostic* rather than named in prose.
+
+    All three fields of ``[<level>] <rule> @ <file>:<line>`` on one line, the level and the rule
+    adjacent. Naming a rule is not reporting it, and this reads a model's retelling rather than
+    the compiler, so a claim about a diagnostic must carry what only a real one has. Two things
+    it deliberately does not require: a fixed field order, since a model may tabulate; and the
+    `@`, which a table drops.
+    """
+    level_re = rf"\[(?:{level})\]"
+    gap = r"[^\w\n]*"  # `- `, `| `, backticks — never a newline, and never another word
+    pair = rf"(?:{level_re}{gap}{re.escape(rule)}|{re.escape(rule)}{gap}{level_re})"
+    return re.compile(rf"^(?=.*{pair})(?=.*{_LOCATION}).*$", re.MULTILINE | re.IGNORECASE)
+
+
+#: The rule the config switches on. Its *message* drifts — the day count climbs — but the id
+#: does not, and the pinned `2023-01-01` only ages further past the threshold, so it fires more
+#: over time, never less.
+_CONFIG_RULE = "use-recent-api-versions"
+
+#: Either one proves `bicepconfig.json` was found: the config switches `_CONFIG_RULE` on, and
+#: promotes `no-unused-params` from its built-in `warning` to `error`.
+_CONFIG_TELLS = (_reported(_CONFIG_RULE), _reported("no-unused-params", "error"))
+
 _DISPOSED = re.compile(r"Disposed\s+(\d+)\s+sandbox", re.IGNORECASE)
+
+
+def config_was_discovered(output: str) -> bool:
+    """Whether the diagnostics show the compiler found `bicepconfig.json`.
+
+    Either tell suffices on purpose: they are one fact seen twice and vanish together, so
+    requiring both would only add false reds when a model reformats one of them away.
+    """
+    return any(tell.search(output) for tell in _CONFIG_TELLS)
 
 
 def assess(output: str) -> list[str]:
@@ -47,11 +89,19 @@ def assess(output: str) -> list[str]:
                 f"diagnostic {rule!r} is not in the output — the compiler's findings did not come back"
             )
 
-    # A severity must render — the level is half of what an agent acts on. `error` specifically:
-    # a healthy run always reports at least one (main.bicep's faults yield an error either way),
-    # so requiring it does not depend on the drift-prone warning. It is deliberately not tied to
-    # a particular rule — the model's prose is not parsed finely enough to assert which rule the
-    # error belongs to — so this proves severities render, not that any single rule is at error.
+    # Which rule set ran. Everything above passes against the CLI's built-in defaults (#308).
+    if not config_was_discovered(output):
+        failures.append(
+            f"no diagnostic reports {_CONFIG_RULE!r}, and none reports no-unused-params at "
+            "[error] — bicepconfig.json was not discovered, so this linted against the CLI's "
+            "built-in defaults. It is missing from the work-dir root of whatever served the "
+            "run: an imported disk image (re-import under a new tag — overwriting the old one "
+            "changes nothing), an image built from images/bicep-sandbox, or the backend's "
+            "seed files. See #308"
+        )
+
+    # A severity rendered at all — the level is half of what an agent acts on. Coarse by
+    # design, and not a config check: it matches the word anywhere, so prose satisfies it.
     if not re.search(r"\berror\b", output, re.IGNORECASE):
         failures.append(
             "no 'error' severity anywhere in the output — a healthy run reports at least one"

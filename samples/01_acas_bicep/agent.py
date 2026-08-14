@@ -56,7 +56,7 @@ AGENT_DIR = "devops-engineer"
 BICEP_FILE = "main.bicep"
 
 #: Everything the sandbox backend needs. `BICEP_SANDBOX_IMAGE` is a bare
-#: `repository:tag` (for example `bicep-sandbox:0.46.1`); the registry above
+#: `repository:tag` (for example `bicep-sandbox:0.46.1-1`); the registry above
 #: qualifies it into a full reference.
 SANDBOX_VARS = (
     "ACAS_SANDBOX_ENDPOINT",
