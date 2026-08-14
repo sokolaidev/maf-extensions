@@ -166,7 +166,7 @@ def bicep_sandbox_spec(image: str | None = None, image_id: str | None = None) ->
 
 def make_bicep_tools(
     router: SandboxRouter | None,
-    file_store: "AgentFileStore",
+    file_store: AgentFileStore,
     agent_dir: str,
     context: CallerContext,
     *,
@@ -220,9 +220,9 @@ def make_bicep_tools(
 
 def _bicep_validate_tool(
     session: SandboxToolSession,
-    store: "AgentFileStore",
+    store: AgentFileStore,
     timeout: int,
-) -> "Callable[..., Awaitable[str]]":
+) -> Callable[..., Awaitable[str]]:
     """Build the ``bicep_validate`` body for one attached tool.
 
     Defined at module level rather than nested inside :func:`make_bicep_tools`, and that is

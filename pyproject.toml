@@ -19,6 +19,23 @@ dev = [
     "twine>=6,<7",
 ]
 
+# Lint rules for the tree *outside* packages/* — samples/, tests/, scripts/, which belong to no
+# package. ruff resolves [tool.ruff] per file from the nearest ancestor that has one, so each
+# package still answers to its own section and nothing here reaches it; their self-containment is
+# what it was. Those 43 files previously answered to ruff's defaults — no `UP` — which is how a
+# quoted annotation in samples/07 outlived the same cleanup inside the packages.
+#
+# `UP` and nothing more, deliberately. No `line-length`: this tree is formatted at ruff's default
+# width, and raising it to the packages' 100 would reformat 27 files to no purpose. `I` (13
+# findings) and the `D` docstring rules (43) are a larger question than the one that added this,
+# and a sample is not a package — whether it should document like one is worth deciding on its
+# own rather than as a side effect.
+[tool.ruff]
+target-version = "py312"
+
+[tool.ruff.lint]
+extend-select = ["UP"]
+
 # From-the-root test runs. Each package also carries its own [tool.pytest.ini_options] for
 # in-package runs; pytest binds exactly one rootdir per invocation, so running from here
 # uses this list and running inside a package uses that package's own configuration.
