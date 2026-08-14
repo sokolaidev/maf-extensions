@@ -57,6 +57,10 @@ _HEALTHY = """\
     SandboxIdentityDenied: the 'release-notes' workload's dispatched tools exercise user
     authority, which this host's router denies outright (denied_identities).
 
+  The way past the second refusal is a different registry, not a different call:
+    a registry without publish_release_note folds to identities={app}, requires_approval=False,
+    and the same denied_identities router serves the spec built from it.
+
 Completed 4 of 4 acts. Acquired 0 sandbox(es).
 """
 
@@ -153,6 +157,36 @@ class TestTheTwoRefusals:
             line for line in _HEALTHY.splitlines() if "ensure_can_serve" not in line
         )
         assert any("permitted path" in r for r in check.assess(dropped))
+
+
+class TestTheNarrowedRegistry:
+    """Act 4's way out: a smaller surface registered from the start, run rather than described.
+
+    The claim behind "least privilege is what a host registers". It cannot be shown by editing
+    what act 3 built — `SandboxSpec` is frozen, `aggregate()` sealed the registry, and there is
+    no unregister — so the sample builds a second registry, and these pin what it comes to.
+    """
+
+    def test_the_narrowed_fold_is_reported(self):
+        assert check.assess(_HEALTHY) == []
+
+    def test_a_missing_narrowing_step_is_caught(self):
+        dropped = "\n".join(
+            line for line in _HEALTHY.splitlines() if "folds to identities=" not in line
+        )
+        assert any("narrowed registry" in r for r in check.assess(dropped))
+
+    def test_approval_surviving_the_narrowing_is_caught(self):
+        # Dropping the only USER tool must take the whole surface off approval-gated. If it did
+        # not, the identity refusal would still apply and the sample's way out would not work.
+        reasons = check.assess(
+            _HEALTHY.replace("requires_approval=False", "requires_approval=True")
+        )
+        assert any("requires_approval=False" in r for r in reasons), reasons
+
+    def test_user_surviving_the_narrowing_is_caught(self):
+        reasons = check.assess(_HEALTHY.replace("identities={app}", "identities={app, user}"))
+        assert any("identities={app}" in r for r in reasons), reasons
 
 
 class TestTheRunCompleted:

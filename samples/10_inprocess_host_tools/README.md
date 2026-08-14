@@ -50,7 +50,17 @@ The one-time registration notice is printed rather than suppressed. It says out 
 
 Both are `PermissionError`, both name the deployment's own setting, and both turn away the **whole kind**. There is no partial attach — a registry with one refused tool in it attaches nothing.
 
-Which is the practical lever: drop `publish_release_note` and the identities become `{app}` alone, `requires_approval` goes false, and the second router serves the same spec. Least privilege here comes from what a host **registers**, never from what it declares.
+Act 4 ends by getting past the second refusal, and *how* is the part worth reading. Not a narrower call against the objects already built — three things prevent that, each on purpose:
+
+| | |
+|---|---|
+| `SandboxSpec` is `@dataclass(frozen=True)` | its `identities` cannot be edited after the router has been handed it |
+| `aggregate()` sealed the registry | a later `register` is refused, so the surface cannot widen under a policy derived from it |
+| there is no unregister | `HostToolRegistry` exposes `register`, `resolve`, `declaration_for`, `names` and `aggregate`, and nothing that removes |
+
+So narrowing means going back to the registration site and building the smaller surface from the start. The sample does exactly that: a second registry with `publish_release_note` left out folds to `identities={app}` and `requires_approval=False`, and the same `denied_identities` router serves a spec built from *that*.
+
+Least privilege here comes from what a host **registers**, never from what it declares — and the three rows above are what that costs in practice.
 
 ## `Identity.USER` is declarable and not servable
 

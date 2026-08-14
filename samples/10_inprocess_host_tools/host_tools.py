@@ -1,13 +1,7 @@
 """The four functions a host offers a sandboxed program — three declared, one not.
 
-Split out of ``agent.py`` so the declarations read as what they are: statements a host makes
-about its own functions, written where the functions are, not assembled at the wiring site.
-That is the whole of `@sandbox_tool`'s job — it stamps and returns the function unchanged, so
-these stay ordinary callables that anything else in the host can still call directly.
-
-The bodies are stubs returning fixed values. Nothing here is dispatched (see the README), and
-a real implementation would change none of the declarations, which is the point: the three
-legs describe a function's *relationship to the boundary*, not its code.
+The bodies are stubs, and a real implementation would change none of the declarations: the
+three legs describe a function's relationship to the boundary, not its code.
 """
 
 from __future__ import annotations

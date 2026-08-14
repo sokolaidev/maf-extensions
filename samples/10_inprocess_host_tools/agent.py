@@ -1,29 +1,11 @@
-"""What a host configures before a sandboxed program may call back into it — and what refuses it.
+"""What a host configures before a sandboxed program may call back into it, in four acts.
 
-This is the `app` box again, one layer earlier than every other sample::
+Registration, the aggregate the registry folds to, a router that permits the spec built from
+it, and the two axes a router refuses on. Every one of them is answered at attach, so this
+runs with no sandbox, no model and no configuration.
 
-    app  ->  maf_sandbox (router)  ->  a backend  ->  the sandbox
-     ^ everything below happens here, before a sandbox exists
-
-`HOST_TOOLS` is the one capability where trust crosses *outward*: a dispatched body runs in
-the host process, with the host's authority, driven by model-written code, and its call is
-invisible to the host's middleware — the boundary sees only `execute_code`'s aggregate
-result. So the interesting part is not the call. It is everything a host decides before one
-is possible, and the router turning a whole kind away when that decision says no.
-
-**Nothing is dispatched here, and nothing can be yet.** No shipped backend declares
-`Capability.HOST_TOOLS` — the constant lives in `maf_sandbox` and in no backend — and the
-transport that would carry a request out of a guest is still being designed (#133). That is
-why this sample builds its own backend below: to have something that declares the capability,
-the wiring is written by hand, and having to write it is the honest demonstration.
-
-What *is* real today is everything a host gets wrong first: which functions are reachable at
-all, what the surface as a whole then means, and whether this deployment permits it. All of
-it is decided at attach, before a sandbox is acquired, so all of it runs here in a second
-with no cloud account, no container runtime, no model and no configuration.
-
-Read `host_tools.py` first — the four functions and their declarations — then the four acts
-below.
+Why the channel is shaped this way, and why nothing is dispatched, is in this directory's
+README.
 """
 
 # /// script
@@ -195,8 +177,36 @@ def act_four_refused(identities: frozenset[Identity]) -> None:
 
     print("  Both are PermissionError, both name the deployment's own setting, and both")
     print("  turn away the whole kind rather than one function — there is no partial")
-    print("  attach. Drop publish_release_note from the registry and the second router")
-    print("  serves this spec: the identities came from what was registered.\n")
+    print("  attach.\n")
+
+    # The way out, run rather than described. It is not a narrower call against the objects
+    # above: `spec` is frozen, `registry` sealed when its aggregate was taken, and there is no
+    # unregister — all three deliberate, so a surface a policy was derived from cannot quietly
+    # change. Narrowing means going back to the registration site and building the smaller
+    # surface from the start, which is what "least privilege comes from what a host registers"
+    # costs in practice.
+    narrower = HostToolRegistry(require_declared=True)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", MafSandboxHostToolsWarning)
+        for tool in (semver_bump, fetch_changelog):  # no publish_release_note
+            narrower.register(tool)
+    narrowed = narrower.aggregate()
+    no_user.ensure_can_serve(
+        SandboxSpec(
+            kind=KIND,
+            requires=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
+            identities=narrowed.identities,
+        )
+    )
+    print("  The way past the second refusal is a different registry, not a different call:")
+    print(
+        f"    a registry without publish_release_note folds to identities="
+        f"{{{', '.join(sorted(narrowed.identities))}}}, requires_approval="
+        f"{narrowed.requires_approval},"
+    )
+    print("    and the same denied_identities router serves the spec built from it.")
+    print("    Least privilege is what a host registers, and the cost of that is real:")
+    print("    the spec is frozen, the registry sealed, and there is no unregister.\n")
 
 
 def main() -> int:

@@ -47,6 +47,13 @@ _AGGREGATE = {
 #: raised and the sample really caught it.
 _REFUSALS = ("SandboxCapabilityDenied", "SandboxIdentityDenied")
 
+#: The narrowed fold: act 4 rebuilds the registry without the USER tool and reports what it
+#: comes to. Half of this is covered by the completion line already — the sample calls
+#: `ensure_can_serve` on the narrowed spec unguarded, so a router that refused would end the
+#: run before it printed one — and that is the half worth having twice, because it is the
+#: claim `least privilege is what a host registers` rests on.
+_NARROWED = ("identities={app}", "requires_approval=False")
+
 #: The last line: four acts, and no sandbox. Every other sample's check asserts a sandbox *was*
 #: created; this one asserts none ever was, because the whole point is that the router answers
 #: at attach. A truncated run has no such line at all, which both readings catch.
@@ -126,6 +133,21 @@ def assess(output: str) -> list[str]:
             failures.append(
                 f"{exception} is not in the output — that deny axis did not refuse the spec"
             )
+
+    narrowed = _line_containing(output, "folds to identities=")
+    if narrowed is None:
+        failures.append(
+            "act 4 did not report the narrowed registry — the way past the identity refusal is "
+            "a smaller surface registered from the start, and the sample runs it rather than "
+            "describing it"
+        )
+    else:
+        for fragment in _NARROWED:
+            if fragment not in narrowed:
+                failures.append(
+                    f"the narrowed registry does not report {fragment!r} — dropping the only "
+                    "USER tool must take the whole surface off approval-gated"
+                )
 
     completed = _COMPLETED.search(output)
     if completed is None:
