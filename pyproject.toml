@@ -20,20 +20,14 @@ dev = [
 ]
 
 # Lint rules for the tree *outside* packages/* — samples/, tests/, scripts/, which belong to no
-# package. ruff resolves [tool.ruff] per file from the nearest ancestor that has one, so each
-# package still answers to its own section and nothing here reaches it; their self-containment is
-# what it was. Those 43 files previously answered to ruff's defaults — no `UP` — which is how a
-# quoted annotation in samples/07 outlived the same cleanup inside the packages.
+# package. ruff resolves [tool.ruff] per file from the nearest ancestor that has one, so this root
+# section reaches that tree while each package still answers to its own; their self-containment is
+# what it was. Without it these files would fall back to ruff's defaults — the gap #274 closed.
 #
-# The rules now mirror every package's: `I`, `UP`, and the `D100`/`D101`/`D103`/`D104` docstring
-# rules. `tests/**` is ignored for `D101`/`D103` for the same reason each package ignores its own
-# tests — the repo's `tests/` is repository-level wiring, no different in kind from a package's, so
-# the 23 undocumented classes and 9 undocumented functions there are exempt by consistency rather
-# than by writing them. That left 13 unsorted imports (auto-fixed) and 11 undocumented public
-# functions in `scripts/`, which gained one-line docstrings. `line-length` is 100, matching the
-# packages; the 27 files that reformatted at that width landed as a separate formatter-only
-# commit, so the diff is reviewable as one mechanical change rather than mixed with these rules.
-# #292 carries the measurements and the proposal for both.
+# The rules mirror every package's: `I`, `UP`, and the `D100`/`D101`/`D103`/`D104` docstring rules,
+# at `line-length = 100`. `tests/**` is ignored for `D101`/`D103` for the same reason each package
+# ignores its own tests — the repo's `tests/` is repository-level wiring, no different in kind
+# from a package's, not API surface. #292 carries the decision and the measurements behind it.
 [tool.ruff]
 line-length = 100
 target-version = "py312"
