@@ -26,7 +26,7 @@ _HEALTHY = """\
 
   spec asks for container isolation
     SandboxBackendNotPermitted: the 'operator' workload requires at least 'container'
-    isolation, and sandbox backend 'in-process' declares 'process'.
+    isolation, and sandbox backend 'in-process' declares 'none'.
 
   spec requires files_out
     SandboxCapabilityNotSupported: sandbox backend 'in-process' does not support files_out.

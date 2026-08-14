@@ -12,7 +12,7 @@ beside the in-process backend, and what #328 would change.
 # requires-python = ">=3.12"
 # dependencies = [
 #     "maf-sandbox-docker",
-#     "maf-sandbox>=0.13",
+#     "maf-sandbox>=0.14",
 # ]
 # ///
 
@@ -42,8 +42,8 @@ IMAGE = "mcr.microsoft.com/devcontainers/python:3.13-bookworm"
 KEY = SandboxKey(scope="samples", thread_id="11-two-backends", agent_dir="operator")
 
 #: The floor this host is willing to go down to. Both backends must clear it or the router
-#: refuses at construction — `PROCESS` is the bottom rung, so this accepts either.
-FLOOR = Isolation.PROCESS
+#: refuses at construction — `NONE` is the bottom rung, so this accepts either.
+FLOOR = Isolation.NONE
 
 
 def backends() -> tuple[InProcessSandboxBackend, DockerSandboxBackend]:
@@ -52,7 +52,7 @@ def backends() -> tuple[InProcessSandboxBackend, DockerSandboxBackend]:
     Neither is configured to be weaker than the other for the sake of the demonstration, which
     is the reason for this pairing rather than two in-process instances: `docker` really does
     declare `CONTAINER` and `FILES_OUT`, and the in-process backend really does declare
-    `PROCESS` and only `EXEC | FILES_IN`. Every refusal below follows from what they are.
+    `NONE` and only `EXEC | FILES_IN`. Every refusal below follows from what they are.
     """
     return InProcessSandboxBackend(name="in-process"), DockerSandboxBackend(DockerSandboxConfig())
 

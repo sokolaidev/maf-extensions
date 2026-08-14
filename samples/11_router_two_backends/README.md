@@ -23,7 +23,7 @@ The refusals in act 2 are not staged. The two backends declare genuinely differe
 
 | | `in-process` | `docker` |
 |---|---|---|
-| isolation | `process` | `container` |
+| isolation | `none` | `container` |
 | capabilities | `exec`, `files_in` | `exec`, `files_in`, **`files_out`** |
 
 So a spec asking for `container` isolation gets `SandboxBackendNotPermitted`, and a spec requiring `FILES_OUT` gets `SandboxCapabilityNotSupported` — while a backend declaring both sits registered beside the one refusing. That pairing is also why this sample uses Docker rather than two in-process backends: with two instances of one class the difference would be something the sample invented, and the lesson would be worth less.
