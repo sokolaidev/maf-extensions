@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.3.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.2.1...maf-sandbox-docker-v0.3.0) (2026-08-14)
+
+
+### Features
+
+* consolidate every work_dir onto /maf-sandbox/work ([#267](https://github.com/sokolaidev/maf-extensions/issues/267)) ([0f5c6c2](https://github.com/sokolaidev/maf-extensions/commit/0f5c6c2a91e611fbf58927618f848887cb2bc683))
+
+
+### Bug Fixes
+
+* **docker:** stop _remove_network warning on a network that was never there ([#309](https://github.com/sokolaidev/maf-extensions/issues/309)) ([d634df4](https://github.com/sokolaidev/maf-extensions/commit/d634df40e3beef24a4e56733e5e564dfae5637ba))
+* require maf-sandbox 0.12.0 and admit 0.13 in the dependents' range ([#252](https://github.com/sokolaidev/maf-extensions/issues/252)) ([fb92562](https://github.com/sokolaidev/maf-extensions/commit/fb925620a4d6ad844512f34444bfafe04e81e827))
+
 ## [0.2.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.2.0...maf-sandbox-docker-v0.2.1) (2026-08-12)
 
 
