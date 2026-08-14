@@ -66,19 +66,24 @@ The vendor CLI is the short path, and it needs no Python and nothing from this r
 
 ```bash
 curl -fsSL https://aka.ms/aca-cli-install | sh                       # PowerShell: irm https://aka.ms/aca-cli-install-ps | iex
-export AZURE_SUBSCRIPTION_ID=<sub-id> ACA_RESOURCE_GROUP=<sandbox-group-rg> ACA_SANDBOX_GROUP=<group>
-aca sandboxgroup disk create --image <name>.azurecr.io/bicep-sandbox:0.46.1 --name bicep-sandbox-0-46-1
+export ACA_SUBSCRIPTION=<sub-id> ACA_RESOURCE_GROUP=<sandbox-group-rg> ACA_REGION=<region>
+aca sandboxgroup disk create --group <group> --image <name>.azurecr.io/bicep-sandbox:0.46.1-1 --name bicep-sandbox-0-46-1-1 \
+  --username 00000000-0000-0000-0000-000000000000 --token "$(az acr login --name <registry> --expose-token --query accessToken -o tsv)"
 ```
 
-Scope comes from the environment rather than from flags — the resource group is the sandbox group's, not the registry's. A private registry additionally needs the pull authenticated, which this project's deploys do with `--identity <managed-identity-resource-id>`. Both the CLI and the service are in preview and Microsoft says the command surface may change, so `aca sandboxgroup disk create --help` is the authority if a flag here does not match.
+Scope comes from the environment rather than from flags — the resource group is the sandbox group's, not the registry's. The region is the one that is easy to miss, because nothing else in this document needs it: leave it out and the CLI stops with `Region required for data plane operations` before it reaches the service at all. Both the CLI and the service are in preview and Microsoft says the command surface may change, so `aca sandboxgroup disk create --help` is the authority if a flag or a variable name here does not match — the above is `aca 1.0.0-preview.1`, which reads `ACA_SUBSCRIPTION` rather than the `AZURE_SUBSCRIPTION_ID` the rest of this project uses.
+
+**Authenticate the pull with a username and token, not with a managed identity.** `--identity <managed-identity-resource-id>` is the flag you would reach for, and against this project's own deployment it does not work: the service answers `RegistryAuthFailed` 401 asking for `registryCredentials` or a `managedIdentityClientId`, and supplying the latter directly in the request body returns the same 401. That is not a missing prerequisite. It was measured with the identity attached to the sandbox group *and* holding `AcrPull` on the registry, which was in classic permissions mode — both halves of the requirement below satisfied — and the same 401 comes back from the vendor CLI and from this repository's `import_disk_image.py` alike. Why the service rejects it is unresolved.
+
+The token above is what works instead. `az acr login --expose-token` warns that it hands back a refresh token rather than an access token; the import accepts it regardless. Its short life is not a problem, because the pull happens once while the disk image is being built and never again when a sandbox boots from it.
 
 The portal is the third way, and the one that needs nothing installed: [sandboxes.azure.com](https://sandboxes.azure.com) → your sandbox group → **Disk Images** → **Create** takes the same OCI reference in **Base Image URL**, with **Registry Authentication** set to a username and token or a managed identity for a private registry like this one. It also states plainly what the flag list does not: a disk image is a snapshot, and changing the source tag afterwards does not touch disk images already created.
 
 If you would rather not install the CLI, this repository ships the equivalent as a script with explicit arguments instead of environment variables — see [`packages/maf-sandbox-acas/scripts/README.md`](../../packages/maf-sandbox-acas/scripts/README.md). It is idempotent, and it prints the resolved disk-image id.
 
-Either way the identity doing the pull has to be attached to the sandbox group and hold `Container Registry Repository Reader` on a registry in RBAC + ABAC permissions mode, or `AcrPull` on a classic-mode one. Without it a private registry answers the pull with a 403 and the import fails rather than the run.
+Whichever route you take, an identity doing the pull has to be attached to the sandbox group and hold `Container Registry Repository Reader` on a registry in RBAC + ABAC permissions mode, or `AcrPull` on a classic-mode one — `az acr show --query roleAssignmentMode` tells you which. Satisfying both is necessary and, on the evidence above, not sufficient, so treat it as the floor rather than the fix: a private registry answers an unauthenticated pull by failing the import rather than the run.
 
-Then point the sample at it — `ACAS_SANDBOX_REGISTRY=<name>.azurecr.io` and `BICEP_SANDBOX_IMAGE=bicep-sandbox:0.46.1`. The backend qualifies the bare reference with the registry and resolves it to the imported disk image at acquire time.
+Then point the sample at it — `ACAS_SANDBOX_REGISTRY=<name>.azurecr.io` and `BICEP_SANDBOX_IMAGE=bicep-sandbox:0.46.1-1`. The backend qualifies the bare reference with the registry and resolves it to the imported disk image at acquire time.
 
 ## What it may reach at run time
 
