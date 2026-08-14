@@ -138,11 +138,33 @@ class TestTheRuleSetTheRepositoryAskedFor:
         assert len(check.assess(_STALE_IMAGE)) == 1, check.assess(_STALE_IMAGE)
 
     def test_the_switched_on_rule_alone_is_enough(self):
-        # The model laid the severities out somewhere this cannot read, but kept the rule list.
-        # `use-recent-api-versions` cannot be reported at all without the config, so its
-        # presence settles the question on its own.
+        # The promotion is not visible — no `[error]` anywhere — but a rule the config switches
+        # on was reported, which it could not be without one.
         assert check.config_was_discovered(
-            "Diagnostics: no-unused-params, BCP035, use-recent-api-versions."
+            "- [warning] use-recent-api-versions @ main.bicep:31 — '2023-01-01' is 1287 days old."
+        )
+
+    def test_naming_a_rule_is_not_reporting_it(self):
+        """A stale run that *mentions* the missing rule must not read as a healthy one.
+
+        The trap a substring test walks into. Without the config every one of these is a true
+        sentence about the run, and each names the rule while reporting the opposite.
+        """
+        for prose in (
+            "use-recent-api-versions is missing from the output.",
+            "No use-recent-api-versions diagnostic was produced.",
+            "There is no use-recent-api-versions finding, and no-unused-params is only a warning.",
+        ):
+            assert not check.config_was_discovered(prose), prose
+
+    def test_a_stale_run_naming_the_missing_rule_still_fails(self):
+        # End to end, not just the predicate: the whole assess() verdict must stay red.
+        named = _STALE_IMAGE.replace(
+            "Neither one is an error.",
+            "Neither one is an error, and use-recent-api-versions was not reported.",
+        )
+        assert any("bicepconfig.json was not discovered" in r for r in check.assess(named)), (
+            check.assess(named)
         )
 
     def test_the_promoted_severity_alone_is_enough(self):
@@ -165,12 +187,24 @@ class TestTheRuleSetTheRepositoryAskedFor:
             "| no-unused-params | [error] | main.bicep:21 | declared but never used |"
         )
 
-    def test_prose_denying_the_error_does_not_count(self):
-        # Why the brackets are matched and not the bare word. Without the config this sentence
-        # is *true* of that rule, and it is the kind of thing a model writes unprompted.
-        assert not check.config_was_discovered(
-            "- [warning] no-unused-params @ main.bicep:21 — not an error, only a warning."
-        )
+    def test_prose_about_the_rule_does_not_count(self):
+        """Words between a rule and a severity mean the two are not one diagnostic.
+
+        Each of these is a sentence a run *without* the config would truthfully produce, and
+        the second carries a real `[error]` on the same line — belonging to another rule.
+        """
+        for prose in (
+            "- [warning] no-unused-params @ main.bicep:21 — not an error, only a warning.",
+            "- [error] BCP057 @ main.bicep:9 — undefined name; no-unused-params stayed a warning.",
+            "no-unused-params did not come back as an error this time.",
+        ):
+            assert not check.config_was_discovered(prose), prose
+
+    def test_an_unbracketed_severity_is_not_a_rendered_diagnostic(self):
+        # The workload always brackets the level, so a bare word beside a rule id is prose. This
+        # is the one thing adjacency alone does not reject.
+        assert not check.config_was_discovered("no-unused-params error")
+        assert check.config_was_discovered("no-unused-params [error]")
 
     def test_an_error_on_another_line_does_not_count(self):
         # Some other diagnostic being an error says nothing about whether this one was promoted.
@@ -182,5 +216,4 @@ class TestTheRuleSetTheRepositoryAskedFor:
     def test_a_healthy_run_shows_both_tells(self):
         # The premise the either-or rests on: on a good run neither signal is doing the work
         # alone, so losing one to model formatting costs nothing.
-        assert check._CONFIG_ONLY_RULE in _HEALTHY
-        assert check._PROMOTED_LINT_ERROR.search(_HEALTHY) is not None
+        assert all(tell.search(_HEALTHY) for tell in check._CONFIG_TELLS)

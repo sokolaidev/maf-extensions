@@ -17,13 +17,10 @@ the very drift it is meant to catch. Rule ids and severities are matched instead
 ids are opaque tokens the model is instructed to echo verbatim, so their presence is evidence
 the compiler ran and its findings reached the end, not that the model agreed with itself.
 
-It also checks the compiler found `bicepconfig.json`, because nothing else can. Sample 01
-boots a *disk image*, which is a snapshot: overwriting the registry tag it was imported from
-leaves the booted image untouched, so an image carrying the config at a work-dir root the
-tool no longer writes to keeps running — and lints against the CLI's built-in defaults
-instead of the rule set this repository asked for. SARIF still parses, diagnostics still
-render, and both rule ids above still come back, so every other assertion here survives it.
-See #308.
+It also checks the compiler found `bicepconfig.json`, because nothing else can. A guest
+carrying that file at a work-dir root the tool no longer writes to lints against the CLI's
+built-in defaults and still satisfies every other assertion here — same rule ids, same
+sandbox, weaker rule set (#308).
 
 Exits non-zero listing every reason it failed. A run that never created a sandbox
 (`Disposed 0`) or never produced these diagnostics is a broken stack, not a clean file.
@@ -35,35 +32,35 @@ import re
 import sys
 from pathlib import Path
 
-#: Two findings the sample's `main.bicep` always produces: `no-unused-params` (a lint finding)
-#: and `BCP035` (a build finding, the missing `sku`). Their rule ids are opaque tokens the
-#: model is told to echo verbatim, so requiring both is strong evidence the compiler ran and
-#: its findings reached the end. Neither says anything about *which* rule set ran, which is
-#: what the config check below is for.
+#: Rule ids `main.bicep` always produces — a lint finding and a build finding. Opaque tokens
+#: the model is told to echo verbatim, so their presence is evidence the compiler ran. Neither
+#: says which rule set ran; `_CONFIG_TELLS` is for that.
 _REQUIRED_RULES = ("no-unused-params", "BCP035")
 
-#: A rule `bicepconfig.json` switches on. It is off by default, so it cannot appear unless the
-#: config was found. Its *message* drifts — the day count climbs and the acceptable-version
-#: list moves — but the rule id does not, and the direction of that drift is safe: the pinned
-#: `2023-01-01` only ever gets further past the 730-day threshold, so the rule fires more over
-#: time, never less.
-_CONFIG_ONLY_RULE = "use-recent-api-versions"
 
-#: `no-unused-params` and a rendered `[error]` on one line. The config promotes that rule from
-#: its built-in `warning`, so the pairing cannot occur without one.
-#:
-#: Two lookaheads rather than a fixed order, and line-scoped rather than adjacent, because the
-#: model is between the compiler and this script. The workload renders each diagnostic as
-#: `  [<level>] <rule> @ <file>:<line>: <message>` (`maf_sandbox_bicep._sarif`), and the sample
-#: instructs the model to report it back verbatim — but a model asked to "list every
-#: diagnostic" may lay the same fields out as a table row instead. Either shape keeps a
-#: diagnostic on one line, and `.` does not cross a newline, so the line is the unit.
-#:
-#: The brackets are load-bearing. A bare `error` also matches "no-unused-params is not an
-#: error", which is what a run *without* the config would truthfully say about it.
-_PROMOTED_LINT_ERROR = re.compile(
-    r"^(?=.*no-unused-params)(?=.*\[error\]).*$", re.MULTILINE | re.IGNORECASE
-)
+def _reported(rule: str, level: str = r"error|warning|info|note") -> re.Pattern[str]:
+    """Match ``rule`` *rendered as a diagnostic* — a bracketed severity beside it, either order.
+
+    Naming a rule is not reporting it: without the config a model can truthfully write
+    "use-recent-api-versions is missing", and a substring test reads that as present. Only
+    punctuation may sit between the two halves, so neither a negation nor a severity belonging
+    to another diagnostic on the same line can stand in for the real thing.
+    """
+    level_re = rf"\[(?:{level})\]"
+    gap = r"[^\w\n]*"  # `- `, `| `, backticks — never a newline, and never another word
+    return re.compile(
+        rf"{level_re}{gap}{re.escape(rule)}|{re.escape(rule)}{gap}{level_re}", re.IGNORECASE
+    )
+
+
+#: The rule the config switches on. Its *message* drifts — the day count climbs — but the id
+#: does not, and the pinned `2023-01-01` only ages further past the threshold, so it fires more
+#: over time, never less.
+_CONFIG_RULE = "use-recent-api-versions"
+
+#: Either one proves `bicepconfig.json` was found: the config switches `_CONFIG_RULE` on, and
+#: promotes `no-unused-params` from its built-in `warning` to `error`.
+_CONFIG_TELLS = (_reported(_CONFIG_RULE), _reported("no-unused-params", "error"))
 
 _DISPOSED = re.compile(r"Disposed\s+(\d+)\s+sandbox", re.IGNORECASE)
 
@@ -71,18 +68,10 @@ _DISPOSED = re.compile(r"Disposed\s+(\d+)\s+sandbox", re.IGNORECASE)
 def config_was_discovered(output: str) -> bool:
     """Whether the diagnostics show the compiler found `bicepconfig.json`.
 
-    Two independent tells, and *either* is enough. They are not two facts — they are one fact
-    seen twice, and a run that found no config loses both at the same moment: the rule the
-    config switches on disappears, and the rule it promotes drops back to `warning`. So
-    requiring one of the two catches the failure just as surely as requiring both, while
-    staying standing if the model drops a rule from its summary or lays the severity out
-    somewhere this cannot read it. Requiring both would trade a real red for a false one.
-
-    It also leaves `bicepconfig.json` editable. Turning one of these two rules off is a
-    legitimate change to the rule set; turning both off would be a decision to stop asserting
-    on it here, and this should be updated with it.
+    Either tell suffices on purpose: they are one fact seen twice and vanish together, so
+    requiring both would only add false reds when a model reformats one of them away.
     """
-    return _CONFIG_ONLY_RULE in output or _PROMOTED_LINT_ERROR.search(output) is not None
+    return any(tell.search(output) for tell in _CONFIG_TELLS)
 
 
 def assess(output: str) -> list[str]:
@@ -95,25 +84,19 @@ def assess(output: str) -> list[str]:
                 f"diagnostic {rule!r} is not in the output — the compiler's findings did not come back"
             )
 
-    # The rule set the repository asked for actually ran. Everything above passes against the
-    # CLI's built-in defaults, so without this a sample can lint against a weaker rule set than
-    # it claims and report success — which is exactly what a stale disk image does (#308).
+    # Which rule set ran. Everything above passes against the CLI's built-in defaults (#308).
     if not config_was_discovered(output):
         failures.append(
-            f"neither {_CONFIG_ONLY_RULE!r} nor an [error] level on no-unused-params is in the "
-            "output — bicepconfig.json was not discovered, so this linted against the CLI's "
-            "built-in defaults. On a container backend the image is stale; on ACAS the disk "
-            "image is a snapshot and has to be re-imported under a new tag. See #308"
+            f"no diagnostic reports {_CONFIG_RULE!r}, and none reports no-unused-params at "
+            "[error] — bicepconfig.json was not discovered, so this linted against the CLI's "
+            "built-in defaults. It is missing from the work-dir root of whatever served the "
+            "run: an imported disk image (re-import under a new tag — overwriting the old one "
+            "changes nothing), an image built from images/bicep-sandbox, or the backend's "
+            "seed files. See #308"
         )
 
-    # A severity rendered at all — the level is half of what an agent acts on, and a run that
-    # reported none is not echoing what the tool returned. Coarse on purpose and kept separate
-    # from the check above: it matches the word anywhere, so the model's prose satisfies it.
-    #
-    # It was once believed to hold whatever rule set ran, on the grounds that main.bicep yields
-    # an error either way. That is wrong, and it is why the config check above had to be added
-    # rather than leaned on this: `BCP035` is a `warning` in current Bicep, so `no-unused-params`
-    # promoted by the config is the *only* error a healthy run has.
+    # A severity rendered at all — the level is half of what an agent acts on. Coarse by
+    # design, and not a config check: it matches the word anywhere, so prose satisfies it.
     if not re.search(r"\berror\b", output, re.IGNORECASE):
         failures.append(
             "no 'error' severity anywhere in the output — a healthy run reports at least one"
