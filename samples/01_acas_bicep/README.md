@@ -41,7 +41,7 @@ uv run agent.py
 | `ACAS_SANDBOX_RESOURCE_GROUP` | Resource group holding the group |
 | `ACAS_SANDBOX_GROUP` | Sandbox group name |
 | `ACAS_SANDBOX_REGISTRY` | Registry login server, `<name>.azurecr.io`. Qualifies the bare image reference below |
-| `BICEP_SANDBOX_IMAGE` | `repository:tag` of the Bicep image, e.g. `bicep-sandbox:0.46.1` |
+| `BICEP_SANDBOX_IMAGE` | `repository:tag` of the Bicep image, e.g. `bicep-sandbox:0.46.1-1` |
 | `AZURE_OPENAI_ENDPOINT` | `https://<resource>.openai.azure.com` |
 | `AZURE_OPENAI_CHAT_MODEL` | Deployment name of the chat model — a reasoning model, per the prerequisites |
 
@@ -88,4 +88,6 @@ Delete the unused parameter and add a `sku`, and what remains is the API-version
 
 **`400 — Encrypted content is not supported with this model`** — the chat deployment is not a reasoning model. See the prerequisite above; nothing about the sandbox is involved, and the run fails before one is created.
 
-**`no-unused-params` reports as `[warning]`** — the image's `bicepconfig.json` was not found, so every linter rule is at its built-in default and the rule set is weaker than intended. Bicep resolves that file only by walking up from the source, so this means it is missing from the work-dir root in the image you are running.
+**`no-unused-params` reports as `[warning]`, or `use-recent-api-versions` is missing** — the image's `bicepconfig.json` was not found, so every linter rule is at its built-in default and the rule set is weaker than intended. Bicep resolves that file only by walking up from the source, so this means it is missing from the work-dir root in the image you are running. The two symptoms are one fault and always arrive together, which is why `scripts/check_live_sample.py` accepts either as proof the config *was* found ([#308](https://github.com/sokolaidev/maf-extensions/issues/308)).
+
+Here the image is a **disk image**, and that is a snapshot rather than a live reference to the registry tag it came from. So rebuilding and pushing over the same tag changes nothing about what boots: push a new revision (`0.46.1-1` → `0.46.1-2`), import *that*, and point `BICEP_SANDBOX_IMAGE` at it. [`images/bicep-sandbox/README.md`](../../images/bicep-sandbox/) has the commands and the reason the shortcut does not work.
