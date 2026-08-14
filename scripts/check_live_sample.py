@@ -38,19 +38,24 @@ from pathlib import Path
 _REQUIRED_RULES = ("no-unused-params", "BCP035")
 
 
-def _reported(rule: str, level: str = r"error|warning|info|note") -> re.Pattern[str]:
-    """Match ``rule`` *rendered as a diagnostic* — a bracketed severity beside it, either order.
+#: A source location, the third field of a rendered diagnostic. Prose about a rule carries the
+#: first two — "the expected [warning] use-recent-api-versions is missing" — and not this one.
+_LOCATION = r"[\w./\\-]*\.bicep:\d+"
 
-    Naming a rule is not reporting it: without the config a model can truthfully write
-    "use-recent-api-versions is missing", and a substring test reads that as present. Only
-    punctuation may sit between the two halves, so neither a negation nor a severity belonging
-    to another diagnostic on the same line can stand in for the real thing.
+
+def _reported(rule: str, level: str = r"error|warning|info|note") -> re.Pattern[str]:
+    """Match ``rule`` *rendered as a diagnostic* rather than named in prose.
+
+    All three fields of ``[<level>] <rule> @ <file>:<line>`` on one line, the level and the rule
+    adjacent. Naming a rule is not reporting it, and this reads a model's retelling rather than
+    the compiler, so a claim about a diagnostic must carry what only a real one has. Two things
+    it deliberately does not require: a fixed field order, since a model may tabulate; and the
+    `@`, which a table drops.
     """
     level_re = rf"\[(?:{level})\]"
     gap = r"[^\w\n]*"  # `- `, `| `, backticks — never a newline, and never another word
-    return re.compile(
-        rf"{level_re}{gap}{re.escape(rule)}|{re.escape(rule)}{gap}{level_re}", re.IGNORECASE
-    )
+    pair = rf"(?:{level_re}{gap}{re.escape(rule)}|{re.escape(rule)}{gap}{level_re})"
+    return re.compile(rf"^(?=.*{pair})(?=.*{_LOCATION}).*$", re.MULTILINE | re.IGNORECASE)
 
 
 #: The rule the config switches on. Its *message* drifts — the day count climbs — but the id

@@ -37,13 +37,9 @@ I validated main.bicep and the Bicep compiler returned three diagnostics.
 Disposed 1 sandbox(es).
 """
 
-# The same run against an image whose `bicepconfig.json` is not at the root the tool writes to.
-# Bicep finds that file only by walking up from the source, so it is simply never read and every
-# rule falls back to its built-in default: `no-unused-params` reports at `warning` instead of the
-# configured `error`, and `use-recent-api-versions` — which the config switches on — is gone. The
-# compiler ran, SARIF parsed, diagnostics rendered, the sandbox came up and went away again. The
-# prose says "error" the way a model summarising two warnings would, so even the loose severity
-# match is satisfied. Nothing about this output is unhealthy except the rule set behind it.
+# `_HEALTHY` with the config never found: `no-unused-params` back at its built-in `warning`, and
+# `use-recent-api-versions` gone. The prose says "error" so that even the loose severity check is
+# satisfied — every assertion but the config one passes on this.
 _STALE_IMAGE = """\
 I validated main.bicep and the Bicep compiler returned two diagnostics. Neither one is an error.
 
@@ -115,26 +111,14 @@ class TestABrokenStackFails:
 
 
 class TestTheRuleSetTheRepositoryAskedFor:
-    """#308: a run that found no `bicepconfig.json` and linted against built-in defaults.
-
-    The failure the rest of this file cannot see. Sample 01 boots a disk image, which is a
-    snapshot of a registry tag rather than a live reference to it, so an image built before the
-    work-dir root moved keeps booting after the tool stops writing there. Nothing goes red on
-    its own: the compiler is real, the diagnostics are real, and only the rule set is weaker
-    than the repository asked for.
-    """
+    """The config check (#308) — the one failure shape that looks entirely healthy."""
 
     def test_a_stale_image_run_is_caught(self):
         reasons = check.assess(_STALE_IMAGE)
         assert any("bicepconfig.json was not discovered" in r for r in reasons), reasons
 
     def test_a_stale_image_run_passes_every_other_assertion(self):
-        """Why this check had to exist rather than tightening one of the others.
-
-        Both required rule ids come back, a sandbox is created and disposed, and the word
-        `error` renders. Exactly one thing is wrong with the run, and before #308 nothing here
-        was looking at it.
-        """
+        # Why this is a check of its own rather than a tightening of one of the others.
         assert len(check.assess(_STALE_IMAGE)) == 1, check.assess(_STALE_IMAGE)
 
     def test_the_switched_on_rule_alone_is_enough(self):
@@ -145,17 +129,27 @@ class TestTheRuleSetTheRepositoryAskedFor:
         )
 
     def test_naming_a_rule_is_not_reporting_it(self):
-        """A stale run that *mentions* the missing rule must not read as a healthy one.
+        """Prose about a missing rule must not read as a report of it.
 
-        The trap a substring test walks into. Without the config every one of these is a true
-        sentence about the run, and each names the rule while reporting the opposite.
+        Each is a true sentence about a run that found no config. The last three quote a whole
+        severity-and-rule pair and put the negation *outside* it, which is what defeats a match
+        that only inspects the gap between those two fields.
         """
         for prose in (
             "use-recent-api-versions is missing from the output.",
             "No use-recent-api-versions diagnostic was produced.",
             "There is no use-recent-api-versions finding, and no-unused-params is only a warning.",
+            "Expected [warning] use-recent-api-versions was not reported.",
+            "The expected [warning] use-recent-api-versions diagnostic is missing.",
+            "I did not see [warning] use-recent-api-versions in the output.",
         ):
             assert not check.config_was_discovered(prose), prose
+
+    def test_a_diagnostic_must_carry_a_location(self):
+        # What separates the quoted-pair prose above from a real report: the third field. A
+        # model retelling the compiler keeps it; a model explaining an absence has none to give.
+        assert not check.config_was_discovered("[warning] use-recent-api-versions")
+        assert check.config_was_discovered("[warning] use-recent-api-versions @ main.bicep:31")
 
     def test_a_stale_run_naming_the_missing_rule_still_fails(self):
         # End to end, not just the predicate: the whole assess() verdict must stay red.
@@ -181,8 +175,8 @@ class TestTheRuleSetTheRepositoryAskedFor:
         assert check.assess(dropped) == []
 
     def test_a_reformatted_table_row_still_counts(self):
-        # The workload renders `[<level>] <rule> @ <loc>`, but a model asked to list diagnostics
-        # may tabulate them. Line-scoped rather than adjacent, so both shapes read the same.
+        # A model asked to list diagnostics may tabulate them instead of echoing the rendered
+        # shape, so neither field order nor the `@` is required — only the three fields.
         assert check.config_was_discovered(
             "| no-unused-params | [error] | main.bicep:21 | declared but never used |"
         )
@@ -203,8 +197,8 @@ class TestTheRuleSetTheRepositoryAskedFor:
     def test_an_unbracketed_severity_is_not_a_rendered_diagnostic(self):
         # The workload always brackets the level, so a bare word beside a rule id is prose. This
         # is the one thing adjacency alone does not reject.
-        assert not check.config_was_discovered("no-unused-params error")
-        assert check.config_was_discovered("no-unused-params [error]")
+        assert not check.config_was_discovered("no-unused-params error main.bicep:21")
+        assert check.config_was_discovered("no-unused-params [error] main.bicep:21")
 
     def test_an_error_on_another_line_does_not_count(self):
         # Some other diagnostic being an error says nothing about whether this one was promoted.
