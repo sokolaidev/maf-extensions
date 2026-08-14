@@ -91,6 +91,12 @@ jobs:
           uv run pyright -p packages/maf-sandbox-docker
           uv run pyright -p packages/maf-sandbox-wslc
 
+      - name: Types (scripts)
+        # scripts/ belongs to no package, so the per-package strict pyright above does not see it.
+        # Standard mode: the two intentional InMemoryStore→AgentFileStore duck-types in
+        # smoke_install.py are suppressed inline; everything else is real drift.
+        run: uv run pyright scripts/
+
       - name: Build + metadata check
         run: |
           uv build --package maf-sandbox
