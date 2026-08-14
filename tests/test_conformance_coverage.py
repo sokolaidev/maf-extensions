@@ -49,6 +49,13 @@ def _module_constants(tree: ast.Module) -> dict[str, ast.expr]:
     def note(target: ast.expr, value: ast.expr | None, top_level: bool) -> None:
         if isinstance(target, ast.Name):
             written.setdefault(target.id, []).append(value if top_level else None)
+        elif isinstance(target, ast.Tuple | ast.List | ast.Starred):
+            # `_CAPABILITIES, _ = ...` binds the name as surely as `_CAPABILITIES = ...`, and
+            # what it binds is one element of something this file is not going to unpack. Each
+            # name inside is recorded as a write it cannot read, which drops the constant.
+            elements = [target.value] if isinstance(target, ast.Starred) else list(target.elts)
+            for element in elements:
+                note(element, None, top_level=False)
 
     for node in ast.walk(tree):
         top_level = node in tree.body
@@ -340,12 +347,37 @@ def _suite_keys(tree: ast.Module) -> frozenset[str]:
             for alias in node.names:
                 if alias.name == "maf_sandbox.conformance":
                     keys.add(f"{alias.asname or alias.name}.{SUITE}")
-    shadowed = {
-        node.name
+    return frozenset(key for key in keys if key.split(".")[0] not in _rebound(tree))
+
+
+def _rebound(tree: ast.Module) -> frozenset[str]:
+    """Every name this module binds itself, by any means other than the import.
+
+    An import is only a binding until something else binds the same name. A ``def``, a
+    ``class``, an assignment, a loop variable, a ``with ... as``, a parameter — each makes the
+    call in front of it something other than what was imported, and a guard that reads only the
+    import is reading a name that may no longer point there.
+    """
+    names = {
+        node.id
         for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
     }
-    return frozenset(key for key in keys if key.split(".")[0] not in shadowed)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            names.add(node.name)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
+            arguments = node.args
+            names |= {
+                argument.arg
+                for argument in (
+                    *arguments.posonlyargs,
+                    *arguments.args,
+                    *arguments.kwonlyargs,
+                    *(x for x in (arguments.vararg, arguments.kwarg) if x),
+                )
+            }
+    return frozenset(names)
 
 
 def _names_used(node: ast.AST) -> frozenset[str]:
