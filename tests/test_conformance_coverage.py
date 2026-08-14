@@ -263,19 +263,33 @@ def _expects_a_raise(node: ast.AST) -> bool:
     )
     return any(
         isinstance(call, ast.Call)
-        and isinstance(call.func, ast.Attribute)
-        and call.func.attr == "raises"
+        and (
+            (isinstance(call.func, ast.Attribute) and call.func.attr == "raises")
+            # `from pytest import raises` is the same test spelled without the module, and
+            # anything else named `raises` that this over-matches is a call excluded, which is
+            # the safe direction to be wrong in.
+            or (isinstance(call.func, ast.Name) and call.func.id == "raises")
+        )
         for call in calls
     )
 
 
 def _names_used(node: ast.AST) -> frozenset[str]:
-    """Every name called or referenced in ``node``'s own body, **not** inside a nested def.
+    """Every name **called** in ``node``'s own body — not inside a nested def, not merely named.
+
+    Three exclusions, each because the thing excluded did not run.
 
     A nested definition is only that: defining ``scenario`` does not run it. Its body is
     reached through :func:`_reachable_calls` if something executes it, and not otherwise.
-    Anything under a ``pytest.raises`` is skipped for the same reason from the other end: it
-    was written not to complete.
+
+    Anything under a ``pytest.raises`` did not finish, so it is a rejection test rather than an
+    invocation.
+
+    A bare *reference* is not a call: ``assert callable(assert_files_out_conformance)`` names
+    the suite and runs none of it. Nothing is lost by insisting on the call — ``asyncio.run(
+    scenario())`` invokes ``scenario`` and reads as a call already — and handing a helper to
+    something that may or may not invoke it goes uncounted, which fails this guard rather than
+    passing it.
     """
     used: set[str] = set()
     for child in ast.iter_child_nodes(node):
@@ -291,10 +305,6 @@ def _names_used(node: ast.AST) -> frozenset[str]:
                 used.add(callee.id)
             elif isinstance(callee, ast.Attribute):
                 used.add(callee.attr)
-        elif isinstance(child, ast.Name):
-            # A bare reference counts: `asyncio.run(scenario())` calls it, and
-            # `loop.run_until_complete(scenario())` or a bare `run(scenario)` hands it on.
-            used.add(child.id)
         used |= _names_used(child)
     return frozenset(used)
 
@@ -428,7 +438,22 @@ def test_the_package_that_ships_the_suite_answers_it_too():
 
 
 def test_no_sample_backend_serves_files_out():
-    """A tripwire: `samples/09`'s backend is copyable, and refuses the whole pull surface today."""
+    """A tripwire: `samples/09`'s backend is copyable, and refuses the whole pull surface today.
+
+    Readable first. `_serving` drops what it cannot parse, so asking only *does a sample declare
+    FILES_OUT* lets an unreadable declaration answer no — the fail-open the package tests refuse
+    and this one would otherwise allow.
+    """
+    unreadable = [
+        f"{klass} ({module})"
+        for module, klass, capabilities in _backends(SAMPLES)
+        if capabilities is None
+    ]
+    assert not unreadable, (
+        f"this guard cannot tell what {', '.join(unreadable)} declares, so it cannot tell "
+        "whether a sample has grown a pull surface. Same rule as the packages: teach the "
+        "grammar the new shape rather than leaving it to pass on silence."
+    )
     serving = _serving(SAMPLES)
     assert not serving, (
         f"{', '.join(serving)} declares FILES_OUT. Hold it to `maf_sandbox.conformance` the way "
