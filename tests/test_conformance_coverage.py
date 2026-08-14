@@ -12,6 +12,8 @@ because a guard that goes quiet under a refactor also stops anyone noticing that
 from __future__ import annotations
 
 import ast
+import re
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -230,9 +232,44 @@ def _defines_a_constructor(
     return False
 
 
+def _opts_out(
+    klass: ast.ClassDef, by_name: dict[str, ast.ClassDef], seen: frozenset[str] = frozenset()
+) -> bool:
+    """Whether ``__test__`` says *do not collect me* — resolved through bases, like pytest does.
+
+    One line inside a class turns every test in it off while leaving all their names intact.
+    """
+    for node in klass.body:
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign):
+            targets, value = [node.target], node.value
+        else:
+            continue
+        for target in targets:
+            if isinstance(target, ast.Name) and target.id == "__test__":
+                # Anything this file cannot read as a truthy literal reads as an opt-out, which
+                # loses the class rather than counting a test pytest may never run.
+                return not (isinstance(value, ast.Constant) and bool(value.value))
+    for base in klass.bases:
+        name = base.id if isinstance(base, ast.Name) else None
+        if (
+            name
+            and name in by_name
+            and name not in seen
+            and _opts_out(by_name[name], by_name, seen | {name})
+        ):
+            return True
+    return False
+
+
 def _collectable_class(klass: ast.ClassDef, by_name: dict[str, ast.ClassDef]) -> bool:
-    """pytest's rule, both halves: named ``Test*``, and no constructor it can see."""
-    return klass.name.startswith("Test") and not _defines_a_constructor(klass, by_name)
+    """pytest's rule: named ``Test*``, no constructor it can see, and no ``__test__`` opt-out."""
+    return (
+        klass.name.startswith("Test")
+        and not _defines_a_constructor(klass, by_name)
+        and not _opts_out(klass, by_name)
+    )
 
 
 def _expects_a_raise(node: ast.AST) -> bool:
@@ -262,6 +299,55 @@ def _expects_a_raise(node: ast.AST) -> bool:
     )
 
 
+def _callee_key(callee: ast.expr) -> str | None:
+    """How a call names what it calls: ``helper``, ``module.attr``, ``a.b.c`` — or nothing.
+
+    A dotted callee keeps its whole path rather than its last segment, so
+    ``self.assert_files_out_conformance()`` and the real import are different keys. Matching on
+    the last segment is matching a spelling, and a spelling is not a binding.
+    """
+    parts: list[str] = []
+    node: ast.expr = callee
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if not isinstance(node, ast.Name):
+        return None
+    parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
+def _suite_keys(tree: ast.Module) -> frozenset[str]:
+    """Every way *this module* can name the shared suite, from its own imports.
+
+    Imports anywhere, function-local included: the acas suite imports inside the test that uses
+    it. A module that never imports the suite has no way to call it, whatever it names its own
+    functions — which is the point, since a local ``def assert_files_out_conformance`` was
+    otherwise indistinguishable from the real one.
+    """
+    keys: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            if node.module == "maf_sandbox.conformance":
+                keys |= {alias.asname or alias.name for alias in node.names if alias.name == SUITE}
+            elif node.module == "maf_sandbox":
+                keys |= {
+                    f"{alias.asname or alias.name}.{SUITE}"
+                    for alias in node.names
+                    if alias.name == "conformance"
+                }
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "maf_sandbox.conformance":
+                    keys.add(f"{alias.asname or alias.name}.{SUITE}")
+    shadowed = {
+        node.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)
+    }
+    return frozenset(key for key in keys if key.split(".")[0] not in shadowed)
+
+
 def _names_used(node: ast.AST) -> frozenset[str]:
     """Every name **called** in ``node``'s own body — not inside a nested def, not merely named.
 
@@ -286,11 +372,9 @@ def _names_used(node: ast.AST) -> frozenset[str]:
         if _expects_a_raise(child):
             continue
         if isinstance(child, ast.Call):
-            callee = child.func
-            if isinstance(callee, ast.Name):
-                used.add(callee.id)
-            elif isinstance(callee, ast.Attribute):
-                used.add(callee.attr)
+            key = _callee_key(child.func)
+            if key:
+                used.add(key)
         used |= _names_used(child)
     return frozenset(used)
 
@@ -311,16 +395,16 @@ def _reachable_calls(test: ast.FunctionDef | ast.AsyncFunctionDef) -> frozenset[
     return frozenset(reached)
 
 
-def _collected_calls(module: Path) -> frozenset[str]:
-    """Every name a test pytest collects in ``module`` reaches when it runs.
+def _collected_calls(tree: ast.Module) -> frozenset[str]:
+    """Every callee a test pytest collects in this module reaches when it runs.
 
     Three conditions, and the guard is only as good as the weakest. **Collected**: a `test*`
-    function, with `Test*` and no constructor — inherited included — for every class around it.
-    **Reached**: called from the test's own body, or from a local helper the body executes,
-    because a call in a nested function nobody invokes never runs. **Completed**: not under a
-    ``pytest.raises``, which is where a call goes when it is written to fail.
+    function, with `Test*`, no constructor and no ``__test__`` opt-out — both resolved through
+    bases — for every class around it. **Reached**: called from the test's own body, or from a
+    local helper the body executes, because a call in a nested function nobody invokes never
+    runs. **Completed**: not under a ``pytest.raises``, which is where a call goes when it is
+    written to fail.
     """
-    tree = ast.parse(module.read_text(encoding="utf-8"))
     by_name = {node.name: node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)}
     called: set[str] = set()
 
@@ -340,11 +424,14 @@ def _collected_calls(module: Path) -> frozenset[str]:
 
 
 def _calls_the_suite(tests: Path) -> bool:
-    return any(
-        SUITE in _collected_calls(module)
-        for module in tests.rglob("*.py")
-        if module.name.startswith("test_") or module.name.endswith("_test.py")
-    )
+    """Whether a test pytest collects under ``tests`` calls the suite it imported from core."""
+    for module in tests.rglob("*.py"):
+        if not (module.name.startswith("test_") or module.name.endswith("_test.py")):
+            continue
+        tree = ast.parse(module.read_text(encoding="utf-8"))
+        if _collected_calls(tree) & _suite_keys(tree):
+            return True
+    return False
 
 
 PACKAGE_DIRS = sorted(path.parent for path in PACKAGES.glob("*/pyproject.toml"))
@@ -358,6 +445,19 @@ def _serving(root: Path) -> list[str]:
         for module, klass, capabilities in _backends(root)
         if capabilities and "FILES_OUT" in capabilities
     ]
+
+
+def _metadata(package: Path) -> dict:
+    return tomllib.loads((package / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+
+
+def _requires(package: Path) -> frozenset[str]:
+    """The distributions this package depends on, by name."""
+    return frozenset(
+        match.group(0)
+        for requirement in _metadata(package).get("dependencies", [])
+        if (match := re.match(r"[A-Za-z0-9._-]+", requirement))
+    )
 
 
 @pytest.mark.parametrize("package", BACKEND_PACKAGES, ids=lambda path: path.name)
@@ -401,6 +501,38 @@ def test_the_guard_still_finds_the_backends_that_exist():
         "Either one of them stopped declaring the capability — in which case say so here — or "
         "the discovery stopped seeing it, which would make every other test in this file "
         "vacuous while still green."
+    )
+
+
+def test_no_package_builds_on_a_sibling_that_serves_files_out():
+    """A tripwire for the one case discovery cannot read: a backend inheriting its whole surface.
+
+    A class that inherits both ``acquire`` and its declaration from a base in *another*
+    distribution is not backend-shaped to anything here — the subclass declares nothing and the
+    base is not in this tree — so the package could serve ``FILES_OUT`` and never be asked for
+    the suite. Reading it properly would mean resolving imports across distributions, which is
+    an import away from being a type checker.
+
+    What is checkable is the dependency that such inheritance requires: no package here depends
+    on a sibling that serves ``FILES_OUT``, and the day one does, this says so. A base imported
+    from *outside* the workspace stays beyond the guard, and the probes themselves are what
+    catch that one.
+    """
+    by_distribution = {_metadata(package)["name"]: package for package in PACKAGE_DIRS}
+    building_on = {
+        package.name: sorted(
+            name
+            for name in _requires(package)
+            if name in by_distribution and _serving(by_distribution[name] / "src")
+        )
+        for package in BACKEND_PACKAGES
+    }
+    offenders = {name: on for name, on in building_on.items() if on}
+    assert not offenders, (
+        f"{offenders} depends on a sibling that serves FILES_OUT, so it may inherit that "
+        "surface without declaring it — the one shape backend discovery here cannot see. Hold "
+        "it to the suite explicitly, and relax this test to require that rather than to forbid "
+        "the dependency."
     )
 
 
