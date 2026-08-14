@@ -131,8 +131,7 @@ def _smoke_maf_sandbox_bicep() -> str:
         tools = make_bicep_tools(
             # Below the default floor, as in _smoke_maf_sandbox: exercises the workload.
             SandboxRouter([backend], min_isolation=Isolation.PROCESS),
-            # InMemoryStore duck-types the AgentFileStore subset make_bicep_tools uses; fixing it
-            # is a published-package change (InMemoryStore implementing that protocol), not for here.
+            # InMemoryStore provides the AgentFileStore subset this smoke test exercises.
             store,  # type: ignore[arg-type]
             "devops-engineer",
             context,
