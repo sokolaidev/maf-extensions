@@ -1,25 +1,12 @@
-"""Serving `FILES_OUT` and answering the shared conformance suite are one decision, not two.
+"""A package whose backend declares ``FILES_OUT`` must call `maf_sandbox.conformance`'s suite.
 
-#142's finding was not that a backend got confinement wrong. It was that *two* backends, written
-independently against the same sentence, got it wrong the same way — twice each, once for a
-symlinked parent and again for the work directory's own ancestors. A rule two careful authors
-read and misread is a rule stated somewhere that cannot enforce it.
+Declaring the capability and answering the probes are one decision; this is what makes them
+one. Closes the gap #142 left: the suite exists and both backends run it, and nothing held them
+to it.
 
-What answers that is `maf_sandbox.conformance` (#214, #215): the attacks any backend serving
-`FILES_OUT` must survive, planted through the backend's own public surface. Both shipped
-backends run it. Nothing *makes* them — and "every author remembers" is the assumption #142
-exists to retire.
-
-So this is the binding. Declare the capability in a package under `packages/`, and that
-package's tests must call the suite. It is a wiring check and says so: it proves the probes are
-pointed at the backend, not that they ran on any particular machine — the docker leg needs a
-real engine, and the acas leg answers a simulator built from live payloads because a pull
-request cannot assume a subscription. What it removes is the failure this repository actually
-had, which was not a probe that ran and passed weakly but a rule nobody was held to at all.
-
-**It fails closed.** A declaration this file cannot read is a failure, not a pass. A guard that
-goes quiet when the code it reads is refactored is worth less than no guard, because it also
-stops anyone from noticing.
+The trap is in the reading, not the rule. Everything here fails closed — a declaration this
+file cannot parse, or a suite call pytest would not collect, is a failure rather than a pass,
+because a guard that goes quiet under a refactor also stops anyone noticing that it has.
 """
 
 from __future__ import annotations
@@ -36,13 +23,12 @@ SAMPLES = REPO_ROOT / "samples"
 #: The name a package's tests have to call.
 SUITE = "assert_files_out_conformance"
 
-#: The package that *ships* the suite. Its only backend is `maf_sandbox.testing`'s fake, whose
-#: capabilities are whatever its constructor was handed, so there is no declaration here to
-#: read. Not a hole — `test_the_package_that_ships_the_suite_answers_it_too` holds the fake to
-#: the same probes.
+#: The package that ships the suite. Its only backend is the fake, whose capabilities are a
+#: constructor argument, so there is no declaration to read — and
+#: `test_the_package_that_ships_the_suite_answers_it_too` keeps that exemption from being a hole.
 CORE = "maf-sandbox"
 
-#: Names this file resolves without importing anything, pinned against the real value by
+#: Resolved by name rather than by import, and pinned to the real value by
 #: `test_the_default_this_file_assumes_is_the_default_core_ships`.
 DEFAULT_CAPABILITY_NAMES = frozenset({"EXEC", "FILES_IN"})
 
@@ -59,7 +45,6 @@ def _capability_members(node: ast.AST) -> frozenset[str]:
 
 
 def _module_constants(tree: ast.Module) -> dict[str, ast.expr]:
-    """Module-level assignments, so ``return _CAPABILITIES`` reads as well as writing it out."""
     constants: dict[str, ast.expr] = {}
     for node in tree.body:
         if isinstance(node, ast.Assign):
@@ -75,29 +60,70 @@ def _module_constants(tree: ast.Module) -> dict[str, ast.expr]:
     return constants
 
 
-def _declared_capabilities(
-    prop: ast.FunctionDef | ast.AsyncFunctionDef, constants: dict[str, ast.expr]
+def _capabilities_of(
+    value: ast.expr, constants: dict[str, ast.expr]
 ) -> frozenset[str] | None:
-    """What a ``capabilities`` property declares, or ``None`` when this guard cannot tell.
+    """What one declaring expression says, or ``None`` when this file cannot tell.
 
-    Three shapes are read, and the second and third are deliberate rather than generous: a
-    backend keeping its set in a module constant, or returning core's ``DEFAULT_CAPABILITIES``,
-    has declared exactly as much as one writing the frozenset inline, and a guard that a rename
-    switches off is not one. Anything past that — a helper call, a constructor argument, a set
-    assembled at runtime — answers ``None``, which fails rather than passes.
+    Three shapes: the members written out, core's ``DEFAULT_CAPABILITIES``, and a module-level
+    constant holding either. The indirections are read because a name is as much a declaration
+    as a literal, and a guard a rename switches off is not one. Anything else — a call, a
+    parameter, a set built at runtime — is unreadable, which fails.
     """
-    direct = _capability_members(prop)
-    if direct:
-        return direct
-    for node in ast.walk(prop):
-        if isinstance(node, ast.Name):
-            if node.id == "DEFAULT_CAPABILITIES":
-                return DEFAULT_CAPABILITY_NAMES
-            if node.id in constants:
-                indirect = _capability_members(constants[node.id])
-                if indirect:
-                    return indirect
+    members = _capability_members(value)
+    if members:
+        return members
+    if isinstance(value, ast.Name):
+        if value.id == "DEFAULT_CAPABILITIES":
+            return DEFAULT_CAPABILITY_NAMES
+        constant = constants.get(value.id)
+        if constant is not None and not isinstance(constant, ast.Name):
+            return _capabilities_of(constant, constants)
     return None
+
+
+def _declaring_expressions(klass: ast.ClassDef) -> list[ast.expr]:
+    """Every expression that declares this class's ``capabilities``.
+
+    Not just a property: the router reads the attribute with ``getattr``
+    (``_router.py``), so a class attribute and an assignment in ``__init__`` declare exactly as
+    much. More than one is ambiguous rather than clever, and reads as unreadable below.
+    """
+    found: list[ast.expr] = []
+    for node in ast.walk(klass):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                named = (
+                    isinstance(target, ast.Name)
+                    and target.id == "capabilities"
+                    or isinstance(target, ast.Attribute)
+                    and target.attr == "capabilities"
+                )
+                if named:
+                    found.append(node.value)
+        elif isinstance(node, ast.AnnAssign) and node.value:
+            target = node.target
+            if (
+                isinstance(target, ast.Name)
+                and target.id == "capabilities"
+                or isinstance(target, ast.Attribute)
+                and target.attr == "capabilities"
+            ):
+                found.append(node.value)
+        elif (
+            isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+            and node.name == "capabilities"
+        ):
+            # The return *expression*, not the body: a `Capability` mentioned in a log line or a
+            # docstring example is not a declaration, and reading the whole body lets one hide
+            # the other. Several returns is a shape this file will not guess between.
+            returns = [
+                child.value
+                for child in ast.walk(node)
+                if isinstance(child, ast.Return) and child.value is not None
+            ]
+            found.extend(returns if len(returns) == 1 else [ast.Constant(value=None)])
+    return found
 
 
 def _method(
@@ -112,24 +138,16 @@ def _method(
     return None
 
 
-def _is_property(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    return any(
-        isinstance(decorator, ast.Name) and decorator.id == "property"
-        for decorator in node.decorator_list
-    )
-
-
 def _backends(root: Path) -> list[tuple[str, str, frozenset[str] | None]]:
-    """``(module, class, capabilities)`` for every backend under ``root``.
+    """``(module, class, capabilities)`` for every backend under ``root``, ``None`` if unreadable.
 
-    Backend-shaped means ``acquire``, the one method the protocol cannot do without, or a
-    ``capabilities`` property. Both, rather than the property alone, because **silence is a
-    declaration too**: `capabilities` is optional and omitting it reads as
-    ``DEFAULT_CAPABILITIES``, so a class discovered only by its property would let a backend
-    disappear from this guard by deleting six lines.
+    Backend-shaped means ``acquire`` — the one method the protocol cannot do without — or a
+    ``capabilities`` declaration. Both, because **silence is a declaration too**: the property
+    is optional and omitting it reads as ``DEFAULT_CAPABILITIES``, so discovering backends by
+    their declaration alone would let one leave this guard by deleting six lines.
 
-    A class that says nothing and inherits from something is the case this file will not guess
-    at — the answer could be in a base it does not follow — so it answers ``None`` and fails.
+    A class that declares nothing and inherits from something is not guessed at: the answer may
+    be in a base this file does not follow, so it is unreadable.
     """
     found: list[tuple[str, str, frozenset[str] | None]] = []
     for module in sorted(root.rglob("*.py")):
@@ -140,12 +158,13 @@ def _backends(root: Path) -> list[tuple[str, str, frozenset[str] | None]]:
         for klass in ast.walk(tree):
             if not isinstance(klass, ast.ClassDef):
                 continue
-            prop = _method(klass, "capabilities")
-            prop = prop if prop is not None and _is_property(prop) else None
-            if prop is None and _method(klass, "acquire") is None:
+            declarations = _declaring_expressions(klass)
+            if not declarations and _method(klass, "acquire") is None:
                 continue
-            if prop is not None:
-                capabilities = _declared_capabilities(prop, constants)
+            if len(declarations) == 1:
+                capabilities = _capabilities_of(declarations[0], constants)
+            elif declarations:
+                capabilities = None
             elif klass.bases:
                 capabilities = None
             else:
@@ -156,24 +175,51 @@ def _backends(root: Path) -> list[tuple[str, str, frozenset[str] | None]]:
     return found
 
 
-def _calls_the_suite(tests: Path) -> bool:
-    """Whether anything under ``tests`` *calls* the suite. A mention in prose does not count."""
-    for module in tests.rglob("*.py"):
-        tree = ast.parse(module.read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
+def _collected_calls(module: Path) -> frozenset[str]:
+    """Every function called from inside a test pytest would collect in ``module``.
+
+    Lexical containment in a collected test, not merely presence in the file. A call left
+    behind in a helper whose test was renamed away still parses, and a guard that counts it
+    goes green while the suite no longer runs — the failure mode of every grep-shaped check.
+    """
+    called: set[str] = set()
+
+    def visit(node: ast.AST, classes: tuple[str, ...], inside_test: bool) -> None:
+        for child in ast.iter_child_nodes(node):
+            collected = inside_test
+            if isinstance(child, ast.ClassDef):
+                visit(child, (*classes, child.name), inside_test)
                 continue
-            callee = node.func
-            name = (
-                callee.id
-                if isinstance(callee, ast.Name)
-                else callee.attr
-                if isinstance(callee, ast.Attribute)
-                else None
-            )
-            if name == SUITE:
-                return True
-    return False
+            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef):
+                # pytest's defaults: `Test*` classes, `test*` functions, and a class it collects
+                # from has no `__init__`. A nested def inside a collected test runs with it.
+                collected = inside_test or (
+                    child.name.startswith("test")
+                    and all(name.startswith("Test") for name in classes)
+                )
+            if isinstance(child, ast.Call) and collected:
+                callee = child.func
+                name = (
+                    callee.id
+                    if isinstance(callee, ast.Name)
+                    else callee.attr
+                    if isinstance(callee, ast.Attribute)
+                    else None
+                )
+                if name:
+                    called.add(name)
+            visit(child, classes, collected)
+
+    visit(ast.parse(module.read_text(encoding="utf-8")), (), False)
+    return frozenset(called)
+
+
+def _calls_the_suite(tests: Path) -> bool:
+    return any(
+        SUITE in _collected_calls(module)
+        for module in tests.rglob("*.py")
+        if module.name.startswith("test_") or module.name.endswith("_test.py")
+    )
 
 
 PACKAGE_DIRS = sorted(path.parent for path in PACKAGES.glob("*/pyproject.toml"))
@@ -195,11 +241,11 @@ def test_a_backend_that_serves_files_out_answers_the_suite(package: Path):
     if not serving:
         pytest.skip(f"{package.name} declares no FILES_OUT backend")
     assert _calls_the_suite(package / "tests"), (
-        f"{package.name} declares FILES_OUT in {', '.join(serving)} and nothing in its tests "
+        f"{package.name} declares FILES_OUT in {', '.join(serving)} and no test pytest collects "
         f"calls {SUITE}. Two backends written against the prose alone shipped the same "
         "confinement escape (#142); the probes are what that cost bought. Fill in a "
         "`ConformanceSubject` — `PosixGuestSubject` if the guest is Linux and has `ln` — and "
-        "await the suite against a real instance."
+        "await the suite against a real instance, from a `test_*` in a `test_*.py`."
     )
 
 
@@ -213,11 +259,12 @@ def test_this_guard_can_read_every_backend_it_walks(package: Path):
     ]
     assert not unreadable, (
         f"this guard cannot tell what {', '.join(unreadable)} declares, so it can no longer "
-        "tell whether the conformance suite is required of it. It reads `Capability.X` members "
-        "named in the `capabilities` property, in a module-level constant that property "
-        "returns, or `DEFAULT_CAPABILITIES`; and it reads a backend with no property at all as "
-        "the default set, unless the class has a base whose declaration it cannot follow. "
-        "Teach it the new shape rather than leaving it to pass on silence."
+        "tell whether the conformance suite is required of it. It reads one declaration — a "
+        "`capabilities` property with a single return, a class attribute, or an assignment in "
+        "`__init__` — naming `Capability` members, `DEFAULT_CAPABILITIES`, or a module-level "
+        "constant holding either; and it reads a backend that declares nothing as the default "
+        "set, unless it has a base whose declaration cannot be followed. Teach it the new shape "
+        "rather than leaving it to pass on silence."
     )
 
 
@@ -235,7 +282,6 @@ def test_the_guard_still_finds_the_backends_that_exist():
 
 
 def test_the_default_this_file_assumes_is_the_default_core_ships():
-    """The one value read by name rather than from the source it is defined in."""
     from maf_sandbox import DEFAULT_CAPABILITIES
 
     assert {member.name for member in DEFAULT_CAPABILITIES} == DEFAULT_CAPABILITY_NAMES
@@ -246,25 +292,12 @@ def test_the_default_this_file_assumes_is_the_default_core_ships():
 
 
 def test_the_package_that_ships_the_suite_answers_it_too():
-    """`maf-sandbox` is exempt above because the fake's capabilities are a constructor argument.
-
-    That exemption would be a hole if the fake were not itself held to the probes: it is the
-    specimen every kind's tests run against, so a fake that quietly read through a link would
-    make the whole suite of suites agree with the bug.
-    """
+    """The fake is the specimen every kind's tests run against, so it answers the probes too."""
     assert _calls_the_suite(PACKAGES / CORE / "tests")
 
 
 def test_no_sample_backend_serves_files_out():
-    """A tripwire, not a prohibition.
-
-    Samples are where a backend author starts reading, and `samples/09` already implements
-    enough of one to be copied. It declares `DEFAULT_CAPABILITIES` and raises
-    `NotImplementedError` across the whole pull surface, so there is nothing to confine and
-    nothing to hold to the probes. The day that changes this fails — and a sample serving
-    `FILES_OUT` while demonstrating none of the confinement it requires is the one shape of
-    sample this repository should not ship.
-    """
+    """A tripwire: `samples/09`'s backend is copyable, and refuses the whole pull surface today."""
     serving = _serving(SAMPLES)
     assert not serving, (
         f"{', '.join(serving)} declares FILES_OUT. Hold it to `maf_sandbox.conformance` the way "
