@@ -95,11 +95,23 @@ def assess(output: str) -> list[str]:
             )
 
     executed = _line_containing(output, "it runs:")
-    if executed is None or _EXECUTED not in executed:
+    if executed is None:
         failures.append(
-            f"the selected backend did not report running the command ({_EXECUTED!r}) — the "
-            "router agreed a backend could serve and nothing proved one did"
+            "no 'it runs:' line — the router agreed a backend could serve and nothing proved "
+            "one did"
         )
+    else:
+        # The quoted value, compared whole. A substring test accepts `'unrouted'` and
+        # `'routed with an error'`, which are a container answering wrongly rather than a
+        # container answering — the one thing this line exists to distinguish.
+        printed = re.search(r"it runs:\s*'([^']*)'", executed)
+        actual = printed.group(1) if printed else ""
+        if actual != _EXECUTED:
+            failures.append(
+                f"the selected backend printed {actual!r}, expected exactly {_EXECUTED!r} — "
+                "the command's output is what proves a container ran, so anything else is a "
+                "different result rather than a looser match on the same one"
+            )
 
     failures.extend(_assess_footer(output))
     return failures

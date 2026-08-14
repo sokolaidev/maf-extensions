@@ -123,21 +123,26 @@ async def act_three_disposal_reaches_everyone() -> tuple[int, int]:
     router = SandboxRouter(registered, min_isolation=FLOOR, selected="docker")
     spec = SandboxSpec(kind="operator", image=IMAGE)
 
-    # A sandbox on each, the way a host that switched `selected=` between deployments would
-    # have: one left behind on the backend no longer serving, one on the backend now serving.
-    await local.acquire(KEY, spec)
-    print(f"  acquired on {local.name!r} (not serving — a leftover from an earlier config)")
-    sandbox = await router.acquire(KEY, spec)
-    print(f"  acquired on {router.backend.name!r} (serving)")
-    # `write_file` before `exec`, and not only to have something to echo: a container starts
-    # with nothing at `work_dir`, and `exec` would fail to chdir into a directory that does not
-    # exist yet. Writing creates the parents, which is why every kind pushes its inputs first.
-    await sandbox.write_file(f"{spec.work_dir}/marker", "routed\n")
-    result = await sandbox.exec("cat marker", working_directory=spec.work_dir, timeout=60)
-    print(f"  it runs: {result.stdout.strip()!r}\n")
-
-    disposed = await router.dispose_scope(KEY.scope, KEY.thread_id)
-    print(f"  dispose_scope reached both backends and disposed {disposed} sandbox(es).")
+    # Everything from the first `acquire` sits in a `try`, and disposal in the `finally`, as in
+    # every other container sample. One of these is a real Docker container: a raise between
+    # creating it and disposing it — a failed write, a timed-out exec, a cancelled run — would
+    # otherwise leave it on the machine, and the backend has no auto-delete timer to catch it.
+    try:
+        # A sandbox on each, the way a host that switched `selected=` between deployments would
+        # have: one left on the backend no longer serving, one on the backend now serving.
+        await local.acquire(KEY, spec)
+        print(f"  acquired on {local.name!r} (not serving — a leftover from an earlier config)")
+        sandbox = await router.acquire(KEY, spec)
+        print(f"  acquired on {router.backend.name!r} (serving)")
+        # `write_file` before `exec`, and not only to have something to echo: a container starts
+        # with nothing at `work_dir`, and `exec` would fail to chdir into a directory that does
+        # not exist. Writing creates the parents, which is why a kind pushes its inputs first.
+        await sandbox.write_file(f"{spec.work_dir}/marker", "routed\n")
+        result = await sandbox.exec("cat marker", working_directory=spec.work_dir, timeout=60)
+        print(f"  it runs: {result.stdout.strip()!r}\n")
+    finally:
+        disposed = await router.dispose_scope(KEY.scope, KEY.thread_id)
+        print(f"  dispose_scope reached both backends and disposed {disposed} sandbox(es).")
     print("  Not only the serving one — which is the point: a host that changes `selected=`")
     print("  would otherwise leak whatever the previous choice left running, and on a")
     print("  billable backend that leak has a price.\n")

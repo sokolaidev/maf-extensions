@@ -107,6 +107,24 @@ class TestTheWorkRanAndWasCleanedUp:
         dropped = "\n".join(line for line in _HEALTHY.splitlines() if "it runs:" not in line)
         assert any("nothing proved one did" in r for r in check.assess(dropped))
 
+    def test_a_near_miss_output_does_not_count_as_the_marker(self):
+        """A container answering *wrongly* is not a container answering.
+
+        Both of these contain `routed`, so a substring test read them as the marker — which
+        would report a healthy run for a command that printed something else entirely.
+        """
+        for printed in ("unrouted", "routed with an error", "not routed"):
+            near_miss = _HEALTHY.replace("it runs: 'routed'", f"it runs: '{printed}'")
+            reasons = check.assess(near_miss)
+            assert any("expected exactly 'routed'" in r for r in reasons), (printed, reasons)
+
+    def test_an_unquoted_value_does_not_count(self):
+        # The sample prints the value with `!r`. Anything else is not the line this parses.
+        assert any(
+            "expected exactly 'routed'" in r
+            for r in check.assess(_HEALTHY.replace("it runs: 'routed'", "it runs: routed"))
+        )
+
     def test_disposal_reaching_only_the_serving_backend_is_caught(self):
         """The assertion the whole sample exists for.
 
