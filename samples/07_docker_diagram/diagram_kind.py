@@ -144,7 +144,7 @@ def _render_diagram_tool(
     session: SandboxToolSession,
     sink: OutputSink,
     timeout: int,
-) -> "Callable[..., Awaitable[str]]":
+) -> Callable[..., Awaitable[str]]:
     """Build the ``render_diagram`` body for one attached tool.
 
     Defined at module level rather than nested inside :func:`make_diagram_tools`, and that is

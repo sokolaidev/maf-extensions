@@ -61,7 +61,6 @@ target-version = "py312"
 
 [tool.ruff.lint]
 extend-select = ["I", "UP", "D100", "D101", "D103", "D104"]
-ignore = ["UP037"]
 
 [tool.ruff.lint.per-file-ignores]
 # ruff resolves [tool.ruff] per file by the NEAREST ancestor pyproject.toml that has one, so

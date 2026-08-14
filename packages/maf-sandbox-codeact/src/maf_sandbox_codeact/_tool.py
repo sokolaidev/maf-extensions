@@ -161,7 +161,7 @@ def make_codeact_tools(
     agent_dir: str,
     context: CallerContext,
     *,
-    file_store: "AgentFileStore | None" = None,
+    file_store: AgentFileStore | None = None,
     output_sink: OutputSink | None = None,
     outputs: CodeactOutputs = CodeactOutputs.NONE,
     outbound_max_confidentiality: str | None = None,
@@ -362,10 +362,10 @@ def _tool_description(*, takes_files: bool, outputs: CodeactOutputs) -> str:
 
 def _execute_code_tool(
     session: SandboxToolSession,
-    store: "AgentFileStore | None",
+    store: AgentFileStore | None,
     outputs: CodeactOutputs,
     timeout: int,
-) -> "Callable[..., Awaitable[str]]":
+) -> Callable[..., Awaitable[str]]:
     """Build the ``execute_code`` body for one attached tool.
 
     Four signatures over one implementation, because MAF derives the tool's schema from the
@@ -406,7 +406,7 @@ def _execute_code_tool(
 
 async def _execute(
     session: SandboxToolSession,
-    store: "AgentFileStore | None",
+    store: AgentFileStore | None,
     outputs: CodeactOutputs,
     timeout: int,
     code: str,
@@ -515,7 +515,7 @@ async def _execute(
 
 async def _resolve_listed_files(
     session: SandboxToolSession,
-    store: "AgentFileStore",
+    store: AgentFileStore,
     files: list[str],
     *,
     reserved: set[str],
@@ -583,7 +583,7 @@ def _listing_hint(name: str, listing: list[str]) -> str:
 
 
 async def _read_listed_files(
-    store: "AgentFileStore", names: list[str], tally: "_InboundTally"
+    store: AgentFileStore, names: list[str], tally: _InboundTally
 ) -> list[tuple[str, str]] | str:
     """Read every requested file into memory, or answer with the refusal.
 
@@ -676,7 +676,7 @@ class _InboundTally:
         return None
 
 
-async def _write_shared(sandbox: "Sandbox", name: str, guest_path: str, content: str) -> str | None:
+async def _write_shared(sandbox: Sandbox, name: str, guest_path: str, content: str) -> str | None:
     """Put one already-read file store file into the run's directory, or answer with the refusal."""
     try:
         await sandbox.write_file(guest_path, content)
@@ -698,7 +698,7 @@ def _normalization(session: SandboxToolSession) -> NameNormalization:
 
 
 def _validated_output_names(
-    names: "Sequence[str]",
+    names: Sequence[str],
     *,
     max_files: int,
     reserved: set[str],
@@ -748,7 +748,7 @@ def _validated_output_names(
 
 async def _collect(
     session: SandboxToolSession,
-    sandbox: "Sandbox",
+    sandbox: Sandbox,
     run_id: str,
     outputs: CodeactOutputs,
     declared: list[str],
@@ -810,7 +810,7 @@ async def _collect(
 
 
 async def _read_manifest(
-    session: SandboxToolSession, sandbox: "Sandbox", run_id: str
+    session: SandboxToolSession, sandbox: Sandbox, run_id: str
 ) -> tuple[list[str], int] | str:
     """Parse the program's own listing of what it produced, bounded and refusing malformed shapes.
 
@@ -889,7 +889,7 @@ async def _read_manifest(
     return entries, len(raw)
 
 
-def _format_landed(landed: "Sequence[LandedArtifact]", declared: "Sequence[str]") -> str:
+def _format_landed(landed: Sequence[LandedArtifact], declared: Sequence[str]) -> str:
     """What the model is told about the files: the host's own references, and what is absent.
 
     The two sides are compared in NFC, because a landing name is normalized before the sink
