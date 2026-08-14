@@ -43,16 +43,26 @@ _REQUIRED_RULES = ("no-unused-params", "BCP035")
 _LOCATION = r"[\w./\\-]*\.bicep:\d+"
 
 
+#: How a severity is marked up as a *field* rather than written as a word. Brackets were the
+#: only form until a live run rendered `**error**`, which this read as prose and failed a
+#: healthy bicep 0.7.0 release on. What matters is that the model set the level apart from its
+#: sentence, not which markup it chose. Underscore emphasis is deliberately absent: `_error_`
+#: also matches inside an ordinary identifier, which would cost more than it buys.
+_LEVEL_DELIMITERS = ((r"\[", r"\]"), (r"\*\*", r"\*\*"), (r"\*", r"\*"), ("`", "`"))
+
+
 def _reported(rule: str, level: str = r"error|warning|info|note") -> re.Pattern[str]:
     """Match ``rule`` *rendered as a diagnostic* rather than named in prose.
 
     All three fields of ``[<level>] <rule> @ <file>:<line>`` on one line, the level and the rule
     adjacent. Naming a rule is not reporting it, and this reads a model's retelling rather than
-    the compiler, so a claim about a diagnostic must carry what only a real one has. Two things
-    it deliberately does not require: a fixed field order, since a model may tabulate; and the
-    `@`, which a table drops.
+    the compiler, so a claim about a diagnostic must carry what only a real one has. Three things
+    it deliberately does not require: a fixed field order, since a model may tabulate; the `@`,
+    which a table drops; and any single markup for the level, which varies run to run. A bare
+    word is still refused — that is the one thing adjacency alone cannot tell from prose.
     """
-    level_re = rf"\[(?:{level})\]"
+    marked = "|".join(rf"{opener}(?:{level}){closer}" for opener, closer in _LEVEL_DELIMITERS)
+    level_re = rf"(?:{marked})"
     gap = r"[^\w\n]*"  # `- `, `| `, backticks — never a newline, and never another word
     pair = rf"(?:{level_re}{gap}{re.escape(rule)}|{re.escape(rule)}{gap}{level_re})"
     return re.compile(rf"^(?=.*{pair})(?=.*{_LOCATION}).*$", re.MULTILINE | re.IGNORECASE)
