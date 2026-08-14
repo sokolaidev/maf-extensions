@@ -10,7 +10,7 @@
 
 ```python
 class Isolation(StrEnum):                     # str-valued: serializes and compares as its value,
-    PROCESS = "process"                       # so existing declarations and config keep working;
+    NONE = "none"                             # so existing declarations and config keep working;
                                               # literal same-process execution, no boundary at all
     RUNTIME = "runtime"                       # software boundary in the host process: a restricted
                                               # interpreter or WASM fault isolation (Monty, Wasmtime)
@@ -23,7 +23,7 @@ ISOLATION_RANK: Mapping[Isolation, int] = {
     level: rank
     for rank, level in enumerate(
         (
-            Isolation.PROCESS,
+            Isolation.NONE,
             Isolation.RUNTIME,
             Isolation.CONTAINER,
             Isolation.HARDENED_CONTAINER,
@@ -37,7 +37,8 @@ def meets_floor(declared: Isolation, floor: Isolation) -> bool:
     return ISOLATION_RANK[declared] >= ISOLATION_RANK[floor]
 ```
 
-- `runtime` sits between `process` and `container`, and exists to draw the line between *no boundary at all* and *a software boundary*: a literal in-process function call (the testing fake) is `process`; a sandboxing language runtime — Monty's restricted interpreter, a Wasmtime-class WASM runtime's software fault isolation with capability-based imports — is `runtime`. The boundary is real (OS access rejected by construction, linear-memory confinement), but it is enforced by software in the host process's own address space: an escape is a runtime bug and lands *inside the host process*, beside its memory and credentials, with no second privilege domain in the way — which is why the rung sits below `container`, whose enforcement lives in the kernel, an independent domain. The ordering ranks trust bases, not implementations — it is not a claim that every kernel beats every verified SFI runtime — and the capability axis carries the rest of the honesty: Monty declares no filesystem and no network capabilities at all, which the ladder alone could never express.
+- `none` is the bottom rung, named for what it provides rather than for where it runs. It was `process` until [#262](https://github.com/sokolaidev/maf-extensions/issues/262): that spelling read as a real boundary and meant the absence of one. The spelling is now reserved for the genuine separate-OS-process rung, which lands between `runtime` and `container` a minor after this rename — the two never coexist, so a declaration written against the old meaning fails rather than being re-ranked upward in silence.
+- `runtime` sits between `none` and `container`, and exists to draw the line between *no boundary at all* and *a software boundary*: a literal in-process function call (the testing fake) is `none`; a sandboxing language runtime — Monty's restricted interpreter, a Wasmtime-class WASM runtime's software fault isolation with capability-based imports — is `runtime`. The boundary is real (OS access rejected by construction, linear-memory confinement), but it is enforced by software in the host process's own address space: an escape is a runtime bug and lands *inside the host process*, beside its memory and credentials, with no second privilege domain in the way — which is why the rung sits below `container`, whose enforcement lives in the kernel, an independent domain. The ordering ranks trust bases, not implementations — it is not a claim that every kernel beats every verified SFI runtime — and the capability axis carries the rest of the honesty: Monty declares no filesystem and no network capabilities at all, which the ladder alone could never express.
 - `hardened_container` sits between `container` and `microvm`: syscall interception in a userspace kernel is genuinely stronger than namespaces and genuinely weaker than a hardware boundary, and giving it its own rung makes admitting it somewhere an explicit policy value rather than a backend rounding itself up.
 - `microvm` covers Kata, Firecracker, Hyperlight-class embedded VMMs, Docker Sandbox — a real hypervisor boundary with a minimal or absent guest OS. **This rung is the default floor, and it is a defined standard, not a self-assigned label — next section.**
 - `vm` stays above `microvm` as a dedicated, full VM on remote infrastructure — a guest provisioned per workload or per tenant, where an escape lands on machinery that exists only for that purpose. Keeping it distinct keeps the ladder a total order, which `min` comparison needs, and preserves a stricter posture for hosts that want one. **Classification note: ACA Sandboxes declare `microvm` on this ladder.** They are hardware-isolated micro-VMs; their current `Isolation.VM` declaration is an artifact of the three-rung ladder, where `vm` was the only hypervisor rung, and the reclassification rides the same `feat!` release that introduces the ladder.
@@ -63,7 +64,7 @@ Enforcement is layered: the standard is normative text, and the declarations (`i
 ```python
 router = SandboxRouter(backends)                                  # default floor: MICROVM — the production posture
 router = SandboxRouter(backends, min_isolation=Isolation.VM)      # stricter: dedicated full-VM infrastructure only
-router = SandboxRouter(backends, min_isolation=Isolation.PROCESS) # local machine, opted all the way down
+router = SandboxRouter(backends, min_isolation=Isolation.NONE)    # local machine, opted all the way down
 ```
 
 - **The default is `MICROVM`.** A host that configures nothing gets the production posture; a developer machine *opts down explicitly*; there is nothing to forget. Strictly safer than the current default (`deployed=False`, everything permitted).
@@ -138,7 +139,7 @@ Every value the package accepts or emits is a `StrEnum` member or named constant
 |---|---|---|---|---|
 | ACA Sandboxes (`maf-sandbox-acas`) | backend (shipped) | `microvm` (reclassified from the three-rung ladder's `vm`) | `EXEC, FILES_IN` (+`FILES_OUT` when built; +`ATTACHED_IDENTITY`) | `allowlist` |
 | `wslc` (`maf-sandbox-wslc`) | backend (shipped) | `container` | `EXEC, FILES_IN` | `allowlist` with proxy image, else `closed` |
-| `InProcessSandboxBackend` (`maf_sandbox.testing`) | backend (shipped) | `process` (overridable) | anything a test claims | overridable |
+| `InProcessSandboxBackend` (`maf_sandbox.testing`) | backend (shipped) | `none` (overridable) | anything a test claims | overridable |
 | Monty (`agent-framework-monty`, re-seamed) | backend | `runtime` | `RUN_CODE, HOST_TOOLS` — no `EXEC`, no I/O by construction | `closed` |
 | Wasmtime-class WASM runtimes | backend | `runtime` | `RUN_CODE` + capability-gated imports | `closed` (WASI capabilities are opt-in) |
 | Hyperlight (`agent-framework-hyperlight`, re-seamed) | backend | `microvm` | `RUN_CODE, HOST_TOOLS, FILES_IN, SNAPSHOT` | `closed` |

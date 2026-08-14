@@ -287,9 +287,9 @@ def test_dispose_removes_the_host_directory():
 
 
 def test_backend_declares_the_floor_and_temporary_egress():
-    """The declarations the README and docstrings argue: PROCESS, CLOSED (temporary), no NETWORK."""
+    """The declarations the README and docstrings argue: NONE, CLOSED (temporary), no NETWORK."""
     b = NoIsolationBackend()
-    assert b.isolation is Isolation.PROCESS
+    assert b.isolation is Isolation.NONE
     # CLOSED is the temporary misuse, not enforced; #265 tracks switching back to UNRESTRICTED.
     assert b.egress is Egress.CLOSED
     assert "network" not in {c.value for c in b.capabilities}

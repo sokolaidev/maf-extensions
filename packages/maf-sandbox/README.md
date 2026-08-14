@@ -29,7 +29,7 @@ This snippet never calls `ensure_can_serve` (below) and is checked anyway: `acqu
 
 ## Threat model
 
-This package draws no isolation boundary itself — it is protocol and policy over whatever a `SandboxBackend` implementation actually provides. `Isolation` is a six-rung ladder a backend declares itself onto, weakest to strongest: `process` (no boundary at all — same process as the host), `runtime` (a software boundary inside the host process, e.g. a restricted interpreter or a WASM runtime's fault isolation), `container` (shared-kernel namespaces and cgroups), `hardened_container` (syscall interception in a userspace kernel — gVisor-class), `microvm` (a hypervisor boundary with a minimal or absent guest OS and no ambient identity reachable from inside — the default floor), and `vm` (a dedicated, full VM provisioned for the workload). `SandboxRouter` enforces the checks below on top of that declaration; the package's job is to make an unsafe backend selection fail loudly at construction or attach, not silently at first use. Beyond backend selection this layer holds no credentials, executes nothing and reaches no network, and everything security-relevant about a *specific* sandbox lives in the backend that implements it. It has exactly one boundary of its own, and it is on the way out rather than in: `make_file_system_sink` writes guest-produced bytes under a host directory, so it resolves each destination and refuses one that leaves that directory — see *Getting files back* below, which is also where a host landing somewhere other than a filesystem is told it owns the same question.
+This package draws no isolation boundary itself — it is protocol and policy over whatever a `SandboxBackend` implementation actually provides. `Isolation` is a six-rung ladder a backend declares itself onto, weakest to strongest: `none` (no boundary at all — the workload runs in the host process, with the host's authority), `runtime` (a software boundary inside the host process, e.g. a restricted interpreter or a WASM runtime's fault isolation), `container` (shared-kernel namespaces and cgroups), `hardened_container` (syscall interception in a userspace kernel — gVisor-class), `microvm` (a hypervisor boundary with a minimal or absent guest OS and no ambient identity reachable from inside — the default floor), and `vm` (a dedicated, full VM provisioned for the workload). `SandboxRouter` enforces the checks below on top of that declaration; the package's job is to make an unsafe backend selection fail loudly at construction or attach, not silently at first use. Beyond backend selection this layer holds no credentials, executes nothing and reaches no network, and everything security-relevant about a *specific* sandbox lives in the backend that implements it. It has exactly one boundary of its own, and it is on the way out rather than in: `make_file_system_sink` writes guest-produced bytes under a host directory, so it resolves each destination and refuses one that leaves that directory — see *Getting files back* below, which is also where a host landing somewhere other than a filesystem is told it owns the same question.
 
 ## The vocabulary
 
@@ -53,7 +53,7 @@ This package draws no isolation boundary itself — it is protocol and policy ov
 ```python
 router = SandboxRouter(backends)                                   # default floor: Isolation.MICROVM
 router = SandboxRouter(backends, min_isolation=Isolation.VM)       # stricter: dedicated full-VM only
-router = SandboxRouter(backends, min_isolation=Isolation.PROCESS)  # a developer machine, opted down
+router = SandboxRouter(backends, min_isolation=Isolation.NONE)  # a developer machine, opted down
 ```
 
 **1. The minimum-isolation floor.** A backend declares its own `isolation`, ranked on the ladder above. The router refuses, at construction, any backend below `min_isolation` — or one whose declared value is not a rung this package recognises, because nothing here can tell whether an unrecognised boundary is stronger or weaker than the floor. A spec may also carry its own `min_isolation`; the effective floor is the *stricter* of the host's and the spec's — a spec may raise the floor for itself and never lower it.
@@ -133,6 +133,14 @@ A workload whose artifact names are not knowable when its tool is built passes t
 
 One sentence to read before registering anything, because a declaration reads like a control and is not one: **`Identity.APP` is not the safe option, only the declared one.** It is the application's full authority, and the only real bounds on it are the emptiness of the registry and the dispatch cap — least privilege for dispatched tools comes from what a host registers, never from what it declares. `Identity.USER` is declarable but not servable: registering such a tool raises the whole surface to approval-gated, and dispatching one is refused with the prerequisites named.
 
+## Upgrading to 0.14
+
+**`Isolation.PROCESS` is `Isolation.NONE`.** The rung that provides no boundary was named for where the code runs rather than for what it protects, and read as the opposite of what it meant — "process isolation" implies a boundary, and this rung is the absence of one. One mechanical edit, in host code and in any backend you have written.
+
+**The old spelling is removed outright rather than kept as an alias, and that is the point.** `PROCESS` is reserved for a genuine separate-OS-process rung — a kernel-enforced address space, sharing the kernel and the filesystem — which lands between `runtime` and `container` in the next minor. An alias would make that reuse silent: a backend declaring `"process"` *because* it drew no boundary would come back ranked two rungs higher, having claimed one, and a host running `min_isolation=Isolation.RUNTIME` would begin admitting it. So `Isolation.PROCESS` raises `AttributeError`, `Isolation("process")` raises `ValueError`, and a backend still declaring it is refused at construction with `SandboxBackendNotPermitted`. The failure is the notice.
+
+**Check your configuration, not only your code.** `Isolation` is a `StrEnum`, so a floor or a declaration may reach the router as the string `"process"` out of a config file or an environment variable rather than as an attribute. Those fail the same way and at the same moment — but a grep for `Isolation.PROCESS` will not find them.
+
 ## Upgrading to 0.11
 
 `0.11.0` retired the word `workspace` from the public vocabulary. It was carrying three unrelated things, and only one of them keeps the stem. Two edits, both mechanical.
@@ -147,7 +155,7 @@ The dependent packages moved with it: `maf-sandbox-bicep` and `maf-sandbox-codea
 
 `0.5.0` replaced the `deployed` boolean with a declared isolation floor, and added a capability axis. Four changes need an edit; nothing else moves.
 
-**`SandboxRouter(..., deployed=...)` is gone — pass `min_isolation` instead.** `deployed=True` becomes `min_isolation=Isolation.MICROVM`, which is also the default, so a deployed host can drop the argument entirely. `deployed=False` on a developer machine becomes the rung that host actually accepts, stated explicitly — `min_isolation=Isolation.CONTAINER` for a container backend, `Isolation.PROCESS` for an in-process fake. There is no longer a value meaning "anything goes": a host that wants the weakest rung names it.
+**`SandboxRouter(..., deployed=...)` is gone — pass `min_isolation` instead.** `deployed=True` becomes `min_isolation=Isolation.MICROVM`, which is also the default, so a deployed host can drop the argument entirely. `deployed=False` on a developer machine becomes the rung that host actually accepts, stated explicitly — `min_isolation=Isolation.CONTAINER` for a container backend, `Isolation.NONE` for an in-process fake. There is no longer a value meaning "anything goes": a host that wants the weakest rung names it.
 
 **`DEPLOYED_ISOLATION` is removed.** The policy it expressed is `min_isolation`'s default.
 

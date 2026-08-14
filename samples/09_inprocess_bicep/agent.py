@@ -2,7 +2,7 @@
 
 Sample 02's ``bicep_validate`` workload unchanged, behind ``NoIsolationBackend`` (in
 ``no_isolation_backend.py``): a host work directory and a real ``bicep`` subprocess — the
-floor of the isolation ladder (:data:`~maf_sandbox.Isolation.PROCESS`, no boundary at all).
+floor of the isolation ladder (:data:`~maf_sandbox.Isolation.NONE`, no boundary at all).
 
 The ``egress`` declaration is a **temporary misuse** — a no-boundary backend cannot confine
 egress and the router refuses the honest ``UNRESTRICTED`` today, so ``CLOSED`` is worn only
@@ -70,8 +70,8 @@ async def run() -> int:
         }
     )
 
-    # Below the router's default `microvm` floor; opted down to PROCESS, the no-boundary rung.
-    router = SandboxRouter([backend], min_isolation=Isolation.PROCESS)
+    # Below the router's default `microvm` floor; opted down to NONE, the no-boundary rung.
+    router = SandboxRouter([backend], min_isolation=Isolation.NONE)
 
     store = InMemoryAgentFileStore()
     await store.write(BICEP_FILE, (Path(__file__).parent / BICEP_FILE).read_text())

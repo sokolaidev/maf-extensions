@@ -2,7 +2,7 @@
 
 A backend this sample defines that runs workloads on the host with no boundary at all:
 ``write_file`` writes to a host temp directory and ``exec`` shells out to a real binary on this
-machine — the floor of the isolation ladder (:data:`~maf_sandbox.Isolation.PROCESS`). A backend
+machine — the floor of the isolation ladder (:data:`~maf_sandbox.Isolation.NONE`). A backend
 is independent of the kinds it serves: this module only knows how to put a file into a host
 work directory and run a command there. The workload-specific framing — what this backend is
 asked to run, and why — is in ``agent.py``'s docstring and the sample README; this module is
@@ -161,8 +161,9 @@ class NoIsolationSandbox:
 class NoIsolationBackend:
     """A :class:`~maf_sandbox.SandboxBackend` that runs workloads on the host with no boundary.
 
-    The floor of the isolation ladder — :data:`~maf_sandbox.Isolation.PROCESS`, "same process
-    as the host, no boundary at all". Each ``acquire`` creates a host temp directory and hands
+    The floor of the isolation ladder — :data:`~maf_sandbox.Isolation.NONE`, "no boundary at
+    all: it runs in the host process, with the host's authority". Each ``acquire`` creates a
+    host temp directory and hands
     back a :class:`NoIsolationSandbox` that runs commands there; ``dispose_scope`` deletes them.
     Get-or-create is keyed by ``(SandboxKey, spec.kind)`` and guarded by a lock, the way the
     protocol asks.
@@ -197,7 +198,7 @@ class NoIsolationBackend:
 
     @property
     def isolation(self) -> Isolation:
-        return Isolation.PROCESS
+        return Isolation.NONE
 
     @property
     def egress(self) -> Egress:

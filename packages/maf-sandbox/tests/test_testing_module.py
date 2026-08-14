@@ -130,7 +130,7 @@ class TestInProcessSandboxBackend:
     def test_defaults_to_in_process_name_and_process_isolation(self):
         backend = InProcessSandboxBackend()
         assert backend.name == "in-process"
-        assert backend.isolation == Isolation.PROCESS
+        assert backend.isolation == Isolation.NONE
 
     def test_name_and_isolation_are_configurable(self):
         backend = InProcessSandboxBackend(name="fake", isolation=Isolation.VM)
