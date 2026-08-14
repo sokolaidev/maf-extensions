@@ -958,7 +958,8 @@ class DockerSandboxBackend:
             return False
         if result.returncode == 0:
             return True
-        if _NO_SUCH not in result.stderr.lower():
+        # Keep the network-only wording local so container failures remain visible.
+        if _NO_SUCH not in result.stderr.lower() and "not found" not in result.stderr.lower():
             logger.warning(
                 "docker backend: failed to remove network %s: %s", net, result.stderr.strip()
             )
