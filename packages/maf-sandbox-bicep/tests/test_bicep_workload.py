@@ -21,7 +21,7 @@ import json
 import logging
 
 import pytest
-from maf_sandbox import CallerContext, Isolation, SandboxRouter
+from maf_sandbox import CallerContext, SandboxRouter
 from maf_sandbox.testing import InMemoryStore, InProcessSandbox, InProcessSandboxBackend
 
 from maf_sandbox_bicep import (
@@ -104,8 +104,10 @@ def _tool(
     **kw,
 ):
     tools = make_bicep_tools(
-        # Below the default floor: this suite exercises the fake backend, not the floor.
-        SandboxRouter([backend], min_isolation=Isolation.PROCESS),
+        # Below the default floor: this suite exercises the fake backend, not the floor. Read
+        # off the backend rather than named, so renaming the ladder's bottom rung is not a
+        # change to this package.
+        SandboxRouter([backend], min_isolation=backend.isolation),
         store,
         "devops-engineer",
         _context(store, thread_id=thread_id),
