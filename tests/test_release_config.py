@@ -1,9 +1,10 @@
 """Repository-level release wiring: every package registered, everywhere, consistently.
 
-These are not any one package's tests — they are about the five files that have to agree for
-a release to happen at all (`release-please-config.json`, `.release-please-manifest.json`,
-`uv.lock`, `publish-packages.yml` and `pr-title.yml`), which is why they live at the root
-rather than under a package.
+These are not any one package's tests — they are about the files that have to agree for a
+release to happen at all (`release-please-config.json`, `.release-please-manifest.json`,
+`uv.lock`, `publish-packages.yml` and `pr-title.yml`), and about `RELEASING.md`, which tells a
+maintainer what those files are going to do. Which is why they live at the root rather than
+under a package.
 
 Each failure here is one that is otherwise silent: a new package that release-please never
 proposes a release for, a manifest that has drifted from the version actually declared, a
@@ -32,6 +33,7 @@ WORKFLOWS = REPO_ROOT / ".github" / "workflows"
 PUBLISH_WORKFLOW = WORKFLOWS / "publish-packages.yml"
 PR_TITLE_WORKFLOW = WORKFLOWS / "pr-title.yml"
 RELEASE_WORKFLOW = WORKFLOWS / "release-please.yml"
+RELEASING = REPO_ROOT / "RELEASING.md"
 
 CONFIG = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
 MANIFEST = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
@@ -137,24 +139,57 @@ def run_block(workflow: Path, step_name: str) -> str:
 
 
 def condition_after(workflow: Path, anchor: str) -> str:
-    """The first `if: >-` folded block below `anchor`, as one whitespace-normalised line.
+    """`anchor`'s own `if: >-` folded block, as one whitespace-normalised line.
 
-    `anchor` is a stripped line — a job's `name:` key or a step's `- name: …`.
+    `anchor` is a stripped line — a job's key or a step's `- name: …`. The search stops where
+    that mapping does, at the next line indented no further, and an anchor carrying no `if:`
+    fails rather than borrowing one: unbounded, a job whose gate was deleted returns the *next*
+    job's, and a test asserting on the gate goes on passing with no gate there.
     """
     lines = workflow.read_text(encoding="utf-8").splitlines()
     start = next(index for index, line in enumerate(lines) if line.strip() == anchor)
+    depth = len(lines[start]) - len(lines[start].lstrip())
+    mapping: list[str] = []
+    for line in lines[start + 1 :]:
+        if line.strip() and len(line) - len(line.lstrip()) <= depth:
+            break
+        mapping.append(line)
     marker = next(
-        index
-        for index, line in enumerate(lines[start:], start)
-        if line.strip() == "if: >-"
+        (index for index, line in enumerate(mapping) if line.strip() == "if: >-"), None
     )
-    indent = len(lines[marker]) - len(lines[marker].lstrip()) + 2
+    assert marker is not None, (
+        f"{anchor} carries no `if: >-` block in {workflow.name}; if its gate was removed, "
+        "that is the change to look at rather than this helper"
+    )
+    indent = len(mapping[marker]) - len(mapping[marker].lstrip()) + 2
     body: list[str] = []
-    for line in lines[marker + 1 :]:
+    for line in mapping[marker + 1 :]:
         if not line.startswith(" " * indent):
             break
         body.append(line.strip())
     return " ".join(body)
+
+
+def dispatched_packages() -> set[str]:
+    """The packages whose publish dispatches the live check, from the `verify` gate itself."""
+    condition = condition_after(PUBLISH_WORKFLOW, "verify:")
+    listed = re.search(r"fromJSON\('(\[[^\]]*\])'\)", condition)
+    assert listed is not None, (
+        f"the `verify` gate in {PUBLISH_WORKFLOW.name} no longer names its packages in a "
+        "fromJSON list"
+    )
+    return set(json.loads(listed.group(1)))
+
+
+def packages_named_in_releasing() -> set[str]:
+    """Every maf-sandbox distribution RELEASING.md's live-check paragraph names."""
+    marker = "a live check runs on its own"
+    line = next(
+        (line for line in RELEASING.read_text("utf-8").splitlines() if marker in line),
+        None,
+    )
+    assert line is not None, f"no paragraph in RELEASING.md says {marker!r}"
+    return set(re.findall(r"`(maf-sandbox[\w-]*)`", line))
 
 
 def accepted_title_types() -> list[str]:
@@ -534,6 +569,56 @@ class TestTheConstraintCommentsDoNotNameAVersion:
                 )
         assert checked, (
             "expected at least one package to carry a maf-sandbox constraint"
+        )
+
+
+class TestReleasingNamesEveryPackageThatDispatchesTheLiveCheck:
+    """The instructions and the gate are two records of one list, and only one of them runs.
+
+    RELEASING.md named three of the five for two releases after `maf-sandbox-codeact` and
+    `maf-sandbox-docker` joined the gate. Nothing surfaced it: a maintainer reading the wrong
+    list is not a failing check, it is someone not expecting a workflow that then runs.
+    """
+
+    def test_the_paragraph_and_the_gate_name_the_same_packages(self):
+        assert packages_named_in_releasing() == dispatched_packages()
+
+
+_TWO_JOBS_ONE_GATED = """jobs:
+  ungated:
+    needs: [build]
+    runs-on: ubuntu-latest
+
+  gated:
+    if: >-
+      needs.build.outputs.target == 'pypi'
+      && needs.build.outputs.breaking != 'true'
+    runs-on: ubuntu-latest
+"""
+
+
+class TestReadingAGateOutOfTheWorkflow:
+    """`condition_after` is what every gate assertion below rests on, so it has to be exact.
+
+    The failure that matters is the quiet one: a search running past its own job returns the
+    next job's `if:`, which reads as a gate that is still there. Every test asserting on a gate
+    then passes on a workflow that has none.
+    """
+
+    def _workflow(self, tmp_path: Path) -> Path:
+        path = tmp_path / "w.yml"
+        path.write_text(_TWO_JOBS_ONE_GATED, encoding="utf-8")
+        return path
+
+    def test_a_job_with_no_gate_does_not_borrow_the_next_one(self, tmp_path: Path):
+        with pytest.raises(AssertionError, match="carries no `if: >-` block"):
+            condition_after(self._workflow(tmp_path), "ungated:")
+
+    def test_a_gated_job_reads_its_own(self, tmp_path: Path):
+        condition = condition_after(self._workflow(tmp_path), "gated:")
+        assert condition == (
+            "needs.build.outputs.target == 'pypi' "
+            "&& needs.build.outputs.breaking != 'true'"
         )
 
 
