@@ -39,6 +39,7 @@ from __future__ import annotations
 import asyncio
 import sys
 
+from _scaffold import require_env_vars
 from agent_framework import Agent
 from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
@@ -46,7 +47,6 @@ from maf_sandbox import Isolation, SandboxRouter
 from maf_sandbox.maf import list_no_files, make_caller_context
 from maf_sandbox_codeact import make_codeact_tools
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
-from _scaffold import require_env_vars
 
 # Keyed by (scope, thread_id, agent_dir); constants here since this program serves one request.
 SCOPE = "samples"

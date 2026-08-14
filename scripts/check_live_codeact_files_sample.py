@@ -160,6 +160,7 @@ def assess(output: str, summary: str | None) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
+    """CLI entry: read the sample output and the landed summary, run ``assess``, and print OK or FAIL."""
     if len(argv) != 3:
         print(f"usage: {argv[0]} <output-file> <landed-summary-path>", file=sys.stderr)
         return 2

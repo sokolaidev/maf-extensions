@@ -65,6 +65,7 @@ def assess(output: str) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
+    """CLI entry: read the sample output from a file or stdin, run ``assess``, and print OK or FAIL."""
     if len(argv) > 2:
         print(
             f"usage: {argv[0]} [output-file]  (reads stdin if omitted)", file=sys.stderr

@@ -37,13 +37,13 @@ import os
 import sys
 from pathlib import Path
 
+from _scaffold import require_env_vars
 from agent_framework import Agent, InMemoryAgentFileStore
 from agent_framework.openai import OpenAIChatCompletionClient
 from maf_sandbox import Isolation, SandboxRouter
 from maf_sandbox.maf import list_all_files, make_caller_context
 from maf_sandbox_bicep import make_bicep_tools
 from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
-from _scaffold import require_env_vars
 
 # A sandbox is keyed by (scope, thread_id, agent_dir).  A host reads the first two
 # from its own request context — a user/tenant and a conversation.  This program

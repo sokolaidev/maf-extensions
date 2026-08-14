@@ -21,8 +21,8 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from maf_sandbox import (
-    Capability,
     CallerContext,
+    Capability,
     DeclaredOutput,
     OutputSink,
     SandboxRouter,

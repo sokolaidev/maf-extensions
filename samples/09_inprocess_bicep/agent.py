@@ -31,12 +31,12 @@ import os
 import sys
 from pathlib import Path
 
+from _scaffold import require_env_vars
 from agent_framework import Agent, InMemoryAgentFileStore
 from agent_framework.openai import OpenAIChatCompletionClient
 from maf_sandbox import Isolation, SandboxRouter
 from maf_sandbox.maf import list_all_files, make_caller_context
 from maf_sandbox_bicep import make_bicep_tools
-from _scaffold import require_env_vars
 from no_isolation_backend import NoIsolationBackend
 
 # Keyed by (scope, thread_id, agent_dir); constants here since this program serves one request.

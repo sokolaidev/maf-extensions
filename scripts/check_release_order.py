@@ -85,6 +85,7 @@ def ceilings(repo_root: Path) -> dict[str, tuple[int, ...]]:
 
 
 def core_version(repo_root: Path) -> tuple[int, ...]:
+    """The current ``maf-sandbox`` version, read from its ``pyproject.toml``, as a tuple of ints."""
     text = (repo_root / "packages" / _CORE / "pyproject.toml").read_text("utf-8")
     return version(tomllib.loads(text)["project"]["version"])
 
@@ -115,6 +116,7 @@ def assess(title: str, paths: list[str], repo_root: Path) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
+    """CLI entry: read changed paths from stdin and the PR title from argv, run ``assess``, and print any ordering problems."""
     if len(argv) != 2:
         print(f"usage: {argv[0]} <pull-request-title>", file=sys.stderr)
         return 2

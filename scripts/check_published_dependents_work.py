@@ -285,6 +285,7 @@ def _usage(prog: str) -> int:
 
 
 def main(argv: list[str]) -> int:
+    """CLI entry: build the at-risk candidate set, install and import each against the candidate core wheel, and print OK or FAIL (with optional snapshot diffing)."""
     args = list(argv[1:])
     positionals: list[str] = []
     emit_snapshot: Path | None = None

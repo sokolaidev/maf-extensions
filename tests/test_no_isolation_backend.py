@@ -24,7 +24,6 @@ import tempfile
 from pathlib import Path
 
 import pytest
-
 from maf_sandbox import Egress, Isolation, SandboxKey, SandboxSpec
 
 _SAMPLE = Path(__file__).resolve().parent.parent / "samples" / "09_inprocess_bicep"

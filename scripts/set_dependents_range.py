@@ -188,6 +188,7 @@ def title(released_text: str, moved: frozenset[str]) -> str:
 
 
 def main(argv: list[str]) -> int:
+    """CLI entry: with ``--print-title`` print the commit subject; otherwise apply ``plan`` to rewrite each dependent's range and print the bounds moved."""
     repo_root = Path(__file__).resolve().parent.parent
     if len(argv) == 3 and argv[1] == "--print-title":
         moved: set[str] = set()

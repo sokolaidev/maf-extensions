@@ -109,6 +109,7 @@ def fetch_requires_dist(distribution: str) -> list[str] | None:
 
 
 def main(argv: list[str]) -> int:
+    """CLI entry: parse the candidate version, fetch each dependent's published ``requires-dist``, and exit 1 if any ceiling excludes it."""
     if len(argv) != 2:
         print(f"usage: {argv[0]} <version>", file=sys.stderr)
         return 2

@@ -36,13 +36,13 @@ import asyncio
 import os
 import sys
 
+from _scaffold import require_env_vars
 from agent_framework import Agent
 from agent_framework.openai import OpenAIChatCompletionClient
 from maf_sandbox import Isolation, SandboxRouter
 from maf_sandbox.maf import list_no_files, make_caller_context
 from maf_sandbox_codeact import make_codeact_tools
 from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
-from _scaffold import require_env_vars
 
 # Keyed by (scope, thread_id, agent_dir) — see sample 03's agent.py.
 SCOPE = "samples"

@@ -25,16 +25,25 @@ dev = [
 # what it was. Those 43 files previously answered to ruff's defaults — no `UP` — which is how a
 # quoted annotation in samples/07 outlived the same cleanup inside the packages.
 #
-# `UP` and nothing more, deliberately. No `line-length`: this tree passes `ruff format --check`
-# at ruff's default width only because nothing sets one here, and moving it to the packages' 100
-# reformats 27 files — a diff worth reviewing on its own rather than inside a change about
-# quotes. `I` (13 findings) and the `D` docstring rules (43, none of them in samples/) are the
-# same kind of question. #292 carries the measurements and the proposal.
+# The rules now mirror every package's: `I`, `UP`, and the `D100`/`D101`/`D103`/`D104` docstring
+# rules. `tests/**` is ignored for `D101`/`D103` for the same reason each package ignores its own
+# tests — the repo's `tests/` is repository-level wiring, no different in kind from a package's, so
+# the 23 undocumented classes and 9 undocumented functions there are exempt by consistency rather
+# than by writing them. That left 13 unsorted imports (auto-fixed) and 11 undocumented public
+# functions in `scripts/`, which gained one-line docstrings. `line-length` is still unset here —
+# the default 88 — so `ruff format --check` stays green; moving to the packages' 100 reformats 27
+# files and is a separate, reformat-only commit rather than one mixed with these rule changes.
+# #292 carries the measurements and the proposal for both.
 [tool.ruff]
 target-version = "py312"
 
 [tool.ruff.lint]
-extend-select = ["UP"]
+extend-select = ["I", "UP", "D100", "D101", "D103", "D104"]
+
+# Mirrors each package's own `tests/**` ignore: the repo-level tests/ is wiring, not API surface,
+# so ruff resolves it from this root section the same way a package's tests resolve from its own.
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D101", "D103"]
 
 # Repo-level pyright for the code the per-package strict configs do not cover: scripts/ and the
 # test trees. Package src/ stays on its own per-package strict config (uv run pyright -p

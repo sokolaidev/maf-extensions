@@ -93,6 +93,7 @@ def assess(output: str, image: bytes | None) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
+    """CLI entry: read the sample output and the landed image, run ``assess``, and print OK or FAIL."""
     if len(argv) != 3:
         print(f"usage: {argv[0]} <output-file> <landed-image-path>", file=sys.stderr)
         return 2

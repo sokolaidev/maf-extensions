@@ -114,7 +114,7 @@ def _smoke_maf_sandbox_acas() -> str:
 
 
 def _smoke_maf_sandbox_bicep() -> str:
-    from maf_sandbox import Isolation, SandboxRouter, CallerContext
+    from maf_sandbox import CallerContext, Isolation, SandboxRouter
     from maf_sandbox.testing import (
         InMemoryStore,
         InProcessSandbox,
@@ -202,13 +202,13 @@ def _smoke_maf_sandbox_bicep() -> str:
 def _smoke_maf_sandbox_codeact() -> str:
     from maf_sandbox import (
         DEFAULT_CAPABILITIES,
+        CallerContext,
         Capability,
         Isolation,
         LandedArtifact,
         OutputSink,
         SandboxCapabilityNotSupported,
         SandboxRouter,
-        CallerContext,
     )
     from maf_sandbox.testing import (
         InMemoryStore,
@@ -412,6 +412,7 @@ _SMOKES = {
 
 
 def main(argv: list[str]) -> int:
+    """CLI entry: import the named distribution, assert it resolved under ``site-packages``, check ``py.typed``, run the per-package smoke, and print SMOKE OK."""
     if len(argv) != 2 or argv[1] not in _PACKAGES:
         print(f"usage: {argv[0]} <{'|'.join(_PACKAGES)}>", file=sys.stderr)
         return 2

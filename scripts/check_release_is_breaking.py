@@ -55,6 +55,7 @@ def is_breaking(body: str) -> bool:
 
 
 def main(argv: list[str]) -> int:
+    """CLI entry: parse the package and version, locate the changelog section, and print ``breaking=true`` or ``breaking=false``."""
     if len(argv) != 3:
         print(f"usage: {argv[0]} <package> <version>", file=sys.stderr)
         return 2
