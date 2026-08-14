@@ -171,44 +171,6 @@ def _patch_urlopen(
     monkeypatch.setattr(check.urllib.request, "urlopen", fake_urlopen)
 
 
-class TestFetchLatest:
-    """``fetch_latest`` reads one top-level JSON and honours yanked + 404 + fatal errors."""
-
-    def test_returns_the_latest_version_and_its_requirements(self, monkeypatch):
-        _patch_urlopen(
-            monkeypatch,
-            {
-                "maf-sandbox-bicep/json": {
-                    "info": {
-                        "version": "0.6.0",
-                        "requires_dist": ["maf-sandbox<0.13,>=0.11.0"],
-                        "yanked": False,
-                    }
-                }
-            },
-        )
-        assert check.fetch_latest("maf-sandbox-bicep") == (
-            "0.6.0",
-            ["maf-sandbox<0.13,>=0.11.0"],
-        )
-
-    def test_a_yanked_latest_is_treated_as_absent(self, monkeypatch):
-        _patch_urlopen(
-            monkeypatch,
-            {"maf-sandbox-bicep/json": {"info": {"version": "0.6.0", "yanked": True}}},
-        )
-        assert check.fetch_latest("maf-sandbox-bicep") is None
-
-    def test_a_never_released_distribution_returns_none(self, monkeypatch):
-        _patch_urlopen(monkeypatch, {"maf-sandbox-bicep/json": _http_error(404)})
-        assert check.fetch_latest("maf-sandbox-bicep") is None
-
-    def test_a_non_404_error_is_fatal(self, monkeypatch):
-        _patch_urlopen(monkeypatch, {"maf-sandbox-bicep/json": _http_error(500)})
-        with pytest.raises(urllib.error.HTTPError):
-            check.fetch_latest("maf-sandbox-bicep")
-
-
 class TestFetchRequiresDistForVersion:
     """``fetch_requires_dist_for_version`` reads one per-version JSON, same yanked/404 rules."""
 
@@ -390,6 +352,29 @@ def _breaks_docker_020(
     return None
 
 
+def _fake_fetch_with_docker_020(distribution: str) -> dict[str, list[str]]:
+    """Every dependent admits 0.11.0 at a `<0.13` latest; docker also has an old 0.2.0 at `<0.12`."""
+    if distribution == "maf-sandbox-docker":
+        return {
+            "0.2.0": ["maf-sandbox<0.12,>=0.10.0"],
+            "0.6.0": ["maf-sandbox<0.13,>=0.11.0"],
+        }
+    return {"0.6.0": ["maf-sandbox<0.13,>=0.10.0"]}
+
+
+# The full admitting set build tested under `_fake_fetch_with_docker_020`: every dependent's 0.6.0
+# plus docker's old 0.2.0, sorted by distribution then version. The build snapshot the upload diff
+# reads back, and the expected content of an `--emit-snapshot` run.
+_ADMITTING_AT_BUILD: list[tuple[str, str]] = [
+    ("maf-sandbox-acas", "0.6.0"),
+    ("maf-sandbox-bicep", "0.6.0"),
+    ("maf-sandbox-codeact", "0.6.0"),
+    ("maf-sandbox-docker", "0.2.0"),
+    ("maf-sandbox-docker", "0.6.0"),
+    ("maf-sandbox-wslc", "0.6.0"),
+]
+
+
 class TestBreaks:
     """The verdict over an injected install/import, so the decision is testable offline."""
 
@@ -410,6 +395,79 @@ class TestBreaks:
         failures = check.breaks(Path("core.whl"), candidates, _breaks_docker_020)
         assert len(failures) == 1
         assert "0.6.0" not in failures[0]
+
+
+class TestNewlyAdmitting:
+    """The diff core: current admitting versions minus the snapshot build tested."""
+
+    def test_everything_already_tested_yields_nothing(self):
+        current = [("maf-sandbox-bicep", "0.5.6"), ("maf-sandbox-docker", "0.6.0")]
+        snapshot = [("maf-sandbox-bicep", "0.5.6"), ("maf-sandbox-docker", "0.6.0")]
+        assert check.newly_admitting(current, snapshot) == []
+
+    def test_a_version_not_in_the_snapshot_is_new(self):
+        current = [("maf-sandbox-bicep", "0.5.6"), ("maf-sandbox-docker", "0.7.0")]
+        snapshot = [("maf-sandbox-bicep", "0.5.6"), ("maf-sandbox-docker", "0.6.0")]
+        # 0.7.0 is the newly uploaded non-latest admitting version — the race #284 closes.
+        assert check.newly_admitting(current, snapshot) == [
+            ("maf-sandbox-docker", "0.7.0")
+        ]
+
+    def test_a_version_gone_from_current_is_ignored(self):
+        # A version build tested that is no longer admitting (yanked again, or excluded) is not a
+        # risk to re-test, so it is simply absent from the result — not an error, not re-tested.
+        current = [("maf-sandbox-bicep", "0.5.6")]
+        snapshot = [("maf-sandbox-bicep", "0.5.6"), ("maf-sandbox-docker", "0.6.0")]
+        assert check.newly_admitting(current, snapshot) == []
+
+    def test_current_order_is_preserved(self):
+        current = [
+            ("maf-sandbox-acas", "0.5.0"),
+            ("maf-sandbox-bicep", "0.5.6"),
+            ("maf-sandbox-docker", "0.7.0"),
+        ]
+        snapshot = [("maf-sandbox-bicep", "0.5.6")]
+        assert check.newly_admitting(current, snapshot) == [
+            ("maf-sandbox-acas", "0.5.0"),
+            ("maf-sandbox-docker", "0.7.0"),
+        ]
+
+
+class TestSnapshotIO:
+    """``write_snapshot`` / ``read_snapshot`` round-trip the tested pairs, and fail closed."""
+
+    def test_a_round_trip_preserves_the_pairs(self, tmp_path: Path):
+        path = tmp_path / "snap.json"
+        pairs = [("maf-sandbox-bicep", "0.5.6"), ("maf-sandbox-docker", "0.6.0")]
+        check.write_snapshot(path, pairs)
+        assert check.read_snapshot(path) == pairs
+
+    def test_the_file_is_a_json_list_of_pairs(self, tmp_path: Path):
+        path = tmp_path / "snap.json"
+        check.write_snapshot(path, [("maf-sandbox-bicep", "0.5.6")])
+        assert json.loads(path.read_text()) == [["maf-sandbox-bicep", "0.5.6"]]
+
+    def test_a_missing_snapshot_fails_closed(self, tmp_path: Path):
+        with pytest.raises(ValueError, match="snapshot not found"):
+            check.read_snapshot(tmp_path / "no-such.json")
+
+    def test_malformed_json_fails_closed(self, tmp_path: Path):
+        path = tmp_path / "snap.json"
+        path.write_text("not json")
+        with pytest.raises(ValueError, match="not valid JSON"):
+            check.read_snapshot(path)
+
+    def test_a_non_list_snapshot_fails_closed(self, tmp_path: Path):
+        path = tmp_path / "snap.json"
+        path.write_text(json.dumps({"maf-sandbox-bicep": "0.5.6"}))
+        with pytest.raises(ValueError, match="not a list"):
+            check.read_snapshot(path)
+
+    def test_an_entry_that_is_not_a_pair_fails_closed(self, tmp_path: Path):
+        path = tmp_path / "snap.json"
+        path.write_text(json.dumps([["maf-sandbox-bicep", "0.5.6"], ["solo"]]))
+        with pytest.raises(ValueError, match="not a list"):
+            check.read_snapshot(path)
 
 
 class _CompletedProcess:
@@ -531,12 +589,50 @@ class TestMain:
         assert check.main([_ARGV0]) == 2
         assert "usage:" in capsys.readouterr().err
 
-    def test_too_many_arguments_with_the_flag_is_still_wrong(
+    def test_too_many_arguments_with_a_flag_is_still_wrong(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ):
         assert (
             check.main(
-                [_ARGV0, "0.11.0", str(self._wheel(tmp_path)), "--latest-only", "extra"]
+                [
+                    _ARGV0,
+                    "0.11.0",
+                    str(self._wheel(tmp_path)),
+                    "--since-snapshot",
+                    str(tmp_path / "snap.json"),
+                    "extra",
+                ]
+            )
+            == 2
+        )
+        assert "usage:" in capsys.readouterr().err
+
+    def test_a_flag_without_its_path_argument_is_wrong(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ):
+        assert (
+            check.main(
+                [_ARGV0, "0.11.0", str(self._wheel(tmp_path)), "--emit-snapshot"]
+            )
+            == 2
+        )
+        assert "usage:" in capsys.readouterr().err
+
+    def test_emit_and_since_snapshot_together_are_wrong(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ):
+        snap = tmp_path / "snap.json"
+        assert (
+            check.main(
+                [
+                    _ARGV0,
+                    "0.11.0",
+                    str(self._wheel(tmp_path)),
+                    "--emit-snapshot",
+                    str(snap),
+                    "--since-snapshot",
+                    str(snap),
+                ]
             )
             == 2
         )
@@ -592,24 +688,6 @@ class TestMain:
         assert "imports against it" in out
         assert "maf-sandbox-docker==0.2.0" in out
 
-    def test_latest_only_tests_just_the_latest_version(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-        capsys: pytest.CaptureFixture[str],
-    ):
-        monkeypatch.setattr(
-            check, "fetch_latest", lambda _d: ("0.6.0", ["maf-sandbox<0.13,>=0.10.0"])
-        )
-        monkeypatch.setattr(check, "install_and_import", _ok)
-        assert (
-            check.main([_ARGV0, "0.11.0", str(self._wheel(tmp_path)), "--latest-only"])
-            == 0
-        )
-        out = capsys.readouterr().out
-        assert "maf-sandbox-bicep==0.6.0" in out
-        assert "0.2.0" not in out
-
     def test_every_version_excluded_leaves_nothing_to_verify(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -625,3 +703,199 @@ class TestMain:
         monkeypatch.setattr(check, "install_and_import", _ok)
         assert check.main([_ARGV0, "0.11.0", str(self._wheel(tmp_path))]) == 0
         assert "nothing to verify" in capsys.readouterr().out
+
+    def test_emit_snapshot_records_the_admitting_versions_build_tested(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ):
+        monkeypatch.setattr(
+            check, "fetch_version_requirements", _fake_fetch_with_docker_020
+        )
+        monkeypatch.setattr(check, "install_and_import", _ok)
+        snap = tmp_path / "snap.json"
+        assert (
+            check.main(
+                [
+                    _ARGV0,
+                    "0.11.0",
+                    str(self._wheel(tmp_path)),
+                    "--emit-snapshot",
+                    str(snap),
+                ]
+            )
+            == 0
+        )
+        # The snapshot is the full admitting set build tested, as sorted (distribution, version)
+        # pairs: every dependent's 0.6.0 plus docker's old 0.2.0.
+        assert json.loads(snap.read_text()) == [[d, v] for d, v in _ADMITTING_AT_BUILD]
+
+    def test_emit_snapshot_is_written_even_when_a_break_refuses(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ):
+        # Build refuses on a break, but the snapshot of what it tested is still on disk — only
+        # relevant if a later step reads it, and the workflow only uploads it on build success.
+        monkeypatch.setattr(
+            check, "fetch_version_requirements", _fake_fetch_with_docker_020
+        )
+        monkeypatch.setattr(check, "install_and_import", _breaks_docker_020)
+        snap = tmp_path / "snap.json"
+        assert (
+            check.main(
+                [
+                    _ARGV0,
+                    "0.11.0",
+                    str(self._wheel(tmp_path)),
+                    "--emit-snapshot",
+                    str(snap),
+                ]
+            )
+            == 1
+        )
+        assert snap.exists()
+        assert ["maf-sandbox-docker", "0.2.0"] in json.loads(snap.read_text())
+
+    def test_since_snapshot_with_nothing_new_installs_nothing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ):
+        # The common case: the admitting set at upload matches what build tested, so the diff is
+        # empty and install_and_import is never called.
+        monkeypatch.setattr(
+            check, "fetch_version_requirements", _fake_fetch_with_docker_020
+        )
+
+        calls: list[tuple[str, str]] = []
+
+        def _spy(_wheel: Path, distribution: str, version: str) -> str | None:
+            calls.append((distribution, version))
+            return None
+
+        monkeypatch.setattr(check, "install_and_import", _spy)
+        snap = tmp_path / "snap.json"
+        check.write_snapshot(snap, _ADMITTING_AT_BUILD)
+        assert (
+            check.main(
+                [
+                    _ARGV0,
+                    "0.11.0",
+                    str(self._wheel(tmp_path)),
+                    "--since-snapshot",
+                    str(snap),
+                ]
+            )
+            == 0
+        )
+        assert calls == []
+        assert "nothing to re-verify" in capsys.readouterr().out
+
+    def test_since_snapshot_retests_a_newly_admitting_version(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ):
+        # A newly uploaded non-latest admitting version (docker 0.7.0) is not in the build snapshot
+        # and is re-tested; the versions build already tested are not.
+        def fake_fetch(distribution: str) -> dict[str, list[str]]:
+            if distribution == "maf-sandbox-docker":
+                return {
+                    "0.2.0": ["maf-sandbox<0.12,>=0.10.0"],
+                    "0.6.0": ["maf-sandbox<0.13,>=0.11.0"],
+                    "0.7.0": ["maf-sandbox<0.13,>=0.11.0"],
+                }
+            return {"0.6.0": ["maf-sandbox<0.13,>=0.10.0"]}
+
+        monkeypatch.setattr(check, "fetch_version_requirements", fake_fetch)
+        monkeypatch.setattr(check, "install_and_import", _ok)
+        snap = tmp_path / "snap.json"
+        check.write_snapshot(snap, _ADMITTING_AT_BUILD)
+        assert (
+            check.main(
+                [
+                    _ARGV0,
+                    "0.11.0",
+                    str(self._wheel(tmp_path)),
+                    "--since-snapshot",
+                    str(snap),
+                ]
+            )
+            == 0
+        )
+        out = capsys.readouterr().out
+        assert "maf-sandbox-docker==0.7.0" in out
+        assert "0.2.0" not in out
+
+    def test_since_snapshot_refuses_when_a_newly_admitting_version_breaks(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ):
+        def fake_fetch(distribution: str) -> dict[str, list[str]]:
+            if distribution == "maf-sandbox-docker":
+                return {
+                    "0.2.0": ["maf-sandbox<0.12,>=0.10.0"],
+                    "0.6.0": ["maf-sandbox<0.13,>=0.11.0"],
+                    "0.7.0": ["maf-sandbox<0.13,>=0.11.0"],
+                }
+            return {"0.6.0": ["maf-sandbox<0.13,>=0.10.0"]}
+
+        monkeypatch.setattr(check, "fetch_version_requirements", fake_fetch)
+
+        def _breaks_070(
+            _wheel: Path, distribution: str, version_str: str
+        ) -> str | None:
+            if distribution == "maf-sandbox-docker" and version_str == "0.7.0":
+                return "ImportError: cannot import name 'CallerContext'"
+            return None
+
+        monkeypatch.setattr(check, "install_and_import", _breaks_070)
+        snap = tmp_path / "snap.json"
+        check.write_snapshot(snap, _ADMITTING_AT_BUILD)
+        assert (
+            check.main(
+                [
+                    _ARGV0,
+                    "0.11.0",
+                    str(self._wheel(tmp_path)),
+                    "--since-snapshot",
+                    str(snap),
+                ]
+            )
+            == 1
+        )
+        captured = capsys.readouterr()
+        assert "maf-sandbox-docker==0.7.0: ImportError" in captured.err
+        assert "Release order" in captured.err
+
+    def test_since_snapshot_with_a_missing_snapshot_fails_closed(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ):
+        monkeypatch.setattr(
+            check,
+            "fetch_version_requirements",
+            lambda _d: {"0.6.0": ["maf-sandbox<0.13,>=0.10.0"]},
+        )
+        monkeypatch.setattr(check, "install_and_import", _ok)
+        assert (
+            check.main(
+                [
+                    _ARGV0,
+                    "0.11.0",
+                    str(self._wheel(tmp_path)),
+                    "--since-snapshot",
+                    str(tmp_path / "no-such.json"),
+                ]
+            )
+            == 1
+        )
+        assert "snapshot not found" in capsys.readouterr().err
