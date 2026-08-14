@@ -213,9 +213,10 @@ jobs:
           echo "$contents" | grep -q "\.dist-info/licenses/LICENSE"
 
       # The admit check only asks whether the ceiling permits this version; it never runs the
-      # dependent. Install the candidate core wheel beside each admitting published dependent and
-      # confirm it still imports, so a removed name is caught before the core ships. Only for the
-      # core on the real index: a dependent's own release is what fixes such a break, and a
+      # dependent. Install the candidate core wheel beside each admitting published version of
+      # each dependent and confirm it still imports, so a removed name is caught before the core
+      # ships — including an old version with a loose ceiling that the latest has moved off. Only
+      # for the core on the real index: a dependent's own release is what fixes such a break, and a
       # TestPyPI rehearsal stays frictionless.
       - name: Verify the published dependents import against this core
         if: >-
@@ -319,9 +320,14 @@ jobs:
           && needs.build.outputs.target == 'pypi'
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
 
-      # The build job ran this too. This is the one that decides: the `pypi` environment holds
-      # here for as long as a reviewer takes, and a dependent can ship a breaking latest version
-      # in that window — the import verdict reached before the wait can go stale, so re-run it.
+      # The build job ran the thorough all-versions check; this is the fast re-check that decides.
+      # The `pypi` environment holds here for as long as a reviewer takes, and a dependent can ship
+      # a breaking latest version in that window — the import verdict reached before the wait can
+      # go stale, so re-run it. Latest-only is the fast re-check, not a complete re-run: old
+      # versions are immutable and were tested at build time, so the common new risk is a newly
+      # published breaking latest. Narrower races (a yanked version unyanked in the window, a newly
+      # uploaded non-latest version) are not caught here; re-running all versions is the cost the
+      # build/upload split exists to avoid.
       - name: Re-verify the published dependents import against this core
         if: >-
           needs.build.outputs.package == 'maf-sandbox'
@@ -330,7 +336,7 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           python3 release-guard/scripts/check_published_dependents_work.py "$VERSION" \
-            dist/maf_sandbox-${VERSION}-py3-none-any.whl
+            dist/maf_sandbox-${VERSION}-py3-none-any.whl --latest-only
 
       - name: Publish
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
