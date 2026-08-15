@@ -28,7 +28,9 @@ Three costs, named here rather than discovered later:
 - **One outstanding call at a time.** The supervisor polls for the *next* request by name
   rather than enumerating a directory, because the backend that most needs this transport
   (`maf-sandbox-docker`) serves ``FILES_OUT`` and not ``FILES_LIST``. A guest that fires two
-  calls concurrently has the second answered only after the first.
+  calls concurrently has the second answered only after the first. Concurrent means threads
+  *and* processes: the shim claims each number with an exclusive create, so a program that
+  forks or spawns cannot have two workers writing one request path.
 - **The files outlive the call.** Nothing in the protocol deletes, so requests and responses
   sit in the guest filesystem until the sandbox is disposed of. A fresh per-run directory is
   what keeps one run's traffic out of the next one's; it is the caller's to provide, and
@@ -87,6 +89,11 @@ _FINAL_READ_GRACE = 2.0
 _FRAME_OPEN = '{"value": '
 _FRAME_CLOSE = "}"
 _FRAMING_BYTES = len(_FRAME_OPEN.encode("utf-8")) + len(_FRAME_CLOSE.encode("utf-8"))
+
+#: One sentence for every request the supervisor will not read as JSON, whether it failed to
+#: parse or failed to decode. Named once so the two sites cannot drift into telling a guest
+#: two different things about one situation it cannot retry either way.
+_NOT_JSON = "Error: this host-tool request is not valid JSON"
 
 
 @dataclass(frozen=True)
@@ -218,36 +225,48 @@ request where the supervisor is looking and to wait for the answer.
 
 import json
 import os
-import threading
 import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _CALLS = os.path.join(_HERE, "{calls}")
 _TIMEOUT = {timeout}
 _POLL = {poll}
-_counter = 0
-_counter_lock = threading.Lock()
 
 
 class HostToolError(RuntimeError):
     """A refusal from the host, or the host never answering. The sentence is the message."""
 
 
+def _claim():
+    """Take the lowest identifier no other caller holds, and the file that holds it.
+
+    A lock would only cover this process. A program that forks, or uses `multiprocessing`,
+    gets a second copy of this module with its own idea of the next number, and two copies
+    counting privately write one request path: one call overwrites the other, and both
+    callers read one answer as their own. `os.open` with `O_CREAT | O_EXCL` is a single
+    filesystem operation that exactly one caller wins, whichever process or thread it is in.
+
+    A file of its own rather than the request path, so allocation does not depend on the
+    supervisor's rule that an empty file has not arrived yet. From the lowest number each
+    time, so an identifier released by a call that never published is taken by the next one.
+    """
+    number = 1
+    while True:
+        claim = os.path.join(_CALLS, "%04d.claim" % number)
+        try:
+            os.close(os.open(claim, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+        except FileExistsError:
+            number += 1
+            continue
+        return "%04d" % number, claim
+
+
 def call(name, **arguments):
     """Dispatch ``name`` with keyword ``arguments`` and return its value."""
-    global _counter
     os.makedirs(_CALLS, exist_ok=True)
-    # Allocated and published together, and the counter advances last. A program may be
-    # threaded, and two callers taking one identifier would write one request file and each
-    # read the other's answer as its own. Advancing before the file exists is the other half:
-    # the supervisor answers 0001 before it looks for 0002, so an identifier taken by a call
-    # that never publishes — an argument `json.dumps` cannot serialize, a failed write, either
-    # one caught by the program — is one the run then waits on until its deadline, and every
-    # later call times out behind it. Serializing publication costs nothing the supervisor was
-    # not already doing one request at a time.
-    with _counter_lock:
-        identifier = "%04d" % (_counter + 1)
-        request = os.path.join(_CALLS, identifier + ".request.json")
+    identifier, claim = _claim()
+    request = os.path.join(_CALLS, identifier + ".request.json")
+    try:
         payload = json.dumps({{"id": identifier, "name": name, "arguments": arguments}})
         # Written aside and renamed: `open` creates the file empty, and a supervisor polling
         # in that window would read no JSON and answer this call with a refusal it can never
@@ -256,7 +275,13 @@ def call(name, **arguments):
         with open(staged, "w", encoding="utf-8") as handle:
             handle.write(payload)
         os.replace(staged, request)
-        _counter += 1
+    except BaseException:
+        # Nothing was published under this identifier, so the name goes back. The supervisor
+        # answers 0001 before it looks for 0002, so a number held by a call that never
+        # published — `json.dumps` refusing a `datetime`, a full disk — costs not one call
+        # but every later one, each timing out behind a request that is never coming.
+        os.unlink(claim)
+        raise
     response = os.path.join(_CALLS, identifier + ".response.json")
     deadline = time.monotonic() + _TIMEOUT
     while time.monotonic() < deadline:
@@ -430,7 +455,12 @@ async def _serve_next_request(
     identifier = f"{served + 1:04d}"
     request_path = posixpath.join(layout.calls, f"{identifier}.request.json")
     body = await _read_if_present(
-        sandbox, layout, request_path, cap=_request_cap(run), deadline=deadline
+        sandbox,
+        layout,
+        request_path,
+        cap=_request_cap(run),
+        deadline=deadline,
+        exact=True,
     )
     if body is None:
         return served
@@ -448,7 +478,7 @@ async def _serve_next_request(
     return served + 1
 
 
-async def _answer(run: HostToolRun, body: str | _TooLarge, identifier: str) -> str:
+async def _answer(run: HostToolRun, body: str | _TooLarge | _NotText, identifier: str) -> str:
     """One request's JSON answer: the tool's value, or a sentence the guest may read."""
     if isinstance(body, _TooLarge):
         return json.dumps(
@@ -457,6 +487,10 @@ async def _answer(run: HostToolRun, body: str | _TooLarge, identifier: str) -> s
                 "pass less, or write what you have to a file instead"
             }
         )
+    if isinstance(body, _NotText):
+        # The same sentence as an unparseable request, and deliberately: from the guest's
+        # side both are a request the host would not read, and neither is retryable.
+        return json.dumps({"refusal": _NOT_JSON})
     try:
         parsed = cast(object, json.loads(body))
     except (ValueError, RecursionError):
@@ -464,7 +498,7 @@ async def _answer(run: HostToolRun, body: str | _TooLarge, identifier: str) -> s
         # cap, would otherwise escape the supervisor and leave the detached guest waiting for
         # an answer that is never written.
         logger.warning("host tools: request %s is not JSON, refusing it", identifier)
-        return json.dumps({"refusal": "Error: this host-tool request is not valid JSON"})
+        return json.dumps({"refusal": _NOT_JSON})
     if not isinstance(parsed, dict):
         return json.dumps({"refusal": "Error: a host-tool request must be a JSON object"})
     request = cast("dict[str, object]", parsed)
@@ -490,6 +524,10 @@ class _TooLarge:
     """Sentinel: the file is there and the host will not read it at that size."""
 
 
+class _NotText:
+    """Sentinel: the file is there and it is not UTF-8, so nothing in it is a request."""
+
+
 async def _within[T](deadline: float, what: str, call: Awaitable[T]) -> T:
     """Await one transport call inside what is left of the run's deadline.
 
@@ -509,12 +547,23 @@ async def _within[T](deadline: float, what: str, call: Awaitable[T]) -> T:
 
 
 async def _read_if_present(
-    sandbox: Sandbox, layout: GuestRunLayout, path: str, *, cap: int, deadline: float
-) -> str | _TooLarge | None:
+    sandbox: Sandbox,
+    layout: GuestRunLayout,
+    path: str,
+    *,
+    cap: int,
+    deadline: float,
+    exact: bool = False,
+) -> str | _TooLarge | _NotText | None:
     """Stat, then read within ``cap`` — or ``None`` when the file is not there yet.
 
     Stat-before-read is the pull surface's own rule, and it is what makes polling affordable:
     the common case is one stat that answers ``None``.
+
+    ``exact`` picks how bytes that are not UTF-8 are treated, and the two callers want
+    opposite things. A request is data the host acts on, so it decodes strictly. Everything
+    else here is a program's own output, quoted back to a human, where replacing one bad byte
+    beats losing the whole of it.
     """
     entry = await _within(
         deadline,
@@ -546,7 +595,17 @@ async def _read_if_present(
     except Exception as failure:  # noqa: BLE001 — a read that fails is a poll that missed
         logger.warning("host tools: reading %s failed: %s", path, error_detail(failure))
         return None
-    return raw.decode("utf-8", errors="replace")
+    if not exact:
+        return raw.decode("utf-8", errors="replace")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as invalid:
+        # Refused rather than repaired. Replacement decoding leaves an invalid byte inside a
+        # JSON string as U+FFFD and the document still parses, so the tool would be called
+        # with an argument the guest never sent — a path, an id, a name, silently one
+        # character different — and the host would act on it.
+        logger.warning("host tools: %s is not UTF-8: %s", path, error_detail(invalid))
+        return _NotText()
 
 
 async def _final_output(sandbox: Sandbox, run: HostToolRun, layout: GuestRunLayout) -> str:
@@ -576,7 +635,7 @@ async def _final_output(sandbox: Sandbox, run: HostToolRun, layout: GuestRunLayo
         return ""
 
 
-def _as_text(value: str | _TooLarge | None) -> str:
+def _as_text(value: str | _TooLarge | _NotText | None) -> str:
     """The text, or nothing — an absent or over-cap file reads as no output rather than a type."""
     return value if isinstance(value, str) else ""
 
@@ -591,9 +650,14 @@ def _output_cap(run: HostToolRun) -> int:
     return run.registry.response_limits.max_total_bytes
 
 
-def _exit_code_from(recorded: str | _TooLarge) -> int:
-    """The exit code the launcher wrote, or 1 when it is not a number this can trust."""
-    if isinstance(recorded, _TooLarge):
+def _exit_code_from(recorded: str | _TooLarge | _NotText) -> int:
+    """The exit code the launcher wrote, or 1 when it is not a number this can trust.
+
+    ``_NotText`` cannot arrive here — the marker is read with replacement decoding — and is
+    accepted anyway, so that widening what a read may return can never turn into a failed run
+    in the one place a failure would be silent.
+    """
+    if isinstance(recorded, _TooLarge | _NotText):
         return 1
     try:
         return int(recorded.strip())

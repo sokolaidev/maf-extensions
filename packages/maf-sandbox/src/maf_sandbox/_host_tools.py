@@ -638,6 +638,23 @@ class HostToolRun:
                 f"Error: this run's response byte budget ({limits.max_total_bytes}) is "
                 "exhausted — finish with the results already delivered"
             )
+        if _SMALLEST_RESPONSE + framing_bytes > limits.max_bytes_per_file:
+            # Also knowable without the response, and so it belongs here rather than beside
+            # the size check in `_deliver`: a per-response cap that cannot hold one byte
+            # inside the transport's framing can hold no response at all, and running the
+            # tool first would mean a sink acting in the host process for a result nobody
+            # can ever be handed. The registry refuses a cap below one byte; a transport's
+            # framing is what can put an otherwise sane one out of reach.
+            self._logger.warning(
+                "host tools: the per-response cap (%d bytes) cannot hold a one-byte value "
+                "inside this transport's %d bytes of framing, so nothing can be delivered",
+                limits.max_bytes_per_file,
+                framing_bytes,
+            )
+            return _refused(
+                "Error: no host-tool response can fit this run's per-response cap — report "
+                "this and carry on without host tools"
+            )
         # Taken now and held across the call, because the tool body is the one place this
         # method awaits: two concurrent dispatches would otherwise both read a ledger that
         # still said zero, both run, and both deliver against a cap of one.

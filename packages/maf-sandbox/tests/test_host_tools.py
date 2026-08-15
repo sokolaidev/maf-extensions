@@ -543,6 +543,40 @@ class TestTheResponseLedgerIsCheckedBeforeTheSideEffect:
         assert second.refusal is not None and "byte budget" in second.refusal
         assert calls == [1], "nothing could have been delivered, so nothing should have run"
 
+    def test_a_cap_the_framing_cannot_fit_refuses_without_calling_the_tool(self):
+        """A per-response cap smaller than the transport's envelope can carry no response.
+
+        Knowable before the call, like the two above, and reachable in ordinary
+        configuration: the registry only refuses a cap below one byte, so a five-byte cap is
+        accepted and then a transport's framing puts every value out of reach. Running the
+        body first would mean a sink acting in the host process for a result the run can
+        never hand back.
+        """
+        calls: list[int] = []
+
+        @sandbox_tool(source=None, sink="file_store", identity=None)
+        def writes(x: int) -> int:
+            calls.append(x)
+            return 1
+
+        registry = HostToolRegistry(
+            response_limits=TransferLimits(max_bytes_per_file=5, max_total_bytes=4096, max_files=8)
+        )
+        registry.register(writes, name="writes")
+
+        refused = asyncio.run(HostToolRun(registry).dispatch("writes", {"x": 1}, framing_bytes=11))
+
+        assert not refused.ok
+        assert refused.refusal is not None and "per-response cap" in refused.refusal
+        assert calls == [], "the tool ran for a response that could never be delivered"
+
+    def test_a_negative_framing_allowance_is_a_programming_error(self):
+        """It would widen every ceiling beneath it, so it raises rather than refusing."""
+        registry = HostToolRegistry()
+        registry.register(sandbox_tool(source=None, sink=None, identity=None)(lambda: 1), name="f")
+        with pytest.raises(ValueError, match="framing_bytes"):
+            asyncio.run(HostToolRun(registry).dispatch("f", None, framing_bytes=-1))
+
 
 class TestDispatchResult:
     def test_exactly_one_side_must_be_set(self):

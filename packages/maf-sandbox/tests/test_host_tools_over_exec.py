@@ -20,6 +20,7 @@ import json
 import pathlib
 import posixpath
 import shlex
+import subprocess
 import sys
 import threading
 import time
@@ -564,6 +565,30 @@ class TestWhatTheSupervisorRefusesToParse:
         _run(guest, HostToolRun(_registry(response_limits=limits)))
         assert "not valid JSON" in guest.answers[0]["refusal"]
 
+    def test_a_request_that_is_not_utf8_is_refused_rather_than_repaired(self):
+        """Decoded strictly, because a repaired request is one the host acts on wrongly.
+
+        The byte is inside a JSON string, so replacement decoding leaves a document that
+        parses: `add` would be called with `left` one character different from what the guest
+        sent, and no one would ever know. There is nothing to salvage here — the guest wrote
+        bytes it cannot have meant — so the answer is the refusal an unparseable request gets.
+        """
+        seen: list[Any] = []
+
+        @sandbox_tool(source=SourceIntegrity.TRUSTED, sink=None, identity=Identity.APP)
+        def echo(text: str) -> str:
+            seen.append(text)
+            return text
+
+        registry = HostToolRegistry()
+        registry.register(echo, name="echo")
+        mangled = b'{"id": "0001", "name": "echo", "arguments": {"text": "caf\xe9"}}'
+
+        guest = _ScriptedGuest([("echo", {"text": "cafe"})], raw_request=mangled)
+        _run(guest, HostToolRun(registry))
+        assert seen == [], f"the tool ran on repaired bytes: {seen}"
+        assert "not valid JSON" in guest.answers[0]["refusal"]
+
 
 class TestWhatTheDeadlineCovers:
     """The bound is on the run, and sandbox I/O is part of the run."""
@@ -760,17 +785,52 @@ class TestTheShimsSequenceAllocation:
         assert module.call("anything") == "first", "the failed call spent identifier 0001"
         assert not (calls / "0002.request.json").exists(), "the supervisor is waiting on 0001"
 
+    def test_separate_processes_do_not_share_an_identifier(self, tmp_path: Path):
+        """A program that forks or spawns gets a second copy of the shim, not a second lock.
+
+        Two copies counting privately both start at one, so both write `0001.request.json` —
+        one call overwrites the other, and each reads the same answer as its own. A lock in
+        the module cannot see across a process boundary; the claim file can, because
+        `O_CREAT | O_EXCL` is one filesystem operation and only one caller wins it.
+
+        Real processes rather than a mocked fork: the property under test is what the *kernel*
+        does with two callers, which a double cannot stand in for.
+        """
+        module_path = tmp_path / SHIM_MODULE
+        module_path.write_text(host_tool_shim(), encoding="utf-8")
+        calls = tmp_path / CALLS_DIRECTORY
+        calls.mkdir(parents=True, exist_ok=True)
+        for index in range(1, 5):
+            (calls / f"{index:04d}.response.json").write_text(
+                json.dumps({"value": index}), encoding="utf-8"
+            )
+
+        caller = (
+            "import importlib.util, sys;"
+            f"spec = importlib.util.spec_from_file_location('shim', {str(module_path)!r});"
+            "module = importlib.util.module_from_spec(spec);"
+            "spec.loader.exec_module(module);"
+            "print(module.call('anything'))"
+        )
+        workers = [
+            subprocess.Popen(  # noqa: S603 - the interpreter running this test, no shell
+                [sys.executable, "-c", caller], stdout=subprocess.PIPE, text=True
+            )
+            for _ in range(3)
+        ]
+        answers = [worker.communicate(timeout=60)[0].strip() for worker in workers]
+
+        assert all(answers), f"a worker never got an answer: {answers}"
+        assert len(set(answers)) == 3, f"two processes shared an identifier: {answers}"
+
     def test_concurrent_callers_get_distinct_identifiers(self, tmp_path: Path):
         """Each caller takes its own sequence number, whatever the program's thread count.
 
-        An invariant check rather than a race reproduction, and worth saying which: the lock
-        this pins was added by inspection — `_counter += 1` is load-add-store, so two callers
-        can take one identifier, write one request and each read the other's answer. CPython's
-        GIL makes that interleaving rare enough that this test passes without the lock too, so
-        it guards against a deterministic regression rather than proving the race.
+        The same claim the process test pins, from inside one process: `O_CREAT | O_EXCL`
+        settles threads and processes alike, which is why there is no lock here to go with it.
         """
         source = host_tool_shim()
-        assert "_counter_lock" in source, "the sequence is allocated without a lock"
+        assert "os.O_EXCL" in source, "the sequence is allocated without an exclusive claim"
         module_path = tmp_path / SHIM_MODULE
         module_path.write_text(source, encoding="utf-8")
         spec = importlib.util.spec_from_file_location("maf_host_tools_threads", module_path)
