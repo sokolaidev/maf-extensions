@@ -288,7 +288,9 @@ async def run() -> int:
                 "file_access_write refuses to overwrite a file that already exists. Always call "
                 "bicep_validate rather than judging a file by reading it, and report exactly "
                 "the diagnostics it returns. Write or edit the file first, then validate what "
-                "is on disk. Keep every answer short."
+                "is on disk. If validation reports something your edit introduced, fix that too "
+                "and validate again before you answer — an edit is not finished while the "
+                "compiler is still objecting to it. Keep every answer short."
             ),
             tools=tools,
             # Gives the model `file_access_read`/`_write`/`_replace` over the same store
