@@ -17,6 +17,14 @@ and never exercises the claim. Both turns must show at least one call.
 the file store against what went in, so prose cannot satisfy it. At least one tracked fault must
 be gone, and `faults fixed` plus `faults remaining` must account for both.
 
+The template also has to still be there. Deleting `main.bicep`'s contents satisfies every other
+signal at once — the file changed, no tracked fault is reported, and an empty file compiles
+clean — so "repaired" would be the verdict on a file with nothing left in it.
+
+All four of those are read from the sample's closing block, never from the whole output. The
+model is answering into the same stream and may write "faults fixed" in its own prose, above the
+block; a `search` over everything would parse the narration instead of the computed numbers.
+
 The tally is derived from the compiler, not from the source text, so the two must agree — a
 disagreement means the halves of the output describe different files. And every diagnostic is
 swept, not only the tracked ones: an edit that removes both original faults while introducing a
@@ -51,9 +59,18 @@ _COUNTS = (
     ("after the check", re.compile(r"containers after the check:\s*(\d+)", re.IGNORECASE)),
 )
 
-#: The work product: the file store compared with what went in, and the fault tally. Both tally
-#: lines name their faults after the count, and the names are what the compiler is held to below.
+#: The sample's own closing block, and the only place the four lines below are read from. The
+#: model is answering in the same stream and can say "faults fixed: …" or "main.bicep changed"
+#: in its own prose — turn 2's reply is *above* this block, so an unscoped `search` would find
+#: the narration first and parse that instead of the numbers the sample computed. Same reason
+#: `_TURN_ONE` is scoped, applied to the other end of the output.
+_WORK_PRODUCT = (re.compile(r"==\s*The work product"), None)
+
+#: The file store compared with what went in, whether the template survived, and the fault
+#: tally. Both tally lines name their faults after the count, and those names are what the
+#: compiler is held to below.
 _CHANGED = re.compile(r"main\.bicep changed:\s*(True|False)", re.IGNORECASE)
+_INTACT = re.compile(r"storage account and output intact:\s*(True|False)", re.IGNORECASE)
 _FIXED = re.compile(r"faults fixed:\s*(\d+)\s*[-—]\s*([^\n]*)", re.IGNORECASE)
 _REMAINING = re.compile(r"faults remaining:\s*(\d+)\s*[-—]\s*([^\n]*)", re.IGNORECASE)
 
@@ -89,12 +106,18 @@ def _one(pattern: re.Pattern[str], output: str) -> str | None:
     return match.group(1) if match else None
 
 
-def _section(output: str, bounds: tuple[re.Pattern[str], re.Pattern[str]]) -> str | None:
-    """The text between two markers, or ``None`` if either is missing."""
+def _section(output: str, bounds: tuple[re.Pattern[str], re.Pattern[str] | None]) -> str | None:
+    """The text between two markers, or ``None`` if a required one is missing.
+
+    An end of ``None`` means "to the end of the output" — for the closing block, which has no
+    marker after it and must still be readable when the run died before its footer.
+    """
     start, end = bounds
     opened = start.search(output)
     if opened is None:
         return None
+    if end is None:
+        return output[opened.end() :]
     closed = end.search(output, opened.end())
     return output[opened.end() : closed.start()] if closed else None
 
@@ -159,10 +182,20 @@ def _assess_reuse(output: str) -> list[str]:
 
 
 def _assess_repair(output: str) -> list[str]:
-    """The file changed, a fault went away, and the compiler agrees with the tally."""
+    """The file changed, kept its point, lost a fault, and agrees with the compiler.
+
+    Everything here is read from the sample's closing block rather than from the whole output.
+    The model's own reply sits above it and is free to contain any of these phrases, and a
+    `search` over the lot would find the narration first — which is the failure this sample
+    exists to rule out, reintroduced in its own checker.
+    """
+    block = _section(output, _WORK_PRODUCT)
+    if block is None:
+        return ["no work-product block — the run never reported what it left behind"]
+
     failures: list[str] = []
 
-    changed = _one(_CHANGED, output)
+    changed = _one(_CHANGED, block)
     if changed is None:
         failures.append("the run never reported whether main.bicep changed")
     elif changed.lower() != "true":
@@ -171,7 +204,20 @@ def _assess_repair(output: str) -> list[str]:
             "not make one, which is the exact failure this sample reads the file store to catch"
         )
 
-    fixed, remaining = _FIXED.search(output), _REMAINING.search(output)
+    intact = _one(_INTACT, block)
+    if intact is None:
+        failures.append(
+            "the run never reported whether the template survived — an empty file changed, "
+            "reports no tracked fault and compiles clean, so nothing else here would object"
+        )
+    elif intact.lower() != "true":
+        failures.append(
+            "the storage account or its output is gone from main.bicep — deleting the template "
+            "satisfies every other signal at once, and a repair that removes the thing being "
+            "repaired is not one"
+        )
+
+    fixed, remaining = _FIXED.search(block), _REMAINING.search(block)
     if fixed is None or remaining is None:
         failures.append("the run never reported its fault tally")
         return failures

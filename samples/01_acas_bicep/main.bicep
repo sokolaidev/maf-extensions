@@ -1,11 +1,11 @@
 // A storage account with two faults in it, on purpose.
 //
 // Both are things the Bicep toolchain catches and a model reading the file
-// might not — which is the point of the sample. Expect one diagnostic from
-// `bicep build` and one from `bicep lint`.
+// might not — which is the point of the sample. `build` and `lint` each
+// report three: these two, plus `use-recent-api-versions`, on the age of the
+// `apiVersion` below.
 //
-// Fixing them (add a `sku`, delete the unused parameter) is the quickest way to
-// check the tool is really running: a clean file returns zero diagnostics.
+// Fixing the two (add a `sku`, delete or use the parameter) leaves that third.
 
 @description('Where the storage account goes.')
 param location string = resourceGroup().location

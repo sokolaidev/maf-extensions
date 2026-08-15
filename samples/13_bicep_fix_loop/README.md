@@ -32,7 +32,13 @@ So after the turns, the sample compiles the file the model left — the same `bi
 
 That distinction decides whether a real repair passes. `no-unused-params` is satisfied two ways: delete `environmentName`, or start using it. A substring test for `param environmentName` calls the second one unfixed while the compiler calls the file clean — a genuine fix failed by its own harness. Asking the compiler costs nothing here, because it has already been run.
 
-One thing the compiler cannot answer, so the sample keeps it separate: `main.bicep changed: True` compares the file store against what went in. A model that edits nothing still compiles.
+Two things the compiler cannot answer, so the sample keeps them separate.
+
+`main.bicep changed: True` compares the file store against what went in. A model that edits nothing still compiles.
+
+`storage account and output intact: True` is the one that closes the degenerate case. Replace `main.bicep` with an empty but valid file and every other signal agrees it was repaired: the file changed, no tracked fault is reported, and both compile phases come back clean. "Repaired" would be the verdict on a file with the storage account deleted. So the sample checks that the resource and the output it exists to produce are still there — a question about what the file is *for*, which a compiler has no opinion on.
+
+All four of these lines are read out of the closing block rather than the whole run. The model is answering into the same stream and can write "faults fixed" in its own prose; that prose is printed above the block, so a search over everything would find the narration first and grade the run on it — this sample's own thesis, reintroduced in its checker.
 
 The compile is also the third `acquire`, which is why it earns its own container count. Turn 2 finding the sandbox warm could be two calls landing close together; the check runs after all the model's work is done and still finds the same one.
 

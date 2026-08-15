@@ -57,6 +57,7 @@ All three faults fixed; validation now returns zero diagnostics. What changed:
 == The work product ==
 
   main.bicep changed: True
+  storage account and output intact: True
   faults fixed:       2 — no-unused-params; BCP035
   faults remaining:   0 — none
 
@@ -172,6 +173,51 @@ class TestTheModelActuallyEdited:
     def test_a_tally_that_does_not_add_up_is_caught(self):
         reasons = _tampered("faults remaining:   0 — none", "faults remaining:   5 — invented")
         assert any("do not account for the 2 faults" in r for r in reasons), reasons
+
+
+class TestTheTemplateSurvived:
+    """The one repair that satisfies every other signal at once.
+
+    Replace `main.bicep` with an empty but valid file and: it changed, no tracked fault is
+    reported, and both compile phases come back clean. Every other assertion here passes, and
+    the run reports a successful repair over a file with the storage account deleted.
+    """
+
+    def test_a_deleted_template_is_caught(self):
+        reasons = _tampered(
+            "  storage account and output intact: True",
+            "  storage account and output intact: False — missing "
+            "Microsoft.Storage/storageAccounts; output storageAccountId",
+        )
+        assert any("deleting the template" in r for r in reasons), reasons
+
+    def test_a_run_that_does_not_report_it_is_caught(self):
+        reasons = _tampered("  storage account and output intact: True\n", "")
+        assert any("whether the template survived" in r for r in reasons), reasons
+
+
+class TestTheTallyIsReadFromTheSampleNotTheModel:
+    """The model answers into the same stream, and its prose is above the closing block."""
+
+    def test_a_model_narrating_its_own_tally_does_not_decide_the_result(self):
+        """Turn 2 says the opposite of what the sample computed; the sample wins.
+
+        An unscoped `search` finds the model's line first, because turn 2 is printed before the
+        work-product block. The run would then fail on the narration of a healthy repair — or,
+        with the numbers the other way round, pass on the narration of a broken one.
+        """
+        narrated = _HEALTHY.replace(
+            "  bicep_validate calls in turn 2: 1",
+            "main.bicep changed: False\nfaults fixed: 0 — none\n"
+            "faults remaining: 2 — no-unused-params; BCP035\n\n"
+            "  bicep_validate calls in turn 2: 1",
+        )
+        assert narrated != _HEALTHY, "the substitution matched nothing — the fixture moved"
+        assert check.assess(narrated) == [], check.assess(narrated)
+
+    def test_a_missing_work_product_block_is_caught(self):
+        reasons = _tampered("== The work product ==", "== something else ==")
+        assert any("no work-product block" in r for r in reasons), reasons
 
 
 class TestTheCompilerHasTheLastWord:
@@ -324,19 +370,26 @@ class TestTheSampleAsksTheCompilerNotTheText:
     def test_a_clean_compile_leaves_nothing_remaining(self):
         assert _faults_left()("build(main.bicep): no diagnostics") == []
 
-    def test_a_fault_fixed_by_using_the_parameter_counts_as_fixed(self):
-        """The regression. The declaration survives the repair; the diagnostic does not.
+    def test_source_text_is_not_what_it_reads(self):
+        """The regression, pinned by feeding it the thing the old version keyed on.
 
         The old tally asked `"param environmentName" in source`, which is still true of the
-        file below — a perfectly good repair that references the parameter instead of deleting
-        it. That reported the rule as remaining while the compiler reported nothing, and the
-        live check failed the run for disagreeing with itself.
+        repair below — a perfectly good one that references the parameter instead of deleting
+        it. It reported the rule as remaining while the compiler reported nothing, and the live
+        check then failed the run for disagreeing with itself.
+
+        Passing that source here is what separates the two implementations. The old one finds
+        its substrings and returns both faults; the current one finds no rule id and returns
+        nothing, because source text is not what it reads. An earlier version of this test
+        built `repaired` and then asserted on a clean-diagnostics string instead, which the old
+        implementation also fails — for an unrelated reason, via its `sku:` clause — so it went
+        green without ever exercising the clause it is named after.
         """
         repaired = "param environmentName string\ntags: { env: environmentName }"
         assert "param environmentName" in repaired, "the fixture lost the point of this test"
+        assert "sku:" not in repaired, "the fixture must not satisfy the old BCP035 clause either"
 
-        # What the compiler says about that file: the parameter is used, so the rule is quiet.
-        assert _faults_left()("build(main.bicep): no diagnostics") == []
+        assert _faults_left()(repaired) == []
 
     def test_the_age_rule_is_not_tracked(self):
         diagnostics = (

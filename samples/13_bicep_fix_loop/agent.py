@@ -55,6 +55,13 @@ TRACKED_FAULTS = ("no-unused-params", "BCP035")
 #: The tool the model is expected to reach for, and the one this sample counts calls to.
 BICEP_TOOL = "bicep_validate"
 
+#: What `main.bicep` is *for*, and the one thing no other signal here protects. Deleting the
+#: template and leaving an empty file satisfies every other check at once: it changed, it
+#: reports no tracked fault, and it compiles clean. "Repaired" would then be the verdict on a
+#: file with nothing left in it. Checked as text because the compiler's job is to say the file
+#: is valid, never that it still does what it was written to do.
+WORK_PRODUCT = ("Microsoft.Storage/storageAccounts", "output storageAccountId")
+
 #: Built from `images/bicep-sandbox` — the same guest samples 02 and 05 use, so the compiler and
 #: the lint rule set are theirs and the diagnostics below are comparable with both.
 IMAGE = os.environ.get("BICEP_SANDBOX_IMAGE") or "bicep-sandbox:local"
@@ -107,6 +114,11 @@ def faults_left(diagnostics: str) -> list[str]:
     Both tracked rules fire on the file as it ships, so a rule absent here was fixed.
     """
     return [rule for rule in TRACKED_FAULTS if rule.lower() in diagnostics.lower()]
+
+
+def work_missing(source: str) -> list[str]:
+    """Which pieces of the template the model did not leave behind — empty is the good answer."""
+    return [piece for piece in WORK_PRODUCT if piece not in source]
 
 
 def tool_calls(reply: object, name: str) -> int:
@@ -252,8 +264,13 @@ async def run() -> int:
         remaining = faults_left(verdict)
         fixed = [rule for rule in TRACKED_FAULTS if rule not in remaining]
 
+        missing = work_missing(source)
         print("== The work product ==\n")
         print(f"  main.bicep changed: {source != original}")
+        print(
+            f"  storage account and output intact: {not missing}"
+            + (f" — missing {'; '.join(missing)}" if missing else "")
+        )
         print(f"  faults fixed:       {len(fixed)} — {'; '.join(fixed) or 'none'}")
         print(f"  faults remaining:   {len(remaining)} — {'; '.join(remaining) or 'none'}\n")
     finally:
