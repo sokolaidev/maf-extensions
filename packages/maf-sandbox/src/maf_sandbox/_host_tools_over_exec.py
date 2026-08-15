@@ -646,7 +646,20 @@ def _request_cap(run: HostToolRun) -> int:
 
 
 def _output_cap(run: HostToolRun) -> int:
-    """What the host will read back of the program's own output."""
+    """What the host will read back of the program's own output.
+
+    The **total** leg rather than the per-file one, which is the opposite of :func:`_request_cap`
+    and deliberate. A request file is a host-tool response's counterpart and belongs to that
+    accounting; the program's stdout does not — on any other execution path it comes back
+    through :attr:`ExecResult.stdout` bounded by nothing in this vocabulary at all. Capping it
+    at the per-*response* ceiling would mean a program printing more than one tool call may
+    return loses its whole output to a number chosen for something else, and only under this
+    transport. So the run's total is borrowed as the largest bound this vocabulary sanctions,
+    rather than inventing a second ceiling for one concern.
+
+    That is a stretch of ``response_limits`` either way, and it is the one place this transport
+    reaches for a number that was not written for it.
+    """
     return run.registry.response_limits.max_total_bytes
 
 
