@@ -1,6 +1,6 @@
-"""Assert that a live `samples/12_docker_purge_lifecycle` run reclaimed what it created.
+"""Assert that a live `samples/12_purge_lifecycle` run reclaimed what it created.
 
-    python samples/12_docker_purge_lifecycle/agent.py | tee out.txt
+    python samples/12_purge_lifecycle/agent.py | tee out.txt
     python scripts/check_live_purge_sample.py out.txt   # or: ... | python …
 
 Matches exactly, like the other two model-free checks: the printed numbers are `docker ps`

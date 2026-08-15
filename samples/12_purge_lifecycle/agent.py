@@ -117,13 +117,20 @@ async def act_two_between_turns(router: SandboxRouter) -> None:
     print("  Nothing is wrong with that on Docker: an idle container on your own machine is")
     print("  free, and the next turn starts warm.")
     print()
-    print("  On ACAS the same choice is a bill. `AcasSandboxConfig` defaults to")
-    print("  `auto_suspend_seconds=60` and `auto_delete_seconds=600`, so a sandbox held")
-    print("  between turns is billable while it idles and gone ten minutes later regardless.")
-    print("  If turns are minutes apart that trade can pay. If they are hours or days apart —")
-    print("  which is what a real conversation looks like — it never does: the sandbox is")
-    print("  auto-deleted long before the next turn, so the idle window is paid for and the")
-    print("  reuse it was bought for never happens.\n")
+    print("  On ACAS it has a price, and the two lifecycle bounds are sequential rather than")
+    print("  one window. `AcasSandboxConfig` defaults to `auto_suspend_seconds=60` and then")
+    print("  `auto_delete_seconds=600`: idle a minute and the sandbox suspends, stopped ten")
+    print("  more and it is deleted. A suspended one is resumable, and the backend waits to")
+    print("  resume rather than create because a cold create is slower and costs more — so")
+    print("  warm reuse really does survive a gap of about eleven minutes.")
+    print()
+    print("  Which makes the case for purging per turn narrower than it first looks, and")
+    print("  still a case. Under eleven minutes the sandbox is there and holding it costs the")
+    print("  idle minute before suspension. Hours or days — what a conversation actually")
+    print("  looks like — outlives both timers, so that minute is paid every turn and the")
+    print("  reuse it bought is gone before the next one arrives. Purging at the end of the")
+    print("  turn spends nothing on idling and reclaims when the host decides rather than")
+    print("  when the platform does.\n")
 
     await router.dispose_scope(SCOPE, "t-kept")
 
@@ -163,11 +170,8 @@ async def act_four_thread_delete(router: SandboxRouter) -> tuple[int, int]:
     print("  Zero is the right answer, not a broken hook. A host that purges at end of turn")
     print("  should expect the delete path to find nothing almost every time.\n")
 
-    # A turn that ran with no `router.scope` around it — a host that never wired per-turn
-    # disposal, or a sandbox left by a worker that died before it could. Note what this is
-    # *not*: an abandoned `async with`. That block disposes however it exits, so a scope once
-    # entered cannot orphan anything, and the only way to reach a delete with work outstanding
-    # is never to have entered one.
+    # No `router.scope` here on purpose: an entered one disposes however it exits, so never
+    # entering it is the only way to reach a delete with work still outstanding.
     unscoped = "t-unscoped"
     await one_turn(router, SandboxKey(scope=SCOPE, thread_id=unscoped, agent_dir=AGENT_DIR))
     print(f"  a thread never scoped per turn -> containers: {containers(unscoped)}")
@@ -178,7 +182,8 @@ async def act_four_thread_delete(router: SandboxRouter) -> tuple[int, int]:
     print("  `dispose_scope` selects on the labels the backend stamped rather than on anything")
     print("  this process remembers, which is what lets the delete path reclaim sandboxes a")
     print("  replica never created — a crashed worker's, or an older deployment's. After it")
-    print("  there is only the backend's own timer: on ACAS, ten minutes of billing away.\n")
+    print("  there are only the platform's two timers, reclaiming on their schedule rather")
+    print("  than on the host's.\n")
 
     return tidy_found, unscoped_found
 

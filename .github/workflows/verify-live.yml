@@ -755,7 +755,7 @@ jobs:
           python3 "$HARNESS"/scripts/check_live_router_sample.py /tmp/sample11-out.txt
 
   sample-12:
-    name: samples/12_docker_purge_lifecycle against a live container
+    name: samples/12_purge_lifecycle against a live container
     # The lifecycle end no other sample reaches: reuse within a turn, `router.scope` at the end
     # of one, and `SandboxPurger` on a thread delete. Only the router (maf-sandbox) and the
     # backend it disposes through (maf-sandbox-docker) can change what this exercises; no kind
@@ -787,7 +787,7 @@ jobs:
       - name: Run sample 12 and assert every sandbox was reclaimed
         run: |
           set -euo pipefail
-          uv run --no-project samples/12_docker_purge_lifecycle/agent.py | tee /tmp/sample12-out.txt
+          uv run --no-project samples/12_purge_lifecycle/agent.py | tee /tmp/sample12-out.txt
           # Two assertions carry it: no container left behind, and the purger finding 1 on the
           # abandoned thread — a purger wired to nothing reports 0 everywhere, so the tidy
           # thread's expected 0 cannot be the only zero checked. stdlib-only, so the runner's
