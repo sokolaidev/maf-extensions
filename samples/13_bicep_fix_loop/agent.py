@@ -1,12 +1,19 @@
-"""Two turns against one warm sandbox: validate, read the diagnostics, fix, validate again.
+"""Author, validate, fix — two turns against one warm sandbox.
 
-Every other sample runs one turn. `acquire` is get-or-create precisely so a model can iterate,
-and until now nothing showed the second turn arriving to find its sandbox still there.
+Every other sample runs one turn against a file that was already there. Here the store starts
+**empty**: turn 1 writes `main.bicep` from a written brief and validates what it wrote, turn 2
+repairs what the compiler reported, and the program compiles the result itself afterwards.
+`acquire` is get-or-create precisely so a model can iterate like this, and until now nothing
+showed the second turn arriving to find its sandbox still there.
+
+The brief is what makes the diagnostics predictable without scripting them. It asks for a
+parameter that a later change will use, and for no `sku` yet because the tier is undecided —
+both ordinary things to write, and between them they produce the two faults turn 2 has to
+repair. The model is never told they are faults; the compiler is what says so.
 
 What the sample checks is the model's **work product**, not its narration: `main.bicep` is read
-back out of the file store after the fix turn and compared with what went in, and the container
-count comes from `docker ps -a`. A model can describe a fix it did not make; it cannot leave the
-file changed without making one.
+back out of the file store after each turn, and the container count comes from `docker ps -a`. A
+model can describe a fix it did not make; it cannot leave the file changed without making one.
 
 Needs a Docker-compatible engine and a model — Azure OpenAI in CI, a local Ollama server by
 default. See this directory's README.
@@ -33,7 +40,6 @@ import asyncio
 import os
 import subprocess
 import sys
-from pathlib import Path
 
 from _scaffold import require_env_vars
 from agent_framework import Agent, FileAccessProvider, InMemoryAgentFileStore
@@ -48,18 +54,32 @@ THREAD_ID = "13-fix-loop"
 AGENT_DIR = "devops-engineer"
 BICEP_FILE = "main.bicep"
 
-#: The two structural faults in `main.bicep`, by the rule id the compiler reports for each. The
-#: file is sample 05's, unedited, so these are the faults that sample already reports.
+#: What turn 1 is asked to write. Every clause is a plain requirement rather than a planted
+#: fault, and two of them have consequences the compiler objects to: `environmentName` is
+#: declared for a later change and so goes unused, and the omitted `sku` is required. Those are
+#: `TRACKED_FAULTS` below. Naming the faults here instead would script the repair, which #304
+#: rules out — the point is a model reacting to real diagnostics.
+SPEC = (
+    "three parameters — `location` defaulting to the resource group's location, "
+    "`storageAccountName`, and `environmentName` which a later change will use; "
+    "one `Microsoft.Storage/storageAccounts` resource at apiVersion 2023-01-01, "
+    "kind StorageV2, named from the parameter, with no `sku` yet because the tier is "
+    "still being decided; and an output `storageAccountId` giving the resource's id"
+)
+
+#: The two faults the brief implies, by the rule id the compiler reports for each. The same two
+#: samples 01, 02, 05 and 09 report from their checked-in `main.bicep`, which is why the brief
+#: describes that file: the diagnostics stay comparable across all five.
 TRACKED_FAULTS = ("no-unused-params", "BCP035")
 
 #: The tool the model is expected to reach for, and the one this sample counts calls to.
 BICEP_TOOL = "bicep_validate"
 
-#: What `main.bicep` is *for*, and the one thing no other signal here protects. Deleting the
-#: template and leaving an empty file satisfies every other check at once: it changed, it
-#: reports no tracked fault, and it compiles clean. "Repaired" would then be the verdict on a
-#: file with nothing left in it. Checked as text because the compiler's job is to say the file
-#: is valid, never that it still does what it was written to do.
+#: The two things the brief asks for by name, and the one thing no other signal here protects.
+#: Emptying the file satisfies every other check at once: it changed, it reports no tracked
+#: fault, and an empty file compiles clean. "Repaired" would then be the verdict on a file with
+#: nothing left in it. Checked as text because the compiler's job is to say the file is valid,
+#: never that it is the thing that was asked for.
 WORK_PRODUCT = ("Microsoft.Storage/storageAccounts", "output storageAccountId")
 
 #: Built from `images/bicep-sandbox` — the same guest samples 02 and 05 use, so the compiler and
@@ -99,9 +119,10 @@ def containers() -> int:
 def faults_left(diagnostics: str) -> list[str]:
     """Which of the two tracked faults the **compiler** still reports in ``diagnostics``.
 
-    Both fire on the file as it ships, so a tracked rule absent here was fixed. Read from the
-    diagnostics and not the source, because `no-unused-params` is satisfied by *using*
-    `environmentName` as well as by deleting it.
+    Called twice: once on what the compiler told the model about the file it just wrote, and
+    once on the program's own compile of the file turn 2 left. The difference between the two is
+    what was fixed. Read from the diagnostics and not the source, because `no-unused-params` is
+    satisfied by *using* `environmentName` as well as by deleting it.
 
     `use-recent-api-versions` is deliberately untracked: it fires on the age of the API version,
     so what counts as fixed would move with the calendar. Anything else the compiler reports is
@@ -130,6 +151,43 @@ def tool_calls(reply: object, name: str) -> int:
         if getattr(content, "type", None) == "function_call"
         and getattr(content, "name", None) == name
     )
+
+
+async def read_or_empty(store: InMemoryAgentFileStore, name: str) -> str:
+    """``name``'s contents, or ``""`` when the model never created it.
+
+    The store starts empty, so "no such file" is a real outcome here and not an error: a turn 1
+    that wrote nothing is exactly what this sample has to be able to report.
+    """
+    try:
+        content = await store.read(name)
+    except Exception:  # noqa: BLE001 - any failure to read means nothing was authored
+        return ""
+    return content if isinstance(content, str) else content.decode("utf-8")
+
+
+def tool_results(reply: object, name: str) -> list[str]:
+    """What the tool ``name`` returned during ``reply``, in call order.
+
+    Turn 1's own validation is the compiler's verdict on the file the model just wrote, so it is
+    the baseline everything after it is measured against. Taken from the turn rather than by
+    compiling again from here: it is the same text the model read, so the sample and the model
+    are demonstrably reacting to one set of diagnostics, and it costs no extra `acquire`.
+    """
+    calls = {
+        content.call_id
+        for message in getattr(reply, "messages", [])
+        for content in message.contents
+        if getattr(content, "type", None) == "function_call"
+        and getattr(content, "name", None) == name
+    }
+    return [
+        str(content.result)
+        for message in getattr(reply, "messages", [])
+        for content in message.contents
+        if getattr(content, "type", None) == "function_result"
+        and getattr(content, "call_id", None) in calls
+    ]
 
 
 def build_client() -> tuple[OpenAIChatCompletionClient, object | None] | None:
@@ -167,9 +225,9 @@ def build_client() -> tuple[OpenAIChatCompletionClient, object | None] | None:
 
 async def run() -> int:
     """Wire the stack once, run two turns through one session, and report what moved."""
-    original = (Path(__file__).parent / BICEP_FILE).read_text(encoding="utf-8")
+    # Empty on purpose: `main.bicep` does not exist until turn 1 writes it. Nothing here can
+    # smuggle in the file the sample is about, which is what "the model authored it" has to mean.
     store = InMemoryAgentFileStore()
-    await store.write(BICEP_FILE, original)
 
     backend = DockerSandboxBackend(DockerSandboxConfig())
     router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
@@ -191,11 +249,12 @@ async def run() -> int:
             client=client,
             name=AGENT_DIR,
             instructions=(
-                "You validate and repair Azure Bicep. Always call bicep_validate rather than "
-                "judging a file by reading it, and report exactly the diagnostics it returns. "
-                "When asked to fix something, edit the file first with file_access_replace — "
-                "file_access_write refuses to overwrite a file that already exists — then "
-                "call bicep_validate again on the edited file. Keep every answer short."
+                "You write, validate and repair Azure Bicep. Create a file with "
+                "file_access_write and edit an existing one with file_access_replace — "
+                "file_access_write refuses to overwrite a file that already exists. Always call "
+                "bicep_validate rather than judging a file by reading it, and report exactly "
+                "the diagnostics it returns. Write or edit the file first, then validate what "
+                "is on disk. Keep every answer short."
             ),
             tools=tools,
             # Gives the model `file_access_read`/`_write`/`_replace` over the same store
@@ -217,14 +276,31 @@ async def run() -> int:
         # the whole mechanism: a fresh session would make turn two a stranger to turn one.
         session = agent.create_session()
 
-        print("== Turn 1: validate ==\n")
+        print("== Turn 1: author main.bicep, then validate it ==\n")
         first = await agent.run(
-            f"Validate {BICEP_FILE}. List each diagnostic as one line: rule id, severity, line.",
+            f"Write {BICEP_FILE} with {SPEC}. Then validate it and list each diagnostic as one "
+            "line: rule id, severity, line.",
             session=session,
         )
         print(first.text)
         print(f"\n  bicep_validate calls in turn 1: {tool_calls(first, BICEP_TOOL)}")
         print(f"  containers after turn 1: {containers()}\n")
+
+        # The compiler's verdict on what the model just wrote, taken from turn 1's own tool call
+        # rather than compiled again from here — the same text the model read. The first result
+        # is the one that matters: if the model validated twice it fixed something in between,
+        # and the file as authored is what turn 2's work is measured against.
+        authored = await read_or_empty(store, BICEP_FILE)
+        validated = tool_results(first, BICEP_TOOL)
+        as_authored = faults_left(validated[0]) if validated else []
+
+        print("== What the compiler told the model about the file it wrote ==\n")
+        for line in (validated[0] if validated else "(turn 1 never validated)").splitlines():
+            print(f"  {line}")
+        print(
+            f"\n  tracked faults in the authored file: {len(as_authored)} — "
+            f"{'; '.join(as_authored) or 'none'}\n"
+        )
 
         print("== Turn 2: fix, then validate again ==\n")
         second = await agent.run(
@@ -249,18 +325,18 @@ async def run() -> int:
         print("\n".join(f"  {line}" for line in verdict.splitlines()))
         print(f"\n  containers after the check: {containers()}\n")
 
-        # The work product. `changed` compares the file store with what went in — the one thing
-        # the compiler cannot answer, since a model that edited nothing still compiles. The
-        # tally comes from the diagnostics above rather than from the source text, so a fault
-        # fixed by *using* the parameter counts as fixed, which is what the compiler thinks too.
-        edited = await store.read(BICEP_FILE)
-        source = edited if isinstance(edited, str) else edited.decode("utf-8")
+        # The work product, and the two questions the compiler cannot answer: did turn 1 write a
+        # file at all, and did turn 2 change it. A model that edited nothing still compiles.
+        # `fixed` is the difference between the two compiles, so it counts what *this run* did
+        # rather than assuming the file arrived with both faults in it.
+        source = await read_or_empty(store, BICEP_FILE)
         remaining = faults_left(verdict)
-        fixed = [rule for rule in TRACKED_FAULTS if rule not in remaining]
+        fixed = [rule for rule in as_authored if rule not in remaining]
 
         missing = work_missing(source)
         print("== The work product ==\n")
-        print(f"  main.bicep changed: {source != original}")
+        print(f"  main.bicep authored in turn 1: {bool(authored.strip())}")
+        print(f"  main.bicep changed by turn 2:  {source != authored}")
         print(
             f"  storage account and output intact: {not missing}"
             + (f" — missing {'; '.join(missing)}" if missing else "")

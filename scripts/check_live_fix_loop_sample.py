@@ -3,7 +3,14 @@
     python samples/13_bicep_fix_loop/agent.py | tee out.txt
     python scripts/check_live_fix_loop_sample.py out.txt   # or: ... | python …
 
-The sample makes two claims and this checks both, because each is worthless alone.
+The sample makes three claims and this checks all of them, because each is weak alone.
+
+**Turn 1 wrote the file.** The store starts empty, so `main.bicep authored in turn 1` is the
+authoring half of author → validate → fix, and everything after it is about a file the model
+produced. What the compiler then told the model about that file is the baseline the repair is
+measured against — it must be real compiler output, and it must report at least one tracked
+fault, since an authored file that was already clean gives turn 2 nothing to repair while
+passing every other assertion here.
 
 **One sandbox served the whole run.** Three `acquire` calls — turn 1, turn 2, and the compile
 the program runs itself — and `docker ps -a` must report exactly 1 container after each.
@@ -13,15 +20,16 @@ checked first. A fix turn that edits the file and never validates it makes no se
 at all, and turn 1's container is still sitting there to be counted — so the run reads as reuse
 and never exercises the claim. Both turns must show at least one call.
 
-**The model repaired the file rather than describing a repair.** `main.bicep changed` compares
-the file store against what went in, so prose cannot satisfy it. At least one tracked fault must
-be gone, and `faults fixed` plus `faults remaining` must account for both.
+**Turn 2 repaired it rather than describing a repair.** `main.bicep changed by turn 2` compares
+the store against what turn 1 wrote, so prose cannot satisfy it. At least one tracked fault must
+be gone, and `faults fixed` plus `faults remaining` must add up to what the authored file had —
+measured, not assumed, because the file is the model's.
 
 The template also has to still be there. Deleting `main.bicep`'s contents satisfies every other
 signal at once — the file changed, no tracked fault is reported, and an empty file compiles
 clean — so "repaired" would be the verdict on a file with nothing left in it.
 
-All four of those are read from the sample's closing block, never from the whole output. The
+Those closing lines are read from the sample's own block, never from the whole output. The
 model is answering into the same stream and may write "faults fixed" in its own prose, above the
 block; a `search` over everything would parse the narration instead of the computed numbers.
 
@@ -43,8 +51,8 @@ import re
 import sys
 from pathlib import Path
 
-#: The two structural faults in `main.bicep`, by the rule id the compiler reports for each. The
-#: file is sample 05's, unedited, so these are the faults that sample already reports.
+#: The two faults the sample's brief implies, by the rule id the compiler reports for each —
+#: the same two samples 01, 02, 05 and 09 report from their checked-in `main.bicep`.
 _RULE_IDS = ("no-unused-params", "BCP035")
 
 #: Turn 1's prose, and only that. The rule ids appear again further down in the sample's own
@@ -72,7 +80,8 @@ _WORK_PRODUCT = (re.compile(r"==\s*The work product"), None)
 #: The file store compared with what went in, whether the template survived, and the fault
 #: tally. Both tally lines name their faults after the count, and those names are what the
 #: compiler is held to below.
-_CHANGED = re.compile(r"main\.bicep changed:\s*(True|False)", re.IGNORECASE)
+_AUTHORED = re.compile(r"main\.bicep authored in turn 1:\s*(True|False)", re.IGNORECASE)
+_CHANGED = re.compile(r"main\.bicep changed by turn 2:\s*(True|False)", re.IGNORECASE)
 _INTACT = re.compile(r"storage account and output intact:\s*(True|False)", re.IGNORECASE)
 _FIXED = re.compile(r"faults fixed:\s*(\d+)\s*[-—]\s*([^\n]*)", re.IGNORECASE)
 _REMAINING = re.compile(r"faults remaining:\s*(\d+)\s*[-—]\s*([^\n]*)", re.IGNORECASE)
@@ -83,6 +92,18 @@ _REMAINING = re.compile(r"faults remaining:\s*(\d+)\s*[-—]\s*([^\n]*)", re.IGN
 _TOOL_CALLS = (
     ("turn 1", re.compile(r"bicep_validate calls in turn 1:\s*(\d+)", re.IGNORECASE)),
     ("turn 2", re.compile(r"bicep_validate calls in turn 2:\s*(\d+)", re.IGNORECASE)),
+)
+
+#: What the compiler told the model about the file turn 1 wrote, printed from that turn's own
+#: tool result. This is the baseline the repair is measured against, and it is why the tally can
+#: say what *this run* fixed rather than assuming the file arrived with both faults in it.
+#: Read with ``last=True`` for the same reason as the other sample-authored blocks.
+_AUTHORED_COMPILE = (
+    re.compile(r"==\s*What the compiler told the model"),
+    re.compile(r"tracked faults in the authored file"),
+)
+_AUTHORED_FAULTS = re.compile(
+    r"tracked faults in the authored file:\s*(\d+)\s*[-—]\s*([^\n]*)", re.IGNORECASE
 )
 
 #: The compile at the end, and only that. `main.bicep` compiles in two phases and each prints one
@@ -214,13 +235,24 @@ def _assess_repair(output: str) -> list[str]:
 
     failures: list[str] = []
 
+    authored = _one(_AUTHORED, block)
+    if authored is None:
+        failures.append("the run never reported whether turn 1 wrote main.bicep")
+    elif authored.lower() != "true":
+        failures.append(
+            "turn 1 left no main.bicep in the store — the store starts empty in this sample, so "
+            "the authoring half of author → validate → fix did not happen and everything after "
+            "it is about a file that was never written"
+        )
+
     changed = _one(_CHANGED, block)
     if changed is None:
-        failures.append("the run never reported whether main.bicep changed")
+        failures.append("the run never reported whether turn 2 changed main.bicep")
     elif changed.lower() != "true":
         failures.append(
-            "main.bicep is byte-identical to what went in — the model described a fix and did "
-            "not make one, which is the exact failure this sample reads the file store to catch"
+            "main.bicep is byte-identical to what turn 1 wrote — the fix turn described a repair "
+            "and did not make one, which is the exact failure this sample reads the store to "
+            "catch"
         )
 
     intact = _one(_INTACT, block)
@@ -246,17 +278,55 @@ def _assess_repair(output: str) -> list[str]:
 
     if fixed_count < 1:
         failures.append(
-            "no fault was fixed — the file may have changed, but not in a way that removed "
-            "either fault the diagnostics pointed at"
-        )
-    if fixed_count + remaining_count != len(_RULE_IDS):
-        failures.append(
-            f"{fixed_count} fixed and {remaining_count} remaining do not account for the "
-            f"{len(_RULE_IDS)} faults this sample tracks — the tally lost one"
+            "no fault was fixed — the file may have changed, but not in a way that removed any "
+            "fault the diagnostics pointed at"
         )
 
+    # Against what turn 1 actually produced, not a constant. The brief is written so a compliant
+    # model writes both faults, but the file is the model's, so the baseline has to be measured.
+    failures.extend(_assess_against_the_authored_file(output, fixed_count, remaining_count))
     failures.extend(_assess_compiler_agrees(output, fixed_names, remaining_names))
     return failures
+
+
+def _assess_against_the_authored_file(output: str, fixed: int, remaining: int) -> list[str]:
+    """The baseline: what the compiler said about the file turn 1 wrote.
+
+    Two things depend on it. The tally has to add up against *that* number rather than against a
+    constant — the file is the model's, so how many tracked faults it arrived with is a
+    measurement. And the count has to be at least one, because a run whose authored file was
+    already clean has nothing for turn 2 to repair: it would sail through every other assertion
+    here while demonstrating no fix loop at all, which is the whole subject of the sample.
+    """
+    compiled = _section(output, _AUTHORED_COMPILE, last=True)
+    if compiled is None:
+        return [
+            "the run never showed what the compiler told the model about the file it wrote — "
+            "without that baseline there is nothing to measure the repair against"
+        ]
+    if not _PHASE.search(compiled):
+        return [
+            "turn 1's validation printed no compiler output — the baseline is the model's "
+            "account of its own file rather than the compiler's"
+        ]
+
+    match = _AUTHORED_FAULTS.search(output)
+    if match is None:
+        return ["the run never counted the tracked faults in the authored file"]
+
+    count = int(match.group(1))
+    if count < 1:
+        return [
+            "the file turn 1 wrote had no tracked fault in it — the brief asks for an unused "
+            "parameter and no sku, so a clean file means the model did not follow it, and there "
+            "was nothing for the fix turn to repair"
+        ]
+    if fixed + remaining != count:
+        return [
+            f"{fixed} fixed and {remaining} remaining do not account for the {count} the "
+            "authored file had — the tally lost one, or gained one turn 2 introduced"
+        ]
+    return []
 
 
 def _assess_compiler_agrees(output: str, fixed_names: str, remaining_names: str) -> list[str]:

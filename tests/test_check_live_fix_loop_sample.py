@@ -25,24 +25,37 @@ check = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(check)
 
 _HEALTHY = """\
-== Turn 1: validate ==
+== Turn 1: author main.bicep, then validate it ==
 
-Here are the diagnostics for `main.bicep`:
+Validation complete. Here are the 3 diagnostics, one line each:
 
-1. **no-unused-params** — Error — line 21
-2. **BCP035** — Warning — line 31
-3. **use-recent-api-versions** — Warning — line 31
+1. `no-unused-params` — error — line 3 (`environmentName` declared but never used)
+2. `BCP035` — warning — line 5 (resource missing required `sku` property)
+3. `use-recent-api-versions` — warning — line 5 (`2023-01-01` is over the 730-day guideline)
 
   bicep_validate calls in turn 1: 1
   containers after turn 1: 1
 
+== What the compiler told the model about the file it wrote ==
+
+  build(main.bicep): 3 diagnostic(s)
+    [error] no-unused-params @ main.bicep:3: Parameter "environmentName" is never used.
+    [warning] BCP035 @ main.bicep:5: The "resource" declaration is missing "sku".
+    [warning] use-recent-api-versions @ main.bicep:5: '2023-01-01' is 1322 days old.
+  lint(main.bicep): 3 diagnostic(s)
+    [error] no-unused-params @ main.bicep:3: Parameter "environmentName" is never used.
+    [warning] BCP035 @ main.bicep:5: The "resource" declaration is missing "sku".
+    [warning] use-recent-api-versions @ main.bicep:5: '2023-01-01' is 1322 days old.
+
+  tracked faults in the authored file: 2 — no-unused-params; BCP035
+
 == Turn 2: fix, then validate again ==
 
-All three faults fixed; validation now returns zero diagnostics. What changed:
+Validation is clean — zero diagnostics. What changed:
 
-1. Removed the unused `environmentName` parameter.
-2. Added the required `sku` property to the storage account.
-3. Bumped the stale API version.
+1. `no-unused-params` — `environmentName` is now used in the storage account's tags.
+2. `BCP035` — added a `sku` block with a `skuName` parameter.
+3. `use-recent-api-versions` — bumped the API version to `2025-01-01`.
 
   bicep_validate calls in turn 2: 1
   containers after turn 2: 1
@@ -56,7 +69,8 @@ All three faults fixed; validation now returns zero diagnostics. What changed:
 
 == The work product ==
 
-  main.bicep changed: True
+  main.bicep authored in turn 1: True
+  main.bicep changed by turn 2:  True
   storage account and output intact: True
   faults fixed:       2 — no-unused-params; BCP035
   faults remaining:   0 — none
@@ -152,6 +166,52 @@ class TestOneSandboxAcrossTheRun:
         assert any("did not run to completion" in r for r in reasons), reasons
 
 
+class TestTurnOneActuallyAuthoredTheFile:
+    """The half #304 asks for that a pre-seeded file would fake.
+
+    The store starts empty, so every later signal is about a file the model wrote. A run where
+    turn 1 wrote nothing has no subject at all, and one where it wrote something already clean
+    has nothing for turn 2 to repair — both would otherwise pass every assertion about reuse.
+    """
+
+    def test_a_turn_one_that_wrote_nothing_is_caught(self):
+        reasons = _tampered(
+            "main.bicep authored in turn 1: True", "main.bicep authored in turn 1: False"
+        )
+        assert any("turn 1 left no main.bicep" in r for r in reasons), reasons
+
+    def test_a_run_that_does_not_report_authoring_is_caught(self):
+        reasons = _tampered("  main.bicep authored in turn 1: True\n", "")
+        assert any("whether turn 1 wrote main.bicep" in r for r in reasons), reasons
+
+    def test_an_authored_file_with_no_fault_to_fix_is_caught(self):
+        """A clean authored file means the brief did not do its job, not that the run went well.
+
+        Nothing downstream would object: no tracked fault to fix, a clean final compile, and the
+        tally adding to zero on both sides. The sample would report a successful fix loop having
+        never run one.
+        """
+        reasons = _tampered(
+            "  tracked faults in the authored file: 2 — no-unused-params; BCP035",
+            "  tracked faults in the authored file: 0 — none",
+        )
+        assert any("had no tracked fault in it" in r for r in reasons), reasons
+
+    def test_a_missing_baseline_compile_is_caught(self):
+        reasons = _tampered("== What the compiler told the model", "== something else")
+        assert any("without that baseline" in r for r in reasons), reasons
+
+    def test_a_baseline_of_model_prose_rather_than_compiler_output_is_caught(self):
+        # The block has to carry rendered `build(...)`/`lint(...)` output. Without that check the
+        # sample could print the model's summary of its own validation and call it the baseline.
+        prose = _HEALTHY.replace(
+            "  build(main.bicep): 3 diagnostic(s)", "  I found three:"
+        ).replace("  lint(main.bicep): 3 diagnostic(s)", "  and linting agreed:")
+        assert prose != _HEALTHY, "the substitution matched nothing — the fixture moved"
+        reasons = check.assess(prose)
+        assert any("printed no compiler output" in r for r in reasons), reasons
+
+
 class TestTheModelActuallyEdited:
     def test_an_unchanged_file_is_caught(self):
         """The whole reason the sample reads the file store instead of the model's prose.
@@ -160,8 +220,10 @@ class TestTheModelActuallyEdited:
         is untouched is exactly the run this assertion exists to fail — and the compiler cannot
         catch it, since a file nobody edited still compiles.
         """
-        reasons = _tampered("main.bicep changed: True", "main.bicep changed: False")
-        assert any("described a fix and did not make one" in r for r in reasons), reasons
+        reasons = _tampered(
+            "main.bicep changed by turn 2:  True", "main.bicep changed by turn 2:  False"
+        )
+        assert any("described a repair and did not make one" in r for r in reasons), reasons
 
     def test_a_change_that_fixed_nothing_is_caught(self):
         reasons = _tampered(
@@ -172,7 +234,7 @@ class TestTheModelActuallyEdited:
 
     def test_a_tally_that_does_not_add_up_is_caught(self):
         reasons = _tampered("faults remaining:   0 — none", "faults remaining:   5 — invented")
-        assert any("do not account for the 2 faults" in r for r in reasons), reasons
+        assert any("do not account for the 2 the authored file had" in r for r in reasons), reasons
 
 
 class TestTheTemplateSurvived:
@@ -319,7 +381,7 @@ class TestTurnOneReportedRealDiagnostics:
     """Scoped to turn 1's prose, because the rule ids appear again in the sample's own tally."""
 
     def test_a_first_turn_that_named_no_rule_is_caught(self):
-        reasons = _tampered("1. **no-unused-params** — Error — line 21", "1. some problems")
+        reasons = _tampered("1. `no-unused-params` — error — line 3", "1. some problems")
         assert any("turn 1 did not name no-unused-params" in r for r in reasons), reasons
 
     def test_the_samples_own_tally_does_not_satisfy_the_first_turn(self):
@@ -330,9 +392,10 @@ class TestTurnOneReportedRealDiagnostics:
         for a turn 1 that reported nothing at all — a check measuring its own harness.
         """
         gutted = _HEALTHY.replace(
-            "1. **no-unused-params** — Error — line 21\n"
-            "2. **BCP035** — Warning — line 31\n"
-            "3. **use-recent-api-versions** — Warning — line 31",
+            "1. `no-unused-params` — error — line 3 (`environmentName` declared but never used)\n"
+            "2. `BCP035` — warning — line 5 (resource missing required `sku` property)\n"
+            "3. `use-recent-api-versions` — warning — line 5 "
+            "(`2023-01-01` is over the 730-day guideline)",
             "I could not run the validator.",
         )
         assert gutted != _HEALTHY, "the substitution matched nothing — the fixture moved"
@@ -343,7 +406,7 @@ class TestTurnOneReportedRealDiagnostics:
         assert any("turn 1 did not name" in r for r in reasons), reasons
 
     def test_a_run_with_no_first_turn_at_all_is_caught(self):
-        reasons = _tampered("== Turn 1: validate ==", "== nothing ==")
+        reasons = _tampered("== Turn 1: author main.bicep", "== nothing ==")
         assert any("no turn 1 section" in r for r in reasons), reasons
 
 

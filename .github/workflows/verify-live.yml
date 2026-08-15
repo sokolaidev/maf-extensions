@@ -796,8 +796,9 @@ jobs:
 
   sample-13:
     name: samples/13_bicep_fix_loop against a live container
-    # The only sample that runs more than one turn. Sample 05's workload and its `main.bicep`,
-    # asked twice against one sandbox: validate, then repair what the compiler reported. Runs
+    # The only sample that runs more than one turn, and the only one whose store starts empty:
+    # the model writes `main.bicep` in turn 1 and repairs it in turn 2, both against one
+    # sandbox. Sample 05's workload, arrived at by a brief rather than checked in. Runs
     # for the router (maf-sandbox), the backend it acquires through (maf-sandbox-docker) and the
     # kind that supplies the tool (maf-sandbox-bicep) — the same three sample 05 answers to,
     # because it is the same stack with a second turn on top.
@@ -872,8 +873,9 @@ jobs:
         run: |
           set -euo pipefail
           uv run --no-project samples/13_bicep_fix_loop/agent.py | tee /tmp/sample13-out.txt
-          # Two claims, and the check needs both: one container across all three acquires, and a
-          # `main.bicep` the compiler agrees is repaired. Either alone passes on a broken sample
-          # — perfect reuse of a sandbox that fixed nothing, or a fix that quietly booted a
-          # second container to make it. stdlib-only, so the runner's own python3 runs it.
+          # Three claims, and the check needs all of them: turn 1 wrote a file with a real fault
+          # in it, one container served all three acquires, and the compiler agrees the file
+          # turn 2 left is repaired. Any one alone passes on a broken sample — perfect reuse of
+          # a sandbox that fixed nothing, or a fix that quietly booted a second container to
+          # make it. stdlib-only, so the runner's own python3 runs it.
           python3 "$HARNESS"/scripts/check_live_fix_loop_sample.py /tmp/sample13-out.txt
