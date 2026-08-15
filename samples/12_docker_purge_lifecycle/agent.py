@@ -173,7 +173,7 @@ async def act_four_thread_delete(router: SandboxRouter) -> tuple[int, int]:
     print(f"  a thread never scoped per turn -> containers: {containers(unscoped)}")
     unscoped_found = await purger.purge_scoped_thread(SCOPE, unscoped)
     print(f"  user deletes the conversation  -> purger found {unscoped_found}")
-    print(f"  and docker agrees              -> containers: {containers(unscoped)}")
+    print(f"  and docker agrees, after purge -> containers: {containers(unscoped)}")
     print("  Nothing else would have reclaimed this one, and no turn is coming back for it.")
     print("  `dispose_scope` selects on the labels the backend stamped rather than on anything")
     print("  this process remembers, which is what lets the delete path reclaim sandboxes a")

@@ -29,7 +29,7 @@ _HEALTHY = """\
   a thread already purged per turn -> purger found 0
   a thread never scoped per turn -> containers: 1
   user deletes the conversation  -> purger found 1
-  and docker agrees              -> containers: 0
+  and docker agrees, after purge -> containers: 0
 Completed 4 of 4 acts. Purger found 0 on a purged thread and 1 on an unscoped one. Containers left behind: 0.
 """
 
@@ -50,13 +50,23 @@ class TestReuseWithinATurn:
         reasons = check.assess(_HEALTHY.replace("'still here'", "''"))
         assert any("second acquire reached a different sandbox" in r for r in reasons), reasons
 
-    def test_a_second_container_is_caught_even_though_the_file_came_back(self):
-        # Two acquires that each created a container would still serve the file back from
-        # whichever one was written to, so the count is what separates reuse from duplication.
+    def test_a_container_left_beside_the_reused_one_is_caught(self):
+        # Not the same thing as the file round-trip. If the second acquire had made its own
+        # container the `cat` would have failed, so that check already covers "reached a
+        # different sandbox"; this covers a container created and then orphaned alongside.
         reasons = check.assess(
             _HEALTHY.replace("containers for this thread: 1", "containers for this thread: 2")
         )
-        assert any("expected exactly 1" in r for r in reasons), reasons
+        assert any("orphaned beside it" in r for r in reasons), reasons
+
+
+class TestBetweenTurns:
+    def test_a_sandbox_that_did_not_survive_the_turn_is_caught(self):
+        """Act 2's premise. Without it there is nothing for the rest of the sample to decide."""
+        tampered = _HEALTHY.replace("containers still there: 1", "containers still there: 0")
+        assert tampered != _HEALTHY, "the substitution matched nothing — the fixture moved"
+        reasons = check.assess(tampered)
+        assert any("does not outlive its turn" in r for r in reasons), reasons
 
 
 class TestEndOfTurnDisposal:
@@ -107,6 +117,31 @@ class TestTheDeletePath:
             )
         )
         assert any("already purged per turn" in r for r in reasons), reasons
+
+    def test_a_purge_that_reported_but_reclaimed_nothing_is_caught(self):
+        """The hole the footer cannot cover.
+
+        `main` sweeps every thread in a `finally` before computing the footer, so a purger that
+        reported 1 while removing nothing would be cleaned up by that sweep and `Containers left
+        behind` would still read 0. This is the only line that sees the machine in between.
+        """
+        tampered = _HEALTHY.replace("after purge -> containers: 0", "after purge -> containers: 1")
+        assert tampered != _HEALTHY, "the substitution matched nothing — the fixture moved"
+        reasons = check.assess(tampered)
+        assert any("reported reclaiming and did not" in r for r in reasons), reasons
+
+    def test_act_threes_count_is_not_read_as_act_fours(self):
+        # The two `and docker agrees` lines once differed only in whitespace, so `search` found
+        # act 3's for both and act 4's went unchecked. Their wording is distinct now.
+        assert check._SCOPE_REMAINING.search(_HEALTHY).group(1) == "0"
+        assert check._UNSCOPED_AFTER.search(_HEALTHY).group(1) == "0"
+        act_four_only = _HEALTHY.replace(
+            "after purge -> containers: 0", "after purge -> containers: 3"
+        )
+        assert check._SCOPE_REMAINING.search(act_four_only).group(1) == "0", (
+            "act 4's line must not be what act 3's pattern reads"
+        )
+        assert check._UNSCOPED_AFTER.search(act_four_only).group(1) == "3"
 
 
 class TestTheFooter:

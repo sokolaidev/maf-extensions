@@ -31,16 +31,27 @@ from pathlib import Path
 _REUSED_STATE = "still here"
 _REUSE_COUNT = re.compile(r"containers for this thread:\s*(\d+)", re.IGNORECASE)
 
+#: Act 2: the sandbox is still there after the turn. The premise the whole cost argument rests
+#: on — if a turn's sandbox did not survive it, there would be nothing to decide about.
+_KEPT = re.compile(r"containers still there:\s*(\d+)", re.IGNORECASE)
+
 #: Act 3: what the router reported disposing when the `scope` block ended, and what `docker ps`
 #: saw afterwards. The first is the library's claim, the second is the machine's answer.
 _SCOPE_DISPOSED = re.compile(r"block ended -> router reports\s+(\d+)\s+disposed", re.IGNORECASE)
 _SCOPE_REMAINING = re.compile(r"and docker agrees -> containers:\s*(\d+)", re.IGNORECASE)
 
-#: Act 4, both threads, plus the container count before the delete path runs on the
-#: never-scoped one — without that the purger's 1 could be a number it made up.
+#: Act 4, both threads, the container count before the delete path runs on the never-scoped one
+#: — without that the purger's 1 could be a number it made up — and the count *after* it.
+#:
+#: That last one is not redundant with the footer. `main` disposes every thread in a `finally`
+#: before the footer is computed, so a purger that reported 1 while removing nothing would be
+#: covered by that cleanup and the footer would still read zero. This is the only line that
+#: sees the machine between the purge and the sweep, and its phrasing is deliberately distinct
+#: from act 3's so the two cannot be told apart by whitespace alone.
 _TIDY = re.compile(r"already purged per turn -> purger found\s+(\d+)", re.IGNORECASE)
 _UNSCOPED_BEFORE = re.compile(r"never scoped per turn\s+-> containers:\s*(\d+)", re.IGNORECASE)
 _UNSCOPED_FOUND = re.compile(r"deletes the conversation\s+-> purger found\s+(\d+)", re.IGNORECASE)
+_UNSCOPED_AFTER = re.compile(r"after purge\s+-> containers:\s*(\d+)", re.IGNORECASE)
 
 #: The footer, all three numbers read back from what the run observed.
 _FOOTER = re.compile(
@@ -70,8 +81,19 @@ def assess(output: str) -> list[str]:
         failures.append("act 1 did not report its container count")
     elif int(reuse_count) != 1:
         failures.append(
-            f"act 1 left {reuse_count} containers running for one key, expected exactly 1 — two "
-            "acquires that each created one would still have served the file back"
+            f"act 1 left {reuse_count} container(s) for one key, expected exactly 1 — the file "
+            "coming back already proves the second acquire reached the first one's sandbox, so "
+            "what this catches is a container created and then orphaned beside it"
+        )
+
+    kept = _one(_KEPT, output)
+    if kept is None:
+        failures.append("act 2 did not report whether the sandbox survived the turn")
+    elif int(kept) != 1:
+        failures.append(
+            f"{kept} container(s) after a turn that did not dispose, expected exactly 1 — a "
+            "sandbox that does not outlive its turn leaves nothing for the rest of this sample "
+            "to decide about"
         )
 
     disposed = _one(_SCOPE_DISPOSED, output)
@@ -116,6 +138,19 @@ def assess(output: str) -> list[str]:
                 "is the only line showing the delete path reclaiming something no other disposal "
                 "moment would have, and a purger wired to nothing also reports 0"
             )
+
+    after = _one(_UNSCOPED_AFTER, output)
+    if after is None:
+        failures.append(
+            "act 4 did not report the container count after the purge — the purger's own number "
+            "is its claim, and nothing else here checks the machine before the final sweep"
+        )
+    elif int(after) != 0:
+        failures.append(
+            f"{after} container(s) still there after the delete path ran — the purger reported "
+            "reclaiming and did not, which the footer cannot see because `main` sweeps every "
+            "thread before computing it"
+        )
 
     failures.extend(_assess_footer(output))
     return failures
