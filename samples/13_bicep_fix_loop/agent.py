@@ -254,9 +254,11 @@ async def run() -> int:
         # rather than in the message — and `str(CalledProcessError)` prints only the exit code.
         # It is also the part worth reading: a refused socket and a permission denied both fail
         # here and only Docker can tell them apart.
-        detail = (getattr(exc, "stderr", None) or "").strip()
+        detail = (getattr(exc, "stderr", None) or "").strip() or str(exc)
         print(
-            f"`docker ps` failed, and this sample cannot run without it:\n  {detail or exc}",
+            "`docker ps` failed, and this sample cannot run without it:",
+            *(f"  {line}" for line in detail.splitlines()),
+            sep="\n",
             file=sys.stderr,
         )
         return 2

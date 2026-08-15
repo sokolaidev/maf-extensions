@@ -24,8 +24,9 @@ name: Verify (live)
 #
 # Authentication is OIDC federation to Azure — no stored secret, matching how publishing works.
 # Everything each sample reads is non-secret configuration (endpoints and ids), held as
-# environment variables on the `live-verify` environment; the docker jobs read only the model's,
-# the two whose guest is built here read not even that, and sample 10 reads nothing at all.
+# environment variables on the `live-verify` environment. The docker jobs read only the model's;
+# the jobs whose guest is built in this workflow read not even that, and the jobs that call no
+# model read nothing at all.
 # See docs/maintainers.md.
 #
 # PEP 723 metadata is the single dependency source; `--no-project` ensures uv resolves its

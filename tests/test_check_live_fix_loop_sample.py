@@ -16,9 +16,29 @@ from __future__ import annotations
 import ast
 import importlib.util
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
+
+#: Every `subprocess` entry point that starts a process. The whole set rather than `run` alone,
+#: because `check_output` and `Popen` reach an engine just as well.
+_SPAWNS = frozenset(
+    {"run", "Popen", "call", "check_call", "check_output", "getoutput", "getstatusoutput"}
+)
+
+#: The exception names the sample may name, resolved so a handler can be asked "would this be
+#: caught" rather than "is it spelled this way". Anything unlisted is ignored, which fails
+#: closed: an unrecognised handler covers nothing.
+_EXCEPTIONS: dict[str, type[BaseException]] = {
+    "OSError": OSError,
+    "FileNotFoundError": FileNotFoundError,
+    "PermissionError": PermissionError,
+    "Exception": Exception,
+    "BaseException": BaseException,
+    "subprocess.CalledProcessError": subprocess.CalledProcessError,
+    "subprocess.SubprocessError": subprocess.SubprocessError,
+}
 
 _ROOT = Path(__file__).resolve().parent.parent
 _SCRIPT = _ROOT / "scripts" / "check_live_fix_loop_sample.py"
@@ -848,12 +868,13 @@ class TestTheStaleContainerHint:
         source = _SAMPLE.read_text(encoding="utf-8")
         assert "docker ps -aq --filter label={_LABEL_THREAD}={THREAD_ID}" in source
 
-    def test_containers_is_the_only_thing_that_shells_out(self):
+    def test_nothing_outside_containers_touches_subprocess(self):
         """The premise the test below rests on, asserted rather than assumed.
 
-        If some later preflight also runs a subprocess, the *first* touch of Docker moves and
-        guarding `containers()` stops being enough — while a test that only looked at
-        `containers()` would stay green.
+        If a later preflight shells out too, the *first* touch of Docker moves and guarding
+        `containers()` stops being enough. Keyed on the `subprocess` module rather than on
+        `subprocess.run`, because `check_output`, `Popen` and `from subprocess import run` all
+        reach an engine just as well.
         """
         tree = ast.parse(_SAMPLE.read_text(encoding="utf-8"))
         containers_fn = next(
@@ -862,21 +883,34 @@ class TestTheStaleContainerHint:
             if isinstance(node, ast.FunctionDef) and node.name == "containers"
         )
         inside = {id(node) for node in ast.walk(containers_fn)}
-        shells_out = [
-            call
-            for call in ast.walk(tree)
-            if isinstance(call, ast.Call) and ast.unparse(call.func) == "subprocess.run"
-        ]
-        assert shells_out, "nothing shells out any more — this test has lost its subject"
-        assert all(id(call) in inside for call in shells_out), (
-            "something outside containers() now runs a subprocess, so it may touch Docker first"
+
+        spawns: list[ast.AST] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                called = ast.unparse(node.func)
+                if (
+                    called.startswith("subprocess.")
+                    and called.removeprefix("subprocess.") in _SPAWNS
+                ):
+                    spawns.append(node)
+            elif isinstance(node, ast.ImportFrom) and node.module == "subprocess":
+                # `from subprocess import run as _r` puts a spawner in reach of everything below.
+                if any(alias.name in _SPAWNS for alias in node.names):
+                    spawns.append(node)
+
+        assert spawns, "nothing spawns a process any more — this test has lost its subject"
+        outside = [node for node in spawns if id(node) not in inside]
+        assert not outside, (
+            f"{[ast.unparse(node) for node in outside]} spawns a process outside containers(), "
+            "so something may touch Docker before the guarded call"
         )
 
-    def test_the_first_docker_call_is_inside_a_handler_for_its_two_failures(self):
+    def test_the_first_docker_call_is_answered_not_raised(self):
         """`containers()` uses `check=True`, and the guard before it probes no engine.
 
-        Walked rather than grepped: an `except` merely *near* the call in the source would
-        satisfy a window search while leaving the call outside the `try`.
+        Three properties, because two of them are easy to satisfy without the third: the call is
+        inside a `try`, that `try` catches both shapes the failure takes, and its handler
+        *answers* — a handler edited to log and re-raise would leave the sample tracebacking.
         """
         tree = ast.parse(_SAMPLE.read_text(encoding="utf-8"))
         run = next(
@@ -894,6 +928,8 @@ class TestTheStaleContainerHint:
         assert calls, "run() no longer calls containers()"
         first = min(calls, key=lambda call: (call.lineno, call.col_offset))
 
+        # Innermost, not `ast.walk`'s first: that is breadth-first, so any enclosing `try` —
+        # a `finally` wrapped round the whole block, say — would be picked instead.
         guarding = [
             node
             for node in ast.walk(run)
@@ -901,13 +937,29 @@ class TestTheStaleContainerHint:
             and any(inner is first for stmt in node.body for inner in ast.walk(stmt))
         ]
         assert guarding, "the first containers() call is not inside a try"
+        innermost = max(guarding, key=lambda node: node.lineno)
 
-        caught: set[str] = set()
-        for handler in guarding[0].handlers:
-            if isinstance(handler.type, ast.Tuple):
-                caught |= {ast.unparse(exc) for exc in handler.type.elts}
-            elif handler.type is not None:
-                caught.add(ast.unparse(handler.type))
+        caught: set[type[BaseException]] = set()
+        for handler in innermost.handlers:
+            if handler.type is None:
+                caught.add(BaseException)
+                continue
+            named = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+            caught |= {_EXCEPTIONS[n] for e in named if (n := ast.unparse(e)) in _EXCEPTIONS}
+
         # A missing binary raises FileNotFoundError (an OSError); a refusing daemon exits
-        # non-zero, which `check=True` turns into CalledProcessError — not an OSError.
-        assert {"OSError", "subprocess.CalledProcessError"} <= caught, caught
+        # non-zero, which `check=True` turns into CalledProcessError — not an OSError. Asked as
+        # "would this be caught" so a broader handler passes and a narrower one does not.
+        for failure in (FileNotFoundError, subprocess.CalledProcessError):
+            assert any(issubclass(failure, kind) for kind in caught), (
+                f"{failure.__name__} escapes {sorted(k.__name__ for k in caught)}"
+            )
+
+        answers = [
+            node
+            for handler in innermost.handlers
+            for stmt in handler.body
+            for node in ast.walk(stmt)
+            if isinstance(node, ast.Return)
+        ]
+        assert answers, "the handler catches the failure and does not answer it"
