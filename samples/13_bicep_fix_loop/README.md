@@ -4,13 +4,15 @@ Every other sample runs a single turn. The model is asked something, a tool answ
 
 This one runs two turns and a check against the same key, and prints the container count after each.
 
-| | What happens | Containers |
-|---|---|---|
-| Turn 1 | the model calls `bicep_validate` and reports what came back | 1 |
-| Turn 2 | it edits `main.bicep` and validates again | 1 |
-| The check | the sample compiles the file itself, with no model involved | 1 |
+| | What happens | `bicep_validate` calls | Containers |
+|---|---|---|---|
+| Turn 1 | the model calls `bicep_validate` and reports what came back | 1 | 1 |
+| Turn 2 | it edits `main.bicep` and validates again | 1 | 1 |
+| The check | the sample compiles the file itself, with no model involved | 1 | 1 |
 
 Three `acquire` calls, one container. A second container would have answered every one of those calls just as well, which is why the count is printed rather than described.
+
+**The call counts are there because the container count cannot carry the claim alone.** A fix turn that edits the file and never validates it makes no second `acquire` at all — and turn 1's container is still sitting there to be counted, so the run would read as reuse while never demonstrating any. The counts come from the tool calls in each turn's returned messages, so "the fix turn reached the same warm sandbox" is a measurement rather than an inference. The live check requires both turns to show at least one.
 
 ## The session is the mechanism
 
@@ -26,9 +28,13 @@ Turn 2's prompt says "those diagnostics" and names none of them. It does not hav
 
 A model will tell you it fixed something. The interesting question is whether the file moved.
 
-So after the turns, the sample reads `main.bicep` back out of the file store and compares it with what went in. `main.bicep changed: True` cannot be produced by prose. Then it compiles that file — the same `bicep_validate` the model used, called directly from the program — and prints the compiler's own verdict beside the model's account of it.
+So after the turns, the sample compiles the file the model left — the same `bicep_validate`, called directly from the program — and everything it reports afterwards is read off that. Which faults remain is the compiler's answer, not a search of the source text.
 
-That last step is also the third `acquire`, which is why it earns its own container count. Turn 2 finding the sandbox warm could be two calls landing close together; the check runs after all the model's work is done and still finds the same one.
+That distinction decides whether a real repair passes. `no-unused-params` is satisfied two ways: delete `environmentName`, or start using it. A substring test for `param environmentName` calls the second one unfixed while the compiler calls the file clean — a genuine fix failed by its own harness. Asking the compiler costs nothing here, because it has already been run.
+
+One thing the compiler cannot answer, so the sample keeps it separate: `main.bicep changed: True` compares the file store against what went in. A model that edits nothing still compiles.
+
+The compile is also the third `acquire`, which is why it earns its own container count. Turn 2 finding the sandbox warm could be two calls landing close together; the check runs after all the model's work is done and still finds the same one.
 
 ## The approval gate that makes a fix turn do nothing
 
@@ -62,11 +68,13 @@ The sample tracks **two** of them. `no-unused-params` and `BCP035` are structura
 
 Fixing either tracked fault is a real edit, and the sample reports which happened rather than demanding both.
 
+**Everything else the compiler reports is a failure.** Tracking two rules and checking only those would pass a file whose original faults are gone and which now fails on something new — a fresh `BCP0xx` names neither tracked rule, so nothing would object, and the run would report a clean repair over a broken file. So the live check sweeps every diagnostic: a rule is acceptable only if the tally already calls it remaining, or it is the age rule above.
+
 ## Counted, not claimed
 
 Container counts come from `docker ps -a --filter label=maf-sandbox.thread=…` — the labels the backend stamps and `dispose_scope` selects on, with `-a` so a container stopped but not removed still counts.
 
-The live check holds the file tally to the compiler **rule by rule**: a fault it calls fixed the compiler must no longer report, and one it calls remaining the compiler must still report. The tally is a substring search over the model's file, and a model that deletes the offending lines while breaking something else would satisfy it. That is the whole reason the compiler runs again at the end.
+Every other number is the compiler's or the file store's. The live check reads them back and requires them to agree with each other: a fault the tally calls fixed the compiler must no longer report, and one it calls remaining the compiler must still report. Two halves of the same output describing different files is the failure that catches.
 
 ## Run
 

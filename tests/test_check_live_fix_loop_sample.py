@@ -6,85 +6,135 @@ memory, since a fixture that has drifted makes every assertion below pass agains
 Every tamper asserts `tampered != _HEALTHY` first. A substitution that matches nothing produces
 a test that passes while testing the unmodified fixture, which is the one failure a green run
 cannot show you.
+
+The last class does not test the checker at all — it tests the sample's own `faults_left`,
+because that is where a repair can be miscounted before the checker ever sees the output.
 """
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 from pathlib import Path
 
-_SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "check_live_fix_loop_sample.py"
+_ROOT = Path(__file__).resolve().parent.parent
+_SCRIPT = _ROOT / "scripts" / "check_live_fix_loop_sample.py"
 _spec = importlib.util.spec_from_file_location("check_live_fix_loop_sample", _SCRIPT)
 assert _spec and _spec.loader
 check = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(check)
 
-_FIXED_LINE = (
-    "  faults fixed:       2 — no-unused-params: unused environmentName; "
-    "BCP035: storageAccount without sku"
-)
-
-_HEALTHY = f"""\
+_HEALTHY = """\
 == Turn 1: validate ==
 
-Here are the diagnostics from validating `main.bicep`:
+Here are the diagnostics for `main.bicep`:
 
 1. **no-unused-params** — Error — line 21
 2. **BCP035** — Warning — line 31
 3. **use-recent-api-versions** — Warning — line 31
 
+  bicep_validate calls in turn 1: 1
   containers after turn 1: 1
 
 == Turn 2: fix, then validate again ==
 
-All three diagnostics are now resolved. Here's what changed:
+All three faults fixed; validation now returns zero diagnostics. What changed:
 
-1. **no-unused-params (line 21)** — Removed the unused `environmentName` parameter declaration.
-2. **BCP035 (line 31)** — Added the required `sku` property to the storage account resource.
-3. **use-recent-api-versions (line 31)** — Updated the API version to `2025-01-01`.
+1. Removed the unused `environmentName` parameter.
+2. Added the required `sku` property to the storage account.
+3. Bumped the stale API version.
 
+  bicep_validate calls in turn 2: 1
   containers after turn 2: 1
 
-== What the file actually says now ==
-
-  main.bicep changed: True
-{_FIXED_LINE}
-  faults remaining:   0 — none
-
-== Independent check: compile what the model left ==
+== What the compiler says about the file the model left ==
 
   build(main.bicep): no diagnostics
   lint(main.bicep): no diagnostics
 
   containers after the check: 1
 
+== The work product ==
+
+  main.bicep changed: True
+  faults fixed:       2 — no-unused-params; BCP035
+  faults remaining:   0 — none
+
 Disposed 1 sandbox(es) after 2 turns and a check. Containers left: 0.
 """
 
+#: A run where the model fixed only `BCP035` and left the unused parameter. Both the tally and
+#: the compiler say so, so it is *consistent* — the checker's job here is to accept it, since
+#: the sample deliberately reports which fault was fixed rather than demanding both.
+_PARTIAL = (
+    _HEALTHY.replace(
+        "  build(main.bicep): no diagnostics\n  lint(main.bicep): no diagnostics",
+        "  build(main.bicep): 1 diagnostic(s)\n"
+        "    [error] no-unused-params @ main.bicep:21: Parameter is declared but never used.\n"
+        "  lint(main.bicep): 1 diagnostic(s)\n"
+        "    [error] no-unused-params @ main.bicep:21: Parameter is declared but never used.",
+    )
+    .replace("faults fixed:       2 — no-unused-params; BCP035", "faults fixed:       1 — BCP035")
+    .replace("faults remaining:   0 — none", "faults remaining:   1 — no-unused-params")
+)
 
-def _tampered(original: str, replacement: str) -> list[str]:
-    """Assess `_HEALTHY` with one substitution, refusing to run if it matched nothing."""
-    text = _HEALTHY.replace(original, replacement)
-    assert text != _HEALTHY, f"the substitution matched nothing — the fixture moved: {original!r}"
+
+def _tampered(original: str, replacement: str, *, base: str | None = None) -> list[str]:
+    """Assess a fixture with one substitution, refusing to run if it matched nothing."""
+    source = _HEALTHY if base is None else base
+    text = source.replace(original, replacement)
+    assert text != source, f"the substitution matched nothing — the fixture moved: {original!r}"
     return check.assess(text)
 
 
-class TestHealthyRun:
+class TestHealthyRuns:
     def test_a_real_run_passes(self):
         assert check.assess(_HEALTHY) == []
 
+    def test_a_run_that_fixed_only_one_fault_passes(self):
+        """The sample reports which fault was fixed rather than requiring both.
+
+        This fixture is also the only one carrying rendered diagnostics through the whole
+        pipeline, so it is what proves the sweep below tolerates a diagnostic the tally
+        accounted for instead of rejecting every diagnostic it sees.
+        """
+        assert check.assess(_PARTIAL) == []
+
+
+class TestTheSecondAcquireActuallyHappened:
+    """A container count cannot show this, and inferring it from one is the trap.
+
+    If the fix turn edits the file and never validates it, no second `acquire` is made at all —
+    but turn 1's container is still there to be counted, so the count reads 1 and the run looks
+    like reuse. The final compile passes too. CI would go green having never exercised the
+    claim the sample exists to make.
+    """
+
+    def test_a_fix_turn_that_never_validated_is_caught(self):
+        reasons = _tampered(
+            "bicep_validate calls in turn 2: 1", "bicep_validate calls in turn 2: 0"
+        )
+        assert any("turn 2 never called bicep_validate" in r for r in reasons), reasons
+
+    def test_a_first_turn_that_never_validated_is_caught(self):
+        reasons = _tampered(
+            "bicep_validate calls in turn 1: 1", "bicep_validate calls in turn 1: 0"
+        )
+        assert any("turn 1 never called bicep_validate" in r for r in reasons), reasons
+
+    def test_a_run_that_does_not_report_call_counts_at_all_is_caught(self):
+        # The regression if the sample stops printing them: every other assertion still passes,
+        # and the check would silently go back to inferring the acquire from the count.
+        reasons = _tampered("bicep_validate calls in turn 2: 1\n", "")
+        assert any("did not report how many times" in r for r in reasons), reasons
+
 
 class TestOneSandboxAcrossTheRun:
-    """The claim #304 asked for: the second acquire finds the first one's sandbox."""
-
     def test_a_second_container_on_the_fix_turn_is_caught(self):
         reasons = _tampered("containers after turn 2: 1", "containers after turn 2: 2")
         assert any("after turn 2, expected exactly 1" in r for r in reasons), reasons
 
-    def test_a_second_container_on_the_independent_check_is_caught(self):
-        # The third acquire. Turn 2 finding the sandbox warm could be a fluke of two calls
-        # landing close together; the check runs after all the model's work and must still find
-        # the same one.
+    def test_a_second_container_on_the_final_compile_is_caught(self):
         reasons = _tampered("containers after the check: 1", "containers after the check: 2")
         assert any("after the check, expected exactly 1" in r for r in reasons), reasons
 
@@ -105,17 +155,17 @@ class TestTheModelActuallyEdited:
     def test_an_unchanged_file_is_caught(self):
         """The whole reason the sample reads the file store instead of the model's prose.
 
-        The fixture's turn 2 says "all three diagnostics are now resolved". Leaving that in place
-        while the file is untouched is exactly the run this assertion exists to fail.
+        The fixture's turn 2 says "all three faults fixed". Leaving that in place while the file
+        is untouched is exactly the run this assertion exists to fail — and the compiler cannot
+        catch it, since a file nobody edited still compiles.
         """
         reasons = _tampered("main.bicep changed: True", "main.bicep changed: False")
         assert any("described a fix and did not make one" in r for r in reasons), reasons
 
     def test_a_change_that_fixed_nothing_is_caught(self):
         reasons = _tampered(
-            _FIXED_LINE + "\n  faults remaining:   0 — none",
-            "  faults fixed:       0 — none\n  faults remaining:   2 — "
-            "no-unused-params: unused environmentName; BCP035: storageAccount without sku",
+            "  faults fixed:       2 — no-unused-params; BCP035\n  faults remaining:   0 — none",
+            "  faults fixed:       0 — none\n  faults remaining:   2 — no-unused-params; BCP035",
         )
         assert any("no fault was fixed" in r for r in reasons), reasons
 
@@ -125,40 +175,26 @@ class TestTheModelActuallyEdited:
 
 
 class TestTheCompilerHasTheLastWord:
-    """The tally is a substring search; these hold it to a compiler that ran afterwards."""
+    def test_a_repair_that_breaks_something_else_is_caught(self):
+        """The hole a tracked-rules-only comparison leaves open.
 
-    def test_a_fault_called_fixed_that_still_compiles_dirty_is_caught(self):
+        Both original faults are gone and the tally is honest about it. The file now fails on
+        something unrelated, which names neither tracked rule — so a per-rule comparison finds
+        nothing to object to and reports a clean repair over a broken file.
+        """
         reasons = _tampered(
             "  build(main.bicep): no diagnostics",
             "  build(main.bicep): 1 diagnostic(s)\n"
-            "    [error] no-unused-params @ main.bicep:21: Parameter is declared but never used.",
+            "    [error] BCP062 @ main.bicep:14: The referenced declaration was not found.",
         )
-        assert any("counts no-unused-params as fixed" in r for r in reasons), reasons
+        assert any("BCP062" in r and "does not account for" in r for r in reasons), reasons
 
-    def test_a_fault_called_remaining_that_the_compiler_does_not_see_is_caught(self):
-        reasons = _tampered(
-            _FIXED_LINE + "\n  faults remaining:   0 — none",
-            "  faults fixed:       1 — BCP035: storageAccount without sku\n"
-            "  faults remaining:   1 — no-unused-params: unused environmentName",
-        )
-        assert any("counts no-unused-params as remaining" in r for r in reasons), reasons
-
-    def test_a_missing_independent_compile_is_caught(self):
-        reasons = _tampered("== Independent check: compile what the model left ==", "== gone ==")
-        assert any("independent compile printed nothing" in r for r in reasons), reasons
-
-    def test_only_one_compile_phase_is_caught(self):
-        # build and lint are separate passes and a file can pass one while failing the other,
-        # so a run that printed only one has not shown the file is clean.
-        reasons = _tampered("  lint(main.bicep): no diagnostics\n", "")
-        assert any("expected both build and lint" in r for r in reasons), reasons
-
-    def test_the_age_rule_is_not_required_either_way(self):
+    def test_the_age_rule_is_tolerated_either_way(self):
         """`use-recent-api-versions` fires on the calendar, so neither answer may be demanded.
 
         A model that leaves the API version alone compiles with that one diagnostic still
-        reported. Nothing about the two tracked faults changed, so the run must still pass —
-        otherwise this check would go red on its own, months after anyone touched it.
+        reported. Nothing about the tracked faults changed, so the run must pass — otherwise
+        this check would go red on its own, months after anyone touched it.
         """
         reasons = _tampered(
             "  build(main.bicep): no diagnostics\n  lint(main.bicep): no diagnostics",
@@ -170,6 +206,32 @@ class TestTheCompilerHasTheLastWord:
             "old, should be no more than 730 days old",
         )
         assert reasons == [], reasons
+
+    def test_a_fault_called_fixed_that_the_compiler_still_reports_is_caught(self):
+        reasons = _tampered(
+            "  build(main.bicep): no diagnostics",
+            "  build(main.bicep): 1 diagnostic(s)\n"
+            "    [error] no-unused-params @ main.bicep:21: Parameter is declared but never used.",
+        )
+        assert any("counts no-unused-params as fixed" in r for r in reasons), reasons
+
+    def test_a_fault_called_remaining_that_the_compiler_does_not_see_is_caught(self):
+        reasons = _tampered(
+            "  faults fixed:       1 — BCP035\n  faults remaining:   1 — no-unused-params",
+            "  faults fixed:       1 — no-unused-params\n  faults remaining:   1 — BCP035",
+            base=_PARTIAL,
+        )
+        assert any("counts BCP035 as remaining" in r for r in reasons), reasons
+
+    def test_a_missing_compile_is_caught(self):
+        reasons = _tampered("== What the compiler says about the file the model left ==", "== x ==")
+        assert any("compiler was never run" in r for r in reasons), reasons
+
+    def test_only_one_compile_phase_is_caught(self):
+        # build and lint are separate passes and a file can pass one while failing the other,
+        # so a run that printed only one has not shown the file is clean.
+        reasons = _tampered("  lint(main.bicep): no diagnostics\n", "")
+        assert any("expected both build and lint" in r for r in reasons), reasons
 
 
 class TestTurnOneReportedRealDiagnostics:
@@ -202,3 +264,83 @@ class TestTurnOneReportedRealDiagnostics:
     def test_a_run_with_no_first_turn_at_all_is_caught(self):
         reasons = _tampered("== Turn 1: validate ==", "== nothing ==")
         assert any("no turn 1 section" in r for r in reasons), reasons
+
+
+# --- the sample's own tally, which the checker above can only see the output of ---------------
+
+_SAMPLE = _ROOT / "samples" / "13_bicep_fix_loop" / "agent.py"
+
+
+def _faults_left():
+    """Lift `TRACKED_FAULTS` and `faults_left` out of the sample and run them in isolation.
+
+    Importing the sample would be the obvious way and it does not work here: its module level
+    pulls in agent-framework and the sandbox packages, and this workspace does not install
+    `agent-framework-openai`, so `test_sample_modules_import.py` skips this sample. A skip is
+    the wrong outcome for the one regression below — it is the whole reason the tally reads
+    diagnostics instead of source text, and a test that never runs would not have caught it.
+
+    These two nodes depend on nothing but the standard library, so taking them out of the parse
+    tree and executing just those runs everywhere. The assertion below is what keeps it honest:
+    if either is renamed or moved, this fails rather than quietly testing nothing.
+    """
+    tree = ast.parse(_SAMPLE.read_text(encoding="utf-8"))
+    wanted: dict[str, ast.stmt] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "TRACKED_FAULTS"
+            for target in node.targets
+        ):
+            wanted["TRACKED_FAULTS"] = node
+        elif isinstance(node, ast.FunctionDef) and node.name == "faults_left":
+            wanted["faults_left"] = node
+
+    missing = {"TRACKED_FAULTS", "faults_left"} - wanted.keys()
+    assert not missing, f"samples/13_bicep_fix_loop/agent.py no longer defines {sorted(missing)}"
+
+    namespace: dict = {}
+    module = ast.Module(body=[wanted["TRACKED_FAULTS"], wanted["faults_left"]], type_ignores=[])
+    exec(compile(module, "<sample-13>", "exec"), namespace)  # noqa: S102 - this repo's own file
+    return namespace["faults_left"]
+
+
+class TestTheSampleAsksTheCompilerNotTheText:
+    """`faults_left` reads diagnostics, and the difference is a repair passing or failing.
+
+    A substring test over the source is the tempting version and it is wrong in one direction
+    that matters: `no-unused-params` is satisfied by *using* the parameter as well as by
+    deleting it, so `"param environmentName" in source` calls a valid repair unfixed. The
+    compiler then reports nothing, the tally says it remains, and the run fails CI for a fix
+    that worked.
+    """
+
+    def test_a_rule_the_compiler_reports_counts_as_remaining(self):
+        diagnostics = (
+            "build(main.bicep): 1 diagnostic(s)\n"
+            "  [error] no-unused-params @ main.bicep:21: Parameter is declared but never used."
+        )
+        assert _faults_left()(diagnostics) == ["no-unused-params"]
+
+    def test_a_clean_compile_leaves_nothing_remaining(self):
+        assert _faults_left()("build(main.bicep): no diagnostics") == []
+
+    def test_a_fault_fixed_by_using_the_parameter_counts_as_fixed(self):
+        """The regression. The declaration survives the repair; the diagnostic does not.
+
+        The old tally asked `"param environmentName" in source`, which is still true of the
+        file below — a perfectly good repair that references the parameter instead of deleting
+        it. That reported the rule as remaining while the compiler reported nothing, and the
+        live check failed the run for disagreeing with itself.
+        """
+        repaired = "param environmentName string\ntags: { env: environmentName }"
+        assert "param environmentName" in repaired, "the fixture lost the point of this test"
+
+        # What the compiler says about that file: the parameter is used, so the rule is quiet.
+        assert _faults_left()("build(main.bicep): no diagnostics") == []
+
+    def test_the_age_rule_is_not_tracked(self):
+        diagnostics = (
+            "build(main.bicep): 1 diagnostic(s)\n"
+            "  [warning] use-recent-api-versions @ main.bicep:31: '2023-01-01' is 1322 days old"
+        )
+        assert _faults_left()(diagnostics) == []

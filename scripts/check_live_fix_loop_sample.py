@@ -5,25 +5,26 @@
 
 The sample makes two claims and this checks both, because each is worthless alone.
 
-**One sandbox served the whole run.** Three `acquire` calls — turn 1, turn 2, and the
-independent compile — and `docker ps -a` must report exactly 1 container after each. A second
-container would still answer every call, so the count is the only thing separating get-or-create
-from create-every-time.
+**One sandbox served the whole run.** Three `acquire` calls — turn 1, turn 2, and the compile
+the program runs itself — and `docker ps -a` must report exactly 1 container after each.
 
-**The model repaired the file rather than describing a repair.** `main.bicep changed` comes from
-comparing the file store against what went in, so it cannot be satisfied by prose. At least one
-of the two faults must be gone, and `faults fixed` plus `faults remaining` must still account
-for both.
+The counts alone do not carry that, which is why each turn's `bicep_validate` call count is
+checked first. A fix turn that edits the file and never validates it makes no second `acquire`
+at all, and turn 1's container is still sitting there to be counted — so the run reads as reuse
+and never exercises the claim. Both turns must show at least one call.
 
-Those two numbers come from a substring search over the model's file, so the last assertion
-holds them to the compiler **rule by rule**: what the tally calls fixed the compiler must no
-longer report, and what it calls remaining the compiler must still report. A model that deletes
-the offending lines and breaks something else satisfies the tally and fails here, which is the
-point of compiling again at all.
+**The model repaired the file rather than describing a repair.** `main.bicep changed` compares
+the file store against what went in, so prose cannot satisfy it. At least one tracked fault must
+be gone, and `faults fixed` plus `faults remaining` must account for both.
 
-`main.bicep` also reports `use-recent-api-versions`, which fires on the age of the API version
-rather than on anything structural. This sample neither asks for it nor forbids fixing it, and
-comparing per rule is what keeps that out of the result.
+The tally is derived from the compiler, not from the source text, so the two must agree — a
+disagreement means the halves of the output describe different files. And every diagnostic is
+swept, not only the tracked ones: an edit that removes both original faults while introducing a
+new `BCP0xx` names neither tracked rule, and without the sweep would pass as a clean repair.
+
+The one exception is `use-recent-api-versions`, which fires on the age of the API version.
+Demanding it be fixed would make this check a calendar; demanding it remain would forbid a
+genuine repair. It is tolerated either way, and nothing else untracked is.
 
 Exits non-zero listing every reason it failed.
 """
@@ -41,7 +42,7 @@ _RULE_IDS = ("no-unused-params", "BCP035")
 #: Turn 1's prose, and only that. The rule ids appear again further down in the sample's own
 #: bookkeeping, which the *sample* prints — searching the whole output would pass on that literal
 #: whatever the model said, so the section is cut out before the ids are looked for.
-_TURN_ONE = (re.compile(r"==\s*Turn 1\b"), re.compile(r"containers after turn 1"))
+_TURN_ONE = (re.compile(r"==\s*Turn 1\b"), re.compile(r"bicep_validate calls in turn 1"))
 
 #: `docker ps -a` after each of the three acquires. All three must read 1.
 _COUNTS = (
@@ -56,10 +57,26 @@ _CHANGED = re.compile(r"main\.bicep changed:\s*(True|False)", re.IGNORECASE)
 _FIXED = re.compile(r"faults fixed:\s*(\d+)\s*[-—]\s*([^\n]*)", re.IGNORECASE)
 _REMAINING = re.compile(r"faults remaining:\s*(\d+)\s*[-—]\s*([^\n]*)", re.IGNORECASE)
 
-#: The independent compile at the end, and only that. `main.bicep` compiles in two phases and
-#: each prints one line; `format_diagnostics` renders "no diagnostics" or "N diagnostic(s)".
-_COMPILE = (re.compile(r"==\s*Independent check"), re.compile(r"containers after the check"))
+#: How many times each turn actually called the validator. The container count cannot answer
+#: this: a turn that never validated leaves the previous turn's container standing, so the count
+#: still reads 1 and the run looks like reuse while the second `acquire` never happened.
+_TOOL_CALLS = (
+    ("turn 1", re.compile(r"bicep_validate calls in turn 1:\s*(\d+)", re.IGNORECASE)),
+    ("turn 2", re.compile(r"bicep_validate calls in turn 2:\s*(\d+)", re.IGNORECASE)),
+)
+
+#: The compile at the end, and only that. `main.bicep` compiles in two phases and each prints one
+#: line; `format_diagnostics` renders "no diagnostics" or "N diagnostic(s)" followed by the
+#: diagnostics themselves, one per line as `[level] rule @ file:line: message`.
+_COMPILE = (re.compile(r"==\s*What the compiler says"), re.compile(r"containers after the check"))
 _PHASE = re.compile(r"^\s*(build|lint)\([^)]*\):\s*(no diagnostics|\d+ diagnostic)", re.MULTILINE)
+_DIAGNOSTIC = re.compile(r"^\s*\[\w+\]\s+(\S+)\s+@", re.MULTILINE)
+
+#: The one rule the file is allowed to still report. `use-recent-api-versions` fires on how old
+#: the API version is, so demanding it be fixed would make this check a calendar and demanding it
+#: remain would forbid a genuine repair. Every *other* untracked rule is a fault the model
+#: introduced, and there is no reading of "the file is repaired" that survives one.
+_TOLERATED_RULE = "use-recent-api-versions"
 
 #: The footer, both numbers read back from what the run observed.
 _FOOTER = re.compile(
@@ -110,6 +127,24 @@ def _assess_first_turn(output: str) -> list[str]:
 def _assess_reuse(output: str) -> list[str]:
     """One sandbox across three acquires — the claim the sample exists to make."""
     failures: list[str] = []
+
+    # Before the counts, because they are what makes the counts mean anything. A fix turn that
+    # edited the file and never validated it makes no second `acquire` at all, and turn 1's
+    # container is still sitting there to be counted — so the run reads as reuse, goes green,
+    # and never exercises the claim. The final compile would pass too.
+    for turn, pattern in _TOOL_CALLS:
+        calls = _one(pattern, output)
+        if calls is None:
+            failures.append(
+                f"{turn} did not report how many times it called bicep_validate — without it a "
+                "container count of 1 is equally consistent with that turn never acquiring"
+            )
+        elif int(calls) < 1:
+            failures.append(
+                f"{turn} never called bicep_validate — the container count after it is left "
+                "over from the previous turn, so it says nothing about acquire reusing anything"
+            )
+
     for where, pattern in _COUNTS:
         count = _one(pattern, output)
         if count is None:
@@ -160,41 +195,56 @@ def _assess_repair(output: str) -> list[str]:
 
 
 def _assess_compiler_agrees(output: str, fixed_names: str, remaining_names: str) -> list[str]:
-    """Hold the text tally to the compiler, rule by rule.
+    """Read the compiler's own verdict, and refuse anything it reports that is not accounted for.
 
-    Only the two tracked rules are compared. `main.bicep` also reports `use-recent-api-versions`,
-    which fires on the *age* of the API version rather than on anything structural, so it can be
-    present or gone depending on whether the model chose to bump the version — and requiring
-    either answer would make this check a calendar. Comparing per rule sidesteps that entirely:
-    what the tally calls fixed the compiler must no longer name, and what it calls remaining the
-    compiler must still name, whatever else is in the output.
+    Two separate jobs. The first is consistency: the sample derives its tally from these
+    diagnostics, so a tally naming a rule the compiler does not, or missing one it does, means
+    the two halves of the output disagree about the same file.
+
+    The second is the one a per-rule comparison alone would miss. Checking only the tracked
+    rules passes a file whose original faults are gone and which now fails on something else
+    entirely — a new `BCP0xx` names neither tracked rule, so nothing objects, and the run
+    reports a repair that left the file broken. So every diagnostic is swept: a rule is
+    acceptable only if the tally already calls it remaining, or it is the age rule.
     """
     compiled = _section(output, _COMPILE)
     if compiled is None:
         return [
-            "the independent compile printed nothing — without it the fault tally is a substring "
-            "search over the model's own file, with no compiler behind it"
+            "the compiler was never run over the file the model left — every claim below it is "
+            "then the model's own account of its work, which is what this sample exists to avoid"
         ]
     phases = {match.group(1).lower() for match in _PHASE.finditer(compiled)}
     if phases != {"build", "lint"}:
         return [
-            f"the independent compile reported {sorted(phases) or 'no'} phase(s), expected both "
-            "build and lint — a file can pass one and fail the other"
+            f"the compile reported {sorted(phases) or 'no'} phase(s), expected both build and "
+            "lint — a file can pass one and fail the other"
         ]
 
     failures: list[str] = []
+    reported = {match.group(1) for match in _DIAGNOSTIC.finditer(compiled)}
+
     for rule in _RULE_IDS:
-        named = rule.lower() in compiled.lower()
+        named = any(rule.lower() == seen.lower() for seen in reported)
         if rule.lower() in fixed_names.lower() and named:
             failures.append(
-                f"the tally counts {rule} as fixed but the compiler still reports it — the edit "
-                "removed the text the tally looks for without satisfying the rule"
+                f"the tally counts {rule} as fixed but the compiler still reports it — the two "
+                "halves of the output disagree about the same file"
             )
         elif rule.lower() in remaining_names.lower() and not named:
             failures.append(
                 f"the tally counts {rule} as remaining but the compiler does not report it — the "
-                "tally and the compiler disagree about the same file"
+                "two halves of the output disagree about the same file"
             )
+
+    accounted = {rule.lower() for rule in _RULE_IDS if rule.lower() in remaining_names.lower()}
+    accounted.add(_TOLERATED_RULE.lower())
+    introduced = sorted(rule for rule in reported if rule.lower() not in accounted)
+    if introduced:
+        failures.append(
+            f"the compiler reports {', '.join(introduced)}, which the run does not account for — "
+            "the tracked faults may well be gone, but the model broke something else on the way "
+            f"and only {_TOLERATED_RULE} is tolerated here"
+        )
     return failures
 
 

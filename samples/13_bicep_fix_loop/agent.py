@@ -16,6 +16,10 @@ default. See this directory's README.
 # requires-python = ">=3.12"
 # dependencies = [
 #     "agent-framework-openai",
+#     # The async HTTP transport `azure.identity.aio.DefaultAzureCredential` needs, which
+#     # `azure-identity` alone does not pull in. Samples 05 and 09 declare it for the same
+#     # reason: without it the Azure path fails on import, before the model is ever reached.
+#     "azure-core[aio]",
 #     "azure-identity",
 #     "maf-sandbox-bicep",
 #     "maf-sandbox-docker",
@@ -43,6 +47,13 @@ SCOPE = "samples"
 THREAD_ID = "13-fix-loop"
 AGENT_DIR = "devops-engineer"
 BICEP_FILE = "main.bicep"
+
+#: The two structural faults in `main.bicep`, by the rule id the compiler reports for each. The
+#: file is sample 05's, unedited, so these are the faults that sample already reports.
+TRACKED_FAULTS = ("no-unused-params", "BCP035")
+
+#: The tool the model is expected to reach for, and the one this sample counts calls to.
+BICEP_TOOL = "bicep_validate"
 
 #: Built from `images/bicep-sandbox` — the same guest samples 02 and 05 use, so the compiler and
 #: the lint rule set are theirs and the diagnostics below are comparable with both.
@@ -78,27 +89,41 @@ def containers() -> int:
     return len(result.stdout.split())
 
 
-def faults_left(source: str) -> list[str]:
-    """Which of the file's two structural faults are still in ``source``.
+def faults_left(diagnostics: str) -> list[str]:
+    """Which of the two tracked faults the **compiler** still reports in ``diagnostics``.
 
-    Read off the text rather than from the compiler, because this runs between turns and the
-    point is what the *model wrote*. `main.bicep` declares `environmentName` and never uses it,
-    and its `storageAccount` has no `sku`; fixing either is a real edit and the sample says
-    which happened rather than requiring both.
+    Asked of the compiler rather than of the source text, and that is the whole point. A fault
+    is fixed when the rule stops firing, not when some string disappears: `no-unused-params` is
+    satisfied either by deleting `environmentName` *or* by using it, and a substring test for
+    `param environmentName` calls the second one unfixed while the compiler calls the file
+    clean. That is a real repair failed by its own harness.
 
-    The file reports a **third** diagnostic, `use-recent-api-versions`, and it is deliberately
-    not tracked here. That one fires on how old the API version is rather than on the shape of
-    the file, so what counts as fixed changes with the calendar. The model sees it and may
-    address it; the tally stays out of it, and so does the live check.
+    `main.bicep` reports a **third** diagnostic, `use-recent-api-versions`, which is not tracked
+    here. It fires on how old the API version is rather than on the shape of the file, so what
+    counts as fixed would move with the calendar. The model sees it and may address it; neither
+    answer changes this tally. Anything *else* the compiler reports is a new fault the model
+    introduced, and `scripts/check_live_fix_loop_sample.py` fails the run for it.
 
-    Each entry names a fault, so the same string reads correctly under "fixed" and "remaining".
+    Both tracked rules fire on the file as it ships, so a rule absent here was fixed.
     """
-    remaining: list[str] = []
-    if "param environmentName" in source:
-        remaining.append("no-unused-params: unused environmentName")
-    if "sku:" not in source:
-        remaining.append("BCP035: storageAccount without sku")
-    return remaining
+    return [rule for rule in TRACKED_FAULTS if rule.lower() in diagnostics.lower()]
+
+
+def tool_calls(reply: object, name: str) -> int:
+    """How many times ``reply`` actually called the tool ``name``.
+
+    Read off the returned messages, because the container count cannot answer this. A turn that
+    never validates leaves turn 1's container standing, so the count still reads 1 and the run
+    looks like reuse while the second `acquire` never happened. This is the number that makes
+    "the fix turn reached the same warm sandbox" a measurement rather than an inference.
+    """
+    return sum(
+        1
+        for message in getattr(reply, "messages", [])
+        for content in message.contents
+        if getattr(content, "type", None) == "function_call"
+        and getattr(content, "name", None) == name
+    )
 
 
 def build_client() -> tuple[OpenAIChatCompletionClient, object | None] | None:
@@ -192,7 +217,8 @@ async def run() -> int:
             session=session,
         )
         print(first.text)
-        print(f"\n  containers after turn 1: {containers()}\n")
+        print(f"\n  bicep_validate calls in turn 1: {tool_calls(first, BICEP_TOOL)}")
+        print(f"  containers after turn 1: {containers()}\n")
 
         print("== Turn 2: fix, then validate again ==\n")
         second = await agent.run(
@@ -200,28 +226,36 @@ async def run() -> int:
             session=session,
         )
         print(second.text)
-        print(f"\n  containers after turn 2: {containers()}\n")
-
-        # The model's work product, not its account of it.
-        edited = await store.read(BICEP_FILE)
-        source = edited if isinstance(edited, str) else edited.decode("utf-8")
-        changed = source != original
-        remaining = faults_left(source)
-        fixed = [f for f in faults_left(original) if f not in remaining]
-
-        print("== What the file actually says now ==\n")
-        print(f"  main.bicep changed: {changed}")
-        print(f"  faults fixed:       {len(fixed)} — {'; '.join(fixed) or 'none'}")
-        print(f"  faults remaining:   {len(remaining)} — {'; '.join(remaining) or 'none'}\n")
+        # Printed before the container count, because it is what gives that count its meaning: a
+        # turn that never validated would leave turn 1's container standing and still read 1.
+        print(f"\n  bicep_validate calls in turn 2: {tool_calls(second, BICEP_TOOL)}")
+        print(f"  containers after turn 2: {containers()}\n")
 
         # A model that says "it validates clean now" is still narrating. Compile the file it
-        # left behind, from here rather than from the conversation, and print what the compiler
-        # says. This is also a **third** `acquire` on the same key, which is why the container
-        # count is printed again: turn 2 finding the sandbox warm was not a one-off.
-        print("== Independent check: compile what the model left ==\n")
-        verdict = await bicep_validate.invoke(arguments={"files": [BICEP_FILE]}, skip_parsing=True)
-        print("\n".join(f"  {line}" for line in str(verdict).splitlines()))
+        # left behind, from here rather than from the conversation, and let that be the verdict
+        # everything below is read off. This is also a **third** `acquire` on the same key,
+        # which is why the container count is printed again: turn 2 finding the sandbox warm
+        # was not a one-off.
+        print("== What the compiler says about the file the model left ==\n")
+        verdict = str(
+            await bicep_validate.invoke(arguments={"files": [BICEP_FILE]}, skip_parsing=True)
+        )
+        print("\n".join(f"  {line}" for line in verdict.splitlines()))
         print(f"\n  containers after the check: {containers()}\n")
+
+        # The work product. `changed` compares the file store with what went in — the one thing
+        # the compiler cannot answer, since a model that edited nothing still compiles. The
+        # tally comes from the diagnostics above rather than from the source text, so a fault
+        # fixed by *using* the parameter counts as fixed, which is what the compiler thinks too.
+        edited = await store.read(BICEP_FILE)
+        source = edited if isinstance(edited, str) else edited.decode("utf-8")
+        remaining = faults_left(verdict)
+        fixed = [rule for rule in TRACKED_FAULTS if rule not in remaining]
+
+        print("== The work product ==\n")
+        print(f"  main.bicep changed: {source != original}")
+        print(f"  faults fixed:       {len(fixed)} — {'; '.join(fixed) or 'none'}")
+        print(f"  faults remaining:   {len(remaining)} — {'; '.join(remaining) or 'none'}\n")
     finally:
         disposed = await router.dispose_scope(SCOPE, THREAD_ID)
         if credential is not None:
