@@ -20,6 +20,13 @@ import re
 import sys
 from pathlib import Path
 
+#: Every number below is read only off a line the *sample* tagged. The model answers into the
+#: same stream, so an unmarked search finds a reply quoting "containers after turn 2: 2" before
+#: the sample's own count — and that fails a healthy run. `MEASURED` in the sample writes the
+#: tag; nothing else in the output carries it.
+_M = r"^  \[measured\] "
+_F = re.MULTILINE | re.IGNORECASE
+
 #: The two faults the sample's brief implies, by the rule id the compiler reports for each.
 #: Samples 01, 02, 05 and 09 report the same pair from the `main.bicep` they check in.
 _RULE_IDS = ("no-unused-params", "BCP035")
@@ -27,17 +34,17 @@ _RULE_IDS = ("no-unused-params", "BCP035")
 #: Turn 1's prose, and only that. The rule ids appear again further down in the sample's own
 #: bookkeeping, which the *sample* prints — searching the whole output would pass on that literal
 #: whatever the model said, so the section is cut out before the ids are looked for.
-_TURN_ONE = (re.compile(r"==\s*Turn 1\b"), re.compile(r"bicep_validate calls in turn 1"))
+_TURN_ONE = (re.compile(r"==\s*Turn 1\b"), re.compile(_M + r"bicep_validate calls in turn 1", _F))
 
 #: `docker ps -a` after each of the four acquires. All four must read 1.
 _COUNTS = (
-    ("after turn 1", re.compile(r"containers after turn 1:\s*(\d+)", re.IGNORECASE)),
+    ("after turn 1", re.compile(_M + r"containers after turn 1:\s*(\d+)", _F)),
     (
         "after the baseline compile",
-        re.compile(r"containers after the baseline compile:\s*(\d+)", re.IGNORECASE),
+        re.compile(_M + r"containers after the baseline compile:\s*(\d+)", _F),
     ),
-    ("after turn 2", re.compile(r"containers after turn 2:\s*(\d+)", re.IGNORECASE)),
-    ("after the check", re.compile(r"containers after the check:\s*(\d+)", re.IGNORECASE)),
+    ("after turn 2", re.compile(_M + r"containers after turn 2:\s*(\d+)", _F)),
+    ("after the check", re.compile(_M + r"containers after the check:\s*(\d+)", _F)),
 )
 
 #: The sample's closing block, and the only place the four lines below are read from: the model
@@ -48,18 +55,18 @@ _WORK_PRODUCT = (re.compile(r"==\s*The work product"), None)
 #: The file store compared with what went in, whether the template survived, and the fault
 #: tally. Both tally lines name their faults after the count, and those names are what the
 #: compiler is held to below.
-_AUTHORED = re.compile(r"main\.bicep authored in turn 1:\s*(True|False)", re.IGNORECASE)
-_CHANGED = re.compile(r"main\.bicep changed by turn 2:\s*(True|False)", re.IGNORECASE)
-_INTACT = re.compile(r"storage account and output intact:\s*(True|False)", re.IGNORECASE)
-_FIXED = re.compile(r"faults fixed:\s*(\d+)\s*[-—]\s*([^\n]*)", re.IGNORECASE)
-_REMAINING = re.compile(r"faults remaining:\s*(\d+)\s*[-—]\s*([^\n]*)", re.IGNORECASE)
+_AUTHORED = re.compile(_M + r"main\.bicep authored in turn 1:\s*(True|False)", _F)
+_CHANGED = re.compile(_M + r"main\.bicep changed by turn 2:\s*(True|False)", _F)
+_INTACT = re.compile(_M + r"storage account and output intact:\s*(True|False)", _F)
+_FIXED = re.compile(_M + r"faults fixed:\s*(\d+)\s*[-—]\s*([^\n]*)", _F)
+_REMAINING = re.compile(_M + r"faults remaining:\s*(\d+)\s*[-—]\s*([^\n]*)", _F)
 
 #: How many times each turn actually called the validator. The container count cannot answer
 #: this: a turn that never validated leaves the previous turn's container standing, so the count
 #: still reads 1 and the run looks like reuse while the second `acquire` never happened.
 _TOOL_CALLS = (
-    ("turn 1", re.compile(r"bicep_validate calls in turn 1:\s*(\d+)", re.IGNORECASE)),
-    ("turn 2", re.compile(r"bicep_validate calls in turn 2:\s*(\d+)", re.IGNORECASE)),
+    ("turn 1", re.compile(_M + r"bicep_validate calls in turn 1:\s*(\d+)", _F)),
+    ("turn 2", re.compile(_M + r"bicep_validate calls in turn 2:\s*(\d+)", _F)),
 )
 
 #: The program's own compile of the file turn 1 wrote — the baseline the repair is measured
@@ -67,10 +74,10 @@ _TOOL_CALLS = (
 #: Ends at the container count so the fault tally below is inside the section and read from it.
 _AUTHORED_COMPILE = (
     re.compile(r"==\s*What the compiler says about the file turn 1 wrote"),
-    re.compile(r"containers after the baseline compile"),
+    re.compile(_M + r"containers after the baseline compile", _F),
 )
 _AUTHORED_FAULTS = re.compile(
-    r"tracked faults in the authored file:\s*(\d+)\s*[-—]\s*([^\n]*)", re.IGNORECASE
+    _M + r"tracked faults in the authored file:\s*(\d+)\s*[-—]\s*([^\n]*)", _F
 )
 
 #: The program's compile of the file turn 2 left. Matched on the full heading, because the
@@ -78,7 +85,7 @@ _AUTHORED_FAULTS = re.compile(
 #: diagnostics as `[level] rule @ file:line: message`.
 _COMPILE = (
     re.compile(r"==\s*What the compiler says about the file the model left"),
-    re.compile(r"containers after the check"),
+    re.compile(_M + r"containers after the check", _F),
 )
 _PHASE = re.compile(r"^\s*(build|lint)\([^)]*\):\s*(no diagnostics|\d+ diagnostic)", re.MULTILINE)
 _DIAGNOSTIC = re.compile(r"^\s*\[\w+\]\s+(\S+)\s+@", re.MULTILINE)
@@ -91,7 +98,7 @@ _TOLERATED_RULE = "use-recent-api-versions"
 
 #: The footer, both numbers read back from what the run observed.
 _FOOTER = re.compile(
-    r"Disposed\s+(\d+)\s+sandbox\(es\)[^.]*\.\s*Containers left:\s*(\d+)\.", re.IGNORECASE
+    _M + r"Disposed\s+(\d+)\s+sandbox\(es\)[^.]*\.\s*Containers left:\s*(\d+)\.", _F
 )
 
 

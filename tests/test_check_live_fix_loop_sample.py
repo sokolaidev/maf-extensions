@@ -18,6 +18,8 @@ import importlib.util
 import re
 from pathlib import Path
 
+import pytest
+
 _ROOT = Path(__file__).resolve().parent.parent
 _SCRIPT = _ROOT / "scripts" / "check_live_fix_loop_sample.py"
 _spec = importlib.util.spec_from_file_location("check_live_fix_loop_sample", _SCRIPT)
@@ -34,8 +36,8 @@ Validation complete. Here are the 3 diagnostics, one line each:
 2. `BCP035` — warning — line 5 (resource missing required `sku` property)
 3. `use-recent-api-versions` — warning — line 5 (`2023-01-01` is over the 730-day guideline)
 
-  bicep_validate calls in turn 1: 1
-  containers after turn 1: 1
+  [measured] bicep_validate calls in turn 1: 1
+  [measured] containers after turn 1: 1
 
 == What the compiler says about the file turn 1 wrote ==
 
@@ -48,8 +50,8 @@ Validation complete. Here are the 3 diagnostics, one line each:
     [warning] BCP035 @ main.bicep:5: The "resource" declaration is missing "sku".
     [warning] use-recent-api-versions @ main.bicep:5: '2023-01-01' is 1322 days old.
 
-  tracked faults in the authored file: 2 — no-unused-params; BCP035
-  containers after the baseline compile: 1
+  [measured] tracked faults in the authored file: 2 — no-unused-params; BCP035
+  [measured] containers after the baseline compile: 1
 
 == Turn 2: fix, then validate again ==
 
@@ -59,25 +61,25 @@ Validation is clean — zero diagnostics. What changed:
 2. `BCP035` — added a `sku` block with a `skuName` parameter.
 3. `use-recent-api-versions` — bumped the API version to `2025-01-01`.
 
-  bicep_validate calls in turn 2: 1
-  containers after turn 2: 1
+  [measured] bicep_validate calls in turn 2: 1
+  [measured] containers after turn 2: 1
 
 == What the compiler says about the file the model left ==
 
   build(main.bicep): no diagnostics
   lint(main.bicep): no diagnostics
 
-  containers after the check: 1
+  [measured] containers after the check: 1
 
 == The work product ==
 
-  main.bicep authored in turn 1: True
-  main.bicep changed by turn 2:  True
-  storage account and output intact: True
-  faults fixed:       2 — no-unused-params; BCP035
-  faults remaining:   0 — none
+  [measured] main.bicep authored in turn 1: True
+  [measured] main.bicep changed by turn 2:  True
+  [measured] storage account and output intact: True
+  [measured] faults fixed:       2 — no-unused-params; BCP035
+  [measured] faults remaining:   0 — none
 
-Disposed 1 sandbox(es) after 2 turns and a check. Containers left: 0.
+  [measured] Disposed 1 sandbox(es) after 2 turns and a check. Containers left: 0.
 """
 
 #: A run where the model fixed only `BCP035` and left the unused parameter. Both the tally and
@@ -191,7 +193,7 @@ class TestTurnOneActuallyAuthoredTheFile:
         assert any("turn 1 left no main.bicep" in r for r in reasons), reasons
 
     def test_a_run_that_does_not_report_authoring_is_caught(self):
-        reasons = _tampered("  main.bicep authored in turn 1: True\n", "")
+        reasons = _tampered("  [measured] main.bicep authored in turn 1: True\n", "")
         assert any("whether turn 1 wrote main.bicep" in r for r in reasons), reasons
 
     def test_an_authored_file_with_no_fault_to_fix_is_caught(self):
@@ -202,8 +204,8 @@ class TestTurnOneActuallyAuthoredTheFile:
         never run one.
         """
         reasons = _tampered(
-            "  tracked faults in the authored file: 2 — no-unused-params; BCP035",
-            "  tracked faults in the authored file: 0 — none",
+            "  [measured] tracked faults in the authored file: 2 — no-unused-params; BCP035",
+            "  [measured] tracked faults in the authored file: 0 — none",
         )
         assert any("had no tracked fault in it" in r for r in reasons), reasons
 
@@ -215,9 +217,9 @@ class TestTurnOneActuallyAuthoredTheFile:
         the last heading its end marker still follows.
         """
         echoed = _HEALTHY.replace(
-            "  bicep_validate calls in turn 2: 1",
+            "  [measured] bicep_validate calls in turn 2: 1",
             "Recapping == What the compiler says about the file turn 1 wrote ==\n\n"
-            "  bicep_validate calls in turn 2: 1",
+            "  [measured] bicep_validate calls in turn 2: 1",
         )
         assert echoed != _HEALTHY, "the substitution matched nothing — the fixture moved"
         assert check.assess(echoed) == [], check.assess(echoed)
@@ -249,19 +251,23 @@ class TestTheTallyNamesAgreeWithItsNumbers:
 
     def test_a_count_with_no_names_is_caught(self):
         reasons = _tampered(
-            "  faults fixed:       2 — no-unused-params; BCP035", "  faults fixed:       2 — none"
+            "  [measured] faults fixed:       2 — no-unused-params; BCP035",
+            "  [measured] faults fixed:       2 — none",
         )
         assert any("says 2 but names 0" in r for r in reasons), reasons
 
     def test_invented_rule_names_are_caught(self):
         reasons = _tampered(
-            "  faults fixed:       2 — no-unused-params; BCP035",
-            "  faults fixed:       2 — BCP999; totally-made-up",
+            "  [measured] faults fixed:       2 — no-unused-params; BCP035",
+            "  [measured] faults fixed:       2 — BCP999; totally-made-up",
         )
         assert any("which this sample does not track" in r for r in reasons), reasons
 
     def test_a_rule_in_both_columns_is_caught(self):
-        reasons = _tampered("  faults remaining:   0 — none", "  faults remaining:   1 — BCP035")
+        reasons = _tampered(
+            "  [measured] faults remaining:   0 — none",
+            "  [measured] faults remaining:   1 — BCP035",
+        )
         assert any("listed as both fixed and remaining" in r for r in reasons), reasons
 
 
@@ -290,9 +296,9 @@ class TestTheBaselineIsReadFromItsOwnBlock:
         0 makes the sample look like it authored a clean file.
         """
         narrated = _HEALTHY.replace(
-            "  bicep_validate calls in turn 1: 1",
+            "  [measured] bicep_validate calls in turn 1: 1",
             "For the record: tracked faults in the authored file: 0 — none\n\n"
-            "  bicep_validate calls in turn 1: 1",
+            "  [measured] bicep_validate calls in turn 1: 1",
         )
         assert narrated != _HEALTHY, "the substitution matched nothing — the fixture moved"
         assert check.assess(narrated) == [], check.assess(narrated)
@@ -313,8 +319,8 @@ class TestTheModelActuallyEdited:
 
     def test_a_change_that_fixed_nothing_is_caught(self):
         reasons = _tampered(
-            "  faults fixed:       2 — no-unused-params; BCP035\n  faults remaining:   0 — none",
-            "  faults fixed:       0 — none\n  faults remaining:   2 — no-unused-params; BCP035",
+            "  [measured] faults fixed:       2 — no-unused-params; BCP035\n  [measured] faults remaining:   0 — none",
+            "  [measured] faults fixed:       0 — none\n  [measured] faults remaining:   2 — no-unused-params; BCP035",
         )
         assert any("no fault was fixed" in r for r in reasons), reasons
 
@@ -333,14 +339,14 @@ class TestTheTemplateSurvived:
 
     def test_a_deleted_template_is_caught(self):
         reasons = _tampered(
-            "  storage account and output intact: True",
-            "  storage account and output intact: False — missing "
+            "  [measured] storage account and output intact: True",
+            "  [measured] storage account and output intact: False — missing "
             "Microsoft.Storage/storageAccounts; output storageAccountId",
         )
         assert any("deleting the template" in r for r in reasons), reasons
 
     def test_a_run_that_does_not_report_it_is_caught(self):
-        reasons = _tampered("  storage account and output intact: True\n", "")
+        reasons = _tampered("  [measured] storage account and output intact: True\n", "")
         assert any("whether the template survived" in r for r in reasons), reasons
 
 
@@ -355,10 +361,10 @@ class TestTheTallyIsReadFromTheSampleNotTheModel:
         with the numbers the other way round, pass on the narration of a broken one.
         """
         narrated = _HEALTHY.replace(
-            "  bicep_validate calls in turn 2: 1",
+            "  [measured] bicep_validate calls in turn 2: 1",
             "main.bicep changed: False\nfaults fixed: 0 — none\n"
             "faults remaining: 2 — no-unused-params; BCP035\n\n"
-            "  bicep_validate calls in turn 2: 1",
+            "  [measured] bicep_validate calls in turn 2: 1",
         )
         assert narrated != _HEALTHY, "the substitution matched nothing — the fixture moved"
         assert check.assess(narrated) == [], check.assess(narrated)
@@ -371,12 +377,12 @@ class TestTheTallyIsReadFromTheSampleNotTheModel:
         is printed after every turn has returned.
         """
         echoed = _HEALTHY.replace(
-            "  bicep_validate calls in turn 2: 1",
+            "  [measured] bicep_validate calls in turn 2: 1",
             "Here is my summary:\n\n== The work product ==\n\n"
-            "  main.bicep changed: False\n  storage account and output intact: False\n"
-            "  faults fixed:       0 — none\n"
-            "  faults remaining:   2 — no-unused-params; BCP035\n\n"
-            "  bicep_validate calls in turn 2: 1",
+            "  main.bicep changed: False\n  [measured] storage account and output intact: False\n"
+            "  [measured] faults fixed:       0 — none\n"
+            "  [measured] faults remaining:   2 — no-unused-params; BCP035\n\n"
+            "  [measured] bicep_validate calls in turn 2: 1",
         )
         assert echoed != _HEALTHY, "the substitution matched nothing — the fixture moved"
         assert check.assess(echoed) == [], check.assess(echoed)
@@ -388,12 +394,12 @@ class TestTheTallyIsReadFromTheSampleNotTheModel:
         reported them, so a healthy run goes red on rule ids the model only mentioned.
         """
         echoed = _HEALTHY.replace(
-            "  bicep_validate calls in turn 2: 1",
+            "  [measured] bicep_validate calls in turn 2: 1",
             "== What the compiler says about the file the model left ==\n\n"
             "  build(main.bicep): 1 diagnostic(s)\n"
             "    [error] BCP062 @ main.bicep:14: quoting an earlier error I already fixed.\n"
             "  lint(main.bicep): no diagnostics\n\n"
-            "  bicep_validate calls in turn 2: 1",
+            "  [measured] bicep_validate calls in turn 2: 1",
         )
         assert echoed != _HEALTHY, "the substitution matched nothing — the fixture moved"
         assert check.assess(echoed) == [], check.assess(echoed)
@@ -446,8 +452,8 @@ class TestTheCompilerHasTheLastWord:
 
     def test_a_fault_called_remaining_that_the_compiler_does_not_see_is_caught(self):
         reasons = _tampered(
-            "  faults fixed:       1 — BCP035\n  faults remaining:   1 — no-unused-params",
-            "  faults fixed:       1 — no-unused-params\n  faults remaining:   1 — BCP035",
+            "  [measured] faults fixed:       1 — BCP035\n  [measured] faults remaining:   1 — no-unused-params",
+            "  [measured] faults fixed:       1 — no-unused-params\n  [measured] faults remaining:   1 — BCP035",
             base=_PARTIAL,
         )
         assert any("counts BCP035 as remaining" in r for r in reasons), reasons
@@ -574,6 +580,52 @@ class TestTheSampleAsksTheCompilerNotTheText:
             "  [warning] use-recent-api-versions @ main.bicep:31: '2023-01-01' is 1322 days old"
         )
         assert _faults_left()(diagnostics) == []
+
+
+class TestNarrationNeverSuppliesAMeasurement:
+    """Every number the checker reads comes off a line the sample tagged `[measured]`.
+
+    The model answers into the same stream and its reply is printed *before* the sample's own
+    figures for that turn, so an untagged search finds the narration first. Each case below
+    puts a plausible sentence in turn 2's reply and requires the run to still pass.
+    """
+
+    NARRATED = (
+        "bicep_validate calls in turn 2: 0",
+        "bicep_validate calls in turn 1: 0",
+        "containers after turn 1: 4",
+        "containers after the baseline compile: 4",
+        "containers after turn 2: 2",
+        "containers after the check: 9",
+        "main.bicep authored in turn 1: False",
+        "main.bicep changed by turn 2:  False",
+        "storage account and output intact: False",
+        "faults fixed:       0 — none",
+        "faults remaining:   2 — no-unused-params; BCP035",
+        "tracked faults in the authored file: 0 — none",
+        "Disposed 0 sandbox(es) after 2 turns and a check. Containers left: 7.",
+    )
+
+    @pytest.mark.parametrize("sentence", NARRATED, ids=lambda text: text.split(":")[0])
+    def test_the_model_quoting_a_measurement_is_ignored(self, sentence: str):
+        narrated = _HEALTHY.replace(
+            "== Turn 2: fix, then validate again ==",
+            f"== Turn 2: fix, then validate again ==\n\nFor reference, {sentence}\n",
+        )
+        assert narrated != _HEALTHY, "the substitution matched nothing — the fixture moved"
+        assert check.assess(narrated) == [], check.assess(narrated)
+
+    def test_the_fixture_has_no_untagged_measurement_left(self):
+        """Guards the cases above from passing because the phrase stopped being read at all.
+
+        If the sample renamed a line, the narration would match nothing and every case would go
+        green while testing an empty substitution. Each phrase must appear tagged in the
+        fixture, which is what makes injecting an untagged copy meaningful.
+        """
+        for sentence in self.NARRATED:
+            # The footer is the one line whose value is not the first colon-separated field.
+            phrase = "Disposed" if sentence.startswith("Disposed") else sentence.split(":")[0]
+            assert f"  [measured] {phrase}" in _HEALTHY, f"{phrase!r} is not a measured line"
 
 
 class TestTheWorkProductInvariantToleratesFormatting:

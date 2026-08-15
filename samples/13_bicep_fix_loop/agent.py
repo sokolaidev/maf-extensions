@@ -88,6 +88,13 @@ WORK_PRODUCT = (
     ("output storageAccountId", re.compile(r"output\s+storageAccountId")),
 )
 
+#: Prefix on every number this program measured, as opposed to anything the model said. Sample
+#: 12 prints the same kind of line without one and does not need it — no model writes into its
+#: output. Here the model's replies and these measurements share one stream that the live check
+#: parses, so a reply quoting "containers after turn 2: 2" is otherwise indistinguishable from
+#: the count. It also tells a human reading the log which lines are the harness speaking.
+MEASURED = "  [measured] "
+
 #: Built from `images/bicep-sandbox` — the same guest samples 02 and 05 use, so the compiler and
 #: the lint rule set are theirs and the diagnostics below are comparable with both.
 IMAGE = os.environ.get("BICEP_SANDBOX_IMAGE") or "bicep-sandbox:local"
@@ -263,8 +270,8 @@ async def run() -> int:
             session=session,
         )
         print(first.text)
-        print(f"\n  bicep_validate calls in turn 1: {tool_calls(first, BICEP_TOOL)}")
-        print(f"  containers after turn 1: {containers()}\n")
+        print(f"\n{MEASURED}bicep_validate calls in turn 1: {tool_calls(first, BICEP_TOOL)}")
+        print(f"{MEASURED}containers after turn 1: {containers()}\n")
 
         # The baseline turn 2's work is measured against, compiled here rather than lifted out
         # of turn 1's own tool call. That distinction is the whole point: the model may validate
@@ -282,10 +289,10 @@ async def run() -> int:
         print("== What the compiler says about the file turn 1 wrote ==\n")
         print("\n".join(f"  {line}" for line in baseline.splitlines()))
         print(
-            f"\n  tracked faults in the authored file: {len(as_authored)} — "
+            f"\n{MEASURED}tracked faults in the authored file: {len(as_authored)} — "
             f"{'; '.join(as_authored) or 'none'}"
         )
-        print(f"  containers after the baseline compile: {containers()}\n")
+        print(f"{MEASURED}containers after the baseline compile: {containers()}\n")
 
         print("== Turn 2: fix, then validate again ==\n")
         second = await agent.run(
@@ -295,8 +302,8 @@ async def run() -> int:
         print(second.text)
         # Printed before the container count, because it is what gives that count its meaning: a
         # turn that never validated would leave turn 1's container standing and still read 1.
-        print(f"\n  bicep_validate calls in turn 2: {tool_calls(second, BICEP_TOOL)}")
-        print(f"  containers after turn 2: {containers()}\n")
+        print(f"\n{MEASURED}bicep_validate calls in turn 2: {tool_calls(second, BICEP_TOOL)}")
+        print(f"{MEASURED}containers after turn 2: {containers()}\n")
 
         # A model that says "it validates clean now" is still narrating. Compile the file it
         # left behind, from here rather than from the conversation, and let that be the verdict
@@ -308,7 +315,7 @@ async def run() -> int:
             await bicep_validate.invoke(arguments={"files": [BICEP_FILE]}, skip_parsing=True)
         )
         print("\n".join(f"  {line}" for line in verdict.splitlines()))
-        print(f"\n  containers after the check: {containers()}\n")
+        print(f"\n{MEASURED}containers after the check: {containers()}\n")
 
         # The work product, and the two questions the compiler cannot answer: did turn 1 write a
         # file at all, and did turn 2 change it. A model that edited nothing still compiles.
@@ -320,21 +327,23 @@ async def run() -> int:
 
         missing = work_missing(source)
         print("== The work product ==\n")
-        print(f"  main.bicep authored in turn 1: {bool(authored.strip())}")
-        print(f"  main.bicep changed by turn 2:  {source != authored}")
+        print(f"{MEASURED}main.bicep authored in turn 1: {bool(authored.strip())}")
+        print(f"{MEASURED}main.bicep changed by turn 2:  {source != authored}")
         print(
-            f"  storage account and output intact: {not missing}"
+            f"{MEASURED}storage account and output intact: {not missing}"
             + (f" — missing {'; '.join(missing)}" if missing else "")
         )
-        print(f"  faults fixed:       {len(fixed)} — {'; '.join(fixed) or 'none'}")
-        print(f"  faults remaining:   {len(remaining)} — {'; '.join(remaining) or 'none'}\n")
+        print(f"{MEASURED}faults fixed:       {len(fixed)} — {'; '.join(fixed) or 'none'}")
+        print(
+            f"{MEASURED}faults remaining:   {len(remaining)} — {'; '.join(remaining) or 'none'}\n"
+        )
     finally:
         disposed = await router.dispose_scope(SCOPE, THREAD_ID)
         if credential is not None:
             await credential.close()
 
     print(
-        f"Disposed {disposed} sandbox(es) after 2 turns and a check. "
+        f"{MEASURED}Disposed {disposed} sandbox(es) after 2 turns and a check. "
         f"Containers left: {containers()}."
     )
     return 0
