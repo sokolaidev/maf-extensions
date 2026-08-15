@@ -74,8 +74,11 @@ SHIM_MODULE = "maf_host_tools.py"
 _LAUNCHER = "run_program.sh"
 
 #: How long the guest blocks on one call before giving up on the host, and how often it looks.
-#: The guest's patience has to outlast the host's poll interval by a wide margin or a slow
-#: supervisor reads as a dead one; the host's own deadline is what actually bounds a run.
+#: Bounded on both sides. It has to outlast the host's poll interval by a wide margin or a slow
+#: supervisor reads as a dead one, and it must not be shorter than the run's own bound or the
+#: guest gives up on a dispatch that then goes on to act. The host's deadline is what actually
+#: ends a run; this is only the guest's patience, and :func:`host_tool_shim` takes it as an
+#: argument for a caller whose runs are longer than this.
 _GUEST_CALL_TIMEOUT = 300.0
 _GUEST_POLL_SECONDS = 0.05
 
@@ -127,13 +130,24 @@ def guest_run_layout(run_directory: str, *, program: str = "program.py") -> Gues
     )
 
 
-def host_tool_shim(names: frozenset[str] | set[str] | tuple[str, ...] = ()) -> str:
+def host_tool_shim(
+    names: frozenset[str] | set[str] | tuple[str, ...] = (),
+    *,
+    call_timeout: float = _GUEST_CALL_TIMEOUT,
+) -> str:
     """The guest-side module source: ``call(name, **arguments)``, and one function per name.
 
     Written into the guest by the kind, imported by the program. It blocks on a response file
     and raises :class:`HostToolError` — defined in the generated source — on a refusal, so a
     program can catch one call's refusal and carry on, which is what the cap's *finish and
     report* refusal is for.
+
+    ``call_timeout`` is how long the guest waits for one answer, and **it must not be shorter
+    than the bound the run is given**. Give up first and the guest is wrong twice over: a
+    dispatch the supervisor is still running goes on to act — a sink tool sends its message —
+    while the program has already been told the host never answered, and the answer lands in
+    a file nobody will read. The default suits a run bounded below it; a caller passing a
+    larger ``timeout`` to :func:`dispatch_over_exec` must pass the same number here.
 
     ``names`` only adds convenience wrappers; it grants nothing. Resolution happens host-side
     against the registry, so a name omitted here is still callable through :func:`call` and a
@@ -154,9 +168,11 @@ def host_tool_shim(names: frozenset[str] | set[str] | tuple[str, ...] = ()) -> s
         f"    return call({name!r}, **arguments)"
         for name in canonical.values()
     )
+    if call_timeout <= 0:
+        raise ValueError(f"call_timeout must be positive, not {call_timeout}")
     return _SHIM_SOURCE.format(
         calls=CALLS_DIRECTORY,
-        timeout=_GUEST_CALL_TIMEOUT,
+        timeout=call_timeout,
         poll=_GUEST_POLL_SECONDS,
         wrappers=f"\n\n{wrappers}\n" if wrappers else "",
     )
@@ -261,26 +277,38 @@ def _claim():
         return "%04d" % number, claim
 
 
+def _publish(request, payload):
+    """Put `payload` at `request`, whole or not at all.
+
+    Written aside and renamed: `open` creates the file empty, and a supervisor polling in that
+    window would read no JSON and answer a call with a refusal it can never retry.
+    `os.replace` is atomic on every platform this runs on.
+    """
+    staged = request + ".part"
+    with open(staged, "w", encoding="utf-8") as handle:
+        handle.write(payload)
+    os.replace(staged, request)
+
+
 def call(name, **arguments):
     """Dispatch ``name`` with keyword ``arguments`` and return its value."""
     os.makedirs(_CALLS, exist_ok=True)
-    identifier, claim = _claim()
+    identifier, _claim_path = _claim()
     request = os.path.join(_CALLS, identifier + ".request.json")
     try:
-        payload = json.dumps({{"id": identifier, "name": name, "arguments": arguments}})
-        # Written aside and renamed: `open` creates the file empty, and a supervisor polling
-        # in that window would read no JSON and answer this call with a refusal it can never
-        # retry. `os.replace` is atomic on every platform this runs on.
-        staged = request + ".part"
-        with open(staged, "w", encoding="utf-8") as handle:
-            handle.write(payload)
-        os.replace(staged, request)
+        _publish(request, json.dumps({{"id": identifier, "name": name, "arguments": arguments}}))
     except BaseException:
-        # Nothing was published under this identifier, so the name goes back. The supervisor
-        # answers 0001 before it looks for 0002, so a number held by a call that never
-        # published — `json.dumps` refusing a `datetime`, a full disk — costs not one call
-        # but every later one, each timing out behind a request that is never coming.
-        os.unlink(claim)
+        # Published as abandoned rather than released. Giving the number back only helps if
+        # somebody takes it, and the caller who would is often past it already: the supervisor
+        # answers 0001 before it looks at 0002, so a concurrent caller that has published 0002
+        # waits behind a hole that only a *third* call would fill. A marker is a hole the
+        # supervisor can step over, which needs no third call and no shared lock.
+        try:
+            _publish(request, json.dumps({{"id": identifier, "abandoned": True}}))
+        except Exception:
+            # The filesystem is refusing writes, which is very likely why we are here at all.
+            # The original failure is the one worth raising; the run is already lost.
+            pass
         raise
     response = os.path.join(_CALLS, identifier + ".response.json")
     deadline = time.monotonic() + _TIMEOUT
@@ -360,7 +388,9 @@ async def dispatch_over_exec(
         layout: From :func:`guest_run_layout`, on a directory used by this run alone.
         timeout: Seconds for the **whole program**, not one command. A wedged guest is bounded
             by this and nothing else, since a detached process outlives the ``exec`` that
-            started it.
+            started it. Above :func:`host_tool_shim`'s ``call_timeout`` the guest gives up on
+            a call this supervisor is still serving, so the two are set together or the larger
+            bound is the one that is wrong.
         poll_interval: How often to look for the next request or the exit marker.
         interpreter: The guest's Python.
 
@@ -403,6 +433,8 @@ async def dispatch_over_exec(
         )
 
     served = 0
+    allowance = _serving_bound(run)
+    spent = False
     while True:
         if time.monotonic() >= deadline:
             # First in the loop, so an expired run reports *itself*. Every transport call
@@ -428,7 +460,15 @@ async def dispatch_over_exec(
             # Serving awaits the tool, so the check at the top of the loop is what keeps a
             # request arriving a millisecond before the deadline from starting a dispatch the
             # bound cannot interrupt.
-            served = await _serve_next_request(sandbox, run, layout, served, deadline)
+            if served < allowance:
+                served = await _serve_next_request(sandbox, run, layout, served, deadline)
+            elif not spent:
+                spent = True
+                logger.warning(
+                    "host tools: this run has been answered %d times, which is its allowance; "
+                    "the supervisor will not read further requests",
+                    allowance,
+                )
         except TimeoutError as stalled:
             # The deadline expired *inside* this iteration rather than between two of them.
             # Only the transport is bounded that way, so the message says which call ran out
@@ -470,16 +510,31 @@ async def _serve_next_request(
         # supervisor loop cannot see that window; this can. The request stays unanswered and
         # unserved, so the id is not spent and a later run would find it again.
         return served
-    response_path = posixpath.join(layout.calls, f"{identifier}.response.json")
     answer = await _answer(run, body, identifier)
+    if answer is None:
+        # An abandoned number: the guest took it and could not publish a request under it, so
+        # nothing is waiting for a response and writing one would be a round trip spent on
+        # nobody. Stepping over it is what keeps the caller of the *next* number from waiting
+        # on a request that is never coming.
+        logger.debug(
+            "host tools: request %s was abandoned by the guest, stepping over it", identifier
+        )
+        return served + 1
+    response_path = posixpath.join(layout.calls, f"{identifier}.response.json")
     await _within(
         deadline, f"write the answer to {identifier}", sandbox.write_file(response_path, answer)
     )
     return served + 1
 
 
-async def _answer(run: HostToolRun, body: str | _TooLarge | _NotText, identifier: str) -> str:
-    """One request's JSON answer: the tool's value, or a sentence the guest may read."""
+async def _answer(
+    run: HostToolRun, body: str | _TooLarge | _NotText, identifier: str
+) -> str | None:
+    """One request's JSON answer, or ``None`` when the request wants no answer at all.
+
+    ``None`` is the abandonment case and only that: a number the guest claimed and could not
+    publish under. Every other outcome, refusals included, is a sentence the guest may read.
+    """
     if isinstance(body, _TooLarge):
         return json.dumps(
             {
@@ -506,6 +561,11 @@ async def _answer(run: HostToolRun, body: str | _TooLarge | _NotText, identifier
     # takes `object` to its own `isinstance` gates for exactly this reason. Narrowing here
     # would be a second validation in the wrong process's file — and the annotations describe
     # the contract a *host* calls under, not what a transport can promise about a JSON blob.
+    if request.get("abandoned") is True:
+        # The guest's own marker for a number it took and could not use. Nothing dispatches
+        # and nothing is written; a guest spending its allowance on these is bounded by the
+        # same count as one spending it on refusals — see `_serving_bound`.
+        return None
     name = cast(str, request.get("name"))
     arguments = cast("Mapping[str, Any] | None", request.get("arguments"))
     # The framing is declared, not policed afterwards. `dispatch` charges the run for the
@@ -638,6 +698,25 @@ async def _final_output(sandbox: Sandbox, run: HostToolRun, layout: GuestRunLayo
 def _as_text(value: str | _TooLarge | _NotText | None) -> str:
     """The text, or nothing — an absent or over-cap file reads as no output rather than a type."""
     return value if isinstance(value, str) else ""
+
+
+def _serving_bound(run: HostToolRun) -> int:
+    """How many requests this supervisor will read before it stops reading them.
+
+    The dispatch cap bounds what one run may spend at the door, and past it every call is
+    refused — but a refusal is still a stat, a read and a write, and on a remote backend that
+    is three round trips. A guest that catches :class:`HostToolError` and loops, or writes
+    malformed requests that never reach :meth:`~maf_sandbox.HostToolRun.dispatch` at all and
+    so never spend the cap, would otherwise keep the supervisor paying for them until the
+    deadline — and leave a response file behind for each.
+
+    One more than the cap, because this transport serves one outstanding call at a time: a
+    single refusal is all it takes for the guest to be told the cap is gone, and a guest that
+    ignores it has spent its whole allowance. Past that the supervisor stops reading requests
+    and only waits for the program to end, so a still-calling guest gets the timeout its own
+    shim applies rather than an answer.
+    """
+    return run.registry.max_dispatches_per_run + 1
 
 
 def _request_cap(run: HostToolRun) -> int:

@@ -52,6 +52,9 @@ from maf_sandbox.paths import confine_guest_path
 _RUN = "/maf-sandbox/work/run-1"
 _LAYOUT = guest_run_layout(_RUN)
 
+#: Scripted in place of a name: the caller took this number and could not publish under it.
+_ABANDONED = "<abandoned>"
+
 
 @sandbox_tool(source=SourceIntegrity.TRUSTED, sink=None, identity=Identity.APP)
 def add(left: int, right: int) -> int:
@@ -149,6 +152,16 @@ class _ScriptedGuest:
             return
         name, arguments = self.calls[self._issued]
         self._issued += 1
+        if name == _ABANDONED:
+            # One caller's number, claimed and abandoned. Nothing waits on it, so the double
+            # does not either — and the caller behind it has already published, which is the
+            # whole reason a hole here would strand somebody.
+            self.files[self._request_path(self._issued)] = json.dumps(
+                {"id": f"{self._issued:04d}", "abandoned": True}
+            ).encode()
+            self._collected = self._issued
+            self._issue_next()
+            return
         payload: dict[str, Any] = {
             "id": f"{self._issued:04d}",
             "name": name,
@@ -398,6 +411,23 @@ class TestTheLauncher:
         command = launcher_script(layout, "/opt/py 3.12/bin/python3").splitlines()[-1]
         inner = shlex.split(command.removesuffix(" &"))[3]
         assert shlex.split(inner)[0] == "/opt/py 3.12/bin/python3"
+
+
+class TestTheGuestsPatience:
+    def test_the_call_timeout_is_the_callers_to_set(self):
+        """It must not be shorter than the run's bound, so a long run has to be able to say so.
+
+        Give up first and the guest is wrong twice: a dispatch the supervisor is still running
+        goes on to act, while the program has been told the host never answered.
+        """
+        assert "_TIMEOUT = 900.0" in host_tool_shim(call_timeout=900.0)
+        assert "_TIMEOUT = 300.0" in host_tool_shim(), "the default moved without the docs"
+
+    @pytest.mark.parametrize("patience", [0.0, -1.0])
+    def test_a_guest_with_no_patience_is_refused(self, patience: float):
+        """Zero would raise `HostToolError` before the supervisor's first poll."""
+        with pytest.raises(ValueError, match="call_timeout"):
+            host_tool_shim(call_timeout=patience)
 
 
 class TestTheGeneratedShim:
@@ -748,6 +778,50 @@ class TestTheResponseCeiling:
         assert "byte budget" in guest.answers[1]["refusal"]
 
 
+class TestWhatTheSupervisorStepsOver:
+    def test_an_abandoned_number_is_not_answered_and_does_not_stall_the_next(self):
+        """The marker exists so a hole needs no third call to fill it.
+
+        One caller took `0001` and could not publish; another has already published `0002`
+        and is waiting. Serving is by name and in order, so without the marker `0002` is
+        never reached. Nothing waits on `0001`, so answering it would be a round trip spent
+        on nobody — the supervisor steps over it instead.
+        """
+        guest = _ScriptedGuest([(_ABANDONED, {}), ("add", {"left": 2, "right": 3})])
+        _run(guest, HostToolRun(_registry()))
+
+        assert guest.answers and guest.answers[0].get("value") == 5, (
+            f"the call behind the abandoned number went unserved: {guest.answers}"
+        )
+        assert posixpath.join(_LAYOUT.calls, "0001.response.json") not in guest.files, (
+            "the supervisor answered a number nobody was waiting on"
+        )
+
+
+class TestWhatTheSupervisorWillKeepPayingFor:
+    def test_serving_stops_once_the_run_has_spent_its_allowance(self):
+        """A refusal costs the guest nothing and the host a stat, a read and a write.
+
+        With a cap of one: the first call is served, the second is refused because the cap is
+        gone, and the third is not read at all. A guest that ignores the refusal and loops
+        would otherwise keep the supervisor paying until the deadline, leaving a response file
+        behind each time — and a malformed request never reaches `dispatch`, so it never
+        spends the cap that is supposed to bound this.
+
+        The run then times out, which is the honest end state: the guest is still calling and
+        the host has stopped answering.
+        """
+        registry = _registry(max_dispatches_per_run=1)
+        guest = _ScriptedGuest([("add", {"left": 1, "right": 1})] * 3)
+
+        with pytest.raises(TimeoutError):
+            _run(guest, HostToolRun(registry), timeout=0.5)
+
+        assert len(guest.answers) == 2, f"the allowance did not hold: {guest.answers}"
+        assert guest.answers[0].get("value") == 2
+        assert "dispatch cap" in guest.answers[1]["refusal"]
+
+
 class TestTheShimsSequenceAllocation:
     @staticmethod
     def _loaded(tmp_path: Path, name: str) -> Any:
@@ -761,29 +835,29 @@ class TestTheShimsSequenceAllocation:
         (tmp_path / CALLS_DIRECTORY).mkdir(parents=True, exist_ok=True)
         return module
 
-    def test_a_call_that_never_publishes_does_not_spend_an_identifier(self, tmp_path: Path):
+    def test_a_call_that_never_publishes_leaves_a_marker_instead_of_a_hole(self, tmp_path: Path):
         """A gap in the sequence is not a lost call — it is the rest of the run, lost.
 
-        The supervisor answers `0001` before it looks for `0002`, so an identifier taken by a
-        call whose request never lands is one it waits on until the run's deadline. An
-        argument `json.dumps` cannot serialize is the ordinary way in, and a program that
-        catches the `TypeError` — most do — keeps calling into a transport that is now deaf.
+        The supervisor answers `0001` before it looks for `0002`, so a number nobody publishes
+        under is one it waits on until the deadline. Handing the number back is not enough:
+        the caller who would take it next is often past it already, having claimed and
+        published `0002`, and only a *third* call would fill the hole. So the failing caller
+        publishes a marker instead, which the supervisor can step over on its own.
 
-        Both responses are planted so the failure is an answer rather than a five-minute
-        block: without the fix the second call reads `0002`'s.
+        An argument `json.dumps` cannot serialize is the ordinary way in, and a program that
+        catches the `TypeError` — most do — keeps calling.
         """
         module = self._loaded(tmp_path, "maf_host_tools_gap")
         calls = tmp_path / CALLS_DIRECTORY
-        for index, value in ((1, "first"), (2, "second")):
-            (calls / f"{index:04d}.response.json").write_text(
-                json.dumps({"value": value}), encoding="utf-8"
-            )
+        (calls / "0002.response.json").write_text(json.dumps({"value": "second"}), encoding="utf-8")
 
         with pytest.raises(TypeError):
             module.call("anything", unserializable=object())
 
-        assert module.call("anything") == "first", "the failed call spent identifier 0001"
-        assert not (calls / "0002.request.json").exists(), "the supervisor is waiting on 0001"
+        published = calls / "0001.request.json"
+        assert published.exists(), "the number was left holding nothing"
+        assert json.loads(published.read_text(encoding="utf-8"))["abandoned"] is True
+        assert module.call("anything") == "second", "the next call did not move on"
 
     def test_separate_processes_do_not_share_an_identifier(self, tmp_path: Path):
         """A program that forks or spawns gets a second copy of the shim, not a second lock.
