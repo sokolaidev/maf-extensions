@@ -69,6 +69,7 @@ _WORK_PRODUCT = (re.compile(r"==\s*The work product"), None)
 _AUTHORED = re.compile(_M + r"main\.bicep authored in turn 1:\s*(True|False)", _F)
 _CHANGED = re.compile(_M + r"main\.bicep changed by turn 2:\s*(True|False)", _F)
 _INTACT = re.compile(_M + r"storage account and output intact:\s*(True|False)", _F)
+_SUPPRESSED = re.compile(_M + r"tracked rules suppressed:\s*(\d+)\s*[-—]\s*([^\n]*)", _F)
 _FIXED = re.compile(_M + r"faults fixed:\s*(\d+)\s*[-—]\s*([^\n]*)", _F)
 _REMAINING = re.compile(_M + r"faults remaining:\s*(\d+)\s*[-—]\s*([^\n]*)", _F)
 
@@ -100,7 +101,7 @@ _COMPILE = (
     re.compile(_M + r"containers after the check", _F),
 )
 _PHASE = re.compile(r"^\s*(build|lint)\([^)]*\):\s*(no diagnostics|\d+ diagnostic)", re.MULTILINE)
-_DIAGNOSTIC = re.compile(r"^\s*\[\w+\]\s+(\S+)\s+@", re.MULTILINE)
+_DIAGNOSTIC = re.compile(r"^\s*\[(\w+)\]\s+(\S+)\s+@", re.MULTILINE)
 
 #: The one rule the file is allowed to still report. `use-recent-api-versions` fires on how old
 #: the API version is, so demanding it be fixed would make this check a calendar and demanding it
@@ -224,7 +225,7 @@ def _authored_faults(output: str) -> tuple[set[str], list[str]]:
         rule
         for diagnostic in _DIAGNOSTIC.finditer(compiled)
         for rule in _RULE_IDS
-        if diagnostic.group(1).lower() == rule.lower()
+        if diagnostic.group(2).lower() == rule.lower()
     }
     if names != reported:
         failures.append(
@@ -357,6 +358,20 @@ def _assess_repair(output: str, authored: set[str]) -> list[str]:
             "repaired is not one"
         )
 
+    silenced = _one(_SUPPRESSED, block)
+    if silenced is None:
+        failures.append(
+            "the run never reported whether a tracked rule was suppressed — a "
+            "`#disable-next-line` makes the compiler stop reporting it, and every other signal "
+            "here reads that as repaired"
+        )
+    elif int(silenced) != 0:
+        failures.append(
+            f"{silenced} tracked rule(s) silenced with `#disable-next-line` — the diagnostic is "
+            "gone because the file told the compiler not to look, which is not the repair turn "
+            "2 was asked for"
+        )
+
     fixed, remaining = _FIXED.search(block), _REMAINING.search(block)
     if fixed is None or remaining is None:
         failures.append("the run never reported its fault tally")
@@ -390,12 +405,26 @@ def _assess_repair(output: str, authored: set[str]) -> list[str]:
     return failures
 
 
-def _baseline_rules(output: str) -> set[str]:
-    """Every rule the compiler reported on the file turn 1 wrote, tracked or not."""
+def _baseline_warnings(output: str) -> dict[str, int]:
+    """How many times the file turn 1 wrote drew each **non-error** rule.
+
+    Warnings only. Turn 2 is asked to leave the file reporting nothing it did not report
+    before, and an authoring tic like `simplify-interpolation` is not this turn's doing — but a
+    file that does not *build* was never repaired, whoever introduced the error. Tolerating
+    baseline errors would pass a final compile that still fails, which is more than that
+    promise needs.
+
+    Counted rather than collected, so one baseline warning licenses one, not any number.
+    """
     compiled = _section(output, _AUTHORED_COMPILE, last=True)
     if compiled is None:
-        return set()
-    return {match.group(1) for match in _DIAGNOSTIC.finditer(compiled)}
+        return {}
+    counts: dict[str, int] = {}
+    for diagnostic in _DIAGNOSTIC.finditer(compiled):
+        level, rule = diagnostic.group(1).lower(), diagnostic.group(2)
+        if level != "error":
+            counts[rule] = counts.get(rule, 0) + 1
+    return counts
 
 
 def _assess_compiler_agrees(
@@ -427,7 +456,7 @@ def _assess_compiler_agrees(
         ]
 
     failures: list[str] = []
-    reported = {match.group(1) for match in _DIAGNOSTIC.finditer(compiled)}
+    reported = {match.group(2) for match in _DIAGNOSTIC.finditer(compiled)}
 
     for rule in _RULE_IDS:
         named = any(rule.lower() == seen.lower() for seen in reported)
@@ -447,8 +476,16 @@ def _assess_compiler_agrees(
     # not this turn's doing — an ordinary authoring tic like `simplify-interpolation` would
     # otherwise fail a run the prompt explicitly licensed, blaming the model for it.
     accounted = {rule.lower() for rule in remaining_names}
-    accounted |= {rule.lower() for rule in _baseline_rules(output)}
     accounted.add(_TOLERATED_RULE.lower())
+
+    # Warnings the authored file already drew, no more often than it drew them. A rule the
+    # baseline raised once does not license three fresh instances of it.
+    baseline = _baseline_warnings(output)
+    final: dict[str, int] = {}
+    for diagnostic in _DIAGNOSTIC.finditer(compiled):
+        final[diagnostic.group(2)] = final.get(diagnostic.group(2), 0) + 1
+    accounted |= {rule.lower() for rule, seen in final.items() if 0 < seen <= baseline.get(rule, 0)}
+
     introduced = sorted(rule for rule in reported if rule.lower() not in accounted)
     if introduced:
         failures.append(

@@ -76,6 +76,10 @@ TRACKED_FAULTS = ("no-unused-params", "BCP035")
 #: The tool the model is expected to reach for, and the one this sample counts calls to.
 BICEP_TOOL = "bicep_validate"
 
+#: How `_run_phase` renders a compile: one line per phase, at the start of the line. Both
+#: must be present for a result to be one the sandbox produced.
+_PHASES = re.compile(r"^build\(.*^lint\(", re.MULTILINE | re.DOTALL)
+
 #: What the brief asks for by name, and the one thing no other signal here protects:
 #: emptying the file changes it, reports no tracked fault, and compiles clean. Patterns rather
 #: than substrings, because the model writes this file and its spacing is the model's to
@@ -162,6 +166,20 @@ def work_missing(source: str) -> list[str]:
     return [label for label, pattern in WORK_PRODUCT if not pattern.search(source)]
 
 
+def suppressed(source: str) -> list[str]:
+    """Tracked rules the file silences with a `#disable-next-line` directive.
+
+    `faults_left` asks the compiler, which is the right question — and a directive makes the
+    compiler stop asking. Two comment lines otherwise satisfy every signal here at once: the
+    file changed, the template is intact, and both phases come back clean. Suppressing a
+    diagnostic is a legitimate thing to do in real Bicep; it is not a repair, and turn 2's
+    prompt asks for one.
+    """
+    directives = re.findall(r"^[^\S\n]*#disable-next-line[^\S\n]+(.+)$", source, re.MULTILINE)
+    named = {token for line in directives for token in line.split()}
+    return [rule for rule in TRACKED_FAULTS if rule in named]
+
+
 def validations(reply: object, name: str) -> int:
     """How many times ``reply`` called ``name`` and got a compile back.
 
@@ -171,8 +189,9 @@ def validations(reply: object, name: str) -> int:
     Counting *requests* would not answer it either. `bicep_validate` returns an error string
     without touching the sandbox when no conversation is bound, when a name has the wrong
     suffix, and when a name is not in its file listing — so a turn whose only validator call
-    was rejected would score 1 having acquired nothing. A result naming both compiler phases
-    is one that reached the sandbox.
+    was rejected would score 1 having acquired nothing. A result whose *lines* start with both
+    compiler phases is one that reached the sandbox — anchored, because a rejection echoes the
+    caller's own filename back, and a name carrying those markers would otherwise count.
     """
     asked = {
         content.call_id
@@ -187,8 +206,7 @@ def validations(reply: object, name: str) -> int:
         for content in message.contents
         if getattr(content, "type", None) == "function_result"
         and getattr(content, "call_id", None) in asked
-        and "build(" in str(getattr(content, "result", ""))
-        and "lint(" in str(getattr(content, "result", ""))
+        and _PHASES.search(str(getattr(content, "result", ""))) is not None
     )
 
 
@@ -413,12 +431,16 @@ async def run() -> int:
         fixed = [rule for rule in as_authored if rule not in remaining]
 
         missing = work_missing(source)
+        silenced = suppressed(source)
         print("== The work product ==\n")
         print(f"{MEASURED}main.bicep authored in turn 1: {bool(authored.strip())}")
         print(f"{MEASURED}main.bicep changed by turn 2:  {source != authored}")
         print(
             f"{MEASURED}storage account and output intact: {not missing}"
             + (f" — missing {'; '.join(missing)}" if missing else "")
+        )
+        print(
+            f"{MEASURED}tracked rules suppressed: {len(silenced)} — {'; '.join(silenced) or 'none'}"
         )
         print(f"{MEASURED}faults fixed:       {len(fixed)} — {'; '.join(fixed) or 'none'}")
         print(

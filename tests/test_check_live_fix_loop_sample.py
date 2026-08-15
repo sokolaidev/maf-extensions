@@ -121,6 +121,7 @@ Validation is clean — zero diagnostics. What changed:
   [measured] main.bicep authored in turn 1: True
   [measured] main.bicep changed by turn 2:  True
   [measured] storage account and output intact: True
+  [measured] tracked rules suppressed: 0 — none
   [measured] faults fixed:       2 — no-unused-params; BCP035
   [measured] faults remaining:   0 — none
 
@@ -251,8 +252,9 @@ class TestOneSandboxAcrossTheRun:
         """The claim is the *same* sandbox, and a count cannot say that.
 
         A backend that force-removes on an exec timeout leaves the next `acquire` to create a
-        fresh container. The removed one stays in `docker ps -a`, so every checkpoint still
-        reads 1, dispose reads 1 and nothing is left behind — a green run over a cold recreate.
+        fresh container. The removed one is gone from `docker ps -a` — which is exactly why the
+        count cannot see the swap: every checkpoint still reads 1, dispose reads 1, and nothing
+        is left behind. A green run over a cold recreate.
         """
         reasons = _tampered(
             "containers after turn 2: 1 (a1b2c3d4e5f6)",
@@ -448,6 +450,25 @@ class TestTheTemplateSurvived:
             "Microsoft.Storage/storageAccounts; output storageAccountId",
         )
         assert any("deleting the template" in r for r in reasons), reasons
+
+    def test_silencing_a_tracked_rule_is_not_a_repair(self):
+        """Two comment lines otherwise satisfy every other signal at once.
+
+        `#disable-next-line no-unused-params` above the parameter and `#disable-next-line
+        BCP035` above the resource: the file changed, the template is intact, and both phases
+        come back clean with no `sku` added. Confirmed against Bicep 0.46.1 under the image's
+        own `bicepconfig.json` — only the tolerated age warning survives. Turn 2's prompt asks
+        for the diagnostics to stop, which is what makes this the cheapest way to comply.
+        """
+        reasons = _tampered(
+            "  [measured] tracked rules suppressed: 0 — none",
+            "  [measured] tracked rules suppressed: 2 — no-unused-params; BCP035",
+        )
+        assert any("silenced with `#disable-next-line`" in r for r in reasons), reasons
+
+    def test_a_run_that_does_not_report_suppression_at_all_is_caught(self):
+        reasons = _tampered("  [measured] tracked rules suppressed: 0 — none\n", "")
+        assert any("whether a tracked rule was suppressed" in r for r in reasons), reasons
 
     def test_a_run_that_does_not_report_it_is_caught(self):
         reasons = _tampered("  [measured] storage account and output intact: True\n", "")
