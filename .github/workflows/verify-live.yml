@@ -753,3 +753,43 @@ jobs:
           # assertion that matters is the disposal count — 2, one per registered backend, when
           # only one of them was serving. stdlib-only, so the runner's own python3 runs it.
           python3 "$HARNESS"/scripts/check_live_router_sample.py /tmp/sample11-out.txt
+
+  sample-12:
+    name: samples/12_purge_lifecycle against a live container
+    # The lifecycle end no other sample reaches: reuse within a turn, `router.scope` at the end
+    # of one, and `SandboxPurger` on a thread delete. Only the router (maf-sandbox) and the
+    # backend it disposes through (maf-sandbox-docker) can change what this exercises; no kind
+    # package is involved.
+    if: >-
+      inputs.package == ''
+      || contains(fromJSON('["maf-sandbox", "maf-sandbox-docker"]'), inputs.package)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # No `environment:` and no `permissions:`, as for samples 10 and 11: this one calls no model
+    # either. It does create containers — five threads' worth, one at a time — and counts them
+    # with `docker ps`, which is the only evidence a purge claim is worth anything.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # Only when `HARNESS` points at it — see the `env` block above for why the checks come
+      # from somewhere other than the samples. Sparse, because `scripts/` is all that is read.
+      - name: Check out the checks from the default branch
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch || 'main' }}
+          path: .harness
+          sparse-checkout: scripts
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Run sample 12 and assert every sandbox was reclaimed
+        run: |
+          set -euo pipefail
+          uv run --no-project samples/12_purge_lifecycle/agent.py | tee /tmp/sample12-out.txt
+          # Two assertions carry it: no container left behind, and the purger finding 1 on the
+          # abandoned thread — a purger wired to nothing reports 0 everywhere, so the tidy
+          # thread's expected 0 cannot be the only zero checked. stdlib-only, so the runner's
+          # own python3 runs it.
+          python3 "$HARNESS"/scripts/check_live_purge_sample.py /tmp/sample12-out.txt
