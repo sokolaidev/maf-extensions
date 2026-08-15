@@ -6,13 +6,15 @@ This one runs two turns and a check against the same key, and prints the contain
 
 | | What happens | `bicep_validate` calls | Containers |
 |---|---|---|---|
-| Turn 1 | the model calls `bicep_validate` and reports what came back | 1 | 1 |
-| Turn 2 | it edits `main.bicep` and validates again | 1 | 1 |
+| Turn 1 | the model calls `bicep_validate` and reports what came back | ≥1 | 1 |
+| Turn 2 | it edits `main.bicep` and validates again | ≥1 | 1 |
 | The check | the sample compiles the file itself, with no model involved | 1 | 1 |
 
-Three `acquire` calls, one container. A second container would have answered every one of those calls just as well, which is why the count is printed rather than described.
+At least three `acquire` calls, one container. Nothing stops a model from validating twice in a turn — that is a normal thing for one to do, and it makes no difference to the claim, since the second call finds the same sandbox as the first. So the sample prints what happened and the check requires at least one call per turn rather than exactly one. Only the final compile is fixed at one, because the program makes that call itself.
 
-**The call counts are there because the container count cannot carry the claim alone.** A fix turn that edits the file and never validates it makes no second `acquire` at all — and turn 1's container is still sitting there to be counted, so the run would read as reuse while never demonstrating any. The counts come from the tool calls in each turn's returned messages, so "the fix turn reached the same warm sandbox" is a measurement rather than an inference. The live check requires both turns to show at least one.
+A second container would have answered every one of those calls just as well, which is why the count is printed rather than described.
+
+**The call counts are there because the container count cannot carry the claim alone.** A fix turn that edits the file and never validates it makes no second `acquire` at all — and turn 1's container is still sitting there to be counted, so the run would read as reuse while never demonstrating any. The counts come from the tool calls in each turn's returned messages, so "the fix turn reached the same warm sandbox" is a measurement rather than an inference.
 
 ## The session is the mechanism
 

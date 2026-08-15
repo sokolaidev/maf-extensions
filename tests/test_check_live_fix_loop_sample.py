@@ -215,6 +215,41 @@ class TestTheTallyIsReadFromTheSampleNotTheModel:
         assert narrated != _HEALTHY, "the substitution matched nothing — the fixture moved"
         assert check.assess(narrated) == [], check.assess(narrated)
 
+    def test_a_model_echoing_the_work_product_heading_does_not_hijack_the_block(self):
+        """Scoping to a heading is no protection when the model can print the heading.
+
+        The first match would then be the echo, and the block parsed from it is model prose all
+        the way to the end of the output. The sample's block is always the last one, because it
+        is printed after every turn has returned.
+        """
+        echoed = _HEALTHY.replace(
+            "  bicep_validate calls in turn 2: 1",
+            "Here is my summary:\n\n== The work product ==\n\n"
+            "  main.bicep changed: False\n  storage account and output intact: False\n"
+            "  faults fixed:       0 — none\n"
+            "  faults remaining:   2 — no-unused-params; BCP035\n\n"
+            "  bicep_validate calls in turn 2: 1",
+        )
+        assert echoed != _HEALTHY, "the substitution matched nothing — the fixture moved"
+        assert check.assess(echoed) == [], check.assess(echoed)
+
+    def test_a_model_echoing_the_compile_heading_does_not_hijack_the_diagnostics(self):
+        """Same defect on the other sample-authored block, and it fails in the other direction.
+
+        Diagnostics quoted under an echoed heading would be swept as if the compiler had just
+        reported them, so a healthy run goes red on rule ids the model only mentioned.
+        """
+        echoed = _HEALTHY.replace(
+            "  bicep_validate calls in turn 2: 1",
+            "== What the compiler says about the file the model left ==\n\n"
+            "  build(main.bicep): 1 diagnostic(s)\n"
+            "    [error] BCP062 @ main.bicep:14: quoting an earlier error I already fixed.\n"
+            "  lint(main.bicep): no diagnostics\n\n"
+            "  bicep_validate calls in turn 2: 1",
+        )
+        assert echoed != _HEALTHY, "the substitution matched nothing — the fixture moved"
+        assert check.assess(echoed) == [], check.assess(echoed)
+
     def test_a_missing_work_product_block_is_caught(self):
         reasons = _tampered("== The work product ==", "== something else ==")
         assert any("no work-product block" in r for r in reasons), reasons
@@ -371,19 +406,12 @@ class TestTheSampleAsksTheCompilerNotTheText:
         assert _faults_left()("build(main.bicep): no diagnostics") == []
 
     def test_source_text_is_not_what_it_reads(self):
-        """The regression, pinned by feeding it the thing the old version keyed on.
+        """`faults_left` reads diagnostics, so source text tells it nothing.
 
-        The old tally asked `"param environmentName" in source`, which is still true of the
-        repair below — a perfectly good one that references the parameter instead of deleting
-        it. It reported the rule as remaining while the compiler reported nothing, and the live
-        check then failed the run for disagreeing with itself.
-
-        Passing that source here is what separates the two implementations. The old one finds
-        its substrings and returns both faults; the current one finds no rule id and returns
-        nothing, because source text is not what it reads. An earlier version of this test
-        built `repaired` and then asserted on a clean-diagnostics string instead, which the old
-        implementation also fails — for an unrelated reason, via its `sku:` clause — so it went
-        green without ever exercising the clause it is named after.
+        The fixture is a valid repair that keeps the declaration and uses the parameter — the
+        shape a source-substring tally calls unfixed while the compiler calls the file clean.
+        Passing it here is what separates the two: a substring version returns both faults,
+        this one returns none.
         """
         repaired = "param environmentName string\ntags: { env: environmentName }"
         assert "param environmentName" in repaired, "the fixture lost the point of this test"

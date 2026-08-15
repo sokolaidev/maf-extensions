@@ -99,19 +99,13 @@ def containers() -> int:
 def faults_left(diagnostics: str) -> list[str]:
     """Which of the two tracked faults the **compiler** still reports in ``diagnostics``.
 
-    Asked of the compiler rather than of the source text, and that is the whole point. A fault
-    is fixed when the rule stops firing, not when some string disappears: `no-unused-params` is
-    satisfied either by deleting `environmentName` *or* by using it, and a substring test for
-    `param environmentName` calls the second one unfixed while the compiler calls the file
-    clean. That is a real repair failed by its own harness.
+    Both fire on the file as it ships, so a tracked rule absent here was fixed. Read from the
+    diagnostics and not the source, because `no-unused-params` is satisfied by *using*
+    `environmentName` as well as by deleting it.
 
-    `main.bicep` reports a **third** diagnostic, `use-recent-api-versions`, which is not tracked
-    here. It fires on how old the API version is rather than on the shape of the file, so what
-    counts as fixed would move with the calendar. The model sees it and may address it; neither
-    answer changes this tally. Anything *else* the compiler reports is a new fault the model
-    introduced, and `scripts/check_live_fix_loop_sample.py` fails the run for it.
-
-    Both tracked rules fire on the file as it ships, so a rule absent here was fixed.
+    `use-recent-api-versions` is deliberately untracked: it fires on the age of the API version,
+    so what counts as fixed would move with the calendar. Anything else the compiler reports is
+    a fault the model introduced, which `scripts/check_live_fix_loop_sample.py` rejects.
     """
     return [rule for rule in TRACKED_FAULTS if rule.lower() in diagnostics.lower()]
 

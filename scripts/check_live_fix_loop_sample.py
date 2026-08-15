@@ -62,8 +62,11 @@ _COUNTS = (
 #: The sample's own closing block, and the only place the four lines below are read from. The
 #: model is answering in the same stream and can say "faults fixed: …" or "main.bicep changed"
 #: in its own prose — turn 2's reply is *above* this block, so an unscoped `search` would find
-#: the narration first and parse that instead of the numbers the sample computed. Same reason
-#: `_TURN_ONE` is scoped, applied to the other end of the output.
+#: the narration first and parse that instead of the numbers the sample computed.
+#:
+#: Read with ``last=True``, which is the other half of the same problem: scoping to the heading
+#: is no protection if the model prints the heading too, and the first match would then be the
+#: echo. The sample's block is always the final one, because it is printed after every turn.
 _WORK_PRODUCT = (re.compile(r"==\s*The work product"), None)
 
 #: The file store compared with what went in, whether the template survived, and the fault
@@ -85,6 +88,10 @@ _TOOL_CALLS = (
 #: The compile at the end, and only that. `main.bicep` compiles in two phases and each prints one
 #: line; `format_diagnostics` renders "no diagnostics" or "N diagnostic(s)" followed by the
 #: diagnostics themselves, one per line as `[level] rule @ file:line: message`.
+#:
+#: Also read with ``last=True``. A model describing its own validation can print this heading
+#: and diagnostics under it, and taking the first match would sweep those as if the compiler
+#: had reported them — failing a healthy run on rule ids the model merely quoted.
 _COMPILE = (re.compile(r"==\s*What the compiler says"), re.compile(r"containers after the check"))
 _PHASE = re.compile(r"^\s*(build|lint)\([^)]*\):\s*(no diagnostics|\d+ diagnostic)", re.MULTILINE)
 _DIAGNOSTIC = re.compile(r"^\s*\[\w+\]\s+(\S+)\s+@", re.MULTILINE)
@@ -106,16 +113,28 @@ def _one(pattern: re.Pattern[str], output: str) -> str | None:
     return match.group(1) if match else None
 
 
-def _section(output: str, bounds: tuple[re.Pattern[str], re.Pattern[str] | None]) -> str | None:
+def _section(
+    output: str, bounds: tuple[re.Pattern[str], re.Pattern[str] | None], *, last: bool = False
+) -> str | None:
     """The text between two markers, or ``None`` if a required one is missing.
 
     An end of ``None`` means "to the end of the output" — for the closing block, which has no
     marker after it and must still be readable when the run died before its footer.
+
+    ``last`` picks the final start marker instead of the first, and which one a caller wants
+    depends on whose text the section is meant to hold. **The model's output always comes
+    first**: it is printed as each turn returns, before any block the sample writes. So for a
+    block the *sample* authored, the last heading is the real one and the first may be a model
+    echoing it — the failure this argument exists to prevent, because the parse then reads the
+    model's own prose as the sample's findings. `_TURN_ONE` is the exception and takes the
+    first: that section is deliberately the model's reply, so an echo inside it is still the
+    model, which is what is being searched.
     """
     start, end = bounds
-    opened = start.search(output)
-    if opened is None:
+    found = list(start.finditer(output))
+    if not found:
         return None
+    opened = found[-1] if last else found[0]
     if end is None:
         return output[opened.end() :]
     closed = end.search(output, opened.end())
@@ -189,7 +208,7 @@ def _assess_repair(output: str) -> list[str]:
     `search` over the lot would find the narration first — which is the failure this sample
     exists to rule out, reintroduced in its own checker.
     """
-    block = _section(output, _WORK_PRODUCT)
+    block = _section(output, _WORK_PRODUCT, last=True)
     if block is None:
         return ["no work-product block — the run never reported what it left behind"]
 
@@ -253,7 +272,7 @@ def _assess_compiler_agrees(output: str, fixed_names: str, remaining_names: str)
     reports a repair that left the file broken. So every diagnostic is swept: a rule is
     acceptable only if the tally already calls it remaining, or it is the age rule.
     """
-    compiled = _section(output, _COMPILE)
+    compiled = _section(output, _COMPILE, last=True)
     if compiled is None:
         return [
             "the compiler was never run over the file the model left — every claim below it is "
