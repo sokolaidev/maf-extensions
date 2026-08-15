@@ -124,8 +124,25 @@ def guest_run_layout(run_directory: str, *, program: str = "program.py") -> Gues
 
     A kind writes ``program`` and :attr:`GuestRunLayout.shim`; everything else is written here.
     ``run_directory`` must be fresh per run — see this module's docstring on why nothing
-    deletes.
+    deletes — and absolute, and ``program`` must be a plain file name.
+
+    Both are checked rather than assumed, because the ways they fail are quiet.
+    :class:`GuestRunLayout` says every path is absolute and inside one directory, and the pull
+    calls take it at its word: a relative run directory is joined against itself by
+    ``confine_guest_path`` and every request lands somewhere the supervisor is not looking.
+    An absolute ``program`` makes ``posixpath.join`` discard the run directory outright, and a
+    nested one puts the program in a directory the shim is not in, where importing it fails.
     """
+    if not posixpath.isabs(run_directory):
+        raise ValueError(
+            f"run_directory must be an absolute guest path, not {run_directory!r}: every path "
+            "in the layout is joined onto it and resolved against it again by the pull calls"
+        )
+    if program != posixpath.basename(program) or program in {"", ".", ".."}:
+        raise ValueError(
+            f"program must be a plain file name, not {program!r}: it is written beside the "
+            "shim and imports it, which only works when the two share a directory"
+        )
     return GuestRunLayout(
         directory=run_directory,
         program=posixpath.join(run_directory, program),
@@ -259,7 +276,7 @@ class HostToolError(RuntimeError):
 
 
 def _claim():
-    """Take the lowest identifier no other caller holds, and the file that holds it.
+    """Take the lowest identifier no other caller holds.
 
     A lock would only cover this process. A program that forks, or uses `multiprocessing`,
     gets a second copy of this module with its own idea of the next number, and two copies
@@ -268,8 +285,9 @@ def _claim():
     filesystem operation that exactly one caller wins, whichever process or thread it is in.
 
     A file of its own rather than the request path, so allocation does not depend on the
-    supervisor's rule that an empty file has not arrived yet. From the lowest number each
-    time, so an identifier released by a call that never published is taken by the next one.
+    supervisor's rule that an empty file has not arrived yet. Claims are never removed: a
+    number this hands out is published under, as a request or as an abandonment, and from the
+    lowest each time because a process cannot know what the others have already taken.
     """
     number = 1
     while True:
@@ -279,7 +297,7 @@ def _claim():
         except FileExistsError:
             number += 1
             continue
-        return "%04d" % number, claim
+        return "%04d" % number
 
 
 def _publish(request, payload):
@@ -298,7 +316,7 @@ def _publish(request, payload):
 def call(name, **arguments):
     """Dispatch ``name`` with keyword ``arguments`` and return its value."""
     os.makedirs(_CALLS, exist_ok=True)
-    identifier, _claim_path = _claim()
+    identifier = _claim()
     request = os.path.join(_CALLS, identifier + ".request.json")
     try:
         _publish(request, json.dumps({{"id": identifier, "name": name, "arguments": arguments}}))
@@ -489,7 +507,7 @@ async def dispatch_over_exec(
                 )
                 return ExecResult(
                     stdout=_as_text(output),
-                    stderr="",
+                    stderr=_why_no_output(output),
                     exit_code=_exit_code_from(finished),
                 )
             # Serving awaits the tool, so the check at the top of the loop is what keeps a
@@ -768,6 +786,26 @@ async def _final_output(sandbox: Sandbox, run: HostToolRun, layout: GuestRunLayo
 def _as_text(value: str | _TooLarge | _NotText | None) -> str:
     """The text, or nothing — an absent or over-cap file reads as no output rather than a type."""
     return value if isinstance(value, str) else ""
+
+
+def _why_no_output(value: str | _TooLarge | _NotText | None) -> str:
+    """The host's own note when output was dropped rather than absent, and "" when it was not.
+
+    An empty ``stdout`` beside exit code 0 says the program printed nothing, and for a program
+    whose output was refused for its size that is a false report of a successful run — the one
+    a caller cannot tell from the real thing. It goes in ``stderr`` because on this transport
+    that field is the host's: the launcher merges the guest's own stderr into the output file,
+    so nothing else ever writes there.
+
+    What the ceiling should be, and whether a large output should be truncated rather than
+    dropped, is #354. This is only the part that must not stay silent either way.
+    """
+    if isinstance(value, _TooLarge):
+        return (
+            "the program's output was larger than the host will read and was not returned; "
+            "have the program write what it needs to a file the run collects instead"
+        )
+    return ""
 
 
 def _serving_bound(run: HostToolRun) -> int:

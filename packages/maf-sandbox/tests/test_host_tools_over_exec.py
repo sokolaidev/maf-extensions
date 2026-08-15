@@ -858,6 +858,60 @@ class TestWhatSurvivesTheDeadline:
         assert json.loads(written)["value"] == "late"
 
 
+class TestTheLayoutsOwnPromise:
+    @pytest.mark.parametrize("directory", ["work/run-1", "", "run-1"])
+    def test_a_run_directory_that_is_not_absolute_is_refused(self, directory: str):
+        """`confine_guest_path` joins a relative one against itself, and nothing looks wrong.
+
+        The requests then land under `work/run-1/work/run-1/`, where the supervisor is not
+        polling — a run that simply never sees a call, with no error anywhere.
+        """
+        with pytest.raises(ValueError, match="absolute"):
+            guest_run_layout(directory)
+
+    @pytest.mark.parametrize("program", ["/etc/passwd", "sub/dir/p.py", "..", ""])
+    def test_a_program_that_is_not_a_plain_file_name_is_refused(self, program: str):
+        """Absolute discards the run directory outright; nested puts it where the shim is not.
+
+        `posixpath.join("/run", "/etc/passwd")` is `/etc/passwd`, so the layout would name a
+        program outside the directory every other path is inside.
+        """
+        with pytest.raises(ValueError, match="plain file name"):
+            guest_run_layout("/maf-sandbox/work/run-1", program=program)
+
+    def test_the_paths_it_does_accept_are_all_inside_the_run_directory(self):
+        """The promise the two checks above exist to keep."""
+        layout = guest_run_layout("/maf-sandbox/work/run-2")
+        for path in (layout.program, layout.shim, layout.launcher, layout.calls, layout.output):
+            assert path.startswith("/maf-sandbox/work/run-2/")
+
+
+class TestWhatAnEmptyOutputMeans:
+    def test_an_output_dropped_for_its_size_says_so(self):
+        """Empty stdout beside exit code 0 is a report of a program that printed nothing.
+
+        For output refused by the cap that report is false, and false in the direction a
+        caller cannot check. The host's note goes in `stderr`, which on this transport is the
+        host's own channel — the launcher merges the guest's stderr into the output file.
+        """
+        limits = TransferLimits(max_bytes_per_file=64, max_total_bytes=32, max_files=4)
+        guest = _ScriptedGuest([], output="x" * 200)
+        result = _run(guest, HostToolRun(_registry(response_limits=limits)))
+
+        assert result.exit_code == 0
+        assert result.stdout == ""
+        assert "larger than the host will read" in result.stderr
+
+    def test_a_program_that_really_printed_nothing_says_nothing(self):
+        """The note has to distinguish the two cases, or it is noise on every quiet run."""
+        guest = _ScriptedGuest([], output="")
+        result = _run(guest, HostToolRun(_registry()))
+
+        assert result.exit_code == 0
+        assert result.stdout == ""
+        assert result.stderr == ""
+
+
 class TestWhatAFailedReadMeans:
     def test_a_backend_that_cannot_read_ends_the_run_with_its_own_error(self):
         """A permanent failure retried every interval reads back as a slow guest.
