@@ -7,9 +7,10 @@ Three claims, checked together because each is weak alone: turn 1 authored a fil
 fault in it, one container served all four `acquire` calls, and the compiler agrees with the
 repair the run reported. The sample's README says why each is measured the way it is.
 
-Everything is read from the blocks the sample prints and never from the model's replies around
-them. A run graded on its own narration is the failure the sample exists to rule out, and this
-is the easiest place to reintroduce it.
+Every *number* comes off a line the sample tagged `[measured]`, never from the model's replies
+around it. The one thing read out of a reply is turn 1's prose, which has to name the rules the
+compiler found in the file turn 1 wrote — that is the claim being checked, so the model's own
+words are the subject rather than the evidence.
 
 Exits non-zero listing every reason it failed.
 """
@@ -124,6 +125,12 @@ def _tally(match: re.Match[str], label: str) -> tuple[set[str], list[str]]:
             f"`faults {label}` says {count} but names {len(names)}: {body!r} — the number and "
             "the list beside it describe different things"
         )
+    duplicated = sorted({name for name in names if names.count(name) > 1})
+    if duplicated:
+        failures.append(
+            f"`faults {label}` names {', '.join(duplicated)} more than once — the count is then "
+            "larger than the set of rules it describes"
+        )
     unknown = sorted(name for name in names if name not in _RULE_IDS)
     if unknown:
         failures.append(
@@ -160,25 +167,68 @@ def _section(
 
 def assess(output: str) -> list[str]:
     """Return every reason ``output`` is not a healthy sample run — empty means it passed."""
-    failures: list[str] = []
-    failures.extend(_assess_first_turn(output))
+    authored, failures = _authored_faults(output)
+    failures.extend(_assess_first_turn(output, authored))
     failures.extend(_assess_reuse(output))
-    failures.extend(_assess_repair(output))
+    failures.extend(_assess_repair(output, authored))
     failures.extend(_assess_footer(output))
     return failures
 
 
-def _assess_first_turn(output: str) -> list[str]:
-    """Turn 1 must report the compiler's real rule ids, in its own words."""
+def _authored_faults(output: str) -> tuple[set[str], list[str]]:
+    """Which tracked rules the compiler reported in the file turn 1 wrote.
+
+    Everything downstream is measured against this rather than against `_RULE_IDS`. The file is
+    the model's, so which faults it arrives with is an observation: a brief that asks for a
+    parameter "a later change will use" is satisfied by a model that uses it immediately, and
+    that file has one tracked fault, not two. At least one is required — a clean authored file
+    leaves the fix turn nothing to do.
+    """
+    compiled = _section(output, _AUTHORED_COMPILE, last=True)
+    if compiled is None:
+        return set(), [
+            "the run never showed what the compiler said about the file turn 1 wrote — without "
+            "that baseline there is nothing to measure the repair against"
+        ]
+
+    # Both phases, exactly as the final compile demands. A partial compile would undercount what
+    # the authored file started with, and turn 2 would be measured from the wrong place.
+    phases = {match.group(1).lower() for match in _PHASE.finditer(compiled)}
+    if phases != {"build", "lint"}:
+        return set(), [
+            f"the baseline compile reported {sorted(phases) or 'no'} phase(s), expected both "
+            "build and lint — a partial compile undercounts what the authored file started with"
+        ]
+
+    match = _AUTHORED_FAULTS.search(compiled)
+    if match is None:
+        return set(), ["the run never counted the tracked faults in the authored file"]
+
+    names, failures = _tally(match, "in the authored file")
+    if not names and not failures:
+        failures.append(
+            "the file turn 1 wrote had no tracked fault in it — the brief asks for an unused "
+            "parameter and no sku, so a clean file means the model did not follow it, and there "
+            "was nothing for the fix turn to repair"
+        )
+    return names, failures
+
+
+def _assess_first_turn(output: str, authored: set[str]) -> list[str]:
+    """Turn 1 must report, in its own words, the tracked rules its file actually has.
+
+    Against `authored` and not `_RULE_IDS`: demanding both would fail a run whose authored file
+    only ever had one, which is a fix loop the sample is happy to demonstrate.
+    """
     reported = _section(output, _TURN_ONE)
     if reported is None:
         return ["no turn 1 section — the sample did not get as far as validating"]
-    missing = [rule for rule in _RULE_IDS if rule.lower() not in reported.lower()]
+    missing = sorted(rule for rule in authored if rule.lower() not in reported.lower())
     if missing:
         return [
-            f"turn 1 did not name {', '.join(missing)} — the fix turn is asked to repair "
-            "'the faults those diagnostics point at', so a first turn that did not report them "
-            "leaves the second one with nothing to work from"
+            f"turn 1 did not name {', '.join(missing)} — the compiler reported it on the file "
+            "turn 1 wrote, and the fix turn is asked to repair 'the faults those diagnostics "
+            "point at', so a first turn that did not report it leaves the second one short"
         ]
     return []
 
@@ -217,7 +267,7 @@ def _assess_reuse(output: str) -> list[str]:
     return failures
 
 
-def _assess_repair(output: str) -> list[str]:
+def _assess_repair(output: str, authored: set[str]) -> list[str]:
     """The file changed, kept its point, lost a fault, and agrees with the compiler.
 
     Everything here is read from the sample's closing block rather than from the whole output.
@@ -231,10 +281,10 @@ def _assess_repair(output: str) -> list[str]:
 
     failures: list[str] = []
 
-    authored = _one(_AUTHORED, block)
-    if authored is None:
+    wrote_file = _one(_AUTHORED, block)
+    if wrote_file is None:
         failures.append("the run never reported whether turn 1 wrote main.bicep")
-    elif authored.lower() != "true":
+    elif wrote_file.lower() != "true":
         failures.append(
             "turn 1 left no main.bicep in the store — the store starts empty in this sample, so "
             "the authoring half of author → validate → fix did not happen and everything after "
@@ -287,58 +337,14 @@ def _assess_repair(output: str) -> list[str]:
             "fault the diagnostics pointed at"
         )
 
-    # Against what turn 1 actually produced, not a constant. The brief is written so a compliant
-    # model writes both faults, but the file is the model's, so the baseline has to be measured.
-    failures.extend(
-        _assess_against_the_authored_file(output, len(fixed_names), len(remaining_names))
-    )
+    # Against what turn 1 actually produced, not a constant.
+    if authored and fixed_names | remaining_names != authored:
+        failures.append(
+            f"the tally covers {sorted(fixed_names | remaining_names) or 'nothing'} but the "
+            f"authored file had {sorted(authored)} — the two do not describe the same file"
+        )
     failures.extend(_assess_compiler_agrees(output, fixed_names, remaining_names))
     return failures
-
-
-def _assess_against_the_authored_file(output: str, fixed: int, remaining: int) -> list[str]:
-    """The baseline: what the compiler said about the file turn 1 wrote.
-
-    Two things depend on it. The tally has to add up against *that* number rather than against a
-    constant — the file is the model's, so how many tracked faults it arrived with is a
-    measurement. And the count has to be at least one, because a run whose authored file was
-    already clean has nothing for turn 2 to repair: it would sail through every other assertion
-    here while demonstrating no fix loop at all, which is the whole subject of the sample.
-    """
-    compiled = _section(output, _AUTHORED_COMPILE, last=True)
-    if compiled is None:
-        return [
-            "the run never showed what the compiler said about the file turn 1 wrote — without "
-            "that baseline there is nothing to measure the repair against"
-        ]
-
-    # Both phases, exactly as the final compile demands. Accepting one would let the baseline be
-    # counted from a partial compile: a lint-only failure would go unseen, the tracked-fault
-    # count would come out short, and turn 2 would be measured against the wrong starting point.
-    phases = {match.group(1).lower() for match in _PHASE.finditer(compiled)}
-    if phases != {"build", "lint"}:
-        return [
-            f"the baseline compile reported {sorted(phases) or 'no'} phase(s), expected both "
-            "build and lint — a partial compile undercounts what the authored file started with"
-        ]
-
-    match = _AUTHORED_FAULTS.search(compiled)
-    if match is None:
-        return ["the run never counted the tracked faults in the authored file"]
-
-    count = int(match.group(1))
-    if count < 1:
-        return [
-            "the file turn 1 wrote had no tracked fault in it — the brief asks for an unused "
-            "parameter and no sku, so a clean file means the model did not follow it, and there "
-            "was nothing for the fix turn to repair"
-        ]
-    if fixed + remaining != count:
-        return [
-            f"{fixed} fixed and {remaining} remaining do not account for the {count} the "
-            "authored file had — the tally lost one, or gained one turn 2 introduced"
-        ]
-    return []
 
 
 def _assess_compiler_agrees(
@@ -436,9 +442,8 @@ def main(argv: list[str]) -> int:
         for reason in failures:
             print(f"  - {reason}", file=sys.stderr)
         return 1
-    # "agrees with the repair reported", not "the file is fixed". A run that fixed one of two
-    # faults and says so is accepted here on purpose, and the old wording claimed a clean file
-    # over one the compiler still reports an error on.
+    # "agrees with the repair reported", not "the file is fixed": a run that repaired one of two
+    # faults and said so passes, and the compiler still reports an error on it.
     print(
         "OK  the model wrote main.bicep and repaired it against one sandbox, "
         "and the compiler agrees with the repair the run reported"

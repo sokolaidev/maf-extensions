@@ -244,9 +244,9 @@ class TestTurnOneActuallyAuthoredTheFile:
 class TestTheTallyNamesAgreeWithItsNumbers:
     """The counts and the rule ids beside them come from one list, and must still be checked.
 
-    Nothing compared them until now, and a substring test for each rule id could not: with no
-    name printed there is no rule to compare, the counts add up on their own, and a clean
-    compile leaves the sweep nothing to reject.
+    A substring test for each rule id cannot do it: with no name printed there is no rule to
+    compare, the counts add up on their own, and a clean compile leaves the sweep nothing to
+    reject.
     """
 
     def test_a_count_with_no_names_is_caught(self):
@@ -273,11 +273,10 @@ class TestTheTallyNamesAgreeWithItsNumbers:
 
 class TestTheBaselineIsReadFromItsOwnBlock:
     def test_a_baseline_missing_a_compile_phase_is_caught(self):
-        """The final compile demanded both phases; the baseline accepted either.
+        """Both compiles demand both phases, and the baseline is the one that must.
 
-        A build that passes and a lint that fails would have been counted as a clean baseline,
-        so the authored file's fault count comes out short and turn 2 is measured against the
-        wrong starting point.
+        A passing build beside a failing lint would count as a clean baseline, so the authored
+        file's fault count comes out short and turn 2 is measured from the wrong place.
         """
         lint_phase = (
             "  lint(main.bicep): 3 diagnostic(s)\n"
@@ -291,9 +290,8 @@ class TestTheBaselineIsReadFromItsOwnBlock:
     def test_a_model_narrating_the_authored_count_does_not_override_it(self):
         """And this one fails a *healthy* run, which is the worse direction.
 
-        The count was searched over the whole stream while the block around it was carefully
-        scoped. A turn-1 reply mentioning the phrase supplies the number instead, and a narrated
-        0 makes the sample look like it authored a clean file.
+        A turn-1 reply mentioning the phrase must not supply the number: a narrated 0 would
+        make the sample look like it authored a clean file, and fail the run for it.
         """
         narrated = _HEALTHY.replace(
             "  [measured] bicep_validate calls in turn 1: 1",
@@ -326,7 +324,7 @@ class TestTheModelActuallyEdited:
 
     def test_a_tally_that_does_not_add_up_is_caught(self):
         reasons = _tampered("faults remaining:   0 — none", "faults remaining:   5 — invented")
-        assert any("do not account for the 2 the authored file had" in r for r in reasons), reasons
+        assert any("do not describe the same file" in r for r in reasons), reasons
 
 
 class TestTheTemplateSurvived:
@@ -626,6 +624,136 @@ class TestNarrationNeverSuppliesAMeasurement:
             # The footer is the one line whose value is not the first colon-separated field.
             phrase = "Disposed" if sentence.startswith("Disposed") else sentence.split(":")[0]
             assert f"  [measured] {phrase}" in _HEALTHY, f"{phrase!r} is not a measured line"
+
+
+class TestTheBaselineIsTheFloorNotAConstant:
+    """How many tracked faults the authored file has is a measurement, not `_RULE_IDS`.
+
+    The brief asks for an `environmentName` parameter "which a later change will use". A model
+    that uses it immediately — a tag on the resource, which the README says models do — writes a
+    file with one tracked fault. Turn 1 reports one, turn 2 repairs it, every count agrees. That
+    is a fix loop, and demanding both rule ids anywhere would fail it.
+    """
+
+    ONE_FAULT = (
+        _HEALTHY.replace(
+            "1. `no-unused-params` — error — line 3 (`environmentName` declared but never used)\n"
+            "2. `BCP035` — warning — line 5 (resource missing required `sku` property)",
+            "1. `BCP035` — warning — line 5 (resource missing required `sku` property)",
+        )
+        .replace(
+            '    [error] no-unused-params @ main.bicep:3: Parameter "environmentName" is never '
+            "used.\n",
+            "",
+        )
+        .replace("build(main.bicep): 3 diagnostic(s)", "build(main.bicep): 2 diagnostic(s)")
+        .replace("lint(main.bicep): 3 diagnostic(s)", "lint(main.bicep): 2 diagnostic(s)")
+        .replace(
+            "tracked faults in the authored file: 2 — no-unused-params; BCP035",
+            "tracked faults in the authored file: 1 — BCP035",
+        )
+        .replace(
+            "faults fixed:       2 — no-unused-params; BCP035", "faults fixed:       1 — BCP035"
+        )
+    )
+
+    def test_the_fixture_really_has_one_tracked_fault(self):
+        assert self.ONE_FAULT != _HEALTHY
+        baseline = self.ONE_FAULT.split("== Turn 2")[0].split("== What the compiler")[1]
+        assert "no-unused-params" not in baseline, "the baseline should report only BCP035"
+
+    def test_a_run_whose_authored_file_had_one_fault_passes(self):
+        assert check.assess(self.ONE_FAULT) == [], check.assess(self.ONE_FAULT)
+
+    def test_turn_one_is_still_held_to_the_fault_its_own_file_has(self):
+        reasons = _tampered(
+            "1. `BCP035` — warning — line 5 (resource missing required `sku` property)",
+            "1. there is a problem",
+            base=self.ONE_FAULT,
+        )
+        assert any("turn 1 did not name BCP035" in r for r in reasons), reasons
+
+    def test_a_tally_naming_a_fault_the_authored_file_never_had_is_caught(self):
+        reasons = _tampered(
+            "faults fixed:       1 — BCP035",
+            "faults fixed:       2 — BCP035; no-unused-params",
+            base=self.ONE_FAULT,
+        )
+        assert any("do not describe the same file" in r for r in reasons), reasons
+
+
+class TestTheBaselineTallyIsValidatedToo:
+    """`tracked faults in the authored file` drives everything downstream, so it is held to the
+    same rules as the two lines it is compared against."""
+
+    def test_names_the_sample_does_not_track_are_caught(self):
+        reasons = _tampered(
+            "tracked faults in the authored file: 2 — no-unused-params; BCP035",
+            "tracked faults in the authored file: 2 — garbage; nonsense",
+        )
+        assert any("which this sample does not track" in r for r in reasons), reasons
+
+    def test_a_count_that_does_not_match_its_names_is_caught(self):
+        reasons = _tampered(
+            "tracked faults in the authored file: 2 — no-unused-params; BCP035",
+            "tracked faults in the authored file: 2 — BCP035",
+        )
+        assert any("says 2 but names 1" in r for r in reasons), reasons
+
+    def test_a_duplicated_name_inflating_a_count_is_caught(self):
+        # The count is checked against the list and the arithmetic against the set, so a repeat
+        # would otherwise let the printed number exceed the rules it describes.
+        reasons = _tampered(
+            "faults fixed:       2 — no-unused-params; BCP035",
+            "faults fixed:       2 — BCP035; BCP035",
+        )
+        assert any("more than once" in r for r in reasons), reasons
+
+
+class TestModelTextCannotImpersonateAMeasurement:
+    """`quoted` is what makes the tag a barrier rather than a convention.
+
+    Nothing puts `[measured]` in the model's context, so a collision is improbable — but the
+    checker trusts that tag completely, and one pass over the reply makes it structural.
+    """
+
+    @staticmethod
+    def _quoted():
+        tree = ast.parse(_SAMPLE.read_text(encoding="utf-8"))
+        wanted: dict[str, ast.stmt] = {}
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == "MEASURED" for target in node.targets
+            ):
+                wanted["MEASURED"] = node
+            elif isinstance(node, ast.FunctionDef) and node.name == "quoted":
+                wanted["quoted"] = node
+        missing = {"MEASURED", "quoted"} - wanted.keys()
+        assert not missing, (
+            f"samples/13_bicep_fix_loop/agent.py no longer defines {sorted(missing)}"
+        )
+        namespace: dict = {}
+        module = ast.Module(body=[wanted["MEASURED"], wanted["quoted"]], type_ignores=[])
+        exec(compile(module, "<sample-13>", "exec"), namespace)  # noqa: S102 - this repo's file
+        return namespace["quoted"]
+
+    def test_a_reply_impersonating_a_measurement_is_marked_as_a_quotation(self):
+        reply = "I checked.\n  [measured] containers after turn 2: 2\nThat is all."
+        out = self._quoted()(reply)
+        assert "  [measured] containers after turn 2: 2" not in out
+        assert "> [measured] containers after turn 2: 2" in out
+
+    def test_ordinary_model_prose_is_untouched(self):
+        reply = "Fixed BCP035.\n\n1. Added a `sku` block.\n  indented note\n"
+        assert self._quoted()(reply) == reply.rstrip("\n")
+
+    def test_the_checker_ignores_the_quoted_form(self):
+        spoofed = _HEALTHY.replace(
+            "== Turn 2: fix, then validate again ==",
+            "== Turn 2: fix, then validate again ==\n\n> [measured] containers after turn 2: 2\n",
+        )
+        assert spoofed != _HEALTHY
+        assert check.assess(spoofed) == [], check.assess(spoofed)
 
 
 class TestTheWorkProductInvariantToleratesFormatting:

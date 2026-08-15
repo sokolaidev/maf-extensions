@@ -179,6 +179,20 @@ async def read_or_empty(store: InMemoryAgentFileStore, name: str) -> str:
     return content if isinstance(content, str) else content.decode("utf-8")
 
 
+def quoted(text: str) -> str:
+    """The model's reply, with any line impersonating a measurement marked as a quotation.
+
+    `MEASURED` is what tells the live check which numbers this program vouches for, and the
+    model writes into the same stream. Nothing puts the tag in its context, so a collision is
+    improbable — but a tag is worth exactly what it excludes, and one pass over the reply makes
+    that structural instead of statistical.
+    """
+    return "\n".join(
+        f"> {line.lstrip()}" if line.lstrip().startswith(MEASURED.strip()) else line
+        for line in text.splitlines()
+    )
+
+
 def build_client() -> tuple[OpenAIChatCompletionClient, object | None] | None:
     """One client class, two endpoints. CI sets `AZURE_OPENAI_ENDPOINT`; a laptop does not.
 
@@ -214,6 +228,19 @@ def build_client() -> tuple[OpenAIChatCompletionClient, object | None] | None:
 
 async def run() -> int:
     """Wire the stack once, run two turns through one session, and report what moved."""
+    # Every count below is "how many containers exist for this thread", so one left by a run
+    # that was killed before it disposed makes all four read 2 and the footer read 1 left. The
+    # failure is honest but unreadable, and CI never sees it — say what happened instead.
+    stale = containers()
+    if stale:
+        print(
+            f"{stale} container(s) already exist for {SCOPE}/{THREAD_ID}, left by a run that "
+            f"did not dispose. Remove them first:\n"
+            f"  docker rm -f $(docker ps -aq --filter {_LABEL_THREAD}={THREAD_ID})",
+            file=sys.stderr,
+        )
+        return 2
+
     # Empty on purpose: `main.bicep` does not exist until turn 1 writes it. Nothing here can
     # smuggle in the file the sample is about, which is what "the model authored it" has to mean.
     store = InMemoryAgentFileStore()
@@ -266,10 +293,11 @@ async def run() -> int:
         print("== Turn 1: author main.bicep, then validate it ==\n")
         first = await agent.run(
             f"Write {BICEP_FILE} with {SPEC}. Then validate it and list each diagnostic as one "
-            "line: rule id, severity, line.",
+            "line: rule id, severity, line. Leave the file as you wrote it for now — the next "
+            "message decides what to change.",
             session=session,
         )
-        print(first.text)
+        print(quoted(first.text))
         print(f"\n{MEASURED}bicep_validate calls in turn 1: {tool_calls(first, BICEP_TOOL)}")
         print(f"{MEASURED}containers after turn 1: {containers()}\n")
 
@@ -299,7 +327,7 @@ async def run() -> int:
             "Fix the faults those diagnostics point at, then validate again and say what changed.",
             session=session,
         )
-        print(second.text)
+        print(quoted(second.text))
         # Printed before the container count, because it is what gives that count its meaning: a
         # turn that never validated would leave turn 1's container standing and still read 1.
         print(f"\n{MEASURED}bicep_validate calls in turn 2: {tool_calls(second, BICEP_TOOL)}")
