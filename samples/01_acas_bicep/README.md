@@ -20,7 +20,7 @@ Read these first; none of them is quick to arrange halfway through.
 - **An Azure OpenAI deployment of a reasoning model** — `gpt-5.4` and its siblings work. This is not a preference: the framework's client asks for encrypted reasoning content, and a deployment that does not support it rejects the very first call with `400 — Encrypted content is not supported with this model` on `param: include`. That error names neither this sample nor the setting behind it, so it is worth choosing correctly rather than debugging later.
 - **`az login`**, or any other credential `DefaultAzureCredential` resolves. No API keys are read, and none belong in this tree.
 
-**This creates a billable sandbox.** The sample deletes it on the way out, and the backend's auto-suspend and auto-delete timers are a backstop underneath that, but a run that is killed mid-turn can still leave one active for up to ten minutes.
+**This creates a billable sandbox.** The sample deletes it on the way out, and the backend's auto-suspend and auto-delete timers are a backstop underneath that — but they run in sequence rather than together, so a run killed mid-turn leaves a sandbox running for `auto_suspend_seconds` (60 by default), suspended for `auto_delete_seconds` (600) after that, and gone about eleven minutes from the last call. Reclaiming it yourself is the plan; the timers are what happens when the process dies before it can.
 
 ## Install
 
