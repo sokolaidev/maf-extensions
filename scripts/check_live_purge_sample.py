@@ -40,14 +40,8 @@ _KEPT = re.compile(r"containers still there:\s*(\d+)", re.IGNORECASE)
 _SCOPE_DISPOSED = re.compile(r"block ended -> router reports\s+(\d+)\s+disposed", re.IGNORECASE)
 _SCOPE_REMAINING = re.compile(r"and docker agrees -> containers:\s*(\d+)", re.IGNORECASE)
 
-#: Act 4, both threads, the container count before the delete path runs on the never-scoped one
-#: — without that the purger's 1 could be a number it made up — and the count *after* it.
-#:
-#: That last one is not redundant with the footer. `main` disposes every thread in a `finally`
-#: before the footer is computed, so a purger that reported 1 while removing nothing would be
-#: covered by that cleanup and the footer would still read zero. This is the only line that
-#: sees the machine between the purge and the sweep, and its phrasing is deliberately distinct
-#: from act 3's so the two cannot be told apart by whitespace alone.
+#: Act 4: both threads, and the container count either side of the delete path. `_UNSCOPED_AFTER`
+#: keys on wording act 3 does not share, so the two post-purge lines cannot be confused.
 _TIDY = re.compile(r"already purged per turn -> purger found\s+(\d+)", re.IGNORECASE)
 _UNSCOPED_BEFORE = re.compile(r"never scoped per turn\s+-> containers:\s*(\d+)", re.IGNORECASE)
 _UNSCOPED_FOUND = re.compile(r"deletes the conversation\s+-> purger found\s+(\d+)", re.IGNORECASE)

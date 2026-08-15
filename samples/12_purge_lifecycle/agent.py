@@ -39,16 +39,10 @@ _LABEL_THREAD = "maf-sandbox.thread"
 
 
 def containers(thread_id: str) -> int:
-    """How many containers Docker itself reports for ``thread_id`` — the outside view.
+    """How many containers Docker reports for ``thread_id``, **stopped ones included**.
 
-    The counts the library returns say what it believes it disposed. This says what is actually
-    on the machine, which is the only evidence that means anything for a leak.
-
-    ``-a``, so stopped containers count. Without it a purge that stopped a container without
-    removing it would leave a labelled container on the machine while every count here read
-    zero — the leak this sample exists to rule out, invisible to the check that rules it out.
-    The backend lists the same way when it purges (``docker ps -a``), so this asks the question
-    it answers.
+    ``-a`` is the part a caller has to know: a container stopped but not removed still counts,
+    which is what makes this answer the same question the backend's own purge listing asks.
     """
     result = subprocess.run(  # noqa: S603 - a fixed argv, no shell, values from this file
         [
