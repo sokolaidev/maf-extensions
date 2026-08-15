@@ -884,6 +884,28 @@ class TestTheLayoutsOwnPromise:
         with pytest.raises(ValueError, match="plain file name"):
             guest_run_layout("/maf-sandbox/work/run-1", program=program)
 
+    @pytest.mark.parametrize("program", ["program_output.txt", "run_program.sh", SHIM_MODULE])
+    def test_a_program_named_after_the_layouts_own_files_is_refused(self, program: str):
+        """Each collision breaks the run in its own way, and none of them announce themselves.
+
+        `program_output.txt` is the launcher's redirection target, so the shell truncates the
+        program before the interpreter opens it; the launcher and the shim are written over
+        whatever the kind put there. All three end as a program that will not run, with
+        nothing pointing at the name that caused it.
+        """
+        with pytest.raises(ValueError, match="already uses"):
+            guest_run_layout("/maf-sandbox/work/run-1", program=program)
+
+    @pytest.mark.parametrize("directory", [r"/work/run\1", r"/work\run"])
+    def test_a_run_directory_the_backends_cannot_resolve_is_refused(self, directory: str):
+        """Absolute is not the same as valid: `confine_guest_path` refuses a backslash.
+
+        Without this the layout builds and every pull call raises instead — after the
+        launcher has started a detached program that outlives the failure.
+        """
+        with pytest.raises(ValueError, match="backslash"):
+            guest_run_layout(directory)
+
     def test_the_paths_it_does_accept_are_all_inside_the_run_directory(self):
         """The promise the two checks above exist to keep."""
         layout = guest_run_layout("/maf-sandbox/work/run-2")

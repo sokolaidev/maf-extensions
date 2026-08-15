@@ -54,6 +54,7 @@ from typing import TYPE_CHECKING, Any, cast
 from ._error_detail import error_detail
 from ._outputs import SandboxTransferCapExceeded
 from ._protocol import EntryKind, ExecResult
+from .paths import confine_guest_path
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Mapping
@@ -74,6 +75,10 @@ EXIT_FILE = "program_exit_code"
 SHIM_MODULE = "maf_host_tools.py"
 
 _LAUNCHER = "run_program.sh"
+
+#: Every name :func:`guest_run_layout` puts in the run directory. Derived from the constants
+#: above rather than listed again, so a name added there cannot be handed to a guest program.
+_RESERVED_NAMES = frozenset({SHIM_MODULE, _LAUNCHER, OUTPUT_FILE, EXIT_FILE, CALLS_DIRECTORY})
 
 #: How long the guest blocks on one call before giving up on the host, and how often it looks.
 #: Bounded on both sides. It has to outlast the host's poll interval by a wide margin or a slow
@@ -138,10 +143,25 @@ def guest_run_layout(run_directory: str, *, program: str = "program.py") -> Gues
             f"run_directory must be an absolute guest path, not {run_directory!r}: every path "
             "in the layout is joined onto it and resolved against it again by the pull calls"
         )
+    # The backends' own grammar rather than a second copy of it: every pull call resolves
+    # through `confine_guest_path`, which refuses a backslash. Passing the directory as both
+    # arguments tests the spelling and nothing else — containment against itself is trivially
+    # true — so a directory that would fail on the first `stat_file` fails here instead, with
+    # no launcher started and no detached program to outlive the failure.
+    confine_guest_path(run_directory, run_directory)
     if program != posixpath.basename(program) or program in {"", ".", ".."}:
         raise ValueError(
             f"program must be a plain file name, not {program!r}: it is written beside the "
             "shim and imports it, which only works when the two share a directory"
+        )
+    if program in _RESERVED_NAMES:
+        # Each collision breaks the run in its own way and none of them say so: the shell
+        # truncates the output file before the interpreter opens the program, the launcher
+        # and the shim are written over whatever the kind put there, and the calls directory
+        # cannot be created where a file already is.
+        raise ValueError(
+            f"program must not be a name this layout already uses, and {program!r} is one of "
+            f"{sorted(_RESERVED_NAMES)}"
         )
     return GuestRunLayout(
         directory=run_directory,

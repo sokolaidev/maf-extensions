@@ -139,7 +139,7 @@ The contract says what may be dispatched; it does not say how a dispatch *reache
 
 **The shim is not a control.** It runs where model-written code can read, edit or ignore it, and a program that writes request files itself is served identically. That is the design: every gate is host-side, and a check running in the guest would be decoration.
 
-Three costs, stated rather than discovered: **three backend calls per dispatch at minimum** — a `stat_file`, a `read_file` and a `write_file` — plus a `stat_file` per poll for the exit marker and the next request, so on a remote backend a call-heavy program can cost far more round trips than the direct tool-calling this replaces, and whether that trade is worth it is a measurement rather than an assumption; one outstanding call at a time, because polling by name is what lets a backend without `FILES_LIST` host this; and request and response files that outlive the call, since nothing in the protocol deletes — which is why the per-run directory has to be fresh.
+It costs round trips — several backend calls per dispatch, plus polling — serves one outstanding call at a time, and leaves its request and response files behind, which is why the per-run directory has to be fresh. `dispatch_over_exec`'s own docstring is where those three are counted exactly, beside the code that decides them; whether the trade is worth it is a measurement rather than an assumption.
 
 ## Upgrading to 0.14
 
