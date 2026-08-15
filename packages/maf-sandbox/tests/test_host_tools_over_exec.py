@@ -17,10 +17,12 @@ import ast
 import asyncio
 import importlib.util
 import json
+import os
 import pathlib
 import posixpath
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -109,8 +111,8 @@ class _ScriptedGuest:
     def _resolved(self, path: str, working_directory: str) -> str:
         """What a backend would make of this path — `confine_guest_path`, as they all use.
 
-        The double used to ignore `working_directory` and key on the string it was handed,
-        which meant it could not tell a path a real backend accepts from one it refuses.
+        A double keying on the string it was handed cannot tell a path a real backend
+        accepts from one it refuses, which is most of what these tests are for.
         """
         return confine_guest_path(path, working_directory)
 
@@ -426,6 +428,24 @@ class TestTheLauncher:
         assert shlex.split(inner)[:2] == ["PYTHONUNBUFFERED=1", "/opt/py 3.12/bin/python3"]
 
 
+def _reap(pid_file: Path) -> None:
+    """Stop the detached program a real-launcher test started, if it is still there.
+
+    `nohup` means the process this test can see is not the process it made, so cleanup has to
+    go by the pid the program recorded. Best effort by nature: it may have stopped on its own
+    between the check and the signal, and that race is the ordinary outcome rather than a
+    failure.
+    """
+    if not pid_file.exists():
+        return
+    for _ in range(40):
+        try:
+            os.kill(int(pid_file.read_text(encoding="utf-8")), signal.SIGTERM)
+        except (OSError, ValueError):
+            return
+        time.sleep(0.05)
+
+
 class TestTheLauncherAgainstARealShell:
     """The launcher is a shell script, and some of what it promises only a shell can show."""
 
@@ -440,6 +460,9 @@ class TestTheLauncherAgainstARealShell:
 
         A real `sh` and a real interpreter, because buffering is the runtime's behaviour and a
         double cannot have it.
+
+        The program stops on a file rather than a signal and bounds itself besides; see
+        `_reap` for why cleanup cannot simply kill what it started.
         """
         directory = tmp_path.as_posix()
         layout = GuestRunLayout(
@@ -451,16 +474,33 @@ class TestTheLauncherAgainstARealShell:
             output=f"{directory}/program_output.txt",
             exit_code=f"{directory}/program_exit_code",
         )
+        stop = tmp_path / "stop"
         pathlib.Path(layout.program).write_text(
-            "\n".join(("import time", "print('the part before the wedge')", "time.sleep(30)", "")),
+            "\n".join(
+                (
+                    "import os, time",
+                    f"open({str(tmp_path / 'pid')!r}, 'w').write(str(os.getpid()))",
+                    "print('the part before the wedge')",
+                    # Wedged for the observation, and mortal anyway: cleanup can be skipped
+                    # by a killed test run, and nothing else would ever stop this.
+                    "for _ in range(240):",
+                    f"    if os.path.exists({str(stop)!r}):",
+                    "        break",
+                    "    time.sleep(0.25)",
+                    "",
+                )
+            ),
             encoding="utf-8",
         )
         pathlib.Path(layout.launcher).write_text(
             launcher_script(layout, sys.executable.replace("\\", "/")), encoding="utf-8"
         )
 
-        started = subprocess.Popen(  # noqa: S603 - a shell script this test just wrote
-            [shutil.which("sh") or "sh", layout.launcher], stdout=subprocess.DEVNULL
+        subprocess.run(  # noqa: S603 - a shell script this test just wrote
+            [shutil.which("sh") or "sh", layout.launcher],
+            stdout=subprocess.DEVNULL,
+            timeout=30,
+            check=False,
         )
         try:
             output = pathlib.Path(layout.output)
@@ -475,8 +515,8 @@ class TestTheLauncherAgainstARealShell:
                 "quoted this file"
             )
         finally:
-            started.kill()
-            started.wait(timeout=10)
+            stop.write_text("", encoding="utf-8")
+            _reap(tmp_path / "pid")
 
 
 class TestWhatAWrapperCanTakeAway:
@@ -506,9 +546,9 @@ class TestWhatAWrapperCanTakeAway:
         `open` is the one that would hurt: `call` uses it to stage a request, so a wrapper
         by that name breaks every dispatch rather than only its own.
 
-        The set is derived, so it tracks the shim: `int` was in it until the guest's timeout
-        message stopped rounding, and a name the shim no longer reads is a name a tool may
-        have. That is the behaviour, not an oversight.
+        The set is derived, so it tracks the shim: a name the shim stops reading is a name a
+        tool may have, and the second assertion below is that behaviour rather than an
+        oversight.
         """
         assert self._wrappers({"call", "json", "os", "open", "_claim", "_CALLS", "time"}) == set()
         assert self._wrappers({"int"}) == {"int"}, "a name the shim stopped using stays reserved"
@@ -965,6 +1005,19 @@ class TestTheLayoutsOwnPromise:
         with pytest.raises(ValueError, match="backslash"):
             guest_run_layout(directory)
 
+    def test_a_directory_spelled_the_long_way_round_is_kept_the_short_way(self):
+        """One directory, two spellings, is a difference waiting to matter.
+
+        `confine_guest_path` normalises, so the pull calls address `/work/run-1` whatever the
+        caller wrote — while the launcher's `cd` and every path the layout built would still
+        carry the original. Keeping the normalised result is what makes those the same string.
+        """
+        layout = guest_run_layout("/work/missing/../run-1")
+
+        assert layout.directory == "/work/run-1"
+        assert layout.program == "/work/run-1/program.py"
+        assert ".." not in layout.calls
+
     def test_the_paths_it_does_accept_are_all_inside_the_run_directory(self):
         """The promise the two checks above exist to keep."""
         layout = guest_run_layout("/maf-sandbox/work/run-2")
@@ -1032,8 +1085,7 @@ class TestTheGuestsOwnDiagnostic:
     def test_a_fractional_patience_is_reported_as_itself(self, tmp_path: Path):
         """`%d` on 0.5 says "within 0 seconds", which is not a duration anyone waited.
 
-        Fractional patience became reachable when `call_timeout` became an argument, so the
-        message had to stop rounding.
+        Any finite positive number is a legal patience, so the message cannot round.
         """
         module_path = tmp_path / SHIM_MODULE
         module_path.write_text(host_tool_shim(call_timeout=0.05), encoding="utf-8")

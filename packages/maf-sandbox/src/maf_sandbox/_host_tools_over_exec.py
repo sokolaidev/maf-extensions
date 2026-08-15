@@ -128,17 +128,12 @@ def guest_run_layout(run_directory: str, *, program: str = "program.py") -> Gues
     """The paths :func:`dispatch_over_exec` expects, derived from one run's directory.
 
     A kind writes ``program`` and :attr:`GuestRunLayout.shim`; everything else is written here.
-    ``run_directory`` must be fresh per run — see this module's docstring on why nothing
-    deletes — absolute, and spelled the way the pull calls will resolve it, which is
-    :func:`~maf_sandbox.paths.confine_guest_path`'s grammar and refuses a backslash.
-    ``program`` must be a plain file name, and not one the layout already uses.
-
-    All of it is checked rather than assumed, because the ways they fail are quiet.
-    :class:`GuestRunLayout` says every path is absolute and inside one directory, and the pull
-    calls take it at its word: a relative run directory is joined against itself by
-    ``confine_guest_path`` and every request lands somewhere the supervisor is not looking.
-    An absolute ``program`` makes ``posixpath.join`` discard the run directory outright, and a
-    nested one puts the program in a directory the shim is not in, where importing it fails.
+    ``run_directory`` must be absolute, free of backslashes — the grammar
+    :func:`~maf_sandbox.paths.confine_guest_path` enforces on every pull call — and fresh per
+    run, on which see this module's docstring. ``program`` must be a plain file name the
+    layout does not already use. All but freshness are refused here; freshness is not visible
+    from a path, and a stale exit marker ends the next run on its first poll. The directory
+    comes back normalised, so ``..`` is fine to pass and one spelling reaches every call.
     """
     if not posixpath.isabs(run_directory):
         raise ValueError(
@@ -147,7 +142,7 @@ def guest_run_layout(run_directory: str, *, program: str = "program.py") -> Gues
         )
     # Twice on purpose: containment against itself is trivially true, so only the spelling
     # is under test.
-    confine_guest_path(run_directory, run_directory)
+    run_directory = confine_guest_path(run_directory, run_directory)
     if program != posixpath.basename(program) or program in {"", ".", ".."}:
         raise ValueError(
             f"program must be a plain file name, not {program!r}: it is written beside the "
@@ -455,6 +450,14 @@ async def dispatch_over_exec(
             simply not being there yet. A permanent failure — a permission error, a client
             that cannot reach its daemon — is reported as itself rather than retried until
             the run looks like a slow guest.
+
+    **The exit marker is the guest's claim, not proof.** It is a file in the guest's own
+    filesystem, so model-written code can create it and keep running, and this returns success
+    while the program is still going. There is no way to tell from the pull surface — a nonce
+    written into the launcher is a nonce the guest can read — and
+    :class:`~maf_sandbox.SandboxBackend` reuses a warm sandbox for the same key and kind, so a
+    caller that needs the process actually gone must dispose of the sandbox rather than trust
+    the return.
 
     **This supervisor never cancels a dispatch already under way**, and the deadline is
     checked before starting one rather than during it. A dispatched body runs in the host
