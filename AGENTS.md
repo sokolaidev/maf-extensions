@@ -73,6 +73,6 @@ Keep them short. Agents reliably overshoot here, and the tell is prose that outg
 
 - **A docstring says what the function is for and what a caller must know.** One or two sentences for most. Reserve more for a genuine trap — an argument that must be a callable, an ordering that is load-bearing — and state the trap, not its history.
 - **Write the reason once, at the level it belongs to.** If the module docstring has it, the function does not repeat it; if the function has it, the inline comment does not.
-- **An incident belongs in the issue and the commit message, not in the source.** `Closes #22` reaches the whole story. A comment that re-tells it ages badly and is read a thousand times more often.
+- **An incident belongs in the issue and the commit message, not in the source.** That covers the bug this code used to have, what an earlier version of it got wrong, and what a review found — `Closes #22` and the commit reach the whole story. State the constraint the code has to hold to; a comment re-telling the defect it replaced ages badly and is read a thousand times more often. The shape to watch for is a comment or docstring that only makes sense to someone who followed the review: "an earlier version of this test…", "this used to search the whole output…", "Copilot caught…".
 - **Do not annotate the obvious.** No comment above an import, a `return`, or a well-named call.
 - **Delete a comment that has become a caption.** If it restates the line beneath it, the line is either clear enough already or should be renamed.
