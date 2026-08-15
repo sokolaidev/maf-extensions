@@ -4,7 +4,7 @@ Every other sample runs a single turn against a file that was already there. The
 
 Here the file store starts **empty**. There is no `main.bicep` in this directory; the model writes one.
 
-| | What happens | `bicep_validate` calls | Containers |
+| | What happens | validations reaching the sandbox | Containers |
 |---|---|---|---|
 | Turn 1 | the model writes `main.bicep` from a brief, then validates what it wrote | ≥1 | 1 |
 | The baseline | the program compiles what turn 1 left, with no model involved | 1 | 1 |
@@ -13,9 +13,9 @@ Here the file store starts **empty**. There is no `main.bicep` in this directory
 
 At least four `acquire` calls, one container. Nothing stops a model from validating twice in a turn — that is a normal thing for one to do, and it makes no difference to the claim, since the second call finds the same sandbox as the first. So the sample prints what happened and the check requires at least one call per turn rather than exactly one. The two compiles are fixed at one apiece, because the program makes those calls itself.
 
-A second container would have answered every one of those calls just as well, which is why the count is printed rather than described.
+A second container would have answered every one of those calls just as well, which is why the count is printed rather than described — and the container's **id** is printed beside it, because a count says one sandbox existed at that instant and the claim is that the same one served all four. A backend that force-removes a sandbox on an exec timeout leaves the next `acquire` to create a replacement, and every count still reads 1. The live check requires the four ids to agree.
 
-**The call counts are there because the container count cannot carry the claim alone.** A fix turn that edits the file and never validates it makes no second `acquire` at all — and turn 1's container is still sitting there to be counted, so the run would read as reuse while never demonstrating any. The counts come from the tool calls in each turn's returned messages, so "the fix turn reached the same warm sandbox" is a measurement rather than an inference.
+**The validation counts are there because the container count cannot carry the claim alone.** A fix turn that edits the file and never validates it makes no second `acquire` at all — and turn 1's container is still sitting there to be counted, so the run would read as reuse while never demonstrating any. The counts come from each turn's returned messages, and count only calls whose result carries both compiler phases: `bicep_validate` refuses a bad filename before it acquires anything, so counting requests would score a rejected call as a reacquisition.
 
 ## The session is the mechanism
 
@@ -41,7 +41,7 @@ Two things the compiler cannot answer, so the sample keeps them separate.
 
 `main.bicep authored in turn 1: True` and `main.bicep changed by turn 2: True` are both read off the store — the first says a file appeared where there was none, the second says the fix turn moved it. A model that edits nothing still compiles.
 
-`storage account and output intact: True` is the one that closes the degenerate case. Replace `main.bicep` with an empty but valid file and every other signal agrees it was repaired: the file changed, no tracked fault is reported, and both compile phases come back clean. "Repaired" would be the verdict on a file with the storage account deleted. So the sample checks that the resource and the output it exists to produce are still there — a question about what the file is *for*, which a compiler has no opinion on.
+`storage account and output intact: True` is the one that closes the degenerate case. Replace `main.bicep` with an empty but valid file and every other signal agrees it was repaired: the file changed, no tracked fault is reported, and both compile phases come back clean. "Repaired" would be the verdict on a file with the storage account deleted. So the sample checks that the resource, the output it exists to produce, and the two parameters that supply its name and location are all still there — a question about what the file is *for*, which a compiler has no opinion on. `environmentName` is deliberately not among them: deleting *that* is a valid repair of `no-unused-params`, while hardcoding what the other two supply repairs nothing.
 
 Every number the sample measures is printed with a `[measured]` tag, and the live check takes its numbers only from tagged lines. This is the one sample where a model writes into the same stream the check parses, so a reply mentioning "containers after turn 2: 2" is otherwise indistinguishable from the count — and it is the model's reply that comes first. The tag also tells a reader of the log which lines are the harness speaking.
 
@@ -85,7 +85,7 @@ The sample tracks **two** of them. `no-unused-params` and `BCP035` are structura
 
 Fixing either tracked fault is a real edit, and the sample reports which happened rather than demanding both. In practice a model often repairs `no-unused-params` by *using* the parameter rather than deleting it — a tag on the resource, say — which is exactly why the tally asks the compiler instead of searching the source.
 
-**Everything else the compiler reports is a failure.** Tracking two rules and checking only those would pass a file whose original faults are gone and which now fails on something new — a fresh `BCP0xx` names neither tracked rule, so nothing would object, and the run would report a clean repair over a broken file. So the live check sweeps every diagnostic: a rule is acceptable only if the tally already calls it remaining, or it is the age rule above.
+**Everything else the compiler reports is a failure.** Tracking two rules and checking only those would pass a file whose original faults are gone and which now fails on something new — a fresh `BCP0xx` names neither tracked rule, so nothing would object, and the run would report a clean repair over a broken file. So the live check sweeps every diagnostic. A rule is acceptable if the tally calls it remaining, or if the **authored file already reported it** — turn 2 is asked to leave the file reporting nothing it did not report before, and an ordinary authoring tic like `simplify-interpolation` is not this turn's doing. Anything else is, and fails the run.
 
 ## Counted, not claimed
 

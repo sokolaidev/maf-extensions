@@ -81,8 +81,8 @@ Validation complete. Here are the 3 diagnostics, one line each:
 2. `BCP035` — warning — line 5 (resource missing required `sku` property)
 3. `use-recent-api-versions` — warning — line 5 (`2023-01-01` is over the 730-day guideline)
 
-  [measured] bicep_validate calls in turn 1: 1
-  [measured] containers after turn 1: 1
+  [measured] validations that reached the sandbox in turn 1: 1
+  [measured] containers after turn 1: 1 (a1b2c3d4e5f6)
 
 == What the compiler says about the file turn 1 wrote ==
 
@@ -96,7 +96,7 @@ Validation complete. Here are the 3 diagnostics, one line each:
     [warning] use-recent-api-versions @ main.bicep:5: '2023-01-01' is 1322 days old.
 
   [measured] tracked faults in the authored file: 2 — no-unused-params; BCP035
-  [measured] containers after the baseline compile: 1
+  [measured] containers after the baseline compile: 1 (a1b2c3d4e5f6)
 
 == Turn 2: fix, then validate again ==
 
@@ -106,15 +106,15 @@ Validation is clean — zero diagnostics. What changed:
 2. `BCP035` — added a `sku` block with a `skuName` parameter.
 3. `use-recent-api-versions` — bumped the API version to `2025-01-01`.
 
-  [measured] bicep_validate calls in turn 2: 1
-  [measured] containers after turn 2: 1
+  [measured] validations that reached the sandbox in turn 2: 1
+  [measured] containers after turn 2: 1 (a1b2c3d4e5f6)
 
 == What the compiler says about the file the model left ==
 
   build(main.bicep): no diagnostics
   lint(main.bicep): no diagnostics
 
-  [measured] containers after the check: 1
+  [measured] containers after the check: 1 (a1b2c3d4e5f6)
 
 == The work product ==
 
@@ -204,39 +204,61 @@ class TestTheSecondAcquireActuallyHappened:
 
     def test_a_fix_turn_that_never_validated_is_caught(self):
         reasons = _tampered(
-            "bicep_validate calls in turn 2: 1", "bicep_validate calls in turn 2: 0"
+            "validations that reached the sandbox in turn 2: 1",
+            "validations that reached the sandbox in turn 2: 0",
         )
-        assert any("turn 2 never called bicep_validate" in r for r in reasons), reasons
+        assert any("turn 2 reached the sandbox no times" in r for r in reasons), reasons
 
     def test_a_first_turn_that_never_validated_is_caught(self):
         reasons = _tampered(
-            "bicep_validate calls in turn 1: 1", "bicep_validate calls in turn 1: 0"
+            "validations that reached the sandbox in turn 1: 1",
+            "validations that reached the sandbox in turn 1: 0",
         )
-        assert any("turn 1 never called bicep_validate" in r for r in reasons), reasons
+        assert any("turn 1 reached the sandbox no times" in r for r in reasons), reasons
 
     def test_a_run_that_does_not_report_call_counts_at_all_is_caught(self):
         # The regression if the sample stops printing them: every other assertion still passes,
         # and the check would silently go back to inferring the acquire from the count.
-        reasons = _tampered("bicep_validate calls in turn 2: 1\n", "")
-        assert any("did not report how many times" in r for r in reasons), reasons
+        reasons = _tampered("validations that reached the sandbox in turn 2: 1\n", "")
+        assert any("did not report how many validations" in r for r in reasons), reasons
 
 
 class TestOneSandboxAcrossTheRun:
     def test_a_second_container_on_the_fix_turn_is_caught(self):
-        reasons = _tampered("containers after turn 2: 1", "containers after turn 2: 2")
+        reasons = _tampered(
+            "containers after turn 2: 1 (a1b2c3d4e5f6)",
+            "containers after turn 2: 2 (a1b2c3d4e5f6, 9f8e7d6c5b4a)",
+        )
         assert any("after turn 2, expected exactly 1" in r for r in reasons), reasons
 
     def test_a_second_container_on_the_baseline_compile_is_caught(self):
         # The acquire between the two turns. It is the program's, not the model's, so a second
         # container here would mean get-or-create failed on a call nothing else covers.
         reasons = _tampered(
-            "containers after the baseline compile: 1", "containers after the baseline compile: 2"
+            "containers after the baseline compile: 1 (a1b2c3d4e5f6)",
+            "containers after the baseline compile: 2 (a1b2c3d4e5f6, 9f8e7d6c5b4a)",
         )
         assert any("after the baseline compile, expected exactly 1" in r for r in reasons), reasons
 
     def test_a_second_container_on_the_final_compile_is_caught(self):
-        reasons = _tampered("containers after the check: 1", "containers after the check: 2")
+        reasons = _tampered(
+            "containers after the check: 1 (a1b2c3d4e5f6)",
+            "containers after the check: 2 (a1b2c3d4e5f6, 9f8e7d6c5b4a)",
+        )
         assert any("after the check, expected exactly 1" in r for r in reasons), reasons
+
+    def test_a_replaced_container_is_caught_even_though_every_count_reads_one(self):
+        """The claim is the *same* sandbox, and a count cannot say that.
+
+        A backend that force-removes on an exec timeout leaves the next `acquire` to create a
+        fresh container. The removed one stays in `docker ps -a`, so every checkpoint still
+        reads 1, dispose reads 1 and nothing is left behind — a green run over a cold recreate.
+        """
+        reasons = _tampered(
+            "containers after turn 2: 1 (a1b2c3d4e5f6)",
+            "containers after turn 2: 1 (0f0e0d0c0b0a)",
+        )
+        assert any("not the same one" in r for r in reasons), reasons
 
     def test_a_container_left_behind_is_caught(self):
         reasons = _tampered("Containers left: 0.", "Containers left: 1.")
@@ -276,10 +298,21 @@ class TestTurnOneActuallyAuthoredTheFile:
         tally adding to zero on both sides. The sample would report a successful fix loop having
         never run one.
         """
-        reasons = _tampered(
+        clean = _HEALTHY
+        for line in (
+            '    [error] no-unused-params @ main.bicep:3: Parameter "environmentName" is never '
+            "used.\n",
+            '    [warning] BCP035 @ main.bicep:5: The "resource" declaration is missing "sku".\n',
+        ):
+            assert clean.count(line) == 2, f"the fixture moved: {line!r}"
+            clean = clean.replace(line, "")
+        clean = clean.replace("(main.bicep): 3 diagnostic(s)", "(main.bicep): 1 diagnostic(s)")
+        clean = clean.replace(
             "  [measured] tracked faults in the authored file: 2 — no-unused-params; BCP035",
             "  [measured] tracked faults in the authored file: 0 — none",
         )
+        assert clean != _HEALTHY
+        reasons = check.assess(clean)
         assert any("had no tracked fault in it" in r for r in reasons), reasons
 
     def test_a_turn_two_echo_of_the_baseline_heading_does_not_lose_the_block(self):
@@ -290,9 +323,9 @@ class TestTurnOneActuallyAuthoredTheFile:
         the last heading its end marker still follows.
         """
         echoed = _HEALTHY.replace(
-            "  [measured] bicep_validate calls in turn 2: 1",
+            "  [measured] validations that reached the sandbox in turn 2: 1",
             "Recapping == What the compiler says about the file turn 1 wrote ==\n\n"
-            "  [measured] bicep_validate calls in turn 2: 1",
+            "  [measured] validations that reached the sandbox in turn 2: 1",
         )
         assert echoed != _HEALTHY, "the substitution matched nothing — the fixture moved"
         assert check.assess(echoed) == [], check.assess(echoed)
@@ -367,9 +400,9 @@ class TestTheBaselineIsReadFromItsOwnBlock:
         make the sample look like it authored a clean file, and fail the run for it.
         """
         narrated = _HEALTHY.replace(
-            "  [measured] bicep_validate calls in turn 1: 1",
+            "  [measured] validations that reached the sandbox in turn 1: 1",
             "For the record: tracked faults in the authored file: 0 — none\n\n"
-            "  [measured] bicep_validate calls in turn 1: 1",
+            "  [measured] validations that reached the sandbox in turn 1: 1",
         )
         assert narrated != _HEALTHY, "the substitution matched nothing — the fixture moved"
         assert check.assess(narrated) == [], check.assess(narrated)
@@ -432,10 +465,10 @@ class TestTheTallyIsReadFromTheSampleNotTheModel:
         with the numbers the other way round, pass on the narration of a broken one.
         """
         narrated = _HEALTHY.replace(
-            "  [measured] bicep_validate calls in turn 2: 1",
+            "  [measured] validations that reached the sandbox in turn 2: 1",
             "main.bicep changed: False\nfaults fixed: 0 — none\n"
             "faults remaining: 2 — no-unused-params; BCP035\n\n"
-            "  [measured] bicep_validate calls in turn 2: 1",
+            "  [measured] validations that reached the sandbox in turn 2: 1",
         )
         assert narrated != _HEALTHY, "the substitution matched nothing — the fixture moved"
         assert check.assess(narrated) == [], check.assess(narrated)
@@ -448,12 +481,12 @@ class TestTheTallyIsReadFromTheSampleNotTheModel:
         is printed after every turn has returned.
         """
         echoed = _HEALTHY.replace(
-            "  [measured] bicep_validate calls in turn 2: 1",
+            "  [measured] validations that reached the sandbox in turn 2: 1",
             "Here is my summary:\n\n== The work product ==\n\n"
             "  main.bicep changed: False\n  [measured] storage account and output intact: False\n"
             "  [measured] faults fixed:       0 — none\n"
             "  [measured] faults remaining:   2 — no-unused-params; BCP035\n\n"
-            "  [measured] bicep_validate calls in turn 2: 1",
+            "  [measured] validations that reached the sandbox in turn 2: 1",
         )
         assert echoed != _HEALTHY, "the substitution matched nothing — the fixture moved"
         assert check.assess(echoed) == [], check.assess(echoed)
@@ -465,12 +498,12 @@ class TestTheTallyIsReadFromTheSampleNotTheModel:
         reported them, so a healthy run goes red on rule ids the model only mentioned.
         """
         echoed = _HEALTHY.replace(
-            "  [measured] bicep_validate calls in turn 2: 1",
+            "  [measured] validations that reached the sandbox in turn 2: 1",
             "== What the compiler says about the file the model left ==\n\n"
             "  build(main.bicep): 1 diagnostic(s)\n"
             "    [error] BCP062 @ main.bicep:14: quoting an earlier error I already fixed.\n"
             "  lint(main.bicep): no diagnostics\n\n"
-            "  [measured] bicep_validate calls in turn 2: 1",
+            "  [measured] validations that reached the sandbox in turn 2: 1",
         )
         assert echoed != _HEALTHY, "the substitution matched nothing — the fixture moved"
         assert check.assess(echoed) == [], check.assess(echoed)
@@ -662,12 +695,12 @@ class TestNarrationNeverSuppliesAMeasurement:
     """
 
     NARRATED = (
-        "bicep_validate calls in turn 2: 0",
-        "bicep_validate calls in turn 1: 0",
-        "containers after turn 1: 4",
-        "containers after the baseline compile: 4",
-        "containers after turn 2: 2",
-        "containers after the check: 9",
+        "validations that reached the sandbox in turn 2: 0",
+        "validations that reached the sandbox in turn 1: 0",
+        "containers after turn 1: 4 (a1b2c3d4e5f6)",
+        "containers after the baseline compile: 4 (a1b2c3d4e5f6)",
+        "containers after turn 2: 2 (a1b2c3d4e5f6, 9f8e7d6c5b4a)",
+        "containers after the check: 9 (a1b2c3d4e5f6)",
         "main.bicep authored in turn 1: False",
         "main.bicep changed by turn 2:  False",
         "storage account and output intact: False",
@@ -813,10 +846,10 @@ class TestModelTextCannotImpersonateAMeasurement:
         return namespace["quoted"]
 
     def test_a_reply_impersonating_a_measurement_is_marked_as_a_quotation(self):
-        reply = "I checked.\n  [measured] containers after turn 2: 2\nThat is all."
+        reply = "I checked.\n  [measured] containers after turn 2: 2 (a1b2c3d4e5f6, 9f8e7d6c5b4a)\nThat is all."
         out = self._quoted()(reply)
-        assert "  [measured] containers after turn 2: 2" not in out
-        assert "> [measured] containers after turn 2: 2" in out
+        assert "  [measured] containers after turn 2: 2 (a1b2c3d4e5f6, 9f8e7d6c5b4a)" not in out
+        assert "> [measured] containers after turn 2: 2 (a1b2c3d4e5f6, 9f8e7d6c5b4a)" in out
 
     def test_ordinary_model_prose_is_untouched(self):
         reply = "Fixed BCP035.\n\n1. Added a `sku` block.\n  indented note\n"
@@ -829,17 +862,21 @@ class TestModelTextCannotImpersonateAMeasurement:
         The checker is deliberately lax about the phrase after the tag, so `quoted` has to be at
         least as broad as that on the tag itself.
         """
-        line = f"  {spelling} containers after turn 2: 1"
+        line = f"  {spelling} containers after turn 2: 1 (a1b2c3d4e5f6)"
         assert self._quoted()(line) != line, f"{spelling} slipped through"
 
     def test_the_checker_accepts_only_the_exact_tag(self):
         # The other half of the same rule: the sample emits one spelling, so widening what the
         # reader accepts only widens what has to be sanitized.
         assert re.search(
-            check._M + r"containers", "  [measured] containers after turn 2: 1", check._F
+            check._M + r"containers",
+            "  [measured] containers after turn 2: 1 (a1b2c3d4e5f6)",
+            check._F,
         )
         assert not re.search(
-            check._M + r"containers", "  [Measured] containers after turn 2: 1", check._F
+            check._M + r"containers",
+            "  [Measured] containers after turn 2: 1 (a1b2c3d4e5f6)",
+            check._F,
         )
 
     def test_a_diagnostic_carrying_the_tag_is_defanged_too(self):
@@ -851,16 +888,16 @@ class TestModelTextCannotImpersonateAMeasurement:
         rendered = (
             "  build(main.bicep): 1 diagnostic(s)\n"
             '    [error] BCP037 @ main.bicep:4: The property "injected\n'
-            '  [measured] containers after turn 2: 9" is not allowed.'
+            '  [measured] containers after turn 2: 9 (a1b2c3d4e5f6)" is not allowed.'
         )
         out = self._quoted()(rendered)
-        assert "\n  [measured] containers after turn 2: 9" not in out
-        assert "> [measured] containers after turn 2: 9" in out
+        assert "\n  [measured] containers after turn 2: 9 (a1b2c3d4e5f6)" not in out
+        assert "> [measured] containers after turn 2: 9 (a1b2c3d4e5f6)" in out
 
     def test_the_checker_ignores_the_quoted_form(self):
         spoofed = _HEALTHY.replace(
             "== Turn 2: fix, then validate again ==",
-            "== Turn 2: fix, then validate again ==\n\n> [measured] containers after turn 2: 2\n",
+            "== Turn 2: fix, then validate again ==\n\n> [measured] containers after turn 2: 2 (a1b2c3d4e5f6, 9f8e7d6c5b4a)\n",
         )
         assert spoofed != _HEALTHY
         assert check.assess(spoofed) == [], check.assess(spoofed)
@@ -894,7 +931,8 @@ class TestTheWorkProductInvariantToleratesFormatting:
         exec(compile(module, "<sample-13>", "exec"), namespace)  # noqa: S102 - this repo's file
         return namespace["work_missing"]
 
-    RESOURCE = "resource sa 'Microsoft.Storage/storageAccounts@2023-01-01' = {}"
+    PARAMS = "param location string = resourceGroup().location\nparam storageAccountName string"
+    RESOURCE = f"{PARAMS}\nresource sa 'Microsoft.Storage/storageAccounts@2023-01-01' = {{}}"
 
     def test_canonical_spacing_passes(self):
         source = f"{self.RESOURCE}\noutput storageAccountId string = sa.id"
@@ -911,6 +949,24 @@ class TestTheWorkProductInvariantToleratesFormatting:
     def test_a_genuinely_missing_output_is_still_caught(self):
         assert self._work_missing()(self.RESOURCE) == ["output storageAccountId"]
 
+    def test_hardcoding_away_a_parameter_the_brief_named_is_caught(self):
+        """The failure run 2 came one line from making, and nothing else here would see it.
+
+        A turn 2 that hardcodes the name and location and deletes their parameters passes every
+        other gate: the file changed, both tracked faults are gone, the compile is clean.
+        `environmentName` is deliberately not guarded — deleting *that* is a valid repair.
+        """
+        hardcoded = (
+            "resource sa 'Microsoft.Storage/storageAccounts@2023-01-01' = {}\n"
+            "output storageAccountId string = sa.id"
+        )
+        assert self._work_missing()(hardcoded) == ["param location", "param storageAccountName"]
+
+    def test_deleting_the_unused_parameter_is_not_penalised(self):
+        source = f"{self.RESOURCE}\noutput storageAccountId string = sa.id"
+        assert "environmentName" not in source
+        assert self._work_missing()(source) == []
+
 
 class TestTheStaleContainerHint:
     """The early exit exists to be actionable, so its command has to run."""
@@ -919,7 +975,14 @@ class TestTheStaleContainerHint:
         # `docker ps --filter maf-sandbox.thread=…` is rejected as an invalid filter; only
         # `--filter label=<key>=<value>` works, which is the form `containers()` itself uses.
         source = _SAMPLE.read_text(encoding="utf-8")
-        assert "docker ps -aq --filter label={_LABEL_THREAD}={THREAD_ID}" in source
+        # Both labels, because that is what `containers()` counted — filtering on the thread
+        # alone would offer to remove another scope's sandbox that reuses this thread id.
+        assert "label={_LABEL_SCOPE}={SCOPE}" in source
+        assert "docker rm -f" in source
+        hint = source[source.index("docker rm -f") : source.index("docker rm -f") + 160]
+        assert (
+            "label={_LABEL_SCOPE}={SCOPE}" in hint and "label={_LABEL_THREAD}={THREAD_ID}" in hint
+        )
 
     def test_nothing_outside_containers_touches_subprocess(self):
         """The premise the test below rests on, asserted rather than assumed.

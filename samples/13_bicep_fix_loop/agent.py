@@ -76,12 +76,17 @@ TRACKED_FAULTS = ("no-unused-params", "BCP035")
 #: The tool the model is expected to reach for, and the one this sample counts calls to.
 BICEP_TOOL = "bicep_validate"
 
-#: The two things the brief asks for by name, and the one thing no other signal here protects:
+#: What the brief asks for by name, and the one thing no other signal here protects:
 #: emptying the file changes it, reports no tracked fault, and compiles clean. Patterns rather
-#: than substrings, because the model writes this file and its spacing is the model's to choose.
+#: than substrings, because the model writes this file and its spacing is the model's to
+#: choose. `environmentName` is deliberately absent: deleting it is a valid repair of
+#: `no-unused-params`, while hardcoding what `location` and `storageAccountName` supply is
+#: not a repair of anything.
 WORK_PRODUCT = (
     ("Microsoft.Storage/storageAccounts", re.compile(r"Microsoft\.Storage/storageAccounts")),
     ("output storageAccountId", re.compile(r"output\s+storageAccountId")),
+    ("param location", re.compile(r"param\s+location\b")),
+    ("param storageAccountName", re.compile(r"param\s+storageAccountName\b")),
 )
 
 #: Prefix on every number this program measured, as opposed to anything the model said. Sample
@@ -106,8 +111,8 @@ _LABEL_SCOPE = "maf-sandbox.scope"
 _LABEL_THREAD = "maf-sandbox.thread"
 
 
-def containers() -> int:
-    """Containers Docker reports for this thread, **stopped ones included**."""
+def containers() -> list[str]:
+    """Ids Docker reports for this thread, **stopped ones included**, in a stable order."""
     result = subprocess.run(  # noqa: S603 - fixed argv, no shell, values from this file
         [
             "docker",
@@ -123,7 +128,18 @@ def containers() -> int:
         text=True,
         check=True,
     )
-    return len(result.stdout.split())
+    return sorted(result.stdout.split())
+
+
+def counted(ids: list[str]) -> str:
+    """A count and the ids behind it, because the count alone is the weaker claim.
+
+    "One container exists at this instant" is not "the same container served both turns". A
+    backend that force-removes a sandbox — an exec timeout does exactly that — leaves the next
+    `acquire` to create a fresh one, and every checkpoint still reads 1. Printing the id makes
+    the sample measure what #304 asked to see.
+    """
+    return f"{len(ids)} ({', '.join(ids) or 'none'})"
 
 
 def faults_left(diagnostics: str) -> list[str]:
@@ -146,20 +162,33 @@ def work_missing(source: str) -> list[str]:
     return [label for label, pattern in WORK_PRODUCT if not pattern.search(source)]
 
 
-def tool_calls(reply: object, name: str) -> int:
-    """How many times ``reply`` actually called the tool ``name``.
+def validations(reply: object, name: str) -> int:
+    """How many times ``reply`` called ``name`` and got a compile back.
 
-    Read off the returned messages, because the container count cannot answer this. A turn that
-    never validates leaves turn 1's container standing, so the count still reads 1 and the run
-    looks like reuse while the second `acquire` never happened. This is the number that makes
-    "the fix turn reached the same warm sandbox" a measurement rather than an inference.
+    The container count cannot answer this: a turn that never validates leaves the previous
+    turn's container standing, so the count still reads 1 while no second `acquire` happened.
+
+    Counting *requests* would not answer it either. `bicep_validate` returns an error string
+    without touching the sandbox when no conversation is bound, when a name has the wrong
+    suffix, and when a name is not in its file listing — so a turn whose only validator call
+    was rejected would score 1 having acquired nothing. A result naming both compiler phases
+    is one that reached the sandbox.
     """
-    return sum(
-        1
+    asked = {
+        content.call_id
         for message in getattr(reply, "messages", [])
         for content in message.contents
         if getattr(content, "type", None) == "function_call"
         and getattr(content, "name", None) == name
+    }
+    return sum(
+        1
+        for message in getattr(reply, "messages", [])
+        for content in message.contents
+        if getattr(content, "type", None) == "function_result"
+        and getattr(content, "call_id", None) in asked
+        and "build(" in str(getattr(content, "result", ""))
+        and "lint(" in str(getattr(content, "result", ""))
     )
 
 
@@ -264,9 +293,10 @@ async def run() -> int:
         return 2
     if stale:
         print(
-            f"{stale} container(s) already exist for {SCOPE}/{THREAD_ID}, left by a run that "
+            f"{len(stale)} container(s) already exist for {SCOPE}/{THREAD_ID}, left by a run that "
             f"did not dispose. Remove them first:\n"
-            f"  docker rm -f $(docker ps -aq --filter label={_LABEL_THREAD}={THREAD_ID})",
+            f"  docker rm -f $(docker ps -aq --filter label={_LABEL_SCOPE}={SCOPE} "
+            f"--filter label={_LABEL_THREAD}={THREAD_ID})",
             file=sys.stderr,
         )
         return 2
@@ -288,9 +318,9 @@ async def run() -> int:
                 "file_access_write refuses to overwrite a file that already exists. Always call "
                 "bicep_validate rather than judging a file by reading it, and report exactly "
                 "the diagnostics it returns. Write or edit the file first, then validate what "
-                "is on disk. If validation reports something your edit introduced, fix that too "
-                "and validate again before you answer — an edit is not finished while the "
-                "compiler is still objecting to it. Keep every answer short."
+                "is on disk. When you are asked to repair a file, anything validation then "
+                "reports that your repair introduced is part of that repair: fix it and "
+                "validate again before you answer. Keep every answer short."
             ),
             tools=tools,
             # Gives the model `file_access_read`/`_write`/`_replace` over the same store
@@ -318,8 +348,11 @@ async def run() -> int:
             session=session,
         )
         print(quoted(first.text))
-        print(f"\n{MEASURED}bicep_validate calls in turn 1: {tool_calls(first, BICEP_TOOL)}")
-        print(f"{MEASURED}containers after turn 1: {containers()}\n")
+        print(
+            f"\n{MEASURED}validations that reached the sandbox in turn 1: "
+            f"{validations(first, BICEP_TOOL)}"
+        )
+        print(f"{MEASURED}containers after turn 1: {counted(containers())}\n")
 
         # The baseline turn 2's work is measured against, compiled here rather than lifted out
         # of turn 1's own tool call. That distinction is the whole point: the model may validate
@@ -340,7 +373,7 @@ async def run() -> int:
             f"\n{MEASURED}tracked faults in the authored file: {len(as_authored)} — "
             f"{'; '.join(as_authored) or 'none'}"
         )
-        print(f"{MEASURED}containers after the baseline compile: {containers()}\n")
+        print(f"{MEASURED}containers after the baseline compile: {counted(containers())}\n")
 
         print("== Turn 2: fix, then validate again ==\n")
         second = await agent.run(
@@ -351,9 +384,13 @@ async def run() -> int:
         )
         print(quoted(second.text))
         # Printed before the container count, because it is what gives that count its meaning: a
-        # turn that never validated would leave turn 1's container standing and still read 1.
-        print(f"\n{MEASURED}bicep_validate calls in turn 2: {tool_calls(second, BICEP_TOOL)}")
-        print(f"{MEASURED}containers after turn 2: {containers()}\n")
+        # turn that never reached the sandbox would leave turn 1's container standing and
+        # still read 1.
+        print(
+            f"\n{MEASURED}validations that reached the sandbox in turn 2: "
+            f"{validations(second, BICEP_TOOL)}"
+        )
+        print(f"{MEASURED}containers after turn 2: {counted(containers())}\n")
 
         # A model that says "it validates clean now" is still narrating. Compile the file it
         # left behind, from here rather than from the conversation, and let that be the verdict
@@ -365,7 +402,7 @@ async def run() -> int:
             await bicep_validate.invoke(arguments={"files": [BICEP_FILE]}, skip_parsing=True)
         )
         print(quoted("\n".join(f"  {line}" for line in verdict.splitlines())))
-        print(f"\n{MEASURED}containers after the check: {containers()}\n")
+        print(f"\n{MEASURED}containers after the check: {counted(containers())}\n")
 
         # The work product, and the two questions the compiler cannot answer: did turn 1 write a
         # file at all, and did turn 2 change it. A model that edited nothing still compiles.
@@ -394,7 +431,7 @@ async def run() -> int:
 
     print(
         f"{MEASURED}Disposed {disposed} sandbox(es) after 2 turns and a check. "
-        f"Containers left: {containers()}."
+        f"Containers left: {len(containers())}."
     )
     return 0
 

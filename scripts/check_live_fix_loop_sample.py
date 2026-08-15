@@ -39,17 +39,23 @@ _RULE_IDS = ("no-unused-params", "BCP035")
 #: Turn 1's prose, and only that. The rule ids appear again further down in the sample's own
 #: bookkeeping, which the *sample* prints — searching the whole output would pass on that literal
 #: whatever the model said, so the section is cut out before the ids are looked for.
-_TURN_ONE = (re.compile(r"==\s*Turn 1\b"), re.compile(_M + r"bicep_validate calls in turn 1", _F))
+_TURN_ONE = (
+    re.compile(r"==\s*Turn 1\b"),
+    re.compile(_M + r"validations that reached the sandbox in turn 1", _F),
+)
 
-#: `docker ps -a` after each of the four acquires. All four must read 1.
+#: `docker ps -a` after each of the four acquires: the count, then the ids behind it. All four
+#: must read 1, and all four must name the *same* id — one container existing at four instants
+#: is not one container serving all four, and a backend that force-removes on a timeout would
+#: satisfy the count while the second acquire paid for a fresh create.
 _COUNTS = (
-    ("after turn 1", re.compile(_M + r"containers after turn 1:\s*(\d+)", _F)),
+    ("after turn 1", re.compile(_M + r"containers after turn 1:\s*(\d+)\s*\(([^)]*)\)", _F)),
     (
         "after the baseline compile",
-        re.compile(_M + r"containers after the baseline compile:\s*(\d+)", _F),
+        re.compile(_M + r"containers after the baseline compile:\s*(\d+)\s*\(([^)]*)\)", _F),
     ),
-    ("after turn 2", re.compile(_M + r"containers after turn 2:\s*(\d+)", _F)),
-    ("after the check", re.compile(_M + r"containers after the check:\s*(\d+)", _F)),
+    ("after turn 2", re.compile(_M + r"containers after turn 2:\s*(\d+)\s*\(([^)]*)\)", _F)),
+    ("after the check", re.compile(_M + r"containers after the check:\s*(\d+)\s*\(([^)]*)\)", _F)),
 )
 
 #: The sample's closing block, and the only place the four lines below are read from: the model
@@ -66,12 +72,13 @@ _INTACT = re.compile(_M + r"storage account and output intact:\s*(True|False)", 
 _FIXED = re.compile(_M + r"faults fixed:\s*(\d+)\s*[-—]\s*([^\n]*)", _F)
 _REMAINING = re.compile(_M + r"faults remaining:\s*(\d+)\s*[-—]\s*([^\n]*)", _F)
 
-#: How many times each turn actually called the validator. The container count cannot answer
-#: this: a turn that never validated leaves the previous turn's container standing, so the count
-#: still reads 1 and the run looks like reuse while the second `acquire` never happened.
+#: How many times each turn reached the sandbox. The container count cannot answer this: a turn
+#: that never validated leaves the previous turn's container standing, so the count still reads
+#: 1 while no second `acquire` happened. Counted from results rather than requests, because the
+#: tool refuses some calls before it acquires anything.
 _TOOL_CALLS = (
-    ("turn 1", re.compile(_M + r"bicep_validate calls in turn 1:\s*(\d+)", _F)),
-    ("turn 2", re.compile(_M + r"bicep_validate calls in turn 2:\s*(\d+)", _F)),
+    ("turn 1", re.compile(_M + r"validations that reached the sandbox in turn 1:\s*(\d+)", _F)),
+    ("turn 2", re.compile(_M + r"validations that reached the sandbox in turn 2:\s*(\d+)", _F)),
 )
 
 #: The program's own compile of the file turn 1 wrote — the baseline the repair is measured
@@ -209,6 +216,23 @@ def _authored_faults(output: str) -> tuple[set[str], list[str]]:
         return set(), ["the run never counted the tracked faults in the authored file"]
 
     names, failures = _tally(match, "in the authored file")
+
+    # Against the diagnostics printed directly above it, as the final compile is. Without this
+    # the baseline is a number with nothing behind it: drop a diagnostic line from the block and
+    # every later comparison is measured from a starting point the compiler never reported.
+    reported = {
+        rule
+        for diagnostic in _DIAGNOSTIC.finditer(compiled)
+        for rule in _RULE_IDS
+        if diagnostic.group(1).lower() == rule.lower()
+    }
+    if names != reported:
+        failures.append(
+            f"the baseline names {sorted(names) or 'nothing'} but its own compile reports "
+            f"{sorted(reported) or 'nothing'} — the tally and the diagnostics above it "
+            "describe different files"
+        )
+
     if not names and not failures:
         failures.append(
             "the file turn 1 wrote had no tracked fault in it — the brief asks for an unused "
@@ -249,25 +273,40 @@ def _assess_reuse(output: str) -> list[str]:
         calls = _one(pattern, output)
         if calls is None:
             failures.append(
-                f"{turn} did not report how many times it called bicep_validate — without it a "
+                f"{turn} did not report how many validations reached the sandbox — without it a "
                 "container count of 1 is equally consistent with that turn never acquiring"
             )
         elif int(calls) < 1:
             failures.append(
-                f"{turn} never called bicep_validate — the container count after it is left "
+                f"{turn} reached the sandbox no times — the container count after it is left "
                 "over from the previous turn, so it says nothing about acquire reusing anything"
             )
 
+    seen: dict[str, str] = {}
     for where, pattern in _COUNTS:
-        count = _one(pattern, output)
-        if count is None:
+        match = pattern.search(output)
+        if match is None:
             failures.append(f"no container count {where} — reuse is unshown at that point")
-        elif int(count) != 1:
+            continue
+        count, ids = int(match.group(1)), match.group(2).strip()
+        if count != 1:
             failures.append(
                 f"{count} container(s) {where}, expected exactly 1 — a second sandbox answers "
                 "the call just as well, so this count is what distinguishes acquire reusing one "
                 "from acquire creating another"
             )
+        else:
+            seen[where] = ids
+
+    # The same one, not merely one. Without this the sample measures existence at four instants
+    # and claims continuity across them, which is a different sentence.
+    distinct = set(seen.values())
+    if len(distinct) > 1:
+        failures.append(
+            f"the container changed during the run: {', '.join(f'{k} {v}' for k, v in seen.items())}"
+            " — one sandbox existed at each point, but not the same one, so an acquire created "
+            "a replacement rather than finding what was there"
+        )
     return failures
 
 
@@ -347,12 +386,20 @@ def _assess_repair(output: str, authored: set[str]) -> list[str]:
             f"the tally covers {sorted(fixed_names | remaining_names) or 'nothing'} but the "
             f"authored file had {sorted(authored)} — the two do not describe the same file"
         )
-    failures.extend(_assess_compiler_agrees(output, fixed_names, remaining_names))
+    failures.extend(_assess_compiler_agrees(output, fixed_names, remaining_names, authored))
     return failures
 
 
+def _baseline_rules(output: str) -> set[str]:
+    """Every rule the compiler reported on the file turn 1 wrote, tracked or not."""
+    compiled = _section(output, _AUTHORED_COMPILE, last=True)
+    if compiled is None:
+        return set()
+    return {match.group(1) for match in _DIAGNOSTIC.finditer(compiled)}
+
+
 def _assess_compiler_agrees(
-    output: str, fixed_names: set[str], remaining_names: set[str]
+    output: str, fixed_names: set[str], remaining_names: set[str], authored: set[str]
 ) -> list[str]:
     """Read the compiler's own verdict, and refuse anything it reports that is not accounted for.
 
@@ -395,7 +442,12 @@ def _assess_compiler_agrees(
                 "two halves of the output disagree about the same file"
             )
 
+    # "Introduced" means the baseline did not report it. Turn 2 is asked to leave the file
+    # reporting nothing it did not report before, so a rule the authored file already had is
+    # not this turn's doing — an ordinary authoring tic like `simplify-interpolation` would
+    # otherwise fail a run the prompt explicitly licensed, blaming the model for it.
     accounted = {rule.lower() for rule in remaining_names}
+    accounted |= {rule.lower() for rule in _baseline_rules(output)}
     accounted.add(_TOLERATED_RULE.lower())
     introduced = sorted(rule for rule in reported if rule.lower() not in accounted)
     if introduced:
