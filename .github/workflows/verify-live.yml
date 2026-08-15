@@ -49,19 +49,9 @@ on:
         type: string
         default: ""
 
-# Per package, because a group holds one PENDING run rather than a queue: a third run arriving
-# displaces the second, which is silently cancelled before it starts a single step. That met
-# `publish-packages.yml`, which is deliberately parallel across packages, and a four-package train
-# ran roughly two of its four checks — each loss surfacing as a cancelled called workflow, which
-# reads as a broken release rather than as a check that was skipped. Keyed on the package, runs
-# for different packages no longer contend at all, and a re-dispatch of the SAME package still
-# serialises, which is the case worth serialising. `cancel-in-progress: false` keeps the original
-# guarantee whole: a run in flight is never cancelled half-way, so a live sandbox is always
-# disposed by the run that created it rather than left to the backend's auto-delete timer.
-# What this gives up is a cap on how many billable sandboxes may exist at once — but serialising
-# never reduced the spend, only the peak, and it capped the peak by holding up runs that create no
-# sandbox at all: a docker-only release held the whole lock while spending nothing. The peak is now
-# bounded by how many packages one release train carries. (#325.)
+# Key by package because GitHub retains only one pending run per concurrency group; a global group
+# silently drops checks from parallel package releases. Keep same-package runs serialized and never
+# cancel an in-flight run so it can dispose its sandbox itself (#325).
 concurrency:
   group: verify-live-${{ inputs.package || 'all' }}
   cancel-in-progress: false
