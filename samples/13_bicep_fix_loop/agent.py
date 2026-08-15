@@ -67,9 +67,9 @@ SPEC = (
     "still being decided; and an output `storageAccountId` giving the resource's id"
 )
 
-#: The two faults the brief implies, by the rule id the compiler reports for each. The same two
-#: samples 01, 02, 05 and 09 report from their checked-in `main.bicep`, which is why the brief
-#: describes that file: the diagnostics stay comparable across all five.
+#: The two faults the brief implies, by the rule id the compiler reports for each. Samples 01,
+#: 02, 05 and 09 report the same pair from the `main.bicep` they check in, which is why the
+#: brief describes that file: the diagnostics stay comparable across all five.
 TRACKED_FAULTS = ("no-unused-params", "BCP035")
 
 #: The tool the model is expected to reach for, and the one this sample counts calls to.
@@ -235,10 +235,8 @@ async def run() -> int:
             tools=tools,
             # Gives the model `file_access_read`/`_write`/`_replace` over the same store
             # `bicep_validate` reads from — without them it can describe a fix and not make one.
-            # **Both** approval gates are off, and both are needed: the read tools have their
-            # own. Leave `disable_readonly_tool_approval` at its default and the fix turn stops
-            # dead on the model's first `file_access_read`, returning no text and no edit, since
-            # this program has no human in it to approve anything.
+            # Both approval gates are off because there is no human here to answer either one;
+            # the README says what leaving the read gate on does to a fix turn.
             context_providers=[
                 FileAccessProvider(
                     store,
@@ -296,9 +294,9 @@ async def run() -> int:
 
         # A model that says "it validates clean now" is still narrating. Compile the file it
         # left behind, from here rather than from the conversation, and let that be the verdict
-        # everything below is read off. This is also a **third** `acquire` on the same key,
-        # which is why the container count is printed again: turn 2 finding the sandbox warm
-        # was not a one-off.
+        # everything below is read off. This is the **fourth** `acquire` on the same key, which
+        # is why the container count is printed again: turn 2 finding the sandbox warm was not
+        # a one-off.
         print("== What the compiler says about the file the model left ==\n")
         verdict = str(
             await bicep_validate.invoke(arguments={"files": [BICEP_FILE]}, skip_parsing=True)

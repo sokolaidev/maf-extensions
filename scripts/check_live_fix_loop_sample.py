@@ -52,8 +52,8 @@ import re
 import sys
 from pathlib import Path
 
-#: The two faults the sample's brief implies, by the rule id the compiler reports for each —
-#: the same two samples 01, 02, 05 and 09 report from their checked-in `main.bicep`.
+#: The two faults the sample's brief implies, by the rule id the compiler reports for each.
+#: Samples 01, 02, 05 and 09 report the same pair from the `main.bicep` they check in.
 _RULE_IDS = ("no-unused-params", "BCP035")
 
 #: Turn 1's prose, and only that. The rule ids appear again further down in the sample's own
@@ -105,9 +105,13 @@ _TOOL_CALLS = (
 #: which would credit turn 2 with faults turn 1 had already fixed. This is the baseline the
 #: repair is measured against, and why the tally says what *this run* fixed.
 #: Read with ``last=True`` for the same reason as the other sample-authored blocks.
+#: Ends at the container count rather than at the fault line, so the count is *inside* the
+#: section and can be read from it. Searching the whole output for it would let a turn-1 reply
+#: mentioning "tracked faults in the authored file" supply the number instead — and that fails
+#: a healthy run, since a narrated 0 makes the sample look like it authored a clean file.
 _AUTHORED_COMPILE = (
     re.compile(r"==\s*What the compiler says about the file turn 1 wrote"),
-    re.compile(r"tracked faults in the authored file"),
+    re.compile(r"containers after the baseline compile"),
 )
 _AUTHORED_FAULTS = re.compile(
     r"tracked faults in the authored file:\s*(\d+)\s*[-—]\s*([^\n]*)", re.IGNORECASE
@@ -145,6 +149,35 @@ _FOOTER = re.compile(
 def _one(pattern: re.Pattern[str], output: str) -> str | None:
     match = pattern.search(output)
     return match.group(1) if match else None
+
+
+def _tally(match: re.Match[str], label: str) -> tuple[set[str], list[str]]:
+    """The rule ids on a tally line, held to the number printed beside them.
+
+    The count and the names are produced by the same list in the sample, so they cannot drift
+    on their own — but nothing here was checking that, and a substring test for each rule id
+    could not. `faults fixed: 2 — none` satisfied every other assertion: the counts added up,
+    no tracked rule was compared as fixed because none was named, and a clean compile left the
+    sweep nothing to reject. Parsing the names exactly is what makes the two halves agree.
+    """
+    count = int(match.group(1))
+    body = match.group(2).strip()
+    names = [] if body.lower() == "none" else [part.strip() for part in body.split(";")]
+    names = [name for name in names if name]
+
+    failures: list[str] = []
+    if len(names) != count:
+        failures.append(
+            f"`faults {label}` says {count} but names {len(names)}: {body!r} — the number and "
+            "the list beside it describe different things"
+        )
+    unknown = sorted(name for name in names if name not in _RULE_IDS)
+    if unknown:
+        failures.append(
+            f"`faults {label}` names {', '.join(unknown)}, which this sample does not track — "
+            f"the only rule ids it reports on are {', '.join(_RULE_IDS)}"
+        )
+    return set(names), failures
 
 
 def _section(
@@ -201,7 +234,7 @@ def _assess_first_turn(output: str) -> list[str]:
 
 
 def _assess_reuse(output: str) -> list[str]:
-    """One sandbox across three acquires — the claim the sample exists to make."""
+    """One sandbox across all four acquires — the claim the sample exists to make."""
     failures: list[str] = []
 
     # Before the counts, because they are what makes the counts mean anything. A fix turn that
@@ -286,10 +319,19 @@ def _assess_repair(output: str) -> list[str]:
         failures.append("the run never reported its fault tally")
         return failures
 
-    fixed_count, fixed_names = int(fixed.group(1)), fixed.group(2)
-    remaining_count, remaining_names = int(remaining.group(1)), remaining.group(2)
+    fixed_names, fixed_failures = _tally(fixed, "fixed")
+    remaining_names, remaining_failures = _tally(remaining, "remaining")
+    failures.extend(fixed_failures)
+    failures.extend(remaining_failures)
 
-    if fixed_count < 1:
+    both = fixed_names & remaining_names
+    if both:
+        failures.append(
+            f"{', '.join(sorted(both))} is listed as both fixed and remaining — one file cannot "
+            "have a rule in both states"
+        )
+
+    if len(fixed_names) < 1:
         failures.append(
             "no fault was fixed — the file may have changed, but not in a way that removed any "
             "fault the diagnostics pointed at"
@@ -297,7 +339,9 @@ def _assess_repair(output: str) -> list[str]:
 
     # Against what turn 1 actually produced, not a constant. The brief is written so a compliant
     # model writes both faults, but the file is the model's, so the baseline has to be measured.
-    failures.extend(_assess_against_the_authored_file(output, fixed_count, remaining_count))
+    failures.extend(
+        _assess_against_the_authored_file(output, len(fixed_names), len(remaining_names))
+    )
     failures.extend(_assess_compiler_agrees(output, fixed_names, remaining_names))
     return failures
 
@@ -314,16 +358,21 @@ def _assess_against_the_authored_file(output: str, fixed: int, remaining: int) -
     compiled = _section(output, _AUTHORED_COMPILE, last=True)
     if compiled is None:
         return [
-            "the run never showed what the compiler told the model about the file it wrote — "
-            "without that baseline there is nothing to measure the repair against"
-        ]
-    if not _PHASE.search(compiled):
-        return [
-            "turn 1's validation printed no compiler output — the baseline is the model's "
-            "account of its own file rather than the compiler's"
+            "the run never showed what the compiler said about the file turn 1 wrote — without "
+            "that baseline there is nothing to measure the repair against"
         ]
 
-    match = _AUTHORED_FAULTS.search(output)
+    # Both phases, exactly as the final compile demands. Accepting one would let the baseline be
+    # counted from a partial compile: a lint-only failure would go unseen, the tracked-fault
+    # count would come out short, and turn 2 would be measured against the wrong starting point.
+    phases = {match.group(1).lower() for match in _PHASE.finditer(compiled)}
+    if phases != {"build", "lint"}:
+        return [
+            f"the baseline compile reported {sorted(phases) or 'no'} phase(s), expected both "
+            "build and lint — a partial compile undercounts what the authored file started with"
+        ]
+
+    match = _AUTHORED_FAULTS.search(compiled)
     if match is None:
         return ["the run never counted the tracked faults in the authored file"]
 
@@ -342,7 +391,9 @@ def _assess_against_the_authored_file(output: str, fixed: int, remaining: int) -
     return []
 
 
-def _assess_compiler_agrees(output: str, fixed_names: str, remaining_names: str) -> list[str]:
+def _assess_compiler_agrees(
+    output: str, fixed_names: set[str], remaining_names: set[str]
+) -> list[str]:
     """Read the compiler's own verdict, and refuse anything it reports that is not accounted for.
 
     Two separate jobs. The first is consistency: the sample derives its tally from these
@@ -373,18 +424,18 @@ def _assess_compiler_agrees(output: str, fixed_names: str, remaining_names: str)
 
     for rule in _RULE_IDS:
         named = any(rule.lower() == seen.lower() for seen in reported)
-        if rule.lower() in fixed_names.lower() and named:
+        if rule in fixed_names and named:
             failures.append(
                 f"the tally counts {rule} as fixed but the compiler still reports it — the two "
                 "halves of the output disagree about the same file"
             )
-        elif rule.lower() in remaining_names.lower() and not named:
+        elif rule in remaining_names and not named:
             failures.append(
                 f"the tally counts {rule} as remaining but the compiler does not report it — the "
                 "two halves of the output disagree about the same file"
             )
 
-    accounted = {rule.lower() for rule in _RULE_IDS if rule.lower() in remaining_names.lower()}
+    accounted = {rule.lower() for rule in remaining_names}
     accounted.add(_TOLERATED_RULE.lower())
     introduced = sorted(rule for rule in reported if rule.lower() not in accounted)
     if introduced:

@@ -220,7 +220,66 @@ class TestTurnOneActuallyAuthoredTheFile:
         ).replace("  lint(main.bicep): 3 diagnostic(s)", "  and linting agreed:")
         assert prose != _HEALTHY, "the substitution matched nothing — the fixture moved"
         reasons = check.assess(prose)
-        assert any("printed no compiler output" in r for r in reasons), reasons
+        assert any("expected both build and lint" in r for r in reasons), reasons
+
+
+class TestTheTallyNamesAgreeWithItsNumbers:
+    """The counts and the rule ids beside them come from one list, and must still be checked.
+
+    Nothing compared them until now, and a substring test for each rule id could not: with no
+    name printed there is no rule to compare, the counts add up on their own, and a clean
+    compile leaves the sweep nothing to reject.
+    """
+
+    def test_a_count_with_no_names_is_caught(self):
+        reasons = _tampered(
+            "  faults fixed:       2 — no-unused-params; BCP035", "  faults fixed:       2 — none"
+        )
+        assert any("says 2 but names 0" in r for r in reasons), reasons
+
+    def test_invented_rule_names_are_caught(self):
+        reasons = _tampered(
+            "  faults fixed:       2 — no-unused-params; BCP035",
+            "  faults fixed:       2 — BCP999; totally-made-up",
+        )
+        assert any("which this sample does not track" in r for r in reasons), reasons
+
+    def test_a_rule_in_both_columns_is_caught(self):
+        reasons = _tampered("  faults remaining:   0 — none", "  faults remaining:   1 — BCP035")
+        assert any("listed as both fixed and remaining" in r for r in reasons), reasons
+
+
+class TestTheBaselineIsReadFromItsOwnBlock:
+    def test_a_baseline_missing_a_compile_phase_is_caught(self):
+        """The final compile demanded both phases; the baseline accepted either.
+
+        A build that passes and a lint that fails would have been counted as a clean baseline,
+        so the authored file's fault count comes out short and turn 2 is measured against the
+        wrong starting point.
+        """
+        lint_phase = (
+            "  lint(main.bicep): 3 diagnostic(s)\n"
+            '    [error] no-unused-params @ main.bicep:3: Parameter "environmentName" is never used.\n'
+            '    [warning] BCP035 @ main.bicep:5: The "resource" declaration is missing "sku".\n'
+            "    [warning] use-recent-api-versions @ main.bicep:5: '2023-01-01' is 1322 days old.\n"
+        )
+        reasons = _tampered(lint_phase, "")
+        assert any("baseline compile reported" in r for r in reasons), reasons
+
+    def test_a_model_narrating_the_authored_count_does_not_override_it(self):
+        """And this one fails a *healthy* run, which is the worse direction.
+
+        The count was searched over the whole stream while the block around it was carefully
+        scoped. A turn-1 reply mentioning the phrase supplies the number instead, and a narrated
+        0 makes the sample look like it authored a clean file.
+        """
+        narrated = _HEALTHY.replace(
+            "  bicep_validate calls in turn 1: 1",
+            "For the record: tracked faults in the authored file: 0 — none\n\n"
+            "  bicep_validate calls in turn 1: 1",
+        )
+        assert narrated != _HEALTHY, "the substitution matched nothing — the fixture moved"
+        assert check.assess(narrated) == [], check.assess(narrated)
 
 
 class TestTheModelActuallyEdited:
