@@ -19,9 +19,12 @@ argument validation, the dispatch cap, the response ceiling — is host-side in
 
 Three costs, named here rather than discovered later:
 
-- **One round trip per call, at minimum.** On a remote backend that is an HTTP call each way,
-  so a call-heavy program can cost more round trips than the direct tool-calling this replaces.
-  Whether it is worth it is a measurement, not an assumption (#133).
+- **Three backend calls per dispatch, at minimum, plus polling.** Serving one request is a
+  ``stat_file``, then a ``read_file``, then a ``write_file`` for the answer — and the polling
+  in between adds a ``stat_file`` per interval for the exit marker and another for the next
+  request. On a remote backend every one of those is an HTTP round trip, so a call-heavy
+  program can cost far more of them than the direct tool-calling this replaces. Whether that
+  is worth it is a measurement, not an assumption (#133).
 - **One outstanding call at a time.** The supervisor polls for the *next* request by name
   rather than enumerating a directory, because the backend that most needs this transport
   (`maf-sandbox-docker`) serves ``FILES_OUT`` and not ``FILES_LIST``. A guest that fires two
@@ -49,7 +52,7 @@ from ._error_detail import error_detail
 from ._protocol import EntryKind, ExecResult
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Awaitable, Mapping
 
     from ._host_tools import HostToolRun
     from ._protocol import Sandbox
@@ -73,6 +76,9 @@ _LAUNCHER = "run_program.sh"
 #: supervisor reads as a dead one; the host's own deadline is what actually bounds a run.
 _GUEST_CALL_TIMEOUT = 300.0
 _GUEST_POLL_SECONDS = 0.05
+
+#: What a timed-out run may spend reading the output it quotes in the failure.
+_FINAL_READ_GRACE = 2.0
 
 
 @dataclass(frozen=True)
@@ -119,12 +125,19 @@ def host_tool_shim(names: frozenset[str] | set[str] | tuple[str, ...] = ()) -> s
     name invented here still resolves to a refusal. That is what makes the filtering below
     safe: a name this cannot spell as a function is not a name a guest cannot reach.
     """
+    # Keyed by the normalised spelling, because that is the name Python will bind. Two tools
+    # whose names normalise together — `lookup` and `ｌｏｏｋｕｐ` — compile to one global, and
+    # emitting both would leave the second silently answering for the first. The one that
+    # loses its wrapper is still reachable through `call`, which is why dropping it is safe.
+    canonical: dict[str, str] = {}
+    for name in sorted(names):
+        if _spellable(name):
+            canonical.setdefault(unicodedata.normalize("NFKC", name), name)
     wrappers = "\n\n".join(
         f"def {name}(**arguments):\n"
         f'    """Dispatch to the host tool {name!r}."""\n'
         f"    return call({name!r}, **arguments)"
-        for name in sorted(names)
-        if _spellable(name)
+        for name in canonical.values()
     )
     return _SHIM_SOURCE.format(
         calls=CALLS_DIRECTORY,
@@ -263,9 +276,14 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
     # quoted `sh -c '…'` is the classic version of this bug: the first inner quote *ends* the
     # outer argument, so a run directory with a space in it splits the command and the program
     # never starts.
+    # The exit code lands by rename, for the reason the shim stages its requests: a redirection
+    # creates the file empty and fills it a moment later, and a supervisor polling in that gap
+    # would read an empty marker as *finished*, discard the run and report failure. `mv` within
+    # one directory is atomic on any POSIX filesystem.
+    staged = f"{layout.exit_code}.part"
     inner = (
         f"{_quote(interpreter)} {_quote(layout.program)} > {_quote(layout.output)} 2>&1; "
-        f"printf %s $? > {_quote(layout.exit_code)}"
+        f"printf %s $? > {_quote(staged)}; mv {_quote(staged)} {_quote(layout.exit_code)}"
     )
     return (
         f"#!/bin/sh\ncd {_quote(layout.directory)}\nnohup sh -c {_quote(inner)} >/dev/null 2>&1 &\n"
@@ -323,7 +341,11 @@ async def dispatch_over_exec(
     # Before `exec`, not after: the bound is on the whole program, and a launcher that takes
     # most of it would otherwise hand supervision a second full timeout to spend.
     deadline = time.monotonic() + timeout
-    await sandbox.write_file(layout.launcher, launcher_script(layout, interpreter))
+    await _within(
+        deadline,
+        "the launcher upload",
+        sandbox.write_file(layout.launcher, launcher_script(layout, interpreter)),
+    )
     started = await sandbox.exec(
         f"sh {_quote(layout.launcher)}",
         working_directory=layout.directory,
@@ -340,32 +362,46 @@ async def dispatch_over_exec(
 
     served = 0
     while True:
-        finished = await _read_if_present(sandbox, layout, layout.exit_code, cap=32)
-        if finished is not None:
-            output = await _read_if_present(sandbox, layout, layout.output, cap=_output_cap(run))
-            return ExecResult(
-                stdout=_as_text(output),
-                stderr="",
-                exit_code=_exit_code_from(finished),
-            )
-        if time.monotonic() < deadline:
-            # Before serving, not only after. Serving awaits the tool, and a request arriving
-            # a millisecond before the deadline would otherwise start one — so the bound would
-            # be enforced next time round the loop, which is whenever that tool returns.
-            served = await _serve_next_request(sandbox, run, layout, served)
         if time.monotonic() >= deadline:
-            output = await _read_if_present(sandbox, layout, layout.output, cap=_output_cap(run))
+            # First in the loop, so an expired run reports *itself*. Every transport call
+            # below is bounded by this same deadline, and letting one of those raise instead
+            # would replace "the program did not finish" with "a stat timed out".
             raise TimeoutError(
                 f"the guest program did not finish within {timeout:g}s. Output so far: "
-                f"{_as_text(output)[:2000]}"
+                f"{(await _final_output(sandbox, run, layout))[:2000]}"
             )
+        try:
+            finished = await _read_if_present(
+                sandbox, layout, layout.exit_code, cap=32, deadline=deadline
+            )
+            if finished is not None:
+                output = await _read_if_present(
+                    sandbox, layout, layout.output, cap=_output_cap(run), deadline=deadline
+                )
+                return ExecResult(
+                    stdout=_as_text(output),
+                    stderr="",
+                    exit_code=_exit_code_from(finished),
+                )
+            # Serving awaits the tool, so the check at the top of the loop is what keeps a
+            # request arriving a millisecond before the deadline from starting a dispatch the
+            # bound cannot interrupt.
+            served = await _serve_next_request(sandbox, run, layout, served, deadline)
+        except TimeoutError as stalled:
+            # The deadline expired *inside* this iteration rather than between two of them.
+            # Only the transport is bounded that way, so the message says which call ran out
+            # while still leading with the failure the caller asked about.
+            raise TimeoutError(
+                f"the guest program did not finish within {timeout:g}s — {stalled}. "
+                f"Output so far: {(await _final_output(sandbox, run, layout))[:2000]}"
+            ) from stalled
         # Clamped: an unclamped sleep overruns the deadline by a whole interval, so a 0.1s
         # bound with a 10s interval would wait ten seconds to notice it had passed.
         await asyncio.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
 
 
 async def _serve_next_request(
-    sandbox: Sandbox, run: HostToolRun, layout: GuestRunLayout, served: int
+    sandbox: Sandbox, run: HostToolRun, layout: GuestRunLayout, served: int, deadline: float
 ) -> int:
     """Answer request ``served + 1`` if it is there, and say how many have now been answered.
 
@@ -376,11 +412,16 @@ async def _serve_next_request(
     """
     identifier = f"{served + 1:04d}"
     request_path = posixpath.join(layout.calls, f"{identifier}.request.json")
-    body = await _read_if_present(sandbox, layout, request_path, cap=_request_cap(run))
+    body = await _read_if_present(
+        sandbox, layout, request_path, cap=_request_cap(run), deadline=deadline
+    )
     if body is None:
         return served
     response_path = posixpath.join(layout.calls, f"{identifier}.response.json")
-    await sandbox.write_file(response_path, await _answer(run, body, identifier))
+    answer = await _answer(run, body, identifier)
+    await _within(
+        deadline, f"write the answer to {identifier}", sandbox.write_file(response_path, answer)
+    )
     return served + 1
 
 
@@ -422,16 +463,44 @@ class _TooLarge:
     """Sentinel: the file is there and the host will not read it at that size."""
 
 
+async def _within[T](deadline: float, what: str, call: Awaitable[T]) -> T:
+    """Await one transport call inside what is left of the run's deadline.
+
+    Sandbox I/O is bounded and a dispatched host tool is not, and the difference is where the
+    effect lives. A stalled ``stat_file`` is the backend's control plane hanging — cancelling
+    it costs nothing and is the only thing standing between one slow request and a supervisor
+    that never returns. A host tool has already begun acting in this process; see
+    :func:`dispatch_over_exec` on why that one is left alone.
+    """
+    remaining = max(0.0, deadline - time.monotonic())
+    try:
+        return await asyncio.wait_for(call, timeout=remaining)
+    except TimeoutError as expired:
+        raise TimeoutError(
+            f"the sandbox did not answer {what} within the run's remaining {remaining:.1f}s"
+        ) from expired
+
+
 async def _read_if_present(
-    sandbox: Sandbox, layout: GuestRunLayout, path: str, *, cap: int
+    sandbox: Sandbox, layout: GuestRunLayout, path: str, *, cap: int, deadline: float
 ) -> str | _TooLarge | None:
     """Stat, then read within ``cap`` — or ``None`` when the file is not there yet.
 
     Stat-before-read is the pull surface's own rule, and it is what makes polling affordable:
     the common case is one stat that answers ``None``.
     """
-    entry = await sandbox.stat_file(path, working_directory=layout.directory)
+    entry = await _within(
+        deadline,
+        f"stat {posixpath.basename(path)}",
+        sandbox.stat_file(path, working_directory=layout.directory),
+    )
     if entry is None or entry.kind is not EntryKind.FILE:
+        return None
+    if entry.size_bytes == 0:
+        # Not there *yet*: an empty file is what a redirection or a plain `open` leaves in the
+        # window before its content. Both writers here rename into place instead, so a zero
+        # length means a backend or a guest that does not — and reading it would answer a
+        # valid call with a refusal, or read an empty exit marker as a finished run.
         return None
     if entry.size_bytes is None or entry.size_bytes > cap:
         logger.warning(
@@ -442,11 +511,38 @@ async def _read_if_present(
         )
         return _TooLarge()
     try:
-        raw = await sandbox.read_file(path, working_directory=layout.directory, max_bytes=cap)
+        raw = await _within(
+            deadline,
+            f"read {posixpath.basename(path)}",
+            sandbox.read_file(path, working_directory=layout.directory, max_bytes=cap),
+        )
     except Exception as failure:  # noqa: BLE001 — a read that fails is a poll that missed
         logger.warning("host tools: reading %s failed: %s", path, error_detail(failure))
         return None
     return raw.decode("utf-8", errors="replace")
+
+
+async def _final_output(sandbox: Sandbox, run: HostToolRun, layout: GuestRunLayout) -> str:
+    """What the program printed, for the timeout message — on a short allowance of its own.
+
+    The run's deadline has passed by the time this is called, so reading under it would expire
+    instantly and the message would carry nothing. This buys a couple of seconds for the
+    diagnostic and answers with nothing rather than raising if even that is too long: the
+    caller is already being told the run failed, and the reason must not become "reading the
+    reason failed".
+    """
+    try:
+        return _as_text(
+            await _read_if_present(
+                sandbox,
+                layout,
+                layout.output,
+                cap=_output_cap(run),
+                deadline=time.monotonic() + _FINAL_READ_GRACE,
+            )
+        )
+    except TimeoutError:
+        return ""
 
 
 def _as_text(value: str | _TooLarge | None) -> str:

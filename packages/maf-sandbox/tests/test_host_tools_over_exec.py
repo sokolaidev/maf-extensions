@@ -13,13 +13,16 @@ two halves agreeing about names.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import importlib.util
 import json
+import pathlib
 import posixpath
 import shlex
 import threading
 import time
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -450,9 +453,14 @@ class TestTheGeneratedShim:
         assert "def lookup(" in source
 
     def test_the_shim_publishes_a_request_only_once_it_is_whole(self, tmp_path: Path):
-        """`open` creates the file empty; a poll in that window would refuse a valid call."""
+        """`open` creates the file empty; a poll in that window refuses a call that was fine.
+
+        Observed at the rename rather than by racing a watcher against it. A race here is a
+        race in the test as well as in the code: it passed, then failed once in a full-file
+        run and took the shim's five-minute patience to do it, which is a slow way to learn
+        nothing. Recording what `os.replace` was handed proves the same property every time.
+        """
         source = host_tool_shim()
-        assert "os.replace(" in source, "the request is published without an atomic rename"
         module_path = tmp_path / SHIM_MODULE
         module_path.write_text(source, encoding="utf-8")
         spec = importlib.util.spec_from_file_location("maf_host_tools_atomic", module_path)
@@ -460,39 +468,37 @@ class TestTheGeneratedShim:
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
 
-        request = tmp_path / CALLS_DIRECTORY / "0001.request.json"
-        seen: list[str] = []
+        renames: list[tuple[str, str, str]] = []
+        real_replace = module.os.replace
 
-        def poll_like_the_supervisor() -> None:
-            """Read the first thing that appears, then answer — whatever it turned out to be.
-
-            Answering unconditionally is what keeps this test *fast* when it fails: a watcher
-            that gave up on an unparseable request would leave `call` blocking for the shim's
-            own five-minute patience, and a hang reads as a hung suite rather than as a defect.
-            """
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline:
-                if request.exists():
-                    seen.append(request.read_text(encoding="utf-8"))
-                    (tmp_path / CALLS_DIRECTORY / "0001.response.json").write_text(
-                        json.dumps({"value": None}), encoding="utf-8"
-                    )
-                    return
-                time.sleep(0.001)
-
-        watcher = threading.Thread(target=poll_like_the_supervisor)
-        watcher.start()
-        module.call("anything", padding="x" * 200_000)
-        watcher.join(timeout=5)
-        assert seen, "nothing was ever published"
-        try:
-            published = json.loads(seen[0])
-        except json.JSONDecodeError:
-            pytest.fail(
-                f"the supervisor saw a request that was not yet whole: {seen[0][:40]!r} — a "
-                "valid call would have been answered with a refusal it could never retry"
+        def recording_replace(source_path, destination):
+            # What the destination would have looked like to a poll, and what was staged.
+            renames.append(
+                (
+                    str(source_path),
+                    str(destination),
+                    pathlib.Path(source_path).read_text(encoding="utf-8"),
+                )
             )
-        assert published["name"] == "anything"
+            real_replace(source_path, destination)
+
+        module.os.replace = recording_replace
+        try:
+            # Answer immediately so `call` returns rather than waiting on a supervisor.
+            calls = tmp_path / CALLS_DIRECTORY
+            calls.mkdir(parents=True, exist_ok=True)
+            (calls / "0001.response.json").write_text(json.dumps({"value": None}), encoding="utf-8")
+            module.call("anything", padding="x" * 200_000)
+        finally:
+            module.os.replace = real_replace
+
+        assert renames, "the request was published without an atomic rename"
+        staged, published, contents = renames[0]
+        assert staged.endswith(".part"), "the request was written straight to its final name"
+        assert published.endswith("0001.request.json")
+        assert json.loads(contents)["name"] == "anything", (
+            "the staged file was incomplete at the moment it became visible"
+        )
 
 
 class TestNamesThatAreNotWhatTheyLookLike:
@@ -507,8 +513,20 @@ class TestNamesThatAreNotWhatTheyLookLike:
         compile(source, SHIM_MODULE, "exec")
 
     def test_two_names_that_normalise_together_produce_one_wrapper(self):
+        """Counted over every wrapper the module defines, normalised \u2014 not over one spelling.
+
+        The first version asserted `source.count("def lookup(") == 1`, which holds whether or
+        not the second wrapper is emitted, because `def \uff4c\uff4f\uff4f\uff4b\uff55\uff50(` is a different substring.
+        It reported a fix that was not in the file at all.
+        """
         source = host_tool_shim({"lookup", "\uff4co\uff4fkup"})
-        assert source.count("def lookup(") == 1
+        defined = [
+            unicodedata.normalize("NFKC", node.name)
+            for node in ast.parse(source).body
+            if isinstance(node, ast.FunctionDef)
+        ]
+        assert sorted(defined) == sorted(set(defined)), f"two wrappers bind one name: {defined}"
+        assert defined.count("lookup") == 1
 
 
 class TestWhatTheSupervisorRefusesToParse:
@@ -519,3 +537,37 @@ class TestWhatTheSupervisorRefusesToParse:
         guest = _ScriptedGuest([("add", {"left": 1, "right": 1})], raw_request=nested)
         _run(guest, HostToolRun(_registry(response_limits=limits)))
         assert "not valid JSON" in guest.answers[0]["refusal"]
+
+
+class TestWhatTheDeadlineCovers:
+    """The bound is on the run, and sandbox I/O is part of the run."""
+
+    def test_a_stalled_backend_call_does_not_hold_the_supervisor(self):
+        """A hung `stat_file` is what this bound is for: no guest, no exit marker, no end."""
+
+        class _Stalled(_ScriptedGuest):
+            async def stat_file(self, path: str, *, working_directory: str):
+                await asyncio.sleep(3600)
+                raise AssertionError("unreachable")
+
+        began = time.monotonic()
+        with pytest.raises(TimeoutError):
+            _run(_Stalled([]), HostToolRun(_registry()), timeout=0.2)
+        assert time.monotonic() - began < 4.0, "a stalled transport call outlasted the bound"
+
+    def test_an_empty_exit_marker_is_not_a_finished_run(self):
+        """A redirection creates the marker empty; reading that as an exit loses the run."""
+        guest = _ScriptedGuest([], finish=False)
+        guest.files[_LAYOUT.exit_code] = b""
+        guest.files[_LAYOUT.output] = b"still going"
+        with pytest.raises(TimeoutError, match="still going"):
+            _run(guest, HostToolRun(_registry()), timeout=0.1)
+
+
+class TestTheLaunchersExitMarker:
+    def test_the_exit_code_lands_by_rename(self):
+        """The same reason the shim stages requests: a poll must not see a half-written file."""
+        layout = guest_run_layout("/maf-sandbox/work/run-1")
+        inner = shlex.split(launcher_script(layout).splitlines()[-1].removesuffix(" &"))[3]
+        assert f"{layout.exit_code}.part" in inner, "the exit code is written straight to its name"
+        assert inner.rstrip().endswith(f"mv '{layout.exit_code}.part' '{layout.exit_code}'")
