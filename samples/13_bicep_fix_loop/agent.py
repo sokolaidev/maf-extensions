@@ -2,7 +2,7 @@
 
 Every other sample runs one turn against a file that was already there. Here the store starts
 **empty**: turn 1 writes `main.bicep` from a written brief and validates what it wrote, turn 2
-repairs what the compiler reported, and the program compiles the result itself afterwards.
+repairs what the compiler reported, and the program compiles the file itself at both ends.
 `acquire` is get-or-create precisely so a model can iterate like this, and until now nothing
 showed the second turn arriving to find its sandbox still there.
 
@@ -166,30 +166,6 @@ async def read_or_empty(store: InMemoryAgentFileStore, name: str) -> str:
     return content if isinstance(content, str) else content.decode("utf-8")
 
 
-def tool_results(reply: object, name: str) -> list[str]:
-    """What the tool ``name`` returned during ``reply``, in call order.
-
-    Turn 1's own validation is the compiler's verdict on the file the model just wrote, so it is
-    the baseline everything after it is measured against. Taken from the turn rather than by
-    compiling again from here: it is the same text the model read, so the sample and the model
-    are demonstrably reacting to one set of diagnostics, and it costs no extra `acquire`.
-    """
-    calls = {
-        content.call_id
-        for message in getattr(reply, "messages", [])
-        for content in message.contents
-        if getattr(content, "type", None) == "function_call"
-        and getattr(content, "name", None) == name
-    }
-    return [
-        str(content.result)
-        for message in getattr(reply, "messages", [])
-        for content in message.contents
-        if getattr(content, "type", None) == "function_result"
-        and getattr(content, "call_id", None) in calls
-    ]
-
-
 def build_client() -> tuple[OpenAIChatCompletionClient, object | None] | None:
     """One client class, two endpoints. CI sets `AZURE_OPENAI_ENDPOINT`; a laptop does not.
 
@@ -286,21 +262,26 @@ async def run() -> int:
         print(f"\n  bicep_validate calls in turn 1: {tool_calls(first, BICEP_TOOL)}")
         print(f"  containers after turn 1: {containers()}\n")
 
-        # The compiler's verdict on what the model just wrote, taken from turn 1's own tool call
-        # rather than compiled again from here — the same text the model read. The first result
-        # is the one that matters: if the model validated twice it fixed something in between,
-        # and the file as authored is what turn 2's work is measured against.
+        # The baseline turn 2's work is measured against, compiled here rather than lifted out
+        # of turn 1's own tool call. That distinction is the whole point: the model may validate
+        # a draft, edit it and validate again, and then its *first* result describes a file that
+        # no longer exists — crediting turn 2 with faults turn 1 had already fixed. Compiling
+        # the snapshot makes the diagnostics correspond to `authored` by construction.
+        #
+        # It costs one more `acquire`, on the same key, which is why the count is printed again.
         authored = await read_or_empty(store, BICEP_FILE)
-        validated = tool_results(first, BICEP_TOOL)
-        as_authored = faults_left(validated[0]) if validated else []
+        baseline = str(
+            await bicep_validate.invoke(arguments={"files": [BICEP_FILE]}, skip_parsing=True)
+        )
+        as_authored = faults_left(baseline)
 
-        print("== What the compiler told the model about the file it wrote ==\n")
-        for line in (validated[0] if validated else "(turn 1 never validated)").splitlines():
-            print(f"  {line}")
+        print("== What the compiler says about the file turn 1 wrote ==\n")
+        print("\n".join(f"  {line}" for line in baseline.splitlines()))
         print(
             f"\n  tracked faults in the authored file: {len(as_authored)} — "
-            f"{'; '.join(as_authored) or 'none'}\n"
+            f"{'; '.join(as_authored) or 'none'}"
         )
+        print(f"  containers after the baseline compile: {containers()}\n")
 
         print("== Turn 2: fix, then validate again ==\n")
         second = await agent.run(

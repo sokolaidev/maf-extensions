@@ -874,7 +874,7 @@ jobs:
           set -euo pipefail
           uv run --no-project samples/13_bicep_fix_loop/agent.py | tee /tmp/sample13-out.txt
           # Three claims, and the check needs all of them: turn 1 wrote a file with a real fault
-          # in it, one container served all three acquires, and the compiler agrees the file
+          # in it, one container served all four acquires, and the compiler agrees the file
           # turn 2 left is repaired. Any one alone passes on a broken sample — perfect reuse of
           # a sandbox that fixed nothing, or a fix that quietly booted a second container to
           # make it. stdlib-only, so the runner's own python3 runs it.

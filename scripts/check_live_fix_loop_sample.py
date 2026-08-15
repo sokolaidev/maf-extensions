@@ -7,13 +7,14 @@ The sample makes three claims and this checks all of them, because each is weak 
 
 **Turn 1 wrote the file.** The store starts empty, so `main.bicep authored in turn 1` is the
 authoring half of author → validate → fix, and everything after it is about a file the model
-produced. What the compiler then told the model about that file is the baseline the repair is
-measured against — it must be real compiler output, and it must report at least one tracked
-fault, since an authored file that was already clean gives turn 2 nothing to repair while
-passing every other assertion here.
+produced. The program then compiles that snapshot itself, and the result is the baseline the
+repair is measured against — it must be real compiler output, and it must report at least one
+tracked fault, since an authored file that was already clean gives turn 2 nothing to repair
+while passing every other assertion here.
 
-**One sandbox served the whole run.** Three `acquire` calls — turn 1, turn 2, and the compile
-the program runs itself — and `docker ps -a` must report exactly 1 container after each.
+**One sandbox served the whole run.** Four `acquire` calls — turn 1, the program's compile of
+what turn 1 wrote, turn 2, and the program's compile of what turn 2 left — and `docker ps -a`
+must report exactly 1 container after each.
 
 The counts alone do not carry that, which is why each turn's `bicep_validate` call count is
 checked first. A fix turn that edits the file and never validates it makes no second `acquire`
@@ -60,9 +61,13 @@ _RULE_IDS = ("no-unused-params", "BCP035")
 #: whatever the model said, so the section is cut out before the ids are looked for.
 _TURN_ONE = (re.compile(r"==\s*Turn 1\b"), re.compile(r"bicep_validate calls in turn 1"))
 
-#: `docker ps -a` after each of the three acquires. All three must read 1.
+#: `docker ps -a` after each of the four acquires. All four must read 1.
 _COUNTS = (
     ("after turn 1", re.compile(r"containers after turn 1:\s*(\d+)", re.IGNORECASE)),
+    (
+        "after the baseline compile",
+        re.compile(r"containers after the baseline compile:\s*(\d+)", re.IGNORECASE),
+    ),
     ("after turn 2", re.compile(r"containers after turn 2:\s*(\d+)", re.IGNORECASE)),
     ("after the check", re.compile(r"containers after the check:\s*(\d+)", re.IGNORECASE)),
 )
@@ -94,12 +99,14 @@ _TOOL_CALLS = (
     ("turn 2", re.compile(r"bicep_validate calls in turn 2:\s*(\d+)", re.IGNORECASE)),
 )
 
-#: What the compiler told the model about the file turn 1 wrote, printed from that turn's own
-#: tool result. This is the baseline the repair is measured against, and it is why the tally can
-#: say what *this run* fixed rather than assuming the file arrived with both faults in it.
+#: The compiler on the file turn 1 wrote — the program's own compile of that snapshot, not a
+#: quote of turn 1's tool result. The distinction is load-bearing: a model may validate a draft,
+#: edit it and validate again, and its first result then describes a file that no longer exists,
+#: which would credit turn 2 with faults turn 1 had already fixed. This is the baseline the
+#: repair is measured against, and why the tally says what *this run* fixed.
 #: Read with ``last=True`` for the same reason as the other sample-authored blocks.
 _AUTHORED_COMPILE = (
-    re.compile(r"==\s*What the compiler told the model"),
+    re.compile(r"==\s*What the compiler says about the file turn 1 wrote"),
     re.compile(r"tracked faults in the authored file"),
 )
 _AUTHORED_FAULTS = re.compile(
@@ -113,7 +120,13 @@ _AUTHORED_FAULTS = re.compile(
 #: Also read with ``last=True``. A model describing its own validation can print this heading
 #: and diagnostics under it, and taking the first match would sweep those as if the compiler
 #: had reported them — failing a healthy run on rule ids the model merely quoted.
-_COMPILE = (re.compile(r"==\s*What the compiler says"), re.compile(r"containers after the check"))
+#: Matched on the full heading, not a prefix: the baseline block above opens with the same five
+#: words, and a loose pattern would fall back to it whenever this block was missing — reporting
+#: the state of the file turn 1 wrote as though it were the state turn 2 left.
+_COMPILE = (
+    re.compile(r"==\s*What the compiler says about the file the model left"),
+    re.compile(r"containers after the check"),
+)
 _PHASE = re.compile(r"^\s*(build|lint)\([^)]*\):\s*(no diagnostics|\d+ diagnostic)", re.MULTILINE)
 _DIAGNOSTIC = re.compile(r"^\s*\[\w+\]\s+(\S+)\s+@", re.MULTILINE)
 
@@ -422,8 +435,12 @@ def main(argv: list[str]) -> int:
         for reason in failures:
             print(f"  - {reason}", file=sys.stderr)
         return 1
+    # "agrees with the repair reported", not "the file is fixed". A run that fixed one of two
+    # faults and says so is accepted here on purpose, and the old wording claimed a clean file
+    # over one the compiler still reports an error on.
     print(
-        "OK  two turns and a check against one sandbox, and the compiler agrees the file is fixed"
+        "OK  the model wrote main.bicep and repaired it against one sandbox, "
+        "and the compiler agrees with the repair the run reported"
     )
     return 0
 

@@ -36,7 +36,7 @@ Validation complete. Here are the 3 diagnostics, one line each:
   bicep_validate calls in turn 1: 1
   containers after turn 1: 1
 
-== What the compiler told the model about the file it wrote ==
+== What the compiler says about the file turn 1 wrote ==
 
   build(main.bicep): 3 diagnostic(s)
     [error] no-unused-params @ main.bicep:3: Parameter "environmentName" is never used.
@@ -48,6 +48,7 @@ Validation complete. Here are the 3 diagnostics, one line each:
     [warning] use-recent-api-versions @ main.bicep:5: '2023-01-01' is 1322 days old.
 
   tracked faults in the authored file: 2 — no-unused-params; BCP035
+  containers after the baseline compile: 1
 
 == Turn 2: fix, then validate again ==
 
@@ -149,6 +150,14 @@ class TestOneSandboxAcrossTheRun:
         reasons = _tampered("containers after turn 2: 1", "containers after turn 2: 2")
         assert any("after turn 2, expected exactly 1" in r for r in reasons), reasons
 
+    def test_a_second_container_on_the_baseline_compile_is_caught(self):
+        # The acquire between the two turns. It is the program's, not the model's, so a second
+        # container here would mean get-or-create failed on a call nothing else covers.
+        reasons = _tampered(
+            "containers after the baseline compile: 1", "containers after the baseline compile: 2"
+        )
+        assert any("after the baseline compile, expected exactly 1" in r for r in reasons), reasons
+
     def test_a_second_container_on_the_final_compile_is_caught(self):
         reasons = _tampered("containers after the check: 1", "containers after the check: 2")
         assert any("after the check, expected exactly 1" in r for r in reasons), reasons
@@ -198,7 +207,9 @@ class TestTurnOneActuallyAuthoredTheFile:
         assert any("had no tracked fault in it" in r for r in reasons), reasons
 
     def test_a_missing_baseline_compile_is_caught(self):
-        reasons = _tampered("== What the compiler told the model", "== something else")
+        reasons = _tampered(
+            "== What the compiler says about the file turn 1 wrote", "== something else"
+        )
         assert any("without that baseline" in r for r in reasons), reasons
 
     def test_a_baseline_of_model_prose_rather_than_compiler_output_is_caught(self):

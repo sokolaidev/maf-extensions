@@ -7,10 +7,11 @@ Here the file store starts **empty**. There is no `main.bicep` in this directory
 | | What happens | `bicep_validate` calls | Containers |
 |---|---|---|---|
 | Turn 1 | the model writes `main.bicep` from a brief, then validates what it wrote | ≥1 | 1 |
+| The baseline | the program compiles what turn 1 left, with no model involved | 1 | 1 |
 | Turn 2 | it repairs what the compiler reported, and validates again | ≥1 | 1 |
-| The check | the program compiles the result itself, with no model involved | 1 | 1 |
+| The check | the program compiles the result, again with no model involved | 1 | 1 |
 
-At least three `acquire` calls, one container. Nothing stops a model from validating twice in a turn — that is a normal thing for one to do, and it makes no difference to the claim, since the second call finds the same sandbox as the first. So the sample prints what happened and the check requires at least one call per turn rather than exactly one. Only the final compile is fixed at one, because the program makes that call itself.
+At least four `acquire` calls, one container. Nothing stops a model from validating twice in a turn — that is a normal thing for one to do, and it makes no difference to the claim, since the second call finds the same sandbox as the first. So the sample prints what happened and the check requires at least one call per turn rather than exactly one. Only the final compile is fixed at one, because the program makes that call itself.
 
 A second container would have answered every one of those calls just as well, which is why the count is printed rather than described.
 
@@ -42,7 +43,7 @@ Two things the compiler cannot answer, so the sample keeps them separate.
 
 All four of these lines are read out of the closing block rather than the whole run. The model is answering into the same stream and can write "faults fixed" in its own prose; that prose is printed above the block, so a search over everything would find the narration first and grade the run on it — this sample's own thesis, reintroduced in its checker.
 
-The compile is also the third `acquire`, which is why it earns its own container count. Turn 2 finding the sandbox warm could be two calls landing close together; the check runs after all the model's work is done and still finds the same one.
+Both program-side compiles are `acquire` calls too, which is why each earns its own container count. Turn 2 finding the sandbox warm could be two calls landing close together; the last of the four runs after all the model's work is done and still finds the same one.
 
 ## The approval gate that makes a fix turn do nothing
 
@@ -73,6 +74,8 @@ The brief in `agent.py` asks for the template [sample 05](../05_docker_bicep/) c
 **Nothing in the brief calls them faults.** It asks for an `environmentName` parameter "which a later change will use", and for no `sku` "because the tier is still being decided" — both ordinary things to write in a real template, and between them they produce the first two. Naming the faults instead would script the repair, which is the thing [#304](https://github.com/sokolaidev/maf-extensions/issues/304) rules out: the point is a model reacting to real diagnostics.
 
 Because the file is the model's, how many tracked faults it arrives with is measured rather than assumed. The sample prints `tracked faults in the authored file`, and the live check requires it to be at least one — an authored file that came out clean leaves the fix turn nothing to do, and would otherwise pass every assertion about reuse while demonstrating no fix loop at all.
+
+**That baseline is the program's own compile of the snapshot, not a quote of turn 1's validation**, and the difference is not cosmetic. A model is free to validate a draft, edit it, and validate again — the sample permits more than one call per turn. Its *first* result then describes a file that no longer exists, and measuring against it would credit turn 2 with faults turn 1 had already fixed: two repairs attributed to a turn that changed a comment. Compiling the snapshot makes the diagnostics correspond to the file by construction.
 
 The sample tracks **two** of them. `no-unused-params` and `BCP035` are structural — a parameter that is declared and never used, a resource missing a required property — so "fixed" means the same thing today and in a year.
 
