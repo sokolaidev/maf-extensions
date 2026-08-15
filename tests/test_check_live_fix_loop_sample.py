@@ -21,10 +21,30 @@ from pathlib import Path
 
 import pytest
 
-#: Every `subprocess` entry point that starts a process. The whole set rather than `run` alone,
-#: because `check_output` and `Popen` reach an engine just as well.
+#: Every way this file could start a process. `subprocess.run` alone is not the set: an async
+#: sample reaches for `asyncio.create_subprocess_exec`, and `os` is already imported here.
+#:
+#: Lexical, and therefore best-effort. It binds "no *direct* call spawns a process outside
+#: `containers()`", which is the drift a refactor writes by accident. Reaching a spawner through
+#: an alias, a local variable or `getattr` defeats it, and no amount of pattern-matching over
+#: call sites can bind the runtime property — that would need the sample importable, and this
+#: workspace does not install `agent-framework-openai`.
 _SPAWNS = frozenset(
-    {"run", "Popen", "call", "check_call", "check_output", "getoutput", "getstatusoutput"}
+    {
+        "subprocess.run",
+        "subprocess.Popen",
+        "subprocess.call",
+        "subprocess.check_call",
+        "subprocess.check_output",
+        "subprocess.getoutput",
+        "subprocess.getstatusoutput",
+        "os.system",
+        "os.popen",
+        "os.execv",
+        "os.spawnv",
+        "asyncio.create_subprocess_exec",
+        "asyncio.create_subprocess_shell",
+    }
 )
 
 #: The exception names the sample may name, resolved so a handler can be asked "would this be
@@ -39,6 +59,11 @@ _EXCEPTIONS: dict[str, type[BaseException]] = {
     "subprocess.CalledProcessError": subprocess.CalledProcessError,
     "subprocess.SubprocessError": subprocess.SubprocessError,
 }
+
+
+class _Unmatchable(BaseException):
+    """Stands in for a handler naming nothing `_EXCEPTIONS` knows, so it covers nothing."""
+
 
 _ROOT = Path(__file__).resolve().parent.parent
 _SCRIPT = _ROOT / "scripts" / "check_live_fix_loop_sample.py"
@@ -116,6 +141,34 @@ _PARTIAL = (
     .replace("faults fixed:       2 — no-unused-params; BCP035", "faults fixed:       1 — BCP035")
     .replace("faults remaining:   0 — none", "faults remaining:   1 — no-unused-params")
 )
+
+
+def _caught_by(handler: ast.ExceptHandler) -> tuple[type[BaseException], ...]:
+    """The exception classes an `except` clause names, as a tuple `issubclass` can be asked."""
+    if handler.type is None:
+        return (BaseException,)
+    named = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+    return tuple(_EXCEPTIONS[n] for e in named if (n := ast.unparse(e)) in _EXCEPTIONS) or (
+        _Unmatchable,
+    )
+
+
+def _answers(handler: ast.ExceptHandler) -> bool:
+    """Whether the handler itself returns, rather than containing something that does.
+
+    A `return` inside a nested `def` in the handler is that function's answer, not this one's,
+    so nested scopes are pruned. `ast.walk` cannot do that — it has already queued the
+    children by the time you see the node — so the descent is written out.
+    """
+    stack: list[ast.AST] = list(handler.body)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | ast.ClassDef):
+            continue
+        if isinstance(node, ast.Return):
+            return True
+        stack.extend(ast.iter_child_nodes(node))
+    return False
 
 
 def _tampered(original: str, replacement: str, *, base: str | None = None) -> list[str]:
@@ -884,18 +937,18 @@ class TestTheStaleContainerHint:
         )
         inside = {id(node) for node in ast.walk(containers_fn)}
 
+        bare = {name.split(".", 1)[1] for name in _SPAWNS}
         spawns: list[ast.AST] = []
         for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                called = ast.unparse(node.func)
-                if (
-                    called.startswith("subprocess.")
-                    and called.removeprefix("subprocess.") in _SPAWNS
-                ):
-                    spawns.append(node)
-            elif isinstance(node, ast.ImportFrom) and node.module == "subprocess":
+            if isinstance(node, ast.Call) and ast.unparse(node.func) in _SPAWNS:
+                spawns.append(node)
+            elif isinstance(node, ast.ImportFrom) and node.module in {
+                "subprocess",
+                "os",
+                "asyncio",
+            }:
                 # `from subprocess import run as _r` puts a spawner in reach of everything below.
-                if any(alias.name in _SPAWNS for alias in node.names):
+                if any(alias.name in bare for alias in node.names):
                     spawns.append(node)
 
         assert spawns, "nothing spawns a process any more — this test has lost its subject"
@@ -918,6 +971,20 @@ class TestTheStaleContainerHint:
             for node in ast.walk(tree)
             if isinstance(node, ast.AsyncFunctionDef) and node.name == "run"
         )
+        # Only `run` may call it. A helper — `def engine_ready(): return containers() >= 0` —
+        # would otherwise move the first touch of Docker outside the guard while every
+        # assertion below still passed, which is the cheapest way to lose this property.
+        callers = {
+            scope.name
+            for scope in ast.walk(tree)
+            if isinstance(scope, ast.FunctionDef | ast.AsyncFunctionDef)
+            for node in ast.walk(scope)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "containers"
+        }
+        assert callers == {"run"}, f"containers() is also called from {sorted(callers - {'run'})}"
+
         calls = [
             node
             for node in ast.walk(run)
@@ -939,27 +1006,17 @@ class TestTheStaleContainerHint:
         assert guarding, "the first containers() call is not inside a try"
         innermost = max(guarding, key=lambda node: node.lineno)
 
-        caught: set[type[BaseException]] = set()
-        for handler in innermost.handlers:
-            if handler.type is None:
-                caught.add(BaseException)
-                continue
-            named = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
-            caught |= {_EXCEPTIONS[n] for e in named if (n := ast.unparse(e)) in _EXCEPTIONS}
+        # A missing binary raises FileNotFoundError and an unreadable one PermissionError, both
+        # OSError; a refusing daemon exits non-zero, which `check=True` turns into
+        # CalledProcessError — not an OSError. Asked as "would this be caught", so a broader
+        # handler passes and a narrower one does not.
+        failures = (FileNotFoundError, PermissionError, subprocess.CalledProcessError)
+        for failure in failures:
+            covering = [h for h in innermost.handlers if issubclass(failure, _caught_by(h))]
+            assert covering, f"{failure.__name__} escapes this handler"
 
-        # A missing binary raises FileNotFoundError (an OSError); a refusing daemon exits
-        # non-zero, which `check=True` turns into CalledProcessError — not an OSError. Asked as
-        # "would this be caught" so a broader handler passes and a narrower one does not.
-        for failure in (FileNotFoundError, subprocess.CalledProcessError):
-            assert any(issubclass(failure, kind) for kind in caught), (
-                f"{failure.__name__} escapes {sorted(k.__name__ for k in caught)}"
+            # Both properties of the *same* handler: a sibling `except ValueError: return 2`
+            # would otherwise supply the answer for a clause that re-raises.
+            assert any(_answers(handler) for handler in covering), (
+                f"{failure.__name__} is caught and not answered"
             )
-
-        answers = [
-            node
-            for handler in innermost.handlers
-            for stmt in handler.body
-            for node in ast.walk(stmt)
-            if isinstance(node, ast.Return)
-        ]
-        assert answers, "the handler catches the failure and does not answer it"
