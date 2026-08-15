@@ -41,7 +41,7 @@ Two things the compiler cannot answer, so the sample keeps them separate.
 
 `storage account and output intact: True` is the one that closes the degenerate case. Replace `main.bicep` with an empty but valid file and every other signal agrees it was repaired: the file changed, no tracked fault is reported, and both compile phases come back clean. "Repaired" would be the verdict on a file with the storage account deleted. So the sample checks that the resource and the output it exists to produce are still there — a question about what the file is *for*, which a compiler has no opinion on.
 
-Every number the sample measures is printed with a  tag, and the live check reads only tagged lines. This is the one sample where a model writes into the same stream the check parses, so a reply mentioning "containers after turn 2: 2" is otherwise indistinguishable from the count — and it is the model's reply that comes first. The tag also tells a reader of the log which lines are the harness speaking.
+Every number the sample measures is printed with a `[measured]` tag, and the live check reads only tagged lines. This is the one sample where a model writes into the same stream the check parses, so a reply mentioning "containers after turn 2: 2" is otherwise indistinguishable from the count — and it is the model's reply that comes first. The tag also tells a reader of the log which lines are the harness speaking.
 
 Both program-side compiles are `acquire` calls too, which is why each earns its own container count. Turn 2 finding the sandbox warm could be two calls landing close together; the last of the four runs after all the model's work is done and still finds the same one.
 
