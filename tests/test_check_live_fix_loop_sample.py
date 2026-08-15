@@ -848,11 +848,13 @@ class TestTheStaleContainerHint:
         source = _SAMPLE.read_text(encoding="utf-8")
         assert "docker ps -aq --filter label={_LABEL_THREAD}={THREAD_ID}" in source
 
-    def test_the_check_runs_after_the_backend_guard(self):
-        """Ordering, not wording: `containers()` shells out to docker with `check=True`.
+    def test_an_unreachable_engine_is_answered_rather_than_raised(self):
+        """`containers()` is the program's first call to Docker, and it uses `check=True`.
 
-        Ahead of the guard it turns a host with no engine into a traceback instead of the
-        sample's own "No sandbox backend" message.
+        The `if not tools:` guard above it cannot field a missing engine: a tool is attached
+        whenever a backend is *registered*, and registering one probes nothing.
         """
         source = _SAMPLE.read_text(encoding="utf-8")
-        assert source.index("No sandbox backend") < source.index("stale = containers()")
+        around = source[source.index("stale = containers()") - 100 :][:500]
+        assert "except (OSError, subprocess.CalledProcessError)" in around
+        assert "Cannot reach a Docker engine" in around

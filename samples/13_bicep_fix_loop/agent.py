@@ -191,7 +191,7 @@ def quoted(text: str) -> str:
     Matched case-insensitively on purpose: a sanitizer narrower than its reader is a hole, and
     the checker is deliberately lax about everything except the tag's own spelling. Applied to
     the compiler's output as well as the model's replies — Bicep echoes source text in messages
-    like `BCP037`, and a `\n` escape inside an identifier puts a real newline in one.
+    like ``BCP037``, and a newline escape inside an identifier puts a real break in one.
     """
     return "\n".join(
         f"> {line.lstrip()}" if line.lstrip().lower().startswith(_TAG.lower()) else line
@@ -246,11 +246,16 @@ async def run() -> int:
         print("No sandbox backend: bicep_validate was not attached.", file=sys.stderr)
         return 2
 
-    # After the line above, so a host with no engine gets that message rather than whatever
-    # `docker ps` failed with. Every count below is "containers for this thread", so one left
-    # by a run that was killed before disposing makes all four read 2 and the footer read 1
-    # left behind — honest, and unreadable. Say what happened instead.
-    stale = containers()
+    # Every count below is "containers for this thread", so one left by a run that was killed
+    # before disposing makes all four read 2 and the footer read 1 left behind — honest, and
+    # unreadable. This is also the program's first call to Docker: the guard above attaches a
+    # tool whenever a backend is *registered*, which probes nothing, so an unreachable engine
+    # surfaces here and is answered here.
+    try:
+        stale = containers()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        print(f"Cannot reach a Docker engine, which this sample needs: {exc}", file=sys.stderr)
+        return 2
     if stale:
         print(
             f"{stale} container(s) already exist for {SCOPE}/{THREAD_ID}, left by a run that "
