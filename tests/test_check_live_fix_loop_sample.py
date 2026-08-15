@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import re
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent.parent
@@ -205,6 +206,21 @@ class TestTurnOneActuallyAuthoredTheFile:
             "  tracked faults in the authored file: 0 — none",
         )
         assert any("had no tracked fault in it" in r for r in reasons), reasons
+
+    def test_a_turn_two_echo_of_the_baseline_heading_does_not_lose_the_block(self):
+        """The baseline block sits between the turns, so a turn-2 echo comes *after* it.
+
+        Taking the last matching heading then lands on the echo, and the end marker is already
+        behind it — which reads as a missing block and fails a healthy run. The rule has to be
+        the last heading its end marker still follows.
+        """
+        echoed = _HEALTHY.replace(
+            "  bicep_validate calls in turn 2: 1",
+            "Recapping == What the compiler says about the file turn 1 wrote ==\n\n"
+            "  bicep_validate calls in turn 2: 1",
+        )
+        assert echoed != _HEALTHY, "the substitution matched nothing — the fixture moved"
+        assert check.assess(echoed) == [], check.assess(echoed)
 
     def test_a_missing_baseline_compile_is_caught(self):
         reasons = _tampered(
@@ -558,3 +574,49 @@ class TestTheSampleAsksTheCompilerNotTheText:
             "  [warning] use-recent-api-versions @ main.bicep:31: '2023-01-01' is 1322 days old"
         )
         assert _faults_left()(diagnostics) == []
+
+
+class TestTheWorkProductInvariantToleratesFormatting:
+    """The model writes this file, so its spacing is the model's to choose.
+
+    An exact substring test fails a valid template over a second space, and the live job is
+    where that would land — after the model has already done the work.
+    """
+
+    @staticmethod
+    def _work_missing():
+        tree = ast.parse(_SAMPLE.read_text(encoding="utf-8"))
+        wanted: dict[str, ast.stmt] = {}
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and any(
+                isinstance(target, ast.Name) and target.id == "WORK_PRODUCT"
+                for target in node.targets
+            ):
+                wanted["WORK_PRODUCT"] = node
+            elif isinstance(node, ast.FunctionDef) and node.name == "work_missing":
+                wanted["work_missing"] = node
+        missing = {"WORK_PRODUCT", "work_missing"} - wanted.keys()
+        assert not missing, (
+            f"samples/13_bicep_fix_loop/agent.py no longer defines {sorted(missing)}"
+        )
+        namespace: dict = {"re": re}
+        module = ast.Module(body=[wanted["WORK_PRODUCT"], wanted["work_missing"]], type_ignores=[])
+        exec(compile(module, "<sample-13>", "exec"), namespace)  # noqa: S102 - this repo's file
+        return namespace["work_missing"]
+
+    RESOURCE = "resource sa 'Microsoft.Storage/storageAccounts@2023-01-01' = {}"
+
+    def test_canonical_spacing_passes(self):
+        source = f"{self.RESOURCE}\noutput storageAccountId string = sa.id"
+        assert self._work_missing()(source) == []
+
+    def test_extra_spacing_passes(self):
+        source = f"{self.RESOURCE}\noutput  storageAccountId string = sa.id"
+        assert self._work_missing()(source) == []
+
+    def test_a_line_break_after_the_keyword_passes(self):
+        source = f"{self.RESOURCE}\noutput\n  storageAccountId string = sa.id"
+        assert self._work_missing()(source) == []
+
+    def test_a_genuinely_missing_output_is_still_caught(self):
+        assert self._work_missing()(self.RESOURCE) == ["output storageAccountId"]

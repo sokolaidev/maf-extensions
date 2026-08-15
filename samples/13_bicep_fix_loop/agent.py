@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import subprocess
 import sys
 
@@ -80,7 +81,12 @@ BICEP_TOOL = "bicep_validate"
 #: fault, and an empty file compiles clean. "Repaired" would then be the verdict on a file with
 #: nothing left in it. Checked as text because the compiler's job is to say the file is valid,
 #: never that it is the thing that was asked for.
-WORK_PRODUCT = ("Microsoft.Storage/storageAccounts", "output storageAccountId")
+#: Matched as patterns, not substrings: the model writes this file, so its spacing is the
+#: model's to choose and `output  storageAccountId` is the same deliverable.
+WORK_PRODUCT = (
+    ("Microsoft.Storage/storageAccounts", re.compile(r"Microsoft\.Storage/storageAccounts")),
+    ("output storageAccountId", re.compile(r"output\s+storageAccountId")),
+)
 
 #: Built from `images/bicep-sandbox` — the same guest samples 02 and 05 use, so the compiler and
 #: the lint rule set are theirs and the diagnostics below are comparable with both.
@@ -133,7 +139,7 @@ def faults_left(diagnostics: str) -> list[str]:
 
 def work_missing(source: str) -> list[str]:
     """Which pieces of the template the model did not leave behind — empty is the good answer."""
-    return [piece for piece in WORK_PRODUCT if piece not in source]
+    return [label for label, pattern in WORK_PRODUCT if not pattern.search(source)]
 
 
 def tool_calls(reply: object, name: str) -> int:

@@ -11,7 +11,7 @@ Here the file store starts **empty**. There is no `main.bicep` in this directory
 | Turn 2 | it repairs what the compiler reported, and validates again | ≥1 | 1 |
 | The check | the program compiles the result, again with no model involved | 1 | 1 |
 
-At least four `acquire` calls, one container. Nothing stops a model from validating twice in a turn — that is a normal thing for one to do, and it makes no difference to the claim, since the second call finds the same sandbox as the first. So the sample prints what happened and the check requires at least one call per turn rather than exactly one. Only the final compile is fixed at one, because the program makes that call itself.
+At least four `acquire` calls, one container. Nothing stops a model from validating twice in a turn — that is a normal thing for one to do, and it makes no difference to the claim, since the second call finds the same sandbox as the first. So the sample prints what happened and the check requires at least one call per turn rather than exactly one. The two compiles are fixed at one apiece, because the program makes those calls itself.
 
 A second container would have answered every one of those calls just as well, which is why the count is printed rather than described.
 

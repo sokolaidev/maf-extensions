@@ -1,47 +1,15 @@
-"""Assert that a live `samples/13_bicep_fix_loop` run actually repaired the file.
+"""Assert that a live `samples/13_bicep_fix_loop` run did what the sample claims.
 
     python samples/13_bicep_fix_loop/agent.py | tee out.txt
     python scripts/check_live_fix_loop_sample.py out.txt   # or: ... | python …
 
-The sample makes three claims and this checks all of them, because each is weak alone.
+Three claims, checked together because each is weak alone: turn 1 authored a file with a real
+fault in it, one container served all four `acquire` calls, and the compiler agrees with the
+repair the run reported. The sample's README says why each is measured the way it is.
 
-**Turn 1 wrote the file.** The store starts empty, so `main.bicep authored in turn 1` is the
-authoring half of author → validate → fix, and everything after it is about a file the model
-produced. The program then compiles that snapshot itself, and the result is the baseline the
-repair is measured against — it must be real compiler output, and it must report at least one
-tracked fault, since an authored file that was already clean gives turn 2 nothing to repair
-while passing every other assertion here.
-
-**One sandbox served the whole run.** Four `acquire` calls — turn 1, the program's compile of
-what turn 1 wrote, turn 2, and the program's compile of what turn 2 left — and `docker ps -a`
-must report exactly 1 container after each.
-
-The counts alone do not carry that, which is why each turn's `bicep_validate` call count is
-checked first. A fix turn that edits the file and never validates it makes no second `acquire`
-at all, and turn 1's container is still sitting there to be counted — so the run reads as reuse
-and never exercises the claim. Both turns must show at least one call.
-
-**Turn 2 repaired it rather than describing a repair.** `main.bicep changed by turn 2` compares
-the store against what turn 1 wrote, so prose cannot satisfy it. At least one tracked fault must
-be gone, and `faults fixed` plus `faults remaining` must add up to what the authored file had —
-measured, not assumed, because the file is the model's.
-
-The template also has to still be there. Deleting `main.bicep`'s contents satisfies every other
-signal at once — the file changed, no tracked fault is reported, and an empty file compiles
-clean — so "repaired" would be the verdict on a file with nothing left in it.
-
-Those closing lines are read from the sample's own block, never from the whole output. The
-model is answering into the same stream and may write "faults fixed" in its own prose, above the
-block; a `search` over everything would parse the narration instead of the computed numbers.
-
-The tally is derived from the compiler, not from the source text, so the two must agree — a
-disagreement means the halves of the output describe different files. And every diagnostic is
-swept, not only the tracked ones: an edit that removes both original faults while introducing a
-new `BCP0xx` names neither tracked rule, and without the sweep would pass as a clean repair.
-
-The one exception is `use-recent-api-versions`, which fires on the age of the API version.
-Demanding it be fixed would make this check a calendar; demanding it remain would forbid a
-genuine repair. It is tolerated either way, and nothing else untracked is.
+Everything is read from the blocks the sample prints and never from the model's replies around
+them. A run graded on its own narration is the failure the sample exists to rule out, and this
+is the easiest place to reintroduce it.
 
 Exits non-zero listing every reason it failed.
 """
@@ -72,14 +40,9 @@ _COUNTS = (
     ("after the check", re.compile(r"containers after the check:\s*(\d+)", re.IGNORECASE)),
 )
 
-#: The sample's own closing block, and the only place the four lines below are read from. The
-#: model is answering in the same stream and can say "faults fixed: …" or "main.bicep changed"
-#: in its own prose — turn 2's reply is *above* this block, so an unscoped `search` would find
-#: the narration first and parse that instead of the numbers the sample computed.
-#:
-#: Read with ``last=True``, which is the other half of the same problem: scoping to the heading
-#: is no protection if the model prints the heading too, and the first match would then be the
-#: echo. The sample's block is always the final one, because it is printed after every turn.
+#: The sample's closing block, and the only place the four lines below are read from: the model
+#: answers into the same stream and is free to print any of those phrases, heading included.
+#: Hence ``last=True`` as well as the scope.
 _WORK_PRODUCT = (re.compile(r"==\s*The work product"), None)
 
 #: The file store compared with what went in, whether the template survived, and the fault
@@ -99,16 +62,9 @@ _TOOL_CALLS = (
     ("turn 2", re.compile(r"bicep_validate calls in turn 2:\s*(\d+)", re.IGNORECASE)),
 )
 
-#: The compiler on the file turn 1 wrote — the program's own compile of that snapshot, not a
-#: quote of turn 1's tool result. The distinction is load-bearing: a model may validate a draft,
-#: edit it and validate again, and its first result then describes a file that no longer exists,
-#: which would credit turn 2 with faults turn 1 had already fixed. This is the baseline the
-#: repair is measured against, and why the tally says what *this run* fixed.
-#: Read with ``last=True`` for the same reason as the other sample-authored blocks.
-#: Ends at the container count rather than at the fault line, so the count is *inside* the
-#: section and can be read from it. Searching the whole output for it would let a turn-1 reply
-#: mentioning "tracked faults in the authored file" supply the number instead — and that fails
-#: a healthy run, since a narrated 0 makes the sample look like it authored a clean file.
+#: The program's own compile of the file turn 1 wrote — the baseline the repair is measured
+#: against, and it must correspond to that snapshot rather than to anything the model quoted.
+#: Ends at the container count so the fault tally below is inside the section and read from it.
 _AUTHORED_COMPILE = (
     re.compile(r"==\s*What the compiler says about the file turn 1 wrote"),
     re.compile(r"containers after the baseline compile"),
@@ -117,16 +73,9 @@ _AUTHORED_FAULTS = re.compile(
     r"tracked faults in the authored file:\s*(\d+)\s*[-—]\s*([^\n]*)", re.IGNORECASE
 )
 
-#: The compile at the end, and only that. `main.bicep` compiles in two phases and each prints one
-#: line; `format_diagnostics` renders "no diagnostics" or "N diagnostic(s)" followed by the
-#: diagnostics themselves, one per line as `[level] rule @ file:line: message`.
-#:
-#: Also read with ``last=True``. A model describing its own validation can print this heading
-#: and diagnostics under it, and taking the first match would sweep those as if the compiler
-#: had reported them — failing a healthy run on rule ids the model merely quoted.
-#: Matched on the full heading, not a prefix: the baseline block above opens with the same five
-#: words, and a loose pattern would fall back to it whenever this block was missing — reporting
-#: the state of the file turn 1 wrote as though it were the state turn 2 left.
+#: The program's compile of the file turn 2 left. Matched on the full heading, because the
+#: baseline block opens with the same five words. Each phase prints one line, then its
+#: diagnostics as `[level] rule @ file:line: message`.
 _COMPILE = (
     re.compile(r"==\s*What the compiler says about the file the model left"),
     re.compile(r"containers after the check"),
@@ -154,11 +103,8 @@ def _one(pattern: re.Pattern[str], output: str) -> str | None:
 def _tally(match: re.Match[str], label: str) -> tuple[set[str], list[str]]:
     """The rule ids on a tally line, held to the number printed beside them.
 
-    The count and the names are produced by the same list in the sample, so they cannot drift
-    on their own — but nothing here was checking that, and a substring test for each rule id
-    could not. `faults fixed: 2 — none` satisfied every other assertion: the counts added up,
-    no tracked rule was compared as fixed because none was named, and a clean compile left the
-    sweep nothing to reject. Parsing the names exactly is what makes the two halves agree.
+    A count and a list that disagree describe different things, and a name outside `_RULE_IDS`
+    is not something this checker can hold the compiler to.
     """
     count = int(match.group(1))
     body = match.group(2).strip()
@@ -185,27 +131,24 @@ def _section(
 ) -> str | None:
     """The text between two markers, or ``None`` if a required one is missing.
 
-    An end of ``None`` means "to the end of the output" — for the closing block, which has no
-    marker after it and must still be readable when the run died before its footer.
+    An end of ``None`` means "to the end of the output".
 
-    ``last`` picks the final start marker instead of the first, and which one a caller wants
-    depends on whose text the section is meant to hold. **The model's output always comes
-    first**: it is printed as each turn returns, before any block the sample writes. So for a
-    block the *sample* authored, the last heading is the real one and the first may be a model
-    echoing it — the failure this argument exists to prevent, because the parse then reads the
-    model's own prose as the sample's findings. `_TURN_ONE` is the exception and takes the
-    first: that section is deliberately the model's reply, so an echo inside it is still the
-    model, which is what is being searched.
+    ``last`` selects the final start marker **its end marker still follows**, for blocks the
+    sample writes and a model could quote. Simply taking the final match is not enough: the
+    baseline block is printed between the two turns, so a turn-2 reply repeating its heading
+    comes after it, and the end marker is then already behind the match — which reads as a
+    missing block and fails a healthy run. `_TURN_ONE` takes the first, because that section is
+    meant to hold the model's reply.
     """
     start, end = bounds
     found = list(start.finditer(output))
-    if not found:
-        return None
-    opened = found[-1] if last else found[0]
-    if end is None:
-        return output[opened.end() :]
-    closed = end.search(output, opened.end())
-    return output[opened.end() : closed.start()] if closed else None
+    for opened in reversed(found if last else found[:1]):
+        if end is None:
+            return output[opened.end() :]
+        closed = end.search(output, opened.end())
+        if closed:
+            return output[opened.end() : closed.start()]
+    return None
 
 
 def assess(output: str) -> list[str]:
