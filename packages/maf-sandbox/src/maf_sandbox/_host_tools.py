@@ -572,11 +572,7 @@ class HostToolRun:
                 one that checks the total itself can only convert a committed success
                 afterwards, which leaves the run paying for a response nobody received.
         """
-        # Typed before it is ranged, the way the registry's own legs are, and for the reason
-        # `_refuse_non_integer` gives: `float("nan") < 0` is false, so a range check alone
-        # admits the one value that then compares false against every ceiling it is added to
-        # — and lands in `_delivered_bytes`, where it disables the run's byte accounting for
-        # good. This is a transport's number rather than a guest's, so both raise.
+        # A transport's number rather than a guest's, so both checks raise instead of refusing.
         _refuse_non_integer("framing_bytes", framing_bytes)
         if framing_bytes < 0:
             # A negative overhead would widen every ceiling below it by that much.

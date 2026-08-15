@@ -348,7 +348,7 @@ def call(name, **arguments):
             return answered["value"]
         raise HostToolError(answered.get("refusal", "Error: the host refused this call"))
     raise HostToolError(
-        "Error: the host did not answer this call within %d seconds" % int(_TIMEOUT)
+        "Error: the host did not answer this call within %g seconds" % _TIMEOUT
     )
 {wrappers}'''
 
@@ -522,10 +522,11 @@ async def dispatch_over_exec(
                     "the supervisor will not read further requests",
                     allowance,
                 )
-        except TimeoutError as stalled:
-            # The deadline expired *inside* this iteration rather than between two of them.
-            # Only the transport is bounded that way, so the message says which call ran out
-            # while still leading with the failure the caller asked about.
+        except _DeadlineExpired as stalled:
+            # This run's own bound, expiring *inside* an iteration rather than between two of
+            # them. Only the transport is bounded that way, so the message says which call ran
+            # out while still leading with the failure the caller asked about. A backend's own
+            # `TimeoutError` is deliberately not caught here — see `_within`.
             raise TimeoutError(
                 f"the guest program did not finish within {timeout:g}s — {stalled}. "
                 f"Output so far: {(await _final_output(sandbox, run, layout))[:2000]}"
@@ -648,6 +649,16 @@ class _NotText:
     """Sentinel: the file is there and it is not UTF-8, so nothing in it is a request."""
 
 
+class _DeadlineExpired(TimeoutError):
+    """This run's bound ran out inside a transport call, as against a backend's own.
+
+    A `TimeoutError` reaching the supervisor means one of two unrelated things, and only one
+    of them is the run ending. Named so the loop can catch its own and let a backend's — which
+    carries a diagnosis the run-level message would erase — go to the caller intact. A subclass
+    of `TimeoutError` because that is still what the caller is told the run raises.
+    """
+
+
 async def _within[T](deadline: float, what: str, call: Awaitable[T]) -> T:
     """Await one transport call inside what is left of the run's deadline.
 
@@ -661,7 +672,15 @@ async def _within[T](deadline: float, what: str, call: Awaitable[T]) -> T:
     try:
         return await asyncio.wait_for(call, timeout=remaining)
     except TimeoutError as expired:
-        raise TimeoutError(
+        if time.monotonic() < deadline:
+            # A backend's own bound, not this one: `asyncio.wait_for` passes a `TimeoutError`
+            # from the call straight through, and a backend may raise one for a reason of its
+            # own — acas bounds a read because a guest can plant a FIFO the service reports as
+            # a regular file and never serves. The run has time left, so this is not the run
+            # running out, and relabelling it would replace the only sentence that says what
+            # actually happened.
+            raise
+        raise _DeadlineExpired(
             f"the sandbox did not answer {what} within the run's remaining {remaining:.1f}s"
         ) from expired
 

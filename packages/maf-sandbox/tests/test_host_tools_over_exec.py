@@ -446,8 +446,13 @@ class TestWhatAWrapperCanTakeAway:
 
         `open` is the one that would hurt: `call` uses it to stage a request, so a wrapper
         by that name breaks every dispatch rather than only its own.
+
+        The set is derived, so it tracks the shim: `int` was in it until the guest's timeout
+        message stopped rounding, and a name the shim no longer reads is a name a tool may
+        have. That is the behaviour, not an oversight.
         """
-        assert self._wrappers({"call", "json", "os", "open", "_claim", "_CALLS", "int"}) == set()
+        assert self._wrappers({"call", "json", "os", "open", "_claim", "_CALLS", "time"}) == set()
+        assert self._wrappers({"int"}) == {"int"}, "a name the shim stopped using stays reserved"
 
 
 class TestTheGuestsPatience:
@@ -910,6 +915,55 @@ class TestWhatAnEmptyOutputMeans:
         assert result.exit_code == 0
         assert result.stdout == ""
         assert result.stderr == ""
+
+
+class TestWhoseTimeoutItWas:
+    def test_a_backends_own_timeout_reaches_the_caller_intact(self):
+        """Two unrelated things raise `TimeoutError`, and only one of them is the run ending.
+
+        acas bounds a read because a guest can plant a FIFO the service reports as a regular
+        file and never serves, and it says so in the message. Catching that as the supervisor
+        deadline replaces the only sentence that names the actual cause with a generic one
+        about a slow program — and the run has time left, which is the tell.
+        """
+        planted = "a guest can make an entry the service never serves"
+
+        class _BoundsItsOwnRead(_ScriptedGuest):
+            async def read_file(self, path: str, *, working_directory: str, max_bytes: int):
+                raise TimeoutError(planted)
+
+        with pytest.raises(TimeoutError, match=planted):
+            _run(_BoundsItsOwnRead([("add", {"left": 1, "right": 1})]), HostToolRun(_registry()))
+
+    def test_the_runs_own_deadline_still_reports_the_run(self):
+        """The other half: what the supervisor's bound raises must keep saying so."""
+
+        class _Stalls(_ScriptedGuest):
+            async def stat_file(self, path: str, *, working_directory: str):
+                await asyncio.sleep(3600)
+                raise AssertionError("unreachable")
+
+        with pytest.raises(TimeoutError, match="did not finish within"):
+            _run(_Stalls([]), HostToolRun(_registry()), timeout=0.2)
+
+
+class TestTheGuestsOwnDiagnostic:
+    def test_a_fractional_patience_is_reported_as_itself(self, tmp_path: Path):
+        """`%d` on 0.5 says "within 0 seconds", which is not a duration anyone waited.
+
+        Fractional patience became reachable when `call_timeout` became an argument, so the
+        message had to stop rounding.
+        """
+        module_path = tmp_path / SHIM_MODULE
+        module_path.write_text(host_tool_shim(call_timeout=0.05), encoding="utf-8")
+        spec = importlib.util.spec_from_file_location("maf_host_tools_patience", module_path)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        (tmp_path / CALLS_DIRECTORY).mkdir(parents=True, exist_ok=True)
+
+        with pytest.raises(module.HostToolError, match="within 0.05 seconds"):
+            module.call("nobody_is_listening")
 
 
 class TestWhatAFailedReadMeans:
