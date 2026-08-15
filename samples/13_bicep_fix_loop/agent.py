@@ -76,13 +76,9 @@ TRACKED_FAULTS = ("no-unused-params", "BCP035")
 #: The tool the model is expected to reach for, and the one this sample counts calls to.
 BICEP_TOOL = "bicep_validate"
 
-#: The two things the brief asks for by name, and the one thing no other signal here protects.
-#: Emptying the file satisfies every other check at once: it changed, it reports no tracked
-#: fault, and an empty file compiles clean. "Repaired" would then be the verdict on a file with
-#: nothing left in it. Checked as text because the compiler's job is to say the file is valid,
-#: never that it is the thing that was asked for.
-#: Matched as patterns, not substrings: the model writes this file, so its spacing is the
-#: model's to choose and `output  storageAccountId` is the same deliverable.
+#: The two things the brief asks for by name, and the one thing no other signal here protects:
+#: emptying the file changes it, reports no tracked fault, and compiles clean. Patterns rather
+#: than substrings, because the model writes this file and its spacing is the model's to choose.
 WORK_PRODUCT = (
     ("Microsoft.Storage/storageAccounts", re.compile(r"Microsoft\.Storage/storageAccounts")),
     ("output storageAccountId", re.compile(r"output\s+storageAccountId")),
@@ -254,7 +250,15 @@ async def run() -> int:
     try:
         stale = containers()
     except (OSError, subprocess.CalledProcessError) as exc:
-        print(f"Cannot reach a Docker engine, which this sample needs: {exc}", file=sys.stderr)
+        # `containers()` captures output, so the engine's own explanation is on the exception
+        # rather than in the message — and `str(CalledProcessError)` prints only the exit code.
+        # It is also the part worth reading: a refused socket and a permission denied both fail
+        # here and only Docker can tell them apart.
+        detail = (getattr(exc, "stderr", None) or "").strip()
+        print(
+            f"`docker ps` failed, and this sample cannot run without it:\n  {detail or exc}",
+            file=sys.stderr,
+        )
         return 2
     if stale:
         print(

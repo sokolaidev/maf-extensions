@@ -848,13 +848,66 @@ class TestTheStaleContainerHint:
         source = _SAMPLE.read_text(encoding="utf-8")
         assert "docker ps -aq --filter label={_LABEL_THREAD}={THREAD_ID}" in source
 
-    def test_an_unreachable_engine_is_answered_rather_than_raised(self):
-        """`containers()` is the program's first call to Docker, and it uses `check=True`.
+    def test_containers_is_the_only_thing_that_shells_out(self):
+        """The premise the test below rests on, asserted rather than assumed.
 
-        The `if not tools:` guard above it cannot field a missing engine: a tool is attached
-        whenever a backend is *registered*, and registering one probes nothing.
+        If some later preflight also runs a subprocess, the *first* touch of Docker moves and
+        guarding `containers()` stops being enough — while a test that only looked at
+        `containers()` would stay green.
         """
-        source = _SAMPLE.read_text(encoding="utf-8")
-        around = source[source.index("stale = containers()") - 100 :][:500]
-        assert "except (OSError, subprocess.CalledProcessError)" in around
-        assert "Cannot reach a Docker engine" in around
+        tree = ast.parse(_SAMPLE.read_text(encoding="utf-8"))
+        containers_fn = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "containers"
+        )
+        inside = {id(node) for node in ast.walk(containers_fn)}
+        shells_out = [
+            call
+            for call in ast.walk(tree)
+            if isinstance(call, ast.Call) and ast.unparse(call.func) == "subprocess.run"
+        ]
+        assert shells_out, "nothing shells out any more — this test has lost its subject"
+        assert all(id(call) in inside for call in shells_out), (
+            "something outside containers() now runs a subprocess, so it may touch Docker first"
+        )
+
+    def test_the_first_docker_call_is_inside_a_handler_for_its_two_failures(self):
+        """`containers()` uses `check=True`, and the guard before it probes no engine.
+
+        Walked rather than grepped: an `except` merely *near* the call in the source would
+        satisfy a window search while leaving the call outside the `try`.
+        """
+        tree = ast.parse(_SAMPLE.read_text(encoding="utf-8"))
+        run = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == "run"
+        )
+        calls = [
+            node
+            for node in ast.walk(run)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "containers"
+        ]
+        assert calls, "run() no longer calls containers()"
+        first = min(calls, key=lambda call: (call.lineno, call.col_offset))
+
+        guarding = [
+            node
+            for node in ast.walk(run)
+            if isinstance(node, ast.Try)
+            and any(inner is first for stmt in node.body for inner in ast.walk(stmt))
+        ]
+        assert guarding, "the first containers() call is not inside a try"
+
+        caught: set[str] = set()
+        for handler in guarding[0].handlers:
+            if isinstance(handler.type, ast.Tuple):
+                caught |= {ast.unparse(exc) for exc in handler.type.elts}
+            elif handler.type is not None:
+                caught.add(ast.unparse(handler.type))
+        # A missing binary raises FileNotFoundError (an OSError); a refusing daemon exits
+        # non-zero, which `check=True` turns into CalledProcessError — not an OSError.
+        assert {"OSError", "subprocess.CalledProcessError"} <= caught, caught

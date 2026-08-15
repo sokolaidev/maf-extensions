@@ -1,26 +1,23 @@
 name: Verify (live)
 
-# Installs the PUBLISHED wheels into a clean environment and runs eight samples, each asserting its
-# own workload actually ran: samples/01_acas_bicep and samples/05_docker_bicep (the compiler's
-# diagnostics came back), samples/03_acas_codeact and samples/06_docker_codeact (the 100th
-# Fibonacci number came back from code run in the sandbox), and samples/07_docker_diagram and
-# samples/08_docker_codeact_files (a file came back out — a rendered PNG and a declared summary,
-# the two that assert on something other than stdout). Sample 09 runs the same bicep workload as
-# 01 and 05 against a backend that shells out to the bicep CLI on the runner itself — no
-# container, no sandbox — so it pairs with nothing and names no backend. Sample 10 pairs with
-# nothing either and goes one further: no sandbox, no model and no configuration, because
-# everything it exercises — the host-tools registry, its aggregate, and the router's two deny
-# axes — is decided at attach, before a backend is ever asked for one. Each pair is one
-# workload against a billable Azure microVM and against a container, so a red on one side alone
-# names the backend.
-# This is the half of issue #33 that runs after a release rather than on a pull request. The two
-# ACAS jobs each create a billable Azure sandbox and need a subscription; the four docker jobs
-# and sample 09 create no billable sandbox — a container on the runner, or for 09 the host
-# itself — and need no sandbox configuration at all. Sample 10 costs nothing whatsoever: it is
-# the only job with no `environment:` and no `permissions:` block, because it reads no
-# variable and mints no token. It runs on demand, and once after each
-# release that could change what a
-# sample exercises (dispatched by publish-packages.yml).
+# Installs the PUBLISHED wheels into a clean environment and runs the samples below, each
+# asserting that its own workload ran rather than that the program exited zero.
+#
+# Most are paired: one workload against a billable Azure microVM and the same workload against
+# a container, so a red on one side alone names the backend. 01 and 05 report the compiler's
+# diagnostics; 03 and 06 return the 100th Fibonacci number from code run in the sandbox. 07 and
+# 08 assert on a file that came back — a rendered PNG, a declared summary — rather than on
+# stdout. 09 runs 01's bicep workload against the CLI on the runner itself, so it pairs with
+# nothing and names no backend. 13 is the only job that runs more than one turn: a model writes
+# a file, the compiler reports on it, and a second turn repairs it against the same sandbox.
+#
+# This is the half of issue #33 that runs after a release rather than on a pull request. The
+# ACAS jobs each create a billable Azure sandbox and need a subscription; the docker jobs create
+# a container on the runner and need no sandbox configuration; 09 needs neither. **A job that
+# calls no model and reads no variable carries no `environment:` and no `permissions:` block**,
+# because it mints no token — stated as the rule rather than a list, which is what went stale
+# here before. It runs on demand, and once after each release that could change what a sample
+# exercises (dispatched by publish-packages.yml).
 #
 # Samples 02 and 04 are the two with no job, and structurally: `wslc` needs Windows with a WSL
 # that ships it, which the Linux runners are not.
