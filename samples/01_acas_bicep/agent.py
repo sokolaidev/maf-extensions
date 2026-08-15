@@ -154,9 +154,10 @@ async def run() -> int:
     finally:
         # Delete the sandbox rather than leaving it to the lifecycle timers.
         # `auto_suspend_seconds` and `auto_delete_seconds` are the backstop, not
-        # the plan: a sandbox per agent per conversation, billable for ten minutes
-        # after the last call, adds up fast.  `dispose_scope` deletes by
-        # service-side label, so it reclaims sandboxes this process never saw.
+        # the plan, and they run in sequence: idle a minute and the sandbox
+        # suspends, stopped ten more and it goes.  A sandbox per agent per
+        # conversation left to run that course adds up.  `dispose_scope` deletes
+        # by service-side label, so it reclaims sandboxes this process never saw.
         deleted = await router.dispose_scope(SCOPE, THREAD_ID)
         print(f"\nDisposed {deleted} sandbox(es).")
         await backend.aclose()
