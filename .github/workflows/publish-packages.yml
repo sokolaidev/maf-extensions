@@ -488,11 +488,8 @@ jobs:
   # a maf-sandbox-wslc release touches none, so it triggers nothing. Which samples actually run
   # is the called workflow's decision: `package` tells it which package was just released, and
   # each job runs only if that release could affect it — so a maf-sandbox-docker release runs
-  # both docker jobs (neither creates a billable sandbox) and not the ACAS ones. A batch releasing
-  # more than one package runs this once per package; each run is independent and safe, which holds
-  # because the called workflow's concurrency group is keyed per package. It was not always: under a
-  # single global group the calls contended, and since a group holds one pending run rather than a
-  # queue, a batch of four ran roughly two of them (#325).
+  # both docker jobs (neither creates a billable sandbox) and not the ACAS ones. A batch release
+  # calls this once per package; per-package concurrency keeps those calls independent (#325).
   #
   # `breaking != 'true'` is the one case where a release deliberately gets no live check: the
   # published dependents cannot work against a breaking core until they ship again, and their
