@@ -799,6 +799,25 @@ class TestTheBaselineTallyIsValidatedToo:
         )
         assert any("which this sample does not track" in r for r in reasons), reasons
 
+    def test_a_baseline_tally_unsupported_by_its_own_diagnostics_is_caught(self):
+        """The tally and the compile it was derived from must describe one file.
+
+        The final compile has been held to its diagnostics for several rounds; the baseline
+        block did not inherit it. A single-version run cannot disagree with itself — the sample
+        computes the tally *from* those diagnostics — but `$HARNESS` runs main's checker against
+        a tag's sample, so the two can be different versions.
+        """
+        thinner = _HEALTHY.replace(
+            '    [error] no-unused-params @ main.bicep:3: Parameter "environmentName" is never '
+            "used.\n",
+            "",
+        ).replace("(main.bicep): 3 diagnostic(s)", "(main.bicep): 2 diagnostic(s)")
+        assert thinner != _HEALTHY, "the substitution matched nothing — the fixture moved"
+        assert "tracked faults in the authored file: 2" in thinner, "the tally should be stale"
+
+        reasons = check.assess(thinner)
+        assert any("its own compile reports" in r for r in reasons), reasons
+
     def test_a_count_that_does_not_match_its_names_is_caught(self):
         reasons = _tampered(
             "tracked faults in the authored file: 2 — no-unused-params; BCP035",
