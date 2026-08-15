@@ -52,6 +52,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from ._error_detail import error_detail
+from ._outputs import SandboxTransferCapExceeded
 from ._protocol import EntryKind, ExecResult
 
 if TYPE_CHECKING:
@@ -406,6 +407,10 @@ async def dispatch_over_exec(
         TimeoutError: The program left no exit marker before the deadline. Its output up to
             that point is in the message; the process may still be running, and disposing of
             the sandbox is what stops it.
+        Exception: Whatever the backend raises from a stat or a read that is not a file
+            simply not being there yet. A permanent failure — a permission error, a client
+            that cannot reach its daemon — is reported as itself rather than retried until
+            the run looks like a slow guest.
 
     **This supervisor never cancels a dispatch already under way**, and the deadline is
     checked before starting one rather than during it. A dispatched body runs in the host
@@ -432,9 +437,13 @@ async def dispatch_over_exec(
     # wait at all, and a remote backend into a stat loop as fast as the network allows.
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError(f"timeout must be a finite positive number of seconds, not {timeout}")
-    if not math.isfinite(poll_interval) or poll_interval < 0:
+    if not math.isfinite(poll_interval) or poll_interval <= 0:
+        # Zero is the same defect as negative, arrived at by a different route: `sleep(0)`
+        # yields to the loop and comes straight back, so the interval that is supposed to
+        # throttle polling stops throttling it. A test wanting to run fast wants a small
+        # interval, not none.
         raise ValueError(
-            f"poll_interval must be a finite number of seconds, zero or more, not {poll_interval}"
+            f"poll_interval must be a finite positive number of seconds, not {poll_interval}"
         )
     # Before `exec`, not after: the bound is on the whole program, and a launcher that takes
     # most of it would otherwise hand supervision a second full timeout to spend.
@@ -685,9 +694,24 @@ async def _read_if_present(
             f"read {posixpath.basename(path)}",
             sandbox.read_file(path, working_directory=layout.directory, max_bytes=cap),
         )
-    except Exception as failure:  # noqa: BLE001 — a read that fails is a poll that missed
-        logger.warning("host tools: reading %s failed: %s", path, error_detail(failure))
+    except SandboxTransferCapExceeded as refused:
+        # The backend refusing after the fact, which the pull surface says is how a client
+        # that buffers the whole response has to refuse. The same outcome as an over-cap
+        # stat, reached from the other end.
+        logger.warning("host tools: %s is over the cap: %s", path, error_detail(refused))
+        return _TooLarge()
+    except FileNotFoundError:
+        # The one genuine race: the stat found it and the read did not. Polling again is the
+        # right answer, and the only failure for which it is.
         return None
+    except Exception:
+        # Everything else is the backend saying something is wrong — a permission error, a
+        # client that cannot reach the daemon — and retrying it every interval turns a
+        # permanent failure into a run that reports the guest as slow. It propagates, so the
+        # caller is told what actually happened. `_final_output` catches broadly for the same
+        # reason in reverse: a diagnostic must not replace the failure it is describing.
+        logger.warning("host tools: reading %s failed, ending the run", path)
+        raise
     if len(raw) > cap:
         # The pull surface's own rule, and `collect_outputs` keeps it too: `max_bytes` is what
         # a backend was asked for, not what it is guaranteed to have honoured — one whose SDK
@@ -758,7 +782,13 @@ def _serving_bound(run: HostToolRun) -> int:
 
 
 def _request_cap(run: HostToolRun) -> int:
-    """The request ceiling, borrowed from the response one — the same concern, one vocabulary."""
+    """The request ceiling, borrowed from the response one — the same concern, one vocabulary.
+
+    The per-file leg only. What every request together may cost is this times
+    :func:`_serving_bound`, both configured, and *not* the same ``TransferLimits``' total leg:
+    that budget is spent by responses, and sharing it would mean tightening what a tool may
+    return quietly limits how many calls a guest may make.
+    """
     return run.registry.response_limits.max_bytes_per_file
 
 

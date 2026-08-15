@@ -39,6 +39,7 @@ from maf_sandbox import (
     HostToolRun,
     Identity,
     SandboxEntry,
+    SandboxTransferCapExceeded,
     SourceIntegrity,
     TransferLimits,
     dispatch_over_exec,
@@ -48,6 +49,10 @@ from maf_sandbox import (
     sandbox_tool,
 )
 from maf_sandbox.paths import confine_guest_path
+
+#: Fast enough for a suite, and still an interval — the API refuses zero, because
+#: `sleep(0)` is not a throttle.
+_FAST = 0.001
 
 _RUN = "/maf-sandbox/work/run-1"
 _LAYOUT = guest_run_layout(_RUN)
@@ -206,7 +211,9 @@ def _registry(**kwargs: Any) -> HostToolRegistry:
 
 
 def _run(guest: _ScriptedGuest, run: HostToolRun, *, timeout: float = 5.0) -> ExecResult:
-    return asyncio.run(dispatch_over_exec(guest, run, _LAYOUT, timeout=timeout, poll_interval=0.0))
+    return asyncio.run(
+        dispatch_over_exec(guest, run, _LAYOUT, timeout=timeout, poll_interval=_FAST)
+    )
 
 
 class TestTheHappyPath:
@@ -387,7 +394,7 @@ class TestTheSupervisorsOwnBounds:
         with pytest.raises(TimeoutError):
             asyncio.run(
                 dispatch_over_exec(
-                    guest, HostToolRun(registry), _LAYOUT, timeout=1.0, poll_interval=0.0
+                    guest, HostToolRun(registry), _LAYOUT, timeout=1.0, poll_interval=_FAST
                 )
             )
         assert dispatched == [], "a request read inside the bound was dispatched after it"
@@ -851,6 +858,56 @@ class TestWhatSurvivesTheDeadline:
         assert json.loads(written)["value"] == "late"
 
 
+class TestWhatAFailedReadMeans:
+    def test_a_backend_that_cannot_read_ends_the_run_with_its_own_error(self):
+        """A permanent failure retried every interval reads back as a slow guest.
+
+        `PermissionError` will not resolve itself, so polling past it spends the whole bound
+        and then reports "the guest program did not finish" — which is false, and points the
+        reader at the program instead of at the backend.
+        """
+
+        class _Unreadable(_ScriptedGuest):
+            async def read_file(self, path: str, *, working_directory: str, max_bytes: int):
+                raise PermissionError("the daemon said no")
+
+        with pytest.raises(PermissionError, match="the daemon said no"):
+            _run(_Unreadable([("add", {"left": 1, "right": 1})]), HostToolRun(_registry()))
+
+    def test_a_file_that_vanished_between_stat_and_read_is_only_a_missed_poll(self):
+        """The one failure polling again *is* the answer to, so it must stay a retry."""
+        vanished: list[str] = []
+
+        class _Vanishing(_ScriptedGuest):
+            async def read_file(self, path: str, *, working_directory: str, max_bytes: int):
+                if not vanished:
+                    vanished.append(path)
+                    raise FileNotFoundError(path)
+                return await super().read_file(
+                    path, working_directory=working_directory, max_bytes=max_bytes
+                )
+
+        guest = _Vanishing([("add", {"left": 2, "right": 2})])
+        _run(guest, HostToolRun(_registry()))
+        assert vanished, "the race never happened, so this proves nothing"
+        assert guest.answers[0].get("value") == 4
+
+    def test_a_backend_refusing_after_the_fact_is_the_over_cap_refusal(self):
+        """`SandboxTransferCapExceeded` is how a client that buffered first has to refuse."""
+
+        class _RefusesLate(_ScriptedGuest):
+            async def read_file(self, path: str, *, working_directory: str, max_bytes: int):
+                if path.endswith("request.json"):
+                    raise SandboxTransferCapExceeded("buffered it all, then looked")
+                return await super().read_file(
+                    path, working_directory=working_directory, max_bytes=max_bytes
+                )
+
+        guest = _RefusesLate([("add", {"left": 1, "right": 1})])
+        _run(guest, HostToolRun(_registry()))
+        assert "larger than the host will read" in guest.answers[0]["refusal"]
+
+
 class TestWhatABackendMayHaveIgnored:
     def test_a_read_over_its_cap_is_refused_rather_than_parsed(self):
         """`max_bytes` is what a backend was asked for, not what it is known to have honoured.
@@ -887,9 +944,9 @@ class TestTheArgumentsTheSupervisorTakes:
         with pytest.raises(ValueError, match="timeout"):
             _run(_ScriptedGuest([]), HostToolRun(_registry()), timeout=bound)
 
-    @pytest.mark.parametrize("interval", [float("nan"), -1.0])
+    @pytest.mark.parametrize("interval", [float("nan"), -1.0, 0.0])
     def test_a_poll_interval_that_is_not_finite_and_positive_is_refused(self, interval: float):
-        """Below zero, or `nan` which `min` propagates: the wait between polls stops waiting."""
+        """Zero as well as negative: `sleep(0)` comes straight back, so nothing is throttled."""
         with pytest.raises(ValueError, match="poll_interval"):
             asyncio.run(
                 dispatch_over_exec(
