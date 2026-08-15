@@ -150,10 +150,8 @@ def host_tool_shim(names: frozenset[str] | set[str] | tuple[str, ...] = ()) -> s
 def _shim_globals() -> frozenset[str]:
     """Every global name the generated shim reads, taken from the shim itself.
 
-    Derived rather than listed. A hand-kept list is a second copy of the shim's dependencies
-    that nothing updates: `open`, `OSError`, `ValueError` and `int` were each missing from one,
-    and each would have replaced machinery a dispatch needs — a tool named `open` breaks every
-    call at `with open(...)`, before a request is ever published.
+    Derived rather than listed, so a name the shim starts using is reserved without anyone
+    remembering to add it. A wrapper that shadows one replaces machinery every dispatch needs.
     """
     tree = ast.parse(_SHIM_SOURCE.format(calls="", timeout=0.0, poll=0.0, wrappers=""))
     return (
@@ -212,6 +210,7 @@ request where the supervisor is looking and to wait for the answer.
 
 import json
 import os
+import threading
 import time
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -219,6 +218,7 @@ _CALLS = os.path.join(_HERE, "{calls}")
 _TIMEOUT = {timeout}
 _POLL = {poll}
 _counter = 0
+_counter_lock = threading.Lock()
 
 
 class HostToolError(RuntimeError):
@@ -228,8 +228,11 @@ class HostToolError(RuntimeError):
 def call(name, **arguments):
     """Dispatch ``name`` with keyword ``arguments`` and return its value."""
     global _counter
-    _counter += 1
-    identifier = "%04d" % _counter
+    with _counter_lock:
+        # Read-modify-write, and a program may be threaded: two callers taking the same
+        # identifier would write one request file and both read one answer as their own.
+        _counter += 1
+        identifier = "%04d" % _counter
     os.makedirs(_CALLS, exist_ok=True)
     request = os.path.join(_CALLS, identifier + ".request.json")
     response = os.path.join(_CALLS, identifier + ".response.json")
@@ -460,9 +463,27 @@ async def _answer(run: HostToolRun, body: str | _TooLarge, identifier: str) -> s
     result = await run.dispatch(name, arguments)
     if not result.ok:
         return json.dumps({"refusal": result.refusal})
-    # `value_json` is already the serialized return value, capped host-side. Splicing it into
-    # the envelope as text keeps those exact bytes rather than re-serializing a parse of them.
-    return '{"value": ' + (result.value_json or "null") + "}"
+    # `value_json` is already the serialized return value, capped host-side. Splicing it in as
+    # text keeps those exact bytes rather than re-serializing a parse of them — but the framing
+    # around them crosses the boundary too, and `dispatch` counted only the payload. A value
+    # that fits the ceiling and then does not fit once wrapped is refused here rather than
+    # written over it.
+    wrapped = '{"value": ' + (result.value_json or "null") + "}"
+    ceiling = run.registry.response_limits.max_bytes_per_file
+    if len(wrapped.encode("utf-8")) > ceiling:
+        logger.warning(
+            "host tools: %s's response is %d bytes wrapped, over the %d-byte ceiling",
+            identifier,
+            len(wrapped.encode("utf-8")),
+            ceiling,
+        )
+        return json.dumps(
+            {
+                "refusal": "Error: this tool's response does not fit the transport once framed "
+                "— return less, or write it to a file the run collects instead"
+            }
+        )
+    return wrapped
 
 
 class _TooLarge:

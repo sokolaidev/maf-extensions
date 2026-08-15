@@ -46,6 +46,7 @@ from maf_sandbox import (
     launcher_script,
     sandbox_tool,
 )
+from maf_sandbox.paths import confine_guest_path
 
 _RUN = "/maf-sandbox/work/run-1"
 _LAYOUT = guest_run_layout(_RUN)
@@ -94,6 +95,14 @@ class _ScriptedGuest:
 
     # -- Sandbox ------------------------------------------------------------------------
 
+    def _resolved(self, path: str, working_directory: str) -> str:
+        """What a backend would make of this path — `confine_guest_path`, as they all use.
+
+        The double used to ignore `working_directory` and key on the string it was handed,
+        which meant it could not tell a path a real backend accepts from one it refuses.
+        """
+        return confine_guest_path(path, working_directory)
+
     async def write_file(self, path: str, content: str | bytes) -> None:
         self.files[path] = content.encode("utf-8") if isinstance(content, str) else content
 
@@ -107,7 +116,7 @@ class _ScriptedGuest:
         return ExecResult(stdout="", exit_code=self._launcher_exit_code)
 
     async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
-        del working_directory
+        path = self._resolved(path, working_directory)
         self._collect_answers()
         if self.replayed:
             # Stay alive a few polls, so a supervisor that rescans has every chance to.
@@ -121,8 +130,7 @@ class _ScriptedGuest:
         return SandboxEntry(path=path, kind=EntryKind.FILE, size_bytes=len(content))
 
     async def read_file(self, path: str, *, working_directory: str, max_bytes: int) -> bytes:
-        del working_directory
-        content = self.files[path]
+        content = self.files[self._resolved(path, working_directory)]
         if len(content) > max_bytes:
             raise AssertionError("the supervisor read past its own cap")
         return content
@@ -589,3 +597,99 @@ class TestTheLaunchersExitMarker:
         inner = shlex.split(launcher_script(layout).splitlines()[-1].removesuffix(" &"))[3]
         assert f"{layout.exit_code}.part" in inner, "the exit code is written straight to its name"
         assert inner.rstrip().endswith(f"mv '{layout.exit_code}.part' '{layout.exit_code}'")
+
+
+class TestThePathsTheSupervisorPasses:
+    def test_every_pull_call_names_a_path_a_backend_accepts(self):
+        """The double resolves through `confine_guest_path`, so a refused path fails here too.
+
+        Absolute paths inside the working directory are what the layout holds, and
+        `posixpath.join` makes those resolve to themselves — which is why both shipped
+        backends serve them. This keeps that agreement under test rather than assumed.
+        """
+        seen: list[str] = []
+
+        class _RecordingPaths(_ScriptedGuest):
+            async def stat_file(self, path: str, *, working_directory: str):
+                seen.append(path)
+                return await super().stat_file(path, working_directory=working_directory)
+
+        guest = _RecordingPaths([("add", {"left": 1, "right": 1})])
+        _run(guest, HostToolRun(_registry()))
+        assert seen, "nothing was stat-ed"
+        for path in seen:
+            assert confine_guest_path(path, _LAYOUT.directory).startswith(_LAYOUT.directory)
+
+
+class TestTheResponseCeiling:
+    def test_a_value_that_fits_only_unwrapped_is_refused(self):
+        """`dispatch` caps the payload; the framing around it crosses the boundary too.
+
+        The ceiling has to clear the *request* as well — it is the same number in both
+        directions — so the value is sized to fit the cap on its own and to overflow it once
+        `{"value": …}` is around it.
+        """
+        payload = "x" * 80
+
+        def long_answer() -> str:
+            return payload
+
+        stamped = sandbox_tool(source=SourceIntegrity.TRUSTED, sink=None, identity=Identity.APP)
+        registry = HostToolRegistry(
+            response_limits=TransferLimits(
+                max_bytes_per_file=len(payload) + 5,  # fits `"xxx…"`, not `{"value": "xxx…"}`
+                max_total_bytes=4096,
+                max_files=4,
+            )
+        )
+        registry.register(stamped(long_answer), name="long_answer")
+
+        guest = _ScriptedGuest([("long_answer", {})])
+        _run(guest, HostToolRun(registry))
+        answered = guest.answers[0]
+        assert "value" not in answered, "a response longer than the ceiling was written"
+        assert "does not fit the transport once framed" in answered["refusal"]
+
+
+class TestTheShimsSequenceAllocation:
+    def test_concurrent_callers_get_distinct_identifiers(self, tmp_path: Path):
+        """Each caller takes its own sequence number, whatever the program's thread count.
+
+        An invariant check rather than a race reproduction, and worth saying which: the lock
+        this pins was added by inspection — `_counter += 1` is load-add-store, so two callers
+        can take one identifier, write one request and each read the other's answer. CPython's
+        GIL makes that interleaving rare enough that this test passes without the lock too, so
+        it guards against a deterministic regression rather than proving the race.
+        """
+        source = host_tool_shim()
+        assert "_counter_lock" in source, "the sequence is allocated without a lock"
+        module_path = tmp_path / SHIM_MODULE
+        module_path.write_text(source, encoding="utf-8")
+        spec = importlib.util.spec_from_file_location("maf_host_tools_threads", module_path)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        calls = tmp_path / CALLS_DIRECTORY
+        calls.mkdir(parents=True, exist_ok=True)
+        for index in range(1, 65):
+            (calls / f"{index:04d}.response.json").write_text(
+                json.dumps({"value": index}), encoding="utf-8"
+            )
+
+        answers: list[int] = []
+        guard = threading.Lock()
+
+        def one_call() -> None:
+            value = module.call("anything")
+            with guard:
+                answers.append(value)
+
+        threads = [threading.Thread(target=one_call) for _ in range(32)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+        assert len(answers) == 32
+        assert len(set(answers)) == 32, f"two callers shared an identifier: {sorted(answers)}"
