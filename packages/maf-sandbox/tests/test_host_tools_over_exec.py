@@ -622,36 +622,144 @@ class TestThePathsTheSupervisorPasses:
 
 
 class TestTheResponseCeiling:
+    """What the run is charged is the bytes that cross, framing included.
+
+    The transport declares its envelope to `dispatch` rather than checking the total after
+    the fact, so all three of these are one question asked from three sides: is the size the
+    ledger reserves, refuses on, and commits the size of the file the guest receives?
+    """
+
+    @staticmethod
+    def _capped(limits: TransferLimits, tool: Any, name: str) -> HostToolRegistry:
+        stamped = sandbox_tool(source=SourceIntegrity.TRUSTED, sink=None, identity=Identity.APP)
+        registry = HostToolRegistry(response_limits=limits)
+        registry.register(stamped(tool), name=name)
+        return registry
+
     def test_a_value_that_fits_only_unwrapped_is_refused(self):
-        """`dispatch` caps the payload; the framing around it crosses the boundary too.
+        """`dispatch` caps what crosses, and `{"value": …}` crosses with the payload.
 
         The ceiling has to clear the *request* as well — it is the same number in both
         directions — so the value is sized to fit the cap on its own and to overflow it once
-        `{"value": …}` is around it.
+        the framing is around it.
         """
         payload = "x" * 80
 
         def long_answer() -> str:
             return payload
 
-        stamped = sandbox_tool(source=SourceIntegrity.TRUSTED, sink=None, identity=Identity.APP)
-        registry = HostToolRegistry(
-            response_limits=TransferLimits(
+        registry = self._capped(
+            TransferLimits(
                 max_bytes_per_file=len(payload) + 5,  # fits `"xxx…"`, not `{"value": "xxx…"}`
                 max_total_bytes=4096,
                 max_files=4,
-            )
+            ),
+            long_answer,
+            "long_answer",
         )
-        registry.register(stamped(long_answer), name="long_answer")
 
         guest = _ScriptedGuest([("long_answer", {})])
         _run(guest, HostToolRun(registry))
         answered = guest.answers[0]
         assert "value" not in answered, "a response longer than the ceiling was written"
-        assert "does not fit the transport once framed" in answered["refusal"]
+        assert "per-response cap allows" in answered["refusal"]
+
+    def test_a_response_refused_for_its_size_leaves_the_budget_unspent(self):
+        """The run pays for what it delivered, and a refusal delivered nothing.
+
+        `max_total_bytes` is the payload's own size exactly: a run that had been charged for
+        the refused value would have nothing left, and the second call — one byte of value —
+        would be refused for a budget the guest never received.
+        """
+        payload = "x" * 80
+
+        def long_answer() -> str:
+            return payload
+
+        def short_answer() -> int:
+            return 1
+
+        registry = self._capped(
+            TransferLimits(
+                max_bytes_per_file=len(payload) + 5,
+                max_total_bytes=len(payload) + 2,  # room for the refused value, and no more
+                max_files=4,
+            ),
+            long_answer,
+            "long_answer",
+        )
+        stamped = sandbox_tool(source=SourceIntegrity.TRUSTED, sink=None, identity=Identity.APP)
+        registry.register(stamped(short_answer), name="short_answer")
+
+        guest = _ScriptedGuest([("long_answer", {}), ("short_answer", {})])
+        _run(guest, HostToolRun(registry))
+        assert "value" not in guest.answers[0], "the oversized value was delivered"
+        assert guest.answers[1].get("value") == 1, (
+            f"the refused response spent the run's budget: {guest.answers[1]}"
+        )
+
+    def test_the_framing_counts_against_the_runs_total_budget(self):
+        """Two one-byte values fit any budget; two framed responses are two files of twelve.
+
+        The per-file leg alone would let a guest spend the run's whole allowance in envelopes
+        — the cheaper the values, the larger the share that never gets counted.
+        """
+
+        def zero() -> int:
+            return 0
+
+        registry = self._capped(
+            TransferLimits(max_bytes_per_file=64, max_total_bytes=20, max_files=4),
+            zero,
+            "zero",
+        )
+
+        guest = _ScriptedGuest([("zero", {}), ("zero", {})])
+        _run(guest, HostToolRun(registry))
+        assert guest.answers[0].get("value") == 0, "the first framed response did not fit"
+        assert "value" not in guest.answers[1], (
+            f"two framed responses were written over a {20}-byte budget: {guest.answers[1]}"
+        )
+        assert "byte budget" in guest.answers[1]["refusal"]
 
 
 class TestTheShimsSequenceAllocation:
+    @staticmethod
+    def _loaded(tmp_path: Path, name: str) -> Any:
+        """The generated shim, importable, with its calls directory beside it."""
+        module_path = tmp_path / SHIM_MODULE
+        module_path.write_text(host_tool_shim(), encoding="utf-8")
+        spec = importlib.util.spec_from_file_location(name, module_path)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        (tmp_path / CALLS_DIRECTORY).mkdir(parents=True, exist_ok=True)
+        return module
+
+    def test_a_call_that_never_publishes_does_not_spend_an_identifier(self, tmp_path: Path):
+        """A gap in the sequence is not a lost call — it is the rest of the run, lost.
+
+        The supervisor answers `0001` before it looks for `0002`, so an identifier taken by a
+        call whose request never lands is one it waits on until the run's deadline. An
+        argument `json.dumps` cannot serialize is the ordinary way in, and a program that
+        catches the `TypeError` — most do — keeps calling into a transport that is now deaf.
+
+        Both responses are planted so the failure is an answer rather than a five-minute
+        block: without the fix the second call reads `0002`'s.
+        """
+        module = self._loaded(tmp_path, "maf_host_tools_gap")
+        calls = tmp_path / CALLS_DIRECTORY
+        for index, value in ((1, "first"), (2, "second")):
+            (calls / f"{index:04d}.response.json").write_text(
+                json.dumps({"value": value}), encoding="utf-8"
+            )
+
+        with pytest.raises(TypeError):
+            module.call("anything", unserializable=object())
+
+        assert module.call("anything") == "first", "the failed call spent identifier 0001"
+        assert not (calls / "0002.request.json").exists(), "the supervisor is waiting on 0001"
+
     def test_concurrent_callers_get_distinct_identifiers(self, tmp_path: Path):
         """Each caller takes its own sequence number, whatever the program's thread count.
 

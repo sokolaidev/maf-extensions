@@ -209,7 +209,8 @@ class DispatchResult:
 
     ``value_json`` is the tool's return value as JSON text — serialized here, host-side,
     because the size cap is enforced on what actually crosses the boundary and a transport
-    delivers exactly these bytes.  ``refusal`` is a sanitized sentence in the failure-ladder
+    delivers exactly these bytes, inside whatever framing it declared through
+    :meth:`HostToolRun.dispatch`'s ``framing_bytes`` and which was capped along with them.  ``refusal`` is a sanitized sentence in the failure-ladder
     style: fixed shape, no provider detail, safe to land in a transcript.  Exactly one of the
     two is set, and :attr:`ok` says which.
     """
@@ -551,7 +552,7 @@ class HostToolRun:
         return self._registry
 
     async def dispatch(
-        self, name: str, arguments: Mapping[str, Any] | None = None
+        self, name: str, arguments: Mapping[str, Any] | None = None, *, framing_bytes: int = 0
     ) -> DispatchResult:
         """Resolve, gate, validate, call and cap — the whole contract, at the one door.
 
@@ -559,7 +560,22 @@ class HostToolRun:
         probing names or replaying refusals is spending the budget the cap exists to bound.
         Exhaustion is a refusal rather than an exception so the guest program finishes and
         reports what it has, instead of dying mid-way with the reason lost.
+
+        Args:
+            name: The registered tool to call. Guest text — checked, never trusted.
+            arguments: Its keyword arguments, as the guest's JSON parsed.
+            framing_bytes: What the transport wraps around ``value_json`` before it crosses
+                the boundary — an envelope, a length prefix, nothing. Counted against both
+                ceilings and committed with the payload, because what a cap bounds is the
+                bytes that cross rather than the ones the host happened to serialize. A
+                transport that declares it here gets a refusal *before* the ledger is spent;
+                one that checks the total itself can only convert a committed success
+                afterwards, which leaves the run paying for a response nobody received.
         """
+        if framing_bytes < 0:
+            # A programming error in a transport, not a guest input, so it raises rather than
+            # refusing: a negative overhead would widen every ceiling below it by that much.
+            raise ValueError(f"framing_bytes must not be negative, got {framing_bytes}")
         self._dispatched += 1
         cap = self._registry.max_dispatches_per_run
         if self._dispatched > cap:
@@ -615,7 +631,9 @@ class HostToolRun:
                 f"Error: this run's delivered-response cap ({limits.max_files}) is "
                 "exhausted — finish with the results already delivered"
             )
-        if self._delivered_bytes + _SMALLEST_RESPONSE > limits.max_total_bytes:
+        # The smallest thing that could still cross is the smallest payload *plus* whatever
+        # the transport puts around it, so the framing decides exhaustion too.
+        if self._delivered_bytes + _SMALLEST_RESPONSE + framing_bytes > limits.max_total_bytes:
             return _refused(
                 f"Error: this run's response byte budget ({limits.max_total_bytes}) is "
                 "exhausted — finish with the results already delivered"
@@ -626,7 +644,7 @@ class HostToolRun:
         self._delivered += 1
         delivered = False
         try:
-            outcome = await self._deliver(name, func, provided, limits)
+            outcome = await self._deliver(name, func, provided, limits, framing_bytes)
             delivered = outcome.ok
             return outcome
         finally:
@@ -643,6 +661,7 @@ class HostToolRun:
         func: Callable[..., Any],
         provided: dict[str, Any],
         limits: TransferLimits,
+        framing_bytes: int,
     ) -> DispatchResult:
         """Validate, call, serialize and cap, with a response slot already reserved.
 
@@ -702,15 +721,20 @@ class HostToolRun:
             return _refused(
                 f"Error: host tool {name!r} returned a value that cannot be carried as JSON"
             )
-        if size > limits.max_bytes_per_file:
+        # The framing the transport declared is part of every number below. Checking the
+        # payload and committing the payload would leave the difference uncounted in both
+        # legs, and a transport left to police the shortfall itself can only do so after this
+        # method has already committed the success.
+        crossing = size + framing_bytes
+        if crossing > limits.max_bytes_per_file:
             return _refused(
-                f"Error: host tool {name!r}'s response is {size} bytes and the "
+                f"Error: host tool {name!r}'s response is {crossing} bytes and the "
                 f"per-response cap allows {limits.max_bytes_per_file}"
             )
-        if self._delivered_bytes + size > limits.max_total_bytes:
+        if self._delivered_bytes + crossing > limits.max_total_bytes:
             return _refused(
-                f"Error: delivering host tool {name!r}'s {size}-byte response would exceed "
+                f"Error: delivering host tool {name!r}'s {crossing}-byte response would exceed "
                 f"this run's total response cap ({limits.max_total_bytes} bytes)"
             )
-        self._delivered_bytes += size
+        self._delivered_bytes += crossing
         return DispatchResult(value_json=encoded)

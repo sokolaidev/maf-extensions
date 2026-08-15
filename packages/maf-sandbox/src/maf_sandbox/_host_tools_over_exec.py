@@ -80,6 +80,14 @@ _GUEST_POLL_SECONDS = 0.05
 #: What a timed-out run may spend reading the output it quotes in the failure.
 _FINAL_READ_GRACE = 2.0
 
+#: What the supervisor writes around a delivered value, and what that costs. The guest reads
+#: the response as an object so a refusal and a value are told apart by key rather than by
+#: shape. Measured from the framing rather than written down beside it, so the number a run's
+#: ceilings are charged cannot drift from the bytes actually written.
+_FRAME_OPEN = '{"value": '
+_FRAME_CLOSE = "}"
+_FRAMING_BYTES = len(_FRAME_OPEN.encode("utf-8")) + len(_FRAME_CLOSE.encode("utf-8"))
+
 
 @dataclass(frozen=True)
 class GuestRunLayout:
@@ -228,22 +236,28 @@ class HostToolError(RuntimeError):
 def call(name, **arguments):
     """Dispatch ``name`` with keyword ``arguments`` and return its value."""
     global _counter
-    with _counter_lock:
-        # Read-modify-write, and a program may be threaded: two callers taking the same
-        # identifier would write one request file and both read one answer as their own.
-        _counter += 1
-        identifier = "%04d" % _counter
     os.makedirs(_CALLS, exist_ok=True)
-    request = os.path.join(_CALLS, identifier + ".request.json")
+    # Allocated and published together, and the counter advances last. A program may be
+    # threaded, and two callers taking one identifier would write one request file and each
+    # read the other's answer as its own. Advancing before the file exists is the other half:
+    # the supervisor answers 0001 before it looks for 0002, so an identifier taken by a call
+    # that never publishes — an argument `json.dumps` cannot serialize, a failed write, either
+    # one caught by the program — is one the run then waits on until its deadline, and every
+    # later call times out behind it. Serializing publication costs nothing the supervisor was
+    # not already doing one request at a time.
+    with _counter_lock:
+        identifier = "%04d" % (_counter + 1)
+        request = os.path.join(_CALLS, identifier + ".request.json")
+        payload = json.dumps({{"id": identifier, "name": name, "arguments": arguments}})
+        # Written aside and renamed: `open` creates the file empty, and a supervisor polling
+        # in that window would read no JSON and answer this call with a refusal it can never
+        # retry. `os.replace` is atomic on every platform this runs on.
+        staged = request + ".part"
+        with open(staged, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+        os.replace(staged, request)
+        _counter += 1
     response = os.path.join(_CALLS, identifier + ".response.json")
-    payload = json.dumps({{"id": identifier, "name": name, "arguments": arguments}})
-    # Written aside and renamed: `open` creates the file empty, and a supervisor polling in
-    # that window would read no JSON and answer this call with a refusal it can never retry.
-    # `os.replace` is atomic on every platform this runs on.
-    staged = request + ".part"
-    with open(staged, "w", encoding="utf-8") as handle:
-        handle.write(payload)
-    os.replace(staged, request)
     deadline = time.monotonic() + _TIMEOUT
     while time.monotonic() < deadline:
         try:
@@ -460,30 +474,16 @@ async def _answer(run: HostToolRun, body: str | _TooLarge, identifier: str) -> s
     # the contract a *host* calls under, not what a transport can promise about a JSON blob.
     name = cast(str, request.get("name"))
     arguments = cast("Mapping[str, Any] | None", request.get("arguments"))
-    result = await run.dispatch(name, arguments)
+    # The framing is declared, not policed afterwards. `dispatch` charges the run for the
+    # payload *and* these bytes, so a value that only fits unwrapped is refused before the
+    # ledger is spent — checking it here could only turn a committed success into a refusal,
+    # leaving the run paying for a response that was never delivered.
+    result = await run.dispatch(name, arguments, framing_bytes=_FRAMING_BYTES)
     if not result.ok:
         return json.dumps({"refusal": result.refusal})
     # `value_json` is already the serialized return value, capped host-side. Splicing it in as
-    # text keeps those exact bytes rather than re-serializing a parse of them — but the framing
-    # around them crosses the boundary too, and `dispatch` counted only the payload. A value
-    # that fits the ceiling and then does not fit once wrapped is refused here rather than
-    # written over it.
-    wrapped = '{"value": ' + (result.value_json or "null") + "}"
-    ceiling = run.registry.response_limits.max_bytes_per_file
-    if len(wrapped.encode("utf-8")) > ceiling:
-        logger.warning(
-            "host tools: %s's response is %d bytes wrapped, over the %d-byte ceiling",
-            identifier,
-            len(wrapped.encode("utf-8")),
-            ceiling,
-        )
-        return json.dumps(
-            {
-                "refusal": "Error: this tool's response does not fit the transport once framed "
-                "— return less, or write it to a file the run collects instead"
-            }
-        )
-    return wrapped
+    # text keeps those exact bytes rather than re-serializing a parse of them.
+    return _FRAME_OPEN + (result.value_json or "null") + _FRAME_CLOSE
 
 
 class _TooLarge:
