@@ -27,6 +27,8 @@ second = await agent.run("Fix the faults those diagnostics point at. …", sessi
 
 Turn 2's prompt says "those diagnostics" and names none of them. It does not have to: the session carries turn 1's tool result, so the model is repairing faults a compiler reported rather than faults the prompt described. Drop `session=` and turn 2 becomes a stranger to turn 1 — it would have to validate again before it could fix anything, and the sample would be two unrelated turns that happen to run in order.
 
+It does name the *goal*: leave the file reporting nothing it did not report before. That is not scripting the repair — it says nothing about how — and without it a model can finish honestly while having traded one diagnostic for another. The first live run did exactly that, fixing `no-unused-params` by moving `environmentName` into a variable it then left unused, reporting the new `no-unused-vars` and stopping.
+
 ## What is checked is the file, not the reply
 
 A model will tell you it fixed something. The interesting question is whether the file moved.

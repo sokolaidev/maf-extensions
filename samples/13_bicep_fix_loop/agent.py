@@ -342,7 +342,9 @@ async def run() -> int:
 
         print("== Turn 2: fix, then validate again ==\n")
         second = await agent.run(
-            "Fix the faults those diagnostics point at, then validate again and say what changed.",
+            "Fix the faults those diagnostics point at, then validate again and say what "
+            "changed. Leave the file reporting nothing it did not report before — a repair "
+            "that trades one diagnostic for another has not finished.",
             session=session,
         )
         print(quoted(second.text))
