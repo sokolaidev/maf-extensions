@@ -20,6 +20,7 @@ import json
 import pathlib
 import posixpath
 import shlex
+import sys
 import threading
 import time
 import unicodedata
@@ -328,8 +329,14 @@ class TestTheSupervisorsOwnBounds:
         _run(guest, HostToolRun(_registry()), timeout=1.0)
         assert seen and seen[0] < 1.0, "the upload's time was handed back to `exec`"
 
-    def test_a_request_is_not_served_once_the_deadline_has_passed(self):
-        """Serving awaits the tool, so the check has to happen before it, not after."""
+    def test_a_request_read_inside_the_bound_is_not_dispatched_after_it(self, monkeypatch):
+        """The window a loop-top check cannot see: the read succeeds, then the bound passes.
+
+        Every transport call is bounded, so a request can only be read while budget remains —
+        and the clock can still cross the deadline between that read and the dispatch. The
+        check that matters therefore sits beside the dispatch, and the guest below moves the
+        clock at exactly that moment.
+        """
         dispatched: list[str] = []
 
         def counting(left: int, right: int) -> int:
@@ -340,14 +347,28 @@ class TestTheSupervisorsOwnBounds:
         registry = HostToolRegistry()
         registry.register(stamped(counting), name="add")
 
-        guest = _ScriptedGuest([("add", {"left": 1, "right": 1})], finish=False)
+        clock = {"now": 0.0}
+
+        class _TimePassesOnRead(_ScriptedGuest):
+            async def read_file(self, path: str, *, working_directory: str, max_bytes: int):
+                data = await super().read_file(
+                    path, working_directory=working_directory, max_bytes=max_bytes
+                )
+                if path.endswith(".request.json"):
+                    clock["now"] = 99.0
+                return data
+
+        module = sys.modules["maf_sandbox._host_tools_over_exec"]
+        monkeypatch.setattr(module.time, "monotonic", lambda: clock["now"])
+
+        guest = _TimePassesOnRead([("add", {"left": 1, "right": 1})], finish=False)
         with pytest.raises(TimeoutError):
             asyncio.run(
                 dispatch_over_exec(
-                    guest, HostToolRun(registry), _LAYOUT, timeout=0.0, poll_interval=0.0
+                    guest, HostToolRun(registry), _LAYOUT, timeout=1.0, poll_interval=0.0
                 )
             )
-        assert dispatched == [], "a dispatch was started after the run's own deadline"
+        assert dispatched == [], "a request read inside the bound was dispatched after it"
 
 
 class TestTheLauncher:
@@ -455,10 +476,8 @@ class TestTheGeneratedShim:
     def test_the_shim_publishes_a_request_only_once_it_is_whole(self, tmp_path: Path):
         """`open` creates the file empty; a poll in that window refuses a call that was fine.
 
-        Observed at the rename rather than by racing a watcher against it. A race here is a
-        race in the test as well as in the code: it passed, then failed once in a full-file
-        run and took the shim's five-minute patience to do it, which is a slow way to learn
-        nothing. Recording what `os.replace` was handed proves the same property every time.
+        Observed at the rename rather than by racing a watcher against it: what `os.replace`
+        was handed proves the same property without a timing-sensitive test to go with it.
         """
         source = host_tool_shim()
         module_path = tmp_path / SHIM_MODULE
@@ -515,9 +534,8 @@ class TestNamesThatAreNotWhatTheyLookLike:
     def test_two_names_that_normalise_together_produce_one_wrapper(self):
         """Counted over every wrapper the module defines, normalised \u2014 not over one spelling.
 
-        The first version asserted `source.count("def lookup(") == 1`, which holds whether or
-        not the second wrapper is emitted, because `def \uff4c\uff4f\uff4f\uff4b\uff55\uff50(` is a different substring.
-        It reported a fix that was not in the file at all.
+        Counting one spelling proves nothing: `def \uff4c\uff4f\uff4f\uff4b\uff55\uff50(` and `def lookup(` are different
+        substrings and the same global.
         """
         source = host_tool_shim({"lookup", "\uff4co\uff4fkup"})
         defined = [

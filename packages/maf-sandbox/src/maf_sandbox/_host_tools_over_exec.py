@@ -417,6 +417,12 @@ async def _serve_next_request(
     )
     if body is None:
         return served
+    if time.monotonic() >= deadline:
+        # Between reading the request and dispatching it, the bound can pass — the reads above
+        # are bounded, so they can succeed with a microsecond left. Checking at the top of the
+        # supervisor loop cannot see that window; this can. The request stays unanswered and
+        # unserved, so the id is not spent and a later run would find it again.
+        return served
     response_path = posixpath.join(layout.calls, f"{identifier}.response.json")
     answer = await _answer(run, body, identifier)
     await _within(
@@ -541,7 +547,11 @@ async def _final_output(sandbox: Sandbox, run: HostToolRun, layout: GuestRunLayo
                 deadline=time.monotonic() + _FINAL_READ_GRACE,
             )
         )
-    except TimeoutError:
+    except Exception as failure:  # noqa: BLE001 — a diagnostic must not replace the failure
+        # Not just `TimeoutError`: `stat_file` may raise anything a backend's client raises,
+        # and this runs while a `TimeoutError` is being constructed. Losing the run's own
+        # reason to a failure in reading the reason is the one outcome worth ruling out.
+        logger.warning("host tools: could not read the program's output: %s", error_detail(failure))
         return ""
 
 
