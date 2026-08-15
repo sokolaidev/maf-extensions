@@ -49,10 +49,11 @@ on:
         type: string
         default: ""
 
-# One billable run at a time; let a run in flight finish and dispose its sandbox rather than
-# cancelling it half-way and leaving the sandbox to the backend's auto-delete timer.
+# Key by package because GitHub retains only one pending run per concurrency group; a global group
+# silently drops checks from parallel package releases. Keep same-package runs serialized and never
+# cancel an in-flight run so it can dispose its sandbox itself (#325).
 concurrency:
-  group: verify-live
+  group: verify-live-${{ inputs.package || 'all' }}
   cancel-in-progress: false
 
 permissions:
@@ -169,9 +170,13 @@ jobs:
     # run's two billable sandboxes from being up at the same time. That trade is deliberately
     # flipped now: the jobs run concurrently, so for the few minutes both samples are live
     # there are two billable sandboxes at once, in exchange for the run taking one sample's
-    # time instead of two. The workflow-level `concurrency` block above still serialises whole
-    # RUNS of this workflow, so at most one *run* is ever in flight. A failure still names
-    # which sample broke.
+    # time instead of two. A failure still names which sample broke.
+    # Two per run is no longer two overall: the workflow-level `concurrency` block above is keyed
+    # per package, so a release train verifying several packages has several runs in flight and
+    # each may hold this pair. The ceiling is how many of a train's packages reach a billable job
+    # — three at most for this one, since only `maf-sandbox`, `maf-sandbox-acas` and
+    # `maf-sandbox-codeact` releases run it — for the twenty minutes the timeout allows. Total
+    # spend is unchanged by that; only the peak moved. (#325.)
     # Empty input (verify-everything) or a package sample-03 actually exercises: the router
     # (maf-sandbox) and the backend it runs on (maf-sandbox-acas) both affect it, and so does
     # its own package (maf-sandbox-codeact); a maf-sandbox-bicep or maf-sandbox-wslc release
