@@ -52,7 +52,7 @@ from ._error_detail import error_detail
 from ._protocol import EntryKind, ExecResult
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Mapping
+    from collections.abc import Awaitable
 
     from ._host_tools import HostToolRun
     from ._protocol import Sandbox
