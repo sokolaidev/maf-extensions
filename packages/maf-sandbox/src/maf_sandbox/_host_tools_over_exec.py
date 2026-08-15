@@ -86,6 +86,11 @@ _GUEST_POLL_SECONDS = 0.05
 #: What a timed-out run may spend reading the output it quotes in the failure.
 _FINAL_READ_GRACE = 2.0
 
+#: What writing one answer may spend when the run's own bound has already passed. Small, and
+#: not the run's remainder: a dispatch may finish after the deadline by design, and the answer
+#: to a tool that has already acted is worth one more round trip to record.
+_RESPONSE_WRITE_GRACE = 2.0
+
 #: What the supervisor writes around a delivered value, and what that costs. The guest reads
 #: the response as an object so a refusal and a value are told apart by key rather than by
 #: shape. Measured from the framing rather than written down beside it, so the number a run's
@@ -419,6 +424,18 @@ async def dispatch_over_exec(
     legitimate rather than impossible, returning the response slot when its call is
     cancelled.
     """
+    # Both bounds checked before the launcher starts, because a detached program outlives a
+    # supervisor that raises. `inf` is the one that matters and the one a range check misses:
+    # it satisfies `> 0` and then removes the whole-run bound this function's docstring
+    # promises, leaving a wedged guest to run until something else stops it. A poll interval
+    # below zero — or `nan`, which `min` propagates — turns the wait between polls into no
+    # wait at all, and a remote backend into a stat loop as fast as the network allows.
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError(f"timeout must be a finite positive number of seconds, not {timeout}")
+    if not math.isfinite(poll_interval) or poll_interval < 0:
+        raise ValueError(
+            f"poll_interval must be a finite number of seconds, zero or more, not {poll_interval}"
+        )
     # Before `exec`, not after: the bound is on the whole program, and a launcher that takes
     # most of it would otherwise hand supervision a second full timeout to spend.
     deadline = time.monotonic() + timeout
@@ -530,8 +547,15 @@ async def _serve_next_request(
         )
         return served + 1
     response_path = posixpath.join(layout.calls, f"{identifier}.response.json")
+    # Its own floor, not the run's remainder. A dispatch is allowed to finish after the
+    # deadline — that is the whole no-cancellation policy — and a tool that starts with a
+    # millisecond left and returns a second later would otherwise have its answer thrown away
+    # by a write bounded at zero: the effect happened, the record did not. Enforcing the bound
+    # on the record while exempting the effect is the wrong half of the pair to keep.
     await _within(
-        deadline, f"write the answer to {identifier}", sandbox.write_file(response_path, answer)
+        max(deadline, time.monotonic() + _RESPONSE_WRITE_GRACE),
+        f"write the answer to {identifier}",
+        sandbox.write_file(response_path, answer),
     )
     return served + 1
 
@@ -664,6 +688,19 @@ async def _read_if_present(
     except Exception as failure:  # noqa: BLE001 — a read that fails is a poll that missed
         logger.warning("host tools: reading %s failed: %s", path, error_detail(failure))
         return None
+    if len(raw) > cap:
+        # The pull surface's own rule, and `collect_outputs` keeps it too: `max_bytes` is what
+        # a backend was asked for, not what it is guaranteed to have honoured — one whose SDK
+        # buffers the whole response can only refuse after the fact. The stat that came before
+        # is a second-hand number and the file may have grown since. Counted here, so nothing
+        # over the cap is decoded, let alone dispatched.
+        logger.warning(
+            "host tools: %s returned %d bytes against a %d cap, refusing it",
+            posixpath.basename(path),
+            len(raw),
+            cap,
+        )
+        return _TooLarge()
     if not exact:
         return raw.decode("utf-8", errors="replace")
     try:
@@ -712,18 +749,10 @@ def _as_text(value: str | _TooLarge | _NotText | None) -> str:
 def _serving_bound(run: HostToolRun) -> int:
     """How many requests this supervisor will read before it stops reading them.
 
-    The dispatch cap bounds what one run may spend at the door, and past it every call is
-    refused — but a refusal is still a stat, a read and a write, and on a remote backend that
-    is three round trips. A guest that catches :class:`HostToolError` and loops, or writes
-    malformed requests that never reach :meth:`~maf_sandbox.HostToolRun.dispatch` at all and
-    so never spend the cap, would otherwise keep the supervisor paying for them until the
-    deadline — and leave a response file behind for each.
-
-    One more than the cap, because this transport serves one outstanding call at a time: a
-    single refusal is all it takes for the guest to be told the cap is gone, and a guest that
-    ignores it has spent its whole allowance. Past that the supervisor stops reading requests
-    and only waits for the program to end, so a still-calling guest gets the timeout its own
-    shim applies rather than an answer.
+    Every request, not every dispatch: a malformed one is answered before the door and so
+    never spends the cap that is meant to bound this. One more than the cap because the
+    transport serves one outstanding call at a time, which makes a single refusal enough to
+    tell the guest the cap is gone. Past it the supervisor only waits for the program to end.
     """
     return run.registry.max_dispatches_per_run + 1
 

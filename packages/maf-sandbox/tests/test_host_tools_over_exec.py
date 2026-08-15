@@ -824,6 +824,84 @@ class TestTheResponseCeiling:
         assert "byte budget" in guest.answers[1]["refusal"]
 
 
+class TestWhatSurvivesTheDeadline:
+    def test_a_tool_that_finishes_late_still_has_its_answer_written(self):
+        """The dispatch is allowed to overrun the bound; its record has to be allowed too.
+
+        A tool that starts with a moment left and returns after the deadline has already
+        acted. Bounding the response write at the run's remainder — zero, by then — throws
+        the answer away and leaves exactly the effect-without-a-record this transport refuses
+        to cause by cancelling.
+        """
+
+        @sandbox_tool(source=SourceIntegrity.TRUSTED, sink=None, identity=Identity.APP)
+        async def slow() -> str:
+            await asyncio.sleep(0.3)
+            return "late"
+
+        registry = HostToolRegistry()
+        registry.register(slow, name="slow")
+        guest = _ScriptedGuest([("slow", {})], finish=False)
+
+        with pytest.raises(TimeoutError):
+            _run(guest, HostToolRun(registry), timeout=0.1)
+
+        written = guest.files.get(posixpath.join(_LAYOUT.calls, "0001.response.json"))
+        assert written is not None, "the answer to a tool that had already acted was discarded"
+        assert json.loads(written)["value"] == "late"
+
+
+class TestWhatABackendMayHaveIgnored:
+    def test_a_read_over_its_cap_is_refused_rather_than_parsed(self):
+        """`max_bytes` is what a backend was asked for, not what it is known to have honoured.
+
+        The protocol says so where `read_file` is defined — a backend whose SDK buffers the
+        whole response can only refuse after the fact, "which is why the caller re-counts what
+        actually arrived" — and `collect_outputs` counts. This is the third caller.
+        """
+
+        class _OverCap(_ScriptedGuest):
+            async def read_file(self, path: str, *, working_directory: str, max_bytes: int):
+                content = self.files[self._resolved(path, working_directory)]
+                del max_bytes  # a backend that buffered first and returns it all anyway
+                return content
+
+        class _Unstinting(_OverCap):
+            async def stat_file(self, path: str, *, working_directory: str):
+                entry = await super().stat_file(path, working_directory=working_directory)
+                if entry is not None and entry.path.endswith("request.json"):
+                    # A stat that under-reports, which is the case the recount is for.
+                    return SandboxEntry(path=entry.path, kind=entry.kind, size_bytes=1)
+                return entry
+
+        limits = TransferLimits(max_bytes_per_file=48, max_total_bytes=4096, max_files=4)
+        guest = _Unstinting([("add", {"left": 1, "right": 1})], request_bytes=200)
+        _run(guest, HostToolRun(_registry(response_limits=limits)))
+        assert "larger than the host will read" in guest.answers[0]["refusal"]
+
+
+class TestTheArgumentsTheSupervisorTakes:
+    @pytest.mark.parametrize("bound", [float("inf"), float("nan"), 0.0, -1.0])
+    def test_a_run_bound_that_is_not_finite_and_positive_is_refused(self, bound: float):
+        """`inf` passes every range check and then removes the bound the docstring promises."""
+        with pytest.raises(ValueError, match="timeout"):
+            _run(_ScriptedGuest([]), HostToolRun(_registry()), timeout=bound)
+
+    @pytest.mark.parametrize("interval", [float("nan"), -1.0])
+    def test_a_poll_interval_that_is_not_finite_and_positive_is_refused(self, interval: float):
+        """Below zero, or `nan` which `min` propagates: the wait between polls stops waiting."""
+        with pytest.raises(ValueError, match="poll_interval"):
+            asyncio.run(
+                dispatch_over_exec(
+                    _ScriptedGuest([]),
+                    HostToolRun(_registry()),
+                    _LAYOUT,
+                    timeout=1.0,
+                    poll_interval=interval,
+                )
+            )
+
+
 class TestWhatTheSupervisorStepsOver:
     def test_an_abandoned_number_is_not_answered_and_does_not_stall_the_next(self):
         """The marker exists so a hole needs no third call to fill it.
