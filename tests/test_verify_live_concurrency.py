@@ -1,17 +1,4 @@
-"""The live check's concurrency group is keyed per package, and stays that way.
-
-A GitHub concurrency group holds one *pending* run, not a queue: when a third run enters, the one
-already waiting is cancelled and replaced. `publish-packages.yml` is deliberately parallel across
-packages — its own group is per-tag — so a batch release dispatches one live check per package, and
-under a single global `verify-live` group those calls contended. A four-package train ran roughly
-two of its four checks, each loss surfacing as a cancelled called workflow, which reads as a broken
-release rather than as a verification that was skipped (#325).
-
-That is wiring, and its failure is silent in the worst way: nothing goes red, the checks simply stop
-happening, and the run that was displaced never executes a step to say so. Un-keying the group again
-— by editing it back to a constant, or by dropping the interpolation while refactoring — would be
-invisible until the next multi-package release. These pin the shape instead.
-"""
+"""Pin per-package live-check concurrency so batch releases cannot silently drop checks (#325)."""
 
 from __future__ import annotations
 
