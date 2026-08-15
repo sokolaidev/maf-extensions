@@ -25,7 +25,11 @@ from pathlib import Path
 #: same stream, so an unmarked search finds a reply quoting "containers after turn 2: 2" before
 #: the sample's own count — and that fails a healthy run. `MEASURED` in the sample writes the
 #: tag; nothing else in the output carries it.
-_M = r"^  \[measured\] "
+#:
+#: The tag matches case-sensitively — `(?-i:…)` — while the phrase after it keeps `_F`'s
+#: `IGNORECASE`. The sample emits one fixed spelling, so accepting others only widens what has
+#: to be sanitized, and a reader broader than its sanitizer is a hole rather than tolerance.
+_M = r"^  (?-i:\[measured\]) "
 _F = re.MULTILINE | re.IGNORECASE
 
 #: The two faults the sample's brief implies, by the rule id the compiler reports for each.

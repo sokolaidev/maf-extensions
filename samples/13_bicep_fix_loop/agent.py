@@ -93,7 +93,8 @@ WORK_PRODUCT = (
 #: output. Here the model's replies and these measurements share one stream that the live check
 #: parses, so a reply quoting "containers after turn 2: 2" is otherwise indistinguishable from
 #: the count. It also tells a human reading the log which lines are the harness speaking.
-MEASURED = "  [measured] "
+_TAG = "[measured]"
+MEASURED = f"  {_TAG} "
 
 #: Built from `images/bicep-sandbox` — the same guest samples 02 and 05 use, so the compiler and
 #: the lint rule set are theirs and the diagnostics below are comparable with both.
@@ -184,11 +185,16 @@ def quoted(text: str) -> str:
 
     `MEASURED` is what tells the live check which numbers this program vouches for, and the
     model writes into the same stream. Nothing puts the tag in its context, so a collision is
-    improbable — but a tag is worth exactly what it excludes, and one pass over the reply makes
-    that structural instead of statistical.
+    improbable — but a tag is worth exactly what it excludes, and one pass makes that
+    structural instead of statistical.
+
+    Matched case-insensitively on purpose: a sanitizer narrower than its reader is a hole, and
+    the checker is deliberately lax about everything except the tag's own spelling. Applied to
+    the compiler's output as well as the model's replies — Bicep echoes source text in messages
+    like `BCP037`, and a `\n` escape inside an identifier puts a real newline in one.
     """
     return "\n".join(
-        f"> {line.lstrip()}" if line.lstrip().startswith(MEASURED.strip()) else line
+        f"> {line.lstrip()}" if line.lstrip().lower().startswith(_TAG.lower()) else line
         for line in text.splitlines()
     )
 
@@ -228,19 +234,6 @@ def build_client() -> tuple[OpenAIChatCompletionClient, object | None] | None:
 
 async def run() -> int:
     """Wire the stack once, run two turns through one session, and report what moved."""
-    # Every count below is "how many containers exist for this thread", so one left by a run
-    # that was killed before it disposed makes all four read 2 and the footer read 1 left. The
-    # failure is honest but unreadable, and CI never sees it — say what happened instead.
-    stale = containers()
-    if stale:
-        print(
-            f"{stale} container(s) already exist for {SCOPE}/{THREAD_ID}, left by a run that "
-            f"did not dispose. Remove them first:\n"
-            f"  docker rm -f $(docker ps -aq --filter {_LABEL_THREAD}={THREAD_ID})",
-            file=sys.stderr,
-        )
-        return 2
-
     # Empty on purpose: `main.bicep` does not exist until turn 1 writes it. Nothing here can
     # smuggle in the file the sample is about, which is what "the model authored it" has to mean.
     store = InMemoryAgentFileStore()
@@ -251,6 +244,20 @@ async def run() -> int:
     tools = make_bicep_tools(router, store, AGENT_DIR, context, image=IMAGE)
     if not tools:
         print("No sandbox backend: bicep_validate was not attached.", file=sys.stderr)
+        return 2
+
+    # After the line above, so a host with no engine gets that message rather than whatever
+    # `docker ps` failed with. Every count below is "containers for this thread", so one left
+    # by a run that was killed before disposing makes all four read 2 and the footer read 1
+    # left behind — honest, and unreadable. Say what happened instead.
+    stale = containers()
+    if stale:
+        print(
+            f"{stale} container(s) already exist for {SCOPE}/{THREAD_ID}, left by a run that "
+            f"did not dispose. Remove them first:\n"
+            f"  docker rm -f $(docker ps -aq --filter label={_LABEL_THREAD}={THREAD_ID})",
+            file=sys.stderr,
+        )
         return 2
     # `make_bicep_tools` returns exactly `[bicep_validate]`. Bound here because this sample is
     # the one that also calls it directly, from the program rather than through the model.
@@ -315,7 +322,7 @@ async def run() -> int:
         as_authored = faults_left(baseline)
 
         print("== What the compiler says about the file turn 1 wrote ==\n")
-        print("\n".join(f"  {line}" for line in baseline.splitlines()))
+        print(quoted("\n".join(f"  {line}" for line in baseline.splitlines())))
         print(
             f"\n{MEASURED}tracked faults in the authored file: {len(as_authored)} — "
             f"{'; '.join(as_authored) or 'none'}"
@@ -342,7 +349,7 @@ async def run() -> int:
         verdict = str(
             await bicep_validate.invoke(arguments={"files": [BICEP_FILE]}, skip_parsing=True)
         )
-        print("\n".join(f"  {line}" for line in verdict.splitlines()))
+        print(quoted("\n".join(f"  {line}" for line in verdict.splitlines())))
         print(f"\n{MEASURED}containers after the check: {containers()}\n")
 
         # The work product, and the two questions the compiler cannot answer: did turn 1 write a

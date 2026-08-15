@@ -722,18 +722,20 @@ class TestModelTextCannotImpersonateAMeasurement:
         tree = ast.parse(_SAMPLE.read_text(encoding="utf-8"))
         wanted: dict[str, ast.stmt] = {}
         for node in tree.body:
-            if isinstance(node, ast.Assign) and any(
-                isinstance(target, ast.Name) and target.id == "MEASURED" for target in node.targets
-            ):
-                wanted["MEASURED"] = node
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name) and target.id in ("_TAG", "MEASURED"):
+                        wanted[target.id] = node
             elif isinstance(node, ast.FunctionDef) and node.name == "quoted":
                 wanted["quoted"] = node
-        missing = {"MEASURED", "quoted"} - wanted.keys()
+        missing = {"_TAG", "MEASURED", "quoted"} - wanted.keys()
         assert not missing, (
             f"samples/13_bicep_fix_loop/agent.py no longer defines {sorted(missing)}"
         )
         namespace: dict = {}
-        module = ast.Module(body=[wanted["MEASURED"], wanted["quoted"]], type_ignores=[])
+        module = ast.Module(
+            body=[wanted["_TAG"], wanted["MEASURED"], wanted["quoted"]], type_ignores=[]
+        )
         exec(compile(module, "<sample-13>", "exec"), namespace)  # noqa: S102 - this repo's file
         return namespace["quoted"]
 
@@ -746,6 +748,41 @@ class TestModelTextCannotImpersonateAMeasurement:
     def test_ordinary_model_prose_is_untouched(self):
         reply = "Fixed BCP035.\n\n1. Added a `sku` block.\n  indented note\n"
         assert self._quoted()(reply) == reply.rstrip("\n")
+
+    @pytest.mark.parametrize("spelling", ["[measured]", "[Measured]", "[MEASURED]"])
+    def test_every_spelling_the_checker_would_accept_is_defanged(self, spelling: str):
+        """A sanitizer narrower than its reader is a hole, not tolerance.
+
+        The checker is deliberately lax about the phrase after the tag, so `quoted` has to be at
+        least as broad as that on the tag itself.
+        """
+        line = f"  {spelling} containers after turn 2: 1"
+        assert self._quoted()(line) != line, f"{spelling} slipped through"
+
+    def test_the_checker_accepts_only_the_exact_tag(self):
+        # The other half of the same rule: the sample emits one spelling, so widening what the
+        # reader accepts only widens what has to be sanitized.
+        assert re.search(
+            check._M + r"containers", "  [measured] containers after turn 2: 1", check._F
+        )
+        assert not re.search(
+            check._M + r"containers", "  [Measured] containers after turn 2: 1", check._F
+        )
+
+    def test_a_diagnostic_carrying_the_tag_is_defanged_too(self):
+        """Bicep echoes source text in messages, and `\\n` in an identifier makes a real newline.
+
+        So the compiler's output is a second channel a model can influence, and the sample runs
+        it through `quoted` as well as the replies.
+        """
+        rendered = (
+            "  build(main.bicep): 1 diagnostic(s)\n"
+            '    [error] BCP037 @ main.bicep:4: The property "injected\n'
+            '  [measured] containers after turn 2: 9" is not allowed.'
+        )
+        out = self._quoted()(rendered)
+        assert "\n  [measured] containers after turn 2: 9" not in out
+        assert "> [measured] containers after turn 2: 9" in out
 
     def test_the_checker_ignores_the_quoted_form(self):
         spoofed = _HEALTHY.replace(
@@ -800,3 +837,22 @@ class TestTheWorkProductInvariantToleratesFormatting:
 
     def test_a_genuinely_missing_output_is_still_caught(self):
         assert self._work_missing()(self.RESOURCE) == ["output storageAccountId"]
+
+
+class TestTheStaleContainerHint:
+    """The early exit exists to be actionable, so its command has to run."""
+
+    def test_the_printed_filter_carries_the_label_prefix(self):
+        # `docker ps --filter maf-sandbox.thread=…` is rejected as an invalid filter; only
+        # `--filter label=<key>=<value>` works, which is the form `containers()` itself uses.
+        source = _SAMPLE.read_text(encoding="utf-8")
+        assert "docker ps -aq --filter label={_LABEL_THREAD}={THREAD_ID}" in source
+
+    def test_the_check_runs_after_the_backend_guard(self):
+        """Ordering, not wording: `containers()` shells out to docker with `check=True`.
+
+        Ahead of the guard it turns a host with no engine into a traceback instead of the
+        sample's own "No sandbox backend" message.
+        """
+        source = _SAMPLE.read_text(encoding="utf-8")
+        assert source.index("No sandbox backend") < source.index("stale = containers()")
