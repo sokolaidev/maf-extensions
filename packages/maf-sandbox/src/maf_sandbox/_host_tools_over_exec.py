@@ -129,9 +129,11 @@ def guest_run_layout(run_directory: str, *, program: str = "program.py") -> Gues
 
     A kind writes ``program`` and :attr:`GuestRunLayout.shim`; everything else is written here.
     ``run_directory`` must be fresh per run — see this module's docstring on why nothing
-    deletes — and absolute, and ``program`` must be a plain file name.
+    deletes — absolute, and spelled the way the pull calls will resolve it, which is
+    :func:`~maf_sandbox.paths.confine_guest_path`'s grammar and refuses a backslash.
+    ``program`` must be a plain file name, and not one the layout already uses.
 
-    Both are checked rather than assumed, because the ways they fail are quiet.
+    All of it is checked rather than assumed, because the ways they fail are quiet.
     :class:`GuestRunLayout` says every path is absolute and inside one directory, and the pull
     calls take it at its word: a relative run directory is joined against itself by
     ``confine_guest_path`` and every request lands somewhere the supervisor is not looking.
@@ -143,11 +145,8 @@ def guest_run_layout(run_directory: str, *, program: str = "program.py") -> Gues
             f"run_directory must be an absolute guest path, not {run_directory!r}: every path "
             "in the layout is joined onto it and resolved against it again by the pull calls"
         )
-    # The backends' own grammar rather than a second copy of it: every pull call resolves
-    # through `confine_guest_path`, which refuses a backslash. Passing the directory as both
-    # arguments tests the spelling and nothing else — containment against itself is trivially
-    # true — so a directory that would fail on the first `stat_file` fails here instead, with
-    # no launcher started and no detached program to outlive the failure.
+    # Twice on purpose: containment against itself is trivially true, so only the spelling
+    # is under test.
     confine_guest_path(run_directory, run_directory)
     if program != posixpath.basename(program) or program in {"", ".", ".."}:
         raise ValueError(
@@ -394,8 +393,15 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
     # would read an empty marker as *finished*, discard the run and report failure. `mv` within
     # one directory is atomic on any POSIX filesystem.
     staged = f"{layout.exit_code}.part"
+    # Unbuffered, because the output file is the timeout's only witness. CPython block-buffers
+    # stdout when it is not a terminal, and a redirection to a file is not one — so a program
+    # that prints and then wedges reaches the deadline with its output still in its own memory,
+    # and "Output so far" quotes an empty file. Through the environment rather than `-u` so it
+    # survives an `interpreter` spelled with arguments of its own, and costs nothing to a
+    # program that is not Python.
     inner = (
-        f"{_quote(interpreter)} {_quote(layout.program)} > {_quote(layout.output)} 2>&1; "
+        f"PYTHONUNBUFFERED=1 {_quote(interpreter)} {_quote(layout.program)} "
+        f"> {_quote(layout.output)} 2>&1; "
         f"printf %s $? > {_quote(staged)}; mv {_quote(staged)} {_quote(layout.exit_code)}"
     )
     return (

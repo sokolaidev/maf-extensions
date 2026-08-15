@@ -20,6 +20,7 @@ import json
 import pathlib
 import posixpath
 import shlex
+import shutil
 import subprocess
 import sys
 import threading
@@ -35,6 +36,7 @@ from maf_sandbox import (
     SHIM_MODULE,
     EntryKind,
     ExecResult,
+    GuestRunLayout,
     HostToolRegistry,
     HostToolRun,
     Identity,
@@ -413,11 +415,68 @@ class TestTheLauncher:
         assert layout.output in tokens[3]
 
     def test_the_interpreter_is_a_shell_word_like_every_path(self):
-        """An interpreter path with a space is split unless it is quoted like the rest."""
+        """An interpreter path with a space is split unless it is quoted like the rest.
+
+        The environment assignment in front of it is why this reads the second word: `sh`
+        takes `NAME=value cmd` as one command with one variable set for it.
+        """
         layout = guest_run_layout("/maf-sandbox/work/run-1")
         command = launcher_script(layout, "/opt/py 3.12/bin/python3").splitlines()[-1]
         inner = shlex.split(command.removesuffix(" &"))[3]
-        assert shlex.split(inner)[0] == "/opt/py 3.12/bin/python3"
+        assert shlex.split(inner)[:2] == ["PYTHONUNBUFFERED=1", "/opt/py 3.12/bin/python3"]
+
+
+class TestTheLauncherAgainstARealShell:
+    """The launcher is a shell script, and some of what it promises only a shell can show."""
+
+    @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+    def test_a_program_that_prints_and_then_hangs_leaves_its_output_readable(self, tmp_path: Path):
+        """The timeout quotes this file, so what has not reached it does not exist.
+
+        CPython block-buffers stdout when it is not a terminal, and the launcher redirects to a
+        file. A few hundred bytes printed by a program that then wedges sit in its own memory
+        until it exits — which, being wedged, it does not. The supervisor's "Output so far"
+        would quote an empty file at exactly the moment a reader most needs it.
+
+        A real `sh` and a real interpreter, because buffering is the runtime's behaviour and a
+        double cannot have it.
+        """
+        directory = tmp_path.as_posix()
+        layout = GuestRunLayout(
+            directory=directory,
+            program=f"{directory}/program.py",
+            shim=f"{directory}/{SHIM_MODULE}",
+            launcher=f"{directory}/run_program.sh",
+            calls=f"{directory}/{CALLS_DIRECTORY}",
+            output=f"{directory}/program_output.txt",
+            exit_code=f"{directory}/program_exit_code",
+        )
+        pathlib.Path(layout.program).write_text(
+            "\n".join(("import time", "print('the part before the wedge')", "time.sleep(30)", "")),
+            encoding="utf-8",
+        )
+        pathlib.Path(layout.launcher).write_text(
+            launcher_script(layout, sys.executable.replace("\\", "/")), encoding="utf-8"
+        )
+
+        started = subprocess.Popen(  # noqa: S603 - a shell script this test just wrote
+            [shutil.which("sh") or "sh", layout.launcher], stdout=subprocess.DEVNULL
+        )
+        try:
+            output = pathlib.Path(layout.output)
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                if output.exists() and output.read_text(encoding="utf-8").strip():
+                    break
+                time.sleep(0.05)
+            assert output.exists(), "the launcher never created the output file"
+            assert "the part before the wedge" in output.read_text(encoding="utf-8"), (
+                "the program's output was still in its own buffer when the deadline would have "
+                "quoted this file"
+            )
+        finally:
+            started.kill()
+            started.wait(timeout=10)
 
 
 class TestWhatAWrapperCanTakeAway:
