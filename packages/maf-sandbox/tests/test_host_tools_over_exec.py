@@ -413,6 +413,36 @@ class TestTheLauncher:
         assert shlex.split(inner)[0] == "/opt/py 3.12/bin/python3"
 
 
+class TestWhatAWrapperCanTakeAway:
+    @staticmethod
+    def _wrappers(names: set[str]) -> set[str]:
+        """The tool wrappers in the generated module, told apart from the shim's own defs.
+
+        Parsed rather than searched: the shim defines `call` itself, so a substring test
+        cannot tell a wrapper named `call` from the machinery it would have replaced.
+        """
+        tree = ast.parse(host_tool_shim(names))
+        defined = {node.name for node in tree.body if isinstance(node, ast.FunctionDef)}
+        return defined - {"call", "_claim", "_publish"}
+
+    def test_a_tool_named_after_one_of_the_shims_locals_still_gets_a_wrapper(self):
+        """A wrapper is a module-level `def`, so it cannot reach a parameter or a temporary.
+
+        `name`, `request` and `payload` are the shim's own locals and perfectly good tool
+        names. Reserving them costs a tool its convenience function and buys nothing.
+        """
+        locals_of_the_shim = {"name", "request", "payload", "identifier", "response"}
+        assert self._wrappers(locals_of_the_shim) == locals_of_the_shim
+
+    def test_a_tool_named_after_something_a_wrapper_would_replace_gets_none(self):
+        """Module bindings, and the builtins the shim reaches for from inside them.
+
+        `open` is the one that would hurt: `call` uses it to stage a request, so a wrapper
+        by that name breaks every dispatch rather than only its own.
+        """
+        assert self._wrappers({"call", "json", "os", "open", "_claim", "_CALLS", "int"}) == set()
+
+
 class TestTheGuestsPatience:
     def test_the_call_timeout_is_the_callers_to_set(self):
         """It must not be shorter than the run's bound, so a long run has to be able to say so.
@@ -423,11 +453,27 @@ class TestTheGuestsPatience:
         assert "_TIMEOUT = 900.0" in host_tool_shim(call_timeout=900.0)
         assert "_TIMEOUT = 300.0" in host_tool_shim(), "the default moved without the docs"
 
-    @pytest.mark.parametrize("patience", [0.0, -1.0])
-    def test_a_guest_with_no_patience_is_refused(self, patience: float):
-        """Zero would raise `HostToolError` before the supervisor's first poll."""
+    @pytest.mark.parametrize("patience", [0.0, -1.0, float("nan"), float("inf")])
+    def test_a_patience_that_is_not_finite_and_positive_is_refused(self, patience: float):
+        """Zero gives up before the supervisor's first poll; `nan` and `inf` never start.
+
+        Neither is caught by a range check — both are `<= 0`-false — and formatting either
+        into the source emits a bare `nan` or `inf`, which is not a name the guest's module
+        can resolve. The shim would fail at import, before any call is made.
+        """
         with pytest.raises(ValueError, match="call_timeout"):
             host_tool_shim(call_timeout=patience)
+
+    def test_the_generated_shim_imports_at_every_allowed_patience(self, tmp_path: Path):
+        """The check above is only worth having if what it admits actually loads."""
+        for index, patience in enumerate((0.001, 1.0, 86_400.0)):
+            module_path = tmp_path / f"patience_{index}.py"
+            module_path.write_text(host_tool_shim(call_timeout=patience), encoding="utf-8")
+            spec = importlib.util.spec_from_file_location(f"patience_{index}", module_path)
+            assert spec and spec.loader
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            assert module._TIMEOUT == patience
 
 
 class TestTheGeneratedShim:

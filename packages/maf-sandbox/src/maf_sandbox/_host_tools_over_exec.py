@@ -39,12 +39,13 @@ Three costs, named here rather than discovered later:
 
 from __future__ import annotations
 
-import ast
 import asyncio
 import json
 import keyword
 import logging
+import math
 import posixpath
+import symtable
 import time
 import unicodedata
 from dataclasses import dataclass
@@ -168,8 +169,13 @@ def host_tool_shim(
         f"    return call({name!r}, **arguments)"
         for name in canonical.values()
     )
-    if call_timeout <= 0:
-        raise ValueError(f"call_timeout must be positive, not {call_timeout}")
+    if not math.isfinite(call_timeout) or call_timeout <= 0:
+        # Finite as well as positive: `nan` and `inf` are both `<= 0`-false, and formatting
+        # either into the source emits a bare `nan`/`inf`, which is not a name the guest's
+        # module can resolve. The shim would fail at *import*, before any call is made.
+        raise ValueError(
+            f"call_timeout must be a finite positive number of seconds, not {call_timeout}"
+        )
     return _SHIM_SOURCE.format(
         calls=CALLS_DIRECTORY,
         timeout=call_timeout,
@@ -179,37 +185,30 @@ def host_tool_shim(
 
 
 def _shim_globals() -> frozenset[str]:
-    """Every global name the generated shim reads, taken from the shim itself.
+    """Every name a generated wrapper would take away from the shim, read off the shim itself.
 
     Derived rather than listed, so a name the shim starts using is reserved without anyone
-    remembering to add it. A wrapper that shadows one replaces machinery every dispatch needs.
+    remembering to add it. A wrapper is a module-level ``def``, so what it can take is a
+    module-level binding — ``call``, ``_claim``, ``os`` — or a builtin the shim reaches for
+    from inside one, of which ``open`` is the one that would hurt.
+
+    Scoped rather than walked. Every ``Name`` node in the tree also catches the shim's own
+    parameters and temporaries — ``name``, ``request``, ``payload`` — which no wrapper can
+    reach and which are perfectly good tool names; reserving those costs a tool its
+    convenience function for nothing. :mod:`symtable` answers the question actually being
+    asked, which is what each name is *bound to* in the scope it appears in.
     """
-    tree = ast.parse(_SHIM_SOURCE.format(calls="", timeout=0.0, poll=0.0, wrappers=""))
-    return (
-        frozenset(
-            node.id
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
-        )
-        | frozenset(
-            node.name
-            for node in ast.walk(tree)
-            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef)
-        )
-        | frozenset(
-            alias.asname or alias.name
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Import | ast.ImportFrom)
-            for alias in node.names
-        )
-        | frozenset(
-            target.id
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Assign)
-            for target in node.targets
-            if isinstance(target, ast.Name)
-        )
-    )
+    source = _SHIM_SOURCE.format(calls="", timeout=0.0, poll=0.0, wrappers="")
+    scope = symtable.symtable(source, SHIM_MODULE, "exec")
+    # Module scope holds every top-level binding and reference; a nested scope contributes
+    # only what it resolves *outward* — a global or a builtin — never its own locals.
+    reserved = {symbol.get_name() for symbol in scope.get_symbols()}
+    pending = list(scope.get_children())
+    while pending:
+        inner = pending.pop()
+        reserved.update(symbol.get_name() for symbol in inner.get_symbols() if symbol.is_global())
+        pending.extend(inner.get_children())
+    return frozenset(reserved)
 
 
 def _spellable(name: str) -> bool:
@@ -403,12 +402,22 @@ async def dispatch_over_exec(
             that point is in the message; the process may still be running, and disposing of
             the sandbox is what stops it.
 
-    **A dispatch already under way is never cancelled**, and the deadline is checked before
-    starting one rather than during it. A dispatched body runs in the host process and may
-    have acted already — written a row, sent a message — so cancelling it mid-effect would
-    leave the effect and lose the record of it. The cost is stated rather than hidden: a tool
-    that blocks forever holds the supervisor past ``timeout``, and bounding *that* belongs to
-    the host tool, which is the only code that knows what it is waiting on.
+    **This supervisor never cancels a dispatch already under way**, and the deadline is
+    checked before starting one rather than during it. A dispatched body runs in the host
+    process and may have acted already — written a row, sent a message — so cancelling it
+    mid-effect would leave the effect and lose the record of it. The cost is stated rather
+    than hidden: a tool that blocks forever holds the supervisor past ``timeout``, and
+    bounding *that* belongs to the host tool, which is the only code that knows what it is
+    waiting on.
+
+    The promise is about this function's own bound and reaches no further. A caller that
+    cancels the coroutine — an outer ``asyncio.wait_for``, a cancelled task — cancels
+    whatever is in flight, a dispatch included, and can leave a tool's effect half done with
+    no record written. Shielding it would trade that for a worse one, since a host tool is
+    deliberately unbounded here: cancellation would then take arbitrarily long to be
+    honoured, or never. :meth:`~maf_sandbox.HostToolRun.dispatch` treats the outcome as
+    legitimate rather than impossible, returning the response slot when its call is
+    cancelled.
     """
     # Before `exec`, not after: the bound is on the whole program, and a launcher that takes
     # most of it would otherwise hand supervision a second full timeout to spend.
