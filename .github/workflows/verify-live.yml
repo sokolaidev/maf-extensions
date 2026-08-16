@@ -3,6 +3,12 @@ name: Verify (live)
 # Installs the PUBLISHED wheels into a clean environment and runs the samples below, each
 # asserting that its own workload ran rather than that the program exited zero.
 #
+# **No check here reads the model's prose for anything it gates on.** Each sample that calls
+# a model prints a fenced block of what its tool returned, closed by a line tagged
+# `[measured]`, and its check reads that. The alternative was wrong in both directions: a
+# model that never called the tool could satisfy a check made over prose, and three healthy
+# releases went red over a run writing `**error**` where the pattern wanted `[error]` (#314).
+#
 # Most are paired: one workload against a billable Azure microVM and the same workload against
 # a container, so a red on one side alone names the backend. 01 and 05 report the compiler's
 # diagnostics; 03 and 06 return the 100th Fibonacci number from code run in the sandbox. 07 and
@@ -140,11 +146,11 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      # Runs the sample as a consumer would, then asserts loosely on its output. The sample
-      # authenticates with DefaultAzureCredential, which the az login above satisfies — the
-      # AZURE_CLIENT_ID/TENANT/SUBSCRIPTION values are login inputs only and are deliberately
-      # not exported here, so DefaultAzureCredential resolves cleanly through the CLI rather
-      # than a half-populated EnvironmentCredential.
+      # Runs the sample as a consumer would, then asserts on the block it prints from what
+      # bicep_validate returned. The sample authenticates with DefaultAzureCredential, which
+      # the az login above satisfies — the AZURE_CLIENT_ID/TENANT/SUBSCRIPTION values are login
+      # inputs only and are deliberately not exported here, so DefaultAzureCredential resolves
+      # cleanly through the CLI rather than a half-populated EnvironmentCredential.
       - name: Run sample 01 and assert the diagnostics came back
         env:
           ACAS_SANDBOX_ENDPOINT: ${{ vars.ACAS_SANDBOX_ENDPOINT }}
@@ -239,7 +245,8 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
-      # Runs the sample as a consumer would, then asserts exactly on its output. The sample
+      # Runs the sample as a consumer would, then asserts on the interpreter's own stdout,
+      # which the sample prints from the tool result rather than from the reply. The sample
       # authenticates with DefaultAzureCredential, which the az login above satisfies — the
       # AZURE_CLIENT_ID/TENANT/SUBSCRIPTION values are login inputs only and are deliberately
       # not exported here, so DefaultAzureCredential resolves cleanly through the CLI rather
@@ -336,7 +343,7 @@ jobs:
           set -euo pipefail
           uv run --no-project samples/05_docker_bicep/agent.py | tee /tmp/sample05-out.txt
           # Sample 01's assertion, unchanged: the same file compiled by the same CLI produces
-          # the same two rule ids, whatever ran it.
+          # the same two rule ids, whatever ran it — and both samples print them the same way.
           python3 "$HARNESS"/scripts/check_live_sample.py /tmp/sample05-out.txt
 
   sample-06:
@@ -417,7 +424,7 @@ jobs:
         run: |
           set -euo pipefail
           uv run --no-project samples/06_docker_codeact/agent.py | tee /tmp/sample06-out.txt
-          # The same assertion as sample 03: same task, same one right answer, same disposal line.
+          # The same assertion as sample 03: same task, same one right answer, same printed shape.
           python3 "$HARNESS"/scripts/check_live_codeact_sample.py /tmp/sample06-out.txt
 
   sample-07:
