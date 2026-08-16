@@ -32,10 +32,11 @@ this directory's README for the prerequisites and the environment variables.
 from __future__ import annotations
 
 import asyncio
+import re
 import sys
 from pathlib import Path
 
-from _scaffold import require_env_vars
+from _scaffold import MEASURED, evidence, quoted, require_env_vars, tool_results
 from agent_framework import Agent, InMemoryAgentFileStore
 from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
@@ -54,6 +55,17 @@ THREAD_ID = "01-acas-bicep"
 AGENT_DIR = "devops-engineer"
 
 BICEP_FILE = "main.bicep"
+
+#: The tool this sample counts results from. What it returned is what the live check reads: the
+#: model writes the prose around it, the framework writes this.
+BICEP_TOOL = "bicep_validate"
+
+#: What a result that reached the sandbox looks like. `bicep_validate` answers with an error
+#: string *before* it acquires anything when no conversation is bound, when a name has the wrong
+#: suffix, and when a name is not in its file listing — so counting calls would credit the run
+#: with a compile that never happened. Each phase renders one line at the start of a line, which
+#: a refusal has no way to produce.
+_PHASES = re.compile(r"^build\(.*^lint\(", re.MULTILINE | re.DOTALL)
 
 #: Everything the sandbox backend needs. `BICEP_SANDBOX_IMAGE` is a bare
 #: `repository:tag` (for example `bicep-sandbox:0.46.1-1`); the registry above
@@ -150,7 +162,25 @@ async def run() -> int:
             tools=tools,
         )
         response = await agent.run(f"Validate {BICEP_FILE} and list every diagnostic you get back.")
-        print(response.text)
+        # Quoted first, because the reply and the block below share one stream and the live
+        # check trusts the `[measured]` tag completely.
+        print(quoted(response.text))
+
+        # The compiler's own words, printed from the tool result rather than from the reply. The
+        # reply is the model's account of this, which is the thing the sample exists to be
+        # sceptical of: a model that never called the tool can still write a convincing summary
+        # of what it would have said (#314).
+        compiles = [
+            result for result in tool_results(response, BICEP_TOOL) if _PHASES.search(result)
+        ]
+        print()
+        print(
+            evidence(
+                "Diagnostics as bicep_validate returned them",
+                compiles,
+                "compiles that reached the sandbox",
+            )
+        )
     finally:
         # Delete the sandbox rather than leaving it to the lifecycle timers.
         # `auto_suspend_seconds` and `auto_delete_seconds` are the backstop, not
@@ -159,7 +189,7 @@ async def run() -> int:
         # conversation left to run that course adds up.  `dispose_scope` deletes
         # by service-side label, so it reclaims sandboxes this process never saw.
         deleted = await router.dispose_scope(SCOPE, THREAD_ID)
-        print(f"\nDisposed {deleted} sandbox(es).")
+        print(f"\n{MEASURED}Disposed {deleted} sandbox(es).")
         await backend.aclose()
         await credential.close()
 

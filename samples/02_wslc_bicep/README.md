@@ -51,18 +51,26 @@ With any of the first three unset the program says which and exits non-zero, rat
 
 ## Run
 
-The first call pays for creating and starting the container — a few hundred milliseconds, against the minutes a microVM-isolated sandbox needs. The model writes its own prose around them, but the diagnostics it is reporting look like this:
+The first call pays for creating and starting the container — a few hundred milliseconds, against the minutes a microVM-isolated sandbox needs. The model writes its own summary first. Under it the sample prints the diagnostics again, this time straight out of what `bicep_validate` returned:
 
 ```
-  [error]   no-unused-params @ main.bicep:21: Parameter "environmentName" is
-  declared but never used.
-  [warning] BCP035 @ main.bicep:31: The specified "resource" declaration is missing
-  the following required properties: "sku".
-  [warning] use-recent-api-versions @ main.bicep:31: Use more recent API version for
-  'Microsoft.Storage/storageAccounts'. '2023-01-01' is N days old ...
+== Diagnostics as bicep_validate returned them ==
 
-Disposed 1 sandbox(es).
+  build(main.bicep): 1 diagnostic(s)
+    [warning] BCP035 @ main.bicep:31: The specified "resource" declaration is missing
+              the following required properties: "sku".
+  lint(main.bicep): 2 diagnostic(s)
+    [error] no-unused-params @ main.bicep:21: Parameter "environmentName" is declared
+            but never used.
+    [warning] use-recent-api-versions @ main.bicep:31: Use more recent API version for
+              'Microsoft.Storage/storageAccounts'. '2023-01-01' is N days old ...
+
+  [measured] compiles that reached the sandbox: 1
+
+  [measured] Disposed 1 sandbox(es).
 ```
+
+Only the prose above the heading is the model's; the block under it is the tool's own output, and the `[measured]` lines are the sample vouching for a number. Sample 01's README says why that split is what the live check reads.
 
 Three diagnostics, the same three sample 01 gets from a microVM in Azure. Sample 01's README reads them closely and that reading applies here unchanged; the short version is that `no-unused-params` printing as `[error]` rather than its built-in `[warning]` is the visible proof that `bicepconfig.json` was discovered, `BCP035` really is a warning in current Bicep, and the day count in the last one climbs on its own.
 

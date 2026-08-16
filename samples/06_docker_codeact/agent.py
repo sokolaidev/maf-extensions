@@ -37,9 +37,10 @@ not.  Read it, along with the prerequisites and the environment variables, first
 from __future__ import annotations
 
 import asyncio
+import re
 import sys
 
-from _scaffold import require_env_vars
+from _scaffold import MEASURED, evidence, quoted, require_env_vars, tool_results
 from agent_framework import Agent
 from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
@@ -61,6 +62,17 @@ TASK = (
     "F(0) = 0 and F(1) = 1, and prints just the integer. Run it and tell me "
     "exactly what it printed."
 )
+
+#: The tool this sample counts results from. What it returned is what the live check reads: the
+#: model writes the prose around it, the interpreter writes this.
+CODEACT_TOOL = "execute_code"
+
+#: How the tool renders a run: a `stdout:`, `stderr:` or `exit code:` section, each at the start
+#: of a line. A call it refuses — a file it cannot read, a request over a transfer cap — comes
+#: back as an `Error:` string carrying none of them, so this is what separates a program the
+#: interpreter ran from a request that never reached it. A program that both printed nothing and
+#: exited 0 carries none of them either, and this task is not answered by one.
+_RAN = re.compile(r"^(stdout|stderr|exit code):", re.MULTILINE)
 
 #: The Docker backend reads no environment — it drives the local `docker` client —
 #: so the only variables here are the model's. Auth is `DefaultAzureCredential`,
@@ -114,11 +126,26 @@ async def run() -> int:
             tools=tools,
         )
         response = await agent.run(TASK)
-        print(response.text)
+        # Quoted first, because the reply and the block below share one stream and the live
+        # check trusts the `[measured]` tag completely.
+        print(quoted(response.text))
+
+        # What the interpreter printed, taken from the tool result rather than from the reply.
+        # The 100th Fibonacci number is a constant any model can recite, so the reply alone is
+        # not evidence a program ran — this block is (#314).
+        runs = [result for result in tool_results(response, CODEACT_TOOL) if _RAN.search(result)]
+        print()
+        print(
+            evidence(
+                "Program output as execute_code returned it",
+                runs,
+                "programs whose output came back from the sandbox",
+            )
+        )
     finally:
         # Deletes rather than relying on the container living on — see sample 01's README.
         deleted = await router.dispose_scope(SCOPE, THREAD_ID)
-        print(f"\nDisposed {deleted} sandbox(es).")
+        print(f"\n{MEASURED}Disposed {deleted} sandbox(es).")
         await credential.close()
 
     return 0
