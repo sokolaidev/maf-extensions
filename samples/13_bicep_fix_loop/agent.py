@@ -41,6 +41,7 @@ import os
 import re
 import subprocess
 import sys
+from typing import TYPE_CHECKING
 
 from _scaffold import MEASURED, quoted, require_env_vars, tool_results
 from agent_framework import Agent, FileAccessProvider, InMemoryAgentFileStore
@@ -49,6 +50,13 @@ from maf_sandbox import Isolation, SandboxRouter
 from maf_sandbox.maf import list_all_files, make_caller_context
 from maf_sandbox_bicep import make_bicep_tools
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
+
+if TYPE_CHECKING:
+    # Only for `build_client`'s signature. The runtime import stays inside that function, where
+    # it is skipped entirely on the local path — a laptop run reaches Ollama and needs no Azure
+    # SDK loaded to do it. `from __future__ import annotations` is what lets the name be used in
+    # an annotation without importing it here.
+    from azure.identity.aio import DefaultAzureCredential
 
 SCOPE = "samples"
 THREAD_ID = "13-fix-loop"
@@ -198,10 +206,13 @@ async def read_or_empty(store: InMemoryAgentFileStore, name: str) -> str:
         content = await store.read(name)
     except Exception:  # noqa: BLE001 - any failure to read means nothing was authored
         return ""
-    return content if isinstance(content, str) else content.decode("utf-8")
+    # `read` answers `str | None`: a store can miss without raising — the file was listed and
+    # then removed — which the kinds in this repository guard for the same way. A miss is the
+    # same "nothing was authored" outcome as the exception above.
+    return content or ""
 
 
-def build_client() -> tuple[OpenAIChatCompletionClient, object | None] | None:
+def build_client() -> tuple[OpenAIChatCompletionClient, DefaultAzureCredential | None] | None:
     """One client class, two endpoints. CI sets `AZURE_OPENAI_ENDPOINT`; a laptop does not.
 
     Sample 09's split, unchanged, down to reporting a half-configured Azure run rather than
