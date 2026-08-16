@@ -457,6 +457,44 @@ class TestTheLauncherAgainstARealShell:
     """The launcher is a shell script, and some of what it promises only a shell can show."""
 
     @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+    def test_a_work_directory_that_cannot_be_entered_stops_the_run(self, tmp_path: Path):
+        """`sh` does not stop on a failed command, so the `cd` has to say so itself.
+
+        Unguarded, a failed `mkdir`/`cd` pair leaves the program running wherever the launcher
+        was exec'd: artifacts land where no kind collects them, the exit marker still appears,
+        and the run reports success. A non-zero launcher is already handled — `dispatch_over_exec`
+        turns it into "the launcher did not start the program" — so failing loudly is free.
+        """
+        directory = tmp_path.as_posix()
+        served = f"{directory}/host_tools"
+        pathlib.Path(served).mkdir(parents=True, exist_ok=True)
+        # A file where the work directory belongs: `mkdir -p` cannot make one over it.
+        pathlib.Path(directory, "work").write_text("in the way", encoding="utf-8")
+
+        layout = GuestRunLayout(
+            directory=directory,
+            work=f"{directory}/work",
+            program=f"{served}/program.py",
+            shim=f"{served}/{SHIM_MODULE}",
+            launcher=f"{served}/run_program.sh",
+            calls=f"{served}/{CALLS_DIRECTORY}",
+            output=f"{served}/program_output.txt",
+            exit_code=f"{served}/program_exit_code",
+        )
+        pathlib.Path(layout.program).write_text("open('escaped', 'w').close()\n", encoding="utf-8")
+        pathlib.Path(layout.launcher).write_text(
+            launcher_script(layout, sys.executable), encoding="utf-8"
+        )
+
+        started = subprocess.run(
+            ["sh", layout.launcher], cwd=directory, capture_output=True, text=True, timeout=60
+        )
+
+        assert started.returncode != 0, "a launcher that could not enter the work directory ran on"
+        assert not pathlib.Path(directory, "escaped").exists(), "the program ran somewhere else"
+        assert not pathlib.Path(layout.exit_code).exists(), "a relocated run recorded an exit code"
+
+    @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
     def test_a_guest_file_named_like_the_shim_is_not_the_module_the_program_imports(
         self, tmp_path: Path
     ):

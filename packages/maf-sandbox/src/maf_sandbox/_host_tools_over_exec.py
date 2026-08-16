@@ -452,8 +452,12 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
         f"> {_quote(layout.output)} 2>&1; "
         f"printf %s $? > {_quote(staged)}; mv {_quote(staged)} {_quote(layout.exit_code)}"
     )
+    #     Guarded, because `sh` does not stop on a failed command: an unguarded `cd` that
+    #     fails leaves the program running in whatever directory the launcher was exec'd in,
+    #     writing its artifacts where nothing collects them and exiting 0 while it does. A
+    #     non-zero launcher is already a reported failure; a silently relocated run is not.
     return (
-        f"#!/bin/sh\nmkdir -p {_quote(layout.work)}\ncd {_quote(layout.work)}\n"
+        f"#!/bin/sh\nmkdir -p {_quote(layout.work)} && cd {_quote(layout.work)} || exit 1\n"
         f"nohup sh -c {_quote(inner)} >/dev/null 2>&1 &\n"
     )
 
