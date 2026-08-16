@@ -1493,6 +1493,21 @@ class TestWhoseTimeoutItWas:
 
         assert "the service bounds this exec" in str(spent.value), "the backend's reason was lost"
 
+    def test_a_bare_backend_timeout_leaves_no_dangling_reason(self):
+        """The shipped backends all bound `exec` with `asyncio.wait_for`, whose `TimeoutError`
+        is empty — so the case above, with a sentence in it, is the *unusual* one. Appending
+        unconditionally ends the message a model is shown with a dash and nothing after it."""
+
+        class _BoundsTheStartSilently(_ScriptedGuest):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                raise TimeoutError  # exactly what `asyncio.wait_for` raises
+
+        with pytest.raises(SandboxProgramTimeout) as spent:
+            _run(_BoundsTheStartSilently([], finish=False), HostToolRun(_registry()), timeout=30.0)
+
+        assert str(spent.value) == "the run's 30s were gone while starting the program"
+        assert not str(spent.value).endswith("—"), "the message trails off into nothing"
+
     def test_the_hosts_note_is_not_passed_off_as_the_programs_own_words(self):
         """`output` is what a caller quotes under "Output so far", so only stdout belongs in it.
 

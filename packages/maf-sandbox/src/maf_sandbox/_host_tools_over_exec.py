@@ -501,11 +501,14 @@ async def dispatch_over_exec(
         ``stdout`` and the exit code it recorded.
 
     Raises:
-        SandboxProgramTimeout: The program left no exit marker before the deadline. Its output
-            up to that point is in the message and on ``output``; the process may still be
-            running, and disposing of the sandbox is what stops it. Distinct from a bare
-            ``TimeoutError`` below, which is a backend's own bound and says nothing about
-            whether the program is still going.
+        SandboxProgramTimeout: The run's own bound expired. Where the program had started,
+            its output up to that point is in the message and on ``output``, and the process
+            may still be running — disposing of the sandbox is what stops it. On the two
+            starting legs, the launcher upload and the ``exec`` that runs it, ``output`` is
+            empty instead: there was no run directory to read one from, and on a backend that
+            began the command before its own call returned there may be output nobody read.
+            Distinct from a bare ``TimeoutError`` below, which is a backend failing for a
+            reason of its own and says nothing about whether the program is still going.
         Exception: Whatever the backend raises from a stat or a read that is not a file
             simply not being there yet. A permanent failure — a permission error, a client
             that cannot reach its daemon — is reported as itself rather than retried until
@@ -588,8 +591,12 @@ async def dispatch_over_exec(
         # Every `TimeoutError` here, not only one the clock agrees about. The bound `exec` was
         # given *is* this run's remainder, so its expiry is this run's; and re-reading the
         # clock to check would reintroduce the misreading `_within` stopped asking it about.
+        # Conditionally, because the usual case has nothing to append: all three shipped
+        # backends bound `exec` with `asyncio.wait_for`, whose `TimeoutError` is bare, and a
+        # sentence ending in a dangling dash is what a model would be shown.
+        because = f" — {spent}" if str(spent) else ""
         raise SandboxProgramTimeout(
-            f"the run's {timeout:g}s were gone while starting the program — {spent}"
+            f"the run's {timeout:g}s were gone while starting the program{because}"
         ) from spent
     if started.exit_code != 0:
         return ExecResult(

@@ -500,6 +500,13 @@ class Sandbox(Protocol):
     ) -> ExecResult:
         """Run ``command`` inside the sandbox, bounded by ``timeout`` seconds.
 
+        **A** :class:`TimeoutError` **from this method means that bound expired, and nothing
+        else.** A backend with an independent, shorter ceiling of its own must not surface it
+        as one — raise something else, or let ``timeout`` govern. Callers derive the bound
+        they pass from a budget they own, so they read its expiry as their own budget running
+        out; a backend borrowing the same exception for a different limit makes that reading
+        false, and the caller has no way to tell.
+
         ``command`` accepts two shapes, and they are not interchangeable:
 
         - A **sequence** (``["bicep", "build", path]``) is quoted for you before it reaches
