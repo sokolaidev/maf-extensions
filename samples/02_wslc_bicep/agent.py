@@ -87,7 +87,14 @@ async def run() -> int:
     backend = WslcSandboxBackend(WslcSandboxConfig())
 
     # Below the router's default `microvm` floor; opted down explicitly.
-    router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
+    # `WslcSandboxBackend` does not satisfy the `SandboxBackend` protocol: `write_file`
+    # takes `str` where the protocol takes `str | bytes`, and the pull surface is absent
+    # rather than raising. Registering it is still right — the router accepts it at run
+    # time and this workload writes only text — and the ignore comes out with #370.
+    router = SandboxRouter(
+        [backend],  # pyright: ignore[reportArgumentType] - #370
+        min_isolation=Isolation.CONTAINER,
+    )
 
     store = InMemoryAgentFileStore()
     await store.write(BICEP_FILE, (Path(__file__).parent / BICEP_FILE).read_text())
