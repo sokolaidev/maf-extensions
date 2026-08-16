@@ -245,6 +245,48 @@ Unchanged by any of this: approval stays whole-call at the kind layer (both stac
 that independently), and guest-initiated HTTP back to the host stays rejected — the FFI
 removes even the temptation.
 
+## The composition question: what happens to the CodeAct library itself
+
+The question will be asked, so this doc answers it: how does `agent-framework-hyperlight` —
+the provider and the `execute_code` tool — compose with the design above? It doesn't, and
+that is the design. The package's top two thirds are replaced, the bottom third becomes the
+backend, and the experience the library delivers is re-served by this suite's layers:
+
+| What the library does | Where it lands here |
+|---|---|
+| `HyperlightCodeActProvider` injects instructions + a run-scoped `execute_code` tool | The codeact kind + `sandboxed_tool`: the description is built from the channels the host wired, and nothing attaches when no sandbox is configured |
+| `tools=[...]` as bare callbacks, name lookup the only gate | `HostToolRegistry` with declarations, dispatched through the trampoline — cap, ledger, validation, identity refusal at the door |
+| The guest's `call_tool` builtin | Kept — it is baked into the guest binary and becomes the transport's guest half. Like the over-exec shim, it is not a control; the gates are host-side |
+| `workspace_root` / `file_mounts` staged at creation, content-signature cached | `FILES_IN` per spec — and the program stops being a file at all, see the flow below |
+| `allowed_domains`, with per-method restriction | `spec.egress_allow` against the backend's `ALLOWLIST` declaration; the method refinement is #377, additive |
+| `/output` collected and attached to the tool result | `DeclaredOutput` + `collect_outputs`: pull against `output_path()`, dispositions, sinks, caps — the model gets references, never bytes |
+| `approval_mode`, whole-call | Unchanged; both stacks reached it independently |
+| The micro-VM, snapshot/restore, the warm interpreter | The backend — the only part adopted, via `hyperlight-sandbox` directly |
+
+The flow end to end on our stack: at **attach**, the codeact spec declares `RUN_CODE`
+rather than `EXEC`, and the router's five checks refuse before anything boots — the step
+the provider simply does not have. At **acquire**, the backend registers one trampoline per
+sealed registry name and the name set joins the sandbox's cache identity, exactly as the
+wrapper keys on tool identity. **Per call**, the kind hands the program text to
+`run_code(code, timeout=...)` — no `program.py`, no interpreter invocation, so the false
+`python3 program.py` sentence #111 flagged never gets written, and the write-after-create
+question (probe item 1) shrinks to data files only. Mid-run, `call_tool` → FFI → trampoline
+→ `dispatch`. Afterward, outputs are pulled from the host-side output dir with our
+confinement walk and landed through sinks. At **dispose**, the worker-actor teardown wires
+into `dispose`/`dispose_scope` so scope reclamation reaches it.
+
+The honest trade for a host author, against using the library directly: gained — attach-time
+refusals, declared tools, capped and ledgered dispatches, pulled outputs, and a workload
+that also runs on wslc, Docker, or the in-process fake unchanged. Given up — the per-method
+egress precision (#377 is the additive axis) and the content-signature sandbox caching,
+which explicit `(key, kind)` identity replaces.
+
+And one caveat to write down wherever the adapter ships: nothing stops a host attaching
+`HyperlightCodeActProvider` to an agent *beside* this suite, and doing so bypasses every
+gate above — no attach refusal, no floor, no identity denial, no caps. That is not a flaw
+in either library; it is SANDBOX.md's thesis restated. The other answers become backends
+beneath the contract, not alternatives beside it.
+
 ## What reading cannot answer — the live-probe list
 
 1. Does a host-side write into `input_dir` after creation appear in the guest, and does it
