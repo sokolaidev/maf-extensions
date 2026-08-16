@@ -91,13 +91,14 @@ jobs:
           uv run pyright -p packages/maf-sandbox-docker
           uv run pyright -p packages/maf-sandbox-wslc
 
-      - name: Types (scripts & tests)
-        # scripts/ and the test trees belong to no package, so the per-package strict pyright
-        # above does not see them. The root [tool.pyright] in pyproject.toml drives this pass:
-        # scripts/ stays at full standard (it sits under no execution environment), and each test
-        # tree is an execution environment that relaxes the four loose-fake rules to warnings so
-        # intentional fakes do not block. The two InMemoryStore→AgentFileStore duck-types in
-        # smoke_install.py are suppressed inline; everything outside those four rules is real drift.
+      - name: Types (scripts, tests & samples)
+        # scripts/, the test trees and samples/ belong to no package, so the per-package strict
+        # pyright above does not see them. The root [tool.pyright] in pyproject.toml drives this
+        # pass: scripts/ stays at full standard (it sits under no execution environment), and each
+        # test tree is one that relaxes the four loose-fake rules to warnings so intentional fakes
+        # do not block. The two InMemoryStore→AgentFileStore duck-types in smoke_install.py are
+        # suppressed inline; everything outside those four rules is real drift. samples/ relaxes
+        # nothing and suppresses inline instead — pyproject.toml says why (#334).
         run: uv run pyright
 
       - name: Build + metadata check
