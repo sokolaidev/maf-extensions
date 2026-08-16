@@ -1,34 +1,32 @@
 name: Verify (live)
 
-# Installs the PUBLISHED wheels into a clean environment and runs eight samples, each asserting its
-# own workload actually ran: samples/01_acas_bicep and samples/05_docker_bicep (the compiler's
-# diagnostics came back), samples/03_acas_codeact and samples/06_docker_codeact (the 100th
-# Fibonacci number came back from code run in the sandbox), and samples/07_docker_diagram and
-# samples/08_docker_codeact_files (a file came back out — a rendered PNG and a declared summary,
-# the two that assert on something other than stdout). Sample 09 runs the same bicep workload as
-# 01 and 05 against a backend that shells out to the bicep CLI on the runner itself — no
-# container, no sandbox — so it pairs with nothing and names no backend. Sample 10 pairs with
-# nothing either and goes one further: no sandbox, no model and no configuration, because
-# everything it exercises — the host-tools registry, its aggregate, and the router's two deny
-# axes — is decided at attach, before a backend is ever asked for one. Each pair is one
-# workload against a billable Azure microVM and against a container, so a red on one side alone
-# names the backend.
-# This is the half of issue #33 that runs after a release rather than on a pull request. The two
-# ACAS jobs each create a billable Azure sandbox and need a subscription; the four docker jobs
-# and sample 09 create no billable sandbox — a container on the runner, or for 09 the host
-# itself — and need no sandbox configuration at all. Sample 10 costs nothing whatsoever: it is
-# the only job with no `environment:` and no `permissions:` block, because it reads no
-# variable and mints no token. It runs on demand, and once after each
-# release that could change what a
-# sample exercises (dispatched by publish-packages.yml).
+# Installs the PUBLISHED wheels into a clean environment and runs the samples below, each
+# asserting that its own workload ran rather than that the program exited zero.
+#
+# Most are paired: one workload against a billable Azure microVM and the same workload against
+# a container, so a red on one side alone names the backend. 01 and 05 report the compiler's
+# diagnostics; 03 and 06 return the 100th Fibonacci number from code run in the sandbox. 07 and
+# 08 assert on a file that came back — a rendered PNG, a declared summary — rather than on
+# stdout. 09 runs 01's bicep workload against the CLI on the runner itself, so it pairs with
+# nothing and names no backend. 13 is the only job that runs more than one turn: a model writes
+# a file, the compiler reports on it, and a second turn repairs it against the same sandbox.
+#
+# This is the half of issue #33 that runs after a release rather than on a pull request. The
+# ACAS jobs each create a billable Azure sandbox and need a subscription; the docker jobs create
+# a container on the runner and need no sandbox configuration; 09 needs neither. **A job that
+# calls no model and reads no variable carries no `environment:` and no `permissions:` block**,
+# because it mints no token — stated as the rule rather than a list, which is what went stale
+# here before. It runs on demand, and once after each release that could change what a sample
+# exercises (dispatched by publish-packages.yml).
 #
 # Samples 02 and 04 are the two with no job, and structurally: `wslc` needs Windows with a WSL
 # that ships it, which the Linux runners are not.
 #
 # Authentication is OIDC federation to Azure — no stored secret, matching how publishing works.
 # Everything each sample reads is non-secret configuration (endpoints and ids), held as
-# environment variables on the `live-verify` environment; the docker jobs read only the model's,
-# the two whose guest is built here read not even that, and sample 10 reads nothing at all.
+# environment variables on the `live-verify` environment. The ACAS jobs read the sandbox
+# configuration as well as the model's; every other job that calls a model reads only the
+# model's, whether its guest is built here or pulled; a job that calls no model reads nothing.
 # See docs/maintainers.md.
 #
 # PEP 723 metadata is the single dependency source; `--no-project` ensures uv resolves its
@@ -793,3 +791,89 @@ jobs:
           # thread's expected 0 cannot be the only zero checked. stdlib-only, so the runner's
           # own python3 runs it.
           python3 "$HARNESS"/scripts/check_live_purge_sample.py /tmp/sample12-out.txt
+
+  sample-13:
+    name: samples/13_bicep_fix_loop against a live container
+    # The only sample that runs more than one turn, and the only one whose store starts empty:
+    # the model writes `main.bicep` in turn 1 and repairs it in turn 2, both against one
+    # sandbox. Sample 05's workload, arrived at by a brief rather than checked in. Runs
+    # for the router (maf-sandbox), the backend it acquires through (maf-sandbox-docker) and the
+    # kind that supplies the tool (maf-sandbox-bicep) — the same three sample 05 answers to,
+    # because it is the same stack with a second turn on top.
+    if: >-
+      inputs.package == ''
+      || contains(fromJSON('["maf-sandbox", "maf-sandbox-bicep", "maf-sandbox-docker"]'), inputs.package)
+    runs-on: ubuntu-latest
+    # Longer than sample 05's 20: two model turns, and the fix turn does several tool calls of
+    # its own before it answers.
+    timeout-minutes: 25
+    # For the model only, as in sample 05 — `live-verify` holds the non-secret Azure OpenAI
+    # configuration and is half the federated-credential subject. The image is built below.
+    environment: live-verify
+    permissions:
+      # Mints the OIDC token azure/login exchanges. No secret is involved.
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # Only when `HARNESS` points at it — see the `env` block above for why the checks come
+      # from somewhere other than the samples. Sparse, because `scripts/` is all that is read.
+      - name: Check out the checks from the default branch
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch || 'main' }}
+          path: .harness
+          sparse-checkout: scripts
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Check the live configuration is present
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
+            AZURE_OPENAI_ENDPOINT AZURE_OPENAI_CHAT_MODEL; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::the live-verify environment is missing variables: ${missing[*]}. See docs/maintainers.md."
+            exit 1
+          fi
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # Built here rather than pulled, exactly as sample 05 does it, and the freshness matters
+      # more for this sample than for that one: `bicepconfig.json` lives in the image, so a
+      # stale one reports fewer diagnostics at their built-in severities and the fix turn is
+      # handed a smaller problem — a run that goes green having tested less than it says.
+      - name: Build the sandbox image
+        run: docker build -t bicep-sandbox:local images/bicep-sandbox
+
+      - name: Run sample 13 and assert the file was repaired against one sandbox
+        env:
+          BICEP_SANDBOX_IMAGE: bicep-sandbox:local
+          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+        run: |
+          set -euo pipefail
+          uv run --no-project samples/13_bicep_fix_loop/agent.py | tee /tmp/sample13-out.txt
+          # Three claims, and the check needs all of them: turn 1 wrote a file with a real fault
+          # in it, one container served all four acquires, and the compiler agrees the file
+          # turn 2 left is repaired. Any one alone passes on a broken sample — perfect reuse of
+          # a sandbox that fixed nothing, or a fix that quietly booted a second container to
+          # make it. stdlib-only, so the runner's own python3 runs it.
+          python3 "$HARNESS"/scripts/check_live_fix_loop_sample.py /tmp/sample13-out.txt
