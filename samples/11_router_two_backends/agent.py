@@ -41,8 +41,9 @@ IMAGE = "mcr.microsoft.com/devcontainers/python:3.13-bookworm"
 #: serves one request, so they are constants, and `dispose_scope` uses them at the end.
 KEY = SandboxKey(scope="samples", thread_id="11-two-backends", agent_dir="operator")
 
-#: The floor this host is willing to go down to. Both backends must clear it or the router
-#: refuses at construction — `NONE` is the bottom rung, so this accepts either.
+#: The floor this host is willing to go down to. The router floor-checks the backend it
+#: resolves to, not the whole list, and refuses at construction — `NONE` is the bottom
+#: rung, so either of these clears it.
 FLOOR = Isolation.NONE
 
 
@@ -60,9 +61,8 @@ def backends() -> tuple[InProcessSandboxBackend, DockerSandboxBackend]:
 def serving(router: SandboxRouter) -> str:
     """The name of the backend ``router`` resolved to.
 
-    `router.backend` is `SandboxBackend | None`, and `None` means no backend was *registered* —
-    one registered below the floor raises `SandboxBackendNotPermitted` at construction instead.
-    A host reading a backend list out of configuration writes this same narrowing.
+    `router.backend` is `SandboxBackend | None`, and `None` means no backend was registered at
+    all. A host reading a backend list out of configuration writes this same narrowing.
     """
     backend = router.backend
     if backend is None:

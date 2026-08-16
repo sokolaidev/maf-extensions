@@ -25,7 +25,7 @@ import re
 import subprocess
 import sys
 import tomllib
-from pathlib import Path
+from pathlib import Path, PurePath
 
 import pytest
 
@@ -100,7 +100,7 @@ def _import(path: Path, sample: Path) -> None:
 
 
 def test_no_sample_is_skipped_in_a_synced_workspace():
-    """A per-case skip is invisible in a `-q` run and reads as coverage in a summary line.
+    """A per-case skip reads as coverage in a summary line, and names no subject.
 
     Failing rather than skipping is the deliberate half: being wrong this way costs one message
     telling a contributor to sync, and being wrong the other way is what #334 is about.
@@ -121,12 +121,20 @@ def test_a_samples_helper_modules_do_not_outlive_its_import():
     drift, because `test_sample_scaffold.py` forbids the drift — which is what would keep this
     hole invisible.
     """
-    sample = _SAMPLE_DIRS[0]
-    assert not _absent(sample), f"{sample.name} cannot be imported here, so this proves nothing"
-    _import(sample / "agent.py", sample)
-    assert "_scaffold" not in sys.modules, (
-        f"`_scaffold` stayed cached after importing {sample.name}, so the next sample's "
-        "`from _scaffold import …` resolves to this one's copy"
+    first, second = _SAMPLE_DIRS[0], _SAMPLE_DIRS[1]
+    assert not (_absent(first) or _absent(second)), "these two cannot be imported here"
+
+    saw: list[str | None] = []
+    for sample in (first, second):
+        _import(sample / "agent.py", sample)
+        saw.append(getattr(sys.modules.get("_scaffold"), "__file__", None))
+
+    # Presence as well as absence. Asserting only that the cache ends up empty would pass
+    # trivially the day a sample stops importing `_scaffold` at module level, and the eviction
+    # could be deleted with nothing going red.
+    assert saw == [None, None], f"`_scaffold` outlived the import that loaded it: {saw}"
+    assert "_scaffold" in (first / "agent.py").read_text(encoding="utf-8"), (
+        f"{first.name} no longer imports `_scaffold`, so the case above proves nothing"
     )
 
 
@@ -135,69 +143,110 @@ _SAMPLES_ENV = next(
     (env for env in _PYRIGHT.get("executionEnvironments", []) if env.get("root") == "samples"), {}
 )
 
-#: Anything a diagnostic rule can be set to that is weaker than failing. pyright accepts a
-#: boolean for every rule as well as a severity, so a bare `false` is the shortest way to turn
-#: one off and the easiest to miss.
+#: Anything a diagnostic rule can be set to that is weaker than failing. pyright takes a boolean
+#: for every rule as well as a severity, so a bare `false` is the shortest way to turn one off.
 _WEAKER_THAN_ERROR = ("warning", "information", "none", False)
 
+#: The two rules the probe below trips, because a downgrade can be per-rule: the attribute one
+#: is the shape #334 is about, and the assignment one is an ordinary mistake any sample can make.
+_PROBE_RULES = {"reportAttributeAccessIssue", "reportAssignmentType"}
 
-def test_pyright_really_reads_a_sample():
-    """Behavioural, because the three config assertions below are proxies and this is not.
 
-    `exclude` and `ignore` silence `samples/` while `include` still names it, so all of them stay
-    green and pyright analyses nothing — measured: with `exclude = ["samples"]`, asking it about
-    a sample file by name reports `filesAnalyzed: 0`. Costs about two seconds.
-    """
-    probe = _SAMPLE_DIRS[0] / "agent.py"
-    result = subprocess.run(
-        ["uv", "run", "pyright", "--outputjson", str(probe.relative_to(_ROOT))],
-        cwd=_ROOT,
-        capture_output=True,
-        text=True,
+def _relaxed(table: dict) -> list[str]:
+    """Diagnostic rules in ``table`` set to anything short of failing the build."""
+    return sorted(
+        key
+        for key, value in table.items()
+        if key.startswith("report") and value in _WEAKER_THAN_ERROR
     )
-    analysed = json.loads(result.stdout)["summary"]["filesAnalyzed"]
-    assert analysed >= 1, (
-        f"pyright analysed {analysed} files when asked about {probe.name} — samples/ is being "
-        "silenced by `exclude`, `ignore`, or its removal from `include`"
+
+
+def test_pyright_reports_an_error_inside_samples():
+    """The only measurement that proves the pass reaches `samples/`. Costs about six seconds.
+
+    Everything else here is a proxy, and each proxy's blind spot was measured rather than
+    guessed. `filesAnalyzed` counts a file pyright *opened*: under `ignore = ["./samples"]` it
+    opens the file and drops every diagnostic. No reading of the config text sees a rule
+    downgraded at the top level of `[tool.pyright]`, which every execution environment inherits.
+
+    So a file with two known errors goes into `samples/`, the whole configured pass runs — the
+    invocation CI runs, with no path argument, so `include` counts — and both have to come back.
+    """
+    probe = _SAMPLES / "_pyright_probe.py"
+    probe.write_text(
+        '"""Written by tests/test_sample_modules_import.py, deleted in the same call."""\n\n'
+        "from maf_sandbox import Isolation\n\n"
+        "RUNG = Isolation.NO_SUCH_RUNG\n"
+        'COUNT: int = "not an int"\n',
+        encoding="utf-8",
+        newline="\n",
+    )
+    try:
+        result = subprocess.run(
+            ["uv", "run", "pyright", "--outputjson"], cwd=_ROOT, capture_output=True, text=True
+        )
+        # The exit code says nothing: pyright exits non-zero *because* of the probe. Empty output
+        # is the failure worth reporting, and it means the binary never ran.
+        if not result.stdout.strip():
+            pytest.fail(
+                f"pyright produced no output (exit {result.returncode}). Its stderr: "
+                f"{result.stderr.strip()[:500] or '(empty)'}"
+            )
+        reported = {
+            diagnostic.get("rule")
+            for diagnostic in json.loads(result.stdout)["generalDiagnostics"]
+            if probe.name in diagnostic["file"] and diagnostic["severity"] == "error"
+        }
+    finally:
+        probe.unlink(missing_ok=True)
+
+    assert _PROBE_RULES <= reported, (
+        f"the configured pyright pass reported {sorted(reported) or 'nothing'} for a sample file "
+        f"holding errors under {sorted(_PROBE_RULES)}. samples/ is being silenced — by `exclude`, "
+        "by `ignore`, by its removal from `include`, or by a rule downgrade at either level."
     )
 
 
 def test_pyright_is_configured_to_read_samples():
-    """An import executes module level and never enters a function body; pyright does both.
+    """A fast, precise diagnosis for the slow case above, and not a substitute for it.
 
-    A removed rung named inside `run()` is invisible to every case above and plain to pyright.
+    An import executes module level and never enters a function body. A removed rung named
+    inside `run()` is invisible to every case further up and plain to pyright.
     """
     assert "samples" in _PYRIGHT["include"], f"not in include: {_PYRIGHT['include']}"
     assert _PYRIGHT["typeCheckingMode"] == "standard", (
         f"the root type-checking mode is {_PYRIGHT['typeCheckingMode']!r}; anything weaker than "
         "standard drops rules across scripts/, tests/ and samples/ at once"
     )
+    # Compared as path parts, because `./samples`, `samples/**` and `**/samples` all silence the
+    # tree and only one of them starts with the word.
     silenced = [
-        key
+        f"{key}={entry}"
         for key in ("exclude", "ignore")
         for entry in _PYRIGHT.get(key, [])
-        if str(entry).startswith("samples")
+        if "samples" in PurePath(str(entry)).parts
     ]
     assert not silenced, f"samples/ is named in {silenced}, which overrides `include`"
+    assert not _relaxed(_PYRIGHT), (
+        f"{_relaxed(_PYRIGHT)} is downgraded at the top level of [tool.pyright], and every "
+        "execution environment inherits it — samples/ included, which relaxes nothing of its own"
+    )
 
 
 def test_samples_relax_no_rule():
     """`samples/` answers to what `scripts/` answers to, and this says so out loud.
 
-    Every test tree downgrades four rules for the loose fakes it is made of (#290). The five
-    sites in `samples/` that would want that are not fakes — two are #370 and three an Optional
-    the library returns — and a sample is code an adopter copies.
+    Every test tree downgrades four rules for the loose fakes it is made of (#290). The sites in
+    `samples/` that would want that are not fakes — they are #370 — and a sample is code an
+    adopter copies.
     """
-    relaxed = sorted(
-        key for key, value in _SAMPLES_ENV.items() if key != "root" and value in _WEAKER_THAN_ERROR
-    )
     assert _SAMPLES_ENV, "samples lost its pyright execution environment"
     assert "typeCheckingMode" not in _SAMPLES_ENV, (
         f"samples/ sets its own typeCheckingMode ({_SAMPLES_ENV['typeCheckingMode']!r}), which "
         "moves far more than the four rules a test tree relaxes"
     )
-    assert not relaxed, (
-        f"samples/ now relaxes {relaxed}. Suppress the one site inline with a "
+    assert not _relaxed(_SAMPLES_ENV), (
+        f"samples/ now relaxes {_relaxed(_SAMPLES_ENV)}. Suppress the one site inline with a "
         "`# pyright: ignore[...]` naming its reason instead."
     )
 
@@ -206,7 +255,7 @@ def test_a_suppression_in_a_sample_cannot_go_stale_unnoticed():
     """The one real objection to suppressing inline, answered in the config.
 
     A `# pyright: ignore` outlives the thing it was hiding, and nothing would say so. Scoped to
-    `samples/` rather than the root, which has 27 stale ones across six packages' test trees.
+    `samples/` rather than the root, where the package test trees still carry stale ones.
     """
     assert _SAMPLES_ENV.get("reportUnnecessaryTypeIgnoreComment") == "error", (
         "samples/ no longer fails on an unnecessary `# pyright: ignore`, so a suppression that "
