@@ -949,6 +949,7 @@ _PROTOCOL_MODULES = frozenset(
     {
         "_error_detail",
         "_host_tools",
+        "_host_tools_over_exec",
         "_outputs",
         "_protocol",
         "_purger",
