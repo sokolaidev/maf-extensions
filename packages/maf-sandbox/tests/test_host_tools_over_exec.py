@@ -52,6 +52,7 @@ from maf_sandbox import (
     launcher_script,
     sandbox_tool,
 )
+from maf_sandbox import _host_tools_over_exec as host_tools_over_exec
 from maf_sandbox.paths import confine_guest_path
 
 #: Fast enough for a suite, and still an interval — the API refuses zero, because
@@ -129,6 +130,10 @@ class _ScriptedGuest:
         return ExecResult(stdout="", exit_code=self._launcher_exit_code)
 
     async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
+        # Every real backend suspends here, and a bound only bites a call that does: under
+        # `asyncio.timeout` a coroutine that never yields finishes even on a zero budget, so
+        # a double that never yields cannot tell a grace from no grace at all.
+        await asyncio.sleep(0)
         path = self._resolved(path, working_directory)
         self._collect_answers()
         if self.replayed:
@@ -143,6 +148,7 @@ class _ScriptedGuest:
         return SandboxEntry(path=path, kind=EntryKind.FILE, size_bytes=len(content))
 
     async def read_file(self, path: str, *, working_directory: str, max_bytes: int) -> bytes:
+        await asyncio.sleep(0)  # as in `stat_file`: a bound is only a bound against a yield
         content = self.files[self._resolved(path, working_directory)]
         if len(content) > max_bytes:
             raise AssertionError("the supervisor read past its own cap")
@@ -214,10 +220,10 @@ def _registry(**kwargs: Any) -> HostToolRegistry:
     return registry
 
 
-def _run(guest: _ScriptedGuest, run: HostToolRun, *, timeout: float = 5.0) -> ExecResult:
-    return asyncio.run(
-        dispatch_over_exec(guest, run, _LAYOUT, timeout=timeout, poll_interval=_FAST)
-    )
+def _run(
+    guest: _ScriptedGuest, run: HostToolRun, *, timeout: float = 5.0, poll: float = _FAST
+) -> ExecResult:
+    return asyncio.run(dispatch_over_exec(guest, run, _LAYOUT, timeout=timeout, poll_interval=poll))
 
 
 class TestTheHappyPath:
@@ -1025,6 +1031,193 @@ class TestTheLayoutsOwnPromise:
             assert path.startswith("/maf-sandbox/work/run-2/")
 
 
+class _Shifted:
+    """`time`, as the supervisor sees it, with an offset a test can move."""
+
+    def __init__(self, real, ahead) -> None:
+        self._real = real
+        self._ahead = ahead
+
+    def monotonic(self) -> float:
+        return self._real() + self._ahead["seconds"]
+
+
+class TestWhatAFinishedRunIsAllowedToSay:
+    @staticmethod
+    def _lands_during_the_sleep(monkeypatch: pytest.MonkeyPatch, marker: bytes) -> _ScriptedGuest:
+        """A guest whose marker appears in the interval the supervisor is asleep for.
+
+        The clock is moved rather than waited on, and moved on the iteration's *last* call —
+        the look for a request. Jumping earlier would expire the calls that come after it in
+        the same iteration, and the run would reach the same answer through the handler
+        instead of through the check at the top of the loop, which is the site under test.
+        """
+        # The jump is what ends the run, so a caller's `timeout` only has to outlast the
+        # setup before it. Tight bounds here bought nothing and flaked on a stalled runner.
+        ahead = {"seconds": 0.0}
+        real = time.monotonic
+        # Patched where the supervisor reads it, not globally: the event loop's own timers
+        # keep the real clock, so the transport's bounds still mean seconds.
+        monkeypatch.setattr(host_tools_over_exec, "time", _Shifted(real, ahead))
+
+        class _LandsDuringTheSleep(_ScriptedGuest):
+            async def stat_file(self, path: str, *, working_directory: str):
+                if path.endswith(".request.json") and _LAYOUT.exit_code not in self.files:
+                    self.files[_LAYOUT.output] = b"it finished quietly"
+                    self.files[_LAYOUT.exit_code] = marker
+                    ahead["seconds"] += 60.0
+                return await super().stat_file(path, working_directory=working_directory)
+
+        return _LandsDuringTheSleep([], finish=False)
+
+    def test_a_program_that_finishes_at_the_wire_keeps_its_output(self):
+        """The output read is the last thing left, and the run's remainder can be zero by then.
+
+        Bounded at that remainder it expires, and the run comes back with its exit code and
+        an empty stdout — correct about the program, silent about what it printed. The floor
+        is what keeps the output as well as the code.
+        """
+
+        class _SlowFinalRead(_ScriptedGuest):
+            async def read_file(self, path: str, *, working_directory: str, max_bytes: int):
+                if path.endswith("program_output.txt"):
+                    await asyncio.sleep(1.4)
+                return await super().read_file(
+                    path, working_directory=working_directory, max_bytes=max_bytes
+                )
+
+        # A second of bound against a read that takes longer: the read must overrun the
+        # deadline and finish inside the grace, with enough headroom that a stalled runner
+        # cannot expire the run before the marker is even read.
+        guest = _SlowFinalRead([], output="it ran")
+        result = _run(guest, HostToolRun(_registry()), timeout=1.0)
+
+        assert result.exit_code == 0, "a finished run came back as something else"
+        assert result.stdout == "it ran"
+
+    def test_a_backends_own_failure_to_hand_over_output_keeps_the_exit_code(self):
+        """The other `TimeoutError`: a backend's own, raised while the run still has time.
+
+        `_within` passes one straight through — the diagnosis in it is worth more than a
+        relabelling — but by then the marker has proved the program finished, and letting it
+        escape says the opposite. Both facts survive: the exit code is returned, the sentence
+        goes to `stderr`.
+        """
+
+        class _RefusesToHandItOver(_ScriptedGuest):
+            async def read_file(self, path: str, *, working_directory: str, max_bytes: int):
+                if path.endswith("program_output.txt"):
+                    raise TimeoutError("a FIFO the service reports as a regular file")
+                return await super().read_file(
+                    path, working_directory=working_directory, max_bytes=max_bytes
+                )
+
+        guest = _RefusesToHandItOver([], output="unreachable", exit_code=7)
+        result = _run(guest, HostToolRun(_registry()), timeout=1.0)
+
+        assert result.exit_code == 7, "a finished run was reported as something else"
+        assert result.stdout == ""
+        assert "a FIFO the service reports as a regular file" in result.stderr
+
+    def test_a_marker_that_lands_in_the_last_poll_interval_is_still_found(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The loop sleeps up to a whole interval, and a marker can land inside one.
+
+        Nothing raises here and no read is slow — the run simply expires between one poll and
+        the next, with the program already finished. Without a look on the way out, that wait
+        is charged against the guest and its exit code is lost.
+        """
+        guest = self._lands_during_the_sleep(monkeypatch, b"4")
+        result = _run(guest, HostToolRun(_registry()), timeout=5.0)
+
+        assert result.exit_code == 4, "a run that finished inside the last interval was lost"
+        assert result.stdout == "it finished quietly"
+
+    def test_an_unreadable_marker_ends_the_run_at_the_next_poll(self):
+        """The loop side of the same property, which the way-out test takes as given.
+
+        A marker too large to read is still a marker. Waiting for one that will never be
+        readable costs the guest its whole bound — five seconds here, five minutes at the
+        default — for a program that has already finished.
+        """
+        guest = _ScriptedGuest([], finish=False)
+        guest.files[_LAYOUT.output] = b"it ran, whatever the marker says"
+        guest.files[_LAYOUT.exit_code] = b"9" * 40  # over the 32-byte marker cap
+
+        began = time.monotonic()
+        result = _run(guest, HostToolRun(_registry()), timeout=5.0)
+
+        assert result.exit_code == 1, "an unreadable marker stopped meaning a finished run"
+        assert result.stdout == "it ran, whatever the marker says"
+        assert time.monotonic() - began < 1.0, "the run waited out its bound for a finished program"
+
+    def test_an_unreadable_marker_means_the_same_on_the_way_out_as_it_did_in_the_loop(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """One file, one meaning, whichever side of the deadline reads it.
+
+        A marker too large to read is still a marker: in the loop it means the program
+        finished and its code could not be trusted, which `_exit_code_from` answers with 1.
+        Filtering it out of the last look would make the same bytes mean "never finished" a
+        poll later, losing the output with it.
+        """
+
+        guest = self._lands_during_the_sleep(monkeypatch, b"9" * 40)  # over the 32-byte cap
+        result = _run(guest, HostToolRun(_registry()), timeout=5.0)
+
+        assert result.exit_code == 1, "an unreadable marker stopped meaning a finished run"
+        assert result.stdout == "it finished quietly"
+
+    def test_a_marker_read_that_runs_out_is_looked_for_once_more(self):
+        """A stat that found the marker proves the program finished, whatever the read did.
+
+        The read of it gets whatever is left of the run, which can be a millisecond, and its
+        expiry lands in the handler that announces the run did not finish. One more look, on
+        a grace of its own, is what tells those two apart — the first read ran out, the
+        program did not.
+        """
+        slow = {"first": True}
+
+        class _SlowFirstMarkerRead(_ScriptedGuest):
+            async def read_file(self, path: str, *, working_directory: str, max_bytes: int):
+                if path.endswith("program_exit_code") and slow["first"]:
+                    slow["first"] = False
+                    await asyncio.sleep(3600)
+                return await super().read_file(
+                    path, working_directory=working_directory, max_bytes=max_bytes
+                )
+
+        guest = _SlowFirstMarkerRead([], output="it did run", exit_code=5)
+        result = _run(guest, HostToolRun(_registry()), timeout=1.0)
+
+        assert result.exit_code == 5, "a finished run was reported as unfinished"
+        assert result.stdout == "it did run"
+
+    def test_output_the_deadline_outlasts_is_reported_as_itself(self):
+        """The grace is a floor, not a licence: a read that runs past it still has to say so.
+
+        Failing here must still return the recorded exit code — the program did finish — with
+        the reason stdout is empty, rather than a timeout blaming the program.
+        """
+
+        class _NeverFinishesTheRead(_ScriptedGuest):
+            async def read_file(self, path: str, *, working_directory: str, max_bytes: int):
+                if path.endswith("program_output.txt"):
+                    await asyncio.sleep(3600)
+                return await super().read_file(
+                    path, working_directory=working_directory, max_bytes=max_bytes
+                )
+
+        guest = _NeverFinishesTheRead([], output="never arrives", exit_code=3)
+        result = _run(guest, HostToolRun(_registry()), timeout=1.0)
+
+        assert result.exit_code == 3, "the recorded exit code was lost with the output"
+        assert result.stdout == ""
+        assert "could not be read" in result.stderr
+        assert "program_output.txt" in result.stderr, "the reason names no file"
+
+
 class TestWhatAnEmptyOutputMeans:
     def test_an_output_dropped_for_its_size_says_so(self):
         """Empty stdout beside exit code 0 is a report of a program that printed nothing.
@@ -1041,6 +1234,29 @@ class TestWhatAnEmptyOutputMeans:
         assert result.stdout == ""
         assert "larger than the host will read" in result.stderr
 
+    def test_a_timed_out_run_says_why_it_is_quoting_nothing(self):
+        """ "Output so far:" followed by nothing reads as a program that printed nothing.
+
+        A timed-out run whose output was refused for its size is the case where that is false,
+        and the failure message is the only place a reader is looking.
+        """
+
+        class _PrintsThenHangs(_ScriptedGuest):
+            """Output on disk, no exit marker — the shape the timeout message exists for."""
+
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                started = await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+                self.files[_LAYOUT.output] = b"x" * 200
+                return started
+
+        limits = TransferLimits(max_bytes_per_file=64, max_total_bytes=32, max_files=4)
+        guest = _PrintsThenHangs([], finish=False)
+
+        with pytest.raises(TimeoutError, match="larger than the host will read"):
+            _run(guest, HostToolRun(_registry(response_limits=limits)), timeout=0.1)
+
     def test_a_program_that_really_printed_nothing_says_nothing(self):
         """The note has to distinguish the two cases, or it is noise on every quiet run."""
         guest = _ScriptedGuest([], output="")
@@ -1052,6 +1268,34 @@ class TestWhatAnEmptyOutputMeans:
 
 
 class TestWhoseTimeoutItWas:
+    def test_a_clock_that_reads_behind_the_timer_still_names_this_runs_own_expiry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Whose timeout it was is asyncio's to answer, not the clock's.
+
+        A timer may fire up to one clock resolution early — 16ms where `time.monotonic` is
+        `GetTickCount64`, which is CPython 3.12 on Windows and inside this package's supported
+        range. A supervisor that re-reads the clock then sees time left, calls its own expiry
+        a backend's, and sends it past the handler that takes one more look for the marker:
+        the run reports that nothing finished when something had.
+
+        A clock that cannot advance is that reading taken to its limit, and it makes the
+        misclassification certain rather than a matter of tick phase.
+        """
+        monkeypatch.setattr(
+            host_tools_over_exec, "time", _Shifted(lambda: 1000.0, {"seconds": 0.0})
+        )
+
+        async def _stalls() -> None:
+            await asyncio.sleep(3600)
+
+        with pytest.raises(TimeoutError) as caught:
+            asyncio.run(host_tools_over_exec._within(1000.05, "a stalled call", _stalls()))
+
+        assert isinstance(caught.value, host_tools_over_exec._DeadlineExpired), (
+            "this run's own expiry was handed on as a backend's"
+        )
+
     def test_a_backends_own_timeout_reaches_the_caller_intact(self):
         """Two unrelated things raise `TimeoutError`, and only one of them is the run ending.
 

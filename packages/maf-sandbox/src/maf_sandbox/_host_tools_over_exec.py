@@ -89,7 +89,9 @@ _RESERVED_NAMES = frozenset({SHIM_MODULE, _LAUNCHER, OUTPUT_FILE, EXIT_FILE, CAL
 _GUEST_CALL_TIMEOUT = 300.0
 _GUEST_POLL_SECONDS = 0.05
 
-#: What a timed-out run may spend reading the output it quotes in the failure.
+#: What reading the last of a run may spend once its own bound is gone: the output a timeout
+#: quotes, a finished run's output, and the last look for an exit marker. Shrinking it narrows
+#: a *returned* result's window, not only a diagnostic's.
 _FINAL_READ_GRACE = 2.0
 
 #: What writing one answer may spend when the run's own bound has already passed. Small, and
@@ -379,21 +381,18 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
     different launcher; that is a backend's business, and this one is a helper rather than a
     protocol.
     """
-    # Built whole, then quoted once. Quoting the fragments and pasting them inside an already
-    # quoted `sh -c '…'` is the classic version of this bug: the first inner quote *ends* the
-    # outer argument, so a run directory with a space in it splits the command and the program
-    # never starts.
-    # The exit code lands by rename, for the reason the shim stages its requests: a redirection
-    # creates the file empty and fills it a moment later, and a supervisor polling in that gap
-    # would read an empty marker as *finished*, discard the run and report failure. `mv` within
-    # one directory is atomic on any POSIX filesystem.
+    # Three invariants, and the command is built whole so `_quote` applies to finished strings
+    # rather than to fragments nested inside an already quoted `sh -c '…'`.
+    #   * `PYTHONUNBUFFERED`, because this file is the timeout's only witness and CPython
+    #     block-buffers stdout into a redirection. Through the environment because
+    #     `interpreter` need not be CPython: the variable costs a program that is not Python
+    #     nothing, where a spliced `-u` would be a flag it does not know.
+    #   * The exit code lands by rename, so a poll cannot read the empty file a redirection
+    #     leaves for a moment as a finished run. Staged beside its final name, which is the
+    #     cheapest way to know the rename stays inside one filesystem and so stays atomic.
+    #   * `nohup … &`, because `exec` returns when its command does and the program must
+    #     outlive it — see this function's docstring.
     staged = f"{layout.exit_code}.part"
-    # Unbuffered, because the output file is the timeout's only witness. CPython block-buffers
-    # stdout when it is not a terminal, and a redirection to a file is not one — so a program
-    # that prints and then wedges reaches the deadline with its output still in its own memory,
-    # and "Output so far" quotes an empty file. Through the environment rather than `-u` so it
-    # survives an `interpreter` spelled with arguments of its own, and costs nothing to a
-    # program that is not Python.
     inner = (
         f"PYTHONUNBUFFERED=1 {_quote(interpreter)} {_quote(layout.program)} "
         f"> {_quote(layout.output)} 2>&1; "
@@ -522,23 +521,25 @@ async def dispatch_over_exec(
             # First in the loop, so an expired run reports *itself*. Every transport call
             # below is bounded by this same deadline, and letting one of those raise instead
             # would replace "the program did not finish" with "a stat timed out".
+            #
+            # One last look before saying that, on a grace of its own: the marker can land
+            # inside the poll interval that just elapsed, or be there and take longer to read
+            # than a remainder already at zero. Reporting a finished run as unfinished loses
+            # its exit code, and neither window is visible from inside the loop.
+            giving_up = time.monotonic() + _FINAL_READ_GRACE
+            landed = await _marker_if_present(sandbox, layout, giving_up)
+            if landed is not None:
+                return await _completed(sandbox, run, layout, landed, deadline)
             raise TimeoutError(
                 f"the guest program did not finish within {timeout:g}s. Output so far: "
-                f"{(await _final_output(sandbox, run, layout))[:2000]}"
+                f"{(await _final_output(sandbox, run, layout, giving_up))[:2000]}"
             )
         try:
             finished = await _read_if_present(
                 sandbox, layout, layout.exit_code, cap=32, deadline=deadline
             )
             if finished is not None:
-                output = await _read_if_present(
-                    sandbox, layout, layout.output, cap=_output_cap(run), deadline=deadline
-                )
-                return ExecResult(
-                    stdout=_as_text(output),
-                    stderr=_why_no_output(output),
-                    exit_code=_exit_code_from(finished),
-                )
+                return await _completed(sandbox, run, layout, finished, deadline)
             # Serving awaits the tool, so the check at the top of the loop is what keeps a
             # request arriving a millisecond before the deadline from starting a dispatch the
             # bound cannot interrupt.
@@ -552,17 +553,92 @@ async def dispatch_over_exec(
                     allowance,
                 )
         except _DeadlineExpired as stalled:
+            # The same last look, because the call that ran out may have been the marker's own
+            # read: a stat that found it with a millisecond left proves the program finished,
+            # and this handler would otherwise announce the opposite.
+            giving_up = time.monotonic() + _FINAL_READ_GRACE
+            landed = await _marker_if_present(sandbox, layout, giving_up)
+            if landed is not None:
+                # The run is a success after all, so the call that ran out will not be in any
+                # exception — and it may be the write that was recording a tool's effect.
+                logger.warning(
+                    "host tools: the run finished, but a transport call had already run out: %s",
+                    error_detail(stalled),
+                )
+                return await _completed(sandbox, run, layout, landed, deadline)
             # This run's own bound, expiring *inside* an iteration rather than between two of
             # them. Only the transport is bounded that way, so the message says which call ran
             # out while still leading with the failure the caller asked about. A backend's own
             # `TimeoutError` is deliberately not caught here — see `_within`.
             raise TimeoutError(
                 f"the guest program did not finish within {timeout:g}s — {stalled}. "
-                f"Output so far: {(await _final_output(sandbox, run, layout))[:2000]}"
+                f"Output so far: {(await _final_output(sandbox, run, layout, giving_up))[:2000]}"
             ) from stalled
         # Clamped: an unclamped sleep overruns the deadline by a whole interval, so a 0.1s
         # bound with a 10s interval would wait ten seconds to notice it had passed.
         await asyncio.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
+
+
+async def _marker_if_present(
+    sandbox: Sandbox, layout: GuestRunLayout, until: float
+) -> str | _TooLarge | _NotText | None:
+    """The exit marker within what is left of ``until``, or ``None`` — never a raise.
+
+    Called once, on the way to reporting a run as unfinished, so it answers a question rather
+    than adding a failure: whatever a backend raises here means the same as nothing being
+    there, and the run's own reason is the one worth keeping.
+    """
+    try:
+        marker = await _read_if_present(sandbox, layout, layout.exit_code, cap=32, deadline=until)
+    except Exception as failure:  # noqa: BLE001 — a last look must not replace the timeout
+        logger.warning("host tools: a last look for the marker failed: %s", error_detail(failure))
+        return None
+    # Whatever the loop would have accepted, including a marker too large to read: `_completed`
+    # reads it through `_exit_code_from`, which has an answer for every one of them. Filtering
+    # here would make one file mean "finished" a poll before the deadline and "never finished"
+    # a poll after it.
+    return marker
+
+
+async def _completed(
+    sandbox: Sandbox,
+    run: HostToolRun,
+    layout: GuestRunLayout,
+    finished: str | _TooLarge | _NotText,
+    deadline: float,
+) -> ExecResult:
+    """What a run whose exit marker has been read returns, output and all.
+
+    The marker proves the program finished, so nothing here may report that it did not.
+    Reading the output is the last thing left and the run's remainder can be zero by then, so
+    it gets a floor of its own — and a read that runs out even of that still comes back with
+    the exit code. A backend failing for some other reason still propagates, as everywhere
+    else on this path.
+    """
+    try:
+        output = await _read_if_present(
+            sandbox,
+            layout,
+            layout.output,
+            cap=_output_cap(run),
+            deadline=max(deadline, time.monotonic() + _FINAL_READ_GRACE),
+        )
+    except TimeoutError as unread:
+        # Every `TimeoutError`, not only this run's own: `_within` lets a backend's through
+        # untouched, and the grace above guarantees a window where it does. Propagating one
+        # would say the program never finished — the single thing the marker has disproved —
+        # so the backend's sentence goes beside the exit code it would otherwise replace.
+        logger.warning("host tools: the program finished but its output did not")
+        return ExecResult(
+            stdout="",
+            stderr=f"the program finished, but its output could not be read: {unread}",
+            exit_code=_exit_code_from(finished),
+        )
+    return ExecResult(
+        stdout=_as_text(output),
+        stderr=_why_no_output(output),
+        exit_code=_exit_code_from(finished),
+    )
 
 
 async def _serve_next_request(
@@ -698,19 +774,21 @@ async def _within[T](deadline: float, what: str, call: Awaitable[T]) -> T:
     :func:`dispatch_over_exec` on why that one is left alone.
     """
     remaining = max(0.0, deadline - time.monotonic())
+    bound = asyncio.timeout(remaining)
     try:
-        return await asyncio.wait_for(call, timeout=remaining)
+        async with bound:
+            return await call
     except TimeoutError as expired:
-        if time.monotonic() < deadline:
-            # A backend's own bound, not this one: `asyncio.wait_for` passes a `TimeoutError`
-            # from the call straight through, and a backend may raise one for a reason of its
-            # own — acas bounds a read because a guest can plant a FIFO the service reports as
-            # a regular file and never serves. The run has time left, so this is not the run
-            # running out, and relabelling it would replace the only sentence that says what
-            # actually happened.
+        if not bound.expired():
+            # A backend's own bound, not this one — acas bounds a read because a guest can
+            # plant a FIFO the service reports as a regular file and never serves, and that
+            # sentence is the only one saying what happened. Asked of `asyncio` rather than
+            # of the clock: a timer may fire up to one clock resolution early, and on a
+            # platform where that is 16ms a second reading calls this run's own expiry a
+            # backend's, sending it past the handler that knows what to do with it.
             raise
         raise _DeadlineExpired(
-            f"the sandbox did not answer {what} within the run's remaining {remaining:.1f}s"
+            f"the sandbox did not answer {what} within the {remaining:.1f}s it was given"
         ) from expired
 
 
@@ -776,7 +854,7 @@ async def _read_if_present(
         # permanent failure into a run that reports the guest as slow. It propagates, so the
         # caller is told what actually happened. `_final_output` catches broadly for the same
         # reason in reverse: a diagnostic must not replace the failure it is describing.
-        logger.warning("host tools: reading %s failed, ending the run", path)
+        logger.warning("host tools: reading %s failed and will not be retried", path)
         raise
     if len(raw) > cap:
         # The pull surface's own rule, and `collect_outputs` keeps it too: `max_bytes` is what
@@ -804,7 +882,9 @@ async def _read_if_present(
         return _NotText()
 
 
-async def _final_output(sandbox: Sandbox, run: HostToolRun, layout: GuestRunLayout) -> str:
+async def _final_output(
+    sandbox: Sandbox, run: HostToolRun, layout: GuestRunLayout, until: float
+) -> str:
     """What the program printed, for the timeout message — on a short allowance of its own.
 
     The run's deadline has passed by the time this is called, so reading under it would expire
@@ -812,17 +892,23 @@ async def _final_output(sandbox: Sandbox, run: HostToolRun, layout: GuestRunLayo
     diagnostic and answers with nothing rather than raising if even that is too long: the
     caller is already being told the run failed, and the reason must not become "reading the
     reason failed".
+
+    ``until`` is shared with the last look for the exit marker that runs first, not an
+    allowance of this function's own. A backend slow enough to spend it there leaves nothing
+    to quote — the trade for charging a stalled one once rather than twice, and the marker is
+    the half that can still save the run.
     """
     try:
-        return _as_text(
-            await _read_if_present(
-                sandbox,
-                layout,
-                layout.output,
-                cap=_output_cap(run),
-                deadline=time.monotonic() + _FINAL_READ_GRACE,
-            )
+        value = await _read_if_present(
+            sandbox,
+            layout,
+            layout.output,
+            cap=_output_cap(run),
+            deadline=until,
         )
+        # The note when there is one, so a timed-out run whose output was refused for its size
+        # does not quote emptiness at a reader who cannot tell that from a silent program.
+        return _as_text(value) or _why_no_output(value)
     except Exception as failure:  # noqa: BLE001 — a diagnostic must not replace the failure
         # Not just `TimeoutError`: `stat_file` may raise anything a backend's client raises,
         # and this runs while a `TimeoutError` is being constructed. Losing the run's own
