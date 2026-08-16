@@ -346,6 +346,37 @@ def test_samples_relax_no_rule():
     )
 
 
+#: A suppression pyright applies to the whole file rather than to one line: `# type: ignore`
+#: standing alone, and any `# pyright:` directive that is not a line-level `ignore[...]` —
+#: `reportAttributeAccessIssue=false`, `basic`, `strict`.
+#: The gap goes *inside* the lookahead. Outside it, `\s*` gives the space back so the lookahead
+#: reads " ignore[", does not match, and the sanctioned form is flagged as the forbidden one.
+_FILE_WIDE_SUPPRESSION = re.compile(
+    r"^\s*#\s*type:\s*ignore\b|#\s*pyright:(?!\s*ignore\[)", re.MULTILINE
+)
+
+
+@pytest.mark.parametrize("sample", _SAMPLE_DIRS, ids=lambda path: path.name)
+def test_no_sample_suppresses_a_rule_for_a_whole_file(sample: Path):
+    """The unguarded sibling of the sanctioned inline ignore.
+
+    `reportUnnecessaryTypeIgnoreComment` is what makes `# pyright: ignore[rule]` safe to write in
+    a sample: it fails the build once the ignore stops suppressing anything. It does not cover a
+    file-level directive. Measured: `# pyright: reportAttributeAccessIssue=false` on line 1 takes
+    a `run()`-body error to zero diagnostics, and leaving the comment after fixing the error is
+    never flagged — so it silences exactly what #334 exists for and outlives its reason invisibly.
+
+    None exists today. This is what keeps the sanctioned form the only form.
+    """
+    for path in sorted(sample.glob("*.py")):
+        found = _FILE_WIDE_SUPPRESSION.findall(path.read_text(encoding="utf-8"))
+        assert not found, (
+            f"{sample.name}/{path.name} suppresses a rule for the whole file. Only a line-level "
+            "`# pyright: ignore[rule]` is sanctioned here, because only that one fails the build "
+            "when it stops suppressing anything."
+        )
+
+
 def test_a_suppression_in_a_sample_cannot_go_stale_unnoticed():
     """The one real objection to suppressing inline, answered in the config.
 
