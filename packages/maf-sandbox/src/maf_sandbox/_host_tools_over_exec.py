@@ -84,8 +84,8 @@ WORK_DIRECTORY = "work"
 _TRANSPORT_DIRECTORY = "host_tools"
 
 #: Every name :func:`guest_run_layout` puts in that directory. Not a kind's business, and
-#: deliberately not exported: separating the two directories is what makes a guest-supplied
-#: name harmless, and a list of names to refuse is the thing that replaces.
+#: deliberately not exported: two directories are what make a guest-supplied name harmless,
+#: and that is what replaced the list of names a kind used to have to refuse.
 _TRANSPORT_FILENAMES = frozenset({SHIM_MODULE, _LAUNCHER, OUTPUT_FILE, EXIT_FILE, CALLS_DIRECTORY})
 
 
@@ -431,7 +431,7 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
     different launcher; that is a backend's business, and this one is a helper rather than a
     protocol.
     """
-    # Three invariants, and the command is built whole so `_quote` applies to finished strings
+    # Four invariants, and the command is built whole so `_quote` applies to finished strings
     # rather than to fragments nested inside an already quoted `sh -c '…'`.
     #   * `PYTHONUNBUFFERED`, because this file is the timeout's only witness and CPython
     #     block-buffers stdout into a redirection. Through the environment because
@@ -442,20 +442,27 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
     #     cheapest way to know the rename stays inside one filesystem and so stays atomic.
     #   * `nohup … &`, because `exec` returns when its command does and the program must
     #     outlive it — see this function's docstring.
-    #   * The program runs *in* the work directory and *from* the transport's, which is the
-    #     import defence in `GuestRunLayout`: `sys.path[0]` follows the script, never the
-    #     working directory. `mkdir -p` because a run whose kind shared no files has nothing
-    #     else to create it, and `cd` into a directory that is not there fails the run.
+    #   * The program runs *in* the work directory and *from* the transport's, and the shim's
+    #     directory is put on `PYTHONPATH` besides. Placement alone relies on `sys.path[0]`
+    #     being the script's directory, which is a default a guest image can switch off:
+    #     under `PYTHONSAFEPATH` the interpreter prepends nothing, and `import maf_host_tools`
+    #     then finds whatever an inherited `PYTHONPATH` points at — the work directory, on an
+    #     image that puts `.` there, which is the guest's own file. Prepended rather than
+    #     assigned, so an image that needs its own entries keeps them and cannot outrank this.
+    #   * `mkdir -p` because a run whose kind shared no files has nothing else to create the
+    #     work directory, guarded because `sh` does not stop on a failed command: an unguarded
+    #     `cd` leaves the program running wherever the launcher was exec'd, writing artifacts
+    #     where nothing collects them and exiting 0. A non-zero launcher is already reported.
     staged = f"{layout.exit_code}.part"
+    # The shim's own directory, which is the one an import has to reach; `program` is beside
+    # it by construction, and reading it from the shim keeps the two from being separated.
+    importable = posixpath.dirname(layout.shim)
     inner = (
-        f"PYTHONUNBUFFERED=1 {_quote(interpreter)} {_quote(layout.program)} "
+        f"PYTHONUNBUFFERED=1 PYTHONPATH={_quote(importable)}${{PYTHONPATH:+:$PYTHONPATH}} "
+        f"{_quote(interpreter)} {_quote(layout.program)} "
         f"> {_quote(layout.output)} 2>&1; "
         f"printf %s $? > {_quote(staged)}; mv {_quote(staged)} {_quote(layout.exit_code)}"
     )
-    #     Guarded, because `sh` does not stop on a failed command: an unguarded `cd` that
-    #     fails leaves the program running in whatever directory the launcher was exec'd in,
-    #     writing its artifacts where nothing collects them and exiting 0 while it does. A
-    #     non-zero launcher is already a reported failure; a silently relocated run is not.
     return (
         f"#!/bin/sh\nmkdir -p {_quote(layout.work)} && cd {_quote(layout.work)} || exit 1\n"
         f"nohup sh -c {_quote(inner)} >/dev/null 2>&1 &\n"
@@ -582,21 +589,15 @@ async def dispatch_over_exec(
             timeout=max(0.0, deadline - time.monotonic()),
         )
     except TimeoutError as spent:
-        # Translated for the same reason the upload above is, and it has to be the same
-        # answer: the two legs are one situation — the run's budget running out before the
-        # program is going — and which of them it lands on is a matter of milliseconds.
-        # Leaving this one bare made wall-clock jitter decide whether the caller saw its own
-        # expiry or a backend's, for a run that failed identically either way.
-        #
-        # Every `TimeoutError` here, not only one the clock agrees about. The bound `exec` was
-        # given *is* this run's remainder, so its expiry is this run's; and re-reading the
-        # clock to check would reintroduce the misreading `_within` stopped asking it about.
-        # Conditionally, because the usual case has nothing to append: all three shipped
-        # backends bound `exec` with `asyncio.wait_for`, whose `TimeoutError` is bare, and a
-        # sentence ending in a dangling dash is what a model would be shown.
-        because = f" — {spent}" if str(spent) else ""
+        # `exec` was handed this run's remainder, so its expiry is this run's — every
+        # `TimeoutError` from it, without re-reading a clock that may be a resolution behind
+        # the timer that fired. The backend's own text stays in the log for the same reason it
+        # does in `_completed`: this message reaches a model through whichever kind is running.
+        logger.warning(
+            "host tools: the run ran out while starting the program: %s", error_detail(spent)
+        )
         raise SandboxProgramTimeout(
-            f"the run's {timeout:g}s were gone while starting the program{because}"
+            f"the run's {timeout:g}s were gone while starting the program"
         ) from spent
     if started.exit_code != 0:
         return ExecResult(

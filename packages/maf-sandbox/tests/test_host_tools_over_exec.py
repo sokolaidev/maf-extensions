@@ -423,16 +423,39 @@ class TestTheLauncher:
         assert layout.program in tokens[3], "the inner command did not survive as one argument"
         assert layout.output in tokens[3]
 
+    def test_the_shims_directory_is_put_on_the_import_path(self):
+        """Placement alone is a default a guest image can switch off.
+
+        Under `PYTHONSAFEPATH` the interpreter prepends no directory of its own, and then only
+        `PYTHONPATH` decides which `maf_host_tools` an import reaches — the guest's own file,
+        on an image carrying the working directory there. Prepended rather than assigned, so an
+        image keeps whatever entries it needs and none of them can outrank the shim.
+        """
+        layout = guest_run_layout("/maf-sandbox/work/run-1")
+        inner = shlex.split(launcher_script(layout).splitlines()[-1].removesuffix(" &"))[3]
+        assignment = next(w for w in shlex.split(inner) if w.startswith("PYTHONPATH="))
+
+        assert assignment.startswith("PYTHONPATH=/maf-sandbox/work/run-1/host_tools"), (
+            "the shim's directory is not first, so an inherited entry can outrank it"
+        )
+        assert "$PYTHONPATH" in assignment, "an image's own entries were dropped, not kept"
+
     def test_the_interpreter_is_a_shell_word_like_every_path(self):
         """An interpreter path with a space is split unless it is quoted like the rest.
 
-        The environment assignment in front of it is why this reads the second word: `sh`
-        takes `NAME=value cmd` as one command with one variable set for it.
+        The environment assignments in front of it are why this reads past them: `sh` takes
+        `NAME=value NAME=value cmd` as one command with both variables set for it.
         """
         layout = guest_run_layout("/maf-sandbox/work/run-1")
         command = launcher_script(layout, "/opt/py 3.12/bin/python3").splitlines()[-1]
         inner = shlex.split(command.removesuffix(" &"))[3]
-        assert shlex.split(inner)[:2] == ["PYTHONUNBUFFERED=1", "/opt/py 3.12/bin/python3"]
+        assignments, interpreter = shlex.split(inner)[:2], shlex.split(inner)[2]
+
+        assert interpreter == "/opt/py 3.12/bin/python3"
+        assert [word.split("=", 1)[0] for word in assignments] == [
+            "PYTHONUNBUFFERED",
+            "PYTHONPATH",
+        ]
 
 
 def _reap(pid_file: Path) -> None:
@@ -498,16 +521,13 @@ class TestTheLauncherAgainstARealShell:
     def test_a_guest_file_named_like_the_shim_is_not_the_module_the_program_imports(
         self, tmp_path: Path
     ):
-        """The property the two directories exist for, against a real interpreter.
+        """A file a model names cannot become the module the program imports.
 
-        A refusal list cannot be checked this way — it can only be checked against itself —
-        and the two defects already found in one were both about a name nobody thought of.
-        This asks the runtime instead: plant the forgery a model could plausibly name, run the
-        program the way the launcher runs it, and see which module it gets.
-
-        `sys.path[0]` is the *script's* directory, and a script's working directory is never
-        added at all. Running the program from the work directory instead would invert that
-        and the forgery would win — which is why `program` lives beside the shim.
+        Asked of a real interpreter, because the guarantee is the runtime's: `sys.path[0]` is
+        the *script's* directory and a script's working directory is never added at all, so a
+        program run from beside the shim cannot reach a same-named file among the model's own.
+        Placement is not the whole defence — `PYTHONSAFEPATH` switches that default off, which
+        the launcher answers by putting the shim's directory on `PYTHONPATH` as well.
         """
         directory = tmp_path.as_posix()
         served, work = f"{directory}/host_tools", f"{directory}/work"
@@ -521,16 +541,30 @@ class TestTheLauncherAgainstARealShell:
             "import maf_host_tools\nprint(maf_host_tools.SPEAKING)\n", encoding="utf-8"
         )
 
-        spoke = subprocess.run(
-            [sys.executable, f"{served}/program.py"],
-            cwd=work,
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=True,
-        )
+        for label, environment in (
+            # What the launcher sets on an ordinary image: the shim's directory prepended.
+            ("the default path", {"PYTHONPATH": served}),
+            # `PYTHONSAFEPATH` stops the interpreter prepending the *script's* directory, so
+            # placement alone stops defending. Here the guest's own directory is inherited on
+            # `PYTHONPATH` too — an image with `.` on it — and the prepend is what still wins.
+            (
+                "a safe-path guest",
+                {"PYTHONSAFEPATH": "1", "PYTHONPATH": f"{served}{os.pathsep}{work}"},
+            ),
+        ):
+            spoke = subprocess.run(
+                [sys.executable, f"{served}/program.py"],
+                cwd=work,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                env={**os.environ, **environment},
+            )
 
-        assert spoke.stdout.strip() == "the shim", "a guest-named file became the host's module"
+            assert spoke.returncode == 0, f"{label}: {spoke.stderr}"
+            assert spoke.stdout.strip() == "the shim", (
+                f"{label}: a guest-named file became the host's module"
+            )
 
     @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
     def test_a_program_that_prints_and_then_hangs_leaves_its_output_readable(self, tmp_path: Path):
@@ -1223,10 +1257,9 @@ class TestWhatAFinishedRunIsAllowedToSay:
         assert result.exit_code == 7, "a finished run was reported as something else"
         assert result.stdout == ""
         assert "could not be read" in result.stderr
-        # Changed from asserting the backend's sentence reaches `stderr`. It does reach a
-        # model — every kind renders this — and a client's timeout text is where an endpoint,
-        # a subscription or a request id lives. The diagnosis is worth keeping and the log is
-        # where it is kept; what a caller is owed here is that the output is missing.
+        # A client's timeout text is where an endpoint, a subscription or a request id lives,
+        # and every kind renders this value for a model. The diagnosis belongs in the log; what
+        # a caller is owed here is that the output is missing.
         assert "a FIFO the service reports as a regular file" not in result.stderr
 
     def test_a_marker_that_lands_in_the_last_poll_interval_is_still_found(
@@ -1491,7 +1524,10 @@ class TestWhoseTimeoutItWas:
         with pytest.raises(SandboxProgramTimeout, match="while starting the program") as spent:
             _run(_BoundsTheStart([], finish=False), HostToolRun(_registry()), timeout=30.0)
 
-        assert "the service bounds this exec" in str(spent.value), "the backend's reason was lost"
+        # A client's timeout text is where an endpoint or a request id lives, and this
+        # message reaches a model. It stays on `__cause__` for a caller that wants it.
+        assert "the service bounds this exec" not in str(spent.value)
+        assert str(spent.value.__cause__) == "the service bounds this exec"
 
     def test_a_bare_backend_timeout_leaves_no_dangling_reason(self):
         """The shipped backends all bound `exec` with `asyncio.wait_for`, whose `TimeoutError`
