@@ -71,11 +71,15 @@ Expected shape — the grand total over `sales.csv` is **1124**:
 ```
 The grand total is 1124. The per-region summary was saved as summary.md.
 
-Disposed 1 sandbox(es).
-Delivered this turn into out/: ["summary.md"]
+  [measured] Disposed 1 sandbox(es).
+  [measured] Delivered this turn into out/: ["summary.md"]
 ```
 
 `out/summary.md` then holds the per-region table: north 390, south 200, east 84, west 450.
+
+The wording of the first line is the model's and varies run to run. The two tagged ones are the sample's own report of what the router disposed and what the sink took, and the live check reads only those — a model writes into the same stream, so a reply saying "Disposed 1 sandbox(es)." would otherwise answer for the router. The reply is filtered before printing, so a line of it starting with that tag comes out quoted, `> [measured] …` ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)).
+
+[Sample 14](../14_acas_codeact_files/) is this sample on a real Azure sandbox — same task, same data, same two lines, one line of wiring changed — and one script checks both.
 
 A nested declared name works too — `reports/summary.md` lands at `out/reports/summary.md`, because the sink makes each destination's own parent. Nesting cannot climb out: names are validated relative before they arrive, and the sink resolves each destination and refuses one that lands outside `out/` — which lexical validation alone would not catch, since a symlink already sitting in `out/` carries a write wherever it points.
 

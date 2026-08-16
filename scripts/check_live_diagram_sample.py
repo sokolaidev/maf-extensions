@@ -24,7 +24,14 @@ import struct
 import sys
 from pathlib import Path
 
-_DISPOSED = re.compile(r"Disposed\s+(\d+)\s+sandbox", re.IGNORECASE)
+#: Tagged, so a model writing "Disposed 1 sandbox(es)." into its reply does not answer for the
+#: router — this line is the sample's own report of what `dispose_scope` returned. `MEASURED` in
+#: `samples/*/_scaffold.py` writes the tag and `quoted` there takes it away from anything the
+#: model said. Case-sensitive on the tag, lax after it: a reader broader than its sanitizer is a
+#: hole rather than tolerance (#314).
+_DISPOSED = re.compile(
+    r"^  (?-i:\[measured\]) Disposed\s+(\d+)\s+sandbox", re.MULTILINE | re.IGNORECASE
+)
 
 #: The 8-byte PNG signature, and the fixed layout that must follow it: a 4-byte chunk length,
 #: the chunk type `IHDR`, then width and height as big-endian uint32. The header chunk is first
@@ -59,7 +66,9 @@ def assess(output: str, image: bytes | None) -> list[str]:
 
     disposed = _DISPOSED.search(output)
     if disposed is None:
-        failures.append("no 'Disposed N sandbox(es)' line — the sample did not run to completion")
+        failures.append(
+            "no measured 'Disposed N sandbox(es)' line — the sample did not run to completion"
+        )
     elif int(disposed.group(1)) < 1:
         failures.append(
             "'Disposed 0 sandbox(es)' — no sandbox was ever created, so the model answered "

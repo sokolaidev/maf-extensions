@@ -69,7 +69,7 @@ The first call pays for creating and starting the container — a few seconds, a
 The diagram has been rendered and saved to `out/diagram.png`. It shows the
 three-stage pipeline: ingest → transform → load.
 
-Disposed 1 sandbox(es).
+  [measured] Disposed 1 sandbox(es).
 ```
 
 That block is one real run. **What the model says varies** — the DOT it writes, whether it labels the edges, how it phrases the reply. **What does not vary** is the tool result underneath it and the file on disk: `render_diagram` returns exactly
@@ -78,7 +78,7 @@ That block is one real run. **What the model says varies** — the DOT it writes
 Rendered diagram.png (image/png); saved under out/.
 ```
 
-every time — a host-authored line, not the model's — and a valid PNG appears at `out/diagram.png` (`89 50 4E 47` — the PNG magic — as its first bytes). `Disposed 1 sandbox(es).` prints only once `render_diagram` has actually created and torn down a container; a `Disposed 0` would mean the model answered without rendering anything, the T0 behaviour this sample exists to contrast with.
+every time — a host-authored line, not the model's — and a valid PNG appears at `out/diagram.png` (`89 50 4E 47` — the PNG magic — as its first bytes). The disposal line prints only once `render_diagram` has actually created and torn down a container; a `Disposed 0` would mean the model answered without rendering anything, the T0 behaviour this sample exists to contrast with. It carries `[measured]` because it is the sample's report rather than the model's, and the reply is filtered before printing so a line of it starting with that tag comes out quoted, `> [measured] …` — otherwise a reply writing "Disposed 1 sandbox(es)." would answer for the router ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)).
 
 The PNG is git-ignored (`out/`), so a run leaves no tracked file behind.
 

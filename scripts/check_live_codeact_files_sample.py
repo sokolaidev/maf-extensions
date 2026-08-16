@@ -1,10 +1,22 @@
-"""Assert that a live run of `samples/08_docker_codeact_files` moved files in both directions.
+"""Assert that a live CodeAct files run moved files in both directions.
 
-Two halves, and the second is the point: stdout cannot show that a file left the sandbox, so a
-run that prints the right total and lands nothing must go red.
+Shared by `samples/08_docker_codeact_files` (a Docker container on this machine) and
+`samples/14_acas_codeact_files` (a real Azure sandbox) — the task, the data, the one right
+answer and the printed shape are identical, so one checker serves both and a red on one side
+alone names the backend rather than the workload (#300).
 
     python samples/08_docker_codeact_files/agent.py | tee out.txt
     python scripts/check_live_codeact_files_sample.py out.txt samples/08_docker_codeact_files/out/summary.md
+
+Two halves, and the second is the point: stdout cannot show that a file left the sandbox, so a
+run that prints the right total and lands nothing must go red. The landed summary is the half
+that cannot be written by a model — the sink is host-side code, and the only road to `out/` runs
+through a program that actually ran and an artifact actually pulled back.
+
+The two lines this reads out of the transcript are the host's own, and both are tagged
+`[measured]` for the reason #314 set out: the model answers into the same stream, so an unmarked
+search finds a reply saying "Disposed 1 sandbox(es)." before the sample's own line. The sample
+takes the tag away from anything the model said before printing either.
 
 Exits non-zero listing every reason it failed.
 """
@@ -26,8 +38,15 @@ _REGION_TOTALS = {"north": "390", "south": "200", "east": "84", "west": "450"}
 #: What the declared output must be called once delivered — not `<run-id>/summary.md`.
 _SUMMARY_NAME = "summary.md"
 
-_DISPOSED = re.compile(r"Disposed\s+(\d+)\s+sandbox", re.IGNORECASE)
-_DELIVERED = re.compile(r"^Delivered this turn[^:]*:\s*(.+)$", re.IGNORECASE | re.MULTILINE)
+#: Both lines below come off one the *sample* tagged. `MEASURED` in `samples/*/_scaffold.py`
+#: writes the tag and `quoted` there takes it away from anything the model said, so a reply
+#: impersonating either line is a quotation by the time this reads the stream. Case-sensitive on
+#: the tag, lax after it: a reader broader than its sanitizer is a hole rather than tolerance.
+_M = r"^  (?-i:\[measured\]) "
+_F = re.MULTILINE | re.IGNORECASE
+
+_DISPOSED = re.compile(_M + r"Disposed\s+(\d+)\s+sandbox", _F)
+_DELIVERED = re.compile(_M + r"Delivered this turn[^:]*:\s*(.+)$", _F)
 
 
 #: What a model may put between thousands: a comma, a plain space, a no-break space or a
@@ -114,7 +133,9 @@ def assess(output: str, summary: str | None) -> list[str]:
 
     disposed = _DISPOSED.search(output)
     if disposed is None:
-        failures.append("no 'Disposed N sandbox(es)' line — the sample did not run to completion")
+        failures.append(
+            "no measured 'Disposed N sandbox(es)' line — the sample did not run to completion"
+        )
     elif int(disposed.group(1)) < 1:
         failures.append(
             "'Disposed 0 sandbox(es)' — no sandbox was ever created, so nothing ran in one"
@@ -122,7 +143,9 @@ def assess(output: str, summary: str | None) -> list[str]:
 
     delivered = _DELIVERED.search(output)
     if delivered is None:
-        failures.append("no 'Delivered this turn' line — the sample did not reach its final report")
+        failures.append(
+            "no measured 'Delivered this turn' line — the sample did not reach its final report"
+        )
     elif _SUMMARY_NAME not in _delivered_names(delivered.group(1)):
         failures.append(
             f"the host recorded delivering {delivered.group(1).strip()!r}, which does not "
@@ -173,7 +196,7 @@ def main(argv: list[str]) -> int:
             print(f"  - {reason}", file=sys.stderr)
         return 1
     print(
-        "OK  the CodeAct sample read a file from the store in a live container and landed its "
+        "OK  the CodeAct sample read a file from the store in a live sandbox and landed its "
         "declared summary against the published wheels"
     )
     return 0
