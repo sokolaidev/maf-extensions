@@ -45,21 +45,26 @@ With either of the first two unset the program says which and exits non-zero, ra
 
 ## Run
 
-The first call pays for pulling the image, if it is not already local, plus creating and starting the container — a few seconds, against the minutes a microVM-isolated sandbox needs. `agent.py` prints only the model's reply and the disposal line — never `execute_code`'s own result — so what you see looks something like this:
+The first call pays for pulling the image, if it is not already local, plus creating and starting the container — a few seconds, against the minutes a microVM-isolated sandbox needs. `agent.py` prints the model's reply, then what `execute_code` returned, then the disposal line — so what you see looks something like this:
 
 ```
 It printed:
 
-```
-354224848179261915075
-```
+    354224848179261915075
 
-Disposed 1 sandbox(es).
+== Program output as execute_code returned it ==
+
+  stdout:
+  354224848179261915075
+
+  [measured] programs whose output came back from the sandbox: 1
+
+  [measured] Disposed 1 sandbox(es).
 ```
 
 That block is one real run, against a local OpenAI-compatible endpoint. The prose and the formatting around the number are the model's and vary; the number and the disposal line do not.
 
-The same number sample 03 gets from a microVM in Azure, computed by the same program in the same way — only the backend underneath differs. The wording around it is the model's and varies run to run; `Disposed 1 sandbox(es).` is what tells you a container was really created and torn down, rather than the model reciting a well-known sequence.
+The same number sample 03 gets from a microVM in Azure, computed by the same program in the same way — only the backend underneath differs. The wording around it is the model's and varies run to run. The block under it does not: it is what `execute_code` returned, printed from the tool result rather than from the reply, which is what separates a number the interpreter produced from one the model recited ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)). `[measured] Disposed 1 sandbox(es).` is what tells you a container was really created and torn down.
 
 ## Troubleshooting
 

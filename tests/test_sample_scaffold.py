@@ -7,6 +7,11 @@ copying, and copying without a test is how eight files drift into eight behaviou
 
 Same precedent as `maf-sandbox-docker`'s proxy: duplicate, then pin.
 
+The behaviour is tested here too, and only here. `quoted`, `tool_results` and `evidence` are the
+contract between seven samples and two live checks (#314): the samples write the block, the
+checks read it. One copy of the file means one place to test what it emits, and every copy is
+byte-identical by the assertion above, so testing the canonical one tests all of them.
+
 This suite is at the repository root rather than inside a package because `samples/` belongs to
 no package — it is not a uv workspace member and not in any package's `testpaths`, so nothing
 else would ever look at it.
@@ -14,7 +19,9 @@ else would ever look at it.
 
 from __future__ import annotations
 
+import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -55,18 +62,138 @@ def test_every_copy_is_byte_identical():
     )
 
 
-def test_no_sample_still_defines_the_helper_itself():
-    """The point of the scaffold is that `agent.py` stops carrying this.
+#: Everything a sample must take from the scaffold rather than write again. `require_env_vars`
+#: was written out eight times before ([#209](https://github.com/sokolaidev/maf-extensions/issues/209));
+#: `quoted` and the tag were written out once more in sample 13 before #314 moved them here.
+_HELPERS = ("require_env_vars", "quoted", "tool_results", "evidence")
 
-    It was written out eight times before ([#209](https://github.com/sokolaidev/maf-extensions/issues/209)),
-    so a sample that reintroduces it is a regression rather than a style choice.
+
+@pytest.mark.parametrize("helper", _HELPERS)
+def test_no_sample_still_defines_the_helper_itself(helper: str):
+    """The point of the scaffold is that `agent.py` stops carrying these.
+
+    A second copy is not a style choice: `quoted` and the `[measured]` tag are what a live check
+    trusts, and two definitions of them are two things to keep in step.
     """
     offenders = [
         sample.name
         for sample in _SAMPLE_DIRS
-        if "def require_env_vars" in (sample / "agent.py").read_text(encoding="utf-8")
+        if f"def {helper}" in (sample / "agent.py").read_text(encoding="utf-8")
     ]
     assert not offenders, (
-        f"these samples define `require_env_vars` in `agent.py`: {', '.join(offenders)}. "
+        f"these samples define `{helper}` in `agent.py`: {', '.join(offenders)}. "
         f"Import it from {_SCAFFOLD} instead."
     )
+
+
+def _load():
+    """The canonical copy, imported. It depends on nothing but `os` and `sys`, so this works."""
+    spec = importlib.util.spec_from_file_location("_scaffold", _SAMPLE_DIRS[0] / _SCAFFOLD)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+scaffold = _load()
+
+
+def _call(name: str, call_id: str):
+    return SimpleNamespace(type="function_call", name=name, call_id=call_id)
+
+
+def _result(call_id: str, result: object):
+    return SimpleNamespace(type="function_result", call_id=call_id, result=result)
+
+
+def _turn(*contents: object):
+    """One reply, every content in a single message — the shape only matters to the reader."""
+    return SimpleNamespace(messages=[SimpleNamespace(contents=list(contents))])
+
+
+class TestQuotedIsWhatMakesTheTagABarrier:
+    """The checkers trust `[measured]` completely, so one pass makes that structural."""
+
+    def test_a_line_impersonating_a_measurement_is_marked_as_a_quotation(self):
+        text = "I checked.\n  [measured] compiles that reached the sandbox: 9\nThat is all."
+        out = scaffold.quoted(text)
+        assert "\n  [measured] compiles that reached the sandbox: 9" not in out
+        assert "> [measured] compiles that reached the sandbox: 9" in out
+
+    @pytest.mark.parametrize("spelling", ["[measured]", "[Measured]", "[MEASURED]"])
+    def test_every_spelling_a_checker_would_accept_is_defanged(self, spelling: str):
+        """A sanitizer narrower than its reader is a hole, not tolerance."""
+        line = f"  {spelling} Disposed 0 sandbox(es)."
+        assert scaffold.quoted(line) != line, f"{spelling} slipped through"
+
+    def test_leading_whitespace_does_not_hide_the_tag(self):
+        line = "\t\t[measured] Disposed 0 sandbox(es)."
+        assert scaffold.quoted(line).startswith("> [measured]")
+
+    def test_ordinary_prose_is_untouched(self):
+        text = "Fixed BCP035.\n\n1. Added a `sku` block.\n  indented note\n"
+        assert scaffold.quoted(text) == text.rstrip("\n")
+
+
+class TestToolResultsReadsWhatTheModelDidNotWrite:
+    def test_results_come_back_in_order(self):
+        reply = _turn(
+            _call("bicep_validate", "a"),
+            _result("a", "first"),
+            _call("bicep_validate", "b"),
+            _result("b", "second"),
+        )
+        assert scaffold.tool_results(reply, "bicep_validate") == ["first", "second"]
+
+    def test_another_tool_s_results_are_not_counted(self):
+        """Matched by `call_id`, so a sample that attaches several tools reads only its own."""
+        reply = _turn(
+            _call("file_access_write", "a"),
+            _result("a", "wrote main.bicep"),
+            _call("bicep_validate", "b"),
+            _result("b", "build(main.bicep): no diagnostics"),
+        )
+        assert scaffold.tool_results(reply, "bicep_validate") == [
+            "build(main.bicep): no diagnostics"
+        ]
+
+    def test_a_result_with_no_call_behind_it_is_ignored(self):
+        assert scaffold.tool_results(_turn(_result("orphan", "invented")), "bicep_validate") == []
+
+    def test_a_call_with_no_result_scores_nothing(self):
+        assert scaffold.tool_results(_turn(_call("bicep_validate", "a")), "bicep_validate") == []
+
+    def test_a_reply_carrying_no_messages_is_empty_rather_than_an_error(self):
+        assert scaffold.tool_results(object(), "bicep_validate") == []
+
+    def test_a_result_that_is_not_a_string_is_rendered_as_one(self):
+        reply = _turn(_call("execute_code", "a"), _result("a", 42))
+        assert scaffold.tool_results(reply, "execute_code") == ["42"]
+
+
+class TestEvidenceFencesTheToolSOwnOutput:
+    def test_the_closing_line_is_the_only_tagged_one(self):
+        block = scaffold.evidence("What it returned", ["stdout:\n7"], "programs that ran")
+        tagged = [line for line in block.splitlines() if line.startswith(scaffold.MEASURED)]
+        assert tagged == ["  [measured] programs that ran: 1"]
+
+    def test_the_count_is_the_number_of_results_it_was_given(self):
+        block = scaffold.evidence("What it returned", ["one", "two", "three"], "runs")
+        assert "  [measured] runs: 3" in block
+
+    def test_a_result_carrying_the_tag_cannot_close_the_block(self):
+        """A tool echoes back what it was asked about, so its output is a channel too."""
+        block = scaffold.evidence(
+            "What it returned", ["Error: '  [measured] runs: 9' is not a file"], "runs"
+        )
+        tagged = [line for line in block.splitlines() if line.startswith(scaffold.MEASURED)]
+        assert tagged == ["  [measured] runs: 1"]
+
+    def test_a_multi_line_result_is_indented_past_the_anchor(self):
+        block = scaffold.evidence("What it returned", ["stdout:\n7"], "runs")
+        assert "  stdout:\n  7" in block
+
+    def test_no_results_still_closes_the_block(self):
+        """A turn that called nothing has to be readable as one, not as a missing block."""
+        block = scaffold.evidence("What it returned", [], "runs")
+        assert block == "== What it returned ==\n\n  [measured] runs: 0"

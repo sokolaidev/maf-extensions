@@ -42,7 +42,7 @@ import re
 import subprocess
 import sys
 
-from _scaffold import require_env_vars
+from _scaffold import MEASURED, quoted, require_env_vars, tool_results
 from agent_framework import Agent, FileAccessProvider, InMemoryAgentFileStore
 from agent_framework.openai import OpenAIChatCompletionClient
 from maf_sandbox import Isolation, SandboxRouter
@@ -92,14 +92,6 @@ WORK_PRODUCT = (
     ("param location", re.compile(r"param\s+location\b")),
     ("param storageAccountName", re.compile(r"param\s+storageAccountName\b")),
 )
-
-#: Prefix on every number this program measured, as opposed to anything the model said. Sample
-#: 12 prints the same kind of line without one and does not need it — no model writes into its
-#: output. Here the model's replies and these measurements share one stream that the live check
-#: parses, so a reply quoting "containers after turn 2: 2" is otherwise indistinguishable from
-#: the count. It also tells a human reading the log which lines are the harness speaking.
-_TAG = "[measured]"
-MEASURED = f"  {_TAG} "
 
 #: Built from `images/bicep-sandbox` — the same guest samples 02 and 05 use, so the compiler and
 #: the lint rule set are theirs and the diagnostics below are comparable with both.
@@ -193,21 +185,7 @@ def validations(reply: object, name: str) -> int:
     compiler phases is one that reached the sandbox — anchored, because a rejection echoes the
     caller's own filename back, and a name carrying those markers would otherwise count.
     """
-    asked = {
-        content.call_id
-        for message in getattr(reply, "messages", [])
-        for content in message.contents
-        if getattr(content, "type", None) == "function_call"
-        and getattr(content, "name", None) == name
-    }
-    return sum(
-        1
-        for message in getattr(reply, "messages", [])
-        for content in message.contents
-        if getattr(content, "type", None) == "function_result"
-        and getattr(content, "call_id", None) in asked
-        and _PHASES.search(str(getattr(content, "result", ""))) is not None
-    )
+    return sum(1 for result in tool_results(reply, name) if _PHASES.search(result))
 
 
 async def read_or_empty(store: InMemoryAgentFileStore, name: str) -> str:
@@ -221,25 +199,6 @@ async def read_or_empty(store: InMemoryAgentFileStore, name: str) -> str:
     except Exception:  # noqa: BLE001 - any failure to read means nothing was authored
         return ""
     return content if isinstance(content, str) else content.decode("utf-8")
-
-
-def quoted(text: str) -> str:
-    """The model's reply, with any line impersonating a measurement marked as a quotation.
-
-    `MEASURED` is what tells the live check which numbers this program vouches for, and the
-    model writes into the same stream. Nothing puts the tag in its context, so a collision is
-    improbable — but a tag is worth exactly what it excludes, and one pass makes that
-    structural instead of statistical.
-
-    Matched case-insensitively on purpose: a sanitizer narrower than its reader is a hole, and
-    the checker is deliberately lax about everything except the tag's own spelling. Applied to
-    the compiler's output as well as the model's replies — Bicep echoes source text in messages
-    like ``BCP037``, and a newline escape inside an identifier puts a real break in one.
-    """
-    return "\n".join(
-        f"> {line.lstrip()}" if line.lstrip().lower().startswith(_TAG.lower()) else line
-        for line in text.splitlines()
-    )
 
 
 def build_client() -> tuple[OpenAIChatCompletionClient, object | None] | None:

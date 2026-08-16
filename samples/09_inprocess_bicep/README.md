@@ -48,21 +48,30 @@ Local mode needs none of them — an unset `AZURE_OPENAI_ENDPOINT`, a running `o
 
 ## Run
 
-The model writes its own prose around the diagnostics, but what it is reporting comes from the real compiler, and looks like this:
+The model writes its own summary first. Under it the sample prints the diagnostics again, this time straight out of what `bicep_validate` returned:
 
 ```
-  [error]   no-unused-params @ main.bicep:21 — Parameter "environmentName" is declared but never used.
-  [warning] BCP035 @ main.bicep:31 — The specified "resource" declaration is missing the
-            following required properties: "sku".
-  [warning] use-recent-api-versions @ main.bicep:31 — '2023-01-01' is 1320 days old,
-            should be no more than 730 days old, or the most recent.
+== Diagnostics as bicep_validate returned them ==
 
-Disposed 1 sandbox(es).
+  build(main.bicep): 1 diagnostic(s)
+    [warning] BCP035 @ main.bicep:31: The specified "resource" declaration is missing the
+              following required properties: "sku".
+  lint(main.bicep): 2 diagnostic(s)
+    [error] no-unused-params @ main.bicep:21: Parameter "environmentName" is declared but
+            never used.
+    [warning] use-recent-api-versions @ main.bicep:31: '2023-01-01' is 1320 days old,
+              should be no more than 730 days old, or the most recent.
+
+  [measured] compiles that reached the sandbox: 1
+
+  [measured] Disposed 1 sandbox(es).
 ```
 
-Three diagnostics — the two faults the file carries (`no-unused-params`, `BCP035`) plus the age of the deliberately old API version (`use-recent-api-versions`). The rule ids are opaque tokens the model is instructed to echo verbatim, so their presence is evidence the real compiler ran and its SARIF reached the workload, was parsed, was rendered, and came back through the agent — the whole protocol seam, on the host, with nothing rented. The `Disposed 1 sandbox(es).` line is the proof a sandbox was acquired at all, and not the model answering from reading the file.
+Three diagnostics — the two faults the file carries (`no-unused-params`, `BCP035`) plus the age of the deliberately old API version (`use-recent-api-versions`). The rule ids are opaque tokens the model is instructed to echo verbatim, so their presence is evidence the real compiler ran and its SARIF reached the workload, was parsed, was rendered, and came back through the agent — the whole protocol seam, on the host, with nothing rented. The `[measured] Disposed 1 sandbox(es).` line is the proof a sandbox was acquired at all, and not the model answering from reading the file — tagged, because a model can write that sentence too.
 
-The day count and the acceptable-version list in `use-recent-api-versions` move with no code change, so the live check ([`scripts/check_live_sample.py`](../../scripts/check_live_sample.py), shared with samples 01 and 05) matches that rule's **id** and never its message. It requires `no-unused-params` and `BCP035` by name, the `Disposed` line, and one of the two things only a discovered `bicepconfig.json` produces: `use-recent-api-versions` reported at all, or `no-unused-params` reported at `[error]` rather than its built-in `warning`. Either one settles it, because a run that found no config loses both at the same moment — and a run that found no config is otherwise indistinguishable from a healthy one ([#308](https://github.com/sokolaidev/maf-extensions/issues/308)). Both are matched as *rendered* diagnostics — the rule id with a bracketed severity beside it — so a model that merely names a rule while saying it was not reported does not satisfy them. That is why this sample ships its own copy of `bicepconfig.json` and seeds it into the work root: the host has no image to bake it into.
+The live check ([`scripts/check_live_sample.py`](../../scripts/check_live_sample.py), shared with samples 01 and 05) reads all of that out of the block and none of it out of the reply ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)). The compiler's rendering is fixed, so there is nothing to guess about markup; the day count and the acceptable-version list still move with no code change, so no message is read. It requires `no-unused-params` and `BCP035` by name, at least one diagnostic at `[error]`, the tagged `Disposed` line, and one of the two things only a discovered `bicepconfig.json` produces: `use-recent-api-versions` reported at all, or `no-unused-params` reported at `[error]` rather than its built-in `warning`. Either one settles it, because a run that found no config loses both at the same moment — and a run that found no config is otherwise indistinguishable from a healthy one ([#308](https://github.com/sokolaidev/maf-extensions/issues/308)). That is why this sample ships its own copy of `bicepconfig.json` and seeds it into the work root: the host has no image to bake it into.
+
+One thing is still read from the reply, and only one: it has to *name* the rules the block reports. That is the claim the diagnostics reached the model rather than only the log. Rule ids are opaque tokens, so a bare substring is the right test — requiring a rendered severity is what failed three healthy releases.
 
 ## Troubleshooting
 

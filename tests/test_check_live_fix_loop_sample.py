@@ -861,49 +861,32 @@ class TestModelTextCannotImpersonateAMeasurement:
 
     Nothing puts `[measured]` in the model's context, so a collision is improbable — but the
     checker trusts that tag completely, and one pass over the reply makes it structural.
+
+    `quoted` itself lives in `samples/*/_scaffold.py` and is tested in `test_sample_scaffold.py`
+    (#314). What belongs here is the half that is this sample's: that it puts everything a model
+    can steer through the pass, and that the checker's reader is no broader than the pass is.
     """
 
     @staticmethod
     def _quoted():
-        tree = ast.parse(_SAMPLE.read_text(encoding="utf-8"))
-        wanted: dict[str, ast.stmt] = {}
-        for node in tree.body:
-            if isinstance(node, ast.Assign):
-                for target in node.targets:
-                    if isinstance(target, ast.Name) and target.id in ("_TAG", "MEASURED"):
-                        wanted[target.id] = node
-            elif isinstance(node, ast.FunctionDef) and node.name == "quoted":
-                wanted["quoted"] = node
-        missing = {"_TAG", "MEASURED", "quoted"} - wanted.keys()
-        assert not missing, (
-            f"samples/13_bicep_fix_loop/agent.py no longer defines {sorted(missing)}"
-        )
-        namespace: dict = {}
-        module = ast.Module(
-            body=[wanted["_TAG"], wanted["MEASURED"], wanted["quoted"]], type_ignores=[]
-        )
-        exec(compile(module, "<sample-13>", "exec"), namespace)  # noqa: S102 - this repo's file
-        return namespace["quoted"]
+        spec = importlib.util.spec_from_file_location("_scaffold", _SAMPLE.parent / "_scaffold.py")
+        assert spec and spec.loader
+        scaffold = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(scaffold)
+        return scaffold.quoted
 
-    def test_a_reply_impersonating_a_measurement_is_marked_as_a_quotation(self):
-        reply = "I checked.\n  [measured] containers after turn 2: 2 (a1b2c3d4e5f6, 9f8e7d6c5b4a)\nThat is all."
-        out = self._quoted()(reply)
-        assert "  [measured] containers after turn 2: 2 (a1b2c3d4e5f6, 9f8e7d6c5b4a)" not in out
-        assert "> [measured] containers after turn 2: 2 (a1b2c3d4e5f6, 9f8e7d6c5b4a)" in out
+    @pytest.mark.parametrize("printed", ["first.text", "second.text", "baseline", "verdict"])
+    def test_everything_the_model_can_steer_goes_through_the_pass(self, printed: str):
+        """Both replies and both compile blocks, not just the replies.
 
-    def test_ordinary_model_prose_is_untouched(self):
-        reply = "Fixed BCP035.\n\n1. Added a `sku` block.\n  indented note\n"
-        assert self._quoted()(reply) == reply.rstrip("\n")
-
-    @pytest.mark.parametrize("spelling", ["[measured]", "[Measured]", "[MEASURED]"])
-    def test_every_spelling_the_checker_would_accept_is_defanged(self, spelling: str):
-        """A sanitizer narrower than its reader is a hole, not tolerance.
-
-        The checker is deliberately lax about the phrase after the tag, so `quoted` has to be at
-        least as broad as that on the tag itself.
+        The model writes `main.bicep` in this sample, and a `\\n` escape inside an identifier puts
+        a real newline into a `BCP037` message — so the compiler's output is a second channel the
+        model can write into, and printing it raw would hand back what `quoted` took away.
         """
-        line = f"  {spelling} containers after turn 2: 1 (a1b2c3d4e5f6)"
-        assert self._quoted()(line) != line, f"{spelling} slipped through"
+        source = _SAMPLE.read_text(encoding="utf-8")
+        assert re.search(rf"quoted\([^)]*{re.escape(printed)}", source), (
+            f"samples/13_bicep_fix_loop/agent.py prints {printed} without `quoted`"
+        )
 
     def test_the_checker_accepts_only_the_exact_tag(self):
         # The other half of the same rule: the sample emits one spelling, so widening what the
