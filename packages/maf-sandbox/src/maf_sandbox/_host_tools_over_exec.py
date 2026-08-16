@@ -88,18 +88,39 @@ _TRANSPORT_DIRECTORY = "host_tools"
 #: and that is what replaced the list of names a kind used to have to refuse.
 _TRANSPORT_FILENAMES = frozenset({SHIM_MODULE, _LAUNCHER, OUTPUT_FILE, EXIT_FILE, CALLS_DIRECTORY})
 
-#: Names CPython's startup treats specially, which this directory is on the path for. Refused
-#: as a ``program`` name rather than left to surprise a kind — not a model's choice, since a
-#: kind names its own program and nothing a model names lands in this directory.
+#: What **CPython's own startup imports unconditionally**, which this directory is on the path
+#: for. Refused as a ``program`` name rather than left to surprise a kind — not a model's
+#: choice, since a kind names its own program and nothing a model names lands here.
 #:
-#: They do not fail the same way, and the difference is measured rather than assumed:
-#: ``encodings.py`` is imported before the interpreter can report anything and takes it down
-#: with a path-configuration dump; ``sitecustomize.py`` and ``usercustomize.py`` are executed
-#: by ``site``, so as a program each runs twice, once during startup and once as the script.
-#: ``site.py`` does **not** shadow the stdlib module from here — checked on 3.11 through 3.13
-#: — and is refused anyway: it is the module that imports the other two, and which of several
-#: paths CPython resolves it by is an implementation detail rather than a promise.
-_STARTUP_IMPORTED = frozenset({"encodings.py", "site.py", "sitecustomize.py", "usercustomize.py"})
+#: Deliberately not "everything imported before the script runs", which is not a set anyone
+#: can write down: a ``.pth`` file may import any name it likes, so a guest image with
+#: setuptools reaches ``_distutils_hack`` and one with ``PYTHONWARNINGS`` reaches ``warnings``.
+#: Those depend on the image, and a constructor that pretended to enumerate them would be
+#: making a promise it cannot keep. What is refused here is what ships with the interpreter.
+#:
+#: They do not fail alike, and the difference is measured rather than assumed. ``encodings``
+#: is imported before the interpreter can report anything and takes it down with a
+#: path-configuration dump. ``sitecustomize`` is executed by ``site`` on every interpreter, so
+#: as a program it runs twice, once during startup and once as the script; ``usercustomize``
+#: does the same *except* where user site is disabled, which is every virtualenv. ``site``
+#: itself does **not** shadow the stdlib module from here — checked on 3.11 through 3.13 — and
+#: is refused anyway, being the module that imports the other two, on the grounds that which
+#: of several paths CPython resolves it by is an implementation detail and not a promise.
+#:
+#: Both extensions, because a top-level ``.pyc`` still resolves from a path entry: an
+#: ``encodings.pyc`` is the same fatal failure as the source file, reached by its twin.
+_STARTUP_IMPORTED = frozenset(
+    f"{stem}{suffix}"
+    for stem in ("encodings", "site", "sitecustomize", "usercustomize")
+    for suffix in (".py", ".pyc")
+)
+
+#: What the generated shim imports, and therefore what a ``program`` beside it must not be
+#: named. They share a directory and it is first on the path, so a program called ``json.py``
+#: *is* the module the shim reaches for: the program's body runs a second time under that
+#: name, and every dispatch afterwards fails on an attribute the real module would have had.
+#: Derived from the shim rather than listed, so adding an import cannot leave this behind.
+_SHIM_IMPORTS = frozenset(f"{module}.py" for module in ("json", "os", "time"))
 
 
 class SandboxProgramTimeout(TimeoutError):
@@ -229,6 +250,15 @@ def guest_run_layout(run_directory: str, *, program: str = "program.py") -> Gues
         raise ValueError(
             f"program must not be a name this layout already uses, and {program!r} is one of "
             f"{sorted(_TRANSPORT_FILENAMES)}"
+        )
+    if program in _SHIM_IMPORTS:
+        # The shim is imported by the program and lives beside it, so a program under one of
+        # these names answers the shim's own `import` — and takes the dispatch surface down
+        # with it, in a way whose traceback names an attribute rather than the collision.
+        raise ValueError(
+            f"program must not be a name the generated shim imports, and {program!r} is one "
+            f"of {sorted(_SHIM_IMPORTS)}: it shares a directory with the shim, which is first "
+            "on the interpreter's path, so the shim would import the program instead"
         )
     if program in _STARTUP_IMPORTED:
         # This directory is on the interpreter's path from *startup*, not only once the script

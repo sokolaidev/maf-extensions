@@ -439,13 +439,13 @@ class TestTheLauncher:
         )
         assert "$maf_kept" in assignment, "an image's own entries were dropped, not kept"
         assert 'case "$maf_entry" in /*)' in script, "a relative inherited entry is not filtered"
-        # Unquoted for the word splitting `IFS=:` gives it, which also invites globbing against
-        # the guest's own directory; and the loop's names are the launcher's, not the image's.
-        assert "\nset -f\n" in script, "the inherited value is globbed before it is filtered"
-        assert "\nunset maf_kept maf_entry\n" in script, "launcher variables reach the guest"
         assert "\nkept=" not in script and "for entry in" not in script, (
             "an unprefixed name collides with one an image may already export"
         )
+        # `set -f` and the `unset` are deliberately *not* asserted here. Both are properties of
+        # where they sit relative to the loop and the assignment, and a substring check cannot
+        # see order: move either and this stays green while the behaviour is gone. They are
+        # covered by running the launcher, in `TestTheLauncherAgainstARealShell`.
 
     def test_the_interpreter_is_a_shell_word_like_every_path(self):
         """An interpreter path with a space is split unless it is quoted like the rest.
@@ -480,6 +480,68 @@ def _reap(pid_file: Path) -> None:
 
 class TestTheLauncherAgainstARealShell:
     """The launcher is a shell script, and some of what it promises only a shell can show."""
+
+    @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+    @pytest.mark.skipif(os.pathsep != ":", reason="the launcher's path handling is POSIX")
+    def test_the_guest_sees_the_inherited_path_filtered_and_otherwise_untouched(
+        self, tmp_path: Path
+    ):
+        """What the launcher builds, read back from the environment the program actually gets.
+
+        Ordering is the whole property and no substring check can see it: `set -f` moved after
+        the loop globs, an `unset` moved before the assignment empties the result, and either
+        rearrangement leaves every recognisable line of the script in place. So this runs it.
+
+        Verbatim matters as much as filtered — Python does not glob `PYTHONPATH`, so an
+        inherited `/opt/plugins/*` has to arrive as those characters.
+        """
+        directory = tmp_path.as_posix()
+        served, work = f"{directory}/host_tools", f"{directory}/work"
+        pathlib.Path(served).mkdir(parents=True, exist_ok=True)
+        pathlib.Path(work).mkdir(parents=True, exist_ok=True)
+        # Something for a glob to catch, in the directory one would run against.
+        pathlib.Path(work, "caught.py").write_text("", encoding="utf-8")
+        pathlib.Path(served, "program.py").write_text(
+            "import os\nprint(os.environ.get('PYTHONPATH', '<unset>'))\n"
+            "print('leaked:', sorted(k for k in os.environ if k.startswith('maf_')))\n",
+            encoding="utf-8",
+        )
+        layout = GuestRunLayout(
+            directory=directory,
+            work=work,
+            program=f"{served}/program.py",
+            shim=f"{served}/{SHIM_MODULE}",
+            launcher=f"{served}/run_program.sh",
+            calls=f"{served}/{CALLS_DIRECTORY}",
+            output=f"{served}/program_output.txt",
+            exit_code=f"{served}/program_exit_code",
+        )
+        pathlib.Path(layout.launcher).write_text(
+            launcher_script(layout, sys.executable), encoding="utf-8"
+        )
+
+        subprocess.run(
+            ["sh", layout.launcher],
+            cwd=directory,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=True,
+            env={**os.environ, "PYTHONPATH": f"/image/libs:{work}/*:rel:"},
+        )
+        marker = pathlib.Path(layout.exit_code)
+        for _ in range(200):
+            if marker.exists():
+                break
+            time.sleep(0.05)
+
+        seen, leaked = pathlib.Path(layout.output).read_text(encoding="utf-8").splitlines()[:2]
+
+        assert seen == f"{served}:/image/libs:{work}/*", (
+            "the guest's path is not the shim's directory followed by the absolute entries "
+            "unchanged — a glob was expanded, an entry was dropped, or the order moved"
+        )
+        assert leaked == "leaked: []", "the launcher's own variables reached the guest"
 
     @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
     @pytest.mark.skipif(
@@ -1210,8 +1272,42 @@ class TestTheLayoutsOwnPromise:
         with pytest.raises(ValueError, match="must not contain ':'"):
             guest_run_layout("/runs/job:slot")
 
+    def test_every_module_the_shim_imports_is_refused_as_a_program_name(self):
+        """Derived from the shim rather than listed, so adding an import cannot outrun it.
+
+        The program sits beside the shim and their directory is first on the path, so a
+        program named for something the shim imports *is* what the shim gets — and the
+        traceback names a missing attribute rather than the collision that caused it.
+        """
+        source = host_tool_shim(("a", "b"))
+        tree = ast.parse(source)
+        imported = {
+            alias.name.split(".")[0]
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Import)
+            for alias in node.names
+        } | {
+            node.module.split(".")[0]
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module
+        }
+        assert imported, "the shim parsed to no imports, so this would prove nothing"
+
+        for module in sorted(imported):
+            with pytest.raises(ValueError, match="the generated shim imports"):
+                guest_run_layout("/maf-sandbox/work/run-1", program=f"{module}.py")
+
     @pytest.mark.parametrize(
-        "name", ["encodings.py", "site.py", "sitecustomize.py", "usercustomize.py"]
+        "name",
+        [
+            "encodings.py",
+            "site.py",
+            "sitecustomize.py",
+            "usercustomize.py",
+            # A top-level `.pyc` resolves from a path entry too, so the fatal one has a twin.
+            "encodings.pyc",
+            "sitecustomize.pyc",
+        ],
     )
     def test_a_program_the_interpreter_imports_on_its_way_up_is_refused(self, name: str):
         """The transport's directory is on the path from startup, not from when the script is
