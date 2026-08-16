@@ -623,7 +623,7 @@ requires-dist = [{ name = "agent-framework-core", specifier = ">=1.13.0,<2" }]
 
 [[package]]
 name = "maf-sandbox-acas"
-version = "0.8.2"
+version = "0.8.3"
 source = { editable = "packages/maf-sandbox-acas" }
 dependencies = [
     { name = "azure-containerapps-sandbox" },
@@ -640,7 +640,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-bicep"
-version = "0.7.2"
+version = "0.7.3"
 source = { editable = "packages/maf-sandbox-bicep" }
 dependencies = [
     { name = "agent-framework-core" },
@@ -655,7 +655,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-codeact"
-version = "0.4.2"
+version = "0.4.3"
 source = { editable = "packages/maf-sandbox-codeact" }
 dependencies = [
     { name = "agent-framework-core" },
@@ -670,7 +670,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-docker"
-version = "0.3.2"
+version = "0.3.3"
 source = { editable = "packages/maf-sandbox-docker" }
 dependencies = [
     { name = "maf-sandbox" },
@@ -681,7 +681,7 @@ requires-dist = [{ name = "maf-sandbox", editable = "packages/maf-sandbox" }]
 
 [[package]]
 name = "maf-sandbox-wslc"
-version = "0.6.2"
+version = "0.6.3"
 source = { editable = "packages/maf-sandbox-wslc" }
 dependencies = [
     { name = "maf-sandbox" },
