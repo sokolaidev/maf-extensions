@@ -25,7 +25,9 @@ import os
 import re
 import subprocess
 import sys
+import time
 import tomllib
+from fnmatch import fnmatch
 from pathlib import Path, PurePath
 
 import pytest
@@ -160,6 +162,10 @@ _WEAKER_THAN_ERROR = ("warning", "information", "none", False)
 #: is the shape #334 is about, and the assignment one is an ordinary mistake any sample can make.
 _PROBE_RULES = {"reportAttributeAccessIssue", "reportAssignmentType"}
 
+#: How old a probe file has to be before it is somebody's abandoned run rather than somebody's
+#: live one. The pass takes about six seconds; this is two orders above it.
+_ABANDONED_AFTER = 600.0
+
 
 def _relaxed(table: dict) -> list[str]:
     """Diagnostic rules in ``table`` set to anything short of failing the build."""
@@ -170,25 +176,70 @@ def _relaxed(table: dict) -> list[str]:
     )
 
 
+def _covers_samples(pattern: str) -> bool:
+    """Whether a pyright path pattern reaches `samples/` or any sample directory under it.
+
+    Three spellings all silence the tree and only one starts with the word: `./samples`,
+    `samples/**`, `**/samples`. And an entry can name the *directories* without naming the root
+    — `exclude = ["**/09_inprocess_bicep"]` — which the behavioural probe cannot see, because the
+    probe sits at the root where no shipped sample does.
+
+    `fnmatch` rather than `PurePath.match`, whose `**` is 3.13. Its `*` crosses separators, so
+    this errs towards flagging, which is the safe direction for a guard.
+    """
+    entry = PurePath(pattern.replace("\\", "/"))
+    if "samples" in entry.parts or entry == PurePath("."):
+        return True
+    targets = [_SAMPLES, *_SAMPLE_DIRS]
+    return any(
+        fnmatch(str(target.relative_to(_ROOT)).replace("\\", "/"), pattern.replace("\\", "/"))
+        for target in targets
+    )
+
+
+def _covering(key: str) -> list[str]:
+    """`exclude`/`ignore` entries that reach samples/, whichever way they spell it."""
+    return [str(entry) for entry in _PYRIGHT.get(key, []) if _covers_samples(str(entry))]
+
+
+def _sweep_abandoned_probes(mine: Path) -> None:
+    """Remove probe files a killed run left behind, which fail the type gate until they go.
+
+    The `finally` below covers everything short of SIGKILL, and what SIGKILL leaves is a file
+    reporting two errors to every `uv run pyright` in the checkout while this suite — which
+    filters to its own pid — stays green. Age is the test rather than liveness: a concurrent
+    run's probe is seconds old, and nothing portable answers "is that pid still mine".
+    """
+    for stale in _SAMPLES.glob("_pyright_probe_*.py"):
+        if stale != mine and time.time() - stale.stat().st_mtime > _ABANDONED_AFTER:
+            stale.unlink(missing_ok=True)
+
+
 def test_pyright_reports_an_error_inside_samples():
-    """The only measurement that proves the pass reaches `samples/`. Costs about six seconds.
+    """Measures the pass rather than asking the config about it. Costs about six seconds.
 
-    Everything else here is a proxy, and each proxy's blind spot was measured rather than
-    guessed. `filesAnalyzed` counts a file pyright *opened*: under `ignore = ["./samples"]` it
-    opens the file and drops every diagnostic. No reading of the config text sees a rule
-    downgraded at the top level of `[tool.pyright]`, which every execution environment inherits.
+    The proxies below have blind spots that were measured rather than guessed. `filesAnalyzed`
+    counts a file pyright *opened*: under `ignore = ["./samples"]` it opens the file and drops
+    every diagnostic. No reading of the config text sees a rule downgraded at the top level of
+    `[tool.pyright]`, which every execution environment inherits.
 
-    So a file with two known errors goes into `samples/`, the whole configured pass runs — the
+    A file with two known errors goes into `samples/`, the whole configured pass runs — the
     invocation CI runs, with no path argument, so `include` counts — and both have to come back.
+
+    What it does *not* prove is the reach into `samples/NN_*/`, where every sample actually
+    lives: an `exclude` naming the directories and not the root leaves this probe reporting.
+    `test_pyright_is_configured_to_read_samples` matches the patterns against those directories,
+    and the two together are the guarantee.
     """
     # Named for this process. A fixed name is shared state in a checkout this repository expects
     # to be shared: two overlapping runs and the first to finish unlinks the file the second's
     # pyright is still reading, which fails the second with this test's own alarm.
     probe = _SAMPLES / f"_pyright_probe_{os.getpid()}.py"
+    _sweep_abandoned_probes(probe)
     probe.write_text(
         '"""Written by tests/test_sample_modules_import.py, deleted in the same call.\n\n'
-        "While it exists — about six seconds — an independent `uv run pyright` in this checkout\n"
-        'reports its two errors. That is the probe, not drift."""\n\n'
+        "While it exists an independent `uv run pyright` in this checkout reports its two\n"
+        'errors. That is the probe, not drift."""\n\n'
         "from maf_sandbox import Isolation\n\n"
         "RUNG = Isolation.NO_SUCH_RUNG\n"
         'COUNT: int = "not an int"\n',
@@ -216,8 +267,9 @@ def test_pyright_reports_an_error_inside_samples():
 
     assert _PROBE_RULES <= reported, (
         f"the configured pyright pass reported {sorted(reported) or 'nothing'} for a sample file "
-        f"holding errors under {sorted(_PROBE_RULES)}. samples/ is being silenced — by `exclude`, "
-        "by `ignore`, by its removal from `include`, or by a rule downgrade at either level."
+        f"holding errors under {sorted(_PROBE_RULES)}. samples/ is being silenced somewhere in "
+        "[tool.pyright] — `include`, `exclude`, `ignore`, or a rule downgraded at the top level "
+        "or in any execution environment whose root covers samples/."
     )
 
 
@@ -232,18 +284,22 @@ def test_pyright_is_configured_to_read_samples():
         f"the root type-checking mode is {_PYRIGHT['typeCheckingMode']!r}; anything weaker than "
         "standard drops rules across scripts/, tests/ and samples/ at once"
     )
-    # Compared as path parts, because `./samples`, `samples/**` and `**/samples` all silence the
-    # tree and only one of them starts with the word.
-    silenced = [
-        f"{key}={entry}"
-        for key in ("exclude", "ignore")
-        for entry in _PYRIGHT.get(key, [])
-        if "samples" in PurePath(str(entry)).parts
-    ]
+    silenced = [f"{key}={entry}" for key in ("exclude", "ignore") for entry in _covering(key)]
     assert not silenced, f"samples/ is named in {silenced}, which overrides `include`"
     assert not _relaxed(_PYRIGHT), (
         f"{_relaxed(_PYRIGHT)} is downgraded at the top level of [tool.pyright], and every "
         "execution environment inherits it — samples/ included, which relaxes nothing of its own"
+    )
+    # pyright takes the *first* environment whose root covers the file, so one rooted at `.` and
+    # listed above the samples entry answers for samples and never reads it.
+    ancestors = [
+        env.get("root")
+        for env in _PYRIGHT.get("executionEnvironments", [])
+        if env.get("root") != "samples" and _covers_samples(str(env.get("root", "")))
+    ]
+    assert not ancestors, (
+        f"execution environments rooted at {ancestors} cover samples/, and whichever is listed "
+        "first wins — its rule levels answer for samples/ instead of the samples entry's"
     )
 
 
