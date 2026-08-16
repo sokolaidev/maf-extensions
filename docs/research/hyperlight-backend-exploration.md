@@ -186,6 +186,65 @@ The rung is earned per entry, not inherited from the family name: `microvm` is a
 bar, so (wasm × WHP) gets an entry when the four points are checked there, (wasm × KVM) is
 its own confirmation, and hyperlight-js gets no entry until it exists and passes.
 
+## Tool calling across the boundary, and the transport design it forces
+
+How a dispatch travels in the Hyperlight stack, end to end:
+
+1. The host registers named callbacks with `Sandbox.register_tool` — **before the first
+   `run()`**, held for the sandbox's life, never unregistered. The wrapper does it just
+   before the warm-up run, so the tool set is baked into the snapshot every call restores.
+2. Model-written guest code calls `call_tool(name, **kwargs)`, a builtin compiled into the
+   CPython-in-wasm guest. Keyword arguments only.
+3. The call is a synchronous VM exit — a Hyperlight host function. The guest blocks until
+   the host returns. The FFI marshals dict, list, str, int, float, bool and None natively,
+   and **falls back to `repr()`/`str()` for anything else**, silently and lossily.
+4. The callback fires on the sandbox's worker thread, nested inside the blocked `run()`.
+   The wrapper bridges sync-to-async with a fresh thread per call running `asyncio.run`.
+5. One call at a time; a hung callback hangs the guest, and `run()` has no timeout to cut
+   it loose — the native strings name the state (`FunctionHungOnHostFunctionCall`) and no
+   recovery.
+
+And the boundary of what Hyperlight supplies: **a wire, and only a wire.** Name lookup is
+its entire dispatch policy — no cap, no response ceiling, no argument validation beyond the
+tool's own, no integrity or identity axes, approval only on the whole `execute_code` call.
+Everything this suite calls the safety contract has to come from our side.
+
+Our side turns out to be ready for that. `HostToolRun.dispatch(name, arguments, *,
+framing_bytes) -> DispatchResult` is already transport-neutral — a string and a mapping in,
+`value_json` or a sanitized refusal out, every gate behind the one door — and #369 already
+names the missing half (negotiation) with three candidate shapes. What the Hyperlight source
+adds:
+
+- **The trampoline rule.** The adapter never registers a kind's callables directly (the
+  wrapper's model). It registers one trampoline per declared name, and the trampoline's body
+  is a call to the current run's `dispatch`. Their FFI is the wire; our dispatch is the
+  door. Every gate — the cap with refused calls counted, the byte ledger, validation, the
+  USER-identity refusal — comes free.
+- **`RUN_CODE` gets its method.** A `run_code(code, *, timeout)` optional method on the
+  `Sandbox` protocol, gated by `Capability.RUN_CODE` exactly as `FILES_OUT` gates the
+  pull pair (#371 item 1). Host-tool dispatch becomes part of that method's contract.
+- **#369 resolves as shape C, and its sequencing gate opens.** The issue held all three
+  shapes until #302's measurement, because the second transport it foresaw (streamed stdin)
+  depended on it. Hyperlight is a different second transport, arriving for capability
+  reasons — so "settled with two real transports in hand" is satisfiable without #302. And
+  it argues for C specifically: the kind cannot compose this channel out of `exec`,
+  `write_file` and `stat_file`, because none of them exist in the guest. The channel can
+  only be the backend's own, which is what shape C says `HOST_TOOLS` should mean.
+- **Two absorptions the adapter owes.** The sync FFI callback runs on the worker thread
+  while the host loop is free, so the trampoline bridges with `run_coroutine_threadsafe`
+  and blocks on the future **with the dispatch deadline**, answering a timeout with a
+  refusal envelope rather than hanging the guest. And the guest is handed `value_json` —
+  host-side JSON, never raw objects — because serializing at the door is what makes the
+  response ceiling enforceable; the FFI's `repr()` fallback is the cautionary tale.
+  `framing_bytes` is the FFI envelope's overhead, presumably a small constant (probe item).
+- **The fourth-declaration trigger.** A backend-supplied channel is the fourth optional
+  declaration on `SandboxBackend`, which `_protocol.py` says is the signal to collapse all
+  of them into one declarations object. Shape C lands together with that refactor.
+
+Unchanged by any of this: approval stays whole-call at the kind layer (both stacks reached
+that independently), and guest-initiated HTTP back to the host stays rejected — the FFI
+removes even the temptation.
+
 ## What reading cannot answer — the live-probe list
 
 1. Does a host-side write into `input_dir` after creation appear in the guest, and does it
@@ -202,6 +261,10 @@ its own confirmation, and hyperlight-js gets no entry until it exists and passes
 6. Whether any no-hypervisor or in-process fallback is reachable from the Python stack.
    Upstream Hyperlight had a debug mode of that shape; one reachable here would collapse the
    `microvm` claim, so its absence is verified rather than assumed.
+7. The FFI callback's mechanics: which thread it fires on (the trampoline design assumes
+   the sandbox's worker), what an exception raised inside it does to the guest, and whether
+   the marshaling envelope's overhead is a knowable constant to declare as
+   `framing_bytes`.
 
 ## Verdict
 
