@@ -97,7 +97,9 @@ catalogue is a ready-made checklist of the attacks the walk must survive.
 
 ## The fit against our contract
 
-What a `HyperlightSandboxBackend` could declare honestly, from what the source shows:
+What a `HyperlightSandboxBackend` could declare honestly, from what the source shows. The
+table describes the one shipped member of the family — `backend="wasm"` — because the
+adapter is a family, not a single backend; the next section says what that means.
 
 | Axis | Declaration | Basis |
 |---|---|---|
@@ -144,6 +146,46 @@ gap (#111 — the guest is Python-in-wasm, not a POSIX userland), and one-backen
 routing (#328/#329), which stops being latent the day a shell backend and a runtime backend
 are both registered.
 
+## Hyperlight's own backends: a family, not a proxy
+
+`hyperlight_sandbox.Sandbox(backend=...)` selects an inner native backend of Hyperlight's
+own: `"wasm"` is shipped, and `"hyperlight-js"` is defined in the facade and not yet
+published. So the adapter this suite would write is not one backend with one set of
+declarations — it is a backend *family*, the shape the two-axis table already names for mxc:
+declarations derive from the configured containment.
+
+The mechanism follows from patterns already in the suite. The wslc backend's `egress`
+property is a declaration computed from configuration — allowlist with a proxy image, closed
+without — fixed per instance. The adapter does the same one level up: its constructor takes
+the inner backend choice, resolves every declaration from a table keyed by it, and refuses a
+choice with no entry, mirroring `_normalize_backend`'s own refuse-unknown. Resolved at
+construction and static afterward, which is what the router's construction-time floor check
+assumes.
+
+What the inner choice actually moves is less than the word "backend" suggests. Both members
+sit on the same boundary — the hyperlight VMM over KVM, WHP or MSHV — so across today's
+family the isolation rung does not vary: both would claim `microvm`. What varies is
+everything else: the language `RUN_CODE` evaluates (the #111 platform axis, sharpened),
+whether egress enforcement exists at all (wasmtime-wasi-http is a fact about the wasm
+backend, promised nowhere for the js one), the host-tools FFI, and the limits. The
+declaration table carries isolation per entry anyway, because that is the mechanism that
+catches a future member whose boundary is different — any no-hypervisor mode above all.
+Upstream Hyperlight historically had an in-process debug mode; this build's strings say
+boot-or-refuse ("No hypervisor was found"), which is the right failure direction, and
+confirming no fallback is reachable is on the probe list below.
+
+One reading of "family" is wrong and worth refusing in advance: an adapter that picks an
+inner backend per spec at acquire time. That moves the selection below the policy layer that
+owns refusals — every router check reads the backend's declarations as facts about *the*
+backend — and forces the adapter to declare the weakest value across its options to stay
+honest. A host that wants two runtimes registers two configured instances, and choosing
+between them per spec is the router's job, which lands on #328/#329 with a third backend
+shape in play rather than two.
+
+The rung is earned per entry, not inherited from the family name: `microvm` is a conformance
+bar, so (wasm × WHP) gets an entry when the four points are checked there, (wasm × KVM) is
+its own confirmation, and hyperlight-js gets no entry until it exists and passes.
+
 ## What reading cannot answer — the live-probe list
 
 1. Does a host-side write into `input_dir` after creation appear in the guest, and does it
@@ -157,6 +199,9 @@ are both registered.
    mode).
 5. The conformance suite's applicability to a backend that raises from `exec` — what subset
    of probes a `RUN_CODE`-shaped backend must pass.
+6. Whether any no-hypervisor or in-process fallback is reachable from the Python stack.
+   Upstream Hyperlight had a debug mode of that shape; one reachable here would collapse the
+   `microvm` claim, so its absence is verified rather than assumed.
 
 ## Verdict
 
