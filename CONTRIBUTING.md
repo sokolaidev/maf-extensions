@@ -6,7 +6,7 @@ Thanks for looking. These packages are early (`0.x`) and the API may still move,
 
 ```bash
 uv sync            # one workspace, one lock, every package editable
-uv run pytest -q   # the whole suite, about a second
+uv run pytest -q   # the whole suite, about half a minute
 ```
 
 `agent-framework-core` resolves from PyPI at the range each package declares — deliberately the same artifact a consumer of the published wheel gets, not a development pin.

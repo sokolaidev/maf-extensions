@@ -17,11 +17,9 @@ dev = [
     "pyright>=1.1.411,<1.2",
     # Release checks (metadata validation of built sdists/wheels).
     "twine>=6,<7",
-    # Every sample that talks to a model imports this, and nothing else here pulls it in: ten
-    # of the thirteen can be neither imported nor type-checked without it. The band is wide where
-    # the tooling bands above are narrow, and for the opposite reason — a sample declares this
-    # unpinned in its PEP 723 block, so an offline check held to an older minor would pass
-    # against a version no live run uses. `uv.lock` pins the exact one.
+    # Every sample that talks to a model imports this, and nothing else here pulls it in.
+    # Wide where the tooling bands are narrow, and deliberately: a sample declares it unpinned,
+    # so a check held to an older minor would pass against a version no live run uses.
     "agent-framework-openai>=1.13.0,<2",
 ]
 
@@ -71,8 +69,8 @@ typeCheckingMode = "standard"
 # want those four are not loose fakes. They carry an inline `# pyright: ignore[...]` naming the
 # reason. Its execution environment exists to *tighten*: reportUnnecessaryTypeIgnoreComment fails
 # the build on a suppression that no longer suppresses anything, which is what makes suppressing
-# inline safe. Scoped here rather than at the root, which has 27 stale ones across the package
-# test trees.
+# inline safe. Scoped here rather than at the root, where the package test trees still carry
+# stale ones.
 executionEnvironments = [
   { root = "samples", reportUnnecessaryTypeIgnoreComment = "error" },
   { root = "tests", extraPaths = ["samples/09_inprocess_bicep"], reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },

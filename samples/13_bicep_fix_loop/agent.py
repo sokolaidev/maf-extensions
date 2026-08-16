@@ -197,8 +197,8 @@ async def read_or_empty(store: InMemoryAgentFileStore, name: str) -> str:
     """``name``'s contents, or ``""`` when the model never created it.
 
     The store starts empty, so "no such file" is a real outcome here and not an error: a turn 1
-    that wrote nothing is exactly what this sample has to be able to report. `read` signals it
-    two ways — it raises, or it answers `None` — and both mean that.
+    that wrote nothing is exactly what this sample has to be able to report. `read` answers
+    `None` for it; the `except` is for a store that raises instead.
     """
     try:
         content = await store.read(name)
