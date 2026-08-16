@@ -76,18 +76,17 @@ SHIM_MODULE = "maf_host_tools.py"
 
 _LAUNCHER = "run_program.sh"
 
-#: Every name :func:`guest_run_layout` puts in the run directory, and what a kind reads to
-#: refuse a guest-supplied name that would claim one. Derived from the constants above rather
-#: than listed again, so a name added there cannot be handed to a guest program.
-#:
-#: **Refusing the names themselves is not enough for** :data:`SHIM_MODULE`, which is the one a
-#: program ``import``s: CPython's ``FileFinder`` resolves ``maf_host_tools/__init__.py`` and
-#: every extension suffix ahead of ``maf_host_tools.py``, so a kind must refuse that stem
-#: followed by ``/`` or ``.`` as well, or a guest-supplied neighbour becomes the module the
-#: program reaches.
-RESERVED_RUN_FILENAMES = frozenset(
-    {SHIM_MODULE, _LAUNCHER, OUTPUT_FILE, EXIT_FILE, CALLS_DIRECTORY}
-)
+#: The program's working directory, and the only one a kind puts guest-named files in. A model
+#: naming a file names it *here*, so no name it can choose reaches the transport's own.
+WORK_DIRECTORY = "work"
+
+#: Where everything the transport owns lives, beside the work directory rather than in it.
+_TRANSPORT_DIRECTORY = "host_tools"
+
+#: Every name :func:`guest_run_layout` puts in that directory. Not a kind's business, and
+#: deliberately not exported: separating the two directories is what makes a guest-supplied
+#: name harmless, and a list of names to refuse is the thing that replaces.
+_TRANSPORT_FILENAMES = frozenset({SHIM_MODULE, _LAUNCHER, OUTPUT_FILE, EXIT_FILE, CALLS_DIRECTORY})
 
 
 class SandboxProgramTimeout(TimeoutError):
@@ -145,9 +144,26 @@ _NOT_JSON = "Error: this host-tool request is not valid JSON"
 
 @dataclass(frozen=True)
 class GuestRunLayout:
-    """Where one run's files live inside the guest, as absolute guest paths."""
+    """Where one run's files live inside the guest, as absolute guest paths.
+
+    Two directories under one run, and which file goes in which is the whole defence against
+    a guest-supplied name colliding with the machinery serving its own call:
+
+    * :attr:`work` is the program's working directory. Everything a *model* names — files
+      shared in, artifacts written out — lives here, and a kind may put anything here.
+    * everything else lives in a sibling the model can never name into, because a kind writes
+      guest-named files only to :attr:`work` and collects only from it.
+
+    :attr:`program` is in the second one, beside the shim, and that placement is load-bearing
+    rather than tidy. ``sys.path[0]`` is the directory of the *script*, not the working
+    directory, so a program run from :attr:`work` would put :attr:`work` ahead of the shim on
+    the import path and a guest file named ``maf_host_tools.py`` would become the module the
+    program imports. Run from beside the shim, that file is not on ``sys.path`` at all: a
+    script's working directory is never added to it.
+    """
 
     directory: str
+    work: str
     program: str
     shim: str
     launcher: str
@@ -180,23 +196,27 @@ def guest_run_layout(run_directory: str, *, program: str = "program.py") -> Gues
             f"program must be a plain file name, not {program!r}: it is written beside the "
             "shim and imports it, which only works when the two share a directory"
         )
-    if program in RESERVED_RUN_FILENAMES:
+    if program in _TRANSPORT_FILENAMES:
         # Each collision breaks the run in its own way and none of them say so: the shell
         # truncates the output file before the interpreter opens the program, the launcher
         # and the shim are written over whatever the kind put there, and the calls directory
-        # cannot be created where a file already is.
+        # cannot be created where a file already is. A *model* cannot reach these names —
+        # that is what the two directories are for — but the kind's own `program` lands in
+        # the same one, so this stays a refusal at the one door it can still come through.
         raise ValueError(
             f"program must not be a name this layout already uses, and {program!r} is one of "
-            f"{sorted(RESERVED_RUN_FILENAMES)}"
+            f"{sorted(_TRANSPORT_FILENAMES)}"
         )
+    served = posixpath.join(run_directory, _TRANSPORT_DIRECTORY)
     return GuestRunLayout(
         directory=run_directory,
-        program=posixpath.join(run_directory, program),
-        shim=posixpath.join(run_directory, SHIM_MODULE),
-        launcher=posixpath.join(run_directory, _LAUNCHER),
-        calls=posixpath.join(run_directory, CALLS_DIRECTORY),
-        output=posixpath.join(run_directory, OUTPUT_FILE),
-        exit_code=posixpath.join(run_directory, EXIT_FILE),
+        work=posixpath.join(run_directory, WORK_DIRECTORY),
+        program=posixpath.join(served, program),
+        shim=posixpath.join(served, SHIM_MODULE),
+        launcher=posixpath.join(served, _LAUNCHER),
+        calls=posixpath.join(served, CALLS_DIRECTORY),
+        output=posixpath.join(served, OUTPUT_FILE),
+        exit_code=posixpath.join(served, EXIT_FILE),
     )
 
 
@@ -422,6 +442,10 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
     #     cheapest way to know the rename stays inside one filesystem and so stays atomic.
     #   * `nohup … &`, because `exec` returns when its command does and the program must
     #     outlive it — see this function's docstring.
+    #   * The program runs *in* the work directory and *from* the transport's, which is the
+    #     import defence in `GuestRunLayout`: `sys.path[0]` follows the script, never the
+    #     working directory. `mkdir -p` because a run whose kind shared no files has nothing
+    #     else to create it, and `cd` into a directory that is not there fails the run.
     staged = f"{layout.exit_code}.part"
     inner = (
         f"PYTHONUNBUFFERED=1 {_quote(interpreter)} {_quote(layout.program)} "
@@ -429,7 +453,8 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
         f"printf %s $? > {_quote(staged)}; mv {_quote(staged)} {_quote(layout.exit_code)}"
     )
     return (
-        f"#!/bin/sh\ncd {_quote(layout.directory)}\nnohup sh -c {_quote(inner)} >/dev/null 2>&1 &\n"
+        f"#!/bin/sh\nmkdir -p {_quote(layout.work)}\ncd {_quote(layout.work)}\n"
+        f"nohup sh -c {_quote(inner)} >/dev/null 2>&1 &\n"
     )
 
 

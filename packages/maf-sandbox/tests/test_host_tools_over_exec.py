@@ -457,6 +457,44 @@ class TestTheLauncherAgainstARealShell:
     """The launcher is a shell script, and some of what it promises only a shell can show."""
 
     @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+    def test_a_guest_file_named_like_the_shim_is_not_the_module_the_program_imports(
+        self, tmp_path: Path
+    ):
+        """The property the two directories exist for, against a real interpreter.
+
+        A refusal list cannot be checked this way — it can only be checked against itself —
+        and the two defects already found in one were both about a name nobody thought of.
+        This asks the runtime instead: plant the forgery a model could plausibly name, run the
+        program the way the launcher runs it, and see which module it gets.
+
+        `sys.path[0]` is the *script's* directory, and a script's working directory is never
+        added at all. Running the program from the work directory instead would invert that
+        and the forgery would win — which is why `program` lives beside the shim.
+        """
+        directory = tmp_path.as_posix()
+        served, work = f"{directory}/host_tools", f"{directory}/work"
+        pathlib.Path(served).mkdir(parents=True, exist_ok=True)
+        pathlib.Path(work).mkdir(parents=True, exist_ok=True)
+
+        pathlib.Path(served, SHIM_MODULE).write_text("SPEAKING = 'the shim'\n", encoding="utf-8")
+        # What a model can put in its own working directory, under the one name that matters.
+        pathlib.Path(work, SHIM_MODULE).write_text("SPEAKING = 'the guest'\n", encoding="utf-8")
+        pathlib.Path(served, "program.py").write_text(
+            "import maf_host_tools\nprint(maf_host_tools.SPEAKING)\n", encoding="utf-8"
+        )
+
+        spoke = subprocess.run(
+            [sys.executable, f"{served}/program.py"],
+            cwd=work,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=True,
+        )
+
+        assert spoke.stdout.strip() == "the shim", "a guest-named file became the host's module"
+
+    @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
     def test_a_program_that_prints_and_then_hangs_leaves_its_output_readable(self, tmp_path: Path):
         """The timeout quotes this file, so what has not reached it does not exist.
 
@@ -472,15 +510,21 @@ class TestTheLauncherAgainstARealShell:
         `_reap` for why cleanup cannot simply kill what it started.
         """
         directory = tmp_path.as_posix()
+        # Hand-built rather than through `guest_run_layout`: a Windows `tmp_path` is not a
+        # POSIX absolute path, and the constructor is right to refuse one. The shape is the
+        # constructor's, checked against it by `TestTheLayoutsOwnPromise`.
+        served = f"{directory}/host_tools"
         layout = GuestRunLayout(
             directory=directory,
-            program=f"{directory}/program.py",
-            shim=f"{directory}/{SHIM_MODULE}",
-            launcher=f"{directory}/run_program.sh",
-            calls=f"{directory}/{CALLS_DIRECTORY}",
-            output=f"{directory}/program_output.txt",
-            exit_code=f"{directory}/program_exit_code",
+            work=f"{directory}/work",
+            program=f"{served}/program.py",
+            shim=f"{served}/{SHIM_MODULE}",
+            launcher=f"{served}/run_program.sh",
+            calls=f"{served}/{CALLS_DIRECTORY}",
+            output=f"{served}/program_output.txt",
+            exit_code=f"{served}/program_exit_code",
         )
+        pathlib.Path(served).mkdir(parents=True, exist_ok=True)
         stop = tmp_path / "stop"
         pathlib.Path(layout.program).write_text(
             "\n".join(
@@ -1022,8 +1066,30 @@ class TestTheLayoutsOwnPromise:
         layout = guest_run_layout("/work/missing/../run-1")
 
         assert layout.directory == "/work/run-1"
-        assert layout.program == "/work/run-1/program.py"
+        assert layout.work == "/work/run-1/work"
+        assert layout.program == "/work/run-1/host_tools/program.py"
         assert ".." not in layout.calls
+
+    def test_what_a_model_can_name_and_what_the_transport_owns_are_two_directories(self):
+        """The refusal list this replaced could only ever be as complete as its author.
+
+        Nothing a kind writes on a model's say-so goes anywhere near the second directory, so
+        there is no name to get wrong — including the ones a lexical check would miss, like a
+        package directory or a compiled extension resolving ahead of the shim's source.
+        """
+        layout = guest_run_layout("/work/run-1")
+        owned = (
+            layout.program,
+            layout.shim,
+            layout.launcher,
+            layout.calls,
+            layout.output,
+            layout.exit_code,
+        )
+
+        assert all(path.startswith(f"{layout.directory}/host_tools/") for path in owned)
+        assert not any(path.startswith(f"{layout.work}/") for path in owned)
+        assert layout.work != layout.directory, "the guest's own directory is the run's root"
 
     def test_the_paths_it_does_accept_are_all_inside_the_run_directory(self):
         """The promise the two checks above exist to keep."""

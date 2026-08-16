@@ -73,8 +73,8 @@ from ._host_tools import (
 )
 from ._host_tools_over_exec import (
     CALLS_DIRECTORY,
-    RESERVED_RUN_FILENAMES,
     SHIM_MODULE,
+    WORK_DIRECTORY,
     GuestRunLayout,
     SandboxProgramTimeout,
     dispatch_over_exec,
@@ -155,8 +155,8 @@ __all__ = [
     "INTEGRITY_RANK",
     "ISOLATION_RANK",
     "MAX_ARTIFACT_NAME_BYTES",
-    "RESERVED_RUN_FILENAMES",
     "SHIM_MODULE",
+    "WORK_DIRECTORY",
     "Artifact",
     "Capability",
     "DeclaredOutput",
