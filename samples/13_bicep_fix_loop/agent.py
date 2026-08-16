@@ -52,10 +52,7 @@ from maf_sandbox_bicep import make_bicep_tools
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
 
 if TYPE_CHECKING:
-    # Only for `build_client`'s signature. The runtime import stays inside that function, where
-    # it is skipped entirely on the local path — a laptop run reaches Ollama and needs no Azure
-    # SDK loaded to do it. `from __future__ import annotations` is what lets the name be used in
-    # an annotation without importing it here.
+    # The runtime import stays inside `build_client`, so a local run loads no Azure SDK at all.
     from azure.identity.aio import DefaultAzureCredential
 
 SCOPE = "samples"
@@ -200,24 +197,22 @@ async def read_or_empty(store: InMemoryAgentFileStore, name: str) -> str:
     """``name``'s contents, or ``""`` when the model never created it.
 
     The store starts empty, so "no such file" is a real outcome here and not an error: a turn 1
-    that wrote nothing is exactly what this sample has to be able to report.
+    that wrote nothing is exactly what this sample has to be able to report. `read` signals it
+    two ways — it raises, or it answers `None` — and both mean that.
     """
     try:
         content = await store.read(name)
     except Exception:  # noqa: BLE001 - any failure to read means nothing was authored
         return ""
-    # `read` answers `str | None`: a store can miss without raising — the file was listed and
-    # then removed — which the kinds in this repository guard for the same way. A miss is the
-    # same "nothing was authored" outcome as the exception above.
     return content or ""
 
 
 def build_client() -> tuple[OpenAIChatCompletionClient, DefaultAzureCredential | None] | None:
     """One client class, two endpoints. CI sets `AZURE_OPENAI_ENDPOINT`; a laptop does not.
 
-    Sample 09's split, unchanged, down to reporting a half-configured Azure run rather than
-    letting it fail later. Returns the client and the credential to close, or ``None`` when the
-    environment names an endpoint and then does not say which model to reach on it.
+    Sample 09 makes the same split inline. Factored out here, so the credential handed back is
+    named rather than inferred. Returns the client and that credential to close, or ``None`` when
+    the environment names an endpoint and then does not say which model to reach on it.
     """
     azure_endpoint = os.environ.get("AZURE_OPENAI_ENDPOINT")
     if not azure_endpoint:

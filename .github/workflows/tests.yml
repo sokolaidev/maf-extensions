@@ -98,8 +98,7 @@ jobs:
         # test tree is one that relaxes the four loose-fake rules to warnings so intentional fakes
         # do not block. The two InMemoryStore→AgentFileStore duck-types in smoke_install.py are
         # suppressed inline; everything outside those four rules is real drift. samples/ relaxes
-        # nothing — it is here because a sample naming an attribute another package deleted is
-        # otherwise caught by nothing until verify-live runs it, after a release (#334).
+        # nothing and suppresses inline instead — pyproject.toml says why (#334).
         run: uv run pyright
 
       - name: Build + metadata check
