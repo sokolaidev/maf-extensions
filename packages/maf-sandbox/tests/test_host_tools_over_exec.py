@@ -437,8 +437,15 @@ class TestTheLauncher:
         assert assignment.startswith("PYTHONPATH='/maf-sandbox/work/run-1/host_tools'"), (
             "the shim's directory is not first, so an inherited entry can outrank it"
         )
-        assert "$kept" in assignment, "an image's own entries were dropped, not kept"
-        assert 'case "$entry" in /*)' in script, "a relative inherited entry is not filtered out"
+        assert "$maf_kept" in assignment, "an image's own entries were dropped, not kept"
+        assert 'case "$maf_entry" in /*)' in script, "a relative inherited entry is not filtered"
+        # Unquoted for the word splitting `IFS=:` gives it, which also invites globbing against
+        # the guest's own directory; and the loop's names are the launcher's, not the image's.
+        assert "\nset -f\n" in script, "the inherited value is globbed before it is filtered"
+        assert "\nunset maf_kept maf_entry\n" in script, "launcher variables reach the guest"
+        assert "\nkept=" not in script and "for entry in" not in script, (
+            "an unprefixed name collides with one an image may already export"
+        )
 
     def test_the_interpreter_is_a_shell_word_like_every_path(self):
         """An interpreter path with a space is split unless it is quoted like the rest.
@@ -1203,11 +1210,14 @@ class TestTheLayoutsOwnPromise:
         with pytest.raises(ValueError, match="must not contain ':'"):
             guest_run_layout("/runs/job:slot")
 
-    @pytest.mark.parametrize("name", ["site.py", "sitecustomize.py", "usercustomize.py"])
+    @pytest.mark.parametrize(
+        "name", ["encodings.py", "site.py", "sitecustomize.py", "usercustomize.py"]
+    )
     def test_a_program_the_interpreter_imports_on_its_way_up_is_refused(self, name: str):
         """The transport's directory is on the path from startup, not from when the script is
-        found, so a program under one of these runs during initialisation — `sitecustomize.py`
-        twice over, `site.py` in place of the stdlib module that imports the other two."""
+        found, so a program under one of these is reached during initialisation —
+        `sitecustomize.py` running twice over, `encodings.py` ending the interpreter before it
+        can say why."""
         with pytest.raises(ValueError, match="imports at startup"):
             guest_run_layout("/maf-sandbox/work/run-1", program=name)
 

@@ -88,11 +88,18 @@ _TRANSPORT_DIRECTORY = "host_tools"
 #: and that is what replaced the list of names a kind used to have to refuse.
 _TRANSPORT_FILENAMES = frozenset({SHIM_MODULE, _LAUNCHER, OUTPUT_FILE, EXIT_FILE, CALLS_DIRECTORY})
 
-#: Names CPython imports on its way up, which this directory is on the path for. A file here
-#: under one of them runs during initialisation — before the program is even the script — so
-#: they are refused as a ``program`` name rather than left to surprise a kind. Not a model's
-#: choice: a kind names its own program, and nothing a model names lands in this directory.
-_STARTUP_IMPORTED = frozenset({"site.py", "sitecustomize.py", "usercustomize.py"})
+#: Names CPython's startup treats specially, which this directory is on the path for. Refused
+#: as a ``program`` name rather than left to surprise a kind — not a model's choice, since a
+#: kind names its own program and nothing a model names lands in this directory.
+#:
+#: They do not fail the same way, and the difference is measured rather than assumed:
+#: ``encodings.py`` is imported before the interpreter can report anything and takes it down
+#: with a path-configuration dump; ``sitecustomize.py`` and ``usercustomize.py`` are executed
+#: by ``site``, so as a program each runs twice, once during startup and once as the script.
+#: ``site.py`` does **not** shadow the stdlib module from here — checked on 3.11 through 3.13
+#: — and is refused anyway: it is the module that imports the other two, and which of several
+#: paths CPython resolves it by is an implementation detail rather than a promise.
+_STARTUP_IMPORTED = frozenset({"encodings.py", "site.py", "sitecustomize.py", "usercustomize.py"})
 
 
 class SandboxProgramTimeout(TimeoutError):
@@ -226,9 +233,7 @@ def guest_run_layout(run_directory: str, *, program: str = "program.py") -> Gues
     if program in _STARTUP_IMPORTED:
         # This directory is on the interpreter's path from *startup*, not only once the script
         # is found, so a file named for something the interpreter imports on its way up runs —
-        # or fails — before the program does. `sitecustomize.py` as the program runs twice,
-        # once at startup and once as the script; `site.py` shadows the stdlib module that
-        # imports the other two, which ends the interpreter rather than the run.
+        # or fails — before the program does. `_STARTUP_IMPORTED` says what each one does.
         raise ValueError(
             f"program must not be a name the interpreter imports at startup, and {program!r} "
             f"is one of {sorted(_STARTUP_IMPORTED)}: this directory is on the path before the "
@@ -495,14 +500,24 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
     return (
         "#!/bin/sh\n"
         f"mkdir -p {_quote(layout.work)} && cd {_quote(layout.work)} || exit 1\n"
-        "kept=''\n"
+        "maf_kept=''\n"
+        # `set -f` because the expansion below is deliberately unquoted, for the word splitting
+        # `IFS=:` gives it — and an unquoted word is globbed as well as split. The guest owns
+        # the directory that would be globbed against, and Python never globs `PYTHONPATH`, so
+        # an inherited `/opt/plugins/*` has to reach it as itself.
+        "set -f\n"
         "IFS=:\n"
-        "for entry in ${PYTHONPATH:-}; do\n"
-        '  case "$entry" in /*) kept="${kept:+$kept:}$entry" ;; esac\n'
+        "for maf_entry in ${PYTHONPATH:-}; do\n"
+        '  case "$maf_entry" in /*) maf_kept="${maf_kept:+$maf_kept:}$maf_entry" ;; esac\n'
         "done\n"
         "unset IFS\n"
-        f'PYTHONPATH={_quote(importable)}"${{kept:+:$kept}}"\n'
+        "set +f\n"
+        f'PYTHONPATH={_quote(importable)}"${{maf_kept:+:$maf_kept}}"\n'
         "export PYTHONPATH\n"
+        # Prefixed, then removed: a bare `kept` or `entry` collides with an image that exports
+        # one, and an exported name stays exported — the guest would read the launcher's
+        # leftovers where its own value belongs.
+        "unset maf_kept maf_entry\n"
         f"nohup sh -c {_quote(inner)} >/dev/null 2>&1 &\n"
     )
 
