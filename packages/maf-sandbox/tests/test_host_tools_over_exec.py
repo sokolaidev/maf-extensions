@@ -1195,6 +1195,22 @@ class TestTheLayoutsOwnPromise:
         with pytest.raises(ValueError, match="backslash"):
             guest_run_layout(directory)
 
+    def test_a_directory_python_cannot_be_told_about_is_refused(self):
+        """`PYTHONPATH` separates on ':' and cannot quote one, and the shim's directory goes
+        there. `/runs/job:slot` would reach the interpreter as `/runs/job` plus a *relative*
+        `slot/host_tools`, resolved against the guest's own working directory — where a guest
+        file at that path becomes the module the program imports."""
+        with pytest.raises(ValueError, match="must not contain ':'"):
+            guest_run_layout("/runs/job:slot")
+
+    @pytest.mark.parametrize("name", ["site.py", "sitecustomize.py", "usercustomize.py"])
+    def test_a_program_the_interpreter_imports_on_its_way_up_is_refused(self, name: str):
+        """The transport's directory is on the path from startup, not from when the script is
+        found, so a program under one of these runs during initialisation — `sitecustomize.py`
+        twice over, `site.py` in place of the stdlib module that imports the other two."""
+        with pytest.raises(ValueError, match="imports at startup"):
+            guest_run_layout("/maf-sandbox/work/run-1", program=name)
+
     def test_a_directory_spelled_the_long_way_round_is_kept_the_short_way(self):
         """One directory, two spellings, is a difference waiting to matter.
 

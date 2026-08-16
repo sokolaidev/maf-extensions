@@ -88,6 +88,12 @@ _TRANSPORT_DIRECTORY = "host_tools"
 #: and that is what replaced the list of names a kind used to have to refuse.
 _TRANSPORT_FILENAMES = frozenset({SHIM_MODULE, _LAUNCHER, OUTPUT_FILE, EXIT_FILE, CALLS_DIRECTORY})
 
+#: Names CPython imports on its way up, which this directory is on the path for. A file here
+#: under one of them runs during initialisation — before the program is even the script — so
+#: they are refused as a ``program`` name rather than left to surprise a kind. Not a model's
+#: choice: a kind names its own program, and nothing a model names lands in this directory.
+_STARTUP_IMPORTED = frozenset({"site.py", "sitecustomize.py", "usercustomize.py"})
+
 
 class SandboxProgramTimeout(TimeoutError):
     """The *run's own* bound expired: the guest program did not finish in the time it was given.
@@ -186,6 +192,18 @@ def guest_run_layout(run_directory: str, *, program: str = "program.py") -> Gues
             f"run_directory must be an absolute guest path, not {run_directory!r}: every path "
             "in the layout is joined onto it and resolved against it again by the pull calls"
         )
+    if ":" in run_directory:
+        # `PYTHONPATH` has no escape for its own separator, and the launcher puts the shim's
+        # directory there. Under `/runs/job:slot` the interpreter reads two entries — `/runs/job`
+        # and a *relative* `slot/host_tools`, resolved against the guest's working directory —
+        # so a guest file at `slot/host_tools/maf_host_tools.py` becomes importable. Refused
+        # here rather than encoded around, because a path this cannot carry is one the whole
+        # arrangement cannot carry.
+        raise ValueError(
+            f"run_directory must not contain ':', and {run_directory!r} does: the shim's "
+            "directory is passed to the guest through PYTHONPATH, which uses ':' to separate "
+            "entries and offers no way to quote one"
+        )
     # Twice on purpose: containment against itself is trivially true, so only the spelling
     # is under test.
     run_directory = confine_guest_path(run_directory, run_directory)
@@ -204,6 +222,17 @@ def guest_run_layout(run_directory: str, *, program: str = "program.py") -> Gues
         raise ValueError(
             f"program must not be a name this layout already uses, and {program!r} is one of "
             f"{sorted(_TRANSPORT_FILENAMES)}"
+        )
+    if program in _STARTUP_IMPORTED:
+        # This directory is on the interpreter's path from *startup*, not only once the script
+        # is found, so a file named for something the interpreter imports on its way up runs —
+        # or fails — before the program does. `sitecustomize.py` as the program runs twice,
+        # once at startup and once as the script; `site.py` shadows the stdlib module that
+        # imports the other two, which ends the interpreter rather than the run.
+        raise ValueError(
+            f"program must not be a name the interpreter imports at startup, and {program!r} "
+            f"is one of {sorted(_STARTUP_IMPORTED)}: this directory is on the path before the "
+            "program is the script, so such a file runs during initialisation"
         )
     served = posixpath.join(run_directory, _TRANSPORT_DIRECTORY)
     return GuestRunLayout(
