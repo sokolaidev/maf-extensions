@@ -35,6 +35,7 @@ uv sync                # one workspace, one lock; agent-framework-core comes fro
 uv run pytest          # all packages' tests
 uv run ruff check .
 uv run pyright -p packages/maf-sandbox && uv run pyright -p packages/maf-sandbox-acas && uv run pyright -p packages/maf-sandbox-bicep && uv run pyright -p packages/maf-sandbox-codeact && uv run pyright -p packages/maf-sandbox-docker && uv run pyright -p packages/maf-sandbox-wslc
+uv run pyright         # scripts/, tests/ and samples/ — the tree no package covers
 ```
 
 Each package is deliberately self-contained — building, testing and publishing need nothing from this root beyond the shared lock. New extensions arrive as sibling directories under `packages/`.
