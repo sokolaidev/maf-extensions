@@ -543,6 +543,76 @@ class TestTheResponseLedgerIsCheckedBeforeTheSideEffect:
         assert second.refusal is not None and "byte budget" in second.refusal
         assert calls == [1], "nothing could have been delivered, so nothing should have run"
 
+    def test_a_cap_the_framing_cannot_fit_refuses_without_calling_the_tool(self):
+        """A per-response cap smaller than the transport's envelope can carry no response.
+
+        Knowable before the call, like the two above, and reachable in ordinary
+        configuration: the registry only refuses a cap below one byte, so a five-byte cap is
+        accepted and then a transport's framing puts every value out of reach. Running the
+        body first would mean a sink acting in the host process for a result the run can
+        never hand back.
+        """
+        calls: list[int] = []
+
+        @sandbox_tool(source=None, sink="file_store", identity=None)
+        def writes(x: int) -> int:
+            calls.append(x)
+            return 1
+
+        registry = HostToolRegistry(
+            response_limits=TransferLimits(max_bytes_per_file=5, max_total_bytes=4096, max_files=8)
+        )
+        registry.register(writes, name="writes")
+
+        refused = asyncio.run(HostToolRun(registry).dispatch("writes", {"x": 1}, framing_bytes=11))
+
+        assert not refused.ok
+        assert refused.refusal is not None and "per-response cap" in refused.refusal
+        assert calls == [], "the tool ran for a response that could never be delivered"
+
+    def test_a_negative_framing_allowance_is_a_programming_error(self):
+        """It would widen every ceiling beneath it, so it raises rather than refusing."""
+        registry = HostToolRegistry()
+        registry.register(sandbox_tool(source=None, sink=None, identity=None)(lambda: 1), name="f")
+        with pytest.raises(ValueError, match="framing_bytes"):
+            asyncio.run(HostToolRun(registry).dispatch("f", None, framing_bytes=-1))
+
+    @pytest.mark.parametrize("allowance", [float("nan"), float("inf"), 2.5, True, "8", None])
+    def test_a_framing_allowance_that_is_not_a_plain_integer_is_refused(self, allowance: object):
+        """A range check cannot catch these, and the caps are what they would switch off.
+
+        `nan` is the one that matters: it passes `< 0`, compares false against every ceiling
+        it is added to, and then lands in `_delivered_bytes`, where it disables the run's byte
+        accounting for the rest of the run. The others are refused for ordinary reasons.
+        """
+        registry = HostToolRegistry()
+        registry.register(sandbox_tool(source=None, sink=None, identity=None)(lambda: 1), name="f")
+        with pytest.raises(TypeError, match="framing_bytes"):
+            asyncio.run(HostToolRun(registry).dispatch("f", None, framing_bytes=allowance))  # type: ignore[arg-type]
+
+    def test_a_nan_framing_allowance_cannot_disable_the_byte_ledger(self):
+        """The consequence, not the type: a run that admitted one would stop capping anything.
+
+        Sized so the second call must be refused. If `nan` reached `_delivered_bytes` the
+        first call would poison it and every later comparison would be false — the cap gone
+        for good rather than for one call.
+        """
+        registry = HostToolRegistry(
+            response_limits=TransferLimits(max_bytes_per_file=64, max_total_bytes=22, max_files=8)
+        )
+        registry.register(
+            sandbox_tool(source=None, sink=None, identity=None)(lambda: "y" * 20), name="f"
+        )
+        run = HostToolRun(registry)
+
+        with pytest.raises(TypeError):
+            asyncio.run(run.dispatch("f", None, framing_bytes=float("nan")))  # type: ignore[arg-type]
+
+        assert _dispatch(run, "f").ok, "the refused call spent the budget"
+        exhausted = _dispatch(run, "f")
+        assert not exhausted.ok, "the byte ledger stopped counting"
+        assert exhausted.refusal is not None and "byte budget" in exhausted.refusal
+
 
 class TestDispatchResult:
     def test_exactly_one_side_must_be_set(self):

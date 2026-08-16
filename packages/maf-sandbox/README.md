@@ -133,6 +133,14 @@ A workload whose artifact names are not knowable when its tool is built passes t
 
 One sentence to read before registering anything, because a declaration reads like a control and is not one: **`Identity.APP` is not the safe option, only the declared one.** It is the application's full authority, and the only real bounds on it are the emptiness of the registry and the dispatch cap — least privilege for dispatched tools comes from what a host registers, never from what it declares. `Identity.USER` is declarable but not servable: registering such a tool raises the whole surface to approval-gated, and dispatching one is refused with the prerequisites named.
 
+### Reaching the host from inside — `dispatch_over_exec`
+
+The contract says what may be dispatched; it does not say how a dispatch *reaches* a host whose guest speaks an exit code, stdout, and a stat-and-read pull surface. `dispatch_over_exec` is that channel, built from those primitives and nothing else, and it is a helper a kind composes rather than anything the protocol requires. A kind writes the program and the generated shim (`host_tool_shim`) into a fresh per-run directory (`guest_run_layout`); `dispatch_over_exec` writes the launcher itself, starts it detached and then polls for request files, resolves each one through `HostToolRun.dispatch` — the same one door, with the same gates, cap and ceilings — and writes the answer back. It needs `EXEC`, `FILES_IN` and `FILES_OUT`, and deliberately not `FILES_LIST`.
+
+**The shim is not a control.** It runs where model-written code can read, edit or ignore it, and a program that writes request files itself is served identically. That is the design: every gate is host-side, and a check running in the guest would be decoration.
+
+It costs round trips — several backend calls per dispatch, plus polling — serves one outstanding call at a time, and leaves its request and response files behind, which is why the per-run directory has to be fresh. `dispatch_over_exec`'s own docstring is where those three are counted exactly, beside the code that decides them; whether the trade is worth it is a measurement rather than an assumption.
+
 ## Upgrading to 0.14
 
 **`Isolation.PROCESS` is `Isolation.NONE`.** The rung that provides no boundary was named for where the code runs rather than for what it protects, and read as the opposite of what it meant — "process isolation" implies a boundary, and this rung is the absence of one. One mechanical edit, in host code and in any backend you have written.
