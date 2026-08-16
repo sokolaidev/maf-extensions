@@ -21,6 +21,7 @@ from __future__ import annotations
 import importlib.metadata
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
@@ -72,8 +73,8 @@ def _absent(sample: Path) -> list[str]:
     return missing
 
 
-def _import(path: Path, sample: Path) -> None:
-    """Import ``path`` as a standalone module, with its own directory first on the path.
+def _import(path: Path, sample: Path) -> list[str]:
+    """Import ``path`` with its own directory first on the path; answer what it loaded from there.
 
     `sys.path[0]` is the script's directory when a sample is run, which is what lets
     `from _scaffold import …` and `from host_tools import …` resolve. The same has to hold here
@@ -84,11 +85,15 @@ def _import(path: Path, sample: Path) -> None:
     cache and the first sample imported answers every later `from _scaffold import …`, so twelve
     are checked against a copy that is not theirs. Only this directory's modules go — the
     framework and the SDKs stay cached, or each sample would pay to import them again.
+
+    The evicted names come back so a caller can assert the load happened rather than infer it
+    from the empty cache afterwards, which an unrelated change could make true for free.
     """
     spec = importlib.util.spec_from_file_location(f"_sample_{sample.name}_{path.stem}", path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     sys.path.insert(0, str(sample))
+    evicted: list[str] = []
     try:
         spec.loader.exec_module(module)
     finally:
@@ -97,6 +102,8 @@ def _import(path: Path, sample: Path) -> None:
             origin = getattr(loaded, "__file__", None)
             if origin and Path(origin).parent == sample:
                 del sys.modules[name]
+                evicted.append(name)
+    return evicted
 
 
 def test_no_sample_is_skipped_in_a_synced_workspace():
@@ -124,18 +131,20 @@ def test_a_samples_helper_modules_do_not_outlive_its_import():
     first, second = _SAMPLE_DIRS[0], _SAMPLE_DIRS[1]
     assert not (_absent(first) or _absent(second)), "these two cannot be imported here"
 
-    saw: list[str | None] = []
     for sample in (first, second):
-        _import(sample / "agent.py", sample)
-        saw.append(getattr(sys.modules.get("_scaffold"), "__file__", None))
-
-    # Presence as well as absence. Asserting only that the cache ends up empty would pass
-    # trivially the day a sample stops importing `_scaffold` at module level, and the eviction
-    # could be deleted with nothing going red.
-    assert saw == [None, None], f"`_scaffold` outlived the import that loaded it: {saw}"
-    assert "_scaffold" in (first / "agent.py").read_text(encoding="utf-8"), (
-        f"{first.name} no longer imports `_scaffold`, so the case above proves nothing"
-    )
+        # Presence and absence in one measurement. Asserting only that the cache ends up empty
+        # would pass trivially the day a sample stopped importing `_scaffold` at module level,
+        # and the eviction could then be deleted with nothing going red.
+        evicted = _import(sample / "agent.py", sample)
+        assert "_scaffold" in evicted, (
+            f"importing {sample.name} loaded {evicted or 'nothing'} from its own directory, so "
+            "it never cached a `_scaffold` for the next sample to inherit — this case is testing "
+            "nothing"
+        )
+        assert "_scaffold" not in sys.modules, (
+            f"`_scaffold` stayed cached after importing {sample.name}, so the next sample's "
+            "`from _scaffold import …` resolves to this one's copy"
+        )
 
 
 _PYRIGHT = tomllib.loads((_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["pyright"]
@@ -172,9 +181,14 @@ def test_pyright_reports_an_error_inside_samples():
     So a file with two known errors goes into `samples/`, the whole configured pass runs — the
     invocation CI runs, with no path argument, so `include` counts — and both have to come back.
     """
-    probe = _SAMPLES / "_pyright_probe.py"
+    # Named for this process. A fixed name is shared state in a checkout this repository expects
+    # to be shared: two overlapping runs and the first to finish unlinks the file the second's
+    # pyright is still reading, which fails the second with this test's own alarm.
+    probe = _SAMPLES / f"_pyright_probe_{os.getpid()}.py"
     probe.write_text(
-        '"""Written by tests/test_sample_modules_import.py, deleted in the same call."""\n\n'
+        '"""Written by tests/test_sample_modules_import.py, deleted in the same call.\n\n'
+        "While it exists — about six seconds — an independent `uv run pyright` in this checkout\n"
+        'reports its two errors. That is the probe, not drift."""\n\n'
         "from maf_sandbox import Isolation\n\n"
         "RUNG = Isolation.NO_SUCH_RUNG\n"
         'COUNT: int = "not an int"\n',
@@ -276,5 +290,6 @@ def test_every_module_imports(sample: Path):
             pytest.fail(
                 f"{sample.name}/{path.name} does not import: {type(exc).__name__}: {exc}. "
                 "Its declared dependencies are all installed, so this is the sample's own "
-                "problem — and nothing else in this repository would have noticed."
+                "problem. pyright would catch a name that no longer exists; only this case "
+                "catches module level failing to run."
             )

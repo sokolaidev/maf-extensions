@@ -1,6 +1,11 @@
 __pycache__/
 *.pyc
 .venv/
+
+# Written into samples/ by tests/test_sample_modules_import.py for about six seconds and
+# deleted in the same call. Ignored so a killed run cannot leave one to be committed —
+# pyright does not read .gitignore, so the probe is still analysed while it is there.
+samples/_pyright_probe_*.py
 dist/
 .pytest_cache/
 .ruff_cache/
