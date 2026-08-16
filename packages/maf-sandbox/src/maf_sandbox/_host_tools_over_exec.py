@@ -569,13 +569,28 @@ async def dispatch_over_exec(
         raise SandboxProgramTimeout(
             f"the run's {timeout:g}s were gone before the program was started — {gone}"
         ) from gone
-    started = await sandbox.exec(
-        f"sh {_quote(layout.launcher)}",
-        working_directory=layout.directory,
-        # What is left after writing the launcher, not another full bound: on a remote backend
-        # that upload is a round trip, and handing `exec` the original would add it back.
-        timeout=max(0.0, deadline - time.monotonic()),
-    )
+    try:
+        started = await sandbox.exec(
+            f"sh {_quote(layout.launcher)}",
+            working_directory=layout.directory,
+            # What is left after writing the launcher, not another full bound: on a remote
+            # backend that upload is a round trip, and handing `exec` the original would add
+            # it back.
+            timeout=max(0.0, deadline - time.monotonic()),
+        )
+    except TimeoutError as spent:
+        # Translated for the same reason the upload above is, and it has to be the same
+        # answer: the two legs are one situation — the run's budget running out before the
+        # program is going — and which of them it lands on is a matter of milliseconds.
+        # Leaving this one bare made wall-clock jitter decide whether the caller saw its own
+        # expiry or a backend's, for a run that failed identically either way.
+        #
+        # Every `TimeoutError` here, not only one the clock agrees about. The bound `exec` was
+        # given *is* this run's remainder, so its expiry is this run's; and re-reading the
+        # clock to check would reintroduce the misreading `_within` stopped asking it about.
+        raise SandboxProgramTimeout(
+            f"the run's {timeout:g}s were gone while starting the program — {spent}"
+        ) from spent
     if started.exit_code != 0:
         return ExecResult(
             stdout=started.stdout,

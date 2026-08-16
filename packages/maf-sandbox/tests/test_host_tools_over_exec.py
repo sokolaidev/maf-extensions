@@ -1476,6 +1476,23 @@ class TestWhoseTimeoutItWas:
 
         assert gone.value.output == "", "a program that never started printed something"
 
+    def test_the_budget_running_out_while_starting_is_the_runs_own_either_way(self):
+        """Two legs, one situation, and milliseconds decide which one it lands on.
+
+        The upload and the `exec` that starts the launcher are both "the run's budget went
+        before the program was going". Translating one and not the other made wall-clock
+        jitter pick the type a caller sees, for a run that failed identically.
+        """
+
+        class _BoundsTheStart(_ScriptedGuest):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                raise TimeoutError("the service bounds this exec")
+
+        with pytest.raises(SandboxProgramTimeout, match="while starting the program") as spent:
+            _run(_BoundsTheStart([], finish=False), HostToolRun(_registry()), timeout=30.0)
+
+        assert "the service bounds this exec" in str(spent.value), "the backend's reason was lost"
+
     def test_the_hosts_note_is_not_passed_off_as_the_programs_own_words(self):
         """`output` is what a caller quotes under "Output so far", so only stdout belongs in it.
 
