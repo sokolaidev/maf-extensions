@@ -43,6 +43,7 @@ from maf_sandbox import (
     HostToolRun,
     Identity,
     SandboxEntry,
+    SandboxProgramTimeout,
     SandboxTransferCapExceeded,
     SourceIntegrity,
     TransferLimits,
@@ -1323,6 +1324,31 @@ class TestWhoseTimeoutItWas:
 
         with pytest.raises(TimeoutError, match="did not finish within"):
             _run(_Stalls([]), HostToolRun(_registry()), timeout=0.2)
+
+    def test_the_two_are_told_apart_by_type_and_not_by_reading_the_message(self):
+        """Both tests above match on message text, which no caller can dispatch on.
+
+        A consumer has to *branch* — one of these means the program ran out and is still
+        running, the other means a control-plane call ran out and says nothing about the
+        program at all. Left as one type, the useful guess is the wrong one.
+        """
+
+        class _BoundsItsOwnStat(_ScriptedGuest):
+            async def stat_file(self, path: str, *, working_directory: str):
+                raise TimeoutError("the service bounds this read")
+
+        with pytest.raises(TimeoutError) as backends:
+            _run(_BoundsItsOwnStat([], finish=False), HostToolRun(_registry()), timeout=30.0)
+        assert not isinstance(backends.value, SandboxProgramTimeout), (
+            "a backend's own bound was typed as the run's, with 29s still on the clock"
+        )
+
+        wedged = _ScriptedGuest([], finish=False)
+        wedged.files[_LAYOUT.output] = b"step 1 done"
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(wedged, HostToolRun(_registry()), timeout=0.05)
+        assert expired.value.output == "step 1 done", "the quote a caller surfaces was not carried"
+        assert "step 1 done" in str(expired.value), "the message stopped carrying it too"
 
 
 class TestTheGuestsOwnDiagnostic:

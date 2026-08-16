@@ -76,9 +76,39 @@ SHIM_MODULE = "maf_host_tools.py"
 
 _LAUNCHER = "run_program.sh"
 
-#: Every name :func:`guest_run_layout` puts in the run directory. Derived from the constants
-#: above rather than listed again, so a name added there cannot be handed to a guest program.
-_RESERVED_NAMES = frozenset({SHIM_MODULE, _LAUNCHER, OUTPUT_FILE, EXIT_FILE, CALLS_DIRECTORY})
+#: Every name :func:`guest_run_layout` puts in the run directory, and what a kind reads to
+#: refuse a guest-supplied name that would claim one. Derived from the constants above rather
+#: than listed again, so a name added there cannot be handed to a guest program.
+#:
+#: **Refusing the names themselves is not enough for** :data:`SHIM_MODULE`, which is the one a
+#: program ``import``s: CPython's ``FileFinder`` resolves ``maf_host_tools/__init__.py`` and
+#: every extension suffix ahead of ``maf_host_tools.py``, so a kind must refuse that stem
+#: followed by ``/`` or ``.`` as well, or a guest-supplied neighbour becomes the module the
+#: program reaches.
+RESERVED_RUN_FILENAMES = frozenset(
+    {SHIM_MODULE, _LAUNCHER, OUTPUT_FILE, EXIT_FILE, CALLS_DIRECTORY}
+)
+
+
+class SandboxProgramTimeout(TimeoutError):
+    """The *run's own* bound expired: the guest program did not finish in the time it was given.
+
+    A :class:`TimeoutError` subclass, so a caller that only wants "it timed out" keeps working
+    unchanged.  It exists because on this transport a plain ``TimeoutError`` no longer means
+    that: a backend may bound its own control-plane calls and :func:`_within` re-raises those
+    untranslated, deliberately, so the one sentence saying what actually happened survives.  A
+    caller that collapses the two tells the model its program ran out of time when a ``stat``
+    ran out instead — a false statement about code the model is about to rewrite.
+
+    ``output`` is what the program had printed when the run was given up on, already capped.
+    Carried as an attribute rather than left only in the message so a caller can surface the
+    program's own stdout without also surfacing whatever else the message may come to hold.
+    """
+
+    def __init__(self, message: str, *, output: str = "") -> None:
+        super().__init__(message)
+        self.output = output
+
 
 #: How long the guest blocks on one call before giving up on the host, and how often it looks.
 #: Bounded on both sides. It has to outlast the host's poll interval by a wide margin or a slow
@@ -150,14 +180,14 @@ def guest_run_layout(run_directory: str, *, program: str = "program.py") -> Gues
             f"program must be a plain file name, not {program!r}: it is written beside the "
             "shim and imports it, which only works when the two share a directory"
         )
-    if program in _RESERVED_NAMES:
+    if program in RESERVED_RUN_FILENAMES:
         # Each collision breaks the run in its own way and none of them say so: the shell
         # truncates the output file before the interpreter opens the program, the launcher
         # and the shim are written over whatever the kind put there, and the calls directory
         # cannot be created where a file already is.
         raise ValueError(
             f"program must not be a name this layout already uses, and {program!r} is one of "
-            f"{sorted(_RESERVED_NAMES)}"
+            f"{sorted(RESERVED_RUN_FILENAMES)}"
         )
     return GuestRunLayout(
         directory=run_directory,
@@ -442,9 +472,11 @@ async def dispatch_over_exec(
         ``stdout`` and the exit code it recorded.
 
     Raises:
-        TimeoutError: The program left no exit marker before the deadline. Its output up to
-            that point is in the message; the process may still be running, and disposing of
-            the sandbox is what stops it.
+        SandboxProgramTimeout: The program left no exit marker before the deadline. Its output
+            up to that point is in the message and on ``output``; the process may still be
+            running, and disposing of the sandbox is what stops it. Distinct from a bare
+            ``TimeoutError`` below, which is a backend's own bound and says nothing about
+            whether the program is still going.
         Exception: Whatever the backend raises from a stat or a read that is not a file
             simply not being there yet. A permanent failure — a permission error, a client
             that cannot reach its daemon — is reported as itself rather than retried until
@@ -530,9 +562,10 @@ async def dispatch_over_exec(
             landed = await _marker_if_present(sandbox, layout, giving_up)
             if landed is not None:
                 return await _completed(sandbox, run, layout, landed, deadline)
-            raise TimeoutError(
-                f"the guest program did not finish within {timeout:g}s. Output so far: "
-                f"{(await _final_output(sandbox, run, layout, giving_up))[:2000]}"
+            quoted = (await _final_output(sandbox, run, layout, giving_up))[:2000]
+            raise SandboxProgramTimeout(
+                f"the guest program did not finish within {timeout:g}s. Output so far: {quoted}",
+                output=quoted,
             )
         try:
             finished = await _read_if_present(
@@ -570,9 +603,11 @@ async def dispatch_over_exec(
             # them. Only the transport is bounded that way, so the message says which call ran
             # out while still leading with the failure the caller asked about. A backend's own
             # `TimeoutError` is deliberately not caught here — see `_within`.
-            raise TimeoutError(
+            quoted = (await _final_output(sandbox, run, layout, giving_up))[:2000]
+            raise SandboxProgramTimeout(
                 f"the guest program did not finish within {timeout:g}s — {stalled}. "
-                f"Output so far: {(await _final_output(sandbox, run, layout, giving_up))[:2000]}"
+                f"Output so far: {quoted}",
+                output=quoted,
             ) from stalled
         # Clamped: an unclamped sleep overruns the deadline by a whole interval, so a 0.1s
         # bound with a 10s interval would wait ten seconds to notice it had passed.
@@ -760,7 +795,8 @@ class _DeadlineExpired(TimeoutError):
     A `TimeoutError` reaching the supervisor means one of two unrelated things, and only one
     of them is the run ending. Named so the loop can catch its own and let a backend's — which
     carries a diagnosis the run-level message would erase — go to the caller intact. A subclass
-    of `TimeoutError` because that is still what the caller is told the run raises.
+    of `TimeoutError` because a backend's own is one too, and the pair the caller has to tell
+    apart is `SandboxProgramTimeout` against everything else; this one never leaves the module.
     """
 
 

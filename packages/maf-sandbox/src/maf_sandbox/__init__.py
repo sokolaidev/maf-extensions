@@ -73,8 +73,10 @@ from ._host_tools import (
 )
 from ._host_tools_over_exec import (
     CALLS_DIRECTORY,
+    RESERVED_RUN_FILENAMES,
     SHIM_MODULE,
     GuestRunLayout,
+    SandboxProgramTimeout,
     dispatch_over_exec,
     guest_run_layout,
     host_tool_shim,
@@ -153,6 +155,7 @@ __all__ = [
     "INTEGRITY_RANK",
     "ISOLATION_RANK",
     "MAX_ARTIFACT_NAME_BYTES",
+    "RESERVED_RUN_FILENAMES",
     "SHIM_MODULE",
     "Artifact",
     "Capability",
@@ -196,6 +199,7 @@ __all__ = [
     "SandboxOutputSinkRequired",
     "SandboxOutputSizeUnknown",
     "SandboxOutputUnreachable",
+    "SandboxProgramTimeout",
     "SandboxPurger",
     "SandboxRouter",
     "SandboxSpec",
