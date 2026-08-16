@@ -49,20 +49,30 @@ With any of them unset the program says which and exits non-zero, rather than ru
 
 ## Run
 
-The first call is slow — the sandbox is created and booted before the compiler runs. The model writes its own prose around them, but the diagnostics it is reporting look like this:
+The first call is slow — the sandbox is created and booted before the compiler runs. The model writes its own summary first. Under it the sample prints the diagnostics again, this time straight out of what `bicep_validate` returned:
 
 ```
-  [error]   no-unused-params @ main.bicep:21: Parameter "environmentName" is
-  declared but never used.
-  [warning] BCP035 @ main.bicep:31: The specified "resource" declaration is missing
-  the following required properties: "sku".
-  [warning] use-recent-api-versions @ main.bicep:31: Use more recent API version for
-  'Microsoft.Storage/storageAccounts'. '2023-01-01' is N days old ...
+== Diagnostics as bicep_validate returned them ==
 
-Disposed 1 sandbox(es).
+  build(main.bicep): 1 diagnostic(s)
+    [warning] BCP035 @ main.bicep:31: The specified "resource" declaration is missing
+              the following required properties: "sku".
+  lint(main.bicep): 2 diagnostic(s)
+    [error] no-unused-params @ main.bicep:21: Parameter "environmentName" is declared
+            but never used.
+    [warning] use-recent-api-versions @ main.bicep:31: Use more recent API version for
+              'Microsoft.Storage/storageAccounts'. '2023-01-01' is N days old ...
+
+  [measured] compiles that reached the sandbox: 1
+
+  [measured] Disposed 1 sandbox(es).
 ```
 
-Only the prose is the model's. The diagnostics are the compiler's, rendered by `bicep_validate` from the SARIF that `bicep build` and `bicep lint` each emit; exact wording follows the Bicep version in your image.
+Only the prose above the heading is the model's. Everything between the heading and the count is what `bicep_validate` returned, rendered from the SARIF that `bicep build` and `bicep lint` each emit; exact wording follows the Bicep version in your image.
+
+The split is the point, and it is what [`scripts/check_live_sample.py`](../../scripts/check_live_sample.py) reads. `main.bicep` names both rule ids, both severities and both line numbers in its own comments, so a model that never called the tool could write a summary carrying every field a check made over prose would look for — and for a while one would have passed. Reading the block instead closes that, and closes the other direction with it: three healthy releases went red because a run wrote `**error**` where the pattern wanted `[error]`, and no pattern over a model's markup was ever going to hold ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)).
+
+The two `[measured]` lines are the fence. The sample passes the model's reply through a filter first, so any line of it beginning with that tag is printed quoted (`> [measured] …`) — which means a reply can write the heading, and cannot close the block or answer for the router.
 
 Two of those are worth reading closely, because neither says what a newcomer expects.
 

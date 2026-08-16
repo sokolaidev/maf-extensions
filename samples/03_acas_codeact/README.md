@@ -61,17 +61,26 @@ With any of these unset the program says which and exits non-zero, rather than r
 
 ## Run
 
-The first call is slow — the sandbox is created and booted before the interpreter runs. `agent.py` prints only the model's reply and the disposal line — never `execute_code`'s own result — so what you see looks something like this:
+The first call is slow — the sandbox is created and booted before the interpreter runs. `agent.py` prints the model's reply, then what `execute_code` returned, then the disposal line — so what you see looks something like this:
 
 ```
 354224848179261915075
 
-Disposed 1 sandbox(es).
+== Program output as execute_code returned it ==
+
+  stdout:
+  354224848179261915075
+
+  [measured] programs whose output came back from the sandbox: 1
+
+  [measured] Disposed 1 sandbox(es).
 ```
 
 That block is one real run. This model answered with the number alone; another will wrap it in a sentence. What does not vary is the number and the disposal line.
 
-The wording around the number is the model's and varies run to run; the model is instructed to report the tool's answer verbatim, not to paraphrase, round, or recompute it. What tells you the number came from a real run rather than the model reciting a well-known sequence is the line below it: `Disposed 1 sandbox(es).` only prints once `execute_code` has actually created and torn down a sandbox — a `Disposed 0` would mean the model answered without running anything.
+The wording around the number is the model's and varies run to run; the model is instructed to report the tool's answer verbatim, not to paraphrase, round, or recompute it. What tells you the number came from a real run rather than the model reciting a well-known sequence is the block below it. `354224848179261915075` is a constant, and a model that never ran anything can write it — so the live check reads the copy inside `== Program output as execute_code returned it ==`, which is the interpreter's own stdout, recorded by the framework beside the call ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)). The `[measured]` lines are the sample vouching for a number, and the model's reply is filtered before printing so a line of it starting with that tag comes out quoted (`> [measured] …`) — a reply can write the heading and cannot close the block.
+
+`[measured] Disposed 1 sandbox(es).` is the other half: it only prints once `execute_code` has actually created and torn down a sandbox, and a `Disposed 0` would mean the model answered without running anything.
 
 ## Troubleshooting
 

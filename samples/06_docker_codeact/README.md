@@ -51,15 +51,22 @@ There are no sandbox variables at all: the docker backend runs the local engine 
 
 ## Run
 
-The first call pays for pulling the image, if it is not already local, plus creating and starting the container — a few seconds, against the minutes a microVM-isolated sandbox needs. `agent.py` prints only the model's reply and the disposal line — never `execute_code`'s own result — so what you see looks something like this:
+The first call pays for pulling the image, if it is not already local, plus creating and starting the container — a few seconds, against the minutes a microVM-isolated sandbox needs. `agent.py` prints the model's reply, then what `execute_code` returned, then the disposal line — so what you see looks something like this:
 
 ```
 354224848179261915075
 
-Disposed 1 sandbox(es).
+== Program output as execute_code returned it ==
+
+  stdout:
+  354224848179261915075
+
+  [measured] programs whose output came back from the sandbox: 1
+
+  [measured] Disposed 1 sandbox(es).
 ```
 
-That block is one real run. This model answered with the number alone; another will wrap it in a sentence. What does not vary is the number and the disposal line: `Disposed 1 sandbox(es).` only prints once `execute_code` has actually created and torn down a container — a `Disposed 0` would mean the model answered without running anything, the T0 behaviour this sample exists to contrast with.
+That block is one real run. This model answered with the number alone; another will wrap it in a sentence. What does not vary is the block under it. `354224848179261915075` is a constant a model can recite, so the live check reads the copy inside `== Program output as execute_code returned it ==` — the interpreter's own stdout, recorded by the framework beside the call — and not the one in the reply ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)). `[measured] Disposed 1 sandbox(es).` only prints once `execute_code` has actually created and torn down a container; a `Disposed 0` would mean the model answered without running anything, the T0 behaviour this sample exists to contrast with.
 
 The same number sample 03 gets from a microVM in Azure, computed by the same program in the same way — only the backend underneath differs.
 

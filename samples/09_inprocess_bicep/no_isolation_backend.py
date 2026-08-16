@@ -129,18 +129,43 @@ class NoIsolationSandbox:
             )
         except subprocess.TimeoutExpired as exc:
             raise TimeoutError(str(exc)) from exc
-        # The command was rewritten guest→host, so the binary ran against the host root and prints
-        # it back: bicep's SARIF carries `file://` URIs for the host path, and every diagnostic
-        # would render with `/tmp/no-isolation-…` where the workload expects to strip the guest
-        # `work_dir` and leave `main.bicep`. Reverse the translation in both streams so the guest
-        # path the workload strips is the one that appears.
-        guest = str(self._guest_work_dir)
-        host = str(self._host_root)
         return ExecResult(
-            stdout=(completed.stdout or "").replace(host, guest),
-            stderr=(completed.stderr or "").replace(host, guest),
+            stdout=self._to_guest(completed.stdout or ""),
+            stderr=self._to_guest(completed.stderr or ""),
             exit_code=completed.returncode,
         )
+
+    def _to_guest(self, text: str) -> str:
+        """Rewrite the host root back to the guest ``work_dir``, in every spelling of it.
+
+        The command was rewritten guest→host, so the binary ran against the host root and prints
+        it back: bicep's SARIF carries `file://` URIs for the host path, and every diagnostic
+        would render with `no-isolation-…` where the workload expects to strip the guest
+        `work_dir` and leave `main.bicep`.
+
+        One replacement is not enough, because a root has more than one spelling and the binary
+        picks its own. Two differences, and Windows shows both at once:
+
+        * *How the path is written.* A URI uses forward slashes and a leading one, which a POSIX
+          path already has and ``C:\\Users\\…`` does not. So ``str(host_root)`` appears nowhere in
+          a SARIF blob on Windows.
+        * *Which path it is.* ``mkdtemp`` answers with whatever ``%TEMP``/``$TMPDIR`` says, and an
+          OS is free to resolve that to something else before printing it — an 8.3 short name
+          (``C:\\Users\\ANTONS~1\\…`` in, ``C:/Users/AntonSokolovskyi/…`` out), or a symlinked
+          ``/tmp``. So the resolved root is tried as well as the one this object was handed.
+
+        Between them the sample printed the reader's own temp directory in every diagnostic on
+        Windows. Longest first within each root, so the URI form is taken before the bare path
+        inside it. On a POSIX host with no symlink in the way, every spelling is the same string
+        and only the first replacement does anything.
+        """
+        for root in dict.fromkeys((self._host_root, self._host_root.resolve())):
+            native = str(root)
+            slashed = native.replace("\\", "/")
+            uri = slashed if slashed.startswith("/") else f"/{slashed}"
+            for spelling in (uri, native, slashed):
+                text = text.replace(spelling, self._guest_work_dir)
+        return text
 
     async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
         raise NotImplementedError(
