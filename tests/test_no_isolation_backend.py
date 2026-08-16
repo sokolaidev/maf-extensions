@@ -118,6 +118,65 @@ def test_exec_translates_the_host_root_back_to_the_guest_work_dir():
     asyncio.run(body())
 
 
+def test_the_reverse_translation_covers_the_uri_spelling_of_the_host_root():
+    """A `file://` URI spells a path with forward slashes, and Windows roots do not.
+
+    The case above runs `echo`, which prints the root in its *native* form — the one spelling a
+    single replacement catches on every platform. Bicep never prints that: its SARIF carries
+    `file:///C:/Users/…/Temp/no-isolation-ab/main.bicep`, so on Windows the native form appears
+    nowhere in the blob and every diagnostic reached the reader with their own temp directory in
+    it. Found by running `samples/09_inprocess_bicep` on Windows once its output was printed
+    rather than only handed to the model (#314).
+
+    The root here is a literal rather than a real `mkdtemp`, so the case runs the same on both
+    platforms: `str(Path(r"C:\\..."))` is that backslash string under PosixPath too.
+    """
+    sandbox = NoIsolationSandbox(
+        Path(r"C:\Users\x\AppData\Local\Temp\no-isolation-ab"), _GUEST_WORK_DIR
+    )
+    uri = "file:///C:/Users/x/AppData/Local/Temp/no-isolation-ab/main.bicep:21"
+    assert sandbox._to_guest(uri) == f"file://{_GUEST_WORK_DIR}/main.bicep:21"  # noqa: SLF001
+
+    native = r"C:\Users\x\AppData\Local\Temp\no-isolation-ab\main.bicep"
+    assert sandbox._to_guest(native) == f"{_GUEST_WORK_DIR}\\main.bicep"  # noqa: SLF001
+
+    bare = "C:/Users/x/AppData/Local/Temp/no-isolation-ab/main.bicep"
+    assert sandbox._to_guest(bare) == f"{_GUEST_WORK_DIR}/main.bicep"  # noqa: SLF001
+
+
+def test_the_uri_translation_leaves_a_posix_root_where_the_workload_strips_it():
+    """The same three spellings on a POSIX root are one string, and must stay one.
+
+    `format_diagnostics` strips `f"{work_dir}/"` off the front of a URI's path, so an extra
+    leading slash — `file:////maf-sandbox/work/main.bicep` — would leave the whole path rendered
+    where `main.bicep` belongs. Reading right on Windows is worth nothing if it costs Linux,
+    which is the platform the live job runs on.
+    """
+    sandbox = NoIsolationSandbox(Path("/tmp/no-isolation-ab"), _GUEST_WORK_DIR)
+    translated = sandbox._to_guest("file:///tmp/no-isolation-ab/main.bicep:21")  # noqa: SLF001
+    assert translated == f"file://{_GUEST_WORK_DIR}/main.bicep:21"
+    assert translated.removeprefix("file://").startswith(f"{_GUEST_WORK_DIR}/")
+
+
+def test_the_translation_covers_the_root_as_the_operating_system_resolves_it(tmp_path: Path):
+    """The binary prints the root the OS gives it, not the string `mkdtemp` returned.
+
+    On this machine those differ: `%TEMP%` holds an 8.3 short name, so `mkdtemp` answers
+    `C:\\Users\\ANTONS~1\\…\\no-isolation-x` and bicep's SARIF carries
+    `file:///C:/Users/AntonSokolovskyi/…/no-isolation-x`. A macOS `/tmp` is a symlink to
+    `/private/tmp` and does the same thing. Neither is reachable from a literal, so the case
+    below builds the difference out of a `..` segment, which `resolve` collapses and `str` keeps.
+    """
+    real = tmp_path / "no-isolation-ab"
+    real.mkdir()
+    indirect = tmp_path / "no-isolation-ab" / ".." / "no-isolation-ab"
+    assert str(indirect) != str(real), "the fixture no longer gives the root two spellings"
+
+    sandbox = NoIsolationSandbox(indirect, _GUEST_WORK_DIR)
+    printed = f"{real}/main.bicep".replace("\\", "/")
+    assert sandbox._to_guest(printed) == f"{_GUEST_WORK_DIR}/main.bicep"  # noqa: SLF001
+
+
 def test_exec_sequence_form_translates_each_argv_element():
     """The argv form rewrites the guest work_dir in *each* element and runs without a shell.
 
