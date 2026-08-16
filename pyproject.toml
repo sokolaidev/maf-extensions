@@ -17,6 +17,19 @@ dev = [
     "pyright>=1.1.411,<1.2",
     # Release checks (metadata validation of built sdists/wheels).
     "twine>=6,<7",
+    # The model client every sample that talks to a model imports, and the one distribution
+    # `samples/` needs that nothing else here pulls in. Without it `tests/test_sample_modules_
+    # import.py` skips ten of the thirteen samples — every one that calls a model — and pyright
+    # reads `OpenAIChatClient` as an unknown import symbol in nine files (#334).
+    #
+    # A floor and a major ceiling, deliberately wider than the tooling bands above. Those are
+    # narrow so a lock refresh cannot drift a linter's findings; this one has the opposite job.
+    # A sample declares it unpinned in its PEP 723 block, so a live run resolves whatever is
+    # newest — and an offline check pinned to an older minor would go green against a version no
+    # live run uses, which is the gap this dependency is here to close. `uv.lock` pins the exact
+    # version for reproducibility; the ceiling only stops `uv lock --upgrade` crossing a major.
+    # Same range the packages declare for `agent-framework-core`.
+    "agent-framework-openai>=1.13.0,<2",
 ]
 
 # Lint rules for the tree *outside* packages/* — samples/, tests/, scripts/, which belong to no
@@ -40,11 +53,17 @@ extend-select = ["I", "UP", "D100", "D101", "D103", "D104"]
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["D101", "D103"]
 
-# Repo-level pyright for the code the per-package strict configs do not cover: scripts/ and the
-# test trees. Package src/ stays on its own per-package strict config (uv run pyright -p
-# packages/<pkg>, include = ["src"]), which -p selects directly; this config never applies to src.
+# Repo-level pyright for the code the per-package strict configs do not cover: scripts/, the
+# test trees and samples/. Package src/ stays on its own per-package strict config (uv run
+# pyright -p packages/<pkg>, include = ["src"]), which -p selects directly; this config never
+# applies to src.
+#
+# samples/ joined last (#334) and is the one whose absence had a price attached: a sample naming
+# an attribute another package had deleted passed the whole offline gate and raised on the first
+# real run — which is `verify-live`, after a release, on the workflow that creates billable
+# sandboxes. `Isolation.PROCESS` survived its own rename that way and was caught by hand.
 [tool.pyright]
-include = ["scripts", "tests", "packages/*/tests/**"]
+include = ["scripts", "tests", "samples", "packages/*/tests/**"]
 typeCheckingMode = "standard"
 # scripts/ is under no execution environment, so it stays at full standard — the phase-1
 # behavior, unchanged. Each test tree is its own execution environment (root takes a single
@@ -56,7 +75,21 @@ typeCheckingMode = "standard"
 # them; every other rule stays an error and catches real drift. reportMissingImports is
 # deliberately not relaxed. The tests/ env also puts sample 09 on extraPaths so pyright can
 # resolve the runtime sys.path import in test_no_isolation_backend.py instead of suppressing it.
+#
+# **samples/ relaxes nothing.** #334 proposed giving it the same four, and the five sites that
+# would need are not loose fakes, which is what that relaxation is for: two are a real protocol
+# defect in `maf-sandbox-wslc` (#370) and three are an Optional the library genuinely returns.
+# Downgrading four rules across 23 files to cover five lines would take a real wrong-argument
+# bug in a sample down with it — and a sample is code an adopter copies. They carry a
+# `# pyright: ignore[...]` each instead, naming the reason, and #370's come out when it is
+# fixed. So `samples/` answers to exactly what `scripts/` answers to.
+#
+# Its execution environment exists to *tighten*: `reportUnnecessaryTypeIgnoreComment` fails the
+# build on a suppression that has stopped suppressing anything, which is the one real objection
+# to doing it inline. It is scoped to samples/ rather than set at the root because the root has
+# 27 of them already, across six packages' test trees — a separate job, and not this one.
 executionEnvironments = [
+  { root = "samples", reportUnnecessaryTypeIgnoreComment = "error" },
   { root = "tests", extraPaths = ["samples/09_inprocess_bicep"], reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
   { root = "packages/maf-sandbox/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
   { root = "packages/maf-sandbox-acas/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
