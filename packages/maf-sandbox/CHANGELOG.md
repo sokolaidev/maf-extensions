@@ -2,6 +2,18 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.15.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.14.0...maf-sandbox-v0.15.0) (2026-08-16)
+
+
+### Features
+
+* a host-tool transport an EXEC backend can implement, over request and response files ([#327](https://github.com/sokolaidev/maf-extensions/issues/327)) ([680abb0](https://github.com/sokolaidev/maf-extensions/commit/680abb0855a2396723c084c071bc2e2c7a164acb))
+
+
+### Documentation
+
+* the ladder one-liner still named the renamed bottom rung ([#348](https://github.com/sokolaidev/maf-extensions/issues/348)) ([76a175c](https://github.com/sokolaidev/maf-extensions/commit/76a175c8126c5585b4746cb4419ce686eb7e05fb))
+
 ## [0.14.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.13.0...maf-sandbox-v0.14.0) (2026-08-14)
 
 
