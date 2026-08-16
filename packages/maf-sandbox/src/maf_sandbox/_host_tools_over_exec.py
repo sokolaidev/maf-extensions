@@ -526,11 +526,20 @@ async def dispatch_over_exec(
     # Before `exec`, not after: the bound is on the whole program, and a launcher that takes
     # most of it would otherwise hand supervision a second full timeout to spend.
     deadline = time.monotonic() + timeout
-    await _within(
-        deadline,
-        "the launcher upload",
-        sandbox.write_file(layout.launcher, launcher_script(layout, interpreter)),
-    )
+    try:
+        await _within(
+            deadline,
+            "the launcher upload",
+            sandbox.write_file(layout.launcher, launcher_script(layout, interpreter)),
+        )
+    except _DeadlineExpired as gone:
+        # The one `_within` outside the loop, so the loop's handler cannot convert it. Left
+        # alone a module-private type crosses the public boundary, and the caller reads this
+        # run's own expiry as the other kind — a backend's bound, with the program's fate
+        # unknown — when in fact the program is the one thing that certainly never started.
+        raise SandboxProgramTimeout(
+            f"the run's {timeout:g}s were gone before the program was started — {gone}"
+        ) from gone
     started = await sandbox.exec(
         f"sh {_quote(layout.launcher)}",
         working_directory=layout.directory,
@@ -562,10 +571,11 @@ async def dispatch_over_exec(
             landed = await _marker_if_present(sandbox, layout, giving_up)
             if landed is not None:
                 return await _completed(sandbox, run, layout, landed, deadline)
-            quoted = (await _final_output(sandbox, run, layout, giving_up))[:2000]
+            printed, note = await _final_output(sandbox, run, layout, giving_up)
             raise SandboxProgramTimeout(
-                f"the guest program did not finish within {timeout:g}s. Output so far: {quoted}",
-                output=quoted,
+                f"the guest program did not finish within {timeout:g}s. "
+                f"Output so far: {printed[:2000]}{note}",
+                output=printed[:2000],
             )
         try:
             finished = await _read_if_present(
@@ -603,11 +613,11 @@ async def dispatch_over_exec(
             # them. Only the transport is bounded that way, so the message says which call ran
             # out while still leading with the failure the caller asked about. A backend's own
             # `TimeoutError` is deliberately not caught here — see `_within`.
-            quoted = (await _final_output(sandbox, run, layout, giving_up))[:2000]
+            printed, note = await _final_output(sandbox, run, layout, giving_up)
             raise SandboxProgramTimeout(
                 f"the guest program did not finish within {timeout:g}s — {stalled}. "
-                f"Output so far: {quoted}",
-                output=quoted,
+                f"Output so far: {printed[:2000]}{note}",
+                output=printed[:2000],
             ) from stalled
         # Clamped: an unclamped sleep overruns the deadline by a whole interval, so a 0.1s
         # bound with a 10s interval would wait ten seconds to notice it had passed.
@@ -663,10 +673,17 @@ async def _completed(
         # untouched, and the grace above guarantees a window where it does. Propagating one
         # would say the program never finished — the single thing the marker has disproved —
         # so the backend's sentence goes beside the exit code it would otherwise replace.
-        logger.warning("host tools: the program finished but its output did not")
+        logger.warning(
+            "host tools: the program finished but its output did not: %s", error_detail(unread)
+        )
+        # Ours names the call and nothing else, and a caller is owed which read gave up. A
+        # backend's is a client's own text — endpoint, subscription, request id — and this
+        # value is rendered for a model by every kind that has one, so it stays in the log.
+        # The distinction is the same one `SandboxProgramTimeout` exists to draw.
+        blamed = f": {unread}" if isinstance(unread, _DeadlineExpired) else ""
         return ExecResult(
             stdout="",
-            stderr=f"the program finished, but its output could not be read: {unread}",
+            stderr=f"the program finished, but its output could not be read{blamed}",
             exit_code=_exit_code_from(finished),
         )
     return ExecResult(
@@ -920,8 +937,13 @@ async def _read_if_present(
 
 async def _final_output(
     sandbox: Sandbox, run: HostToolRun, layout: GuestRunLayout, until: float
-) -> str:
-    """What the program printed, for the timeout message — on a short allowance of its own.
+) -> tuple[str, str]:
+    """What the program printed, and separately the host's note — on a short allowance.
+
+    Two values rather than one because they go to different places. The note ("output was
+    larger than the host will read") is the *host* speaking, and a caller quoting it under
+    "Output so far" hands a model host prose in the position its own stdout occupies — which
+    is what the success path already avoids by routing the same note to ``stderr``.
 
     The run's deadline has passed by the time this is called, so reading under it would expire
     instantly and the message would carry nothing. This buys a couple of seconds for the
@@ -942,15 +964,16 @@ async def _final_output(
             cap=_output_cap(run),
             deadline=until,
         )
-        # The note when there is one, so a timed-out run whose output was refused for its size
-        # does not quote emptiness at a reader who cannot tell that from a silent program.
-        return _as_text(value) or _why_no_output(value)
+        # The note travels beside the text, not instead of it: a timed-out run whose output was
+        # refused for its size must not quote emptiness at a reader who cannot tell that from a
+        # silent program, and must not pass the note off as the program's own words either.
+        return _as_text(value), _why_no_output(value)
     except Exception as failure:  # noqa: BLE001 — a diagnostic must not replace the failure
         # Not just `TimeoutError`: `stat_file` may raise anything a backend's client raises,
         # and this runs while a `TimeoutError` is being constructed. Losing the run's own
         # reason to a failure in reading the reason is the one outcome worth ruling out.
         logger.warning("host tools: could not read the program's output: %s", error_detail(failure))
-        return ""
+        return "", ""
 
 
 def _as_text(value: str | _TooLarge | _NotText | None) -> str:

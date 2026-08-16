@@ -1118,7 +1118,12 @@ class TestWhatAFinishedRunIsAllowedToSay:
 
         assert result.exit_code == 7, "a finished run was reported as something else"
         assert result.stdout == ""
-        assert "a FIFO the service reports as a regular file" in result.stderr
+        assert "could not be read" in result.stderr
+        # Changed from asserting the backend's sentence reaches `stderr`. It does reach a
+        # model — every kind renders this — and a client's timeout text is where an endpoint,
+        # a subscription or a request id lives. The diagnosis is worth keeping and the log is
+        # where it is kept; what a caller is owed here is that the output is missing.
+        assert "a FIFO the service reports as a regular file" not in result.stderr
 
     def test_a_marker_that_lands_in_the_last_poll_interval_is_still_found(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1349,6 +1354,48 @@ class TestWhoseTimeoutItWas:
             _run(wedged, HostToolRun(_registry()), timeout=0.05)
         assert expired.value.output == "step 1 done", "the quote a caller surfaces was not carried"
         assert "step 1 done" in str(expired.value), "the message stopped carrying it too"
+
+    def test_the_runs_bound_expiring_before_the_program_starts_is_still_the_runs(self):
+        """The one `_within` outside the loop, where no handler converts what it raises.
+
+        Left alone, a module-private `_DeadlineExpired` crosses the public boundary and reads
+        as the other case — a backend's own bound, program's fate unknown — when the program
+        is the one thing that certainly never started.
+        """
+
+        class _StallsOnTheUpload(_ScriptedGuest):
+            async def write_file(self, path: str, content: str | bytes) -> None:
+                await asyncio.sleep(3600)
+
+        with pytest.raises(SandboxProgramTimeout, match="before the program was started") as gone:
+            _run(_StallsOnTheUpload([], finish=False), HostToolRun(_registry()), timeout=0.1)
+
+        assert gone.value.output == "", "a program that never started printed something"
+
+    def test_the_hosts_note_is_not_passed_off_as_the_programs_own_words(self):
+        """`output` is what a caller quotes under "Output so far", so only stdout belongs in it.
+
+        An output dropped for its size leaves the host explaining why. On the success path that
+        explanation goes to `stderr`; putting it in `output` here would hand a model host prose
+        in the position its program's own words occupy.
+        """
+
+        class _PrintsTooMuchThenHangs(_ScriptedGuest):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                started = await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+                self.files[_LAYOUT.output] = b"x" * 200
+                return started
+
+        limits = TransferLimits(max_bytes_per_file=64, max_total_bytes=32, max_files=4)
+        guest = _PrintsTooMuchThenHangs([], finish=False)
+
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry(response_limits=limits)), timeout=0.1)
+
+        assert expired.value.output == "", "the host's note was handed over as program output"
+        assert "larger than the host will read" in str(expired.value), "the note went missing"
 
 
 class TestTheGuestsOwnDiagnostic:
