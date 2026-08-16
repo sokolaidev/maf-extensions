@@ -16,6 +16,8 @@ Titles must be [Conventional Commits](https://www.conventionalcommits.org/); CI 
 
 **So a drive-by fix in another package inherits your commit's type.** Correcting a stale comment in `maf-sandbox-bicep` inside a `feat!:` commit about `maf-sandbox` released bicep 0.5.0, with a changelog announcing a breaking change that package never received. Commit a touch outside the package you are working on **separately**, as `chore:`, which releases nothing.
 
+**And when the touch outside is not a drive-by but something the package you are working on needs, splitting it is not enough — the first half has to be *released* before the second can go green.** A dependency floor may only name a version that exists, and CI installs every built wheel into a clean environment to prove it. The core wheel built from your branch still carries its pre-release version, because release-please bumps versions only in a Release PR, so a dependent declaring `maf-sandbox>=0.16.0` resolves against nothing — not the wheel beside it, not PyPI — however complete the addition to `maf-sandbox` on the same branch is. Land the `maf-sandbox` half on its own, with its own title; adopt it and raise the floor afterwards, as [`RELEASING.md`](RELEASING.md) step 4 describes.
+
 ## Never edit these — they are generated
 
 - `packages/*/CHANGELOG.md`
