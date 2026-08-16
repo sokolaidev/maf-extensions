@@ -1,29 +1,28 @@
 """Every sample module still imports — and the two things that make that mean something.
 
-A sample naming a library attribute that no longer exists used to be caught by nothing offline.
-It went green through the whole gate and raised the first time the sample ran, which is
-`verify-live`, after a release, on the workflow that creates billable sandboxes. Two mechanisms
-answer that now and neither replaces the other:
+Two mechanisms keep a sample from naming a library attribute that no longer exists, and neither
+replaces the other:
 
-* **This suite imports every sample.** A sample's module level is imports, constants and
-  function definitions, with the work behind `if __name__ == "__main__"`, so importing walks all
-  of it and *executes* it — which catches a `FLOOR = Isolation.PROCESS` at the assignment.
+* **This suite imports every sample.** A sample's module level is imports, constants and function
+  definitions, with the work behind `if __name__ == "__main__"`, so importing executes all of it
+  and catches a `FLOOR = Isolation.<a rung that was removed>` at the assignment.
 * **pyright reads `samples/`** (#334), which catches the same name inside a function body, where
   no import reaches.
 
-Both are load-bearing and both are easy to lose quietly, so both are asserted below. The skip is
-the one to watch: it is decided *before* importing, never from the exception an import raised —
-`from maf_sandbox import Removed` and a missing `agent-framework-openai` are both `ImportError`
-and only the second is a reason to look away — and for a while it looked away from ten of the
-thirteen samples, every one that calls a model. A suite that skips most of its subjects reports
-green and covers nothing.
+Both are easy to lose quietly, so both are asserted here rather than assumed. The skip is the one
+to watch — a suite that skips most of its subjects still reports green — and it is decided
+*before* importing, never from the exception an import raised: `from maf_sandbox import Removed`
+and a missing `agent-framework-openai` are both `ImportError`, and only the second is a reason to
+look away.
 """
 
 from __future__ import annotations
 
 import importlib.metadata
 import importlib.util
+import json
 import re
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -59,7 +58,11 @@ def _declared(sample: Path) -> list[str]:
 
 
 def _absent(sample: Path) -> list[str]:
-    """Which of a sample's declared distributions this workspace does not install."""
+    """Which of a sample's declared distributions this workspace does not install.
+
+    Extras are stripped with the version specifier, so `azure-core[aio]` is checked as
+    `azure-core`: the distribution is verified and the extra is not.
+    """
     missing: list[str] = []
     for dist in _declared(sample):
         try:
@@ -75,6 +78,12 @@ def _import(path: Path, sample: Path) -> None:
     `sys.path[0]` is the script's directory when a sample is run, which is what lets
     `from _scaffold import …` and `from host_tools import …` resolve. The same has to hold here
     or a multi-file sample fails for a reason that has nothing to do with the library.
+
+    Every module loaded *from this sample's directory* is then evicted from `sys.modules`, and
+    that is the load-bearing half. Thirteen samples carry a module named `_scaffold`: keep the
+    cache and the first sample imported answers every later `from _scaffold import …`, so twelve
+    are checked against a copy that is not theirs. Only this directory's modules go — the
+    framework and the SDKs stay cached, or each sample would pay to import them again.
     """
     spec = importlib.util.spec_from_file_location(f"_sample_{sample.name}_{path.stem}", path)
     assert spec and spec.loader
@@ -84,80 +93,122 @@ def _import(path: Path, sample: Path) -> None:
         spec.loader.exec_module(module)
     finally:
         sys.path.remove(str(sample))
+        for name, loaded in list(sys.modules.items()):
+            origin = getattr(loaded, "__file__", None)
+            if origin and Path(origin).parent == sample:
+                del sys.modules[name]
 
 
 def test_no_sample_is_skipped_in_a_synced_workspace():
-    """The skip below is a hole, so it is measured rather than trusted.
+    """A per-case skip is invisible in a `-q` run and reads as coverage in a summary line.
 
-    Every distribution a sample declares is either a workspace member or in the root dev group,
-    so a synced workspace skips nothing. Ten of the thirteen skipped until `agent-framework-
-    openai` was added there, and the suite reported green throughout — a per-case skip is
-    invisible in a `-q` run and reads as coverage in a summary line.
-
-    Failing here rather than skipping is deliberate. The cost of being wrong in this direction is
-    one clear message telling a contributor to sync; the cost of the other is what #334 is about.
+    Failing rather than skipping is the deliberate half: being wrong this way costs one message
+    telling a contributor to sync, and being wrong the other way is what #334 is about.
     """
-    absent = {sample.name: _absent(sample) for sample in _SAMPLE_DIRS if _absent(sample)}
+    absent = {sample.name: missing for sample in _SAMPLE_DIRS if (missing := _absent(sample))}
     assert not absent, (
         f"these samples would be skipped, so nothing imports them: {absent}. Every distribution "
-        "a sample declares belongs in the root `dev` dependency group or in `packages/`. Run "
-        "`uv sync --all-packages`, and if something is genuinely missing, add it there rather "
-        "than letting the case skip."
+        "a sample declares belongs in the root `dev` dependency group or in `packages/`; run "
+        "`uv sync` and add anything genuinely missing there rather than letting the case skip."
     )
 
 
-def _pyright() -> dict:
-    return tomllib.loads((_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["pyright"]
+def test_a_samples_helper_modules_do_not_outlive_its_import():
+    """Thirteen samples carry a module named `_scaffold`, and `sys.modules` holds one.
+
+    Cache it and the first sample imported answers every later `from _scaffold import …`, so
+    twelve are checked against a copy that is not theirs. Asserted on the cache rather than on a
+    drift, because `test_sample_scaffold.py` forbids the drift — which is what would keep this
+    hole invisible.
+    """
+    sample = _SAMPLE_DIRS[0]
+    assert not _absent(sample), f"{sample.name} cannot be imported here, so this proves nothing"
+    _import(sample / "agent.py", sample)
+    assert "_scaffold" not in sys.modules, (
+        f"`_scaffold` stayed cached after importing {sample.name}, so the next sample's "
+        "`from _scaffold import …` resolves to this one's copy"
+    )
+
+
+_PYRIGHT = tomllib.loads((_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["pyright"]
+_SAMPLES_ENV = next(
+    (env for env in _PYRIGHT.get("executionEnvironments", []) if env.get("root") == "samples"), {}
+)
+
+#: Anything a diagnostic rule can be set to that is weaker than failing. pyright accepts a
+#: boolean for every rule as well as a severity, so a bare `false` is the shortest way to turn
+#: one off and the easiest to miss.
+_WEAKER_THAN_ERROR = ("warning", "information", "none", False)
+
+
+def test_pyright_really_reads_a_sample():
+    """Behavioural, because the three config assertions below are proxies and this is not.
+
+    `exclude` and `ignore` silence `samples/` while `include` still names it, so all of them stay
+    green and pyright analyses nothing — measured: with `exclude = ["samples"]`, asking it about
+    a sample file by name reports `filesAnalyzed: 0`. Costs about two seconds.
+    """
+    probe = _SAMPLE_DIRS[0] / "agent.py"
+    result = subprocess.run(
+        ["uv", "run", "pyright", "--outputjson", str(probe.relative_to(_ROOT))],
+        cwd=_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    analysed = json.loads(result.stdout)["summary"]["filesAnalyzed"]
+    assert analysed >= 1, (
+        f"pyright analysed {analysed} files when asked about {probe.name} — samples/ is being "
+        "silenced by `exclude`, `ignore`, or its removal from `include`"
+    )
 
 
 def test_pyright_is_configured_to_read_samples():
-    """The other half of the pair, which no import can stand in for (#334).
+    """An import executes module level and never enters a function body; pyright does both.
 
-    An import executes module level; it never enters a function body. `Isolation.PROCESS` inside
-    `run()` is invisible to every case above and plain to pyright, and dropping `samples` from
-    the include would take that away with nothing going red — the change is one word in a config
-    file and the gap it reopens is only visible on a live run.
+    A removed rung named inside `run()` is invisible to every case above and plain to pyright.
     """
-    include = _pyright()["include"]
-    assert "samples" in include, (
-        f"samples is no longer in [tool.pyright] include, so nothing type-checks a sample: {include}"
+    assert "samples" in _PYRIGHT["include"], f"not in include: {_PYRIGHT['include']}"
+    assert _PYRIGHT["typeCheckingMode"] == "standard", (
+        f"the root type-checking mode is {_PYRIGHT['typeCheckingMode']!r}; anything weaker than "
+        "standard drops rules across scripts/, tests/ and samples/ at once"
     )
+    silenced = [
+        key
+        for key in ("exclude", "ignore")
+        for entry in _PYRIGHT.get(key, [])
+        if str(entry).startswith("samples")
+    ]
+    assert not silenced, f"samples/ is named in {silenced}, which overrides `include`"
 
 
-def test_samples_are_checked_at_the_same_strength_as_scripts():
-    """`samples/` relaxes nothing, and this is what says so out loud.
+def test_samples_relax_no_rule():
+    """`samples/` answers to what `scripts/` answers to, and this says so out loud.
 
-    Every test tree downgrades four rules to warnings for the loose fakes they are made of
-    (#290). Extending that to `samples/` was #334's proposal and is not what shipped: the five
-    sites needing it are not fakes — two are a real protocol defect in `maf-sandbox-wslc` (#370)
-    and three an Optional the library genuinely returns — and downgrading four rules across 23
-    files to cover five lines would take a real wrong-argument bug in a sample down with it.
-
-    A relaxation added here would be one line in a config, invisible in a diff summary, and the
-    samples pass would keep reporting green while quietly checking less.
+    Every test tree downgrades four rules for the loose fakes it is made of (#290). The five
+    sites in `samples/` that would want that are not fakes — two are #370 and three an Optional
+    the library returns — and a sample is code an adopter copies.
     """
-    envs = {env.get("root"): env for env in _pyright().get("executionEnvironments", [])}
-    assert "samples" in envs, "samples lost its pyright execution environment"
     relaxed = sorted(
-        k for k, v in envs["samples"].items() if v in ("warning", "information", "none")
+        key for key, value in _SAMPLES_ENV.items() if key != "root" and value in _WEAKER_THAN_ERROR
+    )
+    assert _SAMPLES_ENV, "samples lost its pyright execution environment"
+    assert "typeCheckingMode" not in _SAMPLES_ENV, (
+        f"samples/ sets its own typeCheckingMode ({_SAMPLES_ENV['typeCheckingMode']!r}), which "
+        "moves far more than the four rules a test tree relaxes"
     )
     assert not relaxed, (
-        f"samples/ now relaxes {relaxed}. Those rules are what catch a sample naming an attribute "
-        "another package deleted, or passing the wrong type to a helper. Suppress the one site "
-        "inline with a `# pyright: ignore[...]` naming its reason instead."
+        f"samples/ now relaxes {relaxed}. Suppress the one site inline with a "
+        "`# pyright: ignore[...]` naming its reason instead."
     )
 
 
 def test_a_suppression_in_a_sample_cannot_go_stale_unnoticed():
     """The one real objection to suppressing inline, answered in the config.
 
-    A `# pyright: ignore` outlives the thing it was hiding — #370's two come out when that is
-    fixed, and nothing would say so. The rule below fails the build on a suppression that has
-    stopped suppressing anything. It is scoped to `samples/` rather than set at the root because
-    the root has 27 stale ones already, across six packages' test trees: a separate job.
+    A `# pyright: ignore` outlives the thing it was hiding, and nothing would say so. Scoped to
+    `samples/` rather than the root, which has 27 stale ones across six packages' test trees.
     """
-    envs = {env.get("root"): env for env in _pyright().get("executionEnvironments", [])}
-    assert envs.get("samples", {}).get("reportUnnecessaryTypeIgnoreComment") == "error", (
+    assert _SAMPLES_ENV.get("reportUnnecessaryTypeIgnoreComment") == "error", (
         "samples/ no longer fails on an unnecessary `# pyright: ignore`, so a suppression that "
         "has outlived its reason stays put and reads as a live one"
     )

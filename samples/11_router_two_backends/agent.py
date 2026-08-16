@@ -57,6 +57,19 @@ def backends() -> tuple[InProcessSandboxBackend, DockerSandboxBackend]:
     return InProcessSandboxBackend(name="in-process"), DockerSandboxBackend(DockerSandboxConfig())
 
 
+def serving(router: SandboxRouter) -> str:
+    """The name of the backend ``router`` resolved to.
+
+    `router.backend` is `SandboxBackend | None`, and `None` means no backend was *registered* —
+    one registered below the floor raises `SandboxBackendNotPermitted` at construction instead.
+    A host reading a backend list out of configuration writes this same narrowing.
+    """
+    backend = router.backend
+    if backend is None:
+        raise RuntimeError("no backend was registered")
+    return backend.name
+
+
 def act_one_the_switch() -> None:
     """`selected=` names which backend serves. The workload does not know the difference."""
     print("== 1. Which backend serves is one argument ==\n")
@@ -67,17 +80,13 @@ def act_one_the_switch() -> None:
     for chosen in ("in-process", "docker"):
         router = SandboxRouter([local, container], min_isolation=FLOOR, selected=chosen)
         router.ensure_can_serve(spec)
-        # `router.backend` is `SandboxBackend | None`: a router holding none that meet
-        # its floor resolves to nothing. Both of these meet it.
-        print(
-            f"  selected={chosen!r:14} -> router.backend.name == {router.backend.name!r}"  # pyright: ignore[reportOptionalMemberAccess] - both meet the floor
-        )
+        print(f"  selected={chosen!r:14} -> router.backend.name == {serving(router)!r}")
 
     # Registration order is the default, and it is worth seeing beside the explicit form: a
     # host that omits `selected=` gets whichever it happened to list first.
     default = SandboxRouter([local, container], min_isolation=FLOOR)
     print(
-        f"  selected omitted        -> router.backend.name == {default.backend.name!r}"  # pyright: ignore[reportOptionalMemberAccess] - two backends are registered above
+        f"  selected omitted        -> router.backend.name == {serving(default)!r}"
         "  (the first registered)\n"
     )
 
@@ -137,7 +146,7 @@ async def act_three_disposal_reaches_everyone() -> tuple[int, int]:
         await local.acquire(KEY, spec)
         print(f"  acquired on {local.name!r} (not serving — a leftover from an earlier config)")
         sandbox = await router.acquire(KEY, spec)
-        print(f"  acquired on {router.backend.name!r} (serving)")  # pyright: ignore[reportOptionalMemberAccess] - two backends are registered above
+        print(f"  acquired on {serving(router)!r} (serving)")
         # `write_file` before `exec`, and not only to have something to echo: a container starts
         # with nothing at `work_dir`, and `exec` would fail to chdir into a directory that does
         # not exist. Writing creates the parents, which is why a kind pushes its inputs first.
