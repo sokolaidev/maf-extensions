@@ -92,16 +92,14 @@ _TRANSPORT_FILENAMES = frozenset({SHIM_MODULE, _LAUNCHER, OUTPUT_FILE, EXIT_FILE
 class SandboxProgramTimeout(TimeoutError):
     """The *run's own* bound expired: the guest program did not finish in the time it was given.
 
-    A :class:`TimeoutError` subclass, so a caller that only wants "it timed out" keeps working
-    unchanged.  It exists because on this transport a plain ``TimeoutError`` no longer means
-    that: a backend may bound its own control-plane calls and :func:`_within` re-raises those
-    untranslated, deliberately, so the one sentence saying what actually happened survives.  A
-    caller that collapses the two tells the model its program ran out of time when a ``stat``
-    ran out instead — a false statement about code the model is about to rewrite.
+    A :class:`TimeoutError` subclass, so a caller that only wants "it timed out" is unaffected.
+    Catch it specifically to distinguish the two things a ``TimeoutError`` from this transport
+    can mean: **this** one is the run's budget, and the program may still be running; a bare
+    one is a backend failing for a reason of its own and says nothing about the program.
 
-    ``output`` is what the program had printed when the run was given up on, already capped.
-    Carried as an attribute rather than left only in the message so a caller can surface the
-    program's own stdout without also surfacing whatever else the message may come to hold.
+    ``output`` is what the program had printed when the run was given up on, already capped —
+    empty on the two starting legs, where there is nothing to have read yet. An attribute
+    rather than message text, so a caller can surface the program's own stdout alone.
     """
 
     def __init__(self, message: str, *, output: str = "") -> None:
@@ -431,8 +429,9 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
     different launcher; that is a backend's business, and this one is a helper rather than a
     protocol.
     """
-    # Four invariants, and the command is built whole so `_quote` applies to finished strings
-    # rather than to fragments nested inside an already quoted `sh -c '…'`.
+    # The command is built whole so `_quote` applies to finished strings rather than to
+    # fragments nested inside an already quoted `sh -c '…'`. What it has to preserve:
+    #
     #   * `PYTHONUNBUFFERED`, because this file is the timeout's only witness and CPython
     #     block-buffers stdout into a redirection. Through the environment because
     #     `interpreter` need not be CPython: the variable costs a program that is not Python
@@ -442,29 +441,39 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
     #     cheapest way to know the rename stays inside one filesystem and so stays atomic.
     #   * `nohup … &`, because `exec` returns when its command does and the program must
     #     outlive it — see this function's docstring.
-    #   * The program runs *in* the work directory and *from* the transport's, and the shim's
-    #     directory is put on `PYTHONPATH` besides. Placement alone relies on `sys.path[0]`
-    #     being the script's directory, which is a default a guest image can switch off:
-    #     under `PYTHONSAFEPATH` the interpreter prepends nothing, and `import maf_host_tools`
-    #     then finds whatever an inherited `PYTHONPATH` points at — the work directory, on an
-    #     image that puts `.` there, which is the guest's own file. Prepended rather than
-    #     assigned, so an image that needs its own entries keeps them and cannot outrank this.
     #   * `mkdir -p` because a run whose kind shared no files has nothing else to create the
     #     work directory, guarded because `sh` does not stop on a failed command: an unguarded
     #     `cd` leaves the program running wherever the launcher was exec'd, writing artifacts
     #     where nothing collects them and exiting 0. A non-zero launcher is already reported.
+    #   * The program runs *in* the work directory and *from* the transport's, with the
+    #     transport's on `PYTHONPATH` besides — `sys.path[0]` follows the script, but that is
+    #     a default `PYTHONSAFEPATH` switches off, and then the path is all there is.
+    #   * **Inherited path entries are kept only if absolute.** A relative one resolves
+    #     against the working directory, which this launcher has just changed to the guest's
+    #     own — so whatever the image meant by `.`, it does not mean that here. Left in, it
+    #     makes the run directory importable at *interpreter startup*, where a `sitecustomize`
+    #     a model wrote runs before the program does. An absolute entry cannot name this run:
+    #     the directory is per-run and did not exist when the image was built.
     staged = f"{layout.exit_code}.part"
     # The shim's own directory, which is the one an import has to reach; `program` is beside
     # it by construction, and reading it from the shim keeps the two from being separated.
     importable = posixpath.dirname(layout.shim)
     inner = (
-        f"PYTHONUNBUFFERED=1 PYTHONPATH={_quote(importable)}${{PYTHONPATH:+:$PYTHONPATH}} "
-        f"{_quote(interpreter)} {_quote(layout.program)} "
+        f"PYTHONUNBUFFERED=1 {_quote(interpreter)} {_quote(layout.program)} "
         f"> {_quote(layout.output)} 2>&1; "
         f"printf %s $? > {_quote(staged)}; mv {_quote(staged)} {_quote(layout.exit_code)}"
     )
     return (
-        f"#!/bin/sh\nmkdir -p {_quote(layout.work)} && cd {_quote(layout.work)} || exit 1\n"
+        "#!/bin/sh\n"
+        f"mkdir -p {_quote(layout.work)} && cd {_quote(layout.work)} || exit 1\n"
+        "kept=''\n"
+        "IFS=:\n"
+        "for entry in ${PYTHONPATH:-}; do\n"
+        '  case "$entry" in /*) kept="${kept:+$kept:}$entry" ;; esac\n'
+        "done\n"
+        "unset IFS\n"
+        f'PYTHONPATH={_quote(importable)}"${{kept:+:$kept}}"\n'
+        "export PYTHONPATH\n"
         f"nohup sh -c {_quote(inner)} >/dev/null 2>&1 &\n"
     )
 
@@ -572,10 +581,8 @@ async def dispatch_over_exec(
             sandbox.write_file(layout.launcher, launcher_script(layout, interpreter)),
         )
     except _DeadlineExpired as gone:
-        # The one `_within` outside the loop, so the loop's handler cannot convert it. Left
-        # alone a module-private type crosses the public boundary, and the caller reads this
-        # run's own expiry as the other kind — a backend's bound, with the program's fate
-        # unknown — when in fact the program is the one thing that certainly never started.
+        # The one `_within` outside the supervisor loop, so nothing else converts what it
+        # raises, and a module-private type would otherwise cross the public boundary.
         raise SandboxProgramTimeout(
             f"the run's {timeout:g}s were gone before the program was started — {gone}"
         ) from gone
@@ -626,7 +633,7 @@ async def dispatch_over_exec(
             printed, note = await _final_output(sandbox, run, layout, giving_up)
             raise SandboxProgramTimeout(
                 f"the guest program did not finish within {timeout:g}s. "
-                f"Output so far: {printed[:2000]}{note}",
+                f"{_output_clause(printed, note)}",
                 output=printed[:2000],
             )
         try:
@@ -668,7 +675,7 @@ async def dispatch_over_exec(
             printed, note = await _final_output(sandbox, run, layout, giving_up)
             raise SandboxProgramTimeout(
                 f"the guest program did not finish within {timeout:g}s — {stalled}. "
-                f"Output so far: {printed[:2000]}{note}",
+                f"{_output_clause(printed, note)}",
                 output=printed[:2000],
             ) from stalled
         # Clamped: an unclamped sleep overruns the deadline by a whole interval, so a 0.1s
@@ -985,6 +992,17 @@ async def _read_if_present(
         # character different — and the host would act on it.
         logger.warning("host tools: %s is not UTF-8: %s", path, error_detail(invalid))
         return _NotText()
+
+
+def _output_clause(printed: str, note: str) -> str:
+    """The output half of a timeout message — the program's words, or the host's reason.
+
+    Never both, and never the second wearing the first's label: `Output so far:` is a promise
+    that what follows is the program's own stdout, and "the output was larger than the host
+    will read" is the host talking. A reader who cannot tell them apart is being told the
+    program printed a sentence about itself.
+    """
+    return f"no output was read — {note}" if note else f"Output so far: {printed[:2000]}"
 
 
 async def _final_output(

@@ -431,31 +431,26 @@ class TestTheLauncher:
         on an image carrying the working directory there. Prepended rather than assigned, so an
         image keeps whatever entries it needs and none of them can outrank the shim.
         """
-        layout = guest_run_layout("/maf-sandbox/work/run-1")
-        inner = shlex.split(launcher_script(layout).splitlines()[-1].removesuffix(" &"))[3]
-        assignment = next(w for w in shlex.split(inner) if w.startswith("PYTHONPATH="))
+        script = launcher_script(guest_run_layout("/maf-sandbox/work/run-1"))
+        assignment = next(line for line in script.splitlines() if line.startswith("PYTHONPATH="))
 
-        assert assignment.startswith("PYTHONPATH=/maf-sandbox/work/run-1/host_tools"), (
+        assert assignment.startswith("PYTHONPATH='/maf-sandbox/work/run-1/host_tools'"), (
             "the shim's directory is not first, so an inherited entry can outrank it"
         )
-        assert "$PYTHONPATH" in assignment, "an image's own entries were dropped, not kept"
+        assert "$kept" in assignment, "an image's own entries were dropped, not kept"
+        assert 'case "$entry" in /*)' in script, "a relative inherited entry is not filtered out"
 
     def test_the_interpreter_is_a_shell_word_like_every_path(self):
         """An interpreter path with a space is split unless it is quoted like the rest.
 
-        The environment assignments in front of it are why this reads past them: `sh` takes
-        `NAME=value NAME=value cmd` as one command with both variables set for it.
+        The environment assignment in front of it is why this reads the second word: `sh`
+        takes `NAME=value cmd` as one command with one variable set for it.
         """
         layout = guest_run_layout("/maf-sandbox/work/run-1")
         command = launcher_script(layout, "/opt/py 3.12/bin/python3").splitlines()[-1]
         inner = shlex.split(command.removesuffix(" &"))[3]
-        assignments, interpreter = shlex.split(inner)[:2], shlex.split(inner)[2]
 
-        assert interpreter == "/opt/py 3.12/bin/python3"
-        assert [word.split("=", 1)[0] for word in assignments] == [
-            "PYTHONUNBUFFERED",
-            "PYTHONPATH",
-        ]
+        assert shlex.split(inner)[:2] == ["PYTHONUNBUFFERED=1", "/opt/py 3.12/bin/python3"]
 
 
 def _reap(pid_file: Path) -> None:
@@ -478,6 +473,70 @@ def _reap(pid_file: Path) -> None:
 
 class TestTheLauncherAgainstARealShell:
     """The launcher is a shell script, and some of what it promises only a shell can show."""
+
+    @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+    @pytest.mark.skipif(
+        os.pathsep != ":",
+        reason="the launcher splits PYTHONPATH on ':' and tests entries for a leading '/', "
+        "which is the guest it targets; a Windows interpreter parses neither that way",
+    )
+    def test_an_inherited_relative_path_entry_cannot_reach_into_the_run(self, tmp_path: Path):
+        """The launcher's own filtering, against a real `sh` and a real interpreter.
+
+        An image with `.` on `PYTHONPATH` makes the guest's working directory importable at
+        interpreter *startup*, where `site` imports `sitecustomize` before the program runs —
+        a hook that can seed `sys.modules` outright, which no amount of ordering prevents.
+        Absolute entries survive: one cannot name a run directory that did not exist when the
+        image was built.
+        """
+        directory = tmp_path.as_posix()
+        served, work = f"{directory}/host_tools", f"{directory}/work"
+        pathlib.Path(served).mkdir(parents=True, exist_ok=True)
+        pathlib.Path(work).mkdir(parents=True, exist_ok=True)
+        pathlib.Path(served, SHIM_MODULE).write_text("SPEAKING = 'the shim'\n", encoding="utf-8")
+        pathlib.Path(work, "sitecustomize.py").write_text(
+            "import sys, types\n"
+            "m = types.ModuleType('maf_host_tools')\n"
+            "m.SPEAKING = 'the guest'\n"
+            "sys.modules['maf_host_tools'] = m\n",
+            encoding="utf-8",
+        )
+        pathlib.Path(served, "program.py").write_text(
+            "import maf_host_tools\nprint(maf_host_tools.SPEAKING)\n", encoding="utf-8"
+        )
+        layout = GuestRunLayout(
+            directory=directory,
+            work=work,
+            program=f"{served}/program.py",
+            shim=f"{served}/{SHIM_MODULE}",
+            launcher=f"{served}/run_program.sh",
+            calls=f"{served}/{CALLS_DIRECTORY}",
+            output=f"{served}/program_output.txt",
+            exit_code=f"{served}/program_exit_code",
+        )
+        pathlib.Path(layout.launcher).write_text(
+            launcher_script(layout, sys.executable), encoding="utf-8"
+        )
+
+        subprocess.run(
+            ["sh", layout.launcher],
+            cwd=directory,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=True,
+            # What an image does, not what this run does: a relative entry, and an absolute
+            # one that must survive alongside the shim's.
+            env={**os.environ, "PYTHONPATH": f".:{served}", "PYTHONSAFEPATH": "1"},
+        )
+        marker = pathlib.Path(layout.exit_code)
+        for _ in range(200):
+            if marker.exists():
+                break
+            time.sleep(0.05)
+
+        printed = pathlib.Path(layout.output).read_text(encoding="utf-8").strip()
+        assert printed == "the shim", f"a startup hook in the work directory won: {printed!r}"
 
     @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
     def test_a_work_directory_that_cannot_be_entered_stops_the_run(self, tmp_path: Path):
@@ -541,16 +600,24 @@ class TestTheLauncherAgainstARealShell:
             "import maf_host_tools\nprint(maf_host_tools.SPEAKING)\n", encoding="utf-8"
         )
 
+        # A startup hook is stronger than a same-named module: `site` imports `sitecustomize`
+        # before the program runs, so one on the path can seed `sys.modules` and the import
+        # never reaches a file at all. Only reachable through a *relative* inherited entry,
+        # which is why the launcher drops those — planted here so that stays true.
+        pathlib.Path(work, "sitecustomize.py").write_text(
+            "import sys, types\n"
+            "m = types.ModuleType('maf_host_tools')\n"
+            "m.SPEAKING = 'the guest'\n"
+            "sys.modules['maf_host_tools'] = m\n",
+            encoding="utf-8",
+        )
+
         for label, environment in (
             # What the launcher sets on an ordinary image: the shim's directory prepended.
             ("the default path", {"PYTHONPATH": served}),
             # `PYTHONSAFEPATH` stops the interpreter prepending the *script's* directory, so
-            # placement alone stops defending. Here the guest's own directory is inherited on
-            # `PYTHONPATH` too — an image with `.` on it — and the prepend is what still wins.
-            (
-                "a safe-path guest",
-                {"PYTHONSAFEPATH": "1", "PYTHONPATH": f"{served}{os.pathsep}{work}"},
-            ),
+            # placement alone stops defending and the path is all that is left.
+            ("a safe-path guest", {"PYTHONSAFEPATH": "1", "PYTHONPATH": served}),
         ):
             spoke = subprocess.run(
                 [sys.executable, f"{served}/program.py"],
@@ -1143,11 +1210,11 @@ class TestTheLayoutsOwnPromise:
         assert ".." not in layout.calls
 
     def test_what_a_model_can_name_and_what_the_transport_owns_are_two_directories(self):
-        """The refusal list this replaced could only ever be as complete as its author.
+        """Nothing a kind writes on a model's say-so goes near the transport's directory.
 
-        Nothing a kind writes on a model's say-so goes anywhere near the second directory, so
-        there is no name to get wrong — including the ones a lexical check would miss, like a
-        package directory or a compiled extension resolving ahead of the shim's source.
+        The separation is the guarantee, so there is no name for a kind to get wrong —
+        including the ones a lexical check misses, like a package directory or a compiled
+        extension resolving ahead of the shim's source.
         """
         layout = guest_run_layout("/work/run-1")
         owned = (
@@ -1468,11 +1535,10 @@ class TestWhoseTimeoutItWas:
             _run(_Stalls([]), HostToolRun(_registry()), timeout=0.2)
 
     def test_the_two_are_told_apart_by_type_and_not_by_reading_the_message(self):
-        """Both tests above match on message text, which no caller can dispatch on.
+        """The two are told apart by type, which is the only thing a caller can branch on.
 
-        A consumer has to *branch* — one of these means the program ran out and is still
-        running, the other means a control-plane call ran out and says nothing about the
-        program at all. Left as one type, the useful guess is the wrong one.
+        One means the program ran out and may still be running; the other means a
+        control-plane call ran out and says nothing about the program at all.
         """
 
         class _BoundsItsOwnStat(_ScriptedGuest):
@@ -1493,11 +1559,10 @@ class TestWhoseTimeoutItWas:
         assert "step 1 done" in str(expired.value), "the message stopped carrying it too"
 
     def test_the_runs_bound_expiring_before_the_program_starts_is_still_the_runs(self):
-        """The one `_within` outside the loop, where no handler converts what it raises.
+        """Budget exhausted during the upload is the run's own timeout, publicly typed.
 
-        Left alone, a module-private `_DeadlineExpired` crosses the public boundary and reads
-        as the other case — a backend's own bound, program's fate unknown — when the program
-        is the one thing that certainly never started.
+        This `_within` sits outside the supervisor loop, so nothing else converts what it
+        raises; untranslated, a module-private type would cross the public boundary.
         """
 
         class _StallsOnTheUpload(_ScriptedGuest):
@@ -1510,11 +1575,10 @@ class TestWhoseTimeoutItWas:
         assert gone.value.output == "", "a program that never started printed something"
 
     def test_the_budget_running_out_while_starting_is_the_runs_own_either_way(self):
-        """Two legs, one situation, and milliseconds decide which one it lands on.
+        """Both startup legs spend the same budget, so both classify as the run's own.
 
-        The upload and the `exec` that starts the launcher are both "the run's budget went
-        before the program was going". Translating one and not the other made wall-clock
-        jitter pick the type a caller sees, for a run that failed identically.
+        The upload and the `exec` that starts the launcher are one situation — the budget gone
+        before the program was going — and which leg it lands on is a matter of milliseconds.
         """
 
         class _BoundsTheStart(_ScriptedGuest):
@@ -1530,9 +1594,10 @@ class TestWhoseTimeoutItWas:
         assert str(spent.value.__cause__) == "the service bounds this exec"
 
     def test_a_bare_backend_timeout_leaves_no_dangling_reason(self):
-        """The shipped backends all bound `exec` with `asyncio.wait_for`, whose `TimeoutError`
-        is empty — so the case above, with a sentence in it, is the *unusual* one. Appending
-        unconditionally ends the message a model is shown with a dash and nothing after it."""
+        """A backend's own text never reaches the message, and its absence leaves no seam.
+
+        The shipped backends bound `exec` with `asyncio.wait_for`, whose `TimeoutError` is
+        empty, so this is the ordinary shape rather than an edge of one."""
 
         class _BoundsTheStartSilently(_ScriptedGuest):
             async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
@@ -1568,6 +1633,11 @@ class TestWhoseTimeoutItWas:
 
         assert expired.value.output == "", "the host's note was handed over as program output"
         assert "larger than the host will read" in str(expired.value), "the note went missing"
+        # The attribute is only half of it: `Output so far:` is a promise about whose words
+        # follow, and the note appearing under that label breaks it in the message too.
+        assert "Output so far" not in str(expired.value), (
+            "the host's note is wearing the label that means the program's own stdout"
+        )
 
 
 class TestTheGuestsOwnDiagnostic:
