@@ -128,6 +128,7 @@ class TestIsolationLadder:
         assert list(ISOLATION_RANK) == [
             Isolation.NONE,
             Isolation.RUNTIME,
+            Isolation.PROCESS,
             Isolation.CONTAINER,
             Isolation.HARDENED_CONTAINER,
             Isolation.MICROVM,
@@ -145,23 +146,33 @@ class TestIsolationLadder:
         with pytest.raises(ValueError, match="quantum"):
             Isolation("quantum")
 
-    def test_the_old_bottom_rung_is_gone_rather_than_aliased(self):
-        """`"process"` has to fail here, and keep failing until the rung it names is a real one.
+    def test_the_process_rung_sits_between_a_software_boundary_and_a_container(self):
+        """A kernel-enforced address space is more than software fault isolation and less than namespaces."""
+        assert meets_floor(Isolation.PROCESS, Isolation.RUNTIME)
+        assert not meets_floor(Isolation.PROCESS, Isolation.CONTAINER)
+        assert not meets_floor(Isolation.RUNTIME, Isolation.PROCESS)
 
-        The bottom rung was `PROCESS` and meant no boundary at all. That spelling is reserved
-        for a genuine separate-OS-process rung a minor from now, two ranks above the one it
-        used to name. An alias would make the reuse silent: a backend that declared
-        `"process"` *because* it drew no boundary would come back ranked above `RUNTIME`,
-        having claimed a boundary it never had. This `ValueError` is the whole of what turns
-        that re-ranking into a refusal.
+    def test_the_old_bottom_rung_took_its_name_back_but_not_its_string(self):
+        """`"process"` has to keep failing now that the name it used to carry is a real rung.
+
+        `PROCESS` was the bottom rung and meant no boundary at all; it now means a genuine
+        separate-OS-process one, two ranks above. Reusing the attribute is safe because it is
+        resolved where the code is written. Reusing the value would not be: a declaration
+        crosses into this vocabulary through `Isolation(raw)` at run time, out of
+        configuration nobody re-reads, so a backend that declared `"process"` *because* it
+        drew no boundary would come back ranked above `RUNTIME`, having claimed one it never
+        had. This `ValueError` is the whole of what keeps that a refusal rather than a
+        promotion, and it has to outlive the deprecation window rather than expire with it.
         """
-        assert not hasattr(Isolation, "PROCESS")
+        assert Isolation.PROCESS.value == "os_process"
+        assert ISOLATION_RANK[Isolation.PROCESS] > ISOLATION_RANK[Isolation.RUNTIME]
         with pytest.raises(ValueError, match="process"):
             Isolation("process")
 
     @pytest.mark.parametrize(
         ("declared", "permitted"),
         [
+            (Isolation.PROCESS, False),
             (Isolation.CONTAINER, False),
             (Isolation.HARDENED_CONTAINER, False),
             (Isolation.MICROVM, True),
@@ -190,6 +201,7 @@ class TestIsolationFloor:
         [
             Isolation.NONE,
             Isolation.RUNTIME,
+            Isolation.PROCESS,
             Isolation.CONTAINER,
             Isolation.HARDENED_CONTAINER,
         ],
@@ -225,13 +237,14 @@ class TestIsolationFloor:
                 min_isolation=Isolation.NONE,
             )
 
-    def test_a_backend_still_declaring_the_removed_process_rung_is_refused(self):
+    def test_a_backend_still_declaring_the_old_process_string_is_refused(self):
         """What a backend written against the old vocabulary meets: a refusal, not a promotion.
 
         Down the same path as any unknown value, which is the point — `"process"` is not
-        special-cased, it is simply not a rung any more. So such a backend is turned away
-        rather than ranked above `RUNTIME` on the strength of a word it meant the opposite
-        way.
+        special-cased, it is simply not a value any rung carries. So such a backend is turned
+        away rather than ranked above `RUNTIME` on the strength of a word it meant the
+        opposite way. The `PROCESS` *attribute* means that stronger rung now; this string
+        never comes to mean anything again.
         """
         with pytest.raises(SandboxBackendNotPermitted, match="not a rung"):
             SandboxRouter(
