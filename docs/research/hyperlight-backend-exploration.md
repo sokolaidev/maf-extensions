@@ -287,6 +287,54 @@ gate above — no attach refusal, no floor, no identity denial, no caps. That is
 in either library; it is SANDBOX.md's thesis restated. The other answers become backends
 beneath the contract, not alternatives beside it.
 
+## Feature parity with the CodeAct library — the ledger
+
+The headline features are mapped above. What remains is the smaller surface, itemized here
+so each is consciously matched, deliberately diverged from, or tracked — never silently
+missing. Where the decision was clear, an issue exists.
+
+1. **Between-run mutability.** Their provider mutates live — add/remove tools, mounts and
+   domains between runs, the sandbox cache following each change. Our spec is frozen and
+   the registry seals, and that is the decision: a configuration change is a new sandbox
+   identity on their side too (their cache key says so); the honest equivalent here is
+   rebuilding the tool. **Rebuild-the-tool is the supported path.** Stated here so it is a
+   rule hosts read rather than a limitation they report.
+2. **The guest execution contract, at the prompt level.** Their instructions carry the
+   sentences that make models effective: the sandbox does not return the last expression,
+   end with `print(...)`; prefer one call; large artifacts go to `/output`. The equivalent
+   contract for `run_code` — what it promises the model, per backend — belongs to the
+   method's design and the kind's instructions. Folded into #381.
+3. **Custom guest modules are family entries, not options.** `module`/`module_path` lets a
+   caller swap in any `.wasm`/`.aot` guest. Here that is a declaration hazard: a different
+   guest changes what `RUN_CODE` evaluates, whether `call_tool` exists, and what the
+   conformance run proved. The rule follows from the family section: the packaged Python
+   guest is the table entry that earned its declarations; a custom module is a different
+   family member starting with none — refused, or admitted through its own conformance
+   pass. Lands with the adapter.
+4. **Resource ceilings.** `heap_size`/`stack_size` are real knobs; our `SandboxLimits`
+   caps transfers only, and nothing declares memory or CPU. A deliberate non-axis for now
+   — backend configuration, not vocabulary — recorded so it reads as chosen. Same shape as
+   #377 the day two backends differ in what they can bound.
+5. **Per-run effective-state serialization.** Their provider writes the effective config
+   into session state every run; we record nothing about the run we served. Clear win,
+   no open axes: #380.
+6. **How artifacts surface in chat.** Their output files return as inline `Content` bytes
+   and render immediately; ours land through sinks as references — the right
+   confidentiality posture and a worse demo. The open question is whether reference-only
+   is a rule or a default a sink may relax under a size threshold. Undecided, recorded.
+7. **Queue time versus timeout.** MAF runs parallel tool calls; a per-sandbox worker
+   serializes them, so a call can exhaust its budget waiting behind another. The contract
+   must make that refusal distinguishable from the program overrunning. Folded into #381.
+8. **The long tail, named to be skipped or matched knowingly:** the `execute_code`
+   name-collision guard in tool registration; schemeless-domain expansion to both schemes
+   (#377 territory); stdout `\r\n` normalization and the executed-without-output sentinel;
+   install-hint errors for missing wheels; the telemetry feature marker; and the .NET twin
+   — MAF ships both languages, this suite ships one, a strategic asymmetry rather than a
+   feature gap.
+
+Not on the ledger: interpreter-state persistence. Both stacks wipe state per call via
+restore; parity is already exact.
+
 ## What reading cannot answer — the live-probe list
 
 1. Does a host-side write into `input_dir` after creation appear in the guest, and does it
