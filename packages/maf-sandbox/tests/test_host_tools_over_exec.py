@@ -66,6 +66,13 @@ _LAYOUT = guest_run_layout(_RUN)
 #: Scripted in place of a name: the caller took this number and could not publish under it.
 _ABANDONED = "<abandoned>"
 
+#: Where `site` looks for user packages under `PYTHONUSERBASE`, relative to that base, on the
+#: POSIX guest these launcher tests target. Built from the running interpreter because the
+#: test plants a hook there and then runs `sys.executable` against it, so a hard-coded version
+#: would make the case vacuous the next time Python bumps a minor — it would plant the file
+#: somewhere nothing reads and pass whether the launcher filtered anything or not.
+_USER_SITE_UNDER_BASE = f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages"
+
 
 @sandbox_tool(source=SourceIntegrity.TRUSTED, sink=None, identity=Identity.APP)
 def add(left: int, right: int) -> int:
@@ -528,6 +535,10 @@ class TestTheLauncher:
             "an absolute inherited entry naming the run tree is not filtered — quoted so a "
             "run directory containing a glob character matches only itself"
         )
+        assert "    */./*|*/../*|*//*|*/.|*/..) ;;\n" in script, (
+            "a non-canonical entry is not filtered, so the run-tree test above compares "
+            "spellings rather than directories and `/runs/./current/work` walks through it"
+        )
         assert "\nkept=" not in script and "for entry in" not in script, (
             "an unprefixed name collides with one an image may already export"
         )
@@ -541,14 +552,43 @@ class TestTheLauncher:
     def test_the_interpreter_is_a_shell_word_like_every_path(self):
         """An interpreter path with a space is split unless it is quoted like the rest.
 
-        The environment assignment in front of it is why this reads the second word: `sh`
-        takes `NAME=value cmd` as one command with one variable set for it.
+        `sh` takes `NAME=value cmd` as one command with variables set for it, so the
+        interpreter is whatever follows the assignments. Found by skipping them rather than by
+        counting them: how many the launcher sets is not this test's subject, and pinning the
+        number here means adding one breaks a test that has nothing to say about it.
         """
         layout = guest_run_layout("/maf-sandbox/work/run-1")
         command = launcher_script(layout, "/opt/py 3.12/bin/python3").splitlines()[-1]
         inner = shlex.split(command.removesuffix(" &"))[3]
 
-        assert shlex.split(inner)[:2] == ["PYTHONUNBUFFERED=1", "/opt/py 3.12/bin/python3"]
+        words = shlex.split(inner)
+        interpreter_at = next(index for index, word in enumerate(words) if "=" not in word)
+
+        assert words[interpreter_at] == "/opt/py 3.12/bin/python3", (
+            "the interpreter path did not survive as one word — a space split it, or an "
+            f"assignment in front of it is not one: {words[: interpreter_at + 1]}"
+        )
+
+    def test_the_program_is_given_both_startup_variables(self):
+        """Set through the environment because `interpreter` need not be CPython.
+
+        Named here because the test above deliberately skips the assignments without reading
+        them, so without this nothing would notice either going missing. Both are load-bearing
+        and neither is visible in the run's result when it is absent: unbuffered output is
+        what makes the output file a witness the timeout can quote, and no-user-site is what
+        keeps `$PYTHONUSERBASE/lib/pythonX.Y/site-packages` — which `site` adds, and which an
+        image can point into the run tree — from carrying a `sitecustomize` the guest wrote.
+        """
+        layout = guest_run_layout("/maf-sandbox/work/run-1")
+        command = launcher_script(layout).splitlines()[-1]
+        inner = shlex.split(command.removesuffix(" &"))[3]
+
+        words = shlex.split(inner)
+        assignments = words[: next(index for index, word in enumerate(words) if "=" not in word)]
+
+        assert sorted(assignments) == ["PYTHONNOUSERSITE=1", "PYTHONUNBUFFERED=1"], (
+            f"the program's startup environment is not the two it needs: {assignments}"
+        )
 
 
 def _reap(pid_file: Path) -> None:
@@ -661,19 +701,45 @@ class TestTheLauncherAgainstARealShell:
         reason="the launcher splits PYTHONPATH on ':' and tests entries for a leading '/', "
         "which is the guest it targets; a Windows interpreter parses neither that way",
     )
-    @pytest.mark.parametrize("hostile", [".", "<work>"], ids=["relative", "absolute-in-tree"])
-    def test_an_inherited_path_entry_cannot_reach_into_the_run(self, tmp_path: Path, hostile: str):
+    @pytest.mark.parametrize(
+        ("inherited", "hook_in"),
+        [
+            ({"PYTHONPATH": "."}, ""),
+            ({"PYTHONPATH": "<work>"}, ""),
+            # The `/./` has to fall *inside* the run directory's own spelling. Put it after,
+            # as `<work>` spelled `<run>/./work`, and the prefix branch matches it anyway —
+            # `'<run>'/*` accepts `./work` for its `*` — so the case would pass with the
+            # canonical branch deleted and prove nothing.
+            ({"PYTHONPATH": "<tmp>/./run/work"}, ""),
+            ({"PYTHONUSERBASE": "<work>"}, _USER_SITE_UNDER_BASE),
+        ],
+        ids=["relative", "absolute-in-tree", "non-canonical-alias", "user-base"],
+    )
+    def test_an_inherited_variable_cannot_reach_into_the_run(
+        self, tmp_path: Path, inherited: dict[str, str], hook_in: str
+    ):
         """The launcher's own filtering, against a real `sh` and a real interpreter.
 
-        An image with `.` on `PYTHONPATH` makes the guest's working directory importable at
-        interpreter *startup*, where `site` imports `sitecustomize` before the program runs —
-        a hook that can seed `sys.modules` outright, which no amount of ordering prevents.
+        `site` imports `sitecustomize` before the program runs, from anywhere on the startup
+        path, and such a hook can seed `sys.modules` outright — no amount of ordering between
+        the shim and the guest's files prevents it, because the import never reaches a file.
+        So every inherited way of naming the run tree has to be closed, and the four here are
+        the ways that exist: a relative entry, resolved against the working directory the
+        launcher just changed to the guest's own; an absolute one, for a host that places runs
+        at a path an image can predict; a non-canonical spelling of either, which is a
+        different string to a textual filter and the same directory to the kernel; and
+        `PYTHONUSERBASE`, which reaches startup through `site` rather than through the path.
 
-        The absolute case is the same defect wearing a shape the filter used to pass. This
-        test asserted the opposite until review showed it false: an image is free to export
-        `/runs/current/work` and a host to place a run at `/runs/current`, and then an entry
-        that is absolute names the guest's own directory anyway. Parametrised rather than
-        duplicated so the pair cannot drift — the two entry shapes must reach one outcome.
+        Parametrised rather than duplicated so the four cannot drift: they are one guarantee,
+        and a fix for any one of them must not reopen another. Each case also asserts that an
+        entry from *outside* the tree survives, so a filter that passes by dropping everything
+        fails here.
+
+        The `user-base` case asserts the interpreter's own no-user-site flag rather than only
+        which shim won, because `site` disables user packages inside a virtual environment and
+        this suite runs in one: the planted hook cannot win here however the launcher behaves,
+        so a test that only watched for it would be green with `PYTHONNOUSERSITE` deleted. The
+        flag is observable either way, and it is what the launcher is actually responsible for.
         """
         directory = (tmp_path / "run").as_posix()
         served, work = f"{directory}/host_tools", f"{directory}/work"
@@ -684,7 +750,9 @@ class TestTheLauncherAgainstARealShell:
         pathlib.Path(work).mkdir(parents=True, exist_ok=True)
         pathlib.Path(outside).mkdir(parents=True, exist_ok=True)
         pathlib.Path(served, SHIM_MODULE).write_text("SPEAKING = 'the shim'\n", encoding="utf-8")
-        pathlib.Path(work, "sitecustomize.py").write_text(
+        hook = pathlib.Path(work, hook_in)
+        hook.mkdir(parents=True, exist_ok=True)
+        pathlib.Path(hook, "sitecustomize.py").write_text(
             "import sys, types\n"
             "m = types.ModuleType('maf_host_tools')\n"
             "m.SPEAKING = 'the guest'\n"
@@ -692,10 +760,11 @@ class TestTheLauncherAgainstARealShell:
             encoding="utf-8",
         )
         pathlib.Path(served, "program.py").write_text(
-            "import maf_host_tools, os\n"
-            "print(maf_host_tools.SPEAKING)\n"
+            "import maf_host_tools, os, sys\n"
+            "print('speaking:', maf_host_tools.SPEAKING)\n"
+            "print('user-site-off:', bool(sys.flags.no_user_site))\n"
             # Everything the filter kept beyond the shim's own directory, one per line.
-            "print(*os.environ['PYTHONPATH'].split(':')[1:], sep='\\n')\n",
+            "print(*('kept: ' + e for e in os.environ['PYTHONPATH'].split(':')[1:]), sep='\\n')\n",
             encoding="utf-8",
         )
         layout = GuestRunLayout(
@@ -711,6 +780,15 @@ class TestTheLauncherAgainstARealShell:
         pathlib.Path(layout.launcher).write_text(
             launcher_script(layout, sys.executable), encoding="utf-8"
         )
+        hostile = {
+            name: value.replace("<work>", work)
+            .replace("<run>", directory)
+            .replace("<tmp>", tmp_path.as_posix())
+            for name, value in inherited.items()
+        }
+        # The survivor rides on `PYTHONPATH` in every case, behind the hostile entry when that
+        # is where the hostile entry lives, so the second assertion means one thing throughout.
+        hostile["PYTHONPATH"] = ":".join(filter(None, [hostile.get("PYTHONPATH"), outside]))
 
         subprocess.run(
             ["sh", layout.launcher],
@@ -719,13 +797,9 @@ class TestTheLauncherAgainstARealShell:
             text=True,
             timeout=60,
             check=True,
-            # What an image does, not what this run does: the hostile entry under test, and
-            # an absolute one from outside the tree that must survive alongside the shim's.
-            env={
-                **os.environ,
-                "PYTHONPATH": f"{hostile.replace('<work>', work)}:{outside}",
-                "PYTHONSAFEPATH": "1",
-            },
+            # What an image does, not what this run does: the hostile variable under test,
+            # and an entry from outside the tree that must survive alongside the shim's.
+            env={**os.environ, **hostile, "PYTHONSAFEPATH": "1"},
         )
         marker = pathlib.Path(layout.exit_code)
         for _ in range(200):
@@ -734,10 +808,19 @@ class TestTheLauncherAgainstARealShell:
             time.sleep(0.05)
 
         printed = pathlib.Path(layout.output).read_text(encoding="utf-8").splitlines()
-        assert printed[0] == "the shim", f"a startup hook in the work directory won: {printed[0]!r}"
-        assert printed[1:] == [outside], (
+        said = dict(line.split(": ", 1) for line in printed if not line.startswith("kept: "))
+        kept = [line.removeprefix("kept: ") for line in printed if line.startswith("kept: ")]
+
+        assert said.get("speaking") == "the shim", (
+            f"a startup hook in the work directory won: {printed}"
+        )
+        assert said.get("user-site-off") == "True", (
+            "the interpreter was started with user site-packages enabled, so a hook under "
+            f"$PYTHONUSERBASE would be imported before the program: {printed}"
+        )
+        assert kept == [outside], (
             "the entry from outside the run tree did not survive the filter, so the launcher "
-            f"is dropping more than the run's own directories: {printed[1:]!r}"
+            f"is dropping more than the run's own directories: {kept!r}"
         )
 
     @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")

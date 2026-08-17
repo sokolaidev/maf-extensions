@@ -588,24 +588,44 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
     #   * The program runs *in* the work directory and *from* the transport's, with the
     #     transport's on `PYTHONPATH` besides — `sys.path[0]` follows the script, but that is
     #     a default `PYTHONSAFEPATH` switches off, and then the path is all there is.
-    #   * **An inherited path entry is kept only if it is absolute and outside the run tree.**
-    #     Both halves say the same thing: nothing the guest writes may be importable at
+    #   * **An inherited path entry is kept only if it is absolute, canonical, and outside the
+    #     run tree.** All three say one thing: nothing the guest writes may be importable at
     #     *interpreter startup*, where a `sitecustomize` a model wrote runs before the program
-    #     does and can seed `sys.modules` with a shim of its own. A relative entry resolves
-    #     against the working directory, which this launcher has just changed to the guest's
-    #     own — so whatever the image meant by `.`, it does not mean that here. An absolute one
-    #     usually cannot name a per-run directory, but "usually" is not a control: an image is
-    #     free to export `/runs/current/work` and a host to place a run at `/runs/current`, and
-    #     then the guest's own directory is on the startup path. Dropping the run tree costs
-    #     nothing, because it did not exist when the image was built and so can hold no
-    #     dependency the image meant to name.
+    #     does and can seed `sys.modules` with a shim of its own.
     #
-    #     What this does not catch is a symlink from outside the tree into it: the comparison
-    #     is textual, and POSIX `sh` has no portable `realpath`. Resolving it later is no use —
+    #     A relative entry resolves against the working directory, which this launcher has
+    #     just changed to the guest's own — so whatever the image meant by `.`, it does not
+    #     mean that here. An absolute one usually cannot name a per-run directory, but
+    #     "usually" is not a control: an image is free to export `/runs/current/work` and a
+    #     host to place a run at `/runs/current`, and then the guest's own directory is on the
+    #     startup path. Dropping the run tree costs nothing, because it did not exist when the
+    #     image was built and so can hold no dependency the image meant to name.
+    #
+    #     Canonical is what makes the third test mean anything. The comparison is textual, so
+    #     `/runs/./current/work` is a different string from `/runs/current/work` and the same
+    #     directory to the kernel; an entry carrying `/./`, `/../` or `//` is therefore dropped
+    #     rather than normalised. Dropping is the conservative half of the same rule — an entry
+    #     this cannot compare against the run tree is one it cannot vouch for — and lexical
+    #     normalisation in POSIX `sh` is a great deal of machinery for a spelling no image
+    #     needs. Being dropped costs a lost dependency root, which fails loudly at import.
+    #   * `PYTHONNOUSERSITE`, because `PYTHONPATH` is not the only inherited way into startup:
+    #     `site` adds `$PYTHONUSERBASE/lib/pythonX.Y/site-packages`, and a `sitecustomize`
+    #     there runs before the program exactly as one on the path would. Filtering that
+    #     variable too would leave the same hole behind `HOME`, which the user base falls back
+    #     to, so the whole mechanism goes off instead of being chased through its inputs. An
+    #     image installing with `pip install --user` loses those packages here; that fails at
+    #     import, where being wrong is visible.
+    #
+    #     Through the environment rather than `-s` for the reason `PYTHONUNBUFFERED` is above.
+    #
+    #     What none of this catches is a symlink from outside the tree into it: resolving one
+    #     needs a `realpath` POSIX `sh` does not have, and doing it later is no use, because
     #     `sitecustomize` runs before any script this package could put in front of the
-    #     program. `python -E` would settle the whole class by ignoring `PYTHONPATH`, and is
-    #     refused for the reason `-u` is above: `interpreter` need not be CPython, and it would
-    #     also discard the dependency roots an image legitimately puts there.
+    #     program. `PYTHONHOME` is the other way in and is left alone deliberately — pointed
+    #     at the run tree it replaces the standard library outright, which is a broken guest
+    #     rather than a substituted shim. `python -E` would settle the class entire, and is
+    #     refused for the reason `-u` is: `interpreter` need not be CPython, and it would also
+    #     discard the dependency roots an image legitimately puts on the path.
     staged = f"{layout.exit_code}.part"
     # The shim's own directory, which is the one an import has to reach; `program` is beside
     # it by construction, and reading it from the shim keeps the two from being separated.
@@ -616,7 +636,7 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
     # dropping every absolute entry, which is the honest reading of "inside the run tree".
     enclosing = _quote(layout.directory.rstrip("/"))
     inner = (
-        f"PYTHONUNBUFFERED=1 {_quote(interpreter)} {_quote(layout.program)} "
+        f"PYTHONUNBUFFERED=1 PYTHONNOUSERSITE=1 {_quote(interpreter)} {_quote(layout.program)} "
         f"> {_quote(layout.output)} 2>&1; "
         f"printf %s $? > {_quote(staged)}; mv {_quote(staged)} {_quote(layout.exit_code)}"
     )
@@ -632,8 +652,11 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
         "IFS=:\n"
         "for maf_entry in ${PYTHONPATH:-}; do\n"
         '  case "$maf_entry" in\n'
-        # First, so it wins: an entry inside the run tree is dropped even though it is
-        # absolute, and the `/*` below would otherwise keep it.
+        # Both dropping branches come before the keeping one, because `case` takes the first
+        # match: demote either and `/*` claims the entry first and the test never runs.
+        # Non-canonical first of all — it is the one that decides whether the next test is
+        # comparing spellings or directories.
+        "    */./*|*/../*|*//*|*/.|*/..) ;;\n"
         f"    {enclosing}|{enclosing}/*) ;;\n"
         '    /*) maf_kept="${maf_kept:+$maf_kept:}$maf_entry" ;;\n'
         "  esac\n"
