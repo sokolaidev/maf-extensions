@@ -20,7 +20,7 @@ The walkthrough and environment variables are in ``README.md``; read it first.
 #     "azure-core[aio]",
 #     "azure-identity",
 #     "maf-sandbox-bicep",
-#     "maf-sandbox>=0.15",
+#     "maf-sandbox>=0.16",
 # ]
 # ///
 
