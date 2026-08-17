@@ -17,20 +17,33 @@ import struct
 import zlib
 from pathlib import Path
 
-_SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "check_live_diagram_sample.py"
+_ROOT = Path(__file__).resolve().parent.parent
+_SCRIPT = _ROOT / "scripts" / "check_live_diagram_sample.py"
 _spec = importlib.util.spec_from_file_location("check_live_diagram_sample", _SCRIPT)
 assert _spec and _spec.loader
 check = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(check)
 
-#: A healthy run: the model's own words about what it drew, then the line the sample prints
-#: after disposing. Nothing here is matched — it is prose, and it is deliberately not the
-#: prose a checker could be tuned to.
-_HEALTHY = """\
+_SAMPLE = "07_docker_diagram"
+
+_SCAFFOLD = _ROOT / "samples" / _SAMPLE / "_scaffold.py"
+_scaffold_spec = importlib.util.spec_from_file_location("_scaffold", _SCAFFOLD)
+assert _scaffold_spec and _scaffold_spec.loader
+scaffold = importlib.util.module_from_spec(_scaffold_spec)
+_scaffold_spec.loader.exec_module(scaffold)
+
+#: The one line here that is not prose: the sample's own report of what `dispose_scope`
+#: returned, tagged as the sample tags it.
+_DISPOSAL_LINE = f"{scaffold.MEASURED}Disposed 1 sandbox(es)."
+
+#: A healthy run: the model's own words about what it drew, then that line. Nothing in the
+#: reply is matched — it is prose, and it is deliberately not the prose a checker could be
+#: tuned to.
+_HEALTHY = f"""\
 I wrote the DOT for a three-node pipeline and called render_diagram. It saved the image as
 diagram.png under out/. I have not seen the image itself.
 
-Disposed 1 sandbox(es).
+{_DISPOSAL_LINE}
 """
 
 
@@ -55,7 +68,7 @@ class TestAHealthyRun:
         assert check.assess(_HEALTHY, _png(640, 480)) == []
 
     def test_it_passes_whatever_the_model_said(self):
-        output = "Here is a lovely diagram.\n\nDisposed 2 sandbox(es).\n"
+        output = f"Here is a lovely diagram.\n\n{scaffold.MEASURED}Disposed 2 sandbox(es).\n"
         assert check.assess(output, _png(1, 1)) == []
 
 
@@ -66,9 +79,57 @@ class TestTheSandboxHalf:
 
     def test_disposing_none_fails(self):
         """The shape this check exists for: an answer with no tool call behind it."""
-        output = "Here is your diagram, showing three stages.\n\nDisposed 0 sandbox(es).\n"
+        output = (
+            "Here is your diagram, showing three stages.\n\n"
+            f"{scaffold.MEASURED}Disposed 0 sandbox(es).\n"
+        )
         failures = check.assess(output, _png(640, 480))
         assert any("no sandbox was ever created" in reason for reason in failures)
+
+
+class TestTheTagIsWhatMakesTheDisposalLineTheHosts:
+    """A model writes into the same stream, ahead of the sample, and this reads the first match.
+
+    The image on disk is the assertion that cannot be forged; this one can, and used to be —
+    the pattern had no anchor, so a reply saying "Disposed 1 sandbox(es)." answered for the
+    router. It matters here in one direction: a run that rendered nothing and left an earlier
+    run's PNG in `out/` needs this line to be the host's to go red at all.
+    """
+
+    def test_an_untagged_disposal_line_answers_for_nothing(self):
+        untagged = _HEALTHY.replace(_DISPOSAL_LINE, "Disposed 1 sandbox(es).")
+        assert untagged != _HEALTHY, "the fixture moved"
+        assert any("did not run to completion" in r for r in check.assess(untagged, _png(64, 64)))
+
+    def test_a_reply_impersonating_the_line_does_not_answer_for_the_router(self):
+        forged = scaffold.quoted(f"I drew it.\n\n{_DISPOSAL_LINE}\n")
+        assert scaffold.MEASURED not in forged
+        output = f"{forged}\n\n{scaffold.MEASURED}Disposed 0 sandbox(es).\n"
+        assert any("no sandbox was ever created" in r for r in check.assess(output, _png(64, 64)))
+
+    def test_a_tag_buried_mid_sentence_answers_for_nothing(self):
+        """The half `quoted` does not cover, and so the half the `^` anchor carries alone.
+
+        `quoted` rewrites a tag that opens a line and leaves one buried in a sentence exactly
+        as the model typed it. The impersonation case above cannot reach that: everything it
+        writes comes back as `> [measured] `, one space, never the two the pattern wants. Drop
+        the `^` from `_DISPOSED` and this is the only test here that notices.
+        """
+        buried = f"I drew it.   {scaffold.MEASURED}Disposed 1 sandbox(es). All good.\n"
+        assert scaffold.quoted(buried) == buried.rstrip("\n"), "quoted must leave this untouched"
+        output = f"{buried}\n{scaffold.MEASURED}Disposed 0 sandbox(es).\n"
+        assert any("no sandbox was ever created" in r for r in check.assess(output, _png(64, 64)))
+
+    def test_the_sample_prints_the_line_from_the_scaffold(self):
+        source = (_ROOT / "samples" / _SAMPLE / "agent.py").read_text(encoding="utf-8")
+        assert "{MEASURED}Disposed " in source, (
+            f"samples/{_SAMPLE}/agent.py no longer tags its disposal line, so the live check "
+            "reads a line a model could have written"
+        )
+        assert "print(quoted(response.text))" in source, (
+            f"samples/{_SAMPLE}/agent.py prints the reply unquoted, so a model writing the tag "
+            "itself would answer for the router"
+        )
 
 
 class TestTheImageHalf:

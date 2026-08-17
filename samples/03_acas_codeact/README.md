@@ -84,7 +84,7 @@ The wording around the number is the model's and varies run to run; the model is
 
 ## Troubleshooting
 
-**`No sandbox backend: execute_code was not attached.`** — the router has no usable backend. Check the `ACAS_SANDBOX_*` variables.
+**`No sandbox backend: execute_code was not attached.`** — the router holds no backend at all, which is the only case `make_codeact_tools` answers with an empty list. Unset `ACAS_SANDBOX_*` variables do not reach here: the program checks those first and exits with a message naming them. A backend that is registered and cannot serve the workload does not reach here either — every mismatch raises: an isolation floor at construction, and the rest at attach — a missing capability, a transfer ceiling below what the workload asks, or an egress promise the backend will not make.
 
 **`SandboxBackendNotPermitted` at startup** — `SandboxRouter`'s default minimum-isolation floor is `Isolation.MICROVM`, and it refuses any backend below that. `AcasSandboxBackend` declares `Isolation.MICROVM`, exactly the floor, so this only appears if you swapped the backend for a container- or process-isolated one — and it means the swapped-in backend needs `min_isolation` lowered explicitly, not left implicit. It raises at construction rather than at first call, on purpose.
 

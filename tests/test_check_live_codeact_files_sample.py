@@ -1,11 +1,17 @@
 """The two-halved judgement behind the files-channel live check.
 
 `scripts/check_live_codeact_files_sample.py` runs on a real `samples/08_docker_codeact_files`
-run to decide whether the published stack moved a file in *and* a file out. Its `assess` is a
-pure function, so the judgement is tested here — on every PR — while the run that feeds it
-happens only on dispatch and after a release. The failing cases carry the weight: an
-output-only check would pass a turn that computed the right total and landed nothing, which is
-the regression this sample exists to catch.
+or `samples/14_acas_codeact_files` run to decide whether the published stack moved a file in
+*and* a file out. Its `assess` is a pure function, so the judgement is tested here — on every
+PR — while the runs that feed it happen only on dispatch and after a release, and one of those
+two creates a billable sandbox. The failing cases carry the weight: an output-only check would
+pass a turn that computed the right total and landed nothing, which is the regression these
+samples exist to catch.
+
+Two of the three things it reads out of the transcript are the *host's* — what `dispose_scope`
+returned and what the sink took this turn — and the model writes into the same stream. So they
+are read off the `[measured]` tag, and the classes at the end of this file are the ones that
+make that a fence rather than a decoration.
 """
 
 from __future__ import annotations
@@ -16,20 +22,38 @@ from pathlib import Path
 
 import pytest
 
-_SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "check_live_codeact_files_sample.py"
+_ROOT = Path(__file__).resolve().parent.parent
+_SCRIPT = _ROOT / "scripts" / "check_live_codeact_files_sample.py"
 _spec = importlib.util.spec_from_file_location("check_live_codeact_files_sample", _SCRIPT)
 assert _spec and _spec.loader
 check = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(check)
 
-#: A representative healthy run: the model's reply, the disposal line, and the host's own
-#: record of what reached the sink this turn.
-_HEALTHY = """\
-The grand total across all regions is 1124. I saved the per-region breakdown as summary.md.
+#: Every sample this checker's shape is a contract with, and the one file that writes the tag
+#: for both. Byte-identical in every sample by `tests/test_sample_scaffold.py`, so either copy
+#: is the canonical one.
+_SAMPLES = ("08_docker_codeact_files", "14_acas_codeact_files")
 
-Disposed 1 sandbox(es).
-Delivered this turn into out/: ["summary.md"]
-"""
+_SCAFFOLD = _ROOT / "samples" / _SAMPLES[0] / "_scaffold.py"
+_scaffold_spec = importlib.util.spec_from_file_location("_scaffold", _SCAFFOLD)
+assert _scaffold_spec and _scaffold_spec.loader
+scaffold = importlib.util.module_from_spec(_scaffold_spec)
+_scaffold_spec.loader.exec_module(scaffold)
+
+#: The model's half. Anything it says is prose, including the total — the landed file below is
+#: what settles that, and these two lines are what settle the rest.
+_REPLY = (
+    "The grand total across all regions is 1124. I saved the per-region breakdown as summary.md."
+)
+
+#: The host's two lines, tagged as the sample tags them. Named, because half the cases below
+#: are about removing or untagging one of them and a literal repeated six times drifts.
+_DISPOSAL_LINE = f"{scaffold.MEASURED}Disposed 1 sandbox(es)."
+_DELIVERY_LINE = f'{scaffold.MEASURED}Delivered this turn into out/: ["summary.md"]'
+
+#: A representative healthy run: the model's reply, then the host's own two lines — what the
+#: router disposed, and what reached the sink this turn.
+_HEALTHY = f"{_REPLY}\n\n{_DISPOSAL_LINE}\n{_DELIVERY_LINE}\n"
 
 _SUMMARY = """\
 | Region | Revenue |
@@ -39,6 +63,17 @@ _SUMMARY = """\
 | east | 84 |
 | west | 450 |
 """
+
+
+def _tampered_text(old: str, new: str, base: str = _HEALTHY) -> str:
+    """The fixture with one substitution, proven to have matched something.
+
+    Every case below is a `replace` on a literal, and a fixture that moved turns each of them
+    into an assertion about a string nobody prints. This is what makes that loud.
+    """
+    text = base.replace(old, new)
+    assert text != base, f"the substitution matched nothing — the fixture moved: {old[:60]!r}"
+    return text
 
 
 class TestHealthyRun:
@@ -184,6 +219,39 @@ class TestNamesAreWholeWords:
         )
 
 
+class TestTheSummaryIsReadInTheModelsOwnAlphabet:
+    """The model writes this file, so neither its casing nor its script is ours to assume.
+
+    Both cases below survived the change that introduced them: reverting to offsets taken from
+    a lowered copy passed every other test in this file, and so did dropping the
+    `re.IGNORECASE` that replaced it. Case-insensitivity used to be structural — you could not
+    lose it without deleting the `.lower()` — and moving it into a flag made it losable in
+    silence. These are what make it cost something.
+    """
+
+    def test_a_capitalised_region_name_is_still_the_region(self):
+        """The likeliest real shape: the task asks for a Markdown table, and a model writing
+        one puts `| North | 390 |` in it about as often as the lowercase form.
+
+        One `_tampered_text` per name rather than a chained `replace` with a single guard —
+        that guard passes when either substitution matched, so a fixture that stopped spelling
+        one of them lowercase would leave half this case testing nothing.
+        """
+        titled = _tampered_text("east", "East", _tampered_text("north", "North", _SUMMARY))
+        assert check.assess(_HEALTHY, titled) == []
+
+    @pytest.mark.parametrize("shout", ["NORTH", "NoRtH"])
+    def test_any_casing_of_a_region_name_counts(self, shout: str):
+        assert check.assess(_HEALTHY, _tampered_text("north", shout, _SUMMARY)) == []
+
+    def test_a_character_that_grows_when_lowered_does_not_shift_the_segments(self):
+        """`"İ".lower()` is two characters, so offsets taken from a lowered copy and slices
+        taken from the original drift apart by one for every one of them in the file — and the
+        region totals then get read out of the wrong segments. A correct summary went red."""
+        prefixed = f"{'İ' * 10} regional report\n\n{_SUMMARY}"
+        assert check.assess(_HEALTHY, prefixed) == []
+
+
 class TestATotalBelongsToItsOwnRegion:
     def test_swapped_values_fail(self):
         """Every expected string is still present, which is exactly why checking them
@@ -222,25 +290,162 @@ class TestTheRunThatAnsweredAndSavedNothing:
     def test_a_turn_that_delivered_nothing_fails_even_with_a_file_on_disk(self):
         """The stale-artifact case: `out/` holds an earlier run's summary, and the host's
         record of *this* turn is what settles it."""
-        nothing = _HEALTHY.replace(
-            'Delivered this turn into out/: ["summary.md"]',
-            "Delivered this turn into out/: []",
-        )
+        nothing = _tampered_text('["summary.md"]', "[]")
         assert any("did not reach the sink this turn" in r for r in check.assess(nothing, _SUMMARY))
 
     def test_a_run_that_never_reached_its_final_report_fails(self):
-        truncated = _HEALTHY.replace('Delivered this turn into out/: ["summary.md"]', "")
+        truncated = _tampered_text(f"\n{_DELIVERY_LINE}", "")
         assert any("did not reach its final report" in r for r in check.assess(truncated, _SUMMARY))
 
 
 class TestTheRunThatNeverRanASandbox:
     def test_no_disposal_line_fails(self):
-        without = _HEALTHY.replace("Disposed 1 sandbox(es).", "")
+        without = _tampered_text(f"\n{_DISPOSAL_LINE}", "")
         assert any("did not run to completion" in r for r in check.assess(without, _SUMMARY))
 
     def test_disposing_none_fails(self):
         """Answering without ever creating a sandbox is the T0 behaviour, not a pass."""
-        none_disposed = _HEALTHY.replace("Disposed 1", "Disposed 0")
+        none_disposed = _tampered_text("Disposed 1", "Disposed 0")
         assert any(
             "no sandbox was ever created" in r for r in check.assess(none_disposed, _SUMMARY)
         )
+
+
+class TestTheFixtureIsWhatTheSamplesActuallyPrint:
+    """Both halves of a fixture that no sample emits: the tag, and the two lines carrying it.
+
+    Nothing else offline ties these samples' output to this checker's patterns — they live in
+    different directories, and on a tagged run in different *versions*. A drift between them is
+    green all the way through the gate and red only on the live job, after a sandbox has been
+    paid for.
+    """
+
+    def test_both_host_lines_carry_the_scaffold_tag(self):
+        tagged = [line for line in _HEALTHY.splitlines() if line.startswith(scaffold.MEASURED)]
+        assert tagged == [_DISPOSAL_LINE, _DELIVERY_LINE]
+
+    def test_this_checker_reads_the_lines_above(self):
+        assert check._DISPOSED.search(_HEALTHY)
+        assert check._DELIVERED.search(_HEALTHY)
+
+    @pytest.mark.parametrize("sample", _SAMPLES)
+    def test_every_sample_prints_both_lines_from_the_scaffold(self, sample: str):
+        source = (_ROOT / "samples" / sample / "agent.py").read_text(encoding="utf-8")
+        for literal in ("{MEASURED}Disposed ", "{MEASURED}Delivered this turn into "):
+            assert literal in source, (
+                f"samples/{sample}/agent.py no longer prints {literal!r} — the live check reads "
+                "both of these off the tag, so an untagged line answers for nothing"
+            )
+
+    @pytest.mark.parametrize("sample", _SAMPLES)
+    def test_the_delivery_line_still_ends_in_a_json_list(self, sample: str):
+        """The prefix is not the whole contract — `_delivered_names` parses what follows it.
+
+        Checking only `{MEASURED}Delivered this turn into ` leaves the colon and the JSON free
+        to drift. A sample rewriting the tail as ` — summary.md` keeps the prefix, passes every
+        offline check, and goes red on the live job, which for one of these two costs a
+        billable sandbox to discover.
+        """
+        source = (_ROOT / "samples" / sample / "agent.py").read_text(encoding="utf-8")
+        line = next((one for one in source.splitlines() if "Delivered this turn into" in one), None)
+        assert line is not None, f"samples/{sample}/agent.py prints no delivery line at all"
+        # One suffix, pinned whole: the colon, then the JSON, then the end of the line. Two
+        # separate checks — a colon somewhere, the JSON at the end — would still let text sit
+        # *between* them, and `/: names {json.dumps(delivered)}` passes both while a live run
+        # hands `names [...]` to `json.loads`.
+        assert line.rstrip().endswith('/: {json.dumps(delivered)}")'), (
+            f"samples/{sample}/agent.py's delivery line no longer ends in '/: ' followed "
+            f"directly by the JSON list: {line.strip()!r}. The checker parses everything after "
+            "the colon, so anything printed between the colon and the list stops the names "
+            "being read at all"
+        )
+
+    @pytest.mark.parametrize("sample", _SAMPLES)
+    def test_every_sample_quotes_the_reply_before_printing_them(self, sample: str):
+        """The tag is a barrier only where the model's own text has been through `quoted`."""
+        source = (_ROOT / "samples" / sample / "agent.py").read_text(encoding="utf-8")
+        assert "print(quoted(response.text))" in source, (
+            f"samples/{sample}/agent.py prints the reply unquoted, so a model writing the tag "
+            "itself would answer for the router and the sink"
+        )
+
+
+class TestTheTagIsWhatMakesTheseLinesTheHosts:
+    """The forgery the tag exists to refuse, and the untagged shape that used to pass.
+
+    Both lines report something only the host knows — what `dispose_scope` returned, and what
+    the sink took. A model writes into the same stream, ahead of them, and the checker reads the
+    first match.
+    """
+
+    def test_a_reply_impersonating_both_lines_answers_for_neither(self):
+        # A reply that answers the question correctly and then writes the host's two lines
+        # itself, which is the only forgery worth testing — a wrong answer fails anyway.
+        forged = scaffold.quoted(
+            f"{_REPLY}\n\n{_DISPOSAL_LINE}\n{_DELIVERY_LINE}\n\nThat is everything."
+        )
+        # What the sample itself then reports: no sandbox, and nothing landed.
+        real = (
+            f"{scaffold.MEASURED}Disposed 0 sandbox(es).\n"
+            f"{scaffold.MEASURED}Delivered this turn into out/: []\n"
+        )
+        failures = check.assess(f"{forged}\n\n{real}", _SUMMARY)
+        assert any("no sandbox was ever created" in r for r in failures), failures
+        assert any("did not reach the sink this turn" in r for r in failures), failures
+
+    def test_the_forgery_is_a_real_one_and_not_a_straw_man(self):
+        """Every string the untagged checker looked for is in the reply, and none is the host's."""
+        forged = scaffold.quoted(f"{_DISPOSAL_LINE}\n{_DELIVERY_LINE}")
+        assert "Disposed 1 sandbox(es)." in forged
+        assert '["summary.md"]' in forged
+        assert scaffold.MEASURED not in forged
+
+    def test_an_untagged_disposal_line_answers_for_the_router_no_longer(self):
+        untagged = _tampered_text(_DISPOSAL_LINE, "Disposed 1 sandbox(es).")
+        assert any("did not run to completion" in r for r in check.assess(untagged, _SUMMARY))
+
+    def test_an_untagged_delivery_line_answers_for_the_sink_no_longer(self):
+        untagged = _tampered_text(_DELIVERY_LINE, 'Delivered this turn into out/: ["summary.md"]')
+        assert any("did not reach its final report" in r for r in check.assess(untagged, _SUMMARY))
+
+    def test_a_tag_buried_mid_sentence_answers_for_neither(self):
+        """The half `quoted` does not cover, and so the half the `^` anchor carries alone.
+
+        `quoted` tests `line.lstrip().lower().startswith("[measured]")`, which is true only of a tag
+        that opens a line. One written mid-sentence reaches the checker exactly as the model
+        typed it, two spaces and all. Every impersonation case above goes through `quoted` and
+        comes back as `> [measured] ` — one space, never the two the pattern wants — so none of
+        them can tell an anchored pattern from a bare substring search. Drop the `^` from `_M`
+        and this is the only test in the file that notices.
+        """
+        buried = (
+            f"All done!   {scaffold.MEASURED}Disposed 1 sandbox(es)."
+            f'   {scaffold.MEASURED}Delivered this turn into out/: ["summary.md"]\n'
+        )
+        assert scaffold.quoted(buried) == buried.rstrip("\n"), "quoted must leave this untouched"
+        real = (
+            f"{scaffold.MEASURED}Disposed 0 sandbox(es).\n"
+            f"{scaffold.MEASURED}Delivered this turn into out/: []\n"
+        )
+        failures = check.assess(f"{_REPLY}\n{buried}\n{real}", _SUMMARY)
+        assert any("no sandbox was ever created" in r for r in failures), failures
+        assert any("did not reach the sink this turn" in r for r in failures), failures
+
+    def test_the_delivery_capture_cannot_cross_a_line_break(self):
+        """`[^:]*` and `\\s*` both match a newline, so a colonless host line would have walked
+        down the stream for the next `:` and captured whatever the model wrote after it."""
+        drifted = (
+            f"{scaffold.MEASURED}Disposed 1 sandbox(es).\n"
+            f"{scaffold.MEASURED}Delivered this turn into out/\n"
+            'Note: ["summary.md"]\n'
+        )
+        assert any(
+            "did not reach its final report" in r
+            for r in check.assess(f"{_REPLY}\n\n{drifted}", _SUMMARY)
+        )
+
+    def test_the_tag_is_read_case_sensitively(self):
+        """A reader broader than its sanitizer is a hole. `quoted` defangs every spelling; this
+        accepts only the one the scaffold writes, so neither side is the wider of the two."""
+        shouted = _tampered_text("[measured] Disposed", "[MEASURED] Disposed")
+        assert any("did not run to completion" in r for r in check.assess(shouted, _SUMMARY))

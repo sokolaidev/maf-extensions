@@ -12,11 +12,11 @@ app  ->  maf_sandbox (router)  ->  maf_sandbox_docker  ->  the container
 
 Samples 05 and 06 lean on a packaged kind: `maf_sandbox_bicep`'s `bicep_validate`, `maf_sandbox_codeact`'s `execute_code`. This one defines its kind — `render_diagram` — in **[`diagram_kind.py`](diagram_kind.py)** beside `agent.py`, and imports nothing from a workload package. Everything it needs is public in `maf_sandbox`: the `SandboxSpec` that says what sandbox to ask for, the `OutputSink` that lands bytes in host state, `sandboxed_tool` that wires the tool onto an agent, and `collect_outputs` that pulls the declared file back. So that file is what a third party writing their **own** sandbox kind against the published protocol would write — with nothing reached from inside the library. It is the layer beneath samples 05 and 06, shown once.
 
-A kind is three things, and `diagram_kind.py` is all three and nothing else — `agent.py` beside it is the same host wiring as every other sample, and imports one name from it:
+A kind is two things plus the seam it leaves for the host, and `diagram_kind.py` is exactly that — `agent.py` beside it is the same host wiring as every other sample, and imports one name from it:
 
 - **`diagram_sandbox_spec()`** — a `SandboxSpec` with `kind="diagram-generator"`, closed egress, and one `DeclaredOutput` (`diagram.png`, `image/png`, `required=False`). It `requires` `EXEC`, `FILES_IN` and — the new one — `FILES_OUT`, so the router refuses any backend without a pull surface before a container is ever created.
 - **`render_diagram(dot)`** — the tool body. It writes the DOT in with `write_file`, runs `dot -Tpng` as a fixed argv (no shell, the model's source is a file argument), and on success calls `collect_outputs(...)` to land the PNG. A `dot` that rejects malformed DOT exits non-zero and produces no file; the body hands its diagnostic back for the model to fix, which is exactly why the output is `required=False`.
-- **`make_png_sink(out_dir)`** — the `OutputSink`. Its `deliver` writes the bytes and returns a `LandedArtifact` whose `display` — a one-line "saved under `out/`" — is all the model sees, and whose `handle` — the real host path — is the host's own reference that nothing renders into the transcript. That split is a security property, not tidiness: a sink that returned one string, put in a tool result, could persist a path (or a signed URL) into the conversation to be replayed every turn.
+- **`make_diagram_tools(..., sink)`** — and the `sink` parameter is the interesting half. The kind does not build one. It takes an `OutputSink` from the host and passes it to `sandboxed_tool`, so where the bytes land is the application's decision and never the kind's; `agent.py` supplies `make_file_system_sink` from `maf_sandbox`. What the kind does own is the consequence of that split: `deliver` returns a `LandedArtifact` whose `display` — a one-line "saved under `out/`" — is all the model sees, while its `handle`, the real host path, stays the host's own reference and is never rendered into the transcript. That is a security property rather than tidiness: one string doing both jobs, put in a tool result, could persist a path or a signed URL into the conversation to be replayed every turn.
 
 ## The image itself does not come back
 
@@ -69,7 +69,7 @@ The first call pays for creating and starting the container — a few seconds, a
 The diagram has been rendered and saved to `out/diagram.png`. It shows the
 three-stage pipeline: ingest → transform → load.
 
-Disposed 1 sandbox(es).
+  [measured] Disposed 1 sandbox(es).
 ```
 
 That block is one real run. **What the model says varies** — the DOT it writes, whether it labels the edges, how it phrases the reply. **What does not vary** is the tool result underneath it and the file on disk: `render_diagram` returns exactly
@@ -78,7 +78,7 @@ That block is one real run. **What the model says varies** — the DOT it writes
 Rendered diagram.png (image/png); saved under out/.
 ```
 
-every time — a host-authored line, not the model's — and a valid PNG appears at `out/diagram.png` (`89 50 4E 47` — the PNG magic — as its first bytes). `Disposed 1 sandbox(es).` prints only once `render_diagram` has actually created and torn down a container; a `Disposed 0` would mean the model answered without rendering anything, the T0 behaviour this sample exists to contrast with.
+every time — a host-authored line, not the model's — and a valid PNG appears at `out/diagram.png` (`89 50 4E 47` — the PNG magic — as its first bytes). The disposal line prints only once `render_diagram` has actually created and torn down a container; a `Disposed 0` would mean the model answered without rendering anything, the T0 behaviour this sample exists to contrast with. It carries `[measured]` because it is the sample's report rather than the model's, and the reply is filtered before printing so a line of it starting with that tag comes out quoted, `> [measured] …` — otherwise a reply writing "Disposed 1 sandbox(es)." would answer for the router ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)).
 
 The PNG is git-ignored (`out/`), so a run leaves no tracked file behind.
 

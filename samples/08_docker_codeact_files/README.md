@@ -34,7 +34,7 @@ Everything else is sample 06 unchanged: the same image, the same backend, the sa
 
 ## Where the sink points, and why it is the interesting decision
 
-`make_markdown_sink` writes under this directory's `out/`. The agent's file store is a separate `InMemoryAgentFileStore`, and **the two are deliberately not the same place**.
+`make_recording_sink` writes under this directory's `out/`. The agent's file store is a separate `InMemoryAgentFileStore`, and **the two are deliberately not the same place**.
 
 That matters more here than for any other kind, because these bytes were authored by model-written code. A host that points the sink at the store the agent's own file tools write to has handed that code an unapproved `file_access_write`; one that lets it overwrite has given it a way to influence a *different* tool on the next call. Point the sink somewhere the agent cannot otherwise reach — which is what this sample does, and the reason `out/` is a plain directory on the host rather than another store.
 
@@ -71,11 +71,15 @@ Expected shape — the grand total over `sales.csv` is **1124**:
 ```
 The grand total is 1124. The per-region summary was saved as summary.md.
 
-Disposed 1 sandbox(es).
-Delivered this turn into out/: ["summary.md"]
+  [measured] Disposed 1 sandbox(es).
+  [measured] Delivered this turn into out/: ["summary.md"]
 ```
 
 `out/summary.md` then holds the per-region table: north 390, south 200, east 84, west 450.
+
+The wording of the first line is the model's and varies run to run. The two tagged ones are the sample's own report of what the router disposed and what the sink took, and the live check reads *those two* off the tag — a model writes into the same stream, so a reply saying "Disposed 1 sandbox(es)." would otherwise answer for the router. It also looks for the grand total anywhere in the transcript, which in a healthy run means in the model's reply; that one is a claim about the answer reaching the model, and the evidence a program ran is the landed file, whose four region totals are that grand total decomposed. The reply is filtered before printing, so a line of it starting with that tag comes out quoted, `> [measured] …` ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)).
+
+[Sample 14](../14_acas_codeact_files/) is this sample on a real Azure sandbox — same task, same data, same two lines, a different backend underneath — and one script checks both.
 
 A nested declared name works too — `reports/summary.md` lands at `out/reports/summary.md`, because the sink makes each destination's own parent. Nesting cannot climb out: names are validated relative before they arrive, and the sink resolves each destination and refuses one that lands outside `out/` — which lexical validation alone would not catch, since a symlink already sitting in `out/` carries a write wherever it points.
 

@@ -1,28 +1,41 @@
-"""One turn of an agent that reads a file it was given and writes one back.
+"""One turn of an agent that reads a file it was given and writes one back — remotely.
 
-Sample 06 with both of CodeAct's file channels wired::
+Sample 08's task, its data and its wiring, with the backend swapped underneath::
 
-    app  ->  maf_sandbox (router)  ->  maf_sandbox_docker  ->  the container
+    app  ->  maf_sandbox (router)  ->  maf_sandbox_acas  ->  the sandbox
                   ^ maf_sandbox_codeact calls the router
 
-Samples 03, 04 and 06 give `execute_code` nothing to read and take only stdout
-back.  This one passes a `file_store`, which grows the tool a `files`
-parameter, and an `output_sink` with `CodeactOutputs.DECLARED`, which grows it an
-`outputs` parameter.  The task needs both, so a run that skips either is visibly
-wrong rather than quietly thinner.
+Everything that pulls a file back out of a sandbox has been Docker until now — samples
+07 and 08 — and Docker is the local backend, where a file leaving the guest is a
+`docker cp` on the same machine.  Here the same file crosses a preview control plane:
+`FILES_OUT` on this backend is a `stat_file` and a `read_file` over HTTPS, against a
+service whose SDK has twice reported something the payload did not carry (#139, #142).
+That is the whole reason this sample exists (#300) — the pull surface is portable in the
+way the design says, or it is not, and only a second backend can say which.
 
-This directory's README is the walkthrough — what to watch for, and where the
-sink should point, which is the security-relevant decision here.  Read it first.
+Read `samples/08_docker_codeact_files/README.md` first: it explains both channels, what
+the sink is for and where it must not point.  This directory's README covers only what
+is different here, which is the backend, the isolation floor and the cost.
+
+Running this needs a real Azure subscription and **creates a billable sandbox** — see
+this directory's README for the prerequisites and the environment variables.
 """
 
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
 #     "agent-framework-openai",
+#     # Both named because this file imports `azure.identity.aio.DefaultAzureCredential`
+#     # directly, and the async credential builds azure-core's aiohttp transport. That code
+#     # ships with azure-core; `aiohttp` itself arrives only with the `aio` extra, which is
+#     # why the extra rather than the bare name. Sample 08 declares the same pair
+#     # for the same import. Leaving either out resolves today only on loan: aiohttp arrives
+#     # through maf-sandbox-acas's own SDK dependency, and a preview SDK is a thin thing to
+#     # rest an ImportError on.
 #     "azure-core[aio]",
 #     "azure-identity",
+#     "maf-sandbox-acas",
 #     "maf-sandbox-codeact",
-#     "maf-sandbox-docker",
 #     "maf-sandbox>=0.12",
 # ]
 # ///
@@ -40,25 +53,27 @@ from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
 from maf_sandbox import (
     Artifact,
-    Isolation,
     LandedArtifact,
     OutputSink,
     SandboxRouter,
     make_file_system_sink,
 )
 from maf_sandbox.maf import list_all_files, make_caller_context
+from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
 from maf_sandbox_codeact import CodeactOutputs, make_codeact_tools
-from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
 
 # Keyed by (scope, thread_id, agent_dir); constants here since this program serves one request.
 SCOPE = "samples"
-THREAD_ID = "08-docker-codeact-files"
+THREAD_ID = "14-acas-codeact-files"
 AGENT_DIR = "data-analyst"
 
-#: A standard MCR devcontainer image at Python 3.13 — sample 06's, so nothing is built here.
+#: A standard MCR devcontainer image at Python 3.13 — sample 03's, imported into the sandbox
+#: group as a disk image. Fully qualified, so no registry variable accompanies it.
 CODEACT_IMAGE = "mcr.microsoft.com/devcontainers/python:3.13-bookworm"
 
-#: Ships beside this file and is seeded into the agent's file store under the same name.
+#: Ships beside this file and is seeded into the agent's file store under the same name. A copy
+#: of sample 08's, byte for byte: the two samples answer the same question over the same rows,
+#: so a red on one side while the other is green names the backend rather than the workload.
 STORE_FILE = "sales.csv"
 
 #: Where landed artifacts go. Beside the sample, and deliberately *not* the file store.
@@ -73,19 +88,26 @@ TASK = (
     "grand total and where the summary was saved."
 )
 
-#: The Docker backend reads no environment — it drives the local `docker` client — so the only
-#: variables are the model's. Auth is `DefaultAzureCredential`, so there is no key.
+#: Everything the sandbox backend needs. No `ACAS_SANDBOX_REGISTRY`: `CODEACT_IMAGE` is
+#: already fully-qualified.
+SANDBOX_VARS = (
+    "ACAS_SANDBOX_ENDPOINT",
+    "ACAS_SANDBOX_SUBSCRIPTION_ID",
+    "ACAS_SANDBOX_RESOURCE_GROUP",
+    "ACAS_SANDBOX_GROUP",
+)
+
+#: Everything the chat model needs. Auth is `DefaultAzureCredential`, so there is
+#: no key here — `az login` is enough.
 MODEL_VARS = ("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_CHAT_MODEL")
 
 
 def make_recording_sink(output_dir: Path, delivered: list[str]) -> OutputSink:
     """`make_file_system_sink`, with this turn's names recorded as they land.
 
-    The writing and the confinement are the library's — a sink that joins a validated name
-    onto a directory is still not safe, because the name says nothing about what is already
-    at the path it resolves to.  What is left here is the only part that belongs to the
-    application: `delivered` is *this turn's* record, and the directory cannot stand in for
-    it because it also holds whatever an earlier run left behind.
+    Sample 08's, unchanged, and it is unchanged on purpose: a sink is host-side code that
+    never learns which backend produced the bytes it is handed.  If this function had to know,
+    the pull surface would not be portable and the sample would be making the opposite point.
     """
     landing = make_file_system_sink(
         output_dir,
@@ -104,19 +126,27 @@ def make_recording_sink(output_dir: Path, delivered: list[str]) -> OutputSink:
 
 
 async def run() -> int:
-    """Wire the stack, run one turn, and take the container down again."""
-    env = require_env_vars(MODEL_VARS)
+    """Wire the stack, run one turn, and take the sandbox down again."""
+    env = require_env_vars(SANDBOX_VARS + MODEL_VARS)
     if env is None:
         return 2
 
-    backend = DockerSandboxBackend(DockerSandboxConfig())
+    backend = AcasSandboxBackend(
+        AcasSandboxConfig(
+            endpoint=env["ACAS_SANDBOX_ENDPOINT"],
+            subscription_id=env["ACAS_SANDBOX_SUBSCRIPTION_ID"],
+            resource_group=env["ACAS_SANDBOX_RESOURCE_GROUP"],
+            sandbox_group=env["ACAS_SANDBOX_GROUP"],
+        )
+    )
 
-    # Below the router's default `microvm` floor; opted down explicitly, as sample 06 does.
-    # Worth re-reading that decision here rather than copying it: with a store wired, the
-    # program's input is no longer only source the model wrote — it is also whatever those
-    # files contain. The floor should be chosen against the provenance of the file store.
-    # This sample's file store holds one CSV that ships in this repository.
-    router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
+    # No `min_isolation`, where sample 08 opts down to `Isolation.CONTAINER`. That is the one
+    # line worth pausing on: 08's own comment says the floor should be chosen against the
+    # provenance of the file store, because a store turns the program's input into something
+    # other than source the model wrote. Here the answer costs nothing to give — the default
+    # floor is `Isolation.MICROVM` and this backend meets it, so the same workload runs a rung
+    # higher without the application asking.
+    router = SandboxRouter([backend])
 
     # The agent's file store. A real host's is backed by a disk or a blob container and
     # already holds what the agent wrote earlier; here the sample seeds the one file.
@@ -147,7 +177,13 @@ async def run() -> int:
         image=CODEACT_IMAGE,
     )
     if not tools:
-        # Unreachable given the checks above; printed because the `[]` contract is worth stating.
+        # Unreachable given the checks above; printed because the `[]` contract is worth
+        # stating. `[]` means one thing only — no backend was registered at all. A backend that
+        # *is* registered and cannot serve this spec never reaches here: every mismatch raises,
+        # an isolation floor at `SandboxRouter(...)` and the rest out of `make_codeact_tools`
+        # itself — `SandboxCapabilityNotSupported` for a capability, and its siblings for a
+        # transfer ceiling or an egress promise. So the whole kind is refused rather than the
+        # output channel quietly dropped — loudly, and before this line. Sample 11 shows that.
         print("No sandbox backend: execute_code was not attached.", file=sys.stderr)
         return 2
 
@@ -174,9 +210,10 @@ async def run() -> int:
         # live check trusts the `[measured]` tag completely (#314).
         print(quoted(response.text))
     finally:
-        # Deletes rather than relying on the container living on — see sample 01's README.
+        # Deletes rather than relying on the lifecycle timers — see sample 01's README.
         deleted = await router.dispose_scope(SCOPE, THREAD_ID)
         print(f"\n{MEASURED}Disposed {deleted} sandbox(es).")
+        await backend.aclose()
         await credential.close()
 
     # JSON, not a comma-joined sentence: an artifact name may legally contain a comma, so

@@ -45,7 +45,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from _scaffold import require_env_vars
+from _scaffold import MEASURED, quoted, require_env_vars
 from agent_framework import Agent
 from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
@@ -149,10 +149,12 @@ async def run() -> int:
             tools=tools,
         )
         response = await agent.run(TASK)
-        print(response.text)
+        # Quoted, because the reply and the measured line below share one stream and the live
+        # check trusts the `[measured]` tag completely (#314).
+        print(quoted(response.text))
     finally:
         deleted = await router.dispose_scope(SCOPE, THREAD_ID)
-        print(f"\nDisposed {deleted} sandbox(es).")
+        print(f"\n{MEASURED}Disposed {deleted} sandbox(es).")
         await credential.close()
 
     return 0
