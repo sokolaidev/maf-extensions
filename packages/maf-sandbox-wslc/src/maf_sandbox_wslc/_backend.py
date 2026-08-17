@@ -30,16 +30,44 @@ import weakref
 from collections.abc import Sequence
 from dataclasses import dataclass
 from hashlib import sha256
-from typing import Protocol, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
-from maf_sandbox import Capability, Egress, ExecResult, Isolation, SandboxKey, SandboxSpec
+from maf_sandbox import (
+    Capability,
+    Egress,
+    ExecResult,
+    Isolation,
+    Sandbox,
+    SandboxBackend,
+    SandboxEntry,
+    SandboxKey,
+    SandboxSpec,
+)
 
 from ._config import WslcSandboxConfig
 from ._proxy import build_context
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["WslcSandboxBackend"]
+__all__ = ["BACKEND_NAME", "WslcSandboxBackend"]
+
+#: The name :attr:`WslcSandboxBackend.name` answers to, and the value
+#: :class:`~maf_sandbox.SandboxRouter`'s ``selected=`` matches on.
+#:
+#: Public because a host choosing a backend from its own configuration needs the value before
+#: it has a backend to read it off, and building one to learn a constant is a lot of machinery
+#: for a fixed string (#411). The property below returns this, so the two cannot disagree.
+#:
+#: Worth having even though this backend runs on one platform: a host that registers it on
+#: Windows and something else elsewhere still selects by name, and that selection is written
+#: where the platform check is, not where the backend is built.
+#:
+#: Import it qualified or aliased when more than one backend package is in play. Every backend
+#: exports this same symbol, so two `from … import BACKEND_NAME` lines shadow each other and
+#: the second wins silently. Either `import maf_sandbox_wslc` and reach it as
+#: `maf_sandbox_wslc.BACKEND_NAME`, or alias at the import:
+#: `from maf_sandbox_wslc import BACKEND_NAME as WSLC_BACKEND`.
+BACKEND_NAME = "wslc"
 
 # Written at create and read back on purge, so wslc is the durable record, not this process.
 _LABEL_SCOPE = "maf-sandbox.scope"
@@ -203,14 +231,18 @@ class _WslcSandbox:
     def container_name(self) -> str:
         return self._name
 
-    async def write_file(self, path: str, content: str) -> None:
+    async def write_file(self, path: str, content: str | bytes) -> None:
         """Write ``content`` to ``path`` inside the container, parents included.
 
         Sent as a one-entry tar on stdin.  A ``cp`` destination must already exist and ``/``
         is the only path that always does, so the entry name carries the whole path and wslc
         creates the missing directories from it.
+
+        ``str`` is encoded UTF-8 whatever the host's locale says; ``bytes`` is written as
+        given, and is what an in-door carrying a PNG or a spreadsheet needs — the shape the
+        :class:`~maf_sandbox.Sandbox` protocol promises and the docker backend already takes.
         """
-        data = content.encode("utf-8")
+        data = content.encode("utf-8") if isinstance(content, str) else content
         buffer = io.BytesIO()
         with tarfile.open(fileobj=buffer, mode="w") as archive:
             entry = tarfile.TarInfo(path.lstrip("/"))
@@ -259,6 +291,41 @@ class _WslcSandbox:
             stdout=result.stdout_text, stderr=result.stderr_text, exit_code=result.returncode
         )
 
+    async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
+        """Not supported: this backend declares neither :data:`~maf_sandbox.Capability.FILES_OUT`
+        nor :data:`~maf_sandbox.Capability.FILES_LIST`.
+
+        ``wslc`` shares the docker engine's ``container cp`` tar stream, so a stat-from-header
+        path is buildable here — but it was never wired, and the router refuses a spec requiring
+        either capability before a workload runs, so a well-formed caller never reaches here.
+        The raise is the honest floor under one that skipped the check: an :class:`AttributeError`
+        from a missing method names neither the backend nor the file, and reads as unrelated to
+        a ``write_file`` that had just succeeded.  See :mod:`maf_sandbox.conformance` for the
+        duty a backend that *does* declare ``FILES_OUT`` is held to.
+        """
+        raise NotImplementedError(
+            "the wslc backend does not support FILES_OUT or FILES_LIST: declare a backend that "
+            "does, or require only exec and FILES_IN."
+        )
+
+    async def read_file(self, path: str, *, working_directory: str, max_bytes: int) -> bytes:
+        """Not supported: this backend declares neither :data:`~maf_sandbox.Capability.FILES_OUT`
+        nor :data:`~maf_sandbox.Capability.FILES_LIST`.  See :meth:`stat_file`.
+        """
+        raise NotImplementedError(
+            "the wslc backend does not support FILES_OUT or FILES_LIST: declare a backend that "
+            "does, or require only exec and FILES_IN."
+        )
+
+    async def list_dir(self, path: str, *, working_directory: str) -> tuple[SandboxEntry, ...]:
+        """Not supported: this backend declares neither :data:`~maf_sandbox.Capability.FILES_OUT`
+        nor :data:`~maf_sandbox.Capability.FILES_LIST`.  See :meth:`stat_file`.
+        """
+        raise NotImplementedError(
+            "the wslc backend does not support FILES_OUT or FILES_LIST: declare a backend that "
+            "does, or require only exec and FILES_IN."
+        )
+
 
 class WslcSandboxBackend:
     """Hands out container-isolated sandboxes from the WSL container CLI (``wslc``)."""
@@ -280,7 +347,7 @@ class WslcSandboxBackend:
 
     @property
     def name(self) -> str:
-        return "wslc"
+        return BACKEND_NAME
 
     @property
     def isolation(self) -> Isolation:
@@ -702,3 +769,19 @@ class WslcSandboxBackend:
                 "wslc backend: failed to remove network %s: %s", net, result.stderr_text.strip()
             )
         return False
+
+
+# The package's strict pyright pass type-checks this assignment. ``runtime_checkable`` only
+# tests member *presence*, so ``isinstance(..., SandboxBackend)`` passes while a signature
+# narrows (``write_file`` refusing ``bytes``) or a method goes missing (the pull surface) — the
+# annotation is what fails the build instead, which is how #370 was caught at a sample call
+# site, and this line holds it inside this package, where the gap was. A ``cast(...)`` would
+# not: it is an unchecked escape hatch, accepted silently even when the types do not match.
+# ``_`` is the conventional throwaway — the annotation is the load-bearing part, not the name —
+# and the tuple poses both checks in one binding rather than two unused globals. Guarded by
+# ``TYPE_CHECKING`` so the construction never runs.
+if TYPE_CHECKING:
+    _: tuple[SandboxBackend, type[Sandbox]] = (
+        WslcSandboxBackend(WslcSandboxConfig()),
+        _WslcSandbox,
+    )

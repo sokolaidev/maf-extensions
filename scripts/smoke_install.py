@@ -96,7 +96,7 @@ def _smoke_maf_sandbox() -> str:
 
 
 def _smoke_maf_sandbox_acas() -> str:
-    from maf_sandbox import Isolation, meets_floor
+    from maf_sandbox import Capability, Isolation, meets_floor
     from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
 
     # Constructed, not called: this asserts the package imports with its real preview SDK
@@ -108,7 +108,23 @@ def _smoke_maf_sandbox_acas() -> str:
             f"FAIL: acas backend declares {backend.isolation!r}, "
             "which does not meet the default microvm floor"
         )
-    return "backend constructs and meets the default minimum-isolation floor"
+    # HOST_TOOLS specifically, because a sample resolves this package from PyPI rather than from
+    # the workspace: a codeact sample wiring a host-tool registry against this backend is refused
+    # at attach unless the *published* wheel carries the declaration.
+    if backend.capabilities != frozenset(
+        {
+            Capability.EXEC,
+            Capability.FILES_IN,
+            Capability.FILES_OUT,
+            Capability.FILES_LIST,
+            Capability.HOST_TOOLS,
+        }
+    ):
+        raise SystemExit(f"FAIL: acas backend declares {sorted(backend.capabilities)!r}")
+    return (
+        "backend constructs, meets the default minimum-isolation floor, and declares the pull "
+        "surface and HOST_TOOLS"
+    )
 
 
 def _smoke_maf_sandbox_bicep() -> str:
@@ -353,7 +369,7 @@ def _smoke_maf_sandbox_docker() -> str:
     if backend.isolation != Isolation.CONTAINER:
         raise SystemExit(f"FAIL: docker backend declares {backend.isolation!r}, expected container")
     if backend.capabilities != frozenset(
-        {Capability.EXEC, Capability.FILES_IN, Capability.FILES_OUT}
+        {Capability.EXEC, Capability.FILES_IN, Capability.FILES_OUT, Capability.HOST_TOOLS}
     ):
         raise SystemExit(f"FAIL: docker backend declares {sorted(backend.capabilities)!r}")
     allowlisting = DockerSandboxBackend(DockerSandboxConfig(egress_proxy_image="x:1"))
@@ -363,7 +379,10 @@ def _smoke_maf_sandbox_docker() -> str:
     dockerfile = proxy_build_context() / "Dockerfile"
     if not dockerfile.is_file():
         raise SystemExit(f"FAIL: the proxy build context is missing its Dockerfile ({dockerfile})")
-    return "backend constructs, declares FILES_OUT and its egress, and ships the proxy recipe"
+    return (
+        "backend constructs, declares FILES_OUT, HOST_TOOLS and its egress, and ships the "
+        "proxy recipe"
+    )
 
 
 _SMOKES = {

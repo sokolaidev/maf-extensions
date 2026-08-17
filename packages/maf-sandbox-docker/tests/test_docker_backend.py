@@ -32,7 +32,7 @@ from maf_sandbox import (
     SandboxTransferCapExceeded,
 )
 
-from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
+from maf_sandbox_docker import BACKEND_NAME, DockerSandboxBackend, DockerSandboxConfig
 from maf_sandbox_docker._backend import (
     _container_name,
     _DockerResult,
@@ -228,15 +228,39 @@ class TestBackendIdentity:
         config = DockerSandboxConfig(egress_proxy_image="proxy:local")
         assert DockerSandboxBackend(config).egress == Egress.ALLOWLIST
 
-    def test_declares_exec_files_in_and_files_out(self):
+    def test_declares_exec_files_in_files_out_and_host_tools(self):
         caps = DockerSandboxBackend(DockerSandboxConfig()).capabilities
-        assert caps == frozenset({Capability.EXEC, Capability.FILES_IN, Capability.FILES_OUT})
+        assert caps == frozenset(
+            {
+                Capability.EXEC,
+                Capability.FILES_IN,
+                Capability.FILES_OUT,
+                Capability.HOST_TOOLS,
+            }
+        )
 
     def test_does_not_declare_files_list(self):
         assert Capability.FILES_LIST not in DockerSandboxBackend(DockerSandboxConfig()).capabilities
 
     def test_is_named_docker(self):
+        # The literal, on purpose. `name == BACKEND_NAME` below pins them to each other and
+        # would stay green if both moved together — and both moving together is precisely the
+        # change that silently breaks every host with `selected="docker"` in its configuration.
         assert DockerSandboxBackend(DockerSandboxConfig()).name == "docker"
+
+    def test_the_exported_constant_is_the_name_the_backend_answers_to(self):
+        """#411: the value exists without building a backend, and cannot drift from it."""
+        assert BACKEND_NAME == DockerSandboxBackend(DockerSandboxConfig()).name
+
+    def test_selecting_by_the_constant_resolves_to_this_backend(self):
+        """What the constant is for, exercised rather than asserted.
+
+        `selected=` is a string match against `.name`, so this is the only test that would fail
+        if the constant were right and the property were reading something else.
+        """
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+        router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER, selected=BACKEND_NAME)
+        assert router.backend is backend
 
     def test_declares_transfer_limits(self):
         limits = DockerSandboxBackend(DockerSandboxConfig()).limits
@@ -267,6 +291,31 @@ class TestRouterFloor:
         spec = SandboxSpec(kind="k", requires=frozenset({Capability.EXEC, Capability.FILES_LIST}))
         with pytest.raises(SandboxCapabilityNotSupported):
             router.ensure_can_serve(spec)
+
+    def test_a_codeact_style_spec_wiring_host_tools_is_admitted(self):
+        """The whole point of declaring it: the spec a wired registry produces now attaches.
+
+        Asserted through `ensure_can_serve` rather than by re-reading the frozenset, because
+        the set agreeing with itself is not the property that changed — a spec being admitted
+        is. This is the exact `requires` `codeact_sandbox_spec` builds for a non-empty
+        registry, so it fails if either side of that pair drifts.
+        """
+        router = SandboxRouter(
+            [DockerSandboxBackend(DockerSandboxConfig())], min_isolation=Isolation.CONTAINER
+        )
+        spec = SandboxSpec(
+            kind="codeact",
+            requires=frozenset(
+                {
+                    Capability.EXEC,
+                    Capability.FILES_IN,
+                    Capability.FILES_OUT,
+                    Capability.HOST_TOOLS,
+                }
+            ),
+        )
+
+        router.ensure_can_serve(spec)
 
     def test_a_spec_requiring_files_out_is_admitted(self):
         router = SandboxRouter(
@@ -1003,6 +1052,8 @@ _ALLOW_SPEC = SandboxSpec(
     egress_allow=("mcr.microsoft.com", "*.data.mcr.microsoft.com"),
 )
 _ALLOW_ID = "allow:" + ",".join(sorted(_ALLOW_SPEC.egress_allow))
+#: What `os.environ.get("MAF_EGRESS_PROXY_IMAGE", "")` hands the constructor when nothing is set.
+_EMPTY_PROXY_CONFIG = DockerSandboxConfig(egress_proxy_image="")
 _AL = _container_name(_KEY, _ALLOW_SPEC.kind, _ALLOW_ID)
 _AL_NET = _network_name(_AL)
 _AL_PROXY = _proxy_name(_AL)
@@ -1072,6 +1123,36 @@ class TestAllowlistTopology:
         assert fake.matching("network", "create") == []
         run = fake.only("run")
         assert run.args[run.args.index("--network") + 1] == "none"
+
+
+class TestAnEmptyProxyImageIsNoProxyConfigured:
+    """`""` is what an unset environment variable becomes, and it used to split the two reads.
+
+    The declaration was truthiness and the behaviour was `is None`, so this one value declared
+    `CLOSED` and then ran `docker run -d --name … ""` anyway, which the engine rejects as an
+    invalid reference — a hard failure at every acquire of a spec that allows anything, naming
+    the proxy rather than the configuration (#407).
+
+    The two halves are asserted together on purpose. Either alone stays green while the bug is
+    present: the declaration was already `CLOSED`, and a closed spec already got `--network
+    none`. What broke was the pair — the backend doing what it declared, for a spec that asked
+    for hosts it had said it would not open.
+    """
+
+    def test_the_declaration_is_closed(self):
+        assert _backend_with(config=_EMPTY_PROXY_CONFIG)[0].egress is Egress.CLOSED
+
+    def test_a_spec_with_an_allowlist_is_closed_rather_than_failing(self):
+        backend, fake = _backend_with(_machine(), config=_EMPTY_PROXY_CONFIG)
+
+        sandbox = asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))  # used to raise here
+
+        assert fake.matching("network", "create") == []
+        run = fake.only("run")  # the workload, and nothing that could be a proxy
+        assert run.args[run.args.index("--network") + 1] == "none"
+        # The historical name, not an `allow:`-qualified one: no allowlist is being kept, so a
+        # sandbox created before this configuration existed is the same sandbox.
+        assert sandbox.container_name == _NAME
 
 
 class TestAllowlistReuse:

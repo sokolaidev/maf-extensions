@@ -15,6 +15,7 @@ import pytest
 from maf_sandbox import Capability, Egress, Isolation, SandboxBackend, SandboxKey, SandboxRouter
 
 from maf_sandbox_acas import (
+    BACKEND_NAME,
     AcasEntryPayloadIncomplete,
     AcasSandboxBackend,
     AcasSandboxConfig,
@@ -138,7 +139,7 @@ class TestBackendIdentity:
         """A workload's tool attaches because of this; `TestEgressPolicy` pins that it is true."""
         assert AcasSandboxBackend(_config()).egress == Egress.ALLOWLIST
 
-    def test_declares_exec_files_in_and_the_whole_pull_surface(self):
+    def test_declares_exec_files_in_the_whole_pull_surface_and_host_tools(self):
         """Declares only what it implements today — no ATTACHED_IDENTITY and no SNAPSHOT."""
         assert AcasSandboxBackend(_config()).capabilities == frozenset(
             {
@@ -146,6 +147,7 @@ class TestBackendIdentity:
                 Capability.FILES_IN,
                 Capability.FILES_OUT,
                 Capability.FILES_LIST,
+                Capability.HOST_TOOLS,
             }
         )
 
@@ -172,6 +174,31 @@ class TestBackendIdentity:
             )
         )  # does not raise
 
+    def test_a_codeact_style_spec_wiring_host_tools_is_admitted(self):
+        """The whole point of declaring it: the spec a wired registry produces now attaches.
+
+        Asserted through `ensure_can_serve` rather than by re-reading the frozenset, because the
+        set agreeing with itself is not the property that changed — a spec being admitted is.
+        This is the exact `requires` `codeact_sandbox_spec` builds for a non-empty registry, so
+        it fails if either side of that pair drifts.
+        """
+        from maf_sandbox import SandboxSpec
+
+        router = SandboxRouter([AcasSandboxBackend(_config())])
+        spec = SandboxSpec(
+            kind="codeact",
+            requires=frozenset(
+                {
+                    Capability.EXEC,
+                    Capability.FILES_IN,
+                    Capability.FILES_OUT,
+                    Capability.HOST_TOOLS,
+                }
+            ),
+        )
+
+        router.ensure_can_serve(spec)  # does not raise
+
     def test_a_spec_asking_above_the_transfer_ceiling_is_refused(self):
         from maf_sandbox import SandboxSpec, SandboxTransferLimitsNotPermitted, TransferLimits
 
@@ -194,7 +221,28 @@ class TestBackendIdentity:
         assert SandboxRouter([AcasSandboxBackend(_config())]).enabled
 
     def test_is_named_aca(self):
+        # The literal, on purpose. `name == BACKEND_NAME` below pins them to each other and
+        # would stay green if both moved together — and both moving together is precisely the
+        # change that silently breaks every host with `selected="acas"` in its configuration.
         assert AcasSandboxBackend(_config()).name == "acas"
+
+    def test_the_exported_constant_is_the_name_the_backend_answers_to(self):
+        """#411: the value exists without building a backend, and cannot drift from it.
+
+        Worth more here than for the other two: constructing this backend means a
+        subscription, a credential and a resource group, which is a great deal of setup to
+        reach a fixed string a host needs while it is still reading configuration.
+        """
+        assert BACKEND_NAME == AcasSandboxBackend(_config()).name
+
+    def test_selecting_by_the_constant_resolves_to_this_backend(self):
+        """What the constant is for, exercised rather than asserted.
+
+        `selected=` is a string match against `.name`, so this is the only test that would fail
+        if the constant were right and the property were reading something else.
+        """
+        backend = AcasSandboxBackend(_config())
+        assert SandboxRouter([backend], selected=BACKEND_NAME).backend is backend
 
 
 # ---------------------------------------------------------------------------

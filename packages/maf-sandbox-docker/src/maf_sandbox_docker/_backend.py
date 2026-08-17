@@ -52,7 +52,25 @@ from ._proxy import build_context
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["DockerSandboxBackend"]
+__all__ = ["BACKEND_NAME", "DockerSandboxBackend"]
+
+#: The name :attr:`DockerSandboxBackend.name` answers to, and the value
+#: :class:`~maf_sandbox.SandboxRouter`'s ``selected=`` matches on.
+#:
+#: Public because a host choosing a backend from its own configuration needs the value before
+#: it has a backend to read it off, and building one to learn a constant is a lot of machinery
+#: for a fixed string (#411). The property below returns this, so the two cannot disagree.
+#:
+#: Not a knob. Unlike the in-process backend in ``maf_sandbox.testing``, which takes ``name=``
+#: so a host can register several apart, this one is fixed: ``"docker"`` is the word the socket
+#: contract is called, and a host reading ``selected="docker"`` should get plain containers.
+#:
+#: Import it qualified or aliased when more than one backend package is in play. Every backend
+#: exports this same symbol, so two `from … import BACKEND_NAME` lines shadow each other and
+#: the second wins silently. Either `import maf_sandbox_docker` and reach it as
+#: `maf_sandbox_docker.BACKEND_NAME`, or alias at the import:
+#: `from maf_sandbox_docker import BACKEND_NAME as DOCKER_BACKEND`.
+BACKEND_NAME = "docker"
 
 # Written at create and read back on purge, so the engine is the durable record, not this
 # process. The scheme matches wslc's so the label vocabulary is one thing across backends.
@@ -414,7 +432,7 @@ class DockerSandboxBackend:
 
     @property
     def name(self) -> str:
-        return "docker"
+        return BACKEND_NAME
 
     @property
     def isolation(self) -> Isolation:
@@ -436,7 +454,27 @@ class DockerSandboxBackend:
     def capabilities(self) -> frozenset[Capability]:
         # FILES_OUT from day one — the pull surface is native (stat from the first tar header,
         # read from the same stream). Never FILES_LIST: no engine-level enumeration primitive.
-        return frozenset({Capability.EXEC, Capability.FILES_IN, Capability.FILES_OUT})
+        #
+        # HOST_TOOLS is the one member with no method behind it, so what it asserts here is
+        # narrower than the others and worth stating: `exec` **detaches**. A process started by
+        # one call outlives it and is observable from the next, because the container is the
+        # sandbox and it stays up between calls — which is what `dispatch_over_exec` is built
+        # on, its launcher returning at once and the exit-code file being the run's only
+        # witness. `test_docker_e2e.py` measures it rather than assuming it.
+        #
+        # It is *not* a claim about the image. The shipped launcher wants `sh`, `nohup`,
+        # `printf` and `mv`, and a kind wants whatever interpreter it names — codeact wants
+        # `python3` — none of which this backend chooses, since `spec.image` does. That gap is
+        # #111's axis, and it is the same gap `EXEC` already has: a kind execing `python3`
+        # against a distroless image fails inside the sandbox today.
+        return frozenset(
+            {
+                Capability.EXEC,
+                Capability.FILES_IN,
+                Capability.FILES_OUT,
+                Capability.HOST_TOOLS,
+            }
+        )
 
     @property
     def limits(self) -> SandboxLimits:
@@ -714,8 +752,13 @@ class DockerSandboxBackend:
 
         A proxy image plus a non-empty allowlist means allowlisted egress; either missing means
         closed, and closed is the empty string so a closed sandbox keeps its historical name.
+
+        "Missing" is truthiness, matching what `egress` declares off the same field. It used to
+        be `is None` here, which made `egress_proxy_image=""` declare CLOSED and then try to
+        `docker run` the empty string as an image — the one value where the declaration and the
+        behaviour disagreed, and the one an unset environment variable produces (#407).
         """
-        if self._config.egress_proxy_image is None or not spec.egress_allow:
+        if not self._config.egress_proxy_image or not spec.egress_allow:
             return ""
         return "allow:" + ",".join(sorted(spec.egress_allow))
 
@@ -841,6 +884,8 @@ class DockerSandboxBackend:
         readiness line — so a stale, half-connected or wrong-allowlist proxy is never mistaken
         for a working one.
         """
+        # Sound rather than nearly sound: this is only reached through a truthy `_egress_id`,
+        # which reads the same field the same way (#407).
         proxy_image = cast("str", self._config.egress_proxy_image)
         proxy = _proxy_name(name)
         await self._remove(proxy)

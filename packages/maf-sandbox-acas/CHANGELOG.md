@@ -4,6 +4,19 @@ All notable changes to `maf-sandbox-acas` are documented here. The format follow
 
 Releases up to and including `0.2.3` were published as **`maf-sandbox-aca`**, and the entries below name it as it was — their tags and compare links point at real history and are left as they were written. `maf-sandbox-aca` is not maintained past `0.2.3`; PyPI names cannot be reused, so the rename is a new distribution rather than a continuation of that one.
 
+## [0.9.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.8.3...maf-sandbox-acas-v0.9.0) (2026-08-17)
+
+
+### Features
+
+* **acas:** declare HOST_TOOLS, so a kind wiring a host-tool registry attaches here too ([#418](https://github.com/sokolaidev/maf-extensions/issues/418)) ([b8b90e0](https://github.com/sokolaidev/maf-extensions/commit/b8b90e0e09a16afb25d4da13d8038c0b7d7b2338))
+* **backends:** each backend exports the name `selected=` matches on ([#414](https://github.com/sokolaidev/maf-extensions/issues/414)) ([672c9b2](https://github.com/sokolaidev/maf-extensions/commit/672c9b2fcdf7b94fd0c37d7c225f66b909a259a1))
+
+
+### Bug Fixes
+
+* require maf-sandbox 0.16.0 in the dependents and 0.16 in the samples, and admit 0.17 ([#386](https://github.com/sokolaidev/maf-extensions/issues/386)) ([7133401](https://github.com/sokolaidev/maf-extensions/commit/713340192dbc710c9c18f498a6615fc401332682))
+
 ## [0.8.3](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.8.2...maf-sandbox-acas-v0.8.3) (2026-08-16)
 
 

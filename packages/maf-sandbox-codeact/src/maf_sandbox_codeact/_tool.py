@@ -8,16 +8,19 @@ talks to a :class:`~maf_sandbox.SandboxRouter` and gets back ``write_file``, ``e
 pull surface, so the same tool runs unchanged against ACA Sandboxes, a Docker container or an
 in-process fake.
 
-Four channels, and the host chooses which of them exist.  Stdout is always there.  A
+Channels the host chooses among, and stdout is always there.  A
 **file store** adds a ``files`` parameter, so a program can transform files that already
 exist rather than only data the model wrote into its own source.  An **output sink** plus a
 :class:`CodeactOutputs` mode adds a way for files the program produces to reach host state.
 A **host-tool registry** adds functions the program may call out to, served over
 :func:`~maf_sandbox.dispatch_over_exec` — and no shipped backend declares
 :data:`~maf_sandbox.Capability.HOST_TOOLS`, so that wiring is *refused* until one does,
-where the tool would have been built rather than at the first call.
-Wire none and this is the stdout-only kind it has always been, with nothing dispatchable
-from inside: no network, no host functions, and nothing leaving but what the program printed.
+where the tool would have been built rather than at the first call.  An **egress allowlist**
+opens named hosts to the program; empty by default, so the network stays closed unless a host
+opens it.
+Wire none of them and this is the stdout-only kind it has always been, with nothing
+dispatchable from inside: no network, no host functions, and nothing leaving but what the
+program printed.
 """
 
 from __future__ import annotations
@@ -84,6 +87,11 @@ _WORK_DIR = "/maf-sandbox/work"
 #: One fixed name inside each run's own directory.
 _PROGRAM_FILENAME = "program.py"
 
+#: What this kind needs to reach for ``execute_code`` to work at all — nothing, because the
+#: program computes and no part of this kind resolves a module or installs a package. An answer
+#: rather than an omission; :func:`codeact_sandbox_spec` has why it is fixed here.
+_KIND_EGRESS: tuple[str, ...] = ()
+
 #: Where a ``MANIFEST``-mode program says what it produced.
 _MANIFEST_FILENAME = "outputs.json"
 _MANIFEST_OUTPUTS_KEY = "outputs"
@@ -143,12 +151,28 @@ def codeact_sandbox_spec(
     files_in: TransferLimits = DEFAULT_TRANSFER_LIMITS,
     files_out: TransferLimits = _DEFAULT_FILES_OUT,
     host_tools: HostToolRegistry | None = None,
+    egress_allow: Sequence[str] = (),
 ) -> SandboxSpec:
     """The sandbox a CodeAct program needs, in backend-neutral terms.
 
-    ``egress_allow=()`` and no ``min_isolation`` are both deliberate: the program computes
-    rather than fetches, and this kind runs only what the model wrote, so the host's floor
-    governs.  An output mode other than :data:`CodeactOutputs.NONE` grows ``requires`` by
+    No ``min_isolation`` is deliberate: this kind runs only what the model wrote, so the
+    host's floor governs.
+
+    ``egress_allow`` is the **deployment's** half of the allowlist, and it is empty by default,
+    so a caller that says nothing gets a sandbox with no network — what this kind has always
+    been.  The other half is :data:`_KIND_EGRESS`, what the kind needs to function: empty,
+    because nothing in ``execute_code`` fetches, and fixed here rather than configurable
+    because a deployment able to widen what the *kind itself* requires could undo the
+    containment the design rests on.  The spec carries the **union**, because that is what the router matches against
+    the backend and what decides whether this tool is declared as carrying something out.
+
+    Naming a host here is a real widening of a sandbox running model-written code: every
+    allowed host is a way out for anything the program can read, including files shared into
+    the run and whatever a host tool returned.  It exists because a deployment's endpoints —
+    a package index, an internal artifact store — are not knowable to a published kind, not
+    because reaching them is cheap.
+
+    An output mode other than :data:`CodeactOutputs.NONE` grows ``requires`` by
     :data:`~maf_sandbox.Capability.FILES_OUT` and sets ``outputs_named_at_call_time``, which is
     what keeps the attached tool honest about landing artifacts it cannot yet name.
 
@@ -156,6 +180,11 @@ def codeact_sandbox_spec(
     and :data:`~maf_sandbox.Capability.FILES_OUT` together, and carries the registry's
     ``identities`` so that a router denying one refuses this spec at attach.  Reading a
     registry **seals** it, so ask for the spec once everything is registered.
+
+    Raises:
+        ValueError: when an ``egress_allow`` entry is not a single hostname — blank, or holding
+            whitespace or a comma.
+        TypeError: when ``egress_allow`` is a bare ``str`` rather than a sequence of hostnames.
     """
     return _codeact_spec(
         image,
@@ -164,6 +193,7 @@ def codeact_sandbox_spec(
         files_in=files_in,
         files_out=files_out,
         dispatch=_dispatch_surface(host_tools),
+        egress_allow=egress_allow,
     )
 
 
@@ -182,6 +212,7 @@ def make_codeact_tools(
     exec_timeout_seconds: int = 120,
     files_in: TransferLimits = DEFAULT_TRANSFER_LIMITS,
     files_out: TransferLimits = _DEFAULT_FILES_OUT,
+    egress_allow: Sequence[str] = (),
 ) -> list[Any]:
     """Return the ``[execute_code]`` tool list, or ``[]`` when no sandbox is available.
 
@@ -202,8 +233,8 @@ def make_codeact_tools(
         outputs: How a program's output files are named. See :class:`CodeactOutputs`.
         outbound_max_confidentiality: The host's cap for tools that carry something out, in the
             host's own vocabulary. Off by default and written only when something can actually
-            leave — with egress closed, that is an artifact landing in the sink, or a host tool
-            that carries something out.
+            leave: an artifact landing in the sink, a host tool that carries something out, or
+            a non-empty ``egress_allow``.
         host_tools: What a program may dispatch to, or ``None`` for no dispatch surface at
             all. A non-empty registry widens the spec (see :func:`codeact_sandbox_spec`), and a
             :data:`~maf_sandbox.Identity.USER` tool in it gates every call on approval. A
@@ -225,17 +256,25 @@ def make_codeact_tools(
             applied would be worse than one that declared none.
         files_out: The collection's caps. ``max_files`` is what bounds how many artifacts one
             call may declare, so it is a property of the workload rather than of the guest.
+        egress_allow: The deployment's half of the network allowlist — hosts a published kind
+            cannot know. Empty by default, so the sandbox has no network unless a host opens it;
+            see :func:`codeact_sandbox_spec` for how it joins the kind's own half and why that
+            half is fixed.
 
     Raises:
         ValueError: when a sink is supplied with nothing to send down it — an output mode of
-            :data:`CodeactOutputs.NONE`.
+            :data:`CodeactOutputs.NONE` — or when an ``egress_allow`` entry is not a single
+            hostname (blank, or holding whitespace or a comma), where a sandbox is configured.
+        TypeError: when ``egress_allow`` is a bare ``str`` rather than a sequence of hostnames
+            (which would otherwise be read one character at a time), again only where a sandbox
+            is configured.
         ~maf_sandbox.SandboxOutputSinkRequired: when an output mode is asked for and no sink
             was given. Raised by ``sandboxed_tool`` rather than here, and a
             :class:`RuntimeError` rather than a :class:`ValueError`, so a caller catching one
             of the two does not catch the other.
 
-    Both wait for the attach gate: a host with no sandbox configured gets ``[]``, never an
-    exception.
+    Every one of these waits for the attach gate: a host with no sandbox configured gets
+    ``[]``, never an exception.
     """
     configured = router is not None and router.enabled
     dispatch: _Dispatch | None = None
@@ -311,8 +350,16 @@ def make_codeact_tools(
     # Sealed only on a path that attaches something: an unconfigured host is left as ungrounded
     # as it was, and a registry it goes on to widen has nothing derived from it to contradict.
     surface = _dispatch_surface(host_tools) if configured else None
+    # The ternary is the point, not the call: `_effective_egress` validates anyway, so what this
+    # adds is that an unconfigured host's malformed allowlist never reaches it.
     spec = _codeact_spec(
-        image, image_id, outputs=outputs, files_in=files_in, files_out=files_out, dispatch=surface
+        image,
+        image_id,
+        outputs=outputs,
+        files_in=files_in,
+        files_out=files_out,
+        dispatch=surface,
+        egress_allow=egress_allow if configured else (),
     )
     # A single dispatch may exercise the user's delegated authority, and which one does is not
     # knowable before the program runs, so one such tool raises the whole surface.
@@ -350,6 +397,54 @@ def make_codeact_tools(
     )
 
 
+def _effective_egress(extra: Sequence[str]) -> tuple[str, ...]:
+    """The union of what this kind needs and what the deployment added, in that order.
+
+    The union is what everything downstream must read — the router matches it against the
+    backend, and ``sandbox_tool_declarations`` decides from it whether the tool carries
+    something out. Either half alone would understate the sandbox.
+
+    Duplicates are dropped rather than refused, within a list as well as across the two: two
+    callers naming the same host is agreement, not a mistake, and a repeated host is a second
+    rule that can drift from the first.
+    """
+    return tuple(dict.fromkeys((*_KIND_EGRESS, *_validated_hosts(extra))))
+
+
+def _validated_hosts(hosts: Sequence[str]) -> tuple[str, ...]:
+    """Refuse an allowlist that does not say what its author meant.
+
+    A bare ``str`` satisfies ``Sequence[str]``, so ``egress_allow="pypi.org"`` type-checks and
+    becomes seven single-character hosts — the real endpoint unreachable, with no refusal
+    anywhere and a confidentiality cap applied to a flow nobody opened.
+
+    Each entry is one hostname, so an entry that is blank, holds whitespace, or holds a comma is
+    refused rather than passed through: no hostname contains any of those, and each is a way for
+    a spec, the description the model reads, and a backend's allowlist to end up disagreeing
+    silently — a comma-joined ``"a,b"`` becomes one spec entry the wslc proxy expands back into
+    two, and a padded ``" a"`` reaches a backend as a rule that matches nothing. Refused, not
+    stripped, for the reason the router gives: a value that does not say what its author meant
+    is an error, not something to quietly rewrite.
+    """
+    if isinstance(hosts, str):
+        raise TypeError(
+            f"egress_allow must be a sequence of hostnames, not a single string: {hosts!r} "
+            f"would be read one character at a time"
+        )
+    # Materialised once, after the str guard: a one-shot iterable would otherwise be spent by
+    # the loop and come back empty from the return, silently dropping the whole allowlist.
+    hosts = tuple(hosts)
+    for entry in hosts:
+        if not entry.strip():
+            raise ValueError(f"egress_allow entries must be non-empty hostnames, got {entry!r}")
+        if any(character.isspace() for character in entry) or "," in entry:
+            raise ValueError(
+                f"egress_allow entries are one hostname each, with no whitespace or commas: "
+                f"got {entry!r}"
+            )
+    return tuple(hosts)
+
+
 def _dispatch_surface(host_tools: HostToolRegistry | None) -> HostToolAggregate | None:
     """What a host's registry means for this kind, or ``None`` when nothing is dispatchable.
 
@@ -373,6 +468,7 @@ def _codeact_spec(
     files_in: TransferLimits,
     files_out: TransferLimits,
     dispatch: HostToolAggregate | None,
+    egress_allow: Sequence[str] = (),
 ) -> SandboxSpec:
     """:func:`codeact_sandbox_spec`, over a dispatch surface the caller has already derived."""
     collects = outputs is not CodeactOutputs.NONE
@@ -388,7 +484,7 @@ def _codeact_spec(
         kind=CODEACT_KIND,
         image=image,
         image_id=image_id,
-        egress_allow=(),
+        egress_allow=_effective_egress(egress_allow),
         work_dir=_WORK_DIR,
         requires=frozenset(requires),
         outputs_named_at_call_time=collects,
@@ -426,6 +522,18 @@ _DESCRIPTION_NO_NETWORK = """**no network access**, so it can compute
 #: would misstate as absent.
 _DESCRIPTION_NO_NETWORK_WITH_HOST_TOOLS = """**no network of its own**: it can compute, and
         reach beyond the sandbox only through the host tools listed below."""
+
+#: Said instead of either claim above once a host opens egress, because both of those state
+#: the network is absent and it is not. The hosts are named: a model that cannot tell what it
+#: may reach spends calls finding out, and a program can enumerate the allowlist by trying it
+#: in any case, so withholding the list costs the honest caller and not the dishonest one.
+_DESCRIPTION_ALLOWLISTED = """**network access to {hosts} and nothing else**, and only as far
+        as the environment allows — a fetch that fails is an answer, not something to work
+        around."""
+
+#: Both ways out at once, named together so neither reads as the only one.
+_DESCRIPTION_ALLOWLISTED_WITH_HOST_TOOLS = """**network access to {hosts} and nothing else**,
+        as far as the environment allows, and the host tools listed below."""
 
 _DESCRIPTION_FILES = """**To work on existing files, list them in ``files``.**  Each one is
         copied into the program's working directory under its own name, so a file listed as
@@ -491,12 +599,28 @@ _DESCRIPTION_RETURNS_SAVED = """  A run that saved files also names where each o
 
 
 def _tool_description(
-    *, takes_files: bool, outputs: CodeactOutputs, host_tool_names: frozenset[str] = frozenset()
+    *,
+    takes_files: bool,
+    outputs: CodeactOutputs,
+    host_tool_names: frozenset[str] = frozenset(),
+    egress_allow: Sequence[str] = (),
 ) -> str:
-    """The description the model reads, for the channels this host actually wired."""
-    network = (
-        _DESCRIPTION_NO_NETWORK_WITH_HOST_TOOLS if host_tool_names else _DESCRIPTION_NO_NETWORK
-    )
+    """The description the model reads, for the channels this host actually wired.
+
+    ``egress_allow`` is the spec's effective list, not the deployment's half: the model is told
+    what the sandbox can reach, and where that came from is not its concern.
+    """
+    if egress_allow:
+        hosts = ", ".join(f"``{host}``" for host in egress_allow)
+        network = (
+            _DESCRIPTION_ALLOWLISTED_WITH_HOST_TOOLS
+            if host_tool_names
+            else _DESCRIPTION_ALLOWLISTED
+        ).format(hosts=hosts)
+    else:
+        network = (
+            _DESCRIPTION_NO_NETWORK_WITH_HOST_TOOLS if host_tool_names else _DESCRIPTION_NO_NETWORK
+        )
     body = [_DESCRIPTION_HEAD.format(network=network)]
     if host_tool_names:
         names = ", ".join(f"``{name}``" for name in sorted(host_tool_names))
@@ -584,6 +708,10 @@ def _execute_code_tool(
         takes_files=takes_files,
         outputs=outputs,
         host_tool_names=dispatch.registry.names() if dispatch is not None else frozenset(),
+        # Off the attached spec, not off a parameter threaded down here: the spec carries the
+        # union the router matched, so what the model is told cannot drift from what the
+        # sandbox actually got.
+        egress_allow=session.spec.egress_allow,
     )
     return body
 

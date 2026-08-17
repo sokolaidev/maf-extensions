@@ -50,7 +50,12 @@ class DockerSandboxConfig:
     :func:`maf_sandbox_docker.proxy_build_context`); when set, a sandbox whose spec allows
     egress gets its own internal network and a dual-homed filtering proxy enforcing that
     allowlist by topology, while a spec that allows nothing still gets ``--network none``.
-    Left ``None``, the backend stays ``CLOSED`` and every container gets ``--network none``.
+    Left ``None`` — or ``""``, which is what an unset environment variable becomes — the backend
+    stays ``CLOSED`` and every container gets ``--network none``.  Both spellings of "no proxy
+    configured" behave identically, deliberately: a host writing
+    ``os.environ.get("MAF_EGRESS_PROXY_IMAGE", "")`` means the same thing as one writing ``None``,
+    and for a while it instead got a declaration of ``CLOSED`` and a failed ``docker run`` of the
+    empty string (#407).
 
     ``outbound_network`` is the network that gives the proxy its egress leg.  It exists because
     the default one is not called the same thing everywhere: ``"bridge"`` on Docker, ``"podman"``

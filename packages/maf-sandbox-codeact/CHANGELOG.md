@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.5.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.4.3...maf-sandbox-codeact-v0.5.0) (2026-08-17)
+
+
+### Features
+
+* **codeact:** a host can open named endpoints to a program, in two lists with different owners ([#420](https://github.com/sokolaidev/maf-extensions/issues/420)) ([d491728](https://github.com/sokolaidev/maf-extensions/commit/d491728ac260be20ff84aa5ab4518ee607ca14d0))
+* **codeact:** a host-tool registry the program can call out to, refused until a backend serves it ([#373](https://github.com/sokolaidev/maf-extensions/issues/373)) ([5e7a253](https://github.com/sokolaidev/maf-extensions/commit/5e7a253d75d8d9d3ec63e2844a900eee337a67d1))
+
+
+### Bug Fixes
+
+* **codeact:** a reserved-name refusal names the file it collides with, and whether this tool writes or reads it ([#401](https://github.com/sokolaidev/maf-extensions/issues/401)) ([86506ae](https://github.com/sokolaidev/maf-extensions/commit/86506ae2191798bc77ce4fcb74d28ea3bcb2700c))
+* require maf-sandbox 0.16.0 in the dependents and 0.16 in the samples, and admit 0.17 ([#386](https://github.com/sokolaidev/maf-extensions/issues/386)) ([7133401](https://github.com/sokolaidev/maf-extensions/commit/713340192dbc710c9c18f498a6615fc401332682))
+
 ## [0.4.3](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.4.2...maf-sandbox-codeact-v0.4.3) (2026-08-16)
 
 

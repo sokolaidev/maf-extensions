@@ -46,7 +46,23 @@ from ._images import qualify_image_reference, resolve_disk_image_id
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["AcasEntryPayloadIncomplete", "AcasSandboxBackend"]
+__all__ = ["BACKEND_NAME", "AcasEntryPayloadIncomplete", "AcasSandboxBackend"]
+
+#: The name :attr:`AcasSandboxBackend.name` answers to, and the value
+#: :class:`~maf_sandbox.SandboxRouter`'s ``selected=`` matches on.
+#:
+#: Public because a host choosing a backend from its own configuration needs the value before
+#: it has a backend to read it off, and building one to learn a constant is a lot of machinery
+#: for a fixed string (#411) — more here than anywhere else, since constructing this backend
+#: means a subscription, a credential and a resource group. The property below returns this,
+#: so the two cannot disagree.
+#:
+#: Import it qualified or aliased when more than one backend package is in play. Every backend
+#: exports this same symbol, so two `from … import BACKEND_NAME` lines shadow each other and
+#: the second wins silently. Either `import maf_sandbox_acas` and reach it as
+#: `maf_sandbox_acas.BACKEND_NAME`, or alias at the import:
+#: `from maf_sandbox_acas import BACKEND_NAME as ACAS_BACKEND`.
+BACKEND_NAME = "acas"
 
 
 class AcasEntryPayloadIncomplete(SandboxOutputError):
@@ -460,7 +476,7 @@ class AcasSandboxBackend:
 
     @property
     def name(self) -> str:
-        return "acas"
+        return BACKEND_NAME
 
     @property
     def isolation(self) -> Isolation:
@@ -476,12 +492,29 @@ class AcasSandboxBackend:
         # FILES_LIST as well as FILES_OUT, which is the split's own test — name the backend
         # that lacks it. Enumeration is native here and unavailable on the backends that
         # transport a named path only.
+        #
+        # HOST_TOOLS is the one member with no method behind it, so what it asserts here is
+        # narrower than the others and worth stating: `exec` **detaches**. A process started by
+        # one call outlives it and is observable from the next, because the sandbox is a microVM
+        # the group keeps between calls rather than a session torn down per dispatch — which is
+        # what `dispatch_over_exec` is built on, its launcher returning at once and the exit-code
+        # file being the run's only witness. This is the backend where that could not be taken on
+        # faith, since every call is an HTTP round trip to a remote control plane, so
+        # `test_acas_e2e.py` measures it against the service rather than against a reading of the
+        # SDK.
+        #
+        # It is *not* a claim about the image. The shipped launcher wants `sh`, `nohup`, `printf`
+        # and `mv`, and a kind wants whatever interpreter it names — codeact wants `python3` —
+        # none of which this backend chooses, since `spec.image` does. That gap is #111's axis,
+        # and it is the same gap `EXEC` already has: a kind execing `python3` against an image
+        # without Python fails inside the sandbox today.
         return frozenset(
             {
                 Capability.EXEC,
                 Capability.FILES_IN,
                 Capability.FILES_OUT,
                 Capability.FILES_LIST,
+                Capability.HOST_TOOLS,
             }
         )
 
