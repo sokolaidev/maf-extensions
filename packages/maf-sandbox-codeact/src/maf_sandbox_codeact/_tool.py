@@ -875,9 +875,7 @@ def _inside_a_reserved_file(name: str, reserved: Mapping[str, str], *, action: s
 
     Every shipped backend creates parent directories for a nested write, so
     ``program.py/data.csv`` would turn ``program.py`` into a directory and fail the write of the
-    program that follows.  The sentence names the reserved file rather than the nested spelling,
-    which nothing writes, and says *reserves* rather than *writes*: this tool writes
-    ``program.py``, but only reads ``outputs.json``.
+    program that follows.
 
     **Call it after the name validator.**  ``program.py/../x`` starts with the prefix and climbs
     straight back out, so this sentence would be false for it.

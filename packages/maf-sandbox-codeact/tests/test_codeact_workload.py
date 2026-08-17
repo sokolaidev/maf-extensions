@@ -1010,13 +1010,7 @@ class TestFilesIn:
     ):
         """Backends create parent directories for a nested write, so this would turn
         `program.py` into a directory and the source write that follows would fail on every
-        call — at any depth, which is why the rule is a prefix test and not a parent test.
-
-        Asserted whole, because every word of it carries: which of the two names is refused,
-        which is called reserved, and `reserves` rather than `writes` — the last being what
-        keeps the same sentence true of the manifest, which the guest writes and this tool
-        only reads.
-        """
+        call — at any depth, which is why the rule is a prefix test and not a parent test."""
         sandbox = _ScriptedSandbox()
         tool = _tool(_backend(sandbox), file_store=InMemoryStore({nested: "x"}))
 
@@ -1039,11 +1033,7 @@ class TestFilesIn:
         self, name: str, sentence: str, wrong: str
     ):
         """Two reasons apply and the order decides which one the model reads. A listing miss
-        invites a retry once the file is stored, which is a retry neither name can survive.
-
-        The other name's sentence is asserted absent because the two are one branch apart, and
-        a rule shared between them reads as plausible from either side.
-        """
+        invites a retry once the file is stored, which is a retry neither name can survive."""
         sandbox = _ScriptedSandbox()
         tool = _tool(_backend(sandbox), file_store=InMemoryStore({"data/sales.csv": "x"}))
 
@@ -1800,7 +1790,6 @@ class TestManifestOutputs:
             tool, sandbox, {_MANIFEST_FILENAME: f'{{"outputs": [{{"path": "{nested}"}}]}}'.encode()}
         )
         assert f"Error: {nested!r} cannot be saved" in out, out
-        # `reserves`, not `writes`: the guest writes the manifest and this tool only reads it.
         assert f"{_MANIFEST_FILENAME!r} is a file name this tool reserves" in out, out
         assert "a file of that name" not in out, out
         assert "nothing can live inside it" in out, out
@@ -2270,10 +2259,9 @@ class TestOnlyAnAttachedToolSealsTheRegistry:
         assert registry.names() == frozenset({"_round_half_up", "_exchange_rate"})
 
 
-#: Every name the transport writes into a dispatching run, plus one nested beneath each of the
-#: two that are files — the nested rule reads the same set as the exact one, so both have to
-#: fall silent here. One list for both directions: two lists drift, and the half that stops
-#: being checked is the half nobody looks at.
+#: Every name the transport writes into a dispatching run, and one nested beneath each of the
+#: two that are files: the nested rule reads the same per-mode set as the exact one, so both
+#: have to fall silent for these.
 _TRANSPORT_NAMES = [
     SHIM_MODULE,
     f"{SHIM_MODULE.removesuffix('.py')}/__init__.py",
