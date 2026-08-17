@@ -101,6 +101,19 @@ jobs:
         # nothing and suppresses inline instead — pyproject.toml says why (#334).
         run: uv run pyright
 
+      - name: Markdown code blocks (report-only)
+        # Lints the ```python blocks in README/packages/samples/RELEASING against the installed
+        # maf_sandbox* packages — an import the package no longer exports, an attribute a class
+        # no longer carries. Wiring-only snippets that import no maf_sandbox* module are skipped,
+        # so undefined router/context and top-level await are tolerated. Report-only for now
+        # (continue-on-error): flip the gate on once it has stayed green across a release or two
+        # (#289). Each block is its own pyright run, so this costs one cold start per importing
+        # block; the venv is already synced above and pyright is already a dev dep.
+        continue-on-error: true
+        run: |
+          uv run python scripts/check_md_code_blocks.py \
+            README.md 'packages/*/README.md' 'samples/**/*.md' RELEASING.md
+
       - name: Build + metadata check
         run: |
           uv build --package maf-sandbox
