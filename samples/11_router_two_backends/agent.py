@@ -19,6 +19,7 @@ beside the in-process backend, and what #328 would change.
 from __future__ import annotations
 
 import asyncio
+import os
 
 from maf_sandbox import (
     DEFAULT_CAPABILITIES,
@@ -31,7 +32,11 @@ from maf_sandbox import (
     SandboxSpec,
 )
 from maf_sandbox.testing import InProcessSandboxBackend
-from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
+from maf_sandbox_docker import (
+    DockerSandboxBackend,
+    DockerSandboxConfig,
+    proxy_build_context,
+)
 
 #: A tiny image, because nothing here compiles anything — the point is which backend runs the
 #: command, not what the command is.
@@ -45,6 +50,10 @@ KEY = SandboxKey(scope="samples", thread_id="11-two-backends", agent_dir="operat
 #: resolves to, not the whole list, and refuses at construction — `NONE` is the bottom
 #: rung, so either of these clears it.
 FLOOR = Isolation.NONE
+
+#: A built egress proxy image, or empty. Act 4 needs one to enforce an allowlist with and says
+#: how to build it when it is missing, so the rest of the sample still runs without it.
+PROXY_IMAGE = os.environ.get("MAF_EGRESS_PROXY_IMAGE", "")
 
 
 def backends() -> tuple[InProcessSandboxBackend, DockerSandboxBackend]:
@@ -123,13 +132,92 @@ def act_two_the_spec_cannot_pick() -> None:
     print("  the assumption is that something stronger quietly took over.\n")
 
 
-async def act_three_disposal_reaches_everyone() -> tuple[int, int]:
+def act_three_the_other_axis() -> None:
+    """Egress, and why confining *more* than a spec asked is allowed while less is refused.
+
+    The isolation axis above refuses in one direction only, and so does this one — but the
+    direction is the interesting part, and no other sample shows it. A backend that cannot
+    confine as *precisely* as the spec asked still serves, because denying a host the workload
+    wanted makes the workload fail at the fetch, loudly. A backend that cannot confine *at all*
+    is refused, because silently widening what a workload reaches has no such symptom.
+    """
+    print("== 3. The other axis: what a backend can confine ==\n")
+
+    closed = DockerSandboxBackend(DockerSandboxConfig())
+    allowlisting = DockerSandboxBackend(DockerSandboxConfig(egress_proxy_image=PROXY_IMAGE or "x"))
+    print(f"  DockerSandboxConfig()                        -> {closed.egress}")
+    print(f"  DockerSandboxConfig(egress_proxy_image=...)   -> {allowlisting.egress}")
+    print("  Same backend class. The declaration is a fact about the deployment's wiring,")
+    print("  not about the workload, which is why it is read off the backend and not the spec.\n")
+
+    wants_a_host = SandboxSpec(kind="operator", image=IMAGE, egress_allow=("mcr.microsoft.com",))
+    router = SandboxRouter([closed], min_isolation=FLOOR)
+    # Served, not refused — and the router logs a warning naming the hosts that will be
+    # unreachable. Printed here because a warning a reader never sees is the whole hazard.
+    router.ensure_can_serve(wants_a_host)
+    print(f"  A spec allowing {wants_a_host.egress_allow[0]!r} on a {closed.egress} backend:")
+    print("    served. The allowlist is honoured by denying everything, which is more")
+    print("    confinement than was asked for. The router warns; the workload will report")
+    print("    what it could not fetch.\n")
+
+    print("  The refused direction needs a backend declaring `unrestricted`, and none of the")
+    print("  three shipped ones does — every backend here can at least deny everything. That")
+    print("  asymmetry is the design: `Egress`'s own docstring is where it is written down.\n")
+
+
+async def act_four_an_allowlist_that_is_enforced() -> tuple[str, str] | None:
+    """Reach one host and fail at another, from inside the same sandbox.
+
+    Returns the two HTTP statuses so the footer reports what happened rather than what this
+    file hoped for, or ``None`` when there is no proxy image to enforce anything with.
+    """
+    print("== 4. An allowlist, enforced ==\n")
+
+    if not PROXY_IMAGE:
+        print("  Skipped: set MAF_EGRESS_PROXY_IMAGE to a built proxy image. Build it from")
+        print("  the installed package — the recipe ships with it rather than as an image")
+        print("  you have to trust:\n")
+        print(f"    docker build -t maf-egress-proxy:local {proxy_build_context()}")
+        print("    MAF_EGRESS_PROXY_IMAGE=maf-egress-proxy:local uv run agent.py\n")
+        return None
+
+    backend = DockerSandboxBackend(DockerSandboxConfig(egress_proxy_image=PROXY_IMAGE))
+    spec = SandboxSpec(kind="operator", image=IMAGE, egress_allow=("mcr.microsoft.com",))
+    router = SandboxRouter([backend], min_isolation=FLOOR)
+
+    async def status(sandbox, url: str) -> str:
+        result = await sandbox.exec(
+            ["sh", "-c", f"curl -s -o /dev/null -w '%{{http_code}}' --max-time 25 {url}"],
+            working_directory=spec.work_dir,
+            timeout=45,
+        )
+        return result.stdout.strip()
+
+    try:
+        sandbox = await router.acquire(KEY, spec)
+        # The first write creates the working directory `exec -w` needs, as in act 5.
+        await sandbox.write_file(f"{spec.work_dir}/.keep", "")
+        allowed = await status(sandbox, "https://mcr.microsoft.com/v2/")
+        denied = await status(sandbox, "https://pypi.org/simple/")
+    finally:
+        await router.dispose_scope(KEY.scope, KEY.thread_id)
+
+    print(f"  {spec.egress_allow[0]:<20} (allowed) -> HTTP {allowed}")
+    print(f"  {'pypi.org':<20} (not named) -> HTTP {denied}")
+    print("  `000` is curl reporting no connection at all: the proxy refused the tunnel.")
+    print("  Nothing in the container was configured to obey the allowlist — the container")
+    print("  has no route out except the proxy, so the topology enforces it rather than the")
+    print("  HTTP_PROXY variables, which only tell ordinary clients where to look.\n")
+    return allowed, denied
+
+
+async def act_five_disposal_reaches_everyone() -> tuple[int, int]:
     """The one place holding more than one backend is live at run time.
 
     Returns what it observed — sandboxes disposed, and how many backends were registered — so
     the footer reports measurements rather than the numbers this file expects.
     """
-    print("== 3. Disposal goes to every registered backend ==\n")
+    print("== 5. Disposal goes to every registered backend ==\n")
 
     local, container = backends()
     registered = [local, container]
@@ -163,12 +251,20 @@ async def act_three_disposal_reaches_everyone() -> tuple[int, int]:
 
 
 async def main() -> int:
-    """Three acts. Both counts in the footer are read back, not written down."""
+    """Five acts. Every number in the footer is read back, not written down."""
     act_one_the_switch()
     act_two_the_spec_cannot_pick()
-    disposed, registered = await act_three_disposal_reaches_everyone()
+    act_three_the_other_axis()
+    reached = await act_four_an_allowlist_that_is_enforced()
+    disposed, registered = await act_five_disposal_reaches_everyone()
 
-    print(f"Completed 3 of 3 acts. Disposed {disposed} sandbox(es) across {registered} backends.")
+    ran = 5 if reached else 4
+    print(
+        f"Completed {ran} of 5 acts. Disposed {disposed} sandbox(es) across {registered} backends."
+    )
+    if reached:
+        allowed, denied = reached
+        print(f"Allowlisted host answered HTTP {allowed}; an unlisted one answered HTTP {denied}.")
     return 0
 
 

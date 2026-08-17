@@ -39,7 +39,8 @@ _HEALTHY = """\
 
   dispose_scope reached both backends and disposed 2 sandbox(es).
 
-Completed 3 of 3 acts. Disposed 2 sandbox(es) across 2 backends.
+Completed 5 of 5 acts. Disposed 2 sandbox(es) across 2 backends.
+Allowlisted host answered HTTP 200; an unlisted one answered HTTP 000.
 """
 
 
@@ -144,13 +145,28 @@ class TestTheWorkRanAndWasCleanedUp:
 
     def test_a_truncated_run_has_no_footer(self):
         cut = _HEALTHY.replace(
-            "Completed 3 of 3 acts. Disposed 2 sandbox(es) across 2 backends.\n", ""
+            "Completed 5 of 5 acts. Disposed 2 sandbox(es) across 2 backends.\n", ""
         )
         assert any("did not run to completion" in r for r in check.assess(cut))
 
     def test_a_partial_run_is_caught(self):
-        reasons = check.assess(_HEALTHY.replace("Completed 3 of 3", "Completed 2 of 3"))
-        assert any("2 of 3 acts completed" in r for r in reasons), reasons
+        reasons = check.assess(_HEALTHY.replace("Completed 5 of 5", "Completed 2 of 5"))
+        assert any("2 of 5 acts completed" in r for r in reasons), reasons
+
+    def test_the_allowlist_act_skipping_itself_is_caught(self):
+        """The one failure that reads exactly like a pass.
+
+        Act 4 skips when no proxy image is named, and a skipped run still completes, still
+        disposes two sandboxes and still prints every other line this file checks. Without the
+        act count and the egress line it would be indistinguishable from a run that confined
+        nothing, which is the whole reason the sample reports both.
+        """
+        skipped = _HEALTHY.replace("Completed 5 of 5", "Completed 4 of 5").replace(
+            "Allowlisted host answered HTTP 200; an unlisted one answered HTTP 000.\n", ""
+        )
+        reasons = check.assess(skipped)
+        assert any("4 of 5 acts completed" in r for r in reasons), reasons
+        assert any("allowlist act did not run" in r for r in reasons), reasons
 
 
 class TestEmptyOutput:

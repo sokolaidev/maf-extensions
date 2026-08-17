@@ -38,11 +38,18 @@ _REFUSALS = ("SandboxBackendNotPermitted", "SandboxCapabilityNotSupported")
 #: the router merely agreeing that it could.
 _EXECUTED = "routed"
 
+#: `Allowlisted host answered HTTP 200; an unlisted one answered HTTP 000.` Both are read back
+#: from what curl reported inside the sandbox.
+_EGRESS = re.compile(
+    r"Allowlisted host answered HTTP\s+(\d+);\s+an unlisted one answered HTTP\s+(\d+)",
+    re.IGNORECASE,
+)
+
 #: `Disposed N sandbox(es) across M backends.` Both numbers are read back by the sample from
 #: what it observed — the first from `dispose_scope`'s return, the second from the list it
 #: registered — so these compare measurements, not literals the sample printed.
 _FOOTER = re.compile(
-    r"Completed\s+(\d+)\s+of\s+3\s+acts\.\s+Disposed\s+(\d+)\s+sandbox\(es\)\s+"
+    r"Completed\s+(\d+)\s+of\s+5\s+acts\.\s+Disposed\s+(\d+)\s+sandbox\(es\)\s+"
     r"across\s+(\d+)\s+backends",
     re.IGNORECASE,
 )
@@ -113,7 +120,38 @@ def assess(output: str) -> list[str]:
                 "different result rather than a looser match on the same one"
             )
 
+    failures.extend(_assess_egress(output))
     failures.extend(_assess_footer(output))
+    return failures
+
+
+def _assess_egress(output: str) -> list[str]:
+    """The allowlist pair, matched exactly.
+
+    `200` and `000` are curl's own report from inside the sandbox, not the sample's account of
+    it: the allowed host answered, and the unnamed one could not be connected to at all. Both
+    halves are required, and the denied half is the load-bearing one — a proxy that allowed
+    everything would still print a `2xx` for the allowed host and look identical here.
+    """
+    pair = _EGRESS.search(output)
+    if pair is None:
+        return [
+            "no 'Allowlisted host answered HTTP N; an unlisted one answered HTTP N.' line — "
+            "the allowlist act did not run, so nothing here shows egress was confined"
+        ]
+    allowed, denied = pair.groups()
+    failures: list[str] = []
+    if not allowed.startswith("2"):
+        failures.append(
+            f"the allowlisted host answered HTTP {allowed}, expected a 2xx — the allowlist "
+            "denied a host it named, which is a broken allowlist rather than a confined one"
+        )
+    if denied != "000":
+        failures.append(
+            f"the unlisted host answered HTTP {denied}, expected exactly 000 — curl reports "
+            "000 when no connection was made at all, and any status at all means the proxy "
+            "opened a tunnel to a host the spec never named"
+        )
     return failures
 
 
@@ -122,13 +160,17 @@ def _assess_footer(output: str) -> list[str]:
     footer = _FOOTER.search(output)
     if footer is None:
         return [
-            "no 'Completed N of 3 acts. Disposed N sandbox(es) across N backends.' line — the "
+            "no 'Completed N of 5 acts. Disposed N sandbox(es) across N backends.' line — the "
             "sample did not run to completion"
         ]
     acts, disposed, registered = (int(group) for group in footer.groups())
     failures: list[str] = []
-    if acts != 3:
-        failures.append(f"only {acts} of 3 acts completed — the sample stopped part-way")
+    if acts != 5:
+        failures.append(
+            f"only {acts} of 5 acts completed — act 4 skips itself when MAF_EGRESS_PROXY_IMAGE "
+            "names no built proxy image, and a skipped allowlist act is the one result that "
+            "reads exactly like a passing one"
+        )
     if registered != 2:
         failures.append(
             f"{registered} backends were registered, expected exactly 2 — the whole subject is "
@@ -161,7 +203,8 @@ def main(argv: list[str]) -> int:
             print(f"  - {reason}", file=sys.stderr)
         return 1
     print(
-        "OK  the router selected by name, refused what it could not serve, and disposed across both"
+        "OK  the router selected by name, refused what it could not serve, confined egress to "
+        "the one host named, and disposed across both backends"
     )
     return 0
 

@@ -34,7 +34,27 @@ So a spec asking for `container` isolation gets `SandboxBackendNotPermitted`, an
 
 It looks like housekeeping and it is not. A host that changes `selected=` between deployments — Docker on a laptop, ACAS in production — leaves sandboxes behind on whichever backend it was using before. If disposal followed the current selection only, those would stay running, and on a backend where a sandbox is billable that is a leak with a price on it.
 
-Act 3 acquires one sandbox on each backend, with only `docker` serving, and shows `dispose_scope` returning **2**.
+Act 5 acquires one sandbox on each backend, with only `docker` serving, and shows `dispose_scope` returning **2**.
+
+## The other axis, and why it refuses in one direction only
+
+Isolation is the axis acts 1 and 2 are about. Egress is the other one the two-axis design names, and acts 3 and 4 are the only place in the sample set where it is shown.
+
+The rule is not symmetrical, and the asymmetry is the idea. A backend that cannot confine as *precisely* as a spec asked still serves: `DockerSandboxConfig()` with no proxy declares `Egress.CLOSED`, so a spec allowing `mcr.microsoft.com` gets a container with no network at all. That is **more** confinement than was asked for, the router logs a warning naming the hosts that will be unreachable, and the workload fails loudly at the fetch. A backend that cannot confine **at all** — `Egress.UNRESTRICTED` — is refused instead, because silently widening what a workload reaches produces no symptom anybody sees. `Egress`'s own docstring is where that is written down; act 3 is where you can watch it.
+
+Act 4 then enforces one for real. Set `egress_proxy_image` and the same backend class declares `Egress.ALLOWLIST`: each sandbox gets its own internal network and a dual-homed proxy, and the container has **no route out except that proxy**. The allowlisted host answers `200`; a host the spec never named answers `000`, which is curl reporting that no connection was made at all rather than a server saying no. Nothing inside the container was configured to cooperate — `HTTP_PROXY` tells ordinary clients where to look, and the topology is what enforces the list.
+
+The proxy image is built rather than pulled, from a recipe that ships inside the package:
+
+```bash
+python -c "from maf_sandbox_docker import proxy_build_context; print(proxy_build_context())"
+docker build -t maf-egress-proxy:local "$(python -c 'from maf_sandbox_docker import proxy_build_context; print(proxy_build_context())')"
+export MAF_EGRESS_PROXY_IMAGE=maf-egress-proxy:local
+```
+
+Without that variable act 4 skips itself and prints those commands. The live check treats a skip as a failure, because a run that confined nothing prints every other line exactly as a run that confined something.
+
+**One thing act 4 cannot show**, and it is worth knowing before adapting it: a kind that needs no network and a kind that was simply never asked both write `egress_allow=()` today, so this sample has to spell the empty case the same way whether it means "deny everything" or "no opinion". That conflation is [#403](https://github.com/sokolaidev/maf-extensions/issues/403).
 
 ## Run
 
@@ -42,9 +62,9 @@ Act 3 acquires one sandbox on each backend, with only `docker` serving, and show
 cd samples/11_router_two_backends && uv run agent.py
 ```
 
-Needs a Docker-compatible engine and nothing else — no cloud account, no model, no environment variables. The container image is the same dev-container base samples 06 and 08 use, and the command run inside it is `cat` on a file the sample wrote: this is about which backend runs a command, not what the command is.
+Needs a Docker-compatible engine and nothing else — no cloud account, no model. One optional variable, `MAF_EGRESS_PROXY_IMAGE`, turns act 4 on; without it the other four acts run and act 4 says how to build the image. The container image is the same dev-container base samples 06 and 08 use, and the command run inside it is `cat` on a file the sample wrote: this is about which backend runs a command, not what the command is.
 
-There is one thing in act 3 worth knowing if you adapt it. A fresh container has nothing at `work_dir`, so `exec` cannot change into it — the sample writes a file first, which creates the parents. That ordering is not decoration; it is why every kind pushes its inputs before running anything.
+There is one thing in acts 4 and 5 worth knowing if you adapt it. A fresh container has nothing at `work_dir`, so `exec` cannot change into it — the sample writes a file first, which creates the parents. That ordering is not decoration; it is why every kind pushes its inputs before running anything.
 
 ## Where this sits
 

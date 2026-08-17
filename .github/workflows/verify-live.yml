@@ -776,13 +776,30 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
 
-      - name: Run sample 11 and assert the router chose, refused and disposed
+      # Act 4 enforces an allowlist and needs something to enforce it with. Built from the
+      # *published* package's own recipe, the way the sample tells a reader to — `uv run
+      # --no-project` resolves maf-sandbox-docker from the index, and `proxy_build_context()`
+      # points at the copy inside it, so this builds what a reader would build rather than
+      # this checkout's source. Without the image the act skips itself, and a skipped
+      # allowlist reads exactly like an enforced one; the check refuses that.
+      - name: Build the egress proxy from the published package
+        run: |
+          set -euo pipefail
+          context="$(uv run --no-project --with maf-sandbox-docker python -c \
+            'from maf_sandbox_docker import proxy_build_context; print(proxy_build_context())')"
+          docker build -t maf-egress-proxy:ci "$context"
+
+      - name: Run sample 11 and assert the router chose, refused, confined and disposed
+        env:
+          MAF_EGRESS_PROXY_IMAGE: maf-egress-proxy:ci
         run: |
           set -euo pipefail
           uv run --no-project samples/11_router_two_backends/agent.py | tee /tmp/sample11-out.txt
-          # Strict, like sample 10's: no model stands between the library and stdout. The
-          # assertion that matters is the disposal count — 2, one per registered backend, when
-          # only one of them was serving. stdlib-only, so the runner's own python3 runs it.
+          # Strict, like sample 10's: no model stands between the library and stdout. Two
+          # assertions carry it — the disposal count, 2 when only one of the two registered
+          # backends was serving, and the allowlist pair, where the denied host must report
+          # exactly 000 because any status at all means a tunnel was opened to a host the spec
+          # never named. stdlib-only, so the runner's own python3 runs it.
           python3 "$HARNESS"/scripts/check_live_router_sample.py /tmp/sample11-out.txt
 
   sample-12:
