@@ -432,7 +432,7 @@ def _run_producing(tool, sandbox: _ProducingSandbox, produced: dict[str, bytes],
 
 
 # ---------------------------------------------------------------------------
-# The spec — containment that must not be configurable away
+# The spec — what containment is fixed, and what a deployment may open
 # ---------------------------------------------------------------------------
 
 
@@ -443,14 +443,115 @@ class TestCodeactSandboxSpec:
     def test_work_dir_is_the_programs_own_root(self):
         assert codeact_sandbox_spec().work_dir == _WORK_DIR == "/maf-sandbox/work"
 
-    def test_egress_is_closed(self):
-        """The empty allowlist is half of what makes running model-written code defensible.
-
-        A spec that names no host denies every host, so the program can compute but cannot
+    def test_egress_is_closed_by_default(self):
+        """A spec that names no host denies every host, so the program can compute but cannot
         fetch — and with no host tools dispatchable from inside either, nothing external can
         enter the sandbox and nothing leaves it but what the program printed.
+
+        The default, not the only option: a deployment may name hosts, and the tests below
+        cover what that opens. What stays fixed is the kind's own half.
         """
         assert codeact_sandbox_spec().egress_allow == ()
+
+    def test_a_deployments_hosts_reach_the_spec(self):
+        """The second list: endpoints a published kind cannot know, supplied by whoever wires
+        it. The spec is what the router matches, so this is where they have to arrive."""
+        spec = codeact_sandbox_spec(egress_allow=("index.example", "artifacts.example"))
+
+        assert spec.egress_allow == ("index.example", "artifacts.example")
+
+    def test_the_spec_carries_the_union_of_both_lists(self, monkeypatch: pytest.MonkeyPatch):
+        """`_KIND_EGRESS` is empty today, which makes the union indistinguishable from the
+        deployment's half alone — so it is patched here rather than asserted around.
+
+        Without this the kind's half could be dropped entirely and nothing would notice until
+        a release added something to it.
+        """
+        monkeypatch.setattr("maf_sandbox_codeact._tool._KIND_EGRESS", ("modules.example",))
+
+        spec = codeact_sandbox_spec(egress_allow=("index.example",))
+
+        assert spec.egress_allow == ("modules.example", "index.example")
+
+    def test_the_kinds_half_is_there_even_when_the_deployment_adds_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setattr("maf_sandbox_codeact._tool._KIND_EGRESS", ("modules.example",))
+
+        assert codeact_sandbox_spec().egress_allow == ("modules.example",)
+
+    def test_a_host_named_by_both_lists_is_carried_once(self, monkeypatch: pytest.MonkeyPatch):
+        """Two callers naming the same host is agreement, not a mistake — and a duplicate in an
+        allowlist is a second rule that can drift from the first."""
+        monkeypatch.setattr("maf_sandbox_codeact._tool._KIND_EGRESS", ("shared.example",))
+
+        spec = codeact_sandbox_spec(egress_allow=("shared.example", "other.example"))
+
+        assert spec.egress_allow == ("shared.example", "other.example")
+
+    def test_a_host_the_deployment_names_twice_is_carried_once(self):
+        """Cross-list dedup does not exercise this: a repeated host inside one list is a
+        second rule that can drift from the first."""
+        spec = codeact_sandbox_spec(egress_allow=("a.example", "a.example", "b.example"))
+
+        assert spec.egress_allow == ("a.example", "b.example")
+
+    def test_a_bare_string_is_refused_rather_than_read_one_character_at_a_time(self):
+        """`Sequence[str]` admits `str`, so this type-checks and would otherwise become seven
+        single-character hosts — the real endpoint unreachable, with no refusal anywhere."""
+        with pytest.raises(TypeError, match="not a single string"):
+            codeact_sandbox_spec(egress_allow="pypi.org")
+
+    @pytest.mark.parametrize("router", [None, SandboxRouter([])], ids=["no router", "no backend"])
+    def test_an_unconfigured_host_still_gets_no_tools_rather_than_an_exception(self, router):
+        """This factory's contract, and a malformed allowlist is exactly how a host that
+        develops with sandboxing off would trip it — a trailing comma in configuration.
+
+        Both spellings of unconfigured, because `configured` is a conjunction and a gate that
+        reads only `router is not None` refuses the second while satisfying the first.
+        """
+        assert make_codeact_tools(router, "agent", _context(), egress_allow=("",)) == []
+        assert make_codeact_tools(router, "agent", _context(), egress_allow="pypi.org") == []
+
+    def test_a_bare_string_is_refused_on_the_tool_factory_too(self):
+        """The spec factory refuses it, but `make_codeact_tools` validates on its own path and
+        promises the same `TypeError` where a sandbox is configured — so it needs its own pin,
+        or that promise rests on a check nothing exercises."""
+        with pytest.raises(TypeError, match="not a single string"):
+            _tool(_backend(capabilities=_PULLS), egress_allow="pypi.org")
+
+    @pytest.mark.parametrize("blank", ["", "   ", "\t"])
+    def test_a_blank_entry_is_refused(self, blank: str):
+        """An allowlist entry matching nothing, which reads like one matching everything."""
+        with pytest.raises(ValueError, match="non-empty hostnames"):
+            codeact_sandbox_spec(egress_allow=(blank,))
+
+    @pytest.mark.parametrize(
+        "entry",
+        [" files.example", "files.example ", "a b.example", "a,b.example"],
+        ids=["leading space", "trailing space", "inner space", "comma"],
+    )
+    def test_an_entry_that_is_not_one_hostname_is_refused(self, entry: str):
+        """No hostname holds a space or a comma, and each is a way for the spec, the model's
+        description, and a backend's allowlist to disagree silently: a comma-joined `"a,b"` is
+        one spec entry the wslc proxy splits back into two, and a padded `" a"` reaches a
+        backend as a rule that matches nothing. Refused, not stripped."""
+        with pytest.raises(ValueError, match="one hostname each"):
+            codeact_sandbox_spec(egress_allow=(entry,))
+
+    def test_a_one_shot_iterable_is_not_spent_before_it_reaches_the_spec(self):
+        """`Sequence[str]` is the contract, but a host building the list dynamically hands over
+        a generator — and validating one by iterating it leaves nothing to return, so the
+        allowlist vanishes with no refusal and the model is told the network is closed."""
+        named = ("index.example", "artifacts.example")
+
+        assert codeact_sandbox_spec(egress_allow=(host for host in named)).egress_allow == named
+
+    def test_a_wildcard_host_is_accepted(self):
+        """The refusal is spaces and commas, not punctuation — `*.data.mcr.microsoft.com` is a
+        legitimate allowlist entry (Bicep's own uses it) and must survive."""
+        spec = codeact_sandbox_spec(egress_allow=("*.data.mcr.microsoft.com",))
+        assert spec.egress_allow == ("*.data.mcr.microsoft.com",)
 
     def test_requires_exec_and_files_in(self):
         assert codeact_sandbox_spec().requires == frozenset({Capability.EXEC, Capability.FILES_IN})
@@ -688,6 +789,25 @@ class TestFidesDeclarations:
         tool = _dispatching_tool(_registry(), outbound_max_confidentiality="private")
         assert dict(tool.additional_properties or {}) == {}
 
+    def test_an_opened_allowlist_makes_the_hosts_cap_apply(self):
+        """A named host is a way out, so the flow the cap gates exists — and unlike the
+        host-tool case this one the shared derivation *can* see, off `spec.egress_allow`.
+
+        Opening egress changes what a host's policy engine reads from this tool, so the cap
+        has to start applying without anyone wiring a sink or a registry.
+        """
+        tool = _tool(
+            _backend(capabilities=_PULLS),
+            egress_allow=("index.example",),
+            outbound_max_confidentiality="private",
+        )
+        assert dict(tool.additional_properties or {}) == {"max_allowed_confidentiality": "private"}
+
+    def test_a_closed_allowlist_leaves_it_unwritten(self):
+        """The other side of the same bound: the default must not start declaring a flow."""
+        tool = _tool(_backend(capabilities=_PULLS), outbound_max_confidentiality="private")
+        assert dict(tool.additional_properties or {}) == {}
+
     def test_a_registry_with_no_sink_tool_leaves_the_cap_unwritten(self):
         """A source brings data *in* and pure computation carries nothing at all, so the flow
         the cap gates still does not exist — and a cap on a flow that cannot happen gates
@@ -849,6 +969,37 @@ class TestToolDescription:
     def test_it_says_the_sandbox_has_no_network(self):
         assert "no network" in self._description().lower()
 
+    def test_an_opened_allowlist_replaces_the_no_network_claim_and_names_the_hosts(self):
+        """Both halves matter. The model must not be told the network is absent when it is
+        not, and it must be able to tell what it may reach without spending a call to find
+        out — a program can enumerate the allowlist by trying it in any case."""
+        described = self._description(egress_allow=("index.example",))
+
+        assert "no network" not in described.lower(), described
+        assert "index.example" in described, described
+        # Nothing is listed below, so promising it sends the model looking for a channel that
+        # does not exist. The pair is what discriminates: naming the hosts is not enough.
+        assert "host tools" not in described.lower(), described
+
+    def test_every_allowlisted_host_is_named_not_just_the_first(self):
+        """A model told one of two reachable hosts wastes calls discovering the rest, and a
+        rule that names only the first passes every single-host test — so this uses two."""
+        described = self._description(egress_allow=("index.example", "artifacts.example"))
+
+        assert "index.example" in described, described
+        assert "artifacts.example" in described, described
+
+    def test_the_description_follows_the_spec_rather_than_the_argument(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """It is read off the attached spec, so the kind's own half is described too — a model
+        told only what the deployment added would understate what the sandbox can reach."""
+        monkeypatch.setattr("maf_sandbox_codeact._tool._KIND_EGRESS", ("modules.example",))
+
+        described = self._description()
+
+        assert "modules.example" in described, described
+
     def test_a_channel_the_host_did_not_wire_is_never_described(self):
         """The description is what the model plans against, so a parameter it cannot pass and
         a directory nothing collects must not appear in it."""
@@ -882,6 +1033,20 @@ class TestToolDescriptionWithHostTools:
         assert "_exchange_rate" in described
         assert "_log_to_crm" in described
         assert "_round_half_up" in described
+
+    def test_host_tools_and_an_allowlist_are_both_named(self):
+        """Either one alone reads as the only way out of the sandbox, and with both wired
+        neither is — the claim that names only one understates what can leave."""
+        described = (
+            _callable(
+                _dispatching_tool(_registry(_round_half_up), egress_allow=("index.example",))
+            ).__doc__
+            or ""
+        )
+
+        assert "index.example" in described, described
+        assert "host tools" in described.lower(), described
+        assert "no network" not in described.lower(), described
 
     def test_an_empty_registry_reads_exactly_like_no_registry_at_all(self):
         plain = _callable(_tool(_backend(capabilities=_PULLS))).__doc__ or ""
