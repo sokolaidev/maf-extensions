@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.7.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.6.3...maf-sandbox-wslc-v0.7.0) (2026-08-17)
+
+
+### Features
+
+* **backends:** each backend exports the name `selected=` matches on ([#414](https://github.com/sokolaidev/maf-extensions/issues/414)) ([672c9b2](https://github.com/sokolaidev/maf-extensions/commit/672c9b2fcdf7b94fd0c37d7c225f66b909a259a1))
+
+
+### Bug Fixes
+
+* require maf-sandbox 0.16.0 in the dependents and 0.16 in the samples, and admit 0.17 ([#386](https://github.com/sokolaidev/maf-extensions/issues/386)) ([7133401](https://github.com/sokolaidev/maf-extensions/commit/713340192dbc710c9c18f498a6615fc401332682))
+* **wslc:** make the backend satisfy the Sandbox protocol ([#370](https://github.com/sokolaidev/maf-extensions/issues/370)) ([#408](https://github.com/sokolaidev/maf-extensions/issues/408)) ([2d2221a](https://github.com/sokolaidev/maf-extensions/commit/2d2221a708cca7bdbc8e841816aa96c147c68e7b))
+
 ## [0.6.3](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.6.2...maf-sandbox-wslc-v0.6.3) (2026-08-16)
 
 
