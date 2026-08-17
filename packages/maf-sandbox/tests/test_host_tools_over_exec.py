@@ -1283,6 +1283,22 @@ class TestTheLayoutsOwnPromise:
         with pytest.raises(ValueError, match="must not contain ':'"):
             guest_run_layout("/runs/job:slot")
 
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "maf_host_tools.so",
+            "maf_host_tools.pyc",
+            "maf_host_tools.cpython-313-x86_64-linux-gnu.so",
+        ],
+    )
+    def test_a_program_that_would_be_its_own_shim_is_refused(self, name: str):
+        """The shim's own name is the one importable member of the transport's filenames, so
+        it needs the stem rule and not the exact-name refusal the others get: an extension is
+        tried before source, so such a program answers the `import maf_host_tools` that is the
+        program's own first act, and the run dies on an invalid header."""
+        with pytest.raises(ValueError, match="the shim's own module name"):
+            guest_run_layout("/maf-sandbox/work/run-1", program=name)
+
     def test_every_module_the_shim_imports_is_refused_as_a_program_name(self):
         """Derived from the shim rather than listed, so adding an import cannot outrun it.
 
@@ -1315,12 +1331,26 @@ class TestTheLayoutsOwnPromise:
             "site.py",
             "sitecustomize.py",
             "usercustomize.py",
-            # Matched by stem, because the suffix only decides which loader answers — and
-            # `FileFinder` tries extensions before source, so these outrank the `.py` above.
+            # Matched by stem, because the suffix decides only which loader answers. An
+            # extension is tried before source and a sourceless `.pyc` after it, so a `.so`
+            # twin outranks the `.py` above while a `.pyc` twin answers when no source is
+            # there — which is this directory, where the kind writes one file.
             "encodings.pyc",
             "sitecustomize.pyc",
             "encodings.so",
             "site.cpython-313-x86_64-linux-gnu.so",
+            # Reached during startup on a guest older than 3.11, whose stdlib is not frozen.
+            # Listed rather than derived from `_STARTUP_STEMS`: a test that iterates the set
+            # under test cannot notice a name being dropped from it, which is the mistake this
+            # list exists to catch.
+            "abc.py",
+            "codecs.py",
+            "genericpath.py",
+            "io.py",
+            "posixpath.py",
+            "stat.py",
+            "_collections_abc.py",
+            "_sitebuiltins.py",
         ],
     )
     def test_a_program_the_interpreter_imports_on_its_way_up_is_refused(self, name: str):

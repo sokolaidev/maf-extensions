@@ -107,20 +107,61 @@ _TRANSPORT_FILENAMES = frozenset({SHIM_MODULE, _LAUNCHER, OUTPUT_FILE, EXIT_FILE
 #: the other two, on the grounds that which path CPython resolves it by is an implementation
 #: detail rather than a promise.
 #:
+#: The second group is the stdlib that startup itself imports. It is empty on a guest whose
+#: standard library is frozen — 3.11 onwards — and on an older one it is the difference between
+#: a run and a path-configuration dump: on 3.10, ``site`` reaches ``os`` which reaches ``stat``
+#: through ordinary path lookup, so the program answers as that module during initialisation.
+#: The guest's version is not this package's to pin (``interpreter`` defaults to ``python3``,
+#: which is 3.10 on Ubuntu 22.04), so they are refused everywhere rather than conditionally.
+#:
 #: This is deliberately *not* "everything imported before the script runs", which is not a set
 #: anyone can write down: a ``.pth`` file may import any name it likes, so a guest image with
 #: setuptools reaches ``_distutils_hack`` and one with ``PYTHONWARNINGS`` reaches ``warnings``.
 #: Those belong to the image, and a constructor pretending to enumerate them would be making a
-#: promise it cannot keep.
-_STARTUP_STEMS = frozenset({"encodings", "site", "sitecustomize", "usercustomize"})
+#: promise it cannot keep. What is here was found by running a census against the interpreters
+#: this suite expects to meet; it is a floor under the common failures, not a proof.
+_STARTUP_STEMS = frozenset(
+    {
+        "encodings",
+        "site",
+        "sitecustomize",
+        "usercustomize",
+        # Reached during startup on a guest whose stdlib is not frozen, i.e. before 3.11.
+        "abc",
+        "codecs",
+        "genericpath",
+        "io",
+        "posixpath",
+        "stat",
+        "_collections_abc",
+        "_sitebuiltins",
+    }
+)
 
 #: :data:`_SHIM_STEMS` is what the generated shim imports, and the collision is with the shim
 #: rather than the interpreter: the two share a directory, so a program named ``json`` *is*
 #: what the shim's own ``import json`` finds. The program's body runs a second time under that
 #: name and every dispatch afterwards dies on an attribute the real module would have had —
-#: a traceback that names ``dumps`` and never the collision. Derived from the shim by a test
-#: that parses it, so adding an import there cannot leave this behind.
+#: a traceback that names ``dumps`` and never the collision.
+#:
+#: Only ``json`` does that on a current guest. ``time`` is built in and ``os`` is frozen from
+#: 3.11, so neither is ever resolved from a directory — but ``os`` is *not* frozen on 3.10,
+#: where it collides exactly as ``json`` does, and which modules are frozen is a per-version
+#: implementation detail rather than a contract. They are refused for the same reason the set
+#: is checked by stem: the cost of refusing a program name no kind wants is nothing, and the
+#: cost of missing one is a traceback that points at the wrong thing.
+#:
+#: Derived from the shim by a test that parses it, so adding an import cannot leave this
+#: behind.
 _SHIM_STEMS = frozenset({"json", "os", "time"})
+
+#: The shim's own module name, which is the one importable member of
+#: :data:`_TRANSPORT_FILENAMES` — and so the one that needs the stem rule rather than the
+#: exact-name refusal the rest of that set gets. A ``maf_host_tools.so`` beside the real
+#: ``maf_host_tools.py`` wins the program's very first import, because extensions are tried
+#: before source, and the run dies on an invalid ELF header rather than on anything that names
+#: the collision. Derived from :data:`SHIM_MODULE` so the two cannot drift apart.
+_SHIM_MODULE_STEM = SHIM_MODULE.split(".", 1)[0]
 
 
 class SandboxProgramTimeout(TimeoutError):
@@ -261,6 +302,12 @@ def guest_run_layout(run_directory: str, *, program: str = "program.py") -> Gues
             f"{sorted(_TRANSPORT_FILENAMES)}"
         )
     stem = program.split(".", 1)[0]
+    if stem == _SHIM_MODULE_STEM:
+        raise ValueError(
+            f"program must not answer to the shim's own module name, and {program!r} answers "
+            f"to {stem!r}: the program's first act is to import it, and a suffix that outranks "
+            f"{SHIM_MODULE!r} in the loader's order makes the program its own shim"
+        )
     if stem in _SHIM_STEMS:
         raise ValueError(
             f"program must not be named for a module the generated shim imports, and "
