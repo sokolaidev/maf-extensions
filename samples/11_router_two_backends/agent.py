@@ -17,7 +17,7 @@ beside the in-process backend, and what #328 would change.
 #     "azure-core[aio]",
 #     "azure-identity",
 #     "maf-sandbox-bicep",
-#     "maf-sandbox-docker",
+#     "maf-sandbox-docker>=0.4",
 #     "maf-sandbox>=0.16",
 # ]
 # ///
@@ -46,6 +46,7 @@ from maf_sandbox import (
 from maf_sandbox.maf import list_all_files, make_caller_context
 from maf_sandbox.testing import InProcessSandboxBackend
 from maf_sandbox_bicep import bicep_sandbox_spec, make_bicep_tools
+from maf_sandbox_docker import BACKEND_NAME as DOCKER_BACKEND
 from maf_sandbox_docker import (
     DockerSandboxBackend,
     DockerSandboxConfig,
@@ -114,15 +115,20 @@ def backends() -> tuple[InProcessSandboxBackend, DockerSandboxBackend]:
     declare `CONTAINER` and `FILES_OUT`, and the in-process backend really does declare
     `NONE` and only `EXEC | FILES_IN`. Every refusal below follows from what they are.
 
-    Neither name is written down here either. `selected=` matches a backend by name, and no
-    backend package exports its own as a constant (#411) — `DockerSandboxBackend.name` returns
-    `"docker"` from inside a property, and `InProcessSandboxBackend` defaults to `"in-process"`.
-    So the names come from the objects, and every use below reads `.name` off the one it means.
-    A literal that stopped agreeing would surface as a router refusing to find a backend it was
-    handed, several lines from the string that caused it.
+    Neither name is written down here, and the two get their names from different places —
+    which is worth seeing, because a reader selecting a backend in their own host has to know
+    which kind they are dealing with.
 
-    `InProcessSandboxBackend` does take `name=`, which is how a host would register two of them
-    apart; this sample registers one and lets it keep the default.
+    `maf_sandbox_docker` exports `BACKEND_NAME`, imported above as `DOCKER_BACKEND`. That is
+    what a host writes when it reads `selected=` out of configuration and has no backend built
+    yet. Aliased at the import rather than taken bare because every backend package exports
+    that same symbol, so a host registering two would have the second silently shadow the
+    first.
+
+    `InProcessSandboxBackend` exports none, and correctly: its name is a constructor parameter
+    with a default, so it is the *caller's* to choose — that is how a host registers two of
+    them apart. This sample registers one, lets it keep the default, and reads `.name` back off
+    it.
     """
     return InProcessSandboxBackend(), DockerSandboxBackend(DockerSandboxConfig())
 
@@ -146,7 +152,11 @@ def act_one_the_switch() -> None:
     local, container = backends()
     spec = SandboxSpec(kind=KIND, image=IMAGE)
 
-    for chosen in (local.name, container.name):
+    # `DOCKER_BACKEND` is the package's own constant; `local.name` is read off the object,
+    # because the in-process backend's name belongs to whoever constructed it. `backends()`
+    # says why the two differ. Both are the same kind of value here — the string `selected=`
+    # matches on — and neither is written out in this file.
+    for chosen in (local.name, DOCKER_BACKEND):
         router = SandboxRouter([local, container], min_isolation=FLOOR, selected=chosen)
         router.ensure_can_serve(spec)
         print(f"{MEASURED}selected={chosen!r:14} -> router.backend.name == {serving(router)!r}")
@@ -381,7 +391,9 @@ async def act_five_disposal_reaches_everyone() -> tuple[int, int]:
 
     local, container = backends()
     registered = [local, container]
-    router = SandboxRouter(registered, min_isolation=FLOOR, selected=container.name)
+    # Named by the constant rather than by `container.name`, though both are in scope: this is
+    # the line a host copies, and a host choosing from configuration has no backend to ask.
+    router = SandboxRouter(registered, min_isolation=FLOOR, selected=DOCKER_BACKEND)
     spec = SandboxSpec(kind=KIND, image=IMAGE)
 
     # Everything from the first `acquire` sits in a `try`, and disposal in the `finally`, as in

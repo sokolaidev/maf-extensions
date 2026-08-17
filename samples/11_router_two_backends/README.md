@@ -9,7 +9,15 @@ app  ->  maf_sandbox (router)  ->  [ in-process | docker ]  ->  the sandbox
 
 ## The short version
 
-**Which backend serves is a deployment decision, made once.** `SandboxRouter(backends, selected="docker")` names it. Omit `selected=` and you get whichever was registered first. That is the whole mechanism — one argument, and the workload above never learns which one answered.
+**Which backend serves is a deployment decision, made once.** `SandboxRouter(backends, selected=DOCKER_BACKEND)` names it. Omit `selected=` and you get whichever was registered first. That is the whole mechanism — one argument, and the workload above never learns which one answered.
+
+`selected=` is matched against a backend's `name`, and each backend package exports its own so a host reading that choice out of configuration does not have to build a backend to learn it ([#411](https://github.com/sokolaidev/maf-extensions/issues/411)):
+
+```python
+from maf_sandbox_docker import BACKEND_NAME as DOCKER_BACKEND
+```
+
+Aliased at the import because every backend package exports that same symbol — a host registering Docker beside ACAS would otherwise have the second `from … import BACKEND_NAME` shadow the first, with nothing to say so. The in-process backend has no constant, deliberately: its name is a constructor parameter with a default, so it belongs to whoever registers it, and the sample reads it back with `.name`.
 
 **A spec can raise the bar. It cannot change who serves.** If the selected backend cannot meet what a spec asks for, the router refuses. It does not look at the other backend, even when the other backend would obviously do. Act 2 shows both refusals with `docker` registered and unused.
 
