@@ -299,9 +299,7 @@ class _WslcSandbox:
             "does, or require only exec and FILES_IN."
         )
 
-    async def list_dir(
-        self, path: str, *, working_directory: str
-    ) -> tuple[SandboxEntry, ...]:
+    async def list_dir(self, path: str, *, working_directory: str) -> tuple[SandboxEntry, ...]:
         """Not supported: this backend declares neither :data:`~maf_sandbox.Capability.FILES_OUT`
         nor :data:`~maf_sandbox.Capability.FILES_LIST`.  See :meth:`stat_file`.
         """
@@ -755,12 +753,17 @@ class WslcSandboxBackend:
         return False
 
 
-# The package's strict pyright pass type-checks these two assignments. ``runtime_checkable``
-# only tests member *presence*, so ``isinstance(..., SandboxBackend)`` passes while a signature
-# narrows (``write_file`` refusing ``bytes``) or a method goes missing (the pull surface) — this
-# is what fails the build instead. It is how #370 was caught at a sample call site, and these
-# two lines hold it inside this package, where the gap was. Guarded by ``TYPE_CHECKING`` so the
-# construction never runs.
+# The package's strict pyright pass type-checks this assignment. ``runtime_checkable`` only
+# tests member *presence*, so ``isinstance(..., SandboxBackend)`` passes while a signature
+# narrows (``write_file`` refusing ``bytes``) or a method goes missing (the pull surface) — the
+# annotation is what fails the build instead, which is how #370 was caught at a sample call
+# site, and this line holds it inside this package, where the gap was. A ``cast(...)`` would
+# not: it is an unchecked escape hatch, accepted silently even when the types do not match.
+# ``_`` is the conventional throwaway — the annotation is the load-bearing part, not the name —
+# and the tuple poses both checks in one binding rather than two unused globals. Guarded by
+# ``TYPE_CHECKING`` so the construction never runs.
 if TYPE_CHECKING:
-    _backend_protocol: SandboxBackend = WslcSandboxBackend(WslcSandboxConfig())
-    _sandbox_protocol: type[Sandbox] = _WslcSandbox
+    _: tuple[SandboxBackend, type[Sandbox]] = (
+        WslcSandboxBackend(WslcSandboxConfig()),
+        _WslcSandbox,
+    )

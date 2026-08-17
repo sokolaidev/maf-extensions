@@ -542,7 +542,9 @@ class TestPullSurfaceRefusal:
     def test_read_file_raises_notimplementederror(self):
         sandbox = self._sandbox()
         with pytest.raises(NotImplementedError, match="FILES_OUT"):
-            asyncio.run(sandbox.read_file("/maf-sandbox/work/x", working_directory="/w", max_bytes=64))
+            asyncio.run(
+                sandbox.read_file("/maf-sandbox/work/x", working_directory="/w", max_bytes=64)
+            )
 
     def test_list_dir_raises_notimplementederror(self):
         sandbox = self._sandbox()
