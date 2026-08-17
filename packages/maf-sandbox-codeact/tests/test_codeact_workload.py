@@ -988,18 +988,106 @@ class TestFilesIn:
         assert reason in out
         assert sandbox.files == {}
 
-    def test_a_file_beneath_the_program_name_cannot_be_shared_either(self):
-        """Backends create parent directories for a nested write, so sharing
-        `program.py/data.csv` would turn `program.py` into a directory and the source write
-        that follows would fail on every call."""
+    def test_a_traversing_name_under_a_reserved_one_gets_the_validators_sentence(self):
+        """`program.py/../x` climbs back out, so nothing is living inside anything and the
+        nested-name sentence would be false. Only the validator running first keeps it true."""
         sandbox = _ScriptedSandbox()
-        nested = f"{_PROGRAM_FILENAME}/data.csv"
-        store = InMemoryStore({nested: "x"})
-        tool = _tool(_backend(sandbox), file_store=store)
+        name = f"{_PROGRAM_FILENAME}/../x"
+        tool = _tool(_backend(sandbox), file_store=InMemoryStore({name: "x"}))
+
+        out = _run(tool, "print('hi')", files=[name])
+        assert "cannot be shared" in out
+        assert "nothing can live inside it" not in out, out
+        assert sandbox.files == {}
+
+    @pytest.mark.parametrize(
+        "nested",
+        [f"{_PROGRAM_FILENAME}/data.csv", f"{_PROGRAM_FILENAME}/a/b.csv"],
+        ids=["a child of it", "deeper than that"],
+    )
+    def test_the_refusal_beneath_the_program_name_names_the_program_not_the_nested_name(
+        self, nested: str
+    ):
+        """Backends create parent directories for a nested write, so this would turn
+        `program.py` into a directory and the source write that follows would fail on every
+        call — at any depth, which is why the rule is a prefix test and not a parent test."""
+        sandbox = _ScriptedSandbox()
+        tool = _tool(_backend(sandbox), file_store=InMemoryStore({nested: "x"}))
 
         out = _run(tool, "print('hi')", files=[nested])
-        assert "cannot be shared" in out
+        assert out == (
+            f"Error: {nested!r} cannot be shared — {_PROGRAM_FILENAME!r} is a file name this "
+            f"tool reserves in every run's directory, so nothing can live inside it."
+        ), out
         assert sandbox.contents == {}
+
+    @pytest.mark.parametrize(
+        ("name", "sentence", "wrong"),
+        [
+            (_PROGRAM_FILENAME, "this tool writes a file of that name", "nothing can live inside"),
+            (f"{_PROGRAM_FILENAME}/data.csv", "nothing can live inside it", "a file of that name"),
+        ],
+        ids=["the reserved name", "a name beneath it"],
+    )
+    def test_a_reserved_name_the_store_lacks_is_refused_as_reserved_not_as_a_listing_miss(
+        self, name: str, sentence: str, wrong: str
+    ):
+        """Two reasons apply and the order decides which one the model reads. A listing miss
+        invites a retry once the file is stored, which is a retry neither name can survive."""
+        sandbox = _ScriptedSandbox()
+        tool = _tool(_backend(sandbox), file_store=InMemoryStore({"data/sales.csv": "x"}))
+
+        out = _run(tool, "print('hi')", files=[name])
+        assert sentence in out, out
+        assert wrong not in out, out
+        assert "not in this tool's file listing" not in out, out
+
+    @pytest.mark.parametrize(
+        "name",
+        [_MANIFEST_FILENAME, f"{_MANIFEST_FILENAME}/r.csv"],
+        ids=["the manifest name", "a name beneath it"],
+    )
+    def test_the_manifest_name_is_only_reserved_in_the_mode_that_reads_it(self, name: str):
+        """Nothing reads `outputs.json` outside MANIFEST mode, so refusing it there is
+        overreach. The reserved set is built per mode, and both checks have to honour that
+        rather than carry their own idea of which names this kind owns."""
+        sandbox = _ScriptedSandbox()
+        tool = _tool(_backend(sandbox), file_store=InMemoryStore({name: "x"}))
+
+        out = _run(tool, "print('hi')", files=[name])
+        assert "cannot be shared" not in out, out
+        assert f"{_run_dirs(sandbox)[0]}/{name}" in sandbox.files
+
+    def test_the_two_reserved_names_are_refused_for_their_own_reasons(self):
+        """One sentence for both would be false about one of them. This tool writes
+        `program.py` into the run's directory and only *reads* `outputs.json` from it — the
+        program writes that. Both refusals are asserted whole, so neither can drift onto the
+        other's clause and tell a model this tool writes a file it never touches.
+        """
+        writes = _run(
+            _tool(_backend(_ScriptedSandbox()), file_store=InMemoryStore({_PROGRAM_FILENAME: "x"})),
+            "print('hi')",
+            files=[_PROGRAM_FILENAME],
+        )
+        reads = _run(
+            _pulling_tool(
+                _ProducingSandbox(),
+                CodeactOutputs.MANIFEST,
+                _RecordingSink(),
+                file_store=InMemoryStore({_MANIFEST_FILENAME: "x"}),
+            ),
+            "print('hi')",
+            files=[_MANIFEST_FILENAME],
+        )
+
+        assert writes == (
+            f"Error: {_PROGRAM_FILENAME!r} cannot be shared — this tool writes a file of that "
+            f"name into every run's directory."
+        ), writes
+        assert reads == (
+            f"Error: {_MANIFEST_FILENAME!r} cannot be shared — this tool reads a file of that "
+            f"name from every run's directory as its manifest."
+        ), reads
 
     def test_a_name_that_merely_starts_with_the_program_name_is_fine(self):
         """`program.py.bak` shares no directory with it, so refusing it would be overreach."""
@@ -1320,6 +1408,39 @@ class TestDeclaredOutputs:
         assert "cannot be saved" in out
         assert sandbox.raw_commands == []
 
+    @pytest.mark.parametrize(
+        ("names", "sentence"),
+        [
+            (["Program.py", "program.py"], "this tool writes a file of that name"),
+            (["Program.py/x.csv", "program.py/x.csv"], "nothing can live inside it"),
+        ],
+        ids=["the reserved name", "a name beneath it"],
+    )
+    def test_a_case_variant_declared_first_does_not_turn_a_reserved_name_into_a_collision(
+        self, names: list[str], sentence: str
+    ):
+        """The collision key is NFC-lowered, so a case variant is seen first and both reasons
+        apply. "One file once saved" invites dropping one spelling, and dropping the wrong one
+        re-declares a name that can never be saved — where the reserved refusal is final."""
+        sandbox = _ProducingSandbox()
+        tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, _RecordingSink())
+
+        out = _run(tool, "print('hi')", outputs=names)
+        assert sentence in out, out
+        assert "one file once saved" not in out, out
+        assert sandbox.raw_commands == []
+
+    def test_a_traversing_output_under_a_reserved_name_gets_the_validators_sentence(self):
+        """`program.py/../x` climbs back out, so nothing is living inside anything and the
+        nested-name sentence would be false. Only the validator running first keeps it true."""
+        sandbox = _ProducingSandbox()
+        tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, _RecordingSink())
+
+        out = _run(tool, "print('hi')", outputs=[f"{_PROGRAM_FILENAME}/../x"])
+        assert "cannot be saved" in out
+        assert "nothing can live inside it" not in out, out
+        assert sandbox.raw_commands == []
+
     def test_a_name_too_long_once_the_run_directory_is_counted_is_refused_up_front(self):
         """The guest path carries a 13-byte prefix, so judging the bare name accepts a
         250-byte one here and has `collect_outputs` refuse the 263-byte declaration it becomes
@@ -1417,7 +1538,46 @@ class TestDeclaredOutputs:
         sandbox = _ProducingSandbox()
         tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, _RecordingSink())
 
-        assert "cannot be saved" in _run(tool, "print('hi')", outputs=[_PROGRAM_FILENAME])
+        out = _run(tool, "print('hi')", outputs=[_PROGRAM_FILENAME])
+        assert "cannot be saved" in out
+        assert "this tool writes a file of that name into every run's directory" in out, out
+
+    @pytest.mark.parametrize(
+        "name",
+        [_MANIFEST_FILENAME, f"{_MANIFEST_FILENAME}/r.csv"],
+        ids=["the manifest name", "a name beneath it"],
+    )
+    def test_the_manifest_name_may_be_declared_in_the_mode_that_never_reads_it(self, name: str):
+        """DECLARED mode writes no manifest and reads none, so `outputs.json` is an ordinary
+        name here — the per-mode set says so and both checks have to read it from there."""
+        sandbox = _ProducingSandbox()
+        sink = _RecordingSink()
+        tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, sink)
+
+        out = _run_producing(tool, sandbox, {name: b"a,b\n"}, outputs=[name])
+        assert "cannot be saved" not in out, out
+        assert sink.names == [name]
+
+    @pytest.mark.parametrize(
+        "nested",
+        [f"{_PROGRAM_FILENAME}/report.csv", f"{_PROGRAM_FILENAME}/a/report.csv"],
+        ids=["a child of it", "deeper than that"],
+    )
+    def test_a_declared_output_beneath_the_program_name_names_the_program(self, nested: str):
+        """This tool writes `program.py`, so telling a model it writes `program.py/report.csv`
+        names a file it does not write. The verb is asserted too: this refusal is a save, and
+        the sentence is built from an argument a call site can hand the wrong word."""
+        sandbox = _ProducingSandbox()
+        sink = _RecordingSink()
+        tool = _pulling_tool(sandbox, CodeactOutputs.DECLARED, sink)
+
+        out = _run(tool, "print('hi')", outputs=[nested])
+        assert f"Error: {nested!r} cannot be saved" in out, out
+        assert f"{_PROGRAM_FILENAME!r} is a file name this tool reserves" in out, out
+        assert "a file of that name" not in out, out
+        assert "nothing can live inside it" in out, out
+        assert sandbox.raw_commands == []
+        assert sink.names == []
 
     def test_a_failed_program_reports_its_traceback_and_nothing_about_files(self):
         """A missing-file report stacked on a traceback buries what the model has to fix."""
@@ -1616,6 +1776,49 @@ class TestManifestOutputs:
         )
         assert "cannot be saved" in out
         assert sink.names == []
+
+    def test_a_manifest_path_beneath_the_manifest_name_names_the_manifest(self):
+        """The manifest is a reserved name in this mode, and a path listed beneath it is
+        refused for the same reason a nested input is — so the refusal has to name
+        `outputs.json` rather than the path under it, which nothing writes."""
+        sandbox = _ProducingSandbox()
+        sink = _RecordingSink()
+        tool = _pulling_tool(sandbox, CodeactOutputs.MANIFEST, sink)
+        nested = f"{_MANIFEST_FILENAME}/r.csv"
+
+        out = _run_producing(
+            tool, sandbox, {_MANIFEST_FILENAME: f'{{"outputs": [{{"path": "{nested}"}}]}}'.encode()}
+        )
+        assert f"Error: {nested!r} cannot be saved" in out, out
+        assert f"{_MANIFEST_FILENAME!r} is a file name this tool reserves" in out, out
+        assert "a file of that name" not in out, out
+        assert "nothing can live inside it" in out, out
+        assert sink.names == []
+
+    @pytest.mark.parametrize(
+        ("name", "sentence"),
+        [
+            (_MANIFEST_FILENAME, "this tool reads a file of that name"),
+            (f"{_MANIFEST_FILENAME}/r.csv", "nothing can live inside it"),
+        ],
+        ids=["the manifest name", "a name beneath it"],
+    )
+    def test_the_manifest_name_is_reserved_against_shared_files_too(self, name: str, sentence: str):
+        """A store and this mode can be wired together, and then a shared `outputs.json` lands
+        exactly where the manifest is read from — handing the collection to a file the guest
+        never wrote. The name is reserved on the way in as well as on the way out."""
+        sandbox = _ProducingSandbox()
+        tool = _pulling_tool(
+            sandbox,
+            CodeactOutputs.MANIFEST,
+            _RecordingSink(),
+            file_store=InMemoryStore({name: "x"}),
+        )
+
+        out = _run(tool, "print('hi')", files=[name])
+        assert "cannot be shared" in out, out
+        assert sentence in out, out
+        assert sandbox.contents == {}
 
     def test_a_manifest_over_the_file_cap_lands_nothing(self):
         """`max_files=2` leaves room for the manifest and one artifact, so listing two is over."""
@@ -2056,6 +2259,22 @@ class TestOnlyAnAttachedToolSealsTheRegistry:
         assert registry.names() == frozenset({"_round_half_up", "_exchange_rate"})
 
 
+#: Every name the transport writes into a dispatching run, and one nested beneath each of the
+#: two that are files: the nested rule reads the same per-mode set as the exact one, so both
+#: have to fall silent for these.
+_TRANSPORT_NAMES = [
+    SHIM_MODULE,
+    f"{SHIM_MODULE.removesuffix('.py')}/__init__.py",
+    f"{SHIM_MODULE.removesuffix('.py')}.so",
+    f"{SHIM_MODULE}/part.csv",
+    "program_output.txt",
+    "program_exit_code",
+    "run_program.sh",
+    _PROGRAM_FILENAME,
+    f"{_PROGRAM_FILENAME}/data.csv",
+]
+
+
 class TestWhatTheTwoDirectoriesMakeHarmless:
     """A run that dispatches puts the transport's files in `host_tools/` and the model's in
     `work/`, so a name that would collide is written instead of refused.
@@ -2064,18 +2283,7 @@ class TestWhatTheTwoDirectoriesMakeHarmless:
     some list still enumerates them.
     """
 
-    @pytest.mark.parametrize(
-        "name",
-        [
-            SHIM_MODULE,
-            f"{SHIM_MODULE.removesuffix('.py')}/__init__.py",
-            f"{SHIM_MODULE.removesuffix('.py')}.so",
-            "program_output.txt",
-            "program_exit_code",
-            "run_program.sh",
-            _PROGRAM_FILENAME,
-        ],
-    )
+    @pytest.mark.parametrize("name", _TRANSPORT_NAMES)
     def test_a_shared_file_may_take_a_name_the_transport_uses(self, name: str):
         sandbox = _FinishingSandbox()
         tool = _tool(
@@ -2090,6 +2298,17 @@ class TestWhatTheTwoDirectoriesMakeHarmless:
         assert "cannot be shared" not in out, out
         (run_dir,) = _run_dirs(sandbox)
         assert f"{run_dir}/{WORK_DIRECTORY}/{name}" in sandbox.files, sorted(sandbox.files)
+
+    @pytest.mark.parametrize("name", _TRANSPORT_NAMES)
+    def test_a_declared_output_may_take_a_name_the_transport_uses(self, name: str):
+        """The outbound half of the same guarantee: outputs are collected from `work/`, and
+        the transport's own copies are not in it."""
+        sink = _RecordingSink()
+        tool, sandbox = _neighbouring(True, **_landing(CodeactOutputs.DECLARED, sink))
+
+        out = _run_producing(tool, sandbox, {name: b"a,b\n"}, outputs=[name])
+        assert "cannot be saved" not in out, out
+        assert sink.names == [name]
 
     def test_nothing_this_tool_writes_for_itself_lands_where_the_model_writes(self):
         """The guarantee behind the case above: what the transport owns and what a model can
@@ -2186,6 +2405,35 @@ class TestANeighbourOfTheProgramsNameIsNotTheProgram:
         out = _run(tool, "print('hi')", files=["program/train.py"])
         assert "cannot be shared" not in out
         assert f"{_model_dir(sandbox, dispatch)}/program/train.py" in sandbox.files
+
+    @pytest.mark.parametrize("name", ["Program.py", "Program.py/x.csv"])
+    def test_a_case_variant_of_the_programs_name_is_shared(self, dispatch: bool, name: str):
+        """The guest filesystem is POSIX, where `Program.py` and `program.py` are two files, so
+        the rule matches exactly. Case-folding either comparison refuses a legal name."""
+        tool, sandbox = _neighbouring(dispatch, file_store=InMemoryStore({name: "x"}))
+
+        out = _run(tool, "print('hi')", files=[name])
+        assert "cannot be shared" not in out, out
+        assert f"{_model_dir(sandbox, dispatch)}/{name}" in sandbox.files
+
+    @pytest.mark.parametrize("name", ["Program.py", "Program.py/x.csv"])
+    def test_a_case_variant_of_the_programs_name_is_saved(self, dispatch: bool, name: str):
+        sink = _RecordingSink()
+        tool, sandbox = _neighbouring(dispatch, **_landing(CodeactOutputs.DECLARED, sink))
+
+        out = _run_producing(tool, sandbox, {name: b"a,b\n"}, outputs=[name])
+        assert sink.names == [name]
+        assert "cannot be saved" not in out
+
+    def test_the_programs_name_deeper_in_a_path_is_shared(self, dispatch: bool):
+        """The rule is about the first segment. `data/program.py/notes.txt` displaces nothing,
+        and a containment test written in place of the prefix test refuses it."""
+        store = InMemoryStore({"data/program.py/notes.txt": "x"})
+        tool, sandbox = _neighbouring(dispatch, file_store=store)
+
+        out = _run(tool, "print('hi')", files=["data/program.py/notes.txt"])
+        assert "cannot be shared" not in out, out
+        assert f"{_model_dir(sandbox, dispatch)}/data/program.py/notes.txt" in sandbox.files
 
     def test_a_nested_output_under_it_is_saved(self, dispatch: bool):
         sink = _RecordingSink()
