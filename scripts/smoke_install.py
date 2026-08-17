@@ -353,7 +353,7 @@ def _smoke_maf_sandbox_docker() -> str:
     if backend.isolation != Isolation.CONTAINER:
         raise SystemExit(f"FAIL: docker backend declares {backend.isolation!r}, expected container")
     if backend.capabilities != frozenset(
-        {Capability.EXEC, Capability.FILES_IN, Capability.FILES_OUT}
+        {Capability.EXEC, Capability.FILES_IN, Capability.FILES_OUT, Capability.HOST_TOOLS}
     ):
         raise SystemExit(f"FAIL: docker backend declares {sorted(backend.capabilities)!r}")
     allowlisting = DockerSandboxBackend(DockerSandboxConfig(egress_proxy_image="x:1"))
@@ -363,7 +363,10 @@ def _smoke_maf_sandbox_docker() -> str:
     dockerfile = proxy_build_context() / "Dockerfile"
     if not dockerfile.is_file():
         raise SystemExit(f"FAIL: the proxy build context is missing its Dockerfile ({dockerfile})")
-    return "backend constructs, declares FILES_OUT and its egress, and ships the proxy recipe"
+    return (
+        "backend constructs, declares FILES_OUT, HOST_TOOLS and its egress, and ships the "
+        "proxy recipe"
+    )
 
 
 _SMOKES = {

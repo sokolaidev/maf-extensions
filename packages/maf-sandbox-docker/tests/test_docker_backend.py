@@ -228,9 +228,16 @@ class TestBackendIdentity:
         config = DockerSandboxConfig(egress_proxy_image="proxy:local")
         assert DockerSandboxBackend(config).egress == Egress.ALLOWLIST
 
-    def test_declares_exec_files_in_and_files_out(self):
+    def test_declares_exec_files_in_files_out_and_host_tools(self):
         caps = DockerSandboxBackend(DockerSandboxConfig()).capabilities
-        assert caps == frozenset({Capability.EXEC, Capability.FILES_IN, Capability.FILES_OUT})
+        assert caps == frozenset(
+            {
+                Capability.EXEC,
+                Capability.FILES_IN,
+                Capability.FILES_OUT,
+                Capability.HOST_TOOLS,
+            }
+        )
 
     def test_does_not_declare_files_list(self):
         assert Capability.FILES_LIST not in DockerSandboxBackend(DockerSandboxConfig()).capabilities
@@ -284,6 +291,31 @@ class TestRouterFloor:
         spec = SandboxSpec(kind="k", requires=frozenset({Capability.EXEC, Capability.FILES_LIST}))
         with pytest.raises(SandboxCapabilityNotSupported):
             router.ensure_can_serve(spec)
+
+    def test_a_codeact_style_spec_wiring_host_tools_is_admitted(self):
+        """The whole point of declaring it: the spec a wired registry produces now attaches.
+
+        Asserted through `ensure_can_serve` rather than by re-reading the frozenset, because
+        the set agreeing with itself is not the property that changed — a spec being admitted
+        is. This is the exact `requires` `codeact_sandbox_spec` builds for a non-empty
+        registry, so it fails if either side of that pair drifts.
+        """
+        router = SandboxRouter(
+            [DockerSandboxBackend(DockerSandboxConfig())], min_isolation=Isolation.CONTAINER
+        )
+        spec = SandboxSpec(
+            kind="codeact",
+            requires=frozenset(
+                {
+                    Capability.EXEC,
+                    Capability.FILES_IN,
+                    Capability.FILES_OUT,
+                    Capability.HOST_TOOLS,
+                }
+            ),
+        )
+
+        router.ensure_can_serve(spec)
 
     def test_a_spec_requiring_files_out_is_admitted(self):
         router = SandboxRouter(
