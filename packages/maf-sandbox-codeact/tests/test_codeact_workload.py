@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from collections.abc import Sequence
+import json
+import warnings
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from typing import Any
 
@@ -23,19 +25,30 @@ from maf_sandbox import (
     DEFAULT_CAPABILITIES,
     DEFAULT_TRANSFER_LIMITS,
     MAX_ARTIFACT_NAME_BYTES,
+    SHIM_MODULE,
+    WORK_DIRECTORY,
     Artifact,
     CallerContext,
     Capability,
     EntryKind,
     ExecResult,
+    GuestRunLayout,
+    HostToolRegistry,
+    Identity,
     LandedArtifact,
+    MafSandboxHostToolsWarning,
     NameNormalization,
     OutputSink,
     SandboxCapabilityNotSupported,
     SandboxEntry,
     SandboxOutputSinkRequired,
     SandboxRouter,
+    SourceIntegrity,
     TransferLimits,
+    guest_run_layout,
+    host_tool_shim,
+    launcher_script,
+    sandbox_tool,
 )
 from maf_sandbox.testing import InMemoryStore, InProcessSandbox, InProcessSandboxBackend
 
@@ -56,6 +69,10 @@ from maf_sandbox_codeact._tool import (
 
 #: What a backend must declare before this kind may collect anything.
 _PULLS = DEFAULT_CAPABILITIES | {Capability.FILES_OUT}
+
+#: And before a program may reach a host tool: dispatch carries its requests over the same
+#: pull surface, so it needs everything a collection needs and the capability besides.
+_DISPATCHES = _PULLS | {Capability.HOST_TOOLS}
 
 # ---------------------------------------------------------------------------
 # Fakes: a sandbox that keeps the command it was handed, unjoined
@@ -99,10 +116,16 @@ class _ProducingSandbox(_ScriptedSandbox):
         super().__init__(**kwargs)
         self.produces = produces or {}
 
+    def _program_cwd(self, working_directory: str) -> str:
+        """Where a program writing a relative filename lands it — the directory `exec` was
+        given, for a run this kind starts itself."""
+        return working_directory
+
     async def exec(self, command, *, working_directory, timeout):
         result = await super().exec(command, working_directory=working_directory, timeout=timeout)
+        cwd = self._program_cwd(working_directory)
         for name, content in self.produces.items():
-            self.contents[f"{working_directory}/{name}"] = content
+            self.contents[f"{cwd}/{name}"] = content
         return result
 
 
@@ -128,6 +151,73 @@ class _StatOnlySandbox(_ScriptedSandbox):
         return await super().read_file(
             path, working_directory=working_directory, max_bytes=max_bytes
         )
+
+
+class _CallingSandbox(_ScriptedSandbox):
+    """A sandbox whose "program" dispatches one host tool, prints the answer, and exits.
+
+    The interleaving is what a real guest has and what a scripted ``exec`` cannot express: the
+    request appears when the launcher starts, and the exit marker only once the supervisor's
+    answer has landed. Every path is taken from :func:`~maf_sandbox.guest_run_layout` over the
+    working directory the launcher was given, so a kind addressing the transport by any other
+    name is not served here either.
+    """
+
+    def __init__(self, name: str, arguments: dict[str, Any] | None = None, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.answers: list[dict[str, Any]] = []
+        self.layouts: list[GuestRunLayout] = []
+        self._call = (name, arguments or {})
+        self._outstanding: GuestRunLayout | None = None
+
+    async def exec(self, command, *, working_directory, timeout):
+        result = await super().exec(command, working_directory=working_directory, timeout=timeout)
+        layout = guest_run_layout(working_directory, program=_PROGRAM_FILENAME)
+        self.layouts.append(layout)
+        self._outstanding = layout
+        name, arguments = self._call
+        self.contents[f"{layout.calls}/0001.request.json"] = json.dumps(
+            {"id": "0001", "name": name, "arguments": arguments}
+        ).encode()
+        return result
+
+    async def stat_file(self, path, *, working_directory):
+        self._take_the_answer()
+        return await super().stat_file(path, working_directory=working_directory)
+
+    def _take_the_answer(self) -> None:
+        """Read the response if it has landed, print what it said, and end the program."""
+        layout = self._outstanding
+        if layout is None:
+            return
+        answered = self.contents.get(f"{layout.calls}/0001.response.json")
+        if answered is None:
+            return
+        self._outstanding = None
+        self.answers.append(json.loads(answered))
+        told = self.answers[-1].get("value", self.answers[-1].get("refusal"))
+        self.contents[layout.output] = f"the host said {told}".encode()
+        self.contents[layout.exit_code] = b"0"
+
+
+class _FinishingSandbox(_ProducingSandbox):
+    """A dispatch-served guest that produces its files and then leaves the exit marker.
+
+    The supervisor polls for that marker, so a guest that never writes one is waited out. This
+    one calls nothing: what it stands in for is a dispatched run that simply *succeeds*.
+    """
+
+    def _program_cwd(self, working_directory: str) -> str:
+        """The launcher `cd`s into the work directory before starting the program, so that is
+        where a relative filename lands — not the run directory `exec` was handed."""
+        return guest_run_layout(working_directory, program=_PROGRAM_FILENAME).work
+
+    async def exec(self, command, *, working_directory, timeout):
+        result = await super().exec(command, working_directory=working_directory, timeout=timeout)
+        layout = guest_run_layout(working_directory, program=_PROGRAM_FILENAME)
+        self.contents[layout.output] = b"ran"
+        self.contents[layout.exit_code] = b"0"
+        return result
 
 
 class _RecordingSink:
@@ -280,6 +370,52 @@ def _pulling_tool(
     )
 
 
+# --- Host tools: one stamped function per leg a registry can carry ------------------------
+
+
+@sandbox_tool(source=SourceIntegrity.TRUSTED, sink=None, identity=Identity.APP)
+def _exchange_rate(pair: str) -> float:
+    return 1.0
+
+
+@sandbox_tool(source=None, sink="the-crm", identity=Identity.APP)
+def _log_to_crm(note: str) -> None:
+    return None
+
+
+@sandbox_tool(source=None, sink=None, identity=None)
+def _round_half_up(value: float) -> int:
+    return int(value + 0.5)
+
+
+@sandbox_tool(source=None, sink=None, identity=Identity.USER)
+def _the_callers_calendar() -> list[str]:
+    return []
+
+
+def _unstamped_lookup(query: str) -> str:
+    """No stamp at all, which the library's default gate registers without complaint."""
+    return ""
+
+
+def _registry(*tools: Callable[..., Any], **policy: Any) -> HostToolRegistry:
+    """A registry serving `tools` under `policy`, with the registration notice filtered out.
+
+    That notice is the host's to read once, and the filter below is the one it names itself.
+    """
+    registry = HostToolRegistry(**policy)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=MafSandboxHostToolsWarning)
+        for func in tools:
+            registry.register(func)
+    return registry
+
+
+def _dispatching_tool(registry: HostToolRegistry, **kw: Any):
+    """The tool a host gets for `registry`, on a backend that can serve what dispatch needs."""
+    return _tool(_backend(capabilities=_DISPATCHES), host_tools=registry, **kw)
+
+
 def _callable(tool):
     """The tool body, off whichever attribute the MAF decorator carries it on."""
     return getattr(tool, "func", None) or getattr(tool, "__wrapped__", None) or tool
@@ -330,6 +466,39 @@ class TestCodeactSandboxSpec:
 
     def test_the_image_id_is_passed_through(self):
         assert codeact_sandbox_spec(image_id="disk-image-7").image_id == "disk-image-7"
+
+    def test_a_registry_holding_nothing_leaves_the_spec_where_it_was(self):
+        """An empty registry is a dispatch surface that does not exist, and reads as one."""
+        assert codeact_sandbox_spec(host_tools=_registry()) == codeact_sandbox_spec()
+
+    def test_a_registry_adds_the_capability_and_the_surface_dispatch_travels_over(self):
+        """`FILES_OUT` is not optional here, and not this kind's output channel either: the
+        transport stats and reads the program's request files and its exit marker, so even a
+        stdout-only program that can call a host function needs the pull surface."""
+        spec = codeact_sandbox_spec(host_tools=_registry(_exchange_rate))
+        assert spec.requires == frozenset(
+            {Capability.EXEC, Capability.FILES_IN, Capability.FILES_OUT, Capability.HOST_TOOLS}
+        )
+
+    def test_a_registry_of_pure_computation_widens_it_just_the_same(self):
+        """The capability follows from something being dispatchable at all, never from what
+        the aggregate found in it: a tool that is no source, no sink and no authority is
+        still a call crossing the boundary."""
+        spec = codeact_sandbox_spec(host_tools=_registry(_round_half_up))
+        assert Capability.HOST_TOOLS in spec.requires
+        assert spec.identities == frozenset()
+
+    def test_the_identities_a_registry_declares_reach_the_spec(self):
+        """Which is what the router's `denied_identities` is matched against at attach."""
+        spec = codeact_sandbox_spec(host_tools=_registry(_exchange_rate, _the_callers_calendar))
+        assert spec.identities == frozenset({Identity.APP, Identity.USER})
+
+    def test_reading_a_registry_seals_it(self):
+        """A tool registered afterwards would be dispatchable from a spec that never saw it."""
+        registry = _registry(_exchange_rate)
+        codeact_sandbox_spec(host_tools=registry)
+        with pytest.raises(ValueError, match="sealed"):
+            registry.register(_round_half_up)
 
 
 # ---------------------------------------------------------------------------
@@ -502,6 +671,79 @@ class TestFidesDeclarations:
         tool = _tool(_backend())
         assert dict(tool.additional_properties or {}) == {}
 
+    def test_an_empty_registry_declares_nothing_either(self):
+        """Nothing dispatchable is nothing carried, whatever cap the host holds."""
+        tool = _dispatching_tool(_registry(), outbound_max_confidentiality="private")
+        assert dict(tool.additional_properties or {}) == {}
+
+    def test_a_registry_with_no_sink_tool_leaves_the_cap_unwritten(self):
+        """A source brings data *in* and pure computation carries nothing at all, so the flow
+        the cap gates still does not exist — and a cap on a flow that cannot happen gates
+        calls for nothing."""
+        registry = _registry(_exchange_rate, _round_half_up)
+        tool = _dispatching_tool(registry, outbound_max_confidentiality="private")
+        assert dict(tool.additional_properties or {}) == {}
+
+    def test_a_sink_tool_makes_the_hosts_cap_apply_with_nothing_landing(self):
+        """Egress is closed and no artifact lands, and the surface carries something out
+        anyway — the one flow a derivation reading only the spec cannot see. What is written
+        is the host's own cap, never the tool's sink value: the two are vocabularies this
+        package refuses to order against each other."""
+        tool = _dispatching_tool(_registry(_log_to_crm), outbound_max_confidentiality="private")
+        assert dict(tool.additional_properties or {}) == {"max_allowed_confidentiality": "private"}
+
+    def test_a_sink_tool_beside_an_output_sink_still_attaches(self):
+        """`sandboxed_tool` refuses an explicit mapping together with a sink, and there is
+        nothing to override anyway: a spec that lands already has the derivation writing the
+        very same cap."""
+        tool = _tool(
+            _backend(capabilities=_DISPATCHES),
+            host_tools=_registry(_log_to_crm),
+            outbound_max_confidentiality="private",
+            **_landing(CodeactOutputs.DECLARED),
+        )
+        assert dict(tool.additional_properties or {}) == {"max_allowed_confidentiality": "private"}
+
+    def test_an_unstamped_tool_carries_the_hosts_cap_as_a_sink_tool_would(self):
+        """Nobody answered the sink question, so the fold sees no sink to write a cap from —
+        and the guest can still dispatch that function with conversation-derived arguments.
+        Every other undeclared leg fails safe (untrusted source, APP identity); so does this
+        one, or a confidential conversation reaches `execute_code` ungated."""
+        tool = _dispatching_tool(
+            _registry(_unstamped_lookup), outbound_max_confidentiality="private"
+        )
+        assert dict(tool.additional_properties or {}) == {"max_allowed_confidentiality": "private"}
+
+    def test_no_source_integrity_is_declared_however_the_registry_is_stamped(self):
+        """A registry of trusted lookups does not make a model-written `print(...)` trusted."""
+        registry = _registry(_exchange_rate, _log_to_crm)
+        tool = _dispatching_tool(registry, outbound_max_confidentiality="private")
+        assert "source_integrity" not in dict(tool.additional_properties or {})
+
+
+class TestWhatARegistryDoesBeyondTheSpec:
+    """The two things a host's registry decides here that its own `requires` does not say."""
+
+    def test_a_user_identity_tool_gates_every_call_on_approval(self):
+        """A dispatch may exercise the caller's own delegated authority, and which call does
+        is not knowable before the program runs — so one such tool raises the whole surface."""
+        tool = _dispatching_tool(_registry(_the_callers_calendar))
+        assert tool.approval_mode == "always_require"
+
+    def test_the_applications_own_authority_does_not_gate_it(self):
+        tool = _dispatching_tool(_registry(_exchange_rate, _log_to_crm))
+        assert tool.approval_mode == "never_require"
+
+    @pytest.mark.parametrize("tools", [(), (_exchange_rate,)])
+    def test_the_registry_is_sealed_once_the_factory_has_run(self, tools):
+        """The empty one too: sealing costs nothing there, and it turns "registered a tool
+        after the tool was built" into a refusal at the host's own `register` rather than a
+        registration that quietly reaches nothing."""
+        registry = _registry(*tools)
+        _dispatching_tool(registry)
+        with pytest.raises(ValueError, match="sealed"):
+            registry.register(_round_half_up)
+
 
 # ---------------------------------------------------------------------------
 # Degrading — a failure is an answer to the model, never an exception in the loop
@@ -552,10 +794,42 @@ class TestDegrades:
 # The description is the whole surface: v0 registers nothing else
 # ---------------------------------------------------------------------------
 
+#: `execute_code`'s `__doc__` with no file store, no output mode and no registry wired.
+_UNWIRED_DESCRIPTION = """Run a short Python program inside a sandbox and return what it printed.
+
+        Use this to compute rather than to reason: parse, transform, count, check, simulate —
+        anything where running the code beats predicting what it would do.  The program runs
+        as ``python3 program.py`` in a sandbox with **no network access**, so it can compute
+        but cannot fetch.
+
+        **Only what you print is read back as text.**  There is no REPL echo and the value of
+        the last expression is not returned, so end the program with ``print(...)`` of
+        everything you need to see.
+
+        Write a complete, self-contained program every time.  Each call gets a fresh working
+        directory: nothing you did not pass in to *this* call is in it.
+
+        Args:
+            code: The Python source to run.  The standard library, plus
+                whatever the sandbox image ships.
+
+        Returns:
+            The program's stdout, its stderr when it wrote any, and its exit
+            code when that was not zero.  If the sandbox is unavailable the tool returns an
+            error message instead, so the run degrades rather than blocking.
+        """
+
 
 class TestToolDescription:
     def _description(self, **kw) -> str:
         return _callable(_tool(_backend(capabilities=_PULLS), **kw)).__doc__ or ""
+
+    def test_a_host_that_wires_no_channel_gets_exactly_this_text(self):
+        """A literal, not a comparison against another description this same code builds: a
+        change that shifts every description shifts both sides of such a comparison and it
+        stays green.  Every word and every line break below reaches the model as ``__doc__``,
+        so an edit that reaches this leg has to be made here too, deliberately."""
+        assert self._description() == _UNWIRED_DESCRIPTION
 
     def test_it_says_only_printed_output_comes_back(self):
         assert "print" in self._description()
@@ -585,6 +859,59 @@ class TestToolDescription:
         assert _MANIFEST_FILENAME in described
         assert '"outputs"' in described
         assert "``outputs``" not in described
+
+
+class TestToolDescriptionWithHostTools:
+    """What a non-empty `host_tools` registry adds to the description the model reads."""
+
+    def test_every_registered_tool_is_named(self):
+        registry = _registry(_exchange_rate, _log_to_crm, _round_half_up)
+        described = _callable(_dispatching_tool(registry)).__doc__ or ""
+        assert "_exchange_rate" in described
+        assert "_log_to_crm" in described
+        assert "_round_half_up" in described
+
+    def test_an_empty_registry_reads_exactly_like_no_registry_at_all(self):
+        plain = _callable(_tool(_backend(capabilities=_PULLS))).__doc__ or ""
+        with_empty_registry = _callable(_dispatching_tool(_registry())).__doc__ or ""
+        assert with_empty_registry == plain
+        assert "maf_host_tools" not in with_empty_registry
+
+    def test_the_network_claim_is_qualified_only_once_a_tool_is_registered(self):
+        without = _callable(_tool(_backend(capabilities=_PULLS))).__doc__ or ""
+        described = _callable(_dispatching_tool(_registry(_exchange_rate))).__doc__ or ""
+        assert "no network access" in without
+        assert "no network access" not in described
+        assert "no network of its own" in described
+        assert "no network of its own" not in without
+
+    def test_the_call_form_matches_what_the_shim_actually_generates(self):
+        """The syntax the model is told to write must be the syntax the generated shim
+        module accepts — checked against the real generated source, not a copy of it."""
+        registry = _registry(_exchange_rate)
+        described = _callable(_dispatching_tool(registry)).__doc__ or ""
+        generated = host_tool_shim(registry.names())
+        module = SHIM_MODULE.removesuffix(".py")
+
+        assert f"import {module}" in described
+        assert "def call(name, **arguments):" in generated
+        assert f"{module}.call(" in described
+        assert "keyword" in described
+        assert "class HostToolError" in generated
+        assert f"{module}.HostToolError" in described
+
+    def test_the_returns_contract_says_where_a_traceback_actually_lands(self):
+        """The launcher merges the program's stderr into its stdout, so the plain sentence
+        would send a model looking for its traceback in a section that cannot hold one."""
+        launcher = launcher_script(guest_run_layout("/w/run", program=_PROGRAM_FILENAME))
+        plain = _callable(_tool(_backend(capabilities=_PULLS))).__doc__ or ""
+        described = _callable(_dispatching_tool(_registry(_exchange_rate))).__doc__ or ""
+
+        assert "2>&1" in launcher
+        assert "its stderr when it wrote any" in plain
+        assert "its stderr when it wrote any" not in described
+        assert "traceback comes back under ``stdout``" in described
+        assert "host's note about the run" in described
 
 
 # ---------------------------------------------------------------------------
@@ -724,7 +1051,9 @@ class TestTheInboundCapsAreEnforcedHere:
         tool = self._tool(sandbox, store, files_in=replace(DEFAULT_TRANSFER_LIMITS, max_files=2))
 
         out = _run(tool, "print(1)", files=["a", "b", "c"])
-        assert "at most 2" in out
+        assert "your program and 3 shared" in out
+        # Unqualified: with nothing dispatchable that list is everything that would cross.
+        assert "writes at most 2 per call" in out
         assert sandbox.contents == {}
 
     def test_a_file_over_the_per_file_ceiling_is_refused(self):
@@ -992,6 +1321,35 @@ class TestDeclaredOutputs:
         assert "over the 255-byte ceiling" in out
         assert sandbox.raw_commands == []
         assert sink.names == []
+
+    def test_the_work_subdirectory_counts_toward_the_ceiling_when_a_run_dispatches(self):
+        """A dispatching run keeps the model's files one level deeper, so the prefix a declared
+        name is judged against is `<run>/work/` — five bytes more than `<run>/`.
+
+        242 is the longest name the flat layout accepts, and it is over the ceiling as soon as
+        those five are counted. Both halves are asserted because only the pair discriminates:
+        judging against the run id alone would let this through and have `collect_outputs`
+        refuse the guest path a whole run later, which is the failure the up-front check exists
+        to prevent.
+        """
+        name = "a" * (MAX_ARTIFACT_NAME_BYTES - 13)
+
+        flat_sink = _RecordingSink()
+        flat_tool, flat_sandbox = _neighbouring(
+            False, **_landing(CodeactOutputs.DECLARED, flat_sink)
+        )
+        flat = _run_producing(flat_tool, flat_sandbox, {name: b"x"}, outputs=[name])
+
+        armed_sink = _RecordingSink()
+        armed_tool, armed_sandbox = _neighbouring(
+            True, **_landing(CodeactOutputs.DECLARED, armed_sink)
+        )
+        armed = _run_producing(armed_tool, armed_sandbox, {name: b"x"}, outputs=[name])
+
+        assert flat_sink.names == [name], f"the flat layout should still accept it: {flat}"
+        assert "over the 255-byte ceiling" in armed, armed
+        assert armed_sink.names == []
+        assert armed_sandbox.raw_commands == [], "it was refused after the program ran"
 
     def test_a_name_that_only_grows_past_the_ceiling_once_normalized_is_refused_up_front(self):
         """The delivered spelling is what `collect_outputs` judges: 43 × U+0958 is 129 bytes as
@@ -1459,6 +1817,384 @@ class TestTheSinkIsTheHostsChoice:
         """Landing files changes nothing about where the tool's *result* came from."""
         tool = _tool(_backend(capabilities=_PULLS), **_landing(CodeactOutputs.DECLARED))
         assert "source_integrity" not in dict(tool.additional_properties or {})
+
+
+# ---------------------------------------------------------------------------
+# Host tools — the program calls out, and the host answers over the run's own files
+# ---------------------------------------------------------------------------
+
+
+def _dispatching(sandbox: InProcessSandbox, *tools: Callable[..., Any], **kw: Any):
+    """The tool for a registry serving `tools`, over a sandbox that can serve the transport."""
+    return _tool(_backend(sandbox, capabilities=_DISPATCHES), host_tools=_registry(*tools), **kw)
+
+
+class TestAProgramThatCallsOut:
+    def test_the_registry_answers_and_the_program_reads_what_it_said(self):
+        """End to end over the transport: the request the guest wrote reaches the registered
+        function, its arguments arrive, and its return value is what the program prints."""
+        sandbox = _CallingSandbox("_round_half_up", {"value": 3.6})
+        out = _run(_dispatching(sandbox, _round_half_up), "print(_round_half_up(value=3.6))")
+
+        assert sandbox.answers == [{"value": 4}]
+        assert out == "stdout:\nthe host said 4"
+
+    def test_each_call_is_served_under_its_own_run_directory(self):
+        """`acquire` is get-or-create, so a second call must not find the first one's requests,
+        its answers or its exit marker sitting where the supervisor polls."""
+        sandbox = _CallingSandbox("_round_half_up", {"value": 0.5})
+        tool = _dispatching(sandbox, _round_half_up)
+        _run(tool, "print(1)")
+        _run(tool, "print(2)")
+
+        first, second = sandbox.layouts
+        assert first.directory != second.directory
+        assert [first.directory, second.directory] == _run_dirs(sandbox)
+        assert len(sandbox.answers) == 2
+
+    def test_the_dispatch_cap_bounds_one_call_rather_than_the_conversation(self):
+        """The cap bounds what one program may cost, so a run that spends it all must leave the
+        next call as much — not retire `execute_code` for the rest of the conversation."""
+        sandbox = _CallingSandbox("_round_half_up", {"value": 3.6})
+        registry = _registry(_round_half_up, max_dispatches_per_run=1)
+        tool = _tool(_backend(sandbox, capabilities=_DISPATCHES), host_tools=registry)
+        _run(tool, "print(1)")
+        _run(tool, "print(2)")
+
+        assert sandbox.answers == [{"value": 4}, {"value": 4}]
+
+    def test_the_program_is_written_where_the_launcher_goes_looking_for_it(self):
+        """The launcher runs `layout.program`, which is in the transport's directory and not in
+        the one the program's own working directory points at.
+
+        Nothing else in this suite can see this: these fakes script a result rather than
+        running anything, so a program written to the run directory instead would leave the
+        launcher exec'ing a path that does not exist — on every real dispatching run, and on no
+        test. Both halves are asserted, because writing it to *both* places would satisfy the
+        first alone while leaving a copy where a model's files are.
+        """
+        sandbox = _CallingSandbox("_round_half_up", {"value": 0.5})
+        _run(_dispatching(sandbox, _round_half_up), "print('hi')")
+
+        (layout,) = sandbox.layouts
+        assert sandbox.files.get(layout.program) == "print('hi')", sorted(sandbox.files)
+        assert f"{layout.directory}/{_PROGRAM_FILENAME}" not in sandbox.files
+        assert f"{layout.work}/{_PROGRAM_FILENAME}" not in sandbox.files
+
+    def test_the_shim_is_written_beside_the_program_with_the_runs_own_patience(self):
+        """A guest that gives up before the supervisor does is wrong twice over: the dispatch
+        it asked for goes on to act while the program has been told nobody answered."""
+        sandbox = _CallingSandbox("_round_half_up", {"value": 0.5})
+        _run(_dispatching(sandbox, _round_half_up, exec_timeout_seconds=97), "print(1)")
+
+        (layout,) = sandbox.layouts
+        assert sandbox.files[layout.shim] == host_tool_shim(
+            frozenset({"_round_half_up"}), call_timeout=97
+        )
+
+    def test_both_paths_run_the_program_under_this_kinds_own_interpreter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The transport carries a default of its own, so a dispatching run that leaves it out
+        is running under a constant this kind does not own and cannot change."""
+        monkeypatch.setattr("maf_sandbox_codeact._tool._INTERPRETER", "pypy3")
+
+        plain = _ScriptedSandbox()
+        _run(_tool(_backend(plain)), "print(1)")
+        assert plain.commands[0][0].startswith("pypy3 ")
+
+        sandbox = _CallingSandbox("_round_half_up", {"value": 0.5})
+        _run(_dispatching(sandbox, _round_half_up), "print(1)")
+
+        (layout,) = sandbox.layouts
+        assert "pypy3" in sandbox.files[layout.launcher]
+        assert "python3" not in sandbox.files[layout.launcher]
+
+
+class _StallingSandbox(_ScriptedSandbox):
+    """A dispatch-served guest that prints and then never records an exit marker.
+
+    What a wedged program looks like from the supervisor's side: the launcher returns, output
+    accumulates, and the marker the run is waiting for never lands.
+    """
+
+    def __init__(self, printed: bytes = b"step 1 done", **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.printed = printed
+
+    async def exec(self, command, *, working_directory, timeout):
+        result = await super().exec(command, working_directory=working_directory, timeout=timeout)
+        layout = guest_run_layout(working_directory, program=_PROGRAM_FILENAME)
+        self.contents[layout.output] = self.printed
+        return result
+
+
+class _StatTimingOutSandbox(_StallingSandbox):
+    """A backend that bounds its own control-plane calls, as the shipped Docker one does.
+
+    Its `stat_file` raises the client's own `TimeoutError` — not this run's, which has almost
+    all of its time left. `_within` re-raises a backend's own untranslated on purpose.
+    """
+
+    async def stat_file(self, path, *, working_directory):
+        raise TimeoutError("docker cp: context deadline exceeded")
+
+
+class TestATimeoutSaysWhoseItWas:
+    """`TimeoutError` means two unrelated things on the dispatch path, and only one of them is
+    the program running out. Collapsing them tells the model to rewrite code that was fine."""
+
+    def test_a_backends_own_timeout_is_not_blamed_on_the_program(self):
+        sandbox = _StatTimingOutSandbox()
+        out = _run(_dispatching(sandbox, _round_half_up, exec_timeout_seconds=600), "print('hi')")
+
+        assert "timed out" not in out, "a stat that ran out was reported as the program's bound"
+        assert out == "Error: could not run the program in the sandbox"
+        assert "docker cp" not in out, "the backend's own sentence reached the transcript"
+
+    def test_a_program_that_runs_out_is_quoted_as_far_as_it_got(self):
+        sandbox = _StallingSandbox(printed=b"step 1 done\nstep 2 done")
+        out = _run(_dispatching(sandbox, _round_half_up, exec_timeout_seconds=1), "print('x')")
+
+        assert "timed out after 1s" in out
+        assert "step 2 done" in out, "the partial output the transport paid to read was dropped"
+
+    def test_the_plain_path_still_reads_a_timeout_as_the_programs_own(self):
+        """No dispatch, one `exec`, one bound: the equation this class complicates holds here."""
+        sandbox = _ScriptedSandbox(raises=TimeoutError())
+        out = _run(_tool(_backend(sandbox), exec_timeout_seconds=7), "print('hi')")
+
+        assert out == "Error: the program timed out after 7s"
+
+
+class TestOnlyAnAttachedToolSealsTheRegistry:
+    def test_an_unconfigured_hosts_registry_can_still_be_widened(self):
+        """Nothing is grounded on a host with no sandbox — no spec, no classification — so a
+        later `register` has nothing to contradict and must not be refused as if it had."""
+        registry = _registry(_round_half_up)
+        assert make_codeact_tools(None, "data-analyst", _context(), host_tools=registry) == []
+
+        registry.register(_exchange_rate)
+        assert registry.names() == frozenset({"_round_half_up", "_exchange_rate"})
+
+
+class TestWhatTheTwoDirectoriesMakeHarmless:
+    """A run that dispatches puts the transport's files in `host_tools/` and the model's in
+    `work/`, so a name that used to be refused is now simply written.
+
+    These names were refused until 0.16, against a list this kind had to keep complete —
+    `RESERVED_RUN_FILENAMES`, withdrawn before it shipped. The separation is what replaced it,
+    and the test that it worked is that these land rather than that a list still names them.
+    """
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            SHIM_MODULE,
+            f"{SHIM_MODULE.removesuffix('.py')}/__init__.py",
+            f"{SHIM_MODULE.removesuffix('.py')}.so",
+            "program_output.txt",
+            "program_exit_code",
+            "run_program.sh",
+            _PROGRAM_FILENAME,
+        ],
+    )
+    def test_a_shared_file_may_take_a_name_the_transport_uses(self, name: str):
+        sandbox = _FinishingSandbox()
+        tool = _tool(
+            _backend(sandbox, capabilities=_DISPATCHES),
+            host_tools=_registry(_round_half_up),
+            file_store=InMemoryStore({name: "x"}),
+            exec_timeout_seconds=5,
+        )
+
+        out = _run(tool, "print(1)", files=[name])
+
+        assert "cannot be shared" not in out, out
+        (run_dir,) = _run_dirs(sandbox)
+        assert f"{run_dir}/{WORK_DIRECTORY}/{name}" in sandbox.files, sorted(sandbox.files)
+
+    def test_the_transports_own_files_are_not_in_the_directory_the_model_writes_into(self):
+        """The guarantee behind the case above, stated where a reader will look for it: what
+        the transport owns and what a model can name are two directories, so there is no name
+        to get wrong rather than a list that has to stay complete."""
+        sandbox = _CallingSandbox("_round_half_up", {"value": 0.5})
+        _run(_dispatching(sandbox, _round_half_up), "print(1)")
+
+        (layout,) = sandbox.layouts
+        owned = (layout.program, layout.shim, layout.launcher, layout.output, layout.exit_code)
+
+        assert layout.work != layout.directory
+        for path in owned:
+            assert not path.startswith(f"{layout.work}/"), (
+                f"{path} sits in the directory model-named files are written into"
+            )
+
+
+class TestADegenerateRunBoundIsRefusedInThisKindsVoice:
+    """The shim carries the run's bound as the guest's own patience, so a bound no run could
+    have is settled at the factory — under the parameter the caller passed."""
+
+    @pytest.mark.parametrize("seconds", [0, -1])
+    def test_a_registry_makes_a_non_positive_bound_a_factory_refusal(self, seconds: int):
+        with pytest.raises(ValueError) as refused:
+            _dispatching_tool(_registry(_round_half_up), exec_timeout_seconds=seconds)
+
+        assert str(refused.value).startswith(f"{EXECUTE_CODE_TOOL_NAME}: exec_timeout_seconds")
+        # `call_timeout` is the shim generator's parameter, which this factory does not expose.
+        assert "call_timeout" not in str(refused.value)
+
+    def test_a_host_with_nothing_dispatchable_keeps_tolerating_one(self):
+        """With no shim to generate the number only ever reaches `exec`, and this factory has
+        never had an opinion about it."""
+        _tool(_backend(), exec_timeout_seconds=0)
+        _dispatching_tool(_registry(), exec_timeout_seconds=0)
+
+
+def _neighbouring(dispatch: bool, **kw: Any):
+    """The tool and its sandbox for the tests below, dispatching or not.
+
+    Both halves run because the two put the model's files in different places — the run
+    directory flat, or its `work` subdirectory — while the rule under test is the same one.
+    """
+    sandbox = _FinishingSandbox() if dispatch else _ProducingSandbox()
+    tool = _tool(
+        _backend(sandbox, capabilities=_DISPATCHES if dispatch else _PULLS),
+        exec_timeout_seconds=1,
+        **({"host_tools": _registry(_round_half_up)} if dispatch else {}),
+        **kw,
+    )
+    return tool, sandbox
+
+
+@pytest.mark.parametrize("dispatch", [False, True], ids=["no registry", "dispatch armed"])
+def _model_dir(sandbox: InProcessSandbox, dispatch: bool) -> str:
+    """Where this run put the files a model named: the work subdirectory, or the run directory.
+
+    Derived from `dispatch` rather than from what the sandbox happens to contain, so a
+    regression that writes them to the wrong directory fails here instead of being read back
+    from wherever it wrote them.
+    """
+    run_dir = _run_dirs(sandbox)[0]
+    return f"{run_dir}/{WORK_DIRECTORY}" if dispatch else run_dir
+
+
+@pytest.mark.parametrize("dispatch", [False, True], ids=["no registry", "dispatch armed"])
+class TestANeighbourOfTheProgramsNameIsNotTheProgram:
+    """`program.py` is exec'd by path, so neither a `program/` directory nor a `program.*`
+    sibling displaces it, and both are names the `files` channel documents. The reserved-name
+    rule is a prefix test, which is the shape that over-reaches onto these if written
+    carelessly."""
+
+    def test_a_sibling_of_the_programs_name_is_shared(self, dispatch: bool):
+        tool, sandbox = _neighbouring(dispatch, file_store=InMemoryStore({"program.csv": "a,b\n"}))
+
+        out = _run(tool, "print('hi')", files=["program.csv"])
+        assert "cannot be shared" not in out
+        assert f"{_model_dir(sandbox, dispatch)}/program.csv" in sandbox.files
+
+    def test_a_nested_input_under_the_programs_name_is_shared(self, dispatch: bool):
+        store = InMemoryStore({"program/train.py": "x = 1\n"})
+        tool, sandbox = _neighbouring(dispatch, file_store=store)
+
+        out = _run(tool, "print('hi')", files=["program/train.py"])
+        assert "cannot be shared" not in out
+        assert f"{_model_dir(sandbox, dispatch)}/program/train.py" in sandbox.files
+
+    def test_a_nested_output_under_it_is_saved(self, dispatch: bool):
+        sink = _RecordingSink()
+        tool, sandbox = _neighbouring(dispatch, **_landing(CodeactOutputs.DECLARED, sink))
+
+        out = _run_producing(
+            tool, sandbox, {"program/report.csv": b"a,b\n"}, outputs=["program/report.csv"]
+        )
+        assert sink.names == ["program/report.csv"]
+        assert "cannot be saved" not in out
+
+
+class TestTheShimIsAnInboundFileToo:
+    """It crosses on every call a registry is wired for, so it is counted like the program."""
+
+    def test_it_counts_against_the_inbound_file_count(self):
+        limits = replace(DEFAULT_TRANSFER_LIMITS, max_files=2)
+        store = InMemoryStore({"a.csv": "1"})
+
+        plain = _ScriptedSandbox()
+        _run(_tool(_backend(plain), file_store=store, files_in=limits), "print(1)", files=["a.csv"])
+        assert f"{_run_dirs(plain)[0]}/a.csv" in plain.files
+
+        sandbox = _ScriptedSandbox()
+        tool = _tool(
+            _backend(sandbox, capabilities=_DISPATCHES),
+            host_tools=_registry(_round_half_up),
+            file_store=store,
+            files_in=limits,
+        )
+        out = _run(tool, "print(1)", files=["a.csv"])
+        assert "3 files would be written" in out
+        assert "your program, the host-tool module beside it, and 1 shared" in out
+        # Qualified here and nowhere else: the launcher crosses too and is not in that list.
+        assert "writes at most 2 of those per call" in out
+        assert sandbox.contents == {}
+
+    def test_it_counts_against_the_inbound_byte_ceilings(self):
+        """Kilobytes of generated source, against a total with room for the module alone and
+        not for the program beside it."""
+        module = len(host_tool_shim(frozenset({"_round_half_up"}), call_timeout=97).encode())
+        limits = replace(DEFAULT_TRANSFER_LIMITS, max_total_bytes=module + 5)
+
+        plain = _ScriptedSandbox()
+        _run(_tool(_backend(plain), files_in=limits), "print(1)")
+        assert plain.files, "the same program did not fit without a registry"
+
+        sandbox = _ScriptedSandbox()
+        tool = _tool(
+            _backend(sandbox, capabilities=_DISPATCHES),
+            host_tools=_registry(_round_half_up),
+            files_in=limits,
+            exec_timeout_seconds=97,
+        )
+        assert f"at most {module + 5} per call" in _run(tool, "print(1)")
+        assert sandbox.contents == {}
+
+    def test_room_for_one_inbound_file_is_refused_at_the_factory(self):
+        """Two files cross on every call, so a cap of one could never serve a single call — and
+        a tool the model can see and never use successfully is worse than one that never
+        attached."""
+        with pytest.raises(ValueError, match="dispatch module"):
+            _dispatching_tool(
+                _registry(_round_half_up), files_in=replace(DEFAULT_TRANSFER_LIMITS, max_files=1)
+            )
+
+    @pytest.mark.parametrize("cap", ["max_bytes_per_file", "max_total_bytes"])
+    def test_a_byte_cap_below_the_module_is_refused_at_the_factory_too(self, cap: str):
+        """Its size is settled before anything attaches, so a ceiling under it is the same
+        never-usable tool the count check refuses — reached by the other leg."""
+        module = len(host_tool_shim(frozenset({"_round_half_up"}), call_timeout=97).encode())
+        with pytest.raises(ValueError, match="dispatch module is"):
+            _dispatching_tool(
+                _registry(_round_half_up),
+                files_in=replace(DEFAULT_TRANSFER_LIMITS, **{cap: module - 1}),
+                exec_timeout_seconds=97,
+            )
+
+    def test_a_registry_holding_nothing_is_refused_nothing(self):
+        """Nothing dispatchable is no shim, exactly as it is no capability in the spec."""
+        _dispatching_tool(_registry(), files_in=replace(DEFAULT_TRANSFER_LIMITS, max_files=1))
+
+
+class TestWithoutARegistry:
+    def test_the_program_is_exec_ed_and_nothing_reaches_the_transport(self):
+        """The stdout-only kind is what it always was: an argv sequence handed to `exec`, and
+        no launcher, no shim and no directory of requests nobody would serve."""
+        sandbox = _ScriptedSandbox()
+        _run(_tool(_backend(sandbox)), "print('hi')")
+
+        (run_dir,) = _run_dirs(sandbox)
+        (argv,) = sandbox.raw_commands
+        assert not isinstance(argv, str)
+        assert list(argv) == ["python3", f"{run_dir}/{_PROGRAM_FILENAME}"]
+        assert set(sandbox.contents) == {f"{run_dir}/{_PROGRAM_FILENAME}"}
 
 
 # ---------------------------------------------------------------------------

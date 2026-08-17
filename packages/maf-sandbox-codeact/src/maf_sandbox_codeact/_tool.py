@@ -8,11 +8,15 @@ talks to a :class:`~maf_sandbox.SandboxRouter` and gets back ``write_file``, ``e
 pull surface, so the same tool runs unchanged against ACA Sandboxes, a Docker container or an
 in-process fake.
 
-Three channels, and the host chooses which of them exist.  Stdout is always there.  A
+Four channels, and the host chooses which of them exist.  Stdout is always there.  A
 **file store** adds a ``files`` parameter, so a program can transform files that already
 exist rather than only data the model wrote into its own source.  An **output sink** plus a
 :class:`CodeactOutputs` mode adds a way for files the program produces to reach host state.
-Wire neither and this is the stdout-only kind it has always been, with nothing dispatchable
+A **host-tool registry** adds functions the program may call out to, served over
+:func:`~maf_sandbox.dispatch_over_exec` — and no shipped backend declares
+:data:`~maf_sandbox.Capability.HOST_TOOLS`, so that wiring is *refused* until one does,
+where the tool would have been built rather than at the first call.
+Wire none and this is the stdout-only kind it has always been, with nothing dispatchable
 from inside: no network, no host functions, and nothing leaving but what the program printed.
 """
 
@@ -20,27 +24,35 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import unicodedata
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 from maf_sandbox import (
     DEFAULT_TRANSFER_LIMITS,
+    SHIM_MODULE,
+    WORK_DIRECTORY,
     CallerContext,
     Capability,
     DeclaredOutput,
     ExecResult,
+    HostToolRun,
     NameNormalization,
     OutputSink,
     SandboxArtifactNameInvalid,
     SandboxOutputError,
+    SandboxProgramTimeout,
     SandboxRouter,
     SandboxSpec,
     TransferLimits,
     collect_outputs,
+    dispatch_over_exec,
     error_detail,
+    guest_run_layout,
+    host_tool_shim,
     validate_artifact_name,
 )
 from maf_sandbox.maf import SandboxToolSession, sandboxed_tool
@@ -49,7 +61,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Sequence
 
     from agent_framework import AgentFileStore
-    from maf_sandbox import LandedArtifact, Sandbox
+    from maf_sandbox import HostToolAggregate, HostToolRegistry, LandedArtifact, Sandbox
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +142,7 @@ def codeact_sandbox_spec(
     outputs: CodeactOutputs = CodeactOutputs.NONE,
     files_in: TransferLimits = DEFAULT_TRANSFER_LIMITS,
     files_out: TransferLimits = _DEFAULT_FILES_OUT,
+    host_tools: HostToolRegistry | None = None,
 ) -> SandboxSpec:
     """The sandbox a CodeAct program needs, in backend-neutral terms.
 
@@ -138,21 +151,19 @@ def codeact_sandbox_spec(
     governs.  An output mode other than :data:`CodeactOutputs.NONE` grows ``requires`` by
     :data:`~maf_sandbox.Capability.FILES_OUT` and sets ``outputs_named_at_call_time``, which is
     what keeps the attached tool honest about landing artifacts it cannot yet name.
+
+    A non-empty ``host_tools`` grows ``requires`` by :data:`~maf_sandbox.Capability.HOST_TOOLS`
+    and :data:`~maf_sandbox.Capability.FILES_OUT` together, and carries the registry's
+    ``identities`` so that a router denying one refuses this spec at attach.  Reading a
+    registry **seals** it, so ask for the spec once everything is registered.
     """
-    collects = outputs is not CodeactOutputs.NONE
-    requires = {Capability.EXEC, Capability.FILES_IN}
-    if collects:
-        requires.add(Capability.FILES_OUT)
-    return SandboxSpec(
-        kind=CODEACT_KIND,
-        image=image,
-        image_id=image_id,
-        egress_allow=(),
-        work_dir=_WORK_DIR,
-        requires=frozenset(requires),
-        outputs_named_at_call_time=collects,
+    return _codeact_spec(
+        image,
+        image_id,
+        outputs=outputs,
         files_in=files_in,
         files_out=files_out,
+        dispatch=_dispatch_surface(host_tools),
     )
 
 
@@ -165,6 +176,7 @@ def make_codeact_tools(
     output_sink: OutputSink | None = None,
     outputs: CodeactOutputs = CodeactOutputs.NONE,
     outbound_max_confidentiality: str | None = None,
+    host_tools: HostToolRegistry | None = None,
     image: str | None = None,
     image_id: str | None = None,
     exec_timeout_seconds: int = 120,
@@ -189,8 +201,21 @@ def make_codeact_tools(
             :data:`CodeactOutputs.NONE`, and refused at attach without one.
         outputs: How a program's output files are named. See :class:`CodeactOutputs`.
         outbound_max_confidentiality: The host's cap for tools that carry something out, in the
-            host's own vocabulary. Off by default and written only when this workload lands
-            something — with egress closed, the sink *is* the flow it gates.
+            host's own vocabulary. Off by default and written only when something can actually
+            leave — with egress closed, that is an artifact landing in the sink, or a host tool
+            that carries something out.
+        host_tools: What a program may dispatch to, or ``None`` for no dispatch surface at
+            all. A non-empty registry widens the spec (see :func:`codeact_sandbox_spec`), and a
+            :data:`~maf_sandbox.Identity.USER` tool in it gates every call on approval. A
+            backend that cannot serve the widened spec is refused **here**, so on a backend
+            without :data:`~maf_sandbox.Capability.HOST_TOOLS` this raises rather than
+            returning a tool — which today is every shipped backend. The
+            registry is read — and so **sealed** — only where a sandbox is configured, so a host
+            that develops with sandboxing off meets the refusal for a late ``register`` in
+            production. An **unstamped** tool counts as one that carries something out: nobody
+            answered the sink question, the guest may hand it conversation-derived arguments,
+            and every other undeclared leg is read as the worst it could be — so this one is
+            too, and the cap above applies.
         image: OCI reference of a sandbox image with a Python interpreter on its path.
         image_id: A backend-native disk-image id, skipping resolution.
         exec_timeout_seconds: Per-program bound. A sandbox that stops answering must not hold
@@ -213,6 +238,23 @@ def make_codeact_tools(
     exception.
     """
     configured = router is not None and router.enabled
+    dispatch: _Dispatch | None = None
+    if configured and host_tools is not None and len(host_tools):
+        if not math.isfinite(exec_timeout_seconds) or exec_timeout_seconds <= 0:
+            # The shim generator below refuses this too, in its own `call_timeout` vocabulary.
+            # Gated on a registry, because with none the number only ever reaches `exec` and
+            # this factory has never had an opinion about it.
+            raise ValueError(
+                f"{EXECUTE_CODE_TOOL_NAME}: exec_timeout_seconds is {exec_timeout_seconds}, and "
+                f"a non-empty host_tools registry makes it the guest's patience as well as the "
+                f"run's bound, so it must be a finite positive number of seconds."
+            )
+        # Generated here, so the module the checks below measure is the one every call writes.
+        # Its patience is the run's own bound: give up first and a program is told the host
+        # never answered while the dispatch it asked for goes on to act.
+        dispatch = _Dispatch(
+            host_tools, host_tool_shim(host_tools.names(), call_timeout=exec_timeout_seconds)
+        )
     if configured and files_in.max_files < 1:
         # `program.py` is one inbound file on every call, so a cap below one refuses all of
         # them. Every impossible pairing below is caught here rather than per call: a tool the
@@ -222,6 +264,21 @@ def make_codeact_tools(
             f"program itself is one file written into the sandbox on every call, so no call "
             f"could succeed."
         )
+    if dispatch is not None:
+        if files_in.max_files < 2:
+            raise ValueError(
+                f"{EXECUTE_CODE_TOOL_NAME}: files_in.max_files is {files_in.max_files}, and a "
+                f"non-empty host_tools registry puts the guest's dispatch module beside the "
+                f"program on every call, so no call could succeed."
+            )
+        crossing = len(dispatch.shim.encode())
+        room = min(files_in.max_bytes_per_file, files_in.max_total_bytes)
+        if crossing > room:
+            raise ValueError(
+                f"{EXECUTE_CODE_TOOL_NAME}: the guest's dispatch module is {crossing} bytes and "
+                f"crosses beside the program on every call, and this host's files_in allows "
+                f"{room}, so no call could succeed."
+            )
     if configured and outputs is CodeactOutputs.DECLARED and files_out.max_files < 1:
         raise ValueError(
             f"{EXECUTE_CODE_TOOL_NAME}: outputs={str(CodeactOutputs.DECLARED)!r} shows the "
@@ -251,17 +308,38 @@ def make_codeact_tools(
             f"{str(CodeactOutputs.NONE)!r}, so nothing would ever be landed in it. Pass an "
             f"outputs mode, or drop the sink."
         )
-    spec = codeact_sandbox_spec(
-        image, image_id, outputs=outputs, files_in=files_in, files_out=files_out
+    # Sealed only on a path that attaches something: an unconfigured host is left as ungrounded
+    # as it was, and a registry it goes on to widen has nothing derived from it to contradict.
+    surface = _dispatch_surface(host_tools) if configured else None
+    spec = _codeact_spec(
+        image, image_id, outputs=outputs, files_in=files_in, files_out=files_out, dispatch=surface
+    )
+    # A single dispatch may exercise the user's delegated authority, and which one does is not
+    # knowable before the program runs, so one such tool raises the whole surface.
+    approval_gated = surface is not None and surface.requires_approval
+    # A registry can carry something out with no landing artifact to say so, which is the one
+    # flow `sandbox_tool_declarations` cannot see — so the host's cap is written by hand. Only
+    # with no output sink: with one, the spec already lands, the derivation writes the same
+    # cap, and `sandboxed_tool` refuses the two together.
+    declarations = (
+        {"max_allowed_confidentiality": outbound_max_confidentiality}
+        if surface is not None
+        and (surface.outbound_caps or surface.has_undeclared)
+        and outbound_max_confidentiality is not None
+        and output_sink is None
+        else None
     )
     return sandboxed_tool(
-        lambda session: _execute_code_tool(session, file_store, outputs, exec_timeout_seconds),
+        lambda session: _execute_code_tool(
+            session, file_store, outputs, exec_timeout_seconds, dispatch
+        ),
         router=router,
         context=context,
         agent_dir=agent_dir,
         spec=spec,
         name=EXECUTE_CODE_TOOL_NAME,
-        approval_mode="never_require",
+        approval_mode="always_require" if approval_gated else "never_require",
+        declarations=declarations,
         # The library's "trusted" default is right for a compiler's diagnostics and wrong here:
         # what comes back is whatever a model-written `print(...)` chose to emit. Undeclared,
         # the tracker's untrusted default applies and the result taints the conversation.
@@ -272,17 +350,65 @@ def make_codeact_tools(
     )
 
 
+def _dispatch_surface(host_tools: HostToolRegistry | None) -> HostToolAggregate | None:
+    """What a host's registry means for this kind, or ``None`` when nothing is dispatchable.
+
+    Taking the aggregate seals the registry, so it is taken once per factory call and shared by
+    the spec, the approval mode and the declarations — and taken for an empty registry too,
+    where it costs an all-empty aggregate and turns "registered a tool after the tool was
+    built" into a refusal at the host's own ``register`` rather than a surface nothing
+    classified.
+    """
+    if host_tools is None:
+        return None
+    aggregate = host_tools.aggregate()
+    return aggregate if len(host_tools) else None
+
+
+def _codeact_spec(
+    image: str | None,
+    image_id: str | None,
+    *,
+    outputs: CodeactOutputs,
+    files_in: TransferLimits,
+    files_out: TransferLimits,
+    dispatch: HostToolAggregate | None,
+) -> SandboxSpec:
+    """:func:`codeact_sandbox_spec`, over a dispatch surface the caller has already derived."""
+    collects = outputs is not CodeactOutputs.NONE
+    requires = {Capability.EXEC, Capability.FILES_IN}
+    if collects:
+        requires.add(Capability.FILES_OUT)
+    if dispatch is not None:
+        # FILES_OUT for the transport rather than for this kind's outputs: dispatch stats and
+        # reads its request files and the exit marker back over the pull surface, so even a
+        # stdout-only program that can call a host function needs one.
+        requires |= {Capability.HOST_TOOLS, Capability.FILES_OUT}
+    return SandboxSpec(
+        kind=CODEACT_KIND,
+        image=image,
+        image_id=image_id,
+        egress_allow=(),
+        work_dir=_WORK_DIR,
+        requires=frozenset(requires),
+        outputs_named_at_call_time=collects,
+        files_in=files_in,
+        files_out=files_out,
+        identities=dispatch.identities if dispatch is not None else frozenset(),
+    )
+
+
 # --- The tool's description, assembled from the channels the host wired --------------------
 #
-# Six combinations of `files` and an output mode share one body, so the description is built
-# rather than written six times. It still reaches the model exactly as `__doc__`.
+# Twelve combinations of `files`, an output mode and whether host tools are wired share one
+# body, so the description is built rather than written twelve times. It still reaches the
+# model exactly as `__doc__`.
 
 _DESCRIPTION_HEAD = """Run a short Python program inside a sandbox and return what it printed.
 
         Use this to compute rather than to reason: parse, transform, count, check, simulate —
         anything where running the code beats predicting what it would do.  The program runs
-        as ``python3 program.py`` in a sandbox with **no network access**, so it can compute
-        but cannot fetch.
+        as ``python3 program.py`` in a sandbox with {network}
 
         **Only what you print is read back as text.**  There is no REPL echo and the value of
         the last expression is not returned, so end the program with ``print(...)`` of
@@ -290,6 +416,16 @@ _DESCRIPTION_HEAD = """Run a short Python program inside a sandbox and return wh
 
         Write a complete, self-contained program every time.  Each call gets a fresh working
         directory: nothing you did not pass in to *this* call is in it."""
+
+#: The claim this kind can always make on its own: nothing dispatchable means nothing leaves.
+_DESCRIPTION_NO_NETWORK = """**no network access**, so it can compute
+        but cannot fetch."""
+
+#: The same claim, qualified for a non-empty `host_tool_names` — the sandbox still has no
+#: network of its own, but the registered tools are a way out of it that the plain claim above
+#: would misstate as absent.
+_DESCRIPTION_NO_NETWORK_WITH_HOST_TOOLS = """**no network of its own**: it can compute, and
+        reach beyond the sandbox only through the host tools listed below."""
 
 _DESCRIPTION_FILES = """**To work on existing files, list them in ``files``.**  Each one is
         copied into the program's working directory under its own name, so a file listed as
@@ -319,6 +455,14 @@ _DESCRIPTION_MANIFEST = f"""**To produce files, write them into the working dire
         file you write without listing is not saved, and no ``{_MANIFEST_FILENAME}`` means
         nothing is saved."""
 
+#: The call form is `maf_host_tools.call`, never a per-name wrapper: a registered name need
+#: not be a legal Python identifier (`HostToolRegistry.register` takes any string), so the
+#: form that always works is the one this names, and the only one it promises.
+_DESCRIPTION_HOST_TOOLS = """**To call a host tool, ``import maf_host_tools`` and write
+        ``maf_host_tools.call("name", **arguments)``, with every argument passed by keyword.**
+        The tools you may call this way are: {names}.  A refusal raises
+        ``maf_host_tools.HostToolError``, whose message says why."""
+
 _DESCRIPTION_ARG_CODE = """code: The Python source to run.  The standard library, plus
                 whatever the sandbox image ships."""
 
@@ -329,15 +473,34 @@ _DESCRIPTION_ARG_OUTPUTS = """outputs: The file names your program will write in
                 working directory, or omit if it writes none."""
 
 _DESCRIPTION_RETURNS = """The program's stdout, its stderr when it wrote any, and its exit
-            code when that was not zero.  If the sandbox is unavailable the tool returns an
+            code when that was not zero."""
+
+#: The same, for a run served over the dispatch transport: its launcher merges the program's
+#: stderr into its stdout, so the sentence above would point a model at the wrong section.
+_DESCRIPTION_RETURNS_DISPATCHED = """The program's output — stdout and stderr together, so a
+            traceback comes back under ``stdout`` — and its exit code when that was not zero.
+            A ``stderr`` section is the host's note about the run, not something your program
+            wrote."""
+
+#: Appended to whichever of the two above applies.  Where it wraps is model-facing text, so the
+#: break sits where the undispatched sentence needs it, not where this fragment reads best.
+_DESCRIPTION_RETURNS_DEGRADES = """  If the sandbox is unavailable the tool returns an
             error message instead, so the run degrades rather than blocking."""
 
 _DESCRIPTION_RETURNS_SAVED = """  A run that saved files also names where each one landed."""
 
 
-def _tool_description(*, takes_files: bool, outputs: CodeactOutputs) -> str:
+def _tool_description(
+    *, takes_files: bool, outputs: CodeactOutputs, host_tool_names: frozenset[str] = frozenset()
+) -> str:
     """The description the model reads, for the channels this host actually wired."""
-    body = [_DESCRIPTION_HEAD]
+    network = (
+        _DESCRIPTION_NO_NETWORK_WITH_HOST_TOOLS if host_tool_names else _DESCRIPTION_NO_NETWORK
+    )
+    body = [_DESCRIPTION_HEAD.format(network=network)]
+    if host_tool_names:
+        names = ", ".join(f"``{name}``" for name in sorted(host_tool_names))
+        body.append(_DESCRIPTION_HOST_TOOLS.format(names=names))
     arguments = [_DESCRIPTION_ARG_CODE]
     if takes_files:
         body.append(_DESCRIPTION_FILES)
@@ -347,7 +510,9 @@ def _tool_description(*, takes_files: bool, outputs: CodeactOutputs) -> str:
         arguments.append(_DESCRIPTION_ARG_OUTPUTS)
     elif outputs is CodeactOutputs.MANIFEST:
         body.append(_DESCRIPTION_MANIFEST)
-    returns = _DESCRIPTION_RETURNS
+    returns = (
+        _DESCRIPTION_RETURNS_DISPATCHED if host_tool_names else _DESCRIPTION_RETURNS
+    ) + _DESCRIPTION_RETURNS_DEGRADES
     if outputs is not CodeactOutputs.NONE:
         returns += _DESCRIPTION_RETURNS_SAVED
     return (
@@ -360,11 +525,24 @@ def _tool_description(*, takes_files: bool, outputs: CodeactOutputs) -> str:
     )
 
 
+@dataclass(frozen=True)
+class _Dispatch:
+    """What one attached tool serves host-tool calls with: the registry, and the guest module.
+
+    Generated once and written into every run, which the registry's sealing is what makes
+    honest: the names it spells cannot change after the factory has read them.
+    """
+
+    registry: HostToolRegistry
+    shim: str
+
+
 def _execute_code_tool(
     session: SandboxToolSession,
     store: AgentFileStore | None,
     outputs: CodeactOutputs,
     timeout: int,
+    dispatch: _Dispatch | None,
 ) -> Callable[..., Awaitable[str]]:
     """Build the ``execute_code`` body for one attached tool.
 
@@ -373,7 +551,9 @@ def _execute_code_tool(
     """
 
     async def run(code: str, files: list[str] | None, declared: list[str] | None) -> str:
-        return await _execute(session, store, outputs, timeout, code, files or [], declared or [])
+        return await _execute(
+            session, store, outputs, timeout, dispatch, code, files or [], declared or []
+        )
 
     async def with_files_and_outputs(
         code: str, files: list[str] | None = None, outputs: list[str] | None = None
@@ -400,7 +580,11 @@ def _execute_code_tool(
         if declares
         else plain
     )
-    body.__doc__ = _tool_description(takes_files=takes_files, outputs=outputs)
+    body.__doc__ = _tool_description(
+        takes_files=takes_files,
+        outputs=outputs,
+        host_tool_names=dispatch.registry.names() if dispatch is not None else frozenset(),
+    )
     return body
 
 
@@ -409,6 +593,7 @@ async def _execute(
     store: AgentFileStore | None,
     outputs: CodeactOutputs,
     timeout: int,
+    dispatch: _Dispatch | None,
     code: str,
     files: list[str],
     declared: list[str],
@@ -419,15 +604,27 @@ async def _execute(
     if isinstance(key, str):
         return key
 
-    # Two names this kind writes into every run's directory itself, so neither an input nor an
-    # output may claim one. The manifest is reserved only where it means something.
-    reserved = {_PROGRAM_FILENAME}
+    # The names written into the model's own directory by something other than the program, so
+    # neither an input nor an output may claim one. The manifest is reserved only where it
+    # means something. The program is reserved only where it shares that directory: a run that
+    # dispatches puts it in the transport's, beside the shim, where no name a model chooses can
+    # reach it — which is what 0.16 replaced a list of reserved transport names with.
+    reserved: set[str] = set()
+    if dispatch is None:
+        reserved.add(_PROGRAM_FILENAME)
     if outputs is CodeactOutputs.MANIFEST:
         reserved.add(_MANIFEST_FILENAME)
 
     # Chosen here rather than after `acquire`, so that a declared name can be judged against
     # the guest path it will actually become — the prefix is 13 bytes of the 255 a name gets.
     run_id = uuid4().hex[:12]
+    # Where the model's own files live, relative to `work_dir`: the run directory itself, or
+    # the work subdirectory of it when the transport owns the run. Everything addressed by a
+    # name a model chose is built from this — what is shared in, what the manifest is read
+    # from, and what is collected out — so the three cannot disagree about one run's layout.
+    # It is longer when dispatching, which is why the name checks below take it rather than
+    # `run_id`: five more bytes of the 255 a guest path gets, spent before the name is.
+    guest_prefix = f"{run_id}/{WORK_DIRECTORY}" if dispatch is not None else run_id
 
     names: list[str] = []
     if outputs is CodeactOutputs.DECLARED:
@@ -435,7 +632,7 @@ async def _execute(
             declared,
             max_files=session.spec.files_out.max_files,
             reserved=reserved,
-            run_id=run_id,
+            guest_prefix=guest_prefix,
             normalization=_normalization(session),
         )
         if isinstance(checked, str):
@@ -446,12 +643,19 @@ async def _execute(
     # everything is in memory has already spent what it exists to bound. Every check below
     # therefore happens before the read it would have prevented — the count before the listing,
     # the program's own bytes before the store is touched at all, and each file's as it arrives.
-    # `program.py` is counted with them: the spec requires FILES_IN even with no store, because
-    # the program is the one thing that crosses this boundary on every single call.
+    # The tally covers what this kind writes before exec: `program.py`, which is why the spec
+    # requires FILES_IN even with no store, the shim beside it wherever a registry is wired,
+    # and each shared file. Not the transport's own — a fixed launcher, and one response per
+    # dispatch under the registry's `response_limits`.
     limits = session.spec.files_in
     tally = _InboundTally(limits)
     shared: list[tuple[str, str]] = []
-    over_cap = _over_file_count(len(files) + 1, limits) or tally.add(_PROGRAM_FILENAME, code)
+    inbound = len(files) + (2 if dispatch is not None else 1)
+    over_cap = _over_file_count(inbound, limits, dispatches=dispatch is not None) or tally.add(
+        _PROGRAM_FILENAME, code
+    )
+    if over_cap is None and dispatch is not None:
+        over_cap = tally.add(SHIM_MODULE, dispatch.shim)
     if over_cap is not None:
         return over_cap
     if store is not None:
@@ -469,13 +673,20 @@ async def _execute(
 
     # Fresh per call, because `acquire` is get-or-create: see where `run_id` is chosen.
     run_dir = f"{session.spec.work_dir}/{run_id}"
+    # Built before anything is written, because it decides where everything goes. A run that
+    # dispatches is two directories — the model's files in `work`, the program and the shim in
+    # the transport's — and one that does not is the run directory flat, which is what a kind
+    # writing no shim has always been. The program name and the interpreter are passed rather
+    # than defaulted, so this kind's constants and the transport's cannot drift apart.
+    layout = guest_run_layout(run_dir, program=_PROGRAM_FILENAME) if dispatch is not None else None
+    shared_dir = layout.work if layout is not None else run_dir
 
     for name, content in shared:
-        refusal = await _write_shared(sandbox, name, f"{run_dir}/{name}", content)
+        refusal = await _write_shared(sandbox, name, f"{shared_dir}/{name}", content)
         if refusal is not None:
             return refusal
 
-    program_path = f"{run_dir}/{_PROGRAM_FILENAME}"
+    program_path = layout.program if layout is not None else f"{run_dir}/{_PROGRAM_FILENAME}"
     try:
         await sandbox.write_file(program_path, code)
     except Exception as exc:  # noqa: BLE001
@@ -485,13 +696,43 @@ async def _execute(
         return "Error: could not write the program into the sandbox"
 
     try:
-        # An argv sequence, never a command line: the model's source never reaches a shell.
-        result = await sandbox.exec(
-            [_INTERPRETER, program_path], working_directory=run_dir, timeout=timeout
+        # The two are built together above and are never one without the other; both are named
+        # here so neither has to be narrowed from the other.
+        if dispatch is not None and layout is not None:
+            await sandbox.write_file(layout.shim, dispatch.shim)
+            # A fresh run per call: the dispatch cap and the ledger bound one program.
+            result = await dispatch_over_exec(
+                sandbox,
+                HostToolRun(dispatch.registry, logger=logger),
+                layout,
+                timeout=timeout,
+                interpreter=_INTERPRETER,
+            )
+        else:
+            # An argv sequence, never a command line: the model's source never reaches a shell.
+            result = await sandbox.exec(
+                [_INTERPRETER, program_path], working_directory=run_dir, timeout=timeout
+            )
+    except SandboxProgramTimeout as expired:
+        # The transport's own bound, so the program really did run out — and it is still
+        # running: nothing here can stop a detached process, and no kind can dispose (#375).
+        logger.warning(
+            "execute_code: the program timed out after %ss and may still be running in the "
+            "sandbox; disposing it is what stops it",
+            timeout,
         )
-    except TimeoutError:
-        logger.warning("execute_code: the program timed out after %ss", timeout)
-        return f"Error: the program timed out after {timeout}s"
+        quoted = f" Output so far:\n{expired.output}" if expired.output else ""
+        return f"Error: the program timed out after {timeout}s.{quoted}"
+    except TimeoutError as unfinished:
+        if dispatch is None:
+            # One `exec`, one bound: a timeout here is that bound and nothing else.
+            logger.warning("execute_code: the program timed out after %ss", timeout)
+            return f"Error: the program timed out after {timeout}s"
+        # A backend bounding one of its own control-plane calls, which the transport re-raises
+        # untranslated. Blaming the program would be a guess about code the model is about to
+        # rewrite — and the wrong one, since the run may have had most of its time left.
+        logger.warning("execute_code: a transport call timed out: %s", error_detail(unfinished))
+        return "Error: could not run the program in the sandbox"
     except Exception as exc:  # noqa: BLE001
         # Provider/transport detail can carry account ids — must not reach the transcript.
         logger.warning("execute_code: exec failed: %s", error_detail(exc))
@@ -506,7 +747,7 @@ async def _execute(
         # A program that failed is unlikely to have written what it promised, and a missing-file
         # report stacked on a traceback buries the thing the model has to fix.
         return report
-    collected = await _collect(session, sandbox, run_id, outputs, names, reserved)
+    collected = await _collect(session, sandbox, guest_prefix, outputs, names, reserved)
     return f"{report}\n\n{collected}" if collected else report
 
 
@@ -617,23 +858,32 @@ async def _read_listed_files(
 
 
 def _is_reserved(name: str, reserved: set[str]) -> bool:
-    """Whether ``name`` is a file this tool writes itself, **or sits beneath one**.
+    """Whether ``name`` is a file this tool writes itself, or would turn one into a directory.
 
-    The subtree matters because every shipped backend creates parent directories for a nested
-    write: sharing ``program.py/data.csv`` would turn ``program.py`` into a directory, and the
-    source write that follows would fail on every call.
+    Every shipped backend creates parent directories for a nested write, so sharing
+    ``program.py/data.csv`` would turn ``program.py`` into a directory and the source write that
+    follows would fail on every call.
     """
     return any(name == owned or name.startswith(f"{owned}/") for owned in reserved)
 
 
-def _over_file_count(count: int, limits: TransferLimits) -> str | None:
+def _over_file_count(count: int, limits: TransferLimits, *, dispatches: bool) -> str | None:
     """Refuse a call that would write more files than the workload allows, program included."""
     if count <= limits.max_files:
         return None
+    # "of those" only where the list is partial: the dispatch leg's launcher crosses too and is
+    # not counted here, so the cap is over the enumeration rather than over everything written.
+    written, cap = (
+        (
+            f"your program, the host-tool module beside it, and {count - 2} shared",
+            f"{limits.max_files} of those",
+        )
+        if dispatches
+        else (f"your program and {count - 1} shared", str(limits.max_files))
+    )
     return (
-        f"Error: {count} files would be written into the sandbox — your program and "
-        f"{count - 1} shared — and this tool writes at most {limits.max_files} per call. "
-        f"Nothing was shared."
+        f"Error: {count} files would be written into the sandbox — {written} — and this tool "
+        f"writes at most {cap} per call. Nothing was shared."
     )
 
 
@@ -702,7 +952,7 @@ def _validated_output_names(
     *,
     max_files: int,
     reserved: set[str],
-    run_id: str,
+    guest_prefix: str,
     normalization: NameNormalization,
 ) -> list[str] | str:
     """Settle every output name before the program runs, or answer with the refusal.
@@ -717,7 +967,7 @@ def _validated_output_names(
             f"Error: {len(names)} output files were declared and this tool saves at most "
             f"{max_files} per call."
         )
-    prefix = f"{run_id}/"
+    prefix = f"{guest_prefix}/"
     seen: dict[str, str] = {}
     for name in names:
         # NFC is not length-non-increasing — 43 × U+0958 is 129 bytes declared and 258
@@ -749,7 +999,7 @@ def _validated_output_names(
 async def _collect(
     session: SandboxToolSession,
     sandbox: Sandbox,
-    run_id: str,
+    guest_prefix: str,
     outputs: CodeactOutputs,
     declared: list[str],
     reserved: set[str],
@@ -761,7 +1011,7 @@ async def _collect(
     spec = session.spec
 
     if outputs is CodeactOutputs.MANIFEST:
-        listed = await _read_manifest(session, sandbox, run_id)
+        listed = await _read_manifest(session, sandbox, guest_prefix)
         if isinstance(listed, str):
             return listed
         declared, manifest_bytes = listed
@@ -782,7 +1032,7 @@ async def _collect(
             declared,
             max_files=spec.files_out.max_files,
             reserved=reserved,
-            run_id=run_id,
+            guest_prefix=guest_prefix,
             normalization=_normalization(session),
         )
         if isinstance(checked, str):
@@ -794,7 +1044,8 @@ async def _collect(
     # `required=False` so one forgotten name does not throw away the files that were
     # written, and no `media_type`, which this kind does not know.
     call_time = tuple(
-        DeclaredOutput(path=f"{run_id}/{name}", name=name, required=False) for name in declared
+        DeclaredOutput(path=f"{guest_prefix}/{name}", name=name, required=False)
+        for name in declared
     )
     try:
         landed = await collect_outputs(sandbox, spec, sink=sink, outputs=call_time)
@@ -810,7 +1061,7 @@ async def _collect(
 
 
 async def _read_manifest(
-    session: SandboxToolSession, sandbox: Sandbox, run_id: str
+    session: SandboxToolSession, sandbox: Sandbox, guest_prefix: str
 ) -> tuple[list[str], int] | str:
     """Parse the program's own listing of what it produced, bounded and refusing malformed shapes.
 
@@ -824,7 +1075,7 @@ async def _read_manifest(
     would be capped by :func:`~maf_sandbox.collect_outputs`, but the manifest has to be read
     *before* there is anything to declare.
     """
-    path = f"{run_id}/{_MANIFEST_FILENAME}"
+    path = f"{guest_prefix}/{_MANIFEST_FILENAME}"
     try:
         entry = await sandbox.stat_file(path, working_directory=session.spec.work_dir)
         if entry is None:

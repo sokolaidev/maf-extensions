@@ -13,7 +13,7 @@ So the interesting part is not the call. It is everything a host decides before 
 
 ## Nothing is dispatched here, and that is not an omission
 
-**No shipped backend declares `Capability.HOST_TOOLS`.** The constant lives in `maf_sandbox` — in the protocol, the registry and the router — and in none of `maf-sandbox-acas`, `-docker` or `-wslc`. The transport that would carry a request out of a guest and a response back is still being designed ([#133](https://github.com/sokolaidev/maf-extensions/issues/133)).
+**No shipped backend declares `Capability.HOST_TOOLS`.** The constant lives in `maf_sandbox` — in the protocol, the registry and the router — and in none of `maf-sandbox-acas`, `-docker` or `-wslc`. The transport that carries a request out of a guest and a response back has landed ([#327](https://github.com/sokolaidev/maf-extensions/issues/327)), and `maf-sandbox-codeact` now dispatches over it when a host wires a `host_tools` registry — but with no backend declaring the capability, that wiring attaches nowhere yet.
 
 That is why [`agent.py`](agent.py) builds its own backend to show the permitted path. `InProcessSandboxBackend` takes its capabilities as a constructor argument, so the sample can hand it `HOST_TOOLS` and watch the router agree. Having to write that by hand is the honest demonstration: if a shipped backend declared it, the sample would not need to.
 
@@ -82,4 +82,4 @@ This sample reads no configuration, so its `verify-live.yml` job carries neither
 
 Sample 09 removed the billable sandbox. This one removes the model as well, and what remains is the part of the integration you can put in CI on every pull request: a host's posture, its registry, and the router agreeing or refusing.
 
-The dispatch counterpart — a program inside a real sandbox calling back out, with the round-trip cost measured — is [#302](https://github.com/sokolaidev/maf-extensions/issues/302), and it is blocked on [#133](https://github.com/sokolaidev/maf-extensions/issues/133).
+The dispatch counterpart — a program inside a real sandbox calling back out, with the round-trip cost measured — is [#302](https://github.com/sokolaidev/maf-extensions/issues/302). The contract, the transport and `maf-sandbox-codeact`'s kind integration it needs ([#133](https://github.com/sokolaidev/maf-extensions/issues/133)) have all landed; what still blocks it is a backend declaring `Capability.HOST_TOOLS`, which none does yet.
