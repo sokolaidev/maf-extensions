@@ -46,7 +46,23 @@ from ._images import qualify_image_reference, resolve_disk_image_id
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["AcasEntryPayloadIncomplete", "AcasSandboxBackend"]
+__all__ = ["BACKEND_NAME", "AcasEntryPayloadIncomplete", "AcasSandboxBackend"]
+
+#: The name :attr:`AcasSandboxBackend.name` answers to, and the value
+#: :class:`~maf_sandbox.SandboxRouter`'s ``selected=`` matches on.
+#:
+#: Public because a host choosing a backend from its own configuration needs the value before
+#: it has a backend to read it off, and building one to learn a constant is a lot of machinery
+#: for a fixed string (#411) — more here than anywhere else, since constructing this backend
+#: means a subscription, a credential and a resource group. The property below returns this,
+#: so the two cannot disagree.
+#:
+#: Import it qualified or aliased when more than one backend package is in play. Every backend
+#: exports this same symbol, so two `from … import BACKEND_NAME` lines shadow each other and
+#: the second wins silently. Either `import maf_sandbox_acas` and reach it as
+#: `maf_sandbox_acas.BACKEND_NAME`, or alias at the import:
+#: `from maf_sandbox_acas import BACKEND_NAME as ACAS_BACKEND`.
+BACKEND_NAME = "acas"
 
 
 class AcasEntryPayloadIncomplete(SandboxOutputError):
@@ -460,7 +476,7 @@ class AcasSandboxBackend:
 
     @property
     def name(self) -> str:
-        return "acas"
+        return BACKEND_NAME
 
     @property
     def isolation(self) -> Isolation:

@@ -33,7 +33,7 @@ from maf_sandbox import (
     SandboxSpec,
 )
 
-from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
+from maf_sandbox_wslc import BACKEND_NAME, WslcSandboxBackend, WslcSandboxConfig
 from maf_sandbox_wslc._backend import (
     _container_name,
     _network_name,
@@ -134,7 +134,24 @@ class TestBackendIdentity:
         )
 
     def test_is_named_wslc(self):
+        # The literal, on purpose. `name == BACKEND_NAME` below pins them to each other and
+        # would stay green if both moved together — and both moving together is precisely the
+        # change that silently breaks every host with `selected="wslc"` in its configuration.
         assert WslcSandboxBackend(WslcSandboxConfig()).name == "wslc"
+
+    def test_the_exported_constant_is_the_name_the_backend_answers_to(self):
+        """#411: the value exists without building a backend, and cannot drift from it."""
+        assert BACKEND_NAME == WslcSandboxBackend(WslcSandboxConfig()).name
+
+    def test_selecting_by_the_constant_resolves_to_this_backend(self):
+        """What the constant is for, exercised rather than asserted.
+
+        `selected=` is a string match against `.name`, so this is the only test that would fail
+        if the constant were right and the property were reading something else.
+        """
+        backend = WslcSandboxBackend(WslcSandboxConfig())
+        router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER, selected=BACKEND_NAME)
+        assert router.backend is backend
 
 
 class TestRouterFloor:
