@@ -588,16 +588,33 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
     #   * The program runs *in* the work directory and *from* the transport's, with the
     #     transport's on `PYTHONPATH` besides — `sys.path[0]` follows the script, but that is
     #     a default `PYTHONSAFEPATH` switches off, and then the path is all there is.
-    #   * **Inherited path entries are kept only if absolute.** A relative one resolves
+    #   * **An inherited path entry is kept only if it is absolute and outside the run tree.**
+    #     Both halves say the same thing: nothing the guest writes may be importable at
+    #     *interpreter startup*, where a `sitecustomize` a model wrote runs before the program
+    #     does and can seed `sys.modules` with a shim of its own. A relative entry resolves
     #     against the working directory, which this launcher has just changed to the guest's
-    #     own — so whatever the image meant by `.`, it does not mean that here. Left in, it
-    #     makes the run directory importable at *interpreter startup*, where a `sitecustomize`
-    #     a model wrote runs before the program does. An absolute entry cannot name this run:
-    #     the directory is per-run and did not exist when the image was built.
+    #     own — so whatever the image meant by `.`, it does not mean that here. An absolute one
+    #     usually cannot name a per-run directory, but "usually" is not a control: an image is
+    #     free to export `/runs/current/work` and a host to place a run at `/runs/current`, and
+    #     then the guest's own directory is on the startup path. Dropping the run tree costs
+    #     nothing, because it did not exist when the image was built and so can hold no
+    #     dependency the image meant to name.
+    #
+    #     What this does not catch is a symlink from outside the tree into it: the comparison
+    #     is textual, and POSIX `sh` has no portable `realpath`. Resolving it later is no use —
+    #     `sitecustomize` runs before any script this package could put in front of the
+    #     program. `python -E` would settle the whole class by ignoring `PYTHONPATH`, and is
+    #     refused for the reason `-u` is above: `interpreter` need not be CPython, and it would
+    #     also discard the dependency roots an image legitimately puts there.
     staged = f"{layout.exit_code}.part"
     # The shim's own directory, which is the one an import has to reach; `program` is beside
     # it by construction, and reading it from the shim keeps the two from being separated.
     importable = posixpath.dirname(layout.shim)
+    # Quoted into a `case` pattern below, where quoting is what stops a run directory
+    # containing `*` or `?` from matching more than itself. The trailing separator is stripped
+    # so the two patterns do not become `//*`; a run directory of `/` collapses to `''|/*`,
+    # dropping every absolute entry, which is the honest reading of "inside the run tree".
+    enclosing = _quote(layout.directory.rstrip("/"))
     inner = (
         f"PYTHONUNBUFFERED=1 {_quote(interpreter)} {_quote(layout.program)} "
         f"> {_quote(layout.output)} 2>&1; "
@@ -614,7 +631,12 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
         "set -f\n"
         "IFS=:\n"
         "for maf_entry in ${PYTHONPATH:-}; do\n"
-        '  case "$maf_entry" in /*) maf_kept="${maf_kept:+$maf_kept:}$maf_entry" ;; esac\n'
+        '  case "$maf_entry" in\n'
+        # First, so it wins: an entry inside the run tree is dropped even though it is
+        # absolute, and the `/*` below would otherwise keep it.
+        f"    {enclosing}|{enclosing}/*) ;;\n"
+        '    /*) maf_kept="${maf_kept:+$maf_kept:}$maf_entry" ;;\n'
+        "  esac\n"
         "done\n"
         "unset IFS\n"
         "set +f\n"

@@ -520,14 +520,23 @@ class TestTheLauncher:
             "the shim's directory is not first, so an inherited entry can outrank it"
         )
         assert "$maf_kept" in assignment, "an image's own entries were dropped, not kept"
-        assert 'case "$maf_entry" in /*)' in script, "a relative inherited entry is not filtered"
+        assert '    /*) maf_kept="${maf_kept:+$maf_kept:}$maf_entry" ;;\n' in script, (
+            "a relative inherited entry is not filtered"
+        )
+        run = "/maf-sandbox/work/run-1"
+        assert f"    '{run}'|'{run}'/*) ;;\n" in script, (
+            "an absolute inherited entry naming the run tree is not filtered — quoted so a "
+            "run directory containing a glob character matches only itself"
+        )
         assert "\nkept=" not in script and "for entry in" not in script, (
             "an unprefixed name collides with one an image may already export"
         )
-        # `set -f` and the `unset` are deliberately *not* asserted here. Both are properties of
-        # where they sit relative to the loop and the assignment, and a substring check cannot
-        # see order: move either and this stays green while the behaviour is gone. They are
-        # covered by running the launcher, in `TestTheLauncherAgainstARealShell`.
+        # `set -f`, the `unset`, and the order of the two `case` branches are deliberately
+        # *not* asserted here. All three are properties of where they sit relative to
+        # something else, and a substring check cannot see order: move any of them and this
+        # stays green while the behaviour is gone — the run-tree branch demoted below `/*)`
+        # would never be reached. They are covered by running the launcher, in
+        # `TestTheLauncherAgainstARealShell`.
 
     def test_the_interpreter_is_a_shell_word_like_every_path(self):
         """An interpreter path with a space is split unless it is quoted like the rest.
@@ -576,13 +585,20 @@ class TestTheLauncherAgainstARealShell:
 
         Verbatim matters as much as filtered — Python does not glob `PYTHONPATH`, so an
         inherited `/opt/plugins/*` has to arrive as those characters.
+
+        The glob entry sits outside the run tree because entries inside it are now dropped
+        whether or not they are absolute, so a glob written under `work` would be filtered
+        before the no-globbing claim could be tested. `{directory}-sibling` guards the
+        boundary that move introduces: a prefix of the run directory is not inside it.
         """
-        directory = tmp_path.as_posix()
+        directory = (tmp_path / "run").as_posix()
+        outside = (tmp_path / "outside").as_posix()
         served, work = f"{directory}/host_tools", f"{directory}/work"
         pathlib.Path(served).mkdir(parents=True, exist_ok=True)
         pathlib.Path(work).mkdir(parents=True, exist_ok=True)
-        # Something for a glob to catch, in the directory one would run against.
-        pathlib.Path(work, "caught.py").write_text("", encoding="utf-8")
+        pathlib.Path(outside).mkdir(parents=True, exist_ok=True)
+        # Something for a glob to catch, in the directory the pattern names.
+        pathlib.Path(outside, "caught.py").write_text("", encoding="utf-8")
         pathlib.Path(served, "program.py").write_text(
             "import os\nprint(os.environ.get('PYTHONPATH', '<unset>'))\n"
             "print('leaked:', sorted(k for k in os.environ if k.startswith('maf_')))\n",
@@ -615,7 +631,9 @@ class TestTheLauncherAgainstARealShell:
             # already exported. This is the one arrangement where the `unset` does work.
             env={
                 **os.environ,
-                "PYTHONPATH": f"/image/libs:{work}/*:rel:",
+                "PYTHONPATH": (
+                    f"/image/libs:{outside}/*:{work}:{directory}:{directory}-sibling:rel:"
+                ),
                 "maf_kept": "the image's own",
             },
         )
@@ -627,9 +645,10 @@ class TestTheLauncherAgainstARealShell:
 
         seen, leaked = pathlib.Path(layout.output).read_text(encoding="utf-8").splitlines()[:2]
 
-        assert seen == f"{served}:/image/libs:{work}/*", (
+        assert seen == f"{served}:/image/libs:{outside}/*:{directory}-sibling", (
             "the guest's path is not the shim's directory followed by the absolute entries "
-            "unchanged — a glob was expanded, an entry was dropped, or the order moved"
+            "from outside the run tree, unchanged — a glob was expanded, an entry was dropped "
+            "or kept wrongly, or the order moved"
         )
         assert leaked == "leaked: []", (
             "the launcher's own value for maf_kept reached the guest, where the image's "
@@ -642,19 +661,28 @@ class TestTheLauncherAgainstARealShell:
         reason="the launcher splits PYTHONPATH on ':' and tests entries for a leading '/', "
         "which is the guest it targets; a Windows interpreter parses neither that way",
     )
-    def test_an_inherited_relative_path_entry_cannot_reach_into_the_run(self, tmp_path: Path):
+    @pytest.mark.parametrize("hostile", [".", "<work>"], ids=["relative", "absolute-in-tree"])
+    def test_an_inherited_path_entry_cannot_reach_into_the_run(self, tmp_path: Path, hostile: str):
         """The launcher's own filtering, against a real `sh` and a real interpreter.
 
         An image with `.` on `PYTHONPATH` makes the guest's working directory importable at
         interpreter *startup*, where `site` imports `sitecustomize` before the program runs —
         a hook that can seed `sys.modules` outright, which no amount of ordering prevents.
-        Absolute entries survive: one cannot name a run directory that did not exist when the
-        image was built.
+
+        The absolute case is the same defect wearing a shape the filter used to pass. This
+        test asserted the opposite until review showed it false: an image is free to export
+        `/runs/current/work` and a host to place a run at `/runs/current`, and then an entry
+        that is absolute names the guest's own directory anyway. Parametrised rather than
+        duplicated so the pair cannot drift — the two entry shapes must reach one outcome.
         """
-        directory = tmp_path.as_posix()
+        directory = (tmp_path / "run").as_posix()
         served, work = f"{directory}/host_tools", f"{directory}/work"
+        # Outside the run tree, so its survival is a real claim rather than one the launcher
+        # would satisfy anyway by prepending the shim's own directory.
+        outside = (tmp_path / "outside").as_posix()
         pathlib.Path(served).mkdir(parents=True, exist_ok=True)
         pathlib.Path(work).mkdir(parents=True, exist_ok=True)
+        pathlib.Path(outside).mkdir(parents=True, exist_ok=True)
         pathlib.Path(served, SHIM_MODULE).write_text("SPEAKING = 'the shim'\n", encoding="utf-8")
         pathlib.Path(work, "sitecustomize.py").write_text(
             "import sys, types\n"
@@ -664,7 +692,11 @@ class TestTheLauncherAgainstARealShell:
             encoding="utf-8",
         )
         pathlib.Path(served, "program.py").write_text(
-            "import maf_host_tools\nprint(maf_host_tools.SPEAKING)\n", encoding="utf-8"
+            "import maf_host_tools, os\n"
+            "print(maf_host_tools.SPEAKING)\n"
+            # Everything the filter kept beyond the shim's own directory, one per line.
+            "print(*os.environ['PYTHONPATH'].split(':')[1:], sep='\\n')\n",
+            encoding="utf-8",
         )
         layout = GuestRunLayout(
             directory=directory,
@@ -687,9 +719,13 @@ class TestTheLauncherAgainstARealShell:
             text=True,
             timeout=60,
             check=True,
-            # What an image does, not what this run does: a relative entry, and an absolute
-            # one that must survive alongside the shim's.
-            env={**os.environ, "PYTHONPATH": f".:{served}", "PYTHONSAFEPATH": "1"},
+            # What an image does, not what this run does: the hostile entry under test, and
+            # an absolute one from outside the tree that must survive alongside the shim's.
+            env={
+                **os.environ,
+                "PYTHONPATH": f"{hostile.replace('<work>', work)}:{outside}",
+                "PYTHONSAFEPATH": "1",
+            },
         )
         marker = pathlib.Path(layout.exit_code)
         for _ in range(200):
@@ -697,8 +733,12 @@ class TestTheLauncherAgainstARealShell:
                 break
             time.sleep(0.05)
 
-        printed = pathlib.Path(layout.output).read_text(encoding="utf-8").strip()
-        assert printed == "the shim", f"a startup hook in the work directory won: {printed!r}"
+        printed = pathlib.Path(layout.output).read_text(encoding="utf-8").splitlines()
+        assert printed[0] == "the shim", f"a startup hook in the work directory won: {printed[0]!r}"
+        assert printed[1:] == [outside], (
+            "the entry from outside the run tree did not survive the filter, so the launcher "
+            f"is dropping more than the run's own directories: {printed[1:]!r}"
+        )
 
     @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
     def test_a_work_directory_that_cannot_be_entered_stops_the_run(self, tmp_path: Path):
