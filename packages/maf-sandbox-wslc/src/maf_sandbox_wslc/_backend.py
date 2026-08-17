@@ -39,7 +39,19 @@ from ._proxy import build_context
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["WslcSandboxBackend"]
+__all__ = ["BACKEND_NAME", "WslcSandboxBackend"]
+
+#: The name :attr:`WslcSandboxBackend.name` answers to, and the value
+#: :class:`~maf_sandbox.SandboxRouter`'s ``selected=`` matches on.
+#:
+#: Public because a host choosing a backend from its own configuration needs the value before
+#: it has a backend to read it off, and building one to learn a constant is a lot of machinery
+#: for a fixed string (#411). The property below returns this, so the two cannot disagree.
+#:
+#: Worth having even though this backend runs on one platform: a host that registers it on
+#: Windows and something else elsewhere still selects by name, and that selection is written
+#: where the platform check is, not where the backend is built.
+BACKEND_NAME = "wslc"
 
 # Written at create and read back on purge, so wslc is the durable record, not this process.
 _LABEL_SCOPE = "maf-sandbox.scope"
@@ -280,7 +292,7 @@ class WslcSandboxBackend:
 
     @property
     def name(self) -> str:
-        return "wslc"
+        return BACKEND_NAME
 
     @property
     def isolation(self) -> Isolation:

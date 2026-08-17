@@ -15,6 +15,7 @@ import pytest
 from maf_sandbox import Capability, Egress, Isolation, SandboxBackend, SandboxKey, SandboxRouter
 
 from maf_sandbox_acas import (
+    BACKEND_NAME,
     AcasEntryPayloadIncomplete,
     AcasSandboxBackend,
     AcasSandboxConfig,
@@ -194,7 +195,28 @@ class TestBackendIdentity:
         assert SandboxRouter([AcasSandboxBackend(_config())]).enabled
 
     def test_is_named_aca(self):
+        # The literal, on purpose. `name == BACKEND_NAME` below pins them to each other and
+        # would stay green if both moved together — and both moving together is precisely the
+        # change that silently breaks every host with `selected="acas"` in its configuration.
         assert AcasSandboxBackend(_config()).name == "acas"
+
+    def test_the_exported_constant_is_the_name_the_backend_answers_to(self):
+        """#411: the value exists without building a backend, and cannot drift from it.
+
+        Worth more here than for the other two: constructing this backend means a
+        subscription, a credential and a resource group, which is a great deal of setup to
+        reach a fixed string a host needs while it is still reading configuration.
+        """
+        assert BACKEND_NAME == AcasSandboxBackend(_config()).name
+
+    def test_selecting_by_the_constant_resolves_to_this_backend(self):
+        """What the constant is for, exercised rather than asserted.
+
+        `selected=` is a string match against `.name`, so this is the only test that would fail
+        if the constant were right and the property were reading something else.
+        """
+        backend = AcasSandboxBackend(_config())
+        assert SandboxRouter([backend], selected=BACKEND_NAME).backend is backend
 
 
 # ---------------------------------------------------------------------------
