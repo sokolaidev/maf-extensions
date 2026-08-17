@@ -8,7 +8,7 @@
   "pull-request-header": ":robot: Release prepared from the commits below. The changelog is assembled from their PR titles, so it was written before it got here — read it as a release rather than as a diff. See CONTRIBUTING.md.",
   "changelog-sections": [
     { "type": "feat", "section": "Features" },
-    { "type": "fix", "section": "Bug Fixes" },
+    { "type": "fix", "section": "Fixes" },
     { "type": "perf", "section": "Performance" },
     { "type": "revert", "section": "Reverts" },
     { "type": "docs", "section": "Documentation" },
