@@ -1580,9 +1580,14 @@ class TestTheSharedConformanceSuite:
 
     What this leg is worth is bounded and worth stating: the specimen is a simulator built from
     payloads a live sandbox group actually answered with, not a live sandbox group. The docker
-    backend runs the same probes against a real engine on every pull request; verifying this one
-    live needs a subscription and a preview enrolment a pull request cannot assume (#33), and
-    until it can, this is the closest available and no more than that.
+    backend runs the same probes against a real engine on every pull request, but skips the four
+    requiring `FILES_LIST`, which it does not declare — so this is the only place those four are
+    answered at all without a subscription.
+
+    **A live run now exists**: `test_acas_e2e.py` puts the same probes to a real sandbox group
+    (#306). It needs a subscription and a preview enrolment a pull request cannot assume (#33),
+    so it runs in `verify-live.yml` rather than here, and this leg remains what a pull request
+    gets — the closest available on a runner, and no more than that.
     """
 
     @staticmethod

@@ -54,6 +54,8 @@ router = SandboxRouter([backend])  # microVM isolation meets the router's defaul
 | `capabilities` | `EXEC, FILES_IN, FILES_OUT, FILES_LIST` — declares only what it implements today |
 | `limits` | the transfer ceilings a spec may not exceed, per direction |
 
+`tests/test_acas_e2e.py` is the live suite, skipped unless `ACAS_SANDBOX_ENDPOINT` and `MAF_SANDBOX_ACAS_E2E_IMAGE` name a sandbox group and a guest image. It is what exercises the real data plane — the shared `FILES_OUT` conformance probes, the cap and confinement refusals, the read timeout that turns a fifo from a hang into a refusal, and teardown read back from the service rather than from this process's memory. It runs in `verify-live.yml`, not on a pull request, because every sandbox in it is billable.
+
 **`Capability.FILES_LIST` as well as `FILES_OUT`, and this is the only backend that declares it.** The service enumerates a directory natively, which is the test the protocol's split applies — name the backend that lacks it. A kind whose output names are unpredictable is refused on Docker and wslc and served here.
 
 **Only regular files are read, and the refusal happens at stat time.** This backend's read *follows* symlinks: a path linking to `/etc/hostname` returns that file's contents, so classifying after the bytes come back would be too late. The type comes from the data-plane payload's `isSymlink` and `isDir` flags, read raw — the SDK's typed `FileInfo` exposes neither, and a payload missing them is refused as `AcasEntryPayloadIncomplete`, never assumed regular ([#136](https://github.com/sokolaidev/maf-extensions/issues/136)).
