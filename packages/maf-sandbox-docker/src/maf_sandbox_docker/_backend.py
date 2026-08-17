@@ -752,8 +752,13 @@ class DockerSandboxBackend:
 
         A proxy image plus a non-empty allowlist means allowlisted egress; either missing means
         closed, and closed is the empty string so a closed sandbox keeps its historical name.
+
+        "Missing" is truthiness, matching what `egress` declares off the same field. It used to
+        be `is None` here, which made `egress_proxy_image=""` declare CLOSED and then try to
+        `docker run` the empty string as an image — the one value where the declaration and the
+        behaviour disagreed, and the one an unset environment variable produces (#407).
         """
-        if self._config.egress_proxy_image is None or not spec.egress_allow:
+        if not self._config.egress_proxy_image or not spec.egress_allow:
             return ""
         return "allow:" + ",".join(sorted(spec.egress_allow))
 
@@ -879,6 +884,8 @@ class DockerSandboxBackend:
         readiness line — so a stale, half-connected or wrong-allowlist proxy is never mistaken
         for a working one.
         """
+        # Sound rather than nearly sound: this is only reached through a truthy `_egress_id`,
+        # which reads the same field the same way (#407).
         proxy_image = cast("str", self._config.egress_proxy_image)
         proxy = _proxy_name(name)
         await self._remove(proxy)
