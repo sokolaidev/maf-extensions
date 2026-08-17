@@ -96,7 +96,7 @@ jobs:
           # alone (uv.lock records the workspace edge without a specifier, so it does not move).
           python3 scripts/set_dependents_range.py "$VERSION"
           if git diff --quiet; then
-            echo "every dependent's range already covers maf-sandbox ${VERSION}" >> "$GITHUB_STEP_SUMMARY"
+            echo "every dependent's range and every sample floor already covers maf-sandbox ${VERSION}" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           if [ -z "$title" ]; then

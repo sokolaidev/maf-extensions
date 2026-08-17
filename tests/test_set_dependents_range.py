@@ -344,7 +344,7 @@ class TestTheTitle:
 
     def test_both_bounds_and_the_samples(self):
         assert ranges.title("0.8.0", BOTH | {SAMPLE}) == (
-            "fix: require maf-sandbox 0.8.0 in the dependents and the samples, and admit 0.9"
+            "fix: require maf-sandbox 0.8.0 in the dependents and 0.8 in the samples, and admit 0.9"
         )
 
     def test_the_ceiling_and_the_samples(self):
@@ -354,14 +354,25 @@ class TestTheTitle:
 
     def test_the_floor_and_the_samples(self):
         assert ranges.title("0.8.0", frozenset({FLOOR, SAMPLE})) == (
-            "fix: require maf-sandbox 0.8.0 in the packages that use it, and in the samples"
+            "fix: require maf-sandbox 0.8.0 in the packages that use it, and 0.8 in the samples"
         )
 
     def test_the_samples_alone_name_the_minor_not_the_release(self):
         # The files say >=0.8; a subject saying 0.8.0 would advertise a claim no file makes.
         assert ranges.title("0.8.0", frozenset({SAMPLE})) == (
-            "docs: require maf-sandbox 0.8 in every sample's declared floor"
+            "chore: require maf-sandbox 0.8 in every sample's declared floor"
         )
+
+    @pytest.mark.parametrize(
+        "moved", [BOTH | {SAMPLE}, frozenset({CEILING, SAMPLE}), frozenset({FLOOR, SAMPLE})]
+    )
+    def test_no_subject_credits_the_samples_with_the_patch(self, moved: frozenset[str]):
+        # The rule the samples-alone branch follows, applied to the combined ones: the samples
+        # declare a minor, so a clause about them must not read `0.8.0`. Three subjects said it
+        # anyway, which is the author's own standard held in one branch and dropped in three.
+        subject = ranges.title("0.8.0", moved)
+        samples_clause = subject.split("samples")[0].rsplit("and", 1)[-1]
+        assert "0.8.0" not in samples_clause, f"{subject!r} credits the samples with a patch"
 
     @pytest.mark.parametrize(
         "moved",
@@ -380,8 +391,10 @@ class TestTheTitle:
 
     def test_a_title_that_moves_only_samples_releases_nothing(self):
         # Nothing under samples/ is packaged, so fix: would ask release-please for a patch
-        # with no package to cut it from. docs: is the honest type and attributes to nothing.
-        assert ranges.title("0.8.0", frozenset({SAMPLE})).startswith("docs: ")
+        # Attribution is by path and only packages/* is configured, so no type would cut a
+        # release here. chore: is what AGENTS.md prescribes outside a package, and it is the
+        # one that releases nothing by type rather than by which paths happen to be listed.
+        assert ranges.title("0.8.0", frozenset({SAMPLE})).startswith("chore: ")
 
     @pytest.mark.parametrize(
         "moved",

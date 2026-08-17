@@ -28,7 +28,7 @@ A sample is documentation of the current library rather than a package with cons
 every `samples/*/agent.py` declares the same floor and this moves all of them at once (#343).
 The minor only, so a patch moves nothing and no reviewer reads fourteen files restating what
 they already said. It never lowers, so a re-run is a no-op. Nothing under `samples/` is
-packaged, which is why a run that moves only this releases nothing and is titled `docs:`.
+packaged, which is why a run that moves only this is titled `chore:` and releases nothing.
 
 `--print-title` prints the commit subject for what this would change, without changing it, so
 the workflow naming it in a commit and a pull request reads it from here rather than deriving
@@ -232,10 +232,12 @@ def title(released_text: str, moved: frozenset[str]) -> str:
     release checks the index before it uploads, the floor because a floor nobody can install
     is not a constraint. See RELEASING.md, Release order.
 
-    The samples are the exception, and only when they move alone: nothing under `samples/` is
-    packaged, so `fix:` there would ask release-please for a patch with no package to cut it
-    from. That run says `docs:`, which this repository's title check accepts and which
-    attributes to nothing.
+    The samples are the exception, and only when they move alone. A change is attributed to a
+    package by the files it touches, and only `packages/*` is configured, so a samples-only
+    commit cuts no release whatever type it carries — `fix:` there would be inert rather than
+    harmful. It says `chore:` because that is what AGENTS.md prescribes for a touch outside a
+    package, and because `chore:` releases nothing *by type* rather than by the accident of
+    which paths happen to be configured today.
     """
     released = _version(released_text)
     admitted = target_ceiling(released)
@@ -251,8 +253,8 @@ def title(released_text: str, moved: frozenset[str]) -> str:
         return f"fix: require maf-sandbox {released_text} in the packages that use it"
     if moved == frozenset({FLOOR, CEILING, SAMPLE_FLOOR}):
         return (
-            f"fix: require maf-sandbox {released_text} in the dependents and the samples, "
-            f"and admit {admits}"
+            f"fix: require maf-sandbox {released_text} in the dependents and {samples} in the "
+            f"samples, and admit {admits}"
         )
     if moved == frozenset({CEILING, SAMPLE_FLOOR}):
         return (
@@ -262,10 +264,10 @@ def title(released_text: str, moved: frozenset[str]) -> str:
     if moved == frozenset({FLOOR, SAMPLE_FLOOR}):
         return (
             f"fix: require maf-sandbox {released_text} in the packages that use it, "
-            "and in the samples"
+            f"and {samples} in the samples"
         )
     if moved == frozenset({SAMPLE_FLOOR}):
-        return f"docs: require maf-sandbox {samples} in every sample's declared floor"
+        return f"chore: require maf-sandbox {samples} in every sample's declared floor"
     return ""
 
 
