@@ -96,7 +96,7 @@ jobs:
           # alone (uv.lock records the workspace edge without a specifier, so it does not move).
           python3 scripts/set_dependents_range.py "$VERSION"
           if git diff --quiet; then
-            echo "every dependent's range already covers maf-sandbox ${VERSION}" >> "$GITHUB_STEP_SUMMARY"
+            echo "every dependent's range and every sample floor already covers maf-sandbox ${VERSION}" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
           if [ -z "$title" ]; then
@@ -135,6 +135,8 @@ jobs:
           **The ceiling is uniform and is a claim about nobody's code.** It widens to admit the minor after @VERSION@, before that minor exists — which holds either way, since a ceiling admits a version whether or not it has been released. Widening only enlarges an accepted set, so it cannot make a resolution fail. What it buys is that the next core minor can be released without leaving the index unresolvable as a set (#175) and without anyone having to remember step 1 (#177). Nothing here needs your judgement.
 
           **The floor is a guess, and usually a wrong one.** It moves in every dependent whose ceiling already admitted @VERSION@ and whose floor was a minor behind — a shape, not evidence that a package's code uses this release. Ceilings are widened for everyone at once, so admitting a version says nothing about needing it. A floor should move only for a package that relies on API or behaviour this release introduced or changed; a new import is the obvious case, but a fixed bug in an existing call counts too. For the rest it pins a version they do not need and over-constrains their consumers.
+
+          **The samples' floor is neither, and it is the one thing here you should not decline.** Every `samples/*/agent.py` declares the same `maf-sandbox>=<minor>` and all of them move to @VERSION@'s minor together. Nothing under `samples/` is packaged, so this constrains no consumer: a sample documents the current library, and the version it is actually run against is the only claim it can honestly make. Declining leaves it pointing at a core nothing here runs it on — which never fails, because `uv` resolves the newest admissible version anyway, and so goes unnoticed until a reader whose resolution is capped elsewhere gets a plausible wrong answer (#343).
 
           **To decline a floor without losing its ceiling**, edit that line back to the floor it had and leave the new upper bound alone — the two now live in one hunk, so dropping the hunk wholesale would give up the widening too. Retitle it feat:/breaking if adopting the version is more than a patch for a dependent; the title says fix: so the bot does not choose the bump.
 

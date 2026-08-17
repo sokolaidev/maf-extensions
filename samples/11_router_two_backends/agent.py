@@ -12,7 +12,7 @@ beside the in-process backend, and what #328 would change.
 # requires-python = ">=3.12"
 # dependencies = [
 #     "maf-sandbox-docker",
-#     "maf-sandbox>=0.14",
+#     "maf-sandbox>=0.15",
 # ]
 # ///
 
