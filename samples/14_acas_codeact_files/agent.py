@@ -1,6 +1,6 @@
 """One turn of an agent that reads a file it was given and writes one back — remotely.
 
-Sample 08's task, its data and its wiring, with one line changed::
+Sample 08's task, its data and its wiring, with the backend swapped underneath::
 
     app  ->  maf_sandbox (router)  ->  maf_sandbox_acas  ->  the sandbox
                   ^ maf_sandbox_codeact calls the router
@@ -25,8 +25,13 @@ this directory's README for the prerequisites and the environment variables.
 # requires-python = ">=3.12"
 # dependencies = [
 #     "agent-framework-openai",
-#     # Imported directly for `DefaultAzureCredential`, so it is named here rather than taken
-#     # on loan from maf-sandbox-acas, which happens to depend on it today.
+#     # Both named because this file imports `azure.identity.aio.DefaultAzureCredential`
+#     # directly, and the async credential builds an aiohttp transport — which ships behind
+#     # azure-core's `aio` extra, not with azure-core itself. Sample 08 declares the same pair
+#     # for the same import. Leaving either out resolves today only on loan: aiohttp arrives
+#     # through maf-sandbox-acas's own SDK dependency, and a preview SDK is a thin thing to
+#     # rest an ImportError on.
+#     "azure-core[aio]",
 #     "azure-identity",
 #     "maf-sandbox-acas",
 #     "maf-sandbox-codeact",
@@ -173,10 +178,11 @@ async def run() -> int:
     if not tools:
         # Unreachable given the checks above; printed because the `[]` contract is worth
         # stating. `[]` means one thing only — no backend was registered at all. A backend that
-        # *is* registered and cannot serve this spec never reaches here: a floor breach raises
-        # at `SandboxRouter(...)`, and a missing capability raises `SandboxCapabilityNotSupported`
-        # out of `make_codeact_tools` itself. So the whole kind is refused rather than the output
-        # channel quietly dropped — loudly, and before this line. Sample 11 shows that on purpose.
+        # *is* registered and cannot serve this spec never reaches here: every mismatch raises,
+        # an isolation floor at `SandboxRouter(...)` and the rest out of `make_codeact_tools`
+        # itself — `SandboxCapabilityNotSupported` for a capability, and its siblings for a
+        # transfer ceiling or an egress promise. So the whole kind is refused rather than the
+        # output channel quietly dropped — loudly, and before this line. Sample 11 shows that.
         print("No sandbox backend: execute_code was not attached.", file=sys.stderr)
         return 2
 

@@ -219,6 +219,35 @@ class TestNamesAreWholeWords:
         )
 
 
+class TestTheSummaryIsReadInTheModelsOwnAlphabet:
+    """The model writes this file, so neither its casing nor its script is ours to assume.
+
+    Both cases below survived the change that introduced them: reverting to offsets taken from
+    a lowered copy passed every other test in this file, and so did dropping the
+    `re.IGNORECASE` that replaced it. Case-insensitivity used to be structural — you could not
+    lose it without deleting the `.lower()` — and moving it into a flag made it losable in
+    silence. These are what make it cost something.
+    """
+
+    def test_a_capitalised_region_name_is_still_the_region(self):
+        """The likeliest real shape: the task asks for a Markdown table, and a model writing
+        one puts `| North | 390 |` in it about as often as the lowercase form."""
+        titled = _SUMMARY.replace("north", "North").replace("east", "East")
+        assert titled != _SUMMARY
+        assert check.assess(_HEALTHY, titled) == []
+
+    @pytest.mark.parametrize("shout", ["NORTH", "NoRtH"])
+    def test_any_casing_of_a_region_name_counts(self, shout: str):
+        assert check.assess(_HEALTHY, _SUMMARY.replace("north", shout)) == []
+
+    def test_a_character_that_grows_when_lowered_does_not_shift_the_segments(self):
+        """`"İ".lower()` is two characters, so offsets taken from a lowered copy and slices
+        taken from the original drift apart by one for every one of them in the file — and the
+        region totals then get read out of the wrong segments. A correct summary went red."""
+        prefixed = f"{'İ' * 10} regional report\n\n{_SUMMARY}"
+        assert check.assess(_HEALTHY, prefixed) == []
+
+
 class TestATotalBelongsToItsOwnRegion:
     def test_swapped_values_fail(self):
         """Every expected string is still present, which is exactly why checking them
@@ -316,7 +345,7 @@ class TestTheFixtureIsWhatTheSamplesActuallyPrint:
         source = (_ROOT / "samples" / sample / "agent.py").read_text(encoding="utf-8")
         line = next((one for one in source.splitlines() if "Delivered this turn into" in one), None)
         assert line is not None, f"samples/{sample}/agent.py prints no delivery line at all"
-        for part in ("/: ", "json.dumps("):
+        for part in ("/: ", "json.dumps(delivered)"):
             assert part in line, (
                 f"samples/{sample}/agent.py's delivery line no longer carries {part!r}: "
                 f"{line.strip()!r}. The checker reads the names by parsing that list as JSON, "
@@ -374,7 +403,7 @@ class TestTheTagIsWhatMakesTheseLinesTheHosts:
     def test_a_tag_buried_mid_sentence_answers_for_neither(self):
         """The half `quoted` does not cover, and so the half the `^` anchor carries alone.
 
-        `quoted` tests `line.lstrip().startswith("[measured]")`, which is true only of a tag
+        `quoted` tests `line.lstrip().lower().startswith("[measured]")`, which is true only of a tag
         that opens a line. One written mid-sentence reaches the checker exactly as the model
         typed it, two spaces and all. Every impersonation case above goes through `quoted` and
         comes back as `> [measured] ` — one space, never the two the pattern wants — so none of

@@ -3,18 +3,20 @@ name: Verify (live)
 # Installs the PUBLISHED wheels into a clean environment and runs the samples below, each
 # asserting that its own workload ran rather than that the program exited zero.
 #
-# **No check here decides a run on the model's prose alone.** A sample that judges a tool's
-# answer prints a fenced block of what the tool returned, closed by a line tagged `[measured]`,
-# and its check reads that. A sample that judges a landed file prints no block — it reads the
-# file, and off the tag it reads what the host counted: what the router disposed, and for 08 and
-# 14 what the sink took. The alternative was wrong in both directions: a model that never called
-# the tool could satisfy a check made over prose, and three healthy releases went red over a run
-# writing `**error**` where the pattern wanted `[error]` (#314).
+# **No check here can be satisfied by the model's prose.** A sample that judges a tool's answer
+# prints a fenced block of what the tool returned, closed by a line tagged `[measured]`, and its
+# check reads that. A sample that judges a landed file prints no block — it reads the file, and
+# off the tag it reads what the host counted: what the router disposed, and for 08 and 14 what
+# the sink took. Several checks additionally require the answer to appear in the reply, which is
+# a claim about the round trip reaching the model and is never the condition carrying a verdict.
+# The alternative was wrong in both directions: a model that never called the tool could satisfy
+# a check made over prose, and three healthy releases went red over a run writing `**error**`
+# where the pattern wanted `[error]` (#314).
 #
 # Half are paired: one workload against a billable Azure microVM and the same workload against
 # a container, so a red on one side alone names the backend. 01 and 05 report the compiler's
 # diagnostics; 03 and 06 return the 100th Fibonacci number from code run in the sandbox; 08 and
-# 14 land a declared summary on disk and check the file rather than the transcript. 07 lands one
+# 14 land a declared summary on disk and gate on the file, not on the account of it. 07 lands one
 # too, through a kind written in the sample instead of the packaged one, and pairs with 08 on
 # this side of the machine rather than across backends. 09 runs 01's bicep workload against the
 # CLI on the runner itself, so it pairs with nothing and names no backend. 13 is the only job
@@ -897,7 +899,7 @@ jobs:
     # The pull surface on a second backend, which is the whole reason this job exists (#300).
     # Sample 08 is its pair and the assertion is shared, so a red here while 08 is green is a
     # statement about ACAS rather than about the channels: same task, same sales.csv, same two
-    # measured lines, one line of wiring different. Reading a file back out of *this* backend is
+    # measured lines, four lines of wiring different. Reading a file back out of *this* backend is
     # a stat and a read over a preview control plane, where a mocked test is least likely to
     # match reality — #139 and #142 both turned on the difference between what the SDK reported
     # and what the payload carried, and until this job the pull surface here was exercised by

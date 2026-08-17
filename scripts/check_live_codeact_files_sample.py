@@ -24,10 +24,18 @@ patterns is the only thing refusing one written mid-sentence.
 The third — the grand total — is read from the transcript at large, which in a healthy run means
 out of the model's own reply, because these two samples print no fenced block of the tool's
 output. That is deliberate and it is not the gate. It is the same claim `check_live_codeact_sample.py`
-makes with its reply check: the answer has to reach the model and not merely the log. What
-*proves* a program ran over the real file is the landed summary, where every region's total has
-to sit against that region's name — and those four numbers are the grand total, decomposed. A
-model that never called the tool cannot produce them.
+makes with its reply check: the answer has to reach the model and not merely the log.
+
+What *proves* a program ran is the landed summary, and it is worth being exact about why. Not
+because its numbers are hard to guess — they are printed in sample 08's README and the CSV is six
+rows — so a model-authored program could hardcode all four and this checker could not tell. The
+proof is the road, not the arithmetic: nothing reaches `out/` except through a real call to the
+tool and a real artifact pulled back out of the sandbox, because the sink is host-side code the
+model never touches. What the four totals sitting against their own region names add is that the
+*channel* carried the right bytes rather than merely some.
+
+So the honest summary of this checker: it proves a file made the round trip, and it does not
+prove the program that wrote it read `sales.csv`.
 
 Exits non-zero listing every reason it failed.
 """
@@ -54,7 +62,7 @@ _SUMMARY_NAME = "summary.md"
 #: impersonating either line is a quotation by the time this reads the stream. Case-sensitive on
 #: the tag, lax after it: a reader broader than its sanitizer is a hole rather than tolerance.
 #:
-#: The `^` is not decoration. `quoted` tests `line.lstrip().startswith(...)`, so it rewrites a
+#: The `^` is not decoration. `quoted` tests `line.lstrip().lower().startswith(...)`, so it rewrites a
 #: tag that opens a line and leaves one buried in a sentence exactly as the model wrote it —
 #: `All done!   [measured] Disposed 1 sandbox(es).` reaches this unchanged. The anchor is the
 #: whole of what refuses it, and it is pinned by a test of its own rather than by the
@@ -155,7 +163,8 @@ def assess(output: str, summary: str | None) -> list[str]:
     if not _number(_GRAND_TOTAL).search(output):
         failures.append(
             f"{_GRAND_TOTAL} is not in the output as a number — the grand total over sales.csv "
-            "did not come back, so the program did not read the file it was given"
+            "reached neither the reply nor anything else printed, so the answer did not make it "
+            "back to the model even if a program computed it"
         )
 
     disposed = _DISPOSED.search(output)

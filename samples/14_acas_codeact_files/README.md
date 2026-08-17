@@ -1,6 +1,6 @@
 # 14 — CodeAct with files in and files out (ACA sandbox)
 
-[Sample 08](../08_docker_codeact_files/) with one line changed. Same task, same `sales.csv`, same two channels, same sink — a different backend underneath.
+[Sample 08](../08_docker_codeact_files/) with the backend swapped and nothing else rethought. Same task, same `sales.csv`, same two channels, same sink. The wiring differences come to four, and they are listed below.
 
 ```
 app  ->  maf_sandbox (router)  ->  maf_sandbox_acas  ->  the sandbox
@@ -24,7 +24,7 @@ The application code is the evidence. `make_recording_sink`'s body is copied fro
 - **`await backend.aclose()`** on the way out. There is an HTTP client to close; the Docker backend has none.
 - **It creates a billable sandbox.** Sample 08 costs a container on your own machine.
 
-Everything else is the same file. Diff the two and what changes is those four, the `THREAD_ID` that keys this sample's sandbox, and the dependency block — which swaps the backend package and, unlike 08's, names `azure-identity` because this one imports `DefaultAzureCredential` directly rather than through the Docker path.
+Everything else is the same file. Diff the two and what changes is those four, the `THREAD_ID` that keys this sample's sandbox, and one line of the dependency block, where `maf-sandbox-docker` becomes `maf-sandbox-acas`. The two Azure entries are the same in both, because both import `DefaultAzureCredential` for the model client and neither gets it from its backend.
 
 ## What the pull actually does here
 
