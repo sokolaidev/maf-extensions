@@ -2,6 +2,18 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.16.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.15.0...maf-sandbox-v0.16.0) (2026-08-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* a run is two directories now, some run paths and program names are refused, and its timeout gets a type ([#376](https://github.com/sokolaidev/maf-extensions/issues/376))
+
+### Features
+
+* a run is two directories now, some run paths and program names are refused, and its timeout gets a type ([#376](https://github.com/sokolaidev/maf-extensions/issues/376)) ([bac426f](https://github.com/sokolaidev/maf-extensions/commit/bac426f2926d59621b41ef33002362e3658901cf))
+* a separate-OS-process rung between runtime and container, spelled os_process ([#347](https://github.com/sokolaidev/maf-extensions/issues/347)) ([7269830](https://github.com/sokolaidev/maf-extensions/commit/72698303314a271f31cf4f26851dfae12cad0b2f))
+
 ## [0.15.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.14.0...maf-sandbox-v0.15.0) (2026-08-16)
 
 
