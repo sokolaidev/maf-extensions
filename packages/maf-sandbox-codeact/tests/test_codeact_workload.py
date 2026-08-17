@@ -1068,6 +1068,37 @@ class TestFilesIn:
         assert "cannot be shared" not in out, out
         assert f"{_run_dirs(sandbox)[0]}/{name}" in sandbox.files
 
+    def test_the_two_reserved_names_are_refused_for_their_own_reasons(self):
+        """One sentence for both would be false about one of them. This tool writes
+        `program.py` into the run's directory and only *reads* `outputs.json` from it — the
+        program writes that. Both refusals are asserted whole, so neither can drift onto the
+        other's clause and tell a model this tool writes a file it never touches.
+        """
+        writes = _run(
+            _tool(_backend(_ScriptedSandbox()), file_store=InMemoryStore({_PROGRAM_FILENAME: "x"})),
+            "print('hi')",
+            files=[_PROGRAM_FILENAME],
+        )
+        reads = _run(
+            _pulling_tool(
+                _ProducingSandbox(),
+                CodeactOutputs.MANIFEST,
+                _RecordingSink(),
+                file_store=InMemoryStore({_MANIFEST_FILENAME: "x"}),
+            ),
+            "print('hi')",
+            files=[_MANIFEST_FILENAME],
+        )
+
+        assert writes == (
+            f"Error: {_PROGRAM_FILENAME!r} cannot be shared — this tool writes a file of that "
+            f"name into every run's directory."
+        ), writes
+        assert reads == (
+            f"Error: {_MANIFEST_FILENAME!r} cannot be shared — this tool reads a file of that "
+            f"name from every run's directory as its manifest."
+        ), reads
+
     def test_a_name_that_merely_starts_with_the_program_name_is_fine(self):
         """`program.py.bak` shares no directory with it, so refusing it would be overreach."""
         sandbox = _ScriptedSandbox()
@@ -1390,7 +1421,7 @@ class TestDeclaredOutputs:
     @pytest.mark.parametrize(
         ("names", "sentence"),
         [
-            (["Program.py", "program.py"], "this tool writes that file itself"),
+            (["Program.py", "program.py"], "this tool writes a file of that name"),
             (["Program.py/x.csv", "program.py/x.csv"], "nothing can live inside it"),
         ],
         ids=["the reserved name", "a name beneath it"],
@@ -1519,7 +1550,7 @@ class TestDeclaredOutputs:
 
         out = _run(tool, "print('hi')", outputs=[_PROGRAM_FILENAME])
         assert "cannot be saved" in out
-        assert "this tool writes that file itself" in out, out
+        assert "this tool writes a file of that name into every run's directory" in out, out
 
     @pytest.mark.parametrize(
         "name",
@@ -1553,7 +1584,7 @@ class TestDeclaredOutputs:
         out = _run(tool, "print('hi')", outputs=[nested])
         assert f"Error: {nested!r} cannot be saved" in out, out
         assert f"{_PROGRAM_FILENAME!r} is a file name this tool reserves" in out, out
-        assert "writes that file itself" not in out, out
+        assert "a file of that name" not in out, out
         assert "nothing can live inside it" in out, out
         assert sandbox.raw_commands == []
         assert sink.names == []
@@ -1771,14 +1802,14 @@ class TestManifestOutputs:
         assert f"Error: {nested!r} cannot be saved" in out, out
         # `reserves`, not `writes`: the guest writes the manifest and this tool only reads it.
         assert f"{_MANIFEST_FILENAME!r} is a file name this tool reserves" in out, out
-        assert "writes that file itself" not in out, out
+        assert "a file of that name" not in out, out
         assert "nothing can live inside it" in out, out
         assert sink.names == []
 
     @pytest.mark.parametrize(
         ("name", "sentence"),
         [
-            (_MANIFEST_FILENAME, "this tool writes a file of that name"),
+            (_MANIFEST_FILENAME, "this tool reads a file of that name"),
             (f"{_MANIFEST_FILENAME}/r.csv", "nothing can live inside it"),
         ],
         ids=["the manifest name", "a name beneath it"],

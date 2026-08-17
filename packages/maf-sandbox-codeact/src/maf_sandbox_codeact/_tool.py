@@ -58,7 +58,7 @@ from maf_sandbox import (
 from maf_sandbox.maf import SandboxToolSession, sandboxed_tool
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Sequence
+    from collections.abc import Awaitable, Callable, Mapping, Sequence
 
     from agent_framework import AgentFileStore
     from maf_sandbox import HostToolAggregate, HostToolRegistry, LandedArtifact, Sandbox
@@ -604,16 +604,23 @@ async def _execute(
     if isinstance(key, str):
         return key
 
-    # The names written into the model's own directory by something other than the program, so
-    # neither an input nor an output may claim one. The manifest is reserved only where it
-    # means something, and the program only where it shares that directory: a run that
-    # dispatches puts it in the transport's, beside the shim, where no name a model chooses
-    # can reach it.
-    reserved: set[str] = set()
+    # The names this run spends on something other than the model's own files, so neither an
+    # input nor an output may claim one. The manifest is reserved only where it means
+    # something, and the program only where it shares that directory: a run that dispatches
+    # puts it in the transport's, beside the shim, where no name a model chooses can reach it.
+    #
+    # Each carries the clause its refusal uses, because the two are reserved for opposite
+    # reasons — this tool writes the program and only reads the manifest, which the program
+    # writes. One sentence for both would be false about one of them.
+    reserved: dict[str, str] = {}
     if dispatch is None:
-        reserved.add(_PROGRAM_FILENAME)
+        reserved[_PROGRAM_FILENAME] = (
+            "this tool writes a file of that name into every run's directory"
+        )
     if outputs is CodeactOutputs.MANIFEST:
-        reserved.add(_MANIFEST_FILENAME)
+        reserved[_MANIFEST_FILENAME] = (
+            "this tool reads a file of that name from every run's directory as its manifest"
+        )
 
     # Chosen here rather than after `acquire`, so that a declared name can be judged against
     # the guest path it will actually become — the prefix is 13 bytes of the 255 a name gets.
@@ -765,7 +772,7 @@ async def _resolve_listed_files(
     store: AgentFileStore,
     files: list[str],
     *,
-    reserved: set[str],
+    reserved: Mapping[str, str],
 ) -> list[str] | str:
     """Match each requested name against the caller's listing, or answer with the refusal.
 
@@ -790,10 +797,7 @@ async def _resolve_listed_files(
             # listing is still not echoed — that would invite a retry with another spelling.
             return f"Error: {name!r} cannot be shared — {exc}"
         if name in reserved:
-            return (
-                f"Error: {name!r} cannot be shared — this tool writes a file of that name into "
-                f"every run's directory."
-            )
+            return f"Error: {name!r} cannot be shared — {reserved[name]}."
         refusal = _inside_a_reserved_file(name, reserved, action="shared")
         if refusal is not None:
             return refusal
@@ -866,7 +870,7 @@ async def _read_listed_files(
     return read
 
 
-def _inside_a_reserved_file(name: str, reserved: set[str], *, action: str) -> str | None:
+def _inside_a_reserved_file(name: str, reserved: Mapping[str, str], *, action: str) -> str | None:
     """Refuse a name that would have to live inside a reserved file, naming which one.
 
     Every shipped backend creates parent directories for a nested write, so
@@ -971,7 +975,7 @@ def _validated_output_names(
     names: Sequence[str],
     *,
     max_files: int,
-    reserved: set[str],
+    reserved: Mapping[str, str],
     guest_prefix: str,
     normalization: NameNormalization,
 ) -> list[str] | str:
@@ -1001,7 +1005,7 @@ def _validated_output_names(
             except SandboxArtifactNameInvalid as exc:
                 return f"Error: {name!r} cannot be saved — {exc}"
         if name in reserved:
-            return f"Error: {name!r} cannot be saved — this tool writes that file itself."
+            return f"Error: {name!r} cannot be saved — {reserved[name]}."
         refusal = _inside_a_reserved_file(name, reserved, action="saved")
         if refusal is not None:
             return refusal
@@ -1025,7 +1029,7 @@ async def _collect(
     guest_prefix: str,
     outputs: CodeactOutputs,
     declared: list[str],
-    reserved: set[str],
+    reserved: Mapping[str, str],
 ) -> str:
     """Land whatever this run produced, and say what happened — never raising into the model."""
     sink = session.output_sink
