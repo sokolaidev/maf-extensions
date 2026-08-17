@@ -101,6 +101,19 @@ jobs:
         # nothing and suppresses inline instead — pyproject.toml says why (#334).
         run: uv run pyright
 
+      - name: Markdown code blocks (report-only)
+        # Lints the ```python blocks in README/packages/samples/RELEASING against the installed
+        # maf_sandbox* packages — an import the package no longer exports, an attribute a class
+        # no longer carries. Wiring-only snippets that import no maf_sandbox* module are skipped,
+        # so undefined router/context and top-level await are tolerated. Report-only for now
+        # (continue-on-error): flip the gate on once it has stayed green across a release or two
+        # (#289). Each block is its own pyright run, so this costs one cold start per importing
+        # block; the venv is already synced above and pyright is already a dev dep.
+        continue-on-error: true
+        run: |
+          uv run python scripts/check_md_code_blocks.py \
+            README.md 'packages/*/README.md' 'samples/**/*.md' RELEASING.md
+
       - name: Build + metadata check
         run: |
           uv build --package maf-sandbox
@@ -124,8 +137,11 @@ jobs:
             "$venv/bin/python" scripts/smoke_install.py "$package"
           done
 
-  # A real Docker daemon on ubuntu-latest makes this the one live backend suite that can run on
-  # a pull request — wslc needs Windows, acas needs a billable Azure sandbox. It is an
+  # A real Docker daemon on ubuntu-latest makes this the one place a live suite can run on a
+  # pull request — wslc needs Windows, acas needs a billable Azure sandbox. Two suites run here
+  # now: the docker backend's, and the CodeAct kind's against a real interpreter (#397), which
+  # is where `CodeactOutputs.MANIFEST` and the collection's budget arithmetic are exercised —
+  # every other live run of that kind is a sample with a model in the loop. It is an
   # integration test, so it lives in its own job rather than as a step of the hermetic
   # unit/lint/type job above: it depends on the daemon, a network and an image registry, a
   # different failure class, and isolating it keeps a daemon or registry blip from reding the
@@ -142,6 +158,11 @@ jobs:
       # these two variables is what turns the module's skip guard off.
       MAF_SANDBOX_DOCKER_E2E_IMAGE: mcr.microsoft.com/azurelinux/base/core:3.0
       MAF_SANDBOX_DOCKER_E2E_PROXY_IMAGE: maf-sandbox-docker-proxy:ci
+      # The CodeAct kind runs a Python program in the guest, so it needs an interpreter the
+      # backend suite's image does not carry. Same registry for the same reason — MCR rather
+      # than Docker Hub, whose unauthenticated pull limit is per shared-runner IP — and the
+      # smallest MCR python there is, 204 MB against the devcontainer image's gigabyte.
+      MAF_SANDBOX_CODEACT_E2E_IMAGE: mcr.microsoft.com/azurelinux/base/python:3.12
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
@@ -159,4 +180,10 @@ jobs:
           # asserted at the command-line level offline.
           docker build -t maf-sandbox-docker-proxy:ci \
             packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy
-          uv run pytest packages/maf-sandbox-docker/tests/test_docker_e2e.py -q
+          # Both live suites in one invocation: the backend's, and the CodeAct kind's on top of
+          # it (#397). `-ra` because each skips itself when its image variable is empty, which
+          # the env block above has already made impossible — a skip here is a bug, and without
+          # the summary it reads exactly like a pass.
+          uv run pytest -q -ra \
+            packages/maf-sandbox-docker/tests/test_docker_e2e.py \
+            packages/maf-sandbox-codeact/tests/test_codeact_e2e.py

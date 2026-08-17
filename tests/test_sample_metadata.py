@@ -17,6 +17,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from _version_prose import RELEASE_IN_PROSE, toml_comment
 
 _SAMPLES = Path(__file__).resolve().parent.parent / "samples"
 _SAMPLE_DIRS = sorted(path for path in _SAMPLES.glob("[0-9][0-9]_*") if path.is_dir())
@@ -108,22 +109,6 @@ def _previous_release(changelog: str) -> tuple[int, int]:
     return int(major), int(minor)
 
 
-def _toml_comment(line: str) -> str:
-    """Whatever a TOML line says after its `#`, leading or trailing, or `""`.
-
-    Quote-aware, because the `#` that opens a comment and the `#` inside a dependency string
-    are the same character and only one of them is prose. Without that, a URL fragment in a
-    dependency would be read as a comment.
-    """
-    quoted = False
-    for index, character in enumerate(line):
-        if character == '"':
-            quoted = not quoted
-        elif character == "#" and not quoted:
-            return line[index:]
-    return ""
-
-
 def _floors_outside_the_window(
     floors: set[tuple[int, int]], core: tuple[int, int], previous: tuple[int, int]
 ) -> list[tuple[int, int]]:
@@ -134,32 +119,6 @@ def _floors_outside_the_window(
     moving.
     """
     return sorted(floor for floor in floors if floor not in (core, previous))
-
-
-class TestTheCommentReader:
-    """Where a TOML comment can hide on a dependency line.
-
-    The tree these run against carries no comment naming a release — that is the point of the
-    change — so nothing in it can distinguish a reader that finds trailing comments from one
-    that does not. A reviewer proved that by adding `# needs 0.14` to the end of a dependency
-    line and watching every test stay green.
-    """
-
-    def test_a_leading_comment_is_read(self):
-        assert _toml_comment("    # 0.14 for Isolation.NONE").strip() == "# 0.14 for Isolation.NONE"
-
-    def test_a_trailing_comment_is_read(self):
-        # Legal TOML, the most natural place to justify a pin, and on the very line the bump
-        # script rewrites — so the prose goes stale the moment the version moves under it.
-        assert _toml_comment('     "maf-sandbox-bicep",  # needs 0.14') == "# needs 0.14"
-
-    def test_a_line_with_no_comment_reads_empty(self):
-        assert _toml_comment('     "maf-sandbox>=0.15",') == ""
-
-    def test_a_hash_inside_a_dependency_string_is_not_a_comment(self):
-        # A URL fragment is the case: `pkg @ https://host/x#sha256=…` is one quoted value, and
-        # reading from that `#` would report a version in the dependency as stale prose.
-        assert _toml_comment('     "pkg @ https://host/w.whl#sha256=0.14",') == ""
 
 
 class TestTheWindowRule:
@@ -226,8 +185,6 @@ class TestTheDeclaredCoreFloor:
     """
 
     _PACKAGE = Path(__file__).resolve().parent.parent / "packages" / "maf-sandbox"
-    #: A pre-1.0 release of this project, in a comment. `3.12` and the like are left alone.
-    _CORE_RELEASE = re.compile(r"0\.\d+(?:\.\d+)?")
 
     def _core_minor(self) -> tuple[int, int]:
         text = (self._PACKAGE / "pyproject.toml").read_text(encoding="utf-8")
@@ -323,8 +280,8 @@ class TestTheDeclaredCoreFloor:
         match = _BLOCK.search((sample / "agent.py").read_text(encoding="utf-8"))
         assert match
         for line in match.group("body").splitlines():
-            comment = _toml_comment(line[1:])
-            named = self._CORE_RELEASE.search(comment)
+            comment = toml_comment(line[1:])
+            named = RELEASE_IN_PROSE.search(comment)
             assert not named, (
                 f"{sample.name}: {comment.strip()!r} names {named.group(0)}. The constraint "
                 "beside it is the source of truth and it moves without this comment — say "

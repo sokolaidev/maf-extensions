@@ -86,6 +86,12 @@ executionEnvironments = [
 # in-package runs; pytest binds exactly one rootdir per invocation, so running from here
 # uses this list and running inside a package uses that package's own configuration.
 [tool.pytest.ini_options]
+# `slow` marks tests that spawn pyright (the markdown-block linter's drift
+# round-trip) and so cost seconds each; they stay on by default, and `-m "not slow"`
+# drops them for a fast local loop.
+markers = [
+    "slow: spawns pyright per block — keep on by default, deselect with -m 'not slow'",
+]
 testpaths = [
     # Repository-level wiring (release registration) — belongs to no single package.
     "tests",
