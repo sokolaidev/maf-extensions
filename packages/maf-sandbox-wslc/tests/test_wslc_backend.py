@@ -504,6 +504,22 @@ class TestWriteFile:
         assert member is not None
         assert member.read().decode("utf-8") == "param naïve string\n"
 
+    def test_bytes_are_written_as_given(self):
+        """The protocol's ``write_file`` takes ``str | bytes`` — an in-door carrying a PNG or a
+        spreadsheet needs bytes, and they must reach the tar entry unencoded. Raising
+        ``AttributeError`` on ``bytes.encode`` here was the load-bearing half of #370."""
+        backend, fake = _backend_with(_machine(running=[_NAME]))
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        payload = b"\x89PNG\r\n\x1a\n" + bytes(range(256))
+        asyncio.run(sandbox.write_file("/maf-sandbox/work/diagram.png", payload))
+
+        call = fake.only("container", "cp")
+        assert call.stdin is not None
+        archive = tarfile.open(fileobj=io.BytesIO(call.stdin), mode="r")
+        member = archive.extractfile("maf-sandbox/work/diagram.png")
+        assert member is not None
+        assert member.read() == payload
+
     def test_the_entry_is_readable(self):
         _, archive = self._sent("/maf-sandbox/work/main.bicep", "x")
         assert archive.getmember("maf-sandbox/work/main.bicep").mode == 0o644
@@ -517,6 +533,40 @@ class TestWriteFile:
 
         with pytest.raises(RuntimeError, match="WSLC_E_PATH_NOT_FOUND"):
             asyncio.run(sandbox.write_file("/maf-sandbox/work/main.bicep", "x"))
+
+
+# ---------------------------------------------------------------------------
+# The pull surface — stat_file, read_file, list_dir
+# ---------------------------------------------------------------------------
+
+
+class TestPullSurfaceRefusal:
+    """This backend declares neither FILES_OUT nor FILES_LIST, so the protocol says all three
+    pull-surface methods may raise. They must *exist* and raise the documented refusal rather
+    than be absent — an ``AttributeError`` from a missing method was the second half of #370,
+    and it reads as unrelated to a ``write_file`` that just succeeded.
+    """
+
+    def _sandbox(self):
+        backend, _ = _backend_with(_machine(running=[_NAME]))
+        return asyncio.run(backend.acquire(_KEY, _SPEC))
+
+    def test_stat_file_raises_notimplementederror(self):
+        sandbox = self._sandbox()
+        with pytest.raises(NotImplementedError, match="FILES_OUT"):
+            asyncio.run(sandbox.stat_file("/maf-sandbox/work/x", working_directory="/w"))
+
+    def test_read_file_raises_notimplementederror(self):
+        sandbox = self._sandbox()
+        with pytest.raises(NotImplementedError, match="FILES_OUT"):
+            asyncio.run(
+                sandbox.read_file("/maf-sandbox/work/x", working_directory="/w", max_bytes=64)
+            )
+
+    def test_list_dir_raises_notimplementederror(self):
+        sandbox = self._sandbox()
+        with pytest.raises(NotImplementedError, match="FILES_OUT"):
+            asyncio.run(sandbox.list_dir("/maf-sandbox/work", working_directory="/w"))
 
 
 # ---------------------------------------------------------------------------

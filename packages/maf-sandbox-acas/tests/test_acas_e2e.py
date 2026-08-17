@@ -50,6 +50,8 @@ from maf_sandbox import (
     SandboxKey,
     SandboxSpec,
     SandboxTransferCapExceeded,
+    guest_run_layout,
+    launcher_script,
 )
 from maf_sandbox.conformance import (
     FILES_OUT_PROBES,
@@ -389,5 +391,122 @@ class TestWhatOnlyTheServiceCanSay:
                 await live.sandbox.read_file(
                     "../../etc/hostname", working_directory=odd, max_bytes=1 << 20
                 )
+
+        live.run(scenario())
+
+
+class TestWhetherThisBackendCouldServeHostTools:
+    """Measures the one thing `Capability.HOST_TOOLS` would be a claim about here (#365).
+
+    That capability is the only member of the enum with no backend method behind it: the
+    transport is composed by the kind out of `exec`, `write_file`, `stat_file` and `read_file`,
+    all covered by capabilities this backend already declares. What a backend would be adding is
+    that its `exec` **detaches** — that a process started by one call outlives it and is still
+    observable from the next — because `dispatch_over_exec` is built on exactly that. The
+    launcher returns immediately by design, and the appearance of the exit-code file is the only
+    thing that tells the supervisor the run is over.
+
+    Nothing here declares anything. This answers whether ACAS *could*, against the service rather
+    than against a reading of the SDK, on the shared sandbox so it bills nothing extra. If a
+    session does not keep the process, no wording of the capability makes the transport work
+    here and #365's answer for this backend is C rather than A.
+    """
+
+    def test_the_guest_has_what_the_launcher_needs(self, live: _Live):
+        """What the shipped `launcher_script` runs on, and nothing more.
+
+        Deliberately not the interpreter: `launcher_script` takes that as a parameter, so which
+        one a guest needs is the kind's requirement — codeact wants `python3` for its shim —
+        and asserting it here would fail a backend over something `HOST_TOOLS` does not claim.
+        A separate probe from the one below so a failure says which assumption broke.
+        """
+        wanted = "sh nohup printf mv"
+
+        async def scenario():
+            # The work directory is not in the image; the real flow creates it by writing the
+            # program before it execs anything, so do the same rather than depend on some
+            # earlier test in this module having left it behind.
+            await live.sandbox.write_file(f"{_WORK}/probe/.keep", "")
+            return await live.sandbox.exec(
+                f'for t in {wanted}; do command -v "$t" >/dev/null || echo "$t"; done',
+                working_directory=_WORK,
+                timeout=_EXEC_TIMEOUT,
+            )
+
+        result = live.run(scenario())
+        assert result.exit_code == 0, result.stderr
+        assert result.stdout.split() == [], (
+            f"the image is missing {result.stdout.split()}, so the shipped launcher cannot run "
+            f"here even if exec detaches"
+        )
+
+    def test_a_detached_program_outlives_the_exec_that_started_it(self, live: _Live):
+        """The real `launcher_script`, not an approximation of it, so this measures what would
+        actually ship.
+
+        Two facts, and only the pair discriminates. The exit marker must be **absent** when the
+        launcher's exec returns — otherwise the exec waited for the program and the transport
+        would deadlock against a supervisor that has not started — and it must **appear**
+        afterwards, which is the survival this whole question is about.
+
+        The program is shell rather than Python: whether `exec` detaches is a property of
+        the backend, and pinning it to the interpreter the shim happens to need would
+        report an image without Python as a backend that cannot detach. What the image
+        must carry is the probe above. A session that resets
+        between calls passes the first and fails the second.
+        """
+        layout = guest_run_layout(f"{_WORK}/{uuid.uuid4().hex[:12]}")
+        # Comfortably longer than this control plane's per-call latency, so "the exec waited"
+        # and "the exec detached" cannot be confused by a slow round trip; short enough to keep
+        # the billable sandbox brief.
+        program_seconds = 10
+
+        async def scenario() -> None:
+            await live.sandbox.write_file(
+                layout.program,
+                f"sleep {program_seconds}\necho the program finished\n",
+            )
+            await live.sandbox.write_file(
+                layout.launcher, launcher_script(layout, interpreter="sh")
+            )
+
+            started = asyncio.get_running_loop().time()
+            launched = await live.sandbox.exec(
+                f"sh {layout.launcher}", working_directory=_WORK, timeout=_EXEC_TIMEOUT
+            )
+            returned_after = asyncio.get_running_loop().time() - started
+            assert launched.exit_code == 0, launched.stderr
+
+            early = await live.sandbox.stat_file(layout.exit_code, working_directory=_WORK)
+            assert early is None, (
+                f"the launcher's exec returned after {returned_after:.1f}s with the run already "
+                f"over, so it waited for the program instead of detaching — the supervisor "
+                f"would never see the program start"
+            )
+
+            deadline = asyncio.get_running_loop().time() + program_seconds + 30
+            entry = None
+            while asyncio.get_running_loop().time() < deadline:
+                entry = await live.sandbox.stat_file(layout.exit_code, working_directory=_WORK)
+                if entry is not None:
+                    break
+                await asyncio.sleep(1.0)
+
+            assert entry is not None, (
+                f"no exit marker after {program_seconds + 30}s: the detached program did not "
+                f"survive the exec that started it, so this backend cannot serve HOST_TOOLS "
+                f"over the shipped transport"
+            )
+            code = await live.sandbox.read_file(
+                layout.exit_code, working_directory=_WORK, max_bytes=64
+            )
+            assert code.decode().strip() == "0", f"the program did not end cleanly: {code!r}"
+
+            # The marker alone only proves the launcher reached its last line. This proves the
+            # program itself ran to completion behind it.
+            output = await live.sandbox.read_file(
+                layout.output, working_directory=_WORK, max_bytes=1 << 16
+            )
+            assert output.decode().strip() == "the program finished", output
 
         live.run(scenario())
