@@ -360,8 +360,9 @@ async def act_four_the_egress_the_workload_asked_for() -> tuple[bool, bool] | No
     source = (Path(__file__).parent / BICEP_FILE).read_text(encoding="utf-8")
     credential = DefaultAzureCredential()
     try:
-        # `None`, not `""`. An empty string declares `closed` and still tries to start a proxy
-        # with an unusable reference, which fails at acquire instead of running closed (#407).
+        # `None` is "no proxy configured", which is what closed egress means here. An empty
+        # string now says the same thing, but it did not always: it used to declare closed and
+        # then fail trying to start a proxy with an unusable reference, fixed in 0.4.0 (#407).
         without, closed = await _validate_under(None, env, credential, source)
         with_proxy, allowlisted = await _validate_under(
             env["MAF_EGRESS_PROXY_IMAGE"], env, credential, source
