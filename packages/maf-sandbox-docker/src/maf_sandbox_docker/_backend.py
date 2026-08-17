@@ -436,7 +436,27 @@ class DockerSandboxBackend:
     def capabilities(self) -> frozenset[Capability]:
         # FILES_OUT from day one — the pull surface is native (stat from the first tar header,
         # read from the same stream). Never FILES_LIST: no engine-level enumeration primitive.
-        return frozenset({Capability.EXEC, Capability.FILES_IN, Capability.FILES_OUT})
+        #
+        # HOST_TOOLS is the one member with no method behind it, so what it asserts here is
+        # narrower than the others and worth stating: `exec` **detaches**. A process started by
+        # one call outlives it and is observable from the next, because the container is the
+        # sandbox and it stays up between calls — which is what `dispatch_over_exec` is built
+        # on, its launcher returning at once and the exit-code file being the run's only
+        # witness. `test_docker_e2e.py` measures it rather than assuming it.
+        #
+        # It is *not* a claim about the image. The shipped launcher wants `sh`, `nohup`,
+        # `printf` and `mv`, and a kind wants whatever interpreter it names — codeact wants
+        # `python3` — none of which this backend chooses, since `spec.image` does. That gap is
+        # #111's axis, and it is the same gap `EXEC` already has: a kind execing `python3`
+        # against a distroless image fails inside the sandbox today.
+        return frozenset(
+            {
+                Capability.EXEC,
+                Capability.FILES_IN,
+                Capability.FILES_OUT,
+                Capability.HOST_TOOLS,
+            }
+        )
 
     @property
     def limits(self) -> SandboxLimits:
