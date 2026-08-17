@@ -35,6 +35,7 @@ from azure.identity.aio import DefaultAzureCredential
 from maf_sandbox import (
     DEFAULT_CAPABILITIES,
     Capability,
+    Egress,
     Isolation,
     SandboxBackendNotPermitted,
     SandboxCapabilityNotSupported,
@@ -59,6 +60,11 @@ IMAGE = "mcr.microsoft.com/devcontainers/python:3.13-bookworm"
 #: One request's key. A host reads scope and thread from its own request context; this program
 #: serves one request, so they are constants, and `dispose_scope` uses them at the end.
 KEY = SandboxKey(scope="samples", thread_id="11-two-backends", agent_dir="operator")
+
+#: The workload kind acts 1, 2 and 5 ask for. Named once because it is quoted back inside both
+#: refusal messages: a typo in one of the four specs would still route, still refuse, and still
+#: print a sentence about a kind this sample never mentions anywhere else.
+KIND = "operator"
 
 #: The floor this host is willing to go down to. The router floor-checks the backend it
 #: resolves to, not the whole list, and refuses at construction — `NONE` is the bottom
@@ -107,6 +113,11 @@ def backends() -> tuple[InProcessSandboxBackend, DockerSandboxBackend]:
     is the reason for this pairing rather than two in-process instances: `docker` really does
     declare `CONTAINER` and `FILES_OUT`, and the in-process backend really does declare
     `NONE` and only `EXEC | FILES_IN`. Every refusal below follows from what they are.
+
+    This is the only place either name is written down. `selected=` matches a backend by name,
+    so every other use below reads `.name` off the object rather than repeating the string —
+    `DockerSandboxBackend` chooses its own and this sample has no say in it, and a literal that
+    stopped agreeing would fail as a router that cannot find the backend it was handed.
     """
     return InProcessSandboxBackend(name="in-process"), DockerSandboxBackend(DockerSandboxConfig())
 
@@ -128,9 +139,9 @@ def act_one_the_switch() -> None:
     print("== 1. Which backend serves is one argument ==\n")
 
     local, container = backends()
-    spec = SandboxSpec(kind="operator", image=IMAGE)
+    spec = SandboxSpec(kind=KIND, image=IMAGE)
 
-    for chosen in ("in-process", "docker"):
+    for chosen in (local.name, container.name):
         router = SandboxRouter([local, container], min_isolation=FLOOR, selected=chosen)
         router.ensure_can_serve(spec)
         print(f"{MEASURED}selected={chosen!r:14} -> router.backend.name == {serving(router)!r}")
@@ -150,9 +161,9 @@ def act_two_the_spec_cannot_pick() -> None:
 
     local, container = backends()
     # `docker` is registered throughout this act and is never reached. That is the lesson.
-    router = SandboxRouter([local, container], min_isolation=FLOOR, selected="in-process")
+    router = SandboxRouter([local, container], min_isolation=FLOOR, selected=local.name)
 
-    raises_floor = SandboxSpec(kind="operator", image=IMAGE, min_isolation=Isolation.CONTAINER)
+    raises_floor = SandboxSpec(kind=KIND, image=IMAGE, min_isolation=Isolation.CONTAINER)
     try:
         router.ensure_can_serve(raises_floor)
     except SandboxBackendNotPermitted as refusal:
@@ -160,7 +171,7 @@ def act_two_the_spec_cannot_pick() -> None:
         print(f"{MEASURED}{type(refusal).__name__}: {refusal}\n")
 
     needs_files_out = SandboxSpec(
-        kind="operator", image=IMAGE, requires=DEFAULT_CAPABILITIES | {Capability.FILES_OUT}
+        kind=KIND, image=IMAGE, requires=DEFAULT_CAPABILITIES | {Capability.FILES_OUT}
     )
     try:
         router.ensure_can_serve(needs_files_out)
@@ -196,7 +207,7 @@ def act_three_the_other_axis() -> None:
     print("  Same backend class. The declaration is a fact about the deployment's wiring,")
     print("  not about the workload, which is why it is read off the backend and not the spec.\n")
 
-    wants_a_host = SandboxSpec(kind="operator", image=IMAGE, egress_allow=("mcr.microsoft.com",))
+    wants_a_host = SandboxSpec(kind=KIND, image=IMAGE, egress_allow=("mcr.microsoft.com",))
     router = SandboxRouter([closed], min_isolation=FLOOR)
     # Served, not refused — and the router logs a warning naming the hosts that will be
     # unreachable. Printed here because a warning a reader never sees is the whole hazard.
@@ -214,19 +225,25 @@ def act_three_the_other_axis() -> None:
 
 
 async def _validate_under(
-    posture: str,
     proxy_image: str | None,
     env: dict[str, str],
     credential: DefaultAzureCredential,
     source: str,
-) -> bool:
-    """Run one agent turn against one egress posture. Returns whether the module restored.
+) -> tuple[Egress, bool]:
+    """Run one agent turn against one egress posture.
+
+    Returns the posture the backend declared and whether the module restored under it. The
+    posture is read off `backend.egress` rather than passed in, so the word printed beside each
+    verdict is the backend's own declaration: a wiring change that stopped producing the
+    posture this act meant to demonstrate shows up as the wrong label, where a caller-supplied
+    string would have gone on saying what the caller intended.
 
     Everything here except `proxy_image` is identical across the two calls — the same file, the
     same spec, the same instructions, the same model. That is what makes the difference in the
     output attributable to the deployment's wiring and to nothing else.
     """
     backend = DockerSandboxBackend(DockerSandboxConfig(egress_proxy_image=proxy_image))
+    posture = backend.egress
     # Above the `NONE` floor the other acts use: a compiler running downloaded code has no
     # business in the host process, and this is the floor sample 05 opts down to as well.
     router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
@@ -282,9 +299,19 @@ async def _validate_under(
         # No compile is not a restore. An empty list here means the sandbox never started, and
         # reporting that as a successful restore would turn the loudest failure into the
         # quietest one.
-        return bool(compiles) and not any(_RESTORE_FAILED in result for result in compiles)
+        restored = bool(compiles) and not any(_RESTORE_FAILED in result for result in compiles)
+        return posture, restored
     finally:
         await router.dispose_scope(KEY.scope, thread)
+
+
+def _verdict(restored: bool) -> str:
+    """The two words `scripts/check_live_router_sample.py` matches on.
+
+    Written here rather than inline at each call because they are a contract with a file in
+    another directory, and a contract spelled in four places is one somebody edits in three.
+    """
+    return "RESTORED" if restored else "FAILED"
 
 
 async def act_four_the_egress_the_workload_asked_for() -> tuple[bool, bool] | None:
@@ -320,17 +347,16 @@ async def act_four_the_egress_the_workload_asked_for() -> tuple[bool, bool] | No
     try:
         # `None`, not `""`. An empty string declares `closed` and still tries to start a proxy
         # with an unusable reference, which fails at acquire instead of running closed (#407).
-        closed = await _validate_under("closed", None, env, credential, source)
-        allowlisted = await _validate_under(
-            "allowlist", env["MAF_EGRESS_PROXY_IMAGE"], env, credential, source
+        without, closed = await _validate_under(None, env, credential, source)
+        with_proxy, allowlisted = await _validate_under(
+            env["MAF_EGRESS_PROXY_IMAGE"], env, credential, source
         )
     finally:
         await credential.close()
 
-    print(f"{MEASURED}AVM restore under egress closed: {'RESTORED' if closed else 'FAILED'}")
+    print(f"{MEASURED}AVM restore under egress {without}: {_verdict(closed)}")
     print(
-        f"{MEASURED}AVM restore under egress allowlist: "
-        f"{'RESTORED' if allowlisted else 'FAILED'} "
+        f"{MEASURED}AVM restore under egress {with_proxy}: {_verdict(allowlisted)} "
         f"({len(spec.egress_allow)} hosts allowed)"
     )
     print("\n  Both halves carry the claim. The failure shows the container has no route out")
@@ -350,8 +376,8 @@ async def act_five_disposal_reaches_everyone() -> tuple[int, int]:
 
     local, container = backends()
     registered = [local, container]
-    router = SandboxRouter(registered, min_isolation=FLOOR, selected="docker")
-    spec = SandboxSpec(kind="operator", image=IMAGE)
+    router = SandboxRouter(registered, min_isolation=FLOOR, selected=container.name)
+    spec = SandboxSpec(kind=KIND, image=IMAGE)
 
     # Everything from the first `acquire` sits in a `try`, and disposal in the `finally`, as in
     # every other container sample. One of these is a real Docker container: a raise between
