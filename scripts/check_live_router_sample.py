@@ -3,13 +3,22 @@
     python samples/11_router_two_backends/agent.py | tee out.txt
     python scripts/check_live_router_sample.py out.txt   # or: ... | python …
 
-Like the host-tools check and unlike the rest, this matches exactly: no model stands between
-the library and stdout, so the printed values are `maf-sandbox`'s own answers.
+Two assertions carry this file, and they are load-bearing for different reasons.
 
-The load-bearing assertion is the disposal count. A sandbox is acquired on each of the two
-registered backends and only one of them is serving, so `dispose_scope` returning **2** is the
-whole claim that disposal fans out. A router that reached only the serving backend would
-return 1, leave the other sandbox running, and every other line here would still be correct.
+The **disposal count**. A sandbox is acquired on each of the two registered backends and only
+one of them is serving, so `dispose_scope` returning **2** is the whole claim that disposal fans
+out. A router that reached only the serving backend would return 1, leave the other sandbox
+running, and every other line here would still be correct.
+
+The **restore pair**. Act 4 runs one agent against one file under two egress postures, and both
+outcomes are required: `FAILED` closed, `RESTORED` allowlisted. Either alone is consistent with
+a sandbox that confines nothing — a container with the host's network would restore under both,
+and a container that could not start would fail under both. Only the pair says the deployment's
+wiring is what decided it.
+
+Every line this file reads carries the `[measured]` tag, and act 4 puts a model's prose into the
+same stream. The sample runs that prose through `quoted()`, which prefixes `> ` to any line
+impersonating the tag — so a forged measurement is a quotation here and matches nothing.
 
 Exits non-zero listing every reason it failed.
 """
@@ -19,6 +28,11 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
+
+#: The prefix on every line the sample vouches for. `_scaffold.quoted` has already taken it
+#: away from anything the model said, so requiring it is what keeps act 4's reply from being
+#: able to answer any question below.
+_TAG = "[measured]"
 
 #: Which backend `selected=` resolves to, and the name it must resolve to. `docker` and the
 #: in-process backend declare different isolation and different capabilities, so a swap here is
@@ -38,21 +52,39 @@ _REFUSALS = ("SandboxBackendNotPermitted", "SandboxCapabilityNotSupported")
 #: the router merely agreeing that it could.
 _EXECUTED = "routed"
 
+#: `[measured] AVM restore under egress closed: FAILED`, and its allowlisted twin. The verdicts
+#: are read back from whether the compiler reported BCP192, not from what the sample hoped for.
+_RESTORE = re.compile(
+    rf"^\s*{re.escape(_TAG)}\s+AVM restore under egress\s+(closed|allowlist):\s+(\w+)",
+    re.MULTILINE,
+)
+
+#: What each posture has to report. Closed must fail, because a container with no route out
+#: cannot download a module; allowlisted must restore, because the four hosts the kind names
+#: are exactly what the download needs.
+_RESTORE_EXPECTED = {"closed": "FAILED", "allowlist": "RESTORED"}
+
 #: `Disposed N sandbox(es) across M backends.` Both numbers are read back by the sample from
 #: what it observed — the first from `dispose_scope`'s return, the second from the list it
 #: registered — so these compare measurements, not literals the sample printed.
 _FOOTER = re.compile(
-    r"Completed\s+(\d+)\s+of\s+3\s+acts\.\s+Disposed\s+(\d+)\s+sandbox\(es\)\s+"
-    r"across\s+(\d+)\s+backends",
+    rf"{re.escape(_TAG)}\s+Completed\s+(\d+)\s+of\s+5\s+acts\.\s+Disposed\s+(\d+)\s+"
+    r"sandbox\(es\)\s+across\s+(\d+)\s+backends",
     re.IGNORECASE,
 )
 
 
-def _line_containing(output: str, needle: str) -> str | None:
-    """The first line holding ``needle``, or ``None``."""
+def _measured_line(output: str, needle: str) -> str | None:
+    """The first tagged line holding ``needle``, stripped, or ``None``.
+
+    Tagged, not merely containing. Act 4 prints a model's reply into this stream, and a reply
+    is free to contain `it runs: 'routed'`; it is not free to contain a line that *starts* with
+    the tag, because the sample quotes those away before printing them.
+    """
     for line in output.splitlines():
-        if needle in line:
-            return line
+        stripped = line.lstrip()
+        if stripped.startswith(_TAG) and needle in stripped:
+            return stripped
     return None
 
 
@@ -67,9 +99,9 @@ def assess(output: str) -> list[str]:
     failures: list[str] = []
 
     for selected, expected in _SELECTION.items():
-        line = _line_containing(output, f"selected={selected!r}")
+        line = _measured_line(output, f"selected={selected!r}")
         if line is None:
-            failures.append(f"no line for selected={selected!r} — act 1 did not run it")
+            failures.append(f"no measured line for selected={selected!r} — act 1 did not run it")
             continue
         resolved = _resolved_name(line)
         if resolved != expected:
@@ -78,7 +110,7 @@ def assess(output: str) -> list[str]:
                 "— `selected=` names the backend that serves, and it did not"
             )
 
-    default = _line_containing(output, "selected omitted")
+    default = _measured_line(output, "selected omitted")
     if default is None:
         failures.append("no 'selected omitted' line — the registration-order default is unshown")
     elif _resolved_name(default) != _DEFAULT_BACKEND:
@@ -88,17 +120,17 @@ def assess(output: str) -> list[str]:
         )
 
     for exception in _REFUSALS:
-        if exception not in output:
+        if _measured_line(output, exception) is None:
             failures.append(
-                f"{exception} is not in the output — a spec the serving backend cannot meet was "
-                "not refused, which would mean the router had rerouted or degraded"
+                f"{exception} is not on a measured line — a spec the serving backend cannot "
+                "meet was not refused, which would mean the router had rerouted or degraded"
             )
 
-    executed = _line_containing(output, "it runs:")
+    executed = _measured_line(output, "it runs:")
     if executed is None:
         failures.append(
-            "no 'it runs:' line — the router agreed a backend could serve and nothing proved "
-            "one did"
+            "no measured 'it runs:' line — the router agreed a backend could serve and nothing "
+            "proved one did"
         )
     else:
         # The quoted value, compared whole. A substring test accepts `'unrouted'` and
@@ -113,7 +145,52 @@ def assess(output: str) -> list[str]:
                 "different result rather than a looser match on the same one"
             )
 
+    failures.extend(_assess_restore(output))
     failures.extend(_assess_footer(output))
+    return failures
+
+
+def _assess_restore(output: str) -> list[str]:
+    """Act 4's two verdicts, both required, in the compiler's own terms.
+
+    A `br/public:` module cannot be type-checked without downloading it, so whether the restore
+    happened is the workload's own answer to whether its egress was there. Reading both postures
+    is what makes it evidence: the same agent, the same file and the same spec ran twice, and
+    the only difference between the runs was whether the deployment gave the container a proxy.
+    """
+    seen: dict[str, list[str]] = {}
+    for posture, verdict in _RESTORE.findall(output):
+        seen.setdefault(posture, []).append(verdict)
+
+    failures: list[str] = []
+    for posture, expected in _RESTORE_EXPECTED.items():
+        verdicts = seen.get(posture, [])
+        if not verdicts:
+            failures.append(
+                f"no 'AVM restore under egress {posture}' line — act 4 did not run that posture, "
+                "so nothing here shows the deployment's wiring decided anything"
+            )
+        elif len(verdicts) > 1:
+            # Counted rather than resolved, deliberately. The sample prints each verdict once,
+            # so a second one came from somewhere else — and picking the first would read a
+            # model's reply, while picking the last would read whatever came after it. Neither
+            # is a measurement, so this refuses to choose.
+            failures.append(
+                f"'AVM restore under egress {posture}' appears {len(verdicts)} times, saying "
+                f"{', '.join(verdicts)} — the sample prints it once, so something else is "
+                "writing measured lines into this stream and none of them can be trusted"
+            )
+        elif verdicts[0] != expected:
+            failures.append(
+                f"the AVM module {verdicts[0]} under egress {posture}, expected {expected} — "
+                + (
+                    "a container with no route out cannot download a module, so restoring "
+                    "means it had a route the deployment never gave it"
+                    if posture == "closed"
+                    else "the allowlist names the four hosts the download needs, so failing "
+                    "means the proxy did not serve the list the workload asked for"
+                )
+            )
     return failures
 
 
@@ -122,13 +199,17 @@ def _assess_footer(output: str) -> list[str]:
     footer = _FOOTER.search(output)
     if footer is None:
         return [
-            "no 'Completed N of 3 acts. Disposed N sandbox(es) across N backends.' line — the "
+            "no 'Completed N of 5 acts. Disposed N sandbox(es) across N backends.' line — the "
             "sample did not run to completion"
         ]
     acts, disposed, registered = (int(group) for group in footer.groups())
     failures: list[str] = []
-    if acts != 3:
-        failures.append(f"only {acts} of 3 acts completed — the sample stopped part-way")
+    if acts != 5:
+        failures.append(
+            f"only {acts} of 5 acts completed — act 4 skips itself when any of its four "
+            "variables is unset, and a skipped egress act is the one result that reads exactly "
+            "like a passing one"
+        )
     if registered != 2:
         failures.append(
             f"{registered} backends were registered, expected exactly 2 — the whole subject is "
@@ -161,7 +242,8 @@ def main(argv: list[str]) -> int:
             print(f"  - {reason}", file=sys.stderr)
         return 1
     print(
-        "OK  the router selected by name, refused what it could not serve, and disposed across both"
+        "OK  the router selected by name, refused what it could not serve, gave a real workload "
+        "exactly the egress it asked for and nothing else, and disposed across both backends"
     )
     return 0
 
