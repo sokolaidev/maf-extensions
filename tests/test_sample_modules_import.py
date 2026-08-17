@@ -332,7 +332,8 @@ def test_samples_relax_no_rule():
     """`samples/` answers to what `scripts/` answers to, and this says so out loud.
 
     Every test tree downgrades four rules for the loose fakes it is made of (#290). The sites in
-    `samples/` that would want that are not fakes — they are #370 — and a sample is code an
+    `samples/` that would want that are not fakes — #370 was the example, fixed by making the
+    backend satisfy the protocol rather than by relaxing the rule — and a sample is code an
     adopter copies.
     """
     assert _SAMPLES_ENV, "samples lost its pyright execution environment"
