@@ -1052,6 +1052,8 @@ _ALLOW_SPEC = SandboxSpec(
     egress_allow=("mcr.microsoft.com", "*.data.mcr.microsoft.com"),
 )
 _ALLOW_ID = "allow:" + ",".join(sorted(_ALLOW_SPEC.egress_allow))
+#: What `os.environ.get("MAF_EGRESS_PROXY_IMAGE", "")` hands the constructor when nothing is set.
+_EMPTY_PROXY_CONFIG = DockerSandboxConfig(egress_proxy_image="")
 _AL = _container_name(_KEY, _ALLOW_SPEC.kind, _ALLOW_ID)
 _AL_NET = _network_name(_AL)
 _AL_PROXY = _proxy_name(_AL)
@@ -1121,6 +1123,36 @@ class TestAllowlistTopology:
         assert fake.matching("network", "create") == []
         run = fake.only("run")
         assert run.args[run.args.index("--network") + 1] == "none"
+
+
+class TestAnEmptyProxyImageIsNoProxyConfigured:
+    """`""` is what an unset environment variable becomes, and it used to split the two reads.
+
+    The declaration was truthiness and the behaviour was `is None`, so this one value declared
+    `CLOSED` and then ran `docker run -d --name … ""` anyway, which the engine rejects as an
+    invalid reference — a hard failure at every acquire of a spec that allows anything, naming
+    the proxy rather than the configuration (#407).
+
+    The two halves are asserted together on purpose. Either alone stays green while the bug is
+    present: the declaration was already `CLOSED`, and a closed spec already got `--network
+    none`. What broke was the pair — the backend doing what it declared, for a spec that asked
+    for hosts it had said it would not open.
+    """
+
+    def test_the_declaration_is_closed(self):
+        assert _backend_with(config=_EMPTY_PROXY_CONFIG)[0].egress is Egress.CLOSED
+
+    def test_a_spec_with_an_allowlist_is_closed_rather_than_failing(self):
+        backend, fake = _backend_with(_machine(), config=_EMPTY_PROXY_CONFIG)
+
+        sandbox = asyncio.run(backend.acquire(_KEY, _ALLOW_SPEC))  # used to raise here
+
+        assert fake.matching("network", "create") == []
+        run = fake.only("run")  # the workload, and nothing that could be a proxy
+        assert run.args[run.args.index("--network") + 1] == "none"
+        # The historical name, not an `allow:`-qualified one: no allowlist is being kept, so a
+        # sandbox created before this configuration existed is the same sandbox.
+        assert sandbox.container_name == _NAME
 
 
 class TestAllowlistReuse:
