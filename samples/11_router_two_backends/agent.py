@@ -114,12 +114,17 @@ def backends() -> tuple[InProcessSandboxBackend, DockerSandboxBackend]:
     declare `CONTAINER` and `FILES_OUT`, and the in-process backend really does declare
     `NONE` and only `EXEC | FILES_IN`. Every refusal below follows from what they are.
 
-    This is the only place either name is written down. `selected=` matches a backend by name,
-    so every other use below reads `.name` off the object rather than repeating the string —
-    `DockerSandboxBackend` chooses its own and this sample has no say in it, and a literal that
-    stopped agreeing would fail as a router that cannot find the backend it was handed.
+    Neither name is written down here either. `selected=` matches a backend by name, and no
+    backend package exports its own as a constant (#411) — `DockerSandboxBackend.name` returns
+    `"docker"` from inside a property, and `InProcessSandboxBackend` defaults to `"in-process"`.
+    So the names come from the objects, and every use below reads `.name` off the one it means.
+    A literal that stopped agreeing would surface as a router refusing to find a backend it was
+    handed, several lines from the string that caused it.
+
+    `InProcessSandboxBackend` does take `name=`, which is how a host would register two of them
+    apart; this sample registers one and lets it keep the default.
     """
-    return InProcessSandboxBackend(name="in-process"), DockerSandboxBackend(DockerSandboxConfig())
+    return InProcessSandboxBackend(), DockerSandboxBackend(DockerSandboxConfig())
 
 
 def serving(router: SandboxRouter) -> str:
