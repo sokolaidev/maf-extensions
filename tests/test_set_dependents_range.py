@@ -10,6 +10,13 @@ candidate — a dependent whose ceiling admits the version and whose floor is a 
 which is a shape rather than evidence the package uses it — the floor is judged against the
 ceiling as it was rather than as this run leaves it, and a constraint the pattern cannot read
 stops the step instead of silently no-opping.
+
+The samples ride the same edit (#343) under a different rule: every one of them declares the
+released minor, unconditionally, because a sample documents the current library rather than
+carrying consumers of its own. What is pinned here is that it is the *minor* — so a patch
+release does not churn fourteen files — that it never lowers, that a sample whose floor has
+drifted out of the readable shape stops the step, and that the parser still finds every
+sample that actually exists.
 """
 
 from __future__ import annotations
@@ -25,12 +32,35 @@ assert _spec and _spec.loader
 ranges = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ranges)
 
-FLOOR, CEILING = ranges.FLOOR, ranges.CEILING
+FLOOR, CEILING, SAMPLE = ranges.FLOOR, ranges.CEILING, ranges.SAMPLE_FLOOR
 BOTH = frozenset({FLOOR, CEILING})
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _pyproject(constraint: str, name: str = "maf-sandbox-acas") -> str:
     return f'[project]\nname = "{name}"\nversion = "0.1.0"\ndependencies = ["{constraint}"]\n'
+
+
+def _agent(dependency: str = '"maf-sandbox>=0.7"', docstring: str = "A sample.") -> str:
+    """A sample as `uv run` reads one: a module docstring, then a PEP 723 block of TOML.
+
+    The docstring is a parameter because prose is where an unanchored pattern goes wrong: the
+    rewrite is `count=1`, so a mention above the block is the match it would find first.
+    """
+    return (
+        f'"""{docstring}"""\n'
+        "\n"
+        "# /// script\n"
+        '# requires-python = ">=3.12"\n'
+        "# dependencies = [\n"
+        '#     "agent-framework-openai",\n'
+        '#     "maf-sandbox-acas",\n'
+        f"#     {dependency},\n"
+        "# ]\n"
+        "# ///\n"
+        "\n"
+        "import maf_sandbox\n"
+    )
 
 
 class TestTheTarget:
@@ -143,6 +173,156 @@ class TestSpelling:
         assert moved == frozenset()
 
 
+class TestTheSampleFloor:
+    """Not a judgement call, unlike a package's: every sample declares the released minor."""
+
+    def test_a_new_minor_moves_it(self):
+        text, moved = ranges.set_sample_floor(_agent(), (0, 8, 0))
+        assert moved == frozenset({SAMPLE})
+        assert '"maf-sandbox>=0.8"' in text
+
+    def test_the_patch_is_dropped(self):
+        # A sample declaring >=0.8.3 would claim it needs a patch it has never named, and
+        # would make the next patch release rewrite fourteen files to say the same thing.
+        text, _ = ranges.set_sample_floor(_agent(), (0, 8, 3))
+        assert '"maf-sandbox>=0.8"' in text
+        assert "0.8.3" not in text
+
+    def test_a_patch_within_the_declared_minor_moves_nothing(self):
+        before = _agent('"maf-sandbox>=0.8"')
+        after, moved = ranges.set_sample_floor(before, (0, 8, 3))
+        assert moved == frozenset()
+        assert after == before
+
+    def test_it_never_lowers(self):
+        before = _agent('"maf-sandbox>=0.9"')
+        after, moved = ranges.set_sample_floor(before, (0, 8, 0))
+        assert moved == frozenset()
+        assert after == before
+
+    def test_the_rest_of_the_file_comes_through_byte_for_byte(self):
+        # The floor sits inside a comment block that a greedy pattern can run past. Anything
+        # this rewrites beyond the eleven characters of the version is a bug.
+        before = _agent()
+        after, _ = ranges.set_sample_floor(before, (0, 8, 0))
+        assert after == before.replace('"maf-sandbox>=0.7"', '"maf-sandbox>=0.8"')
+
+    def test_prose_quoting_the_dependency_is_not_the_thing_that_moves(self):
+        # These samples carry paragraphs above their block, and a docstring quoting the line
+        # it is describing is an ordinary thing to write. The rewrite is count=1, so a pattern
+        # that accepts prose edits the sentence and leaves the dependency exactly as it was —
+        # the release step then reports success having moved nothing that resolves.
+        prose = 'The block declares "maf-sandbox>=0.7".'
+        after, moved = ranges.set_sample_floor(_agent(docstring=prose), (0, 8, 0))
+        assert moved == frozenset({SAMPLE})
+        assert prose in after
+        assert '#     "maf-sandbox>=0.8",' in after
+
+    def test_a_docstring_showing_the_block_is_not_the_thing_that_moves(self):
+        # A sample whose prose quotes its own block, indented inside the docstring. Every line
+        # of that copy begins with whitespace rather than `#`, which is the only difference
+        # between it and the real thing — and it comes first, so under a pattern without the
+        # line anchor `count=1` spends itself on the documentation and the dependency stays.
+        shown = (
+            'Run it with uv::\n\n    # dependencies = [\n    #     "maf-sandbox>=0.7",\n    # ]\n'
+        )
+        after, moved = ranges.set_sample_floor(_agent(docstring=shown), (0, 8, 0))
+        assert moved == frozenset({SAMPLE})
+        assert '    #     "maf-sandbox>=0.7",' in after, "the illustration was rewritten"
+        assert '#     "maf-sandbox>=0.8",' in after, "the dependency was left behind"
+
+    def test_a_capped_constraint_is_refused_rather_than_half_rewritten(self):
+        # `maf-sandbox>=0.7,<0.9` is the packages' shape, and a sample is not a package: it
+        # declares a floor and takes whatever is newest. Matching it would move the floor and
+        # leave the ceiling, quietly inventing a range nobody chose; not matching it sends the
+        # sample to plan()'s refusal, where a human decides what the sample meant.
+        before = _agent('"maf-sandbox>=0.7,<0.9"')
+        after, moved = ranges.set_sample_floor(before, (0, 8, 0))
+        assert moved == frozenset()
+        assert after == before
+
+    def test_the_sibling_distribution_is_left_alone(self):
+        after, _ = ranges.set_sample_floor(_agent(), (0, 8, 0))
+        assert '"maf-sandbox-acas",' in after
+
+    def test_a_shape_it_cannot_read_is_left_for_plan_to_refuse(self):
+        _, moved = ranges.set_sample_floor(_agent('"maf-sandbox"'), (0, 8, 0))
+        assert moved == frozenset()
+
+
+class TestOverASampleTree:
+    def _write(self, tmp_path: Path, name: str, text: str) -> Path:
+        sample = tmp_path / "samples" / name
+        sample.mkdir(parents=True)
+        path = sample / "agent.py"
+        path.write_text(text, "utf-8")
+        return path
+
+    def test_the_packages_and_the_samples_move_in_one_plan(self, tmp_path: Path):
+        # One edit, one pull request — the #195 lesson applied to a third file set.
+        package = tmp_path / "packages" / "dep-a"
+        package.mkdir(parents=True)
+        (package / "pyproject.toml").write_text(
+            '[project]\nname = "dep-a"\ndependencies = ["maf-sandbox>=0.7.0,<0.9"]\n', "utf-8"
+        )
+        sample = self._write(tmp_path, "01_a", _agent())
+
+        moved: set[str] = set()
+        for _, _, bounds in ranges.plan("0.8.0", tmp_path):
+            moved |= bounds
+
+        assert moved == {FLOOR, CEILING, SAMPLE}
+        assert sample in ranges.run("0.8.0", tmp_path)
+
+    def test_a_sample_whose_floor_shape_drifted_fails_loudly(self, tmp_path: Path):
+        # The whole reason this script raises rather than skips: a release-time step that
+        # quietly edits nothing looks exactly like one with nothing to do.
+        self._write(tmp_path, "01_a", _agent('"maf-sandbox"'))
+        with pytest.raises(SystemExit):
+            ranges.run("0.8.0", tmp_path)
+
+    def test_two_dependencies_on_one_line_are_refused_not_half_read(self, tmp_path: Path):
+        # Legal TOML, and not the layout the floor pattern reads. The danger is not the
+        # refusal — it is the version of this that skips: a looser `maf-sandbox` probe would
+        # miss the base behind the sibling on that line, decide the sample does not use the
+        # core at all, and leave a stale floor behind a green step.
+        self._write(
+            tmp_path,
+            "01_a",
+            _agent().replace(
+                '#     "maf-sandbox-acas",\n#     "maf-sandbox>=0.7",\n',
+                '#     "maf-sandbox-acas", "maf-sandbox>=0.7",\n',
+            ),
+        )
+        with pytest.raises(SystemExit):
+            ranges.run("0.8.0", tmp_path)
+
+    def test_a_capped_sample_constraint_stops_the_step(self, tmp_path: Path):
+        self._write(tmp_path, "01_a", _agent('"maf-sandbox>=0.7,<0.9"'))
+        with pytest.raises(SystemExit):
+            ranges.run("0.8.0", tmp_path)
+
+    def test_a_sample_naming_only_a_sibling_is_skipped_not_refused(self, tmp_path: Path):
+        self._write(tmp_path, "01_a", _agent('"maf-sandbox-acas>=0.2"'))
+        assert ranges.run("0.8.0", tmp_path) == []
+
+    def test_a_second_run_is_a_clean_no_op(self, tmp_path: Path):
+        path = self._write(tmp_path, "01_a", _agent())
+        assert ranges.run("0.8.0", tmp_path) == [path]
+        after = path.read_text("utf-8")
+        assert ranges.run("0.8.0", tmp_path) == []
+        assert path.read_text("utf-8") == after
+
+    def test_every_sample_in_this_repository_is_reached(self):
+        # The parser here and the one in tests/test_sample_metadata.py read the same block by
+        # different means. This is what keeps them honest about the real files: a sample the
+        # script stops recognising would otherwise sail through every fixture above.
+        expected = sorted((REPO_ROOT / "samples").glob("[0-9][0-9]_*/agent.py"))
+        planned = [path for path, _, bounds in ranges.plan("9.9.0", REPO_ROOT) if SAMPLE in bounds]
+        assert expected, "no samples found; this test is measuring nothing"
+        assert planned == expected
+
+
 class TestTheTitle:
     def test_both_bounds(self):
         assert ranges.title("0.8.0", BOTH) == (
@@ -162,10 +342,63 @@ class TestTheTitle:
     def test_nothing_moved_has_no_title(self):
         assert ranges.title("0.8.0", frozenset()) == ""
 
-    @pytest.mark.parametrize("moved", [BOTH, frozenset({CEILING}), frozenset({FLOOR})])
-    def test_every_title_releases_something(self, moved: frozenset[str]):
+    def test_both_bounds_and_the_samples(self):
+        assert ranges.title("0.8.0", BOTH | {SAMPLE}) == (
+            "fix: require maf-sandbox 0.8.0 in the dependents and the samples, and admit 0.9"
+        )
+
+    def test_the_ceiling_and_the_samples(self):
+        assert ranges.title("0.8.0", frozenset({CEILING, SAMPLE})) == (
+            "fix: admit maf-sandbox 0.9 in the dependents' range, and require 0.8 in the samples"
+        )
+
+    def test_the_floor_and_the_samples(self):
+        assert ranges.title("0.8.0", frozenset({FLOOR, SAMPLE})) == (
+            "fix: require maf-sandbox 0.8.0 in the packages that use it, and in the samples"
+        )
+
+    def test_the_samples_alone_name_the_minor_not_the_release(self):
+        # The files say >=0.8; a subject saying 0.8.0 would advertise a claim no file makes.
+        assert ranges.title("0.8.0", frozenset({SAMPLE})) == (
+            "docs: require maf-sandbox 0.8 in every sample's declared floor"
+        )
+
+    @pytest.mark.parametrize(
+        "moved",
+        [
+            BOTH,
+            frozenset({CEILING}),
+            frozenset({FLOOR}),
+            BOTH | {SAMPLE},
+            frozenset({CEILING, SAMPLE}),
+            frozenset({FLOOR, SAMPLE}),
+        ],
+    )
+    def test_a_title_that_moves_a_package_releases_something(self, moved: frozenset[str]):
         # chore: and ci: release nothing here, and an unpublished range is worth nothing.
         assert ranges.title("0.8.0", moved).startswith("fix: ")
+
+    def test_a_title_that_moves_only_samples_releases_nothing(self):
+        # Nothing under samples/ is packaged, so fix: would ask release-please for a patch
+        # with no package to cut it from. docs: is the honest type and attributes to nothing.
+        assert ranges.title("0.8.0", frozenset({SAMPLE})).startswith("docs: ")
+
+    @pytest.mark.parametrize(
+        "moved",
+        [
+            BOTH,
+            frozenset({CEILING}),
+            frozenset({FLOOR}),
+            BOTH | {SAMPLE},
+            frozenset({CEILING, SAMPLE}),
+            frozenset({FLOOR, SAMPLE}),
+            frozenset({SAMPLE}),
+        ],
+    )
+    def test_every_combination_that_moved_something_is_named(self, moved: frozenset[str]):
+        # The gap this closes: an unhandled combination fell through to "" and the workflow
+        # refused to commit a change it had already made to the working tree.
+        assert ranges.title("0.8.0", moved), f"{sorted(moved)} moved and produced no subject"
 
 
 class TestOverATree:
