@@ -126,7 +126,8 @@ _STARTUP_STEMS = frozenset(
         "site",
         "sitecustomize",
         "usercustomize",
-        # Reached during startup on a guest whose stdlib is not frozen, i.e. before 3.11.
+        # Reached during startup on a guest whose stdlib is not frozen. Censused on 3.9 and
+        # 3.10 by listing the top-level modules whose origin is a file; 3.8 matches 3.10.
         "abc",
         "codecs",
         "genericpath",
@@ -135,6 +136,8 @@ _STARTUP_STEMS = frozenset(
         "stat",
         "_collections_abc",
         "_sitebuiltins",
+        # 3.9 only, and reached by `site` — so its absence is fatal in the same way.
+        "_bootlocale",
     }
 )
 
@@ -145,11 +148,12 @@ _STARTUP_STEMS = frozenset(
 #: a traceback that names ``dumps`` and never the collision.
 #:
 #: Only ``json`` does that on a current guest. ``time`` is built in and ``os`` is frozen from
-#: 3.11, so neither is ever resolved from a directory — but ``os`` is *not* frozen on 3.10,
-#: where it collides exactly as ``json`` does, and which modules are frozen is a per-version
-#: implementation detail rather than a contract. They are refused for the same reason the set
-#: is checked by stem: the cost of refusing a program name no kind wants is nothing, and the
-#: cost of missing one is a traceback that points at the wrong thing.
+#: 3.11, so neither is ever resolved from a directory. On 3.10 ``os`` *is* resolved from one —
+#: but by ``site``, during startup, so it fails as a member of :data:`_STARTUP_STEMS` would,
+#: dying before the program is the script rather than misleading a dispatch. Two mechanisms,
+#: one name, and which modules are frozen is a per-version detail rather than a contract.
+#: They are refused for the same reason the set is checked by stem: refusing a program name
+#: no kind wants costs nothing, and missing one costs a traceback that points elsewhere.
 #:
 #: Derived from the shim by a test that parses it, so adding an import cannot leave this
 #: behind.
@@ -305,8 +309,8 @@ def guest_run_layout(run_directory: str, *, program: str = "program.py") -> Gues
     if stem == _SHIM_MODULE_STEM:
         raise ValueError(
             f"program must not answer to the shim's own module name, and {program!r} answers "
-            f"to {stem!r}: the program's first act is to import it, and a suffix that outranks "
-            f"{SHIM_MODULE!r} in the loader's order makes the program its own shim"
+            f"to {stem!r}: the program's first act is to import that module, and a file here "
+            f"under this stem is either what the import finds or a program that cannot run"
         )
     if stem in _SHIM_STEMS:
         raise ValueError(

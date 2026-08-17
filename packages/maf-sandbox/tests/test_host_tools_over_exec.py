@@ -1292,10 +1292,16 @@ class TestTheLayoutsOwnPromise:
         ],
     )
     def test_a_program_that_would_be_its_own_shim_is_refused(self, name: str):
-        """The shim's own name is the one importable member of the transport's filenames, so
-        it needs the stem rule and not the exact-name refusal the others get: an extension is
-        tried before source, so such a program answers the `import maf_host_tools` that is the
-        program's own first act, and the run dies on an invalid header."""
+        """The shim's own name is the one importable member of the transport's filenames, so it
+        needs the stem rule rather than the exact-name refusal the others get.
+
+        The three fail differently and both ways are dead. An extension is tried before source,
+        so a `.so` twin *answers* the `import maf_host_tools` that is the program's own first
+        act and the run dies on an invalid header. A `.pyc` twin does not answer it — sourceless
+        bytecode ranks after source, and the real shim is beside it by construction — but a
+        program the interpreter must load as bytecode is not a program, and the run dies on a
+        bad magic number instead.
+        """
         with pytest.raises(ValueError, match="the shim's own module name"):
             guest_run_layout("/maf-sandbox/work/run-1", program=name)
 
@@ -1351,6 +1357,7 @@ class TestTheLayoutsOwnPromise:
             "stat.py",
             "_collections_abc.py",
             "_sitebuiltins.py",
+            "_bootlocale.py",
         ],
     )
     def test_a_program_the_interpreter_imports_on_its_way_up_is_refused(self, name: str):
