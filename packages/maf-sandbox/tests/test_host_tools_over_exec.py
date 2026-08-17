@@ -119,6 +119,7 @@ class _ScriptedGuest:
         return confine_guest_path(path, working_directory)
 
     async def write_file(self, path: str, content: str | bytes) -> None:
+        await asyncio.sleep(0)  # as in `stat_file`: a bound is only a bound against a yield
         self.files[path] = content.encode("utf-8") if isinstance(content, str) else content
 
     async def exec(
@@ -276,6 +277,32 @@ class TestWhatTheGuestIsAllowedToSee:
         guest = _ScriptedGuest([("add", {"left": 1, "right": 1})], request_bytes=1024)
         _run(guest, HostToolRun(_registry(response_limits=limits)))
         assert "larger than the host will read" in guest.answers[0]["refusal"]
+
+    def test_a_request_whose_size_the_backend_cannot_state_is_refused_unread(self):
+        """A size the backend will not state fails closed, as the pull surface's rule says:
+        the cap cannot be checked against a number that is not there."""
+        reads: list[str] = []
+
+        class _SizeUnknown(_ScriptedGuest):
+            async def stat_file(self, path: str, *, working_directory: str):
+                entry = await super().stat_file(path, working_directory=working_directory)
+                if entry is not None and entry.path.endswith(".request.json"):
+                    return SandboxEntry(path=entry.path, kind=entry.kind, size_bytes=None)
+                return entry
+
+            async def read_file(self, path: str, *, working_directory: str, max_bytes: int):
+                reads.append(path)
+                return await super().read_file(
+                    path, working_directory=working_directory, max_bytes=max_bytes
+                )
+
+        guest = _SizeUnknown([("add", {"left": 1, "right": 1})])
+        _run(guest, HostToolRun(_registry()))
+        assert "larger than the host will read" in guest.answers[0]["refusal"]
+        assert "value" not in guest.answers[0]
+        assert not any(path.endswith(".request.json") for path in reads), (
+            "a request of unknown size was read"
+        )
 
     def test_a_request_that_is_not_json_is_refused(self):
         guest = _ScriptedGuest([("add", {"left": 1, "right": 1})], raw_request=b"{not json")
@@ -1253,14 +1280,18 @@ class TestTheLayoutsOwnPromise:
         with pytest.raises(ValueError, match="plain file name"):
             guest_run_layout("/maf-sandbox/work/run-1", program=program)
 
-    @pytest.mark.parametrize("program", ["program_output.txt", "run_program.sh", SHIM_MODULE])
+    @pytest.mark.parametrize(
+        "program",
+        ["program_output.txt", "run_program.sh", SHIM_MODULE, "program_exit_code.part"],
+    )
     def test_a_program_named_after_the_layouts_own_files_is_refused(self, program: str):
         """Each collision breaks the run in its own way, and none of them announce themselves.
 
         `program_output.txt` is the launcher's redirection target, so the shell truncates the
         program before the interpreter opens it; the launcher and the shim are written over
-        whatever the kind put there. All three end as a program that will not run, with
-        nothing pointing at the name that caused it.
+        whatever the kind put there; and `program_exit_code.part` is where the launcher stages
+        the exit code, so the program's own file is truncated to the exit digits and renamed
+        away as it exits. Nothing in any of them points at the name that caused it.
         """
         with pytest.raises(ValueError, match="already uses"):
             guest_run_layout("/maf-sandbox/work/run-1", program=program)
@@ -1473,6 +1504,21 @@ class TestWhatAFinishedRunIsAllowedToSay:
 
         assert result.exit_code == 0, "a finished run came back as something else"
         assert result.stdout == "it ran"
+
+    def test_output_larger_than_one_response_may_be_still_comes_back_whole(self):
+        """The output is capped at the run's total, not at the per-response ceiling.
+
+        The program's stdout is not a tool response, and a program may print more than one
+        response may return — capped at the per-file leg, this output would be dropped whole
+        by a number chosen for something else.
+        """
+        limits = TransferLimits(max_bytes_per_file=64, max_total_bytes=4096, max_files=4)
+        guest = _ScriptedGuest([], output="x" * 200)
+        result = _run(guest, HostToolRun(_registry(response_limits=limits)))
+
+        assert result.exit_code == 0
+        assert result.stdout == "x" * 200
+        assert result.stderr == ""
 
     def test_a_backends_own_failure_to_hand_over_output_keeps_the_exit_code(self):
         """The other `TimeoutError`: a backend's own, raised while the run still has time.

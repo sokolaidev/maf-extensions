@@ -71,6 +71,13 @@ CALLS_DIRECTORY = "host_tool_calls"
 OUTPUT_FILE = "program_output.txt"
 EXIT_FILE = "program_exit_code"
 
+#: Where the launcher stages the exit code before renaming it into place. A program under
+#: this name is truncated to the exit digits and renamed away by the launcher's own last
+#: line. The launcher stages beside whatever marker its layout declares; deriving this from
+#: :data:`EXIT_FILE` keeps the two agreeing for any layout :func:`guest_run_layout` built,
+#: which is the only kind the refusal guards.
+_STAGED_EXIT_FILE = f"{EXIT_FILE}.part"
+
 #: The module a guest program imports to reach the host. Written beside the program.
 SHIM_MODULE = "maf_host_tools.py"
 
@@ -83,10 +90,13 @@ WORK_DIRECTORY = "work"
 #: Where everything the transport owns lives, beside the work directory rather than in it.
 _TRANSPORT_DIRECTORY = "host_tools"
 
-#: Every name :func:`guest_run_layout` puts in that directory. Not a kind's business, and
-#: deliberately not exported: two directories are what make a guest-supplied name harmless,
-#: and that is what replaced the list of names a kind used to have to refuse.
-_TRANSPORT_FILENAMES = frozenset({SHIM_MODULE, _LAUNCHER, OUTPUT_FILE, EXIT_FILE, CALLS_DIRECTORY})
+#: Every name the transport puts in that directory — the layout's own files and the
+#: launcher's staged exit marker. Not a kind's business, and deliberately not exported: two
+#: directories are what make a guest-supplied name harmless, and that is what replaced the
+#: list of names a kind used to have to refuse.
+_TRANSPORT_FILENAMES = frozenset(
+    {SHIM_MODULE, _LAUNCHER, OUTPUT_FILE, EXIT_FILE, _STAGED_EXIT_FILE, CALLS_DIRECTORY}
+)
 
 #: Module names a ``program`` may not be called, and why they are matched by **stem**.
 #:
@@ -300,10 +310,12 @@ def guest_run_layout(run_directory: str, *, program: str = "program.py") -> Gues
     if program in _TRANSPORT_FILENAMES:
         # Each collision breaks the run in its own way and none of them say so: the shell
         # truncates the output file before the interpreter opens the program, the launcher
-        # and the shim are written over whatever the kind put there, and the calls directory
-        # cannot be created where a file already is. A *model* cannot reach these names —
-        # that is what the two directories are for — but the kind's own `program` lands in
-        # the same one, so this stays a refusal at the one door it can still come through.
+        # and the shim are written over whatever the kind put there, the calls directory
+        # cannot be created where a file already is, and a program at the staged exit-marker
+        # name is truncated and renamed away by the launcher once it exits. A *model* cannot
+        # reach these names — that is what the two directories are for — but the kind's own
+        # `program` lands in the same one, so this stays a refusal at the one door it can
+        # still come through.
         raise ValueError(
             f"program must not be a name this layout already uses, and {program!r} is one of "
             f"{sorted(_TRANSPORT_FILENAMES)}"
