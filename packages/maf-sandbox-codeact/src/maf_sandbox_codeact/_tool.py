@@ -789,11 +789,14 @@ async def _resolve_listed_files(
             # control character that its name satisfies everything the tool asked for. The
             # listing is still not echoed — that would invite a retry with another spelling.
             return f"Error: {name!r} cannot be shared — {exc}"
-        if _is_reserved(name, reserved):
+        if name in reserved:
             return (
                 f"Error: {name!r} cannot be shared — this tool writes a file of that name into "
                 f"every run's directory."
             )
+        refusal = _inside_a_reserved_file(name, reserved, action="shared")
+        if refusal is not None:
+            return refusal
         if name in resolved:
             # One read and one write per name. Repeating one buys the caller nothing and
             # multiplies both, which is the cheapest way to amplify against the byte ceilings.
@@ -863,14 +866,25 @@ async def _read_listed_files(
     return read
 
 
-def _is_reserved(name: str, reserved: set[str]) -> bool:
-    """Whether ``name`` is a file this tool writes itself, or would turn one into a directory.
+def _inside_a_reserved_file(name: str, reserved: set[str], *, action: str) -> str | None:
+    """Refuse a name that would have to live inside a reserved file, naming which one.
 
-    Every shipped backend creates parent directories for a nested write, so sharing
-    ``program.py/data.csv`` would turn ``program.py`` into a directory and the source write that
-    follows would fail on every call.
+    Every shipped backend creates parent directories for a nested write, so
+    ``program.py/data.csv`` would turn ``program.py`` into a directory and fail the write of the
+    program that follows.  The sentence names the reserved file rather than the nested spelling,
+    which nothing writes, and says *reserves* rather than *writes*: this tool writes
+    ``program.py``, but only reads ``outputs.json``.
+
+    **Call it after the name validator.**  ``program.py/../x`` starts with the prefix and climbs
+    straight back out, so this sentence would be false for it.
     """
-    return any(name == owned or name.startswith(f"{owned}/") for owned in reserved)
+    above = next((owned for owned in reserved if name.startswith(f"{owned}/")), None)
+    if above is None:
+        return None
+    return (
+        f"Error: {name!r} cannot be {action} — {above!r} is a file name this tool reserves in "
+        f"every run's directory, so nothing can live inside it."
+    )
 
 
 def _over_file_count(count: int, limits: TransferLimits, *, dispatches: bool) -> str | None:
@@ -986,8 +1000,11 @@ def _validated_output_names(
                 validate_artifact_name(spelling)
             except SandboxArtifactNameInvalid as exc:
                 return f"Error: {name!r} cannot be saved — {exc}"
-        if _is_reserved(name, reserved):
+        if name in reserved:
             return f"Error: {name!r} cannot be saved — this tool writes that file itself."
+        refusal = _inside_a_reserved_file(name, reserved, action="saved")
+        if refusal is not None:
+            return refusal
         # `collect_outputs`' own key: NFC and case-folded, always, whatever the sink does
         # about rewriting.
         key = unicodedata.normalize("NFC", name).lower()
