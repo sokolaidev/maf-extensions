@@ -36,7 +36,7 @@ this directory's README for the prerequisites and the environment variables.
 #     "azure-identity",
 #     "maf-sandbox-acas",
 #     "maf-sandbox-codeact",
-#     "maf-sandbox>=0.15",
+#     "maf-sandbox>=0.16",
 # ]
 # ///
 
