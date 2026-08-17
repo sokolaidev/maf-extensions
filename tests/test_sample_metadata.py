@@ -300,3 +300,119 @@ def test_no_readme_still_tells_a_reader_to_pip_install():
         f"these still carry a pip recipe: {', '.join(offenders)}. The dependencies live in the "
         "`# /// script` block, and a second list is the drift this replaced."
     )
+
+
+# ---------------------------------------------------------------------------
+# Every floor names a version that has been released, not just the core one
+# ---------------------------------------------------------------------------
+
+#: A floor on a distribution this repository publishes: `maf-sandbox-docker>=0.4`.
+_REPO_FLOOR = re.compile(r"^(maf-sandbox(?:-[a-z]+)?)\s*>=\s*(\d+(?:\.\d+)*)\s*$")
+
+_PACKAGES = Path(__file__).resolve().parent.parent / "packages"
+
+
+def _released(changelog: str) -> list[tuple[int, ...]]:
+    """Every version this package's changelog records, newest first."""
+    return [
+        tuple(int(part) for part in heading.split("."))
+        for heading in _CHANGELOG_HEADING.findall(changelog)
+    ]
+
+
+def _names_a_released_version(floor: tuple[int, ...], released: list[tuple[int, ...]]) -> bool:
+    """Whether ``floor`` names a release that happened, at the precision it was written.
+
+    `>=0.4` is a claim that `0.4` exists, and a `0.4.x` heading is what makes it true — so the
+    comparison is on the components the floor actually wrote, not on padded tuples. Padding
+    would read `>=0.4` as `0.4.0` and reject a package whose first `0.4` release was `0.4.1`,
+    which release-please can produce when a patch and a feature land in one Release PR.
+    """
+    return any(version[: len(floor)] == floor for version in released)
+
+
+def _repo_floors(sample: Path) -> list[tuple[str, tuple[int, ...]]]:
+    """The `(distribution, floor)` pairs a sample declares on this repository's packages."""
+    found: list[tuple[str, tuple[int, ...]]] = []
+    for dependency in _metadata(sample / "agent.py")["dependencies"]:
+        match = _REPO_FLOOR.match(dependency.strip())
+        if match:
+            found.append((match.group(1), tuple(int(part) for part in match.group(2).split("."))))
+    return found
+
+
+class TestAFloorNamesAVersionThatExists:
+    """The pure half, against changelogs this repository does not have.
+
+    Kept separate from the tree-reading test below for `TestTheWindowRule`'s reason: the real
+    tree is conformant most of the time, so it cannot tell a working comparison from one that
+    says yes to everything.
+    """
+
+    def _changelog(self, *versions: str) -> str:
+        return "# Changelog\n\n" + "".join(
+            f"## [{version}](https://example.invalid/compare) (2026-01-01)\n\n### Features\n\n"
+            for version in versions
+        )
+
+    def test_a_released_minor_is_named_by_a_two_part_floor(self):
+        assert _names_a_released_version((0, 4), _released(self._changelog("0.4.0", "0.3.3")))
+
+    def test_an_unreleased_minor_is_not(self):
+        # This repository's own state while a Release PR is open: the version is decided and
+        # the changelog does not have it yet, because release-please writes both at merge.
+        assert not _names_a_released_version((0, 4), _released(self._changelog("0.3.3", "0.3.2")))
+
+    def test_a_minor_whose_first_release_was_a_patch_still_counts(self):
+        """Why the comparison is on the floor's own width.
+
+        Padding `(0, 4)` to `(0, 4, 0)` would reject this, and `0.4.0` never existing is a
+        thing release-please does — a Release PR carrying a fix and a feature lands once.
+        """
+        assert _names_a_released_version((0, 4), _released(self._changelog("0.4.1", "0.3.3")))
+
+    def test_a_three_part_floor_is_matched_exactly(self):
+        released = _released(self._changelog("0.4.1", "0.4.0"))
+        assert _names_a_released_version((0, 4, 1), released)
+        assert not _names_a_released_version((0, 4, 2), released)
+
+    def test_a_later_release_does_not_vouch_for_a_version_that_was_skipped(self):
+        # `>=0.5` is unresolvable while only 0.4 and 0.6 exist, which is exactly the shape a
+        # hand-written floor produces when someone guesses the next number and misses.
+        assert not _names_a_released_version((0, 5), _released(self._changelog("0.6.0", "0.4.0")))
+
+
+class TestEveryDeclaredFloorIsReleased:
+    """AGENTS.md: *a dependency floor may only name a version that exists.*
+
+    `TestTheDeclaredCoreFloor` above enforces that for `maf-sandbox` and nothing else, so a
+    sample that declared `maf-sandbox-docker>=0.4` before that wheel shipped passed every check
+    on a pull request and failed only in `verify-live` — which runs after a release, against
+    PyPI, and is dispatched rather than gating the merge. Green pull request, red release.
+
+    A changelog entry is the offline proxy for "published". It is not exact: release-please
+    writes the entry when the Release PR merges, and the upload is held at "Approve and run"
+    afterwards, so a version can be in a changelog for a while before it is on the index. That
+    gap is minutes and always in the safe direction for the *next* branch to be written, while
+    the gap this closes — a floor naming a version nobody has decided to release — is open
+    indefinitely and invisible.
+    """
+
+    @pytest.mark.parametrize("sample", _SAMPLE_DIRS, ids=lambda path: path.name)
+    def test_every_floor_it_declares(self, sample: Path):
+        for distribution, floor in _repo_floors(sample):
+            changelog = _PACKAGES / distribution / "CHANGELOG.md"
+            assert changelog.is_file(), (
+                f"{sample.name} declares a floor on {distribution}, which this repository does "
+                f"not publish — there is no {changelog.relative_to(_PACKAGES.parent)}."
+            )
+            released = _released(changelog.read_text(encoding="utf-8"))
+            printed = ".".join(str(part) for part in floor)
+            assert _names_a_released_version(floor, released), (
+                f"{sample.name} declares {distribution}>={printed} and {distribution} has not "
+                f"released {printed} — its newest is "
+                f"{'.'.join(str(part) for part in released[0])}. Samples resolve from PyPI, so "
+                "this floor makes the sample unresolvable: `uv` refuses to install rather than "
+                "the sample failing at import. Land the package half, release it, and raise the "
+                "floor afterwards — AGENTS.md and RELEASING.md step 4."
+            )
