@@ -658,9 +658,9 @@ class TestMakeCodeactTools:
             _tool(backend)
 
     def test_a_registry_on_a_backend_that_cannot_serve_host_tools_is_refused_at_attach(self):
-        """The headline promise of this wiring, and nothing pinned it: no shipped backend
-        declares `HOST_TOOLS`, so wiring a registry has to fail where the tool is *built* —
-        not at the first call, and not silently.
+        """No shipped backend declares `HOST_TOOLS`, so wiring a registry has to fail where
+        the tool is *built* — not at the first call, and not silently. That is the promise the
+        module docstring and the README both make, and this is where it is held.
 
         `_PULLS` is what a real backend offers today. The refusal has to come from the
         capability match rather than from the registry being empty, so the registry here has a
@@ -1507,9 +1507,10 @@ class TestManifestOutputs:
         """`_read_manifest` stats a path built from the same prefix everything else uses, so a
         dispatching run must look in `work/` rather than in the run directory.
 
-        This is the one mode × dispatch cell nothing else covers, and the prefix reaching this
-        read was unpinned until it existed: reverting it to the run directory left the whole
-        suite green while a real run answered "no outputs.json was written" and saved nothing.
+        MANIFEST is the one output mode whose names arrive after the program has run, and the
+        stat that fetches them is the only place the prefix is used for a read. Get it wrong
+        and the run answers "no outputs.json was written" — an empty collection reported as
+        success, after a program that produced everything it promised.
         """
         sandbox = _FinishingSandbox()
         sink = _RecordingSink()
