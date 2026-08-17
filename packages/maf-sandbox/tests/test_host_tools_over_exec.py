@@ -43,6 +43,7 @@ from maf_sandbox import (
     HostToolRun,
     Identity,
     SandboxEntry,
+    SandboxProgramTimeout,
     SandboxTransferCapExceeded,
     SourceIntegrity,
     TransferLimits,
@@ -64,6 +65,13 @@ _LAYOUT = guest_run_layout(_RUN)
 
 #: Scripted in place of a name: the caller took this number and could not publish under it.
 _ABANDONED = "<abandoned>"
+
+#: Where `site` looks for user packages under `PYTHONUSERBASE`, relative to that base, on the
+#: POSIX guest these launcher tests target. Built from the running interpreter because the
+#: test plants a hook there and then runs `sys.executable` against it, so a hard-coded version
+#: would make the case vacuous the next time Python bumps a minor — it would plant the file
+#: somewhere nothing reads and pass whether the launcher filtered anything or not.
+_USER_SITE_UNDER_BASE = f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages"
 
 
 @sandbox_tool(source=SourceIntegrity.TRUSTED, sink=None, identity=Identity.APP)
@@ -118,6 +126,7 @@ class _ScriptedGuest:
         return confine_guest_path(path, working_directory)
 
     async def write_file(self, path: str, content: str | bytes) -> None:
+        await asyncio.sleep(0)  # as in `stat_file`: a bound is only a bound against a yield
         self.files[path] = content.encode("utf-8") if isinstance(content, str) else content
 
     async def exec(
@@ -251,6 +260,13 @@ class TestTheHappyPath:
         assert result.exit_code == 127
         assert guest.answers == []
 
+    def test_a_launcher_that_fails_without_a_word_still_gets_a_reason(self):
+        """An empty ``stderr`` beside a non-zero exit tells a caller nothing it can act on,
+        so the transport supplies the sentence itself."""
+        guest = _ScriptedGuest([], launcher_exit_code=127)
+        result = _run(guest, HostToolRun(_registry()))
+        assert result.stderr == "the launcher did not start the program"
+
 
 class TestWhatTheGuestIsAllowedToSee:
     def test_an_unregistered_name_comes_back_as_a_sentence(self):
@@ -275,6 +291,32 @@ class TestWhatTheGuestIsAllowedToSee:
         guest = _ScriptedGuest([("add", {"left": 1, "right": 1})], request_bytes=1024)
         _run(guest, HostToolRun(_registry(response_limits=limits)))
         assert "larger than the host will read" in guest.answers[0]["refusal"]
+
+    def test_a_request_whose_size_the_backend_cannot_state_is_refused_unread(self):
+        """A size the backend will not state fails closed, as the pull surface's rule says:
+        the cap cannot be checked against a number that is not there."""
+        reads: list[str] = []
+
+        class _SizeUnknown(_ScriptedGuest):
+            async def stat_file(self, path: str, *, working_directory: str):
+                entry = await super().stat_file(path, working_directory=working_directory)
+                if entry is not None and entry.path.endswith(".request.json"):
+                    return SandboxEntry(path=entry.path, kind=entry.kind, size_bytes=None)
+                return entry
+
+            async def read_file(self, path: str, *, working_directory: str, max_bytes: int):
+                reads.append(path)
+                return await super().read_file(
+                    path, working_directory=working_directory, max_bytes=max_bytes
+                )
+
+        guest = _SizeUnknown([("add", {"left": 1, "right": 1})])
+        _run(guest, HostToolRun(_registry()))
+        assert "larger than the host will read" in guest.answers[0]["refusal"]
+        assert "value" not in guest.answers[0]
+        assert not any(path.endswith(".request.json") for path in reads), (
+            "a request of unknown size was read"
+        )
 
     def test_a_request_that_is_not_json_is_refused(self):
         guest = _ScriptedGuest([("add", {"left": 1, "right": 1})], raw_request=b"{not json")
@@ -409,6 +451,54 @@ class TestTheSupervisorsOwnBounds:
             )
         assert dispatched == [], "a request read inside the bound was dispatched after it"
 
+    def test_the_poll_interval_actually_throttles_the_polling(self):
+        """The interval is the only thing between a remote backend and a stat per loop tick.
+
+        Refusing zero is not enough if the sleep itself goes missing: a run bounded at a
+        quarter second polls a handful of times at 0.05s, and thousands of times unthrottled.
+        """
+        looks: list[str] = []
+
+        class _CountsTheLooks(_ScriptedGuest):
+            async def stat_file(self, path: str, *, working_directory: str):
+                if path.endswith("program_exit_code"):
+                    looks.append(path)
+                return await super().stat_file(path, working_directory=working_directory)
+
+        guest = _CountsTheLooks([], finish=False)
+        with pytest.raises(SandboxProgramTimeout):
+            _run(guest, HostToolRun(_registry()), timeout=0.25, poll=0.05)
+
+        assert 0 < len(looks) <= 25, f"{len(looks)} marker looks in 0.25s at a 0.05s interval"
+
+    def test_what_a_timeout_quotes_is_capped(self):
+        """`output` and the message both quote the program, and both are bounded.
+
+        Uncapped, a program that printed megabytes puts them whole into an exception a kind
+        renders for a model — "already capped" is the attribute's own contract, and it has
+        to hold on both give-up paths: the plain expiry, and the transport call that ran out.
+        """
+
+        class _StallsOnTheFirstMarkerLook(_ScriptedGuest):
+            stalled = False
+
+            async def stat_file(self, path: str, *, working_directory: str):
+                if path.endswith("program_exit_code") and not self.stalled:
+                    self.stalled = True
+                    await asyncio.sleep(3600)
+                return await super().stat_file(path, working_directory=working_directory)
+
+        quiet = _ScriptedGuest([], finish=False)
+        held_up = _StallsOnTheFirstMarkerLook([], finish=False)
+        for guest in (quiet, held_up):
+            guest.files[_LAYOUT.output] = b"x" * 3000
+            with pytest.raises(SandboxProgramTimeout) as expired:
+                _run(guest, HostToolRun(_registry()), timeout=0.05)
+
+            assert expired.value.output == "x" * 2000
+            assert "x" * 2000 in str(expired.value), "the quote lost its label or its text"
+            assert "x" * 2001 not in str(expired.value), "the message quotes more than the cap"
+
 
 class TestTheLauncher:
     """What the guest is actually asked to run, and whether a shell can read it."""
@@ -422,16 +512,83 @@ class TestTheLauncher:
         assert layout.program in tokens[3], "the inner command did not survive as one argument"
         assert layout.output in tokens[3]
 
+    def test_the_shims_directory_is_put_on_the_import_path(self):
+        """Placement alone is a default a guest image can switch off.
+
+        Under `PYTHONSAFEPATH` the interpreter prepends no directory of its own, and then only
+        `PYTHONPATH` decides which `maf_host_tools` an import reaches — the guest's own file,
+        on an image carrying the working directory there. Prepended rather than assigned, so an
+        image keeps whatever entries it needs and none of them can outrank the shim.
+        """
+        script = launcher_script(guest_run_layout("/maf-sandbox/work/run-1"))
+        assignment = next(line for line in script.splitlines() if line.startswith("PYTHONPATH="))
+
+        assert assignment.startswith("PYTHONPATH='/maf-sandbox/work/run-1/host_tools'"), (
+            "the shim's directory is not first, so an inherited entry can outrank it"
+        )
+        assert "$maf_kept" in assignment, "an image's own entries were dropped, not kept"
+        assert '    /*) maf_kept="${maf_kept:+$maf_kept:}$maf_entry" ;;\n' in script, (
+            "a relative inherited entry is not filtered"
+        )
+        run = "/maf-sandbox/work/run-1"
+        assert f"    '{run}'|'{run}'/*) ;;\n" in script, (
+            "an absolute inherited entry naming the run tree is not filtered — quoted so a "
+            "run directory containing a glob character matches only itself"
+        )
+        assert "    */./*|*/../*|*//*|*/.|*/..) ;;\n" in script, (
+            "a non-canonical entry is not filtered, so the run-tree test above compares "
+            "spellings rather than directories and `/runs/./current/work` walks through it"
+        )
+        assert "\nkept=" not in script and "for entry in" not in script, (
+            "an unprefixed name collides with one an image may already export"
+        )
+        # `set -f`, the `unset`, and the order of the two `case` branches are deliberately
+        # *not* asserted here. All three are properties of where they sit relative to
+        # something else, and a substring check cannot see order: move any of them and this
+        # stays green while the behaviour is gone — the run-tree branch demoted below `/*)`
+        # would never be reached. They are covered by running the launcher, in
+        # `TestTheLauncherAgainstARealShell`.
+
     def test_the_interpreter_is_a_shell_word_like_every_path(self):
         """An interpreter path with a space is split unless it is quoted like the rest.
 
-        The environment assignment in front of it is why this reads the second word: `sh`
-        takes `NAME=value cmd` as one command with one variable set for it.
+        `sh` takes `NAME=value cmd` as one command with variables set for it, so the
+        interpreter is whatever follows the assignments. Found by skipping them rather than by
+        counting them: how many the launcher sets is not this test's subject, and pinning the
+        number here means adding one breaks a test that has nothing to say about it.
         """
         layout = guest_run_layout("/maf-sandbox/work/run-1")
         command = launcher_script(layout, "/opt/py 3.12/bin/python3").splitlines()[-1]
         inner = shlex.split(command.removesuffix(" &"))[3]
-        assert shlex.split(inner)[:2] == ["PYTHONUNBUFFERED=1", "/opt/py 3.12/bin/python3"]
+
+        words = shlex.split(inner)
+        interpreter_at = next(index for index, word in enumerate(words) if "=" not in word)
+
+        assert words[interpreter_at] == "/opt/py 3.12/bin/python3", (
+            "the interpreter path did not survive as one word — a space split it, or an "
+            f"assignment in front of it is not one: {words[: interpreter_at + 1]}"
+        )
+
+    def test_the_program_is_given_both_startup_variables(self):
+        """Set through the environment because `interpreter` need not be CPython.
+
+        Named here because the test above deliberately skips the assignments without reading
+        them, so without this nothing would notice either going missing. Both are load-bearing
+        and neither is visible in the run's result when it is absent: unbuffered output is
+        what makes the output file a witness the timeout can quote, and no-user-site is what
+        keeps `$PYTHONUSERBASE/lib/pythonX.Y/site-packages` — which `site` adds, and which an
+        image can point into the run tree — from carrying a `sitecustomize` the guest wrote.
+        """
+        layout = guest_run_layout("/maf-sandbox/work/run-1")
+        command = launcher_script(layout).splitlines()[-1]
+        inner = shlex.split(command.removesuffix(" &"))[3]
+
+        words = shlex.split(inner)
+        assignments = words[: next(index for index, word in enumerate(words) if "=" not in word)]
+
+        assert sorted(assignments) == ["PYTHONNOUSERSITE=1", "PYTHONUNBUFFERED=1"], (
+            f"the program's startup environment is not the two it needs: {assignments}"
+        )
 
 
 def _reap(pid_file: Path) -> None:
@@ -456,6 +613,312 @@ class TestTheLauncherAgainstARealShell:
     """The launcher is a shell script, and some of what it promises only a shell can show."""
 
     @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+    @pytest.mark.skipif(os.pathsep != ":", reason="the launcher's path handling is POSIX")
+    def test_the_guest_sees_the_inherited_path_filtered_and_otherwise_untouched(
+        self, tmp_path: Path
+    ):
+        """What the launcher builds, read back from the environment the program actually gets.
+
+        Ordering is the whole property and no substring check can see it: `set -f` moved after
+        the loop globs, an `unset` moved before the assignment empties the result, and either
+        rearrangement leaves every recognisable line of the script in place. So this runs it.
+
+        Verbatim matters as much as filtered — Python does not glob `PYTHONPATH`, so an
+        inherited `/opt/plugins/*` has to arrive as those characters.
+
+        The glob entry sits outside the run tree because entries inside it are now dropped
+        whether or not they are absolute, so a glob written under `work` would be filtered
+        before the no-globbing claim could be tested. `{directory}-sibling` guards the
+        boundary that move introduces: a prefix of the run directory is not inside it.
+        """
+        directory = (tmp_path / "run").as_posix()
+        outside = (tmp_path / "outside").as_posix()
+        served, work = f"{directory}/host_tools", f"{directory}/work"
+        pathlib.Path(served).mkdir(parents=True, exist_ok=True)
+        pathlib.Path(work).mkdir(parents=True, exist_ok=True)
+        pathlib.Path(outside).mkdir(parents=True, exist_ok=True)
+        # Something for a glob to catch, in the directory the pattern names.
+        pathlib.Path(outside, "caught.py").write_text("", encoding="utf-8")
+        pathlib.Path(served, "program.py").write_text(
+            "import os\nprint(os.environ.get('PYTHONPATH', '<unset>'))\n"
+            "print('leaked:', sorted(k for k in os.environ if k.startswith('maf_')))\n",
+            encoding="utf-8",
+        )
+        layout = GuestRunLayout(
+            directory=directory,
+            work=work,
+            program=f"{served}/program.py",
+            shim=f"{served}/{SHIM_MODULE}",
+            launcher=f"{served}/run_program.sh",
+            calls=f"{served}/{CALLS_DIRECTORY}",
+            output=f"{served}/program_output.txt",
+            exit_code=f"{served}/program_exit_code",
+        )
+        pathlib.Path(layout.launcher).write_text(
+            launcher_script(layout, sys.executable), encoding="utf-8"
+        )
+
+        subprocess.run(
+            ["sh", layout.launcher],
+            cwd=directory,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=True,
+            # `maf_kept` exported by the "image": without it the leak assertion below is
+            # vacuous, because a plain shell assignment never reaches a child's environment
+            # and the launcher's leftovers could only ever be visible through a name that was
+            # already exported. This is the one arrangement where the `unset` does work.
+            env={
+                **os.environ,
+                "PYTHONPATH": (
+                    f"/image/libs:{outside}/*:{work}:{directory}:{directory}-sibling:rel:"
+                ),
+                "maf_kept": "the image's own",
+            },
+        )
+        marker = pathlib.Path(layout.exit_code)
+        for _ in range(200):
+            if marker.exists():
+                break
+            time.sleep(0.05)
+
+        seen, leaked = pathlib.Path(layout.output).read_text(encoding="utf-8").splitlines()[:2]
+
+        assert seen == f"{served}:/image/libs:{outside}/*:{directory}-sibling", (
+            "the guest's path is not the shim's directory followed by the absolute entries "
+            "from outside the run tree, unchanged — a glob was expanded, an entry was dropped "
+            "or kept wrongly, or the order moved"
+        )
+        assert leaked == "leaked: []", (
+            "the launcher's own value for maf_kept reached the guest, where the image's "
+            "exported variable of that name used to be"
+        )
+
+    @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+    @pytest.mark.skipif(
+        os.pathsep != ":",
+        reason="the launcher splits PYTHONPATH on ':' and tests entries for a leading '/', "
+        "which is the guest it targets; a Windows interpreter parses neither that way",
+    )
+    @pytest.mark.parametrize(
+        ("inherited", "hook_in"),
+        [
+            ({"PYTHONPATH": "."}, ""),
+            ({"PYTHONPATH": "<work>"}, ""),
+            # The `/./` has to fall *inside* the run directory's own spelling. Put it after,
+            # as `<work>` spelled `<run>/./work`, and the prefix branch matches it anyway —
+            # `'<run>'/*` accepts `./work` for its `*` — so the case would pass with the
+            # canonical branch deleted and prove nothing.
+            ({"PYTHONPATH": "<tmp>/./run/work"}, ""),
+            ({"PYTHONUSERBASE": "<work>"}, _USER_SITE_UNDER_BASE),
+        ],
+        ids=["relative", "absolute-in-tree", "non-canonical-alias", "user-base"],
+    )
+    def test_an_inherited_variable_cannot_reach_into_the_run(
+        self, tmp_path: Path, inherited: dict[str, str], hook_in: str
+    ):
+        """The launcher's own filtering, against a real `sh` and a real interpreter.
+
+        `site` imports `sitecustomize` before the program runs, from anywhere on the startup
+        path, and such a hook can seed `sys.modules` outright — no amount of ordering between
+        the shim and the guest's files prevents it, because the import never reaches a file.
+        So every inherited way of naming the run tree has to be closed, and the four here are
+        the ways that exist: a relative entry, resolved against the working directory the
+        launcher just changed to the guest's own; an absolute one, for a host that places runs
+        at a path an image can predict; a non-canonical spelling of either, which is a
+        different string to a textual filter and the same directory to the kernel; and
+        `PYTHONUSERBASE`, which reaches startup through `site` rather than through the path.
+
+        Parametrised rather than duplicated so the four cannot drift: they are one guarantee,
+        and a fix for any one of them must not reopen another. Each case also asserts that an
+        entry from *outside* the tree survives, so a filter that passes by dropping everything
+        fails here.
+
+        The `user-base` case asserts the interpreter's own no-user-site flag rather than only
+        which shim won, because `site` disables user packages inside a virtual environment and
+        this suite runs in one: the planted hook cannot win here however the launcher behaves,
+        so a test that only watched for it would be green with `PYTHONNOUSERSITE` deleted. The
+        flag is observable either way, and it is what the launcher is actually responsible for.
+        """
+        directory = (tmp_path / "run").as_posix()
+        served, work = f"{directory}/host_tools", f"{directory}/work"
+        # Outside the run tree, so its survival is a real claim rather than one the launcher
+        # would satisfy anyway by prepending the shim's own directory.
+        outside = (tmp_path / "outside").as_posix()
+        pathlib.Path(served).mkdir(parents=True, exist_ok=True)
+        pathlib.Path(work).mkdir(parents=True, exist_ok=True)
+        pathlib.Path(outside).mkdir(parents=True, exist_ok=True)
+        pathlib.Path(served, SHIM_MODULE).write_text("SPEAKING = 'the shim'\n", encoding="utf-8")
+        hook = pathlib.Path(work, hook_in)
+        hook.mkdir(parents=True, exist_ok=True)
+        pathlib.Path(hook, "sitecustomize.py").write_text(
+            "import sys, types\n"
+            "m = types.ModuleType('maf_host_tools')\n"
+            "m.SPEAKING = 'the guest'\n"
+            "sys.modules['maf_host_tools'] = m\n",
+            encoding="utf-8",
+        )
+        pathlib.Path(served, "program.py").write_text(
+            "import maf_host_tools, os, sys\n"
+            "print('speaking:', maf_host_tools.SPEAKING)\n"
+            "print('user-site-off:', bool(sys.flags.no_user_site))\n"
+            # Everything the filter kept beyond the shim's own directory, one per line.
+            "print(*('kept: ' + e for e in os.environ['PYTHONPATH'].split(':')[1:]), sep='\\n')\n",
+            encoding="utf-8",
+        )
+        layout = GuestRunLayout(
+            directory=directory,
+            work=work,
+            program=f"{served}/program.py",
+            shim=f"{served}/{SHIM_MODULE}",
+            launcher=f"{served}/run_program.sh",
+            calls=f"{served}/{CALLS_DIRECTORY}",
+            output=f"{served}/program_output.txt",
+            exit_code=f"{served}/program_exit_code",
+        )
+        pathlib.Path(layout.launcher).write_text(
+            launcher_script(layout, sys.executable), encoding="utf-8"
+        )
+        hostile = {
+            name: value.replace("<work>", work)
+            .replace("<run>", directory)
+            .replace("<tmp>", tmp_path.as_posix())
+            for name, value in inherited.items()
+        }
+        # The survivor rides on `PYTHONPATH` in every case, behind the hostile entry when that
+        # is where the hostile entry lives, so the second assertion means one thing throughout.
+        hostile["PYTHONPATH"] = ":".join(filter(None, [hostile.get("PYTHONPATH"), outside]))
+
+        subprocess.run(
+            ["sh", layout.launcher],
+            cwd=directory,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=True,
+            # What an image does, not what this run does: the hostile variable under test,
+            # and an entry from outside the tree that must survive alongside the shim's.
+            env={**os.environ, **hostile, "PYTHONSAFEPATH": "1"},
+        )
+        marker = pathlib.Path(layout.exit_code)
+        for _ in range(200):
+            if marker.exists():
+                break
+            time.sleep(0.05)
+
+        printed = pathlib.Path(layout.output).read_text(encoding="utf-8").splitlines()
+        said = dict(line.split(": ", 1) for line in printed if not line.startswith("kept: "))
+        kept = [line.removeprefix("kept: ") for line in printed if line.startswith("kept: ")]
+
+        assert said.get("speaking") == "the shim", (
+            f"a startup hook in the work directory won: {printed}"
+        )
+        assert said.get("user-site-off") == "True", (
+            "the interpreter was started with user site-packages enabled, so a hook under "
+            f"$PYTHONUSERBASE would be imported before the program: {printed}"
+        )
+        assert kept == [outside], (
+            "the entry from outside the run tree did not survive the filter, so the launcher "
+            f"is dropping more than the run's own directories: {kept!r}"
+        )
+
+    @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+    def test_a_work_directory_that_cannot_be_entered_stops_the_run(self, tmp_path: Path):
+        """`sh` does not stop on a failed command, so the `cd` has to say so itself.
+
+        Unguarded, a failed `mkdir`/`cd` pair leaves the program running wherever the launcher
+        was exec'd: artifacts land where no kind collects them, the exit marker still appears,
+        and the run reports success. A non-zero launcher is already handled — `dispatch_over_exec`
+        turns it into "the launcher did not start the program" — so failing loudly is free.
+        """
+        directory = tmp_path.as_posix()
+        served = f"{directory}/host_tools"
+        pathlib.Path(served).mkdir(parents=True, exist_ok=True)
+        # A file where the work directory belongs: `mkdir -p` cannot make one over it.
+        pathlib.Path(directory, "work").write_text("in the way", encoding="utf-8")
+
+        layout = GuestRunLayout(
+            directory=directory,
+            work=f"{directory}/work",
+            program=f"{served}/program.py",
+            shim=f"{served}/{SHIM_MODULE}",
+            launcher=f"{served}/run_program.sh",
+            calls=f"{served}/{CALLS_DIRECTORY}",
+            output=f"{served}/program_output.txt",
+            exit_code=f"{served}/program_exit_code",
+        )
+        pathlib.Path(layout.program).write_text("open('escaped', 'w').close()\n", encoding="utf-8")
+        pathlib.Path(layout.launcher).write_text(
+            launcher_script(layout, sys.executable), encoding="utf-8"
+        )
+
+        started = subprocess.run(
+            ["sh", layout.launcher], cwd=directory, capture_output=True, text=True, timeout=60
+        )
+
+        assert started.returncode != 0, "a launcher that could not enter the work directory ran on"
+        assert not pathlib.Path(directory, "escaped").exists(), "the program ran somewhere else"
+        assert not pathlib.Path(layout.exit_code).exists(), "a relocated run recorded an exit code"
+
+    @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+    def test_a_guest_file_named_like_the_shim_is_not_the_module_the_program_imports(
+        self, tmp_path: Path
+    ):
+        """A file a model names cannot become the module the program imports.
+
+        Asked of a real interpreter, because the guarantee is the runtime's: `sys.path[0]` is
+        the *script's* directory and a script's working directory is never added at all, so a
+        program run from beside the shim cannot reach a same-named file among the model's own.
+        Placement is not the whole defence — `PYTHONSAFEPATH` switches that default off, which
+        the launcher answers by putting the shim's directory on `PYTHONPATH` as well.
+        """
+        directory = tmp_path.as_posix()
+        served, work = f"{directory}/host_tools", f"{directory}/work"
+        pathlib.Path(served).mkdir(parents=True, exist_ok=True)
+        pathlib.Path(work).mkdir(parents=True, exist_ok=True)
+
+        pathlib.Path(served, SHIM_MODULE).write_text("SPEAKING = 'the shim'\n", encoding="utf-8")
+        # What a model can put in its own working directory, under the one name that matters.
+        pathlib.Path(work, SHIM_MODULE).write_text("SPEAKING = 'the guest'\n", encoding="utf-8")
+        pathlib.Path(served, "program.py").write_text(
+            "import maf_host_tools\nprint(maf_host_tools.SPEAKING)\n", encoding="utf-8"
+        )
+
+        # A startup hook is stronger than a same-named module: `site` imports `sitecustomize`
+        # before the program runs, so one on the path can seed `sys.modules` and the import
+        # never reaches a file at all. Only reachable through a *relative* inherited entry,
+        # which is why the launcher drops those — planted here so that stays true.
+        pathlib.Path(work, "sitecustomize.py").write_text(
+            "import sys, types\n"
+            "m = types.ModuleType('maf_host_tools')\n"
+            "m.SPEAKING = 'the guest'\n"
+            "sys.modules['maf_host_tools'] = m\n",
+            encoding="utf-8",
+        )
+
+        for label, environment in (
+            # What the launcher sets on an ordinary image: the shim's directory prepended.
+            ("the default path", {"PYTHONPATH": served}),
+            # `PYTHONSAFEPATH` stops the interpreter prepending the *script's* directory, so
+            # placement alone stops defending and the path is all that is left.
+            ("a safe-path guest", {"PYTHONSAFEPATH": "1", "PYTHONPATH": served}),
+        ):
+            spoke = subprocess.run(
+                [sys.executable, f"{served}/program.py"],
+                cwd=work,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                env={**os.environ, **environment},
+            )
+
+            assert spoke.returncode == 0, f"{label}: {spoke.stderr}"
+            assert spoke.stdout.strip() == "the shim", (
+                f"{label}: a guest-named file became the host's module"
+            )
+
+    @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
     def test_a_program_that_prints_and_then_hangs_leaves_its_output_readable(self, tmp_path: Path):
         """The timeout quotes this file, so what has not reached it does not exist.
 
@@ -471,15 +934,21 @@ class TestTheLauncherAgainstARealShell:
         `_reap` for why cleanup cannot simply kill what it started.
         """
         directory = tmp_path.as_posix()
+        # Hand-built rather than through `guest_run_layout`: a Windows `tmp_path` is not a
+        # POSIX absolute path, and the constructor is right to refuse one. The shape is the
+        # constructor's, checked against it by `TestTheLayoutsOwnPromise`.
+        served = f"{directory}/host_tools"
         layout = GuestRunLayout(
             directory=directory,
-            program=f"{directory}/program.py",
-            shim=f"{directory}/{SHIM_MODULE}",
-            launcher=f"{directory}/run_program.sh",
-            calls=f"{directory}/{CALLS_DIRECTORY}",
-            output=f"{directory}/program_output.txt",
-            exit_code=f"{directory}/program_exit_code",
+            work=f"{directory}/work",
+            program=f"{served}/program.py",
+            shim=f"{served}/{SHIM_MODULE}",
+            launcher=f"{served}/run_program.sh",
+            calls=f"{served}/{CALLS_DIRECTORY}",
+            output=f"{served}/program_output.txt",
+            exit_code=f"{served}/program_exit_code",
         )
+        pathlib.Path(served).mkdir(parents=True, exist_ok=True)
         stop = tmp_path / "stop"
         pathlib.Path(layout.program).write_text(
             "\n".join(
@@ -523,6 +992,59 @@ class TestTheLauncherAgainstARealShell:
         finally:
             stop.write_text("", encoding="utf-8")
             _reap(tmp_path / "pid")
+
+    @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+    def test_the_launcher_leaves_the_programs_own_ending_behind(self, tmp_path: Path):
+        """The two facts the supervisor reads are the program's own, made where it says.
+
+        The exit code must be what the program exited with, not what the launcher wishes it
+        had. Stderr belongs in the output file — `ExecResult.stderr` is the host's channel
+        on this transport, so a guest's complaints have nowhere else to land. And a relative
+        artifact must land in the work directory, which is the only place a kind collects.
+        """
+        directory = tmp_path.as_posix()
+        served, work = f"{directory}/host_tools", f"{directory}/work"
+        pathlib.Path(served).mkdir(parents=True, exist_ok=True)
+        layout = GuestRunLayout(
+            directory=directory,
+            work=work,
+            program=f"{served}/program.py",
+            shim=f"{served}/{SHIM_MODULE}",
+            launcher=f"{served}/run_program.sh",
+            calls=f"{served}/{CALLS_DIRECTORY}",
+            output=f"{served}/program_output.txt",
+            exit_code=f"{served}/program_exit_code",
+        )
+        pathlib.Path(layout.program).write_text(
+            "import sys\n"
+            "print('to stdout')\n"
+            "print('to stderr', file=sys.stderr)\n"
+            "open('artifact.txt', 'w').close()\n"
+            "sys.exit(3)\n",
+            encoding="utf-8",
+        )
+        pathlib.Path(layout.launcher).write_text(
+            launcher_script(layout, sys.executable.replace("\\", "/")), encoding="utf-8"
+        )
+
+        subprocess.run(  # noqa: S603 - a shell script this test just wrote
+            ["sh", layout.launcher], cwd=directory, capture_output=True, timeout=60, check=True
+        )
+        marker = pathlib.Path(layout.exit_code)
+        deadline = time.monotonic() + 20
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+
+        assert marker.read_text(encoding="utf-8") == "3", "the exit code is not the program's"
+        printed = pathlib.Path(layout.output).read_text(encoding="utf-8")
+        assert "to stdout" in printed
+        assert "to stderr" in printed, "the guest's stderr went where the host never reads"
+        assert pathlib.Path(work, "artifact.txt").exists(), (
+            "the program did not run in the work directory"
+        )
+        assert not pathlib.Path(directory, "artifact.txt").exists(), (
+            "a relative artifact escaped the work directory"
+        )
 
 
 class TestWhatAWrapperCanTakeAway:
@@ -721,6 +1243,36 @@ class TestTheGeneratedShim:
             "the staged file was incomplete at the moment it became visible"
         )
 
+    def test_a_response_caught_mid_write_is_retried_rather_than_raised(self, tmp_path: Path):
+        """A backend may make the supervisor's one write visible in pieces.
+
+        Half a JSON document is a `ValueError`, and treating it as an answer kills a call
+        that was about to succeed; the shim polls again instead, exactly as for a file that
+        is not there yet.
+        """
+        module = self._load(tmp_path)
+        calls = tmp_path / CALLS_DIRECTORY
+        calls.mkdir(parents=True, exist_ok=True)
+        response = calls / "0001.response.json"
+        response.write_text('{"value": "who', encoding="utf-8")
+        answered: list[Any] = []
+
+        def call_it() -> None:
+            answered.append(module.call("anything"))
+
+        caller = threading.Thread(target=call_it)
+        caller.start()
+        request = calls / "0001.request.json"
+        deadline = time.monotonic() + 5
+        while not request.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert request.exists(), "the shim wrote no request"
+        time.sleep(0.25)  # several poll intervals spent on the torn response
+        response.write_text('{"value": "whole"}', encoding="utf-8")
+        caller.join(timeout=5)
+
+        assert answered == ["whole"], "a torn read was treated as the answer"
+
 
 class TestNamesThatAreNotWhatTheyLookLike:
     """Identifier normalisation, where a wrapper name and a shim global can be the same name."""
@@ -781,6 +1333,17 @@ class TestWhatTheSupervisorRefusesToParse:
         _run(guest, HostToolRun(registry))
         assert seen == [], f"the tool ran on repaired bytes: {seen}"
         assert "not valid JSON" in guest.answers[0]["refusal"]
+
+    def test_a_request_that_is_json_but_not_an_object_is_refused(self):
+        """`json.loads` happily returns a list, and `.get` on one crashes the supervisor.
+
+        Like every other malformed request, it has to come back as a sentence: the guest
+        cannot retry it either way, and the run must outlive it.
+        """
+        guest = _ScriptedGuest([("add", {"left": 1, "right": 1})], raw_request=b"[1, 2, 3]")
+        _run(guest, HostToolRun(_registry()))
+        assert "must be a JSON object" in guest.answers[0]["refusal"]
+        assert "value" not in guest.answers[0]
 
 
 class TestWhatTheDeadlineCovers:
@@ -989,14 +1552,31 @@ class TestTheLayoutsOwnPromise:
         with pytest.raises(ValueError, match="plain file name"):
             guest_run_layout("/maf-sandbox/work/run-1", program=program)
 
-    @pytest.mark.parametrize("program", ["program_output.txt", "run_program.sh", SHIM_MODULE])
+    @pytest.mark.parametrize(
+        "program",
+        ["program_output.txt", "run_program.sh", SHIM_MODULE, "program_exit_code.part"],
+    )
     def test_a_program_named_after_the_layouts_own_files_is_refused(self, program: str):
         """Each collision breaks the run in its own way, and none of them announce themselves.
 
         `program_output.txt` is the launcher's redirection target, so the shell truncates the
         program before the interpreter opens it; the launcher and the shim are written over
-        whatever the kind put there. All three end as a program that will not run, with
-        nothing pointing at the name that caused it.
+        whatever the kind put there; and `program_exit_code.part` is where the launcher stages
+        the exit code, so the program's own file is truncated to the exit digits and renamed
+        away as it exits. Nothing in any of them points at the name that caused it.
+        """
+        with pytest.raises(ValueError, match="already uses"):
+            guest_run_layout("/maf-sandbox/work/run-1", program=program)
+
+    @pytest.mark.parametrize("program", ["program_exit_code", "host_tool_calls"])
+    def test_the_marker_and_the_calls_directory_are_refused_as_program_names_too(
+        self, program: str
+    ):
+        """The quiet halves of the same refusal.
+
+        A program at the marker's name is read as a finished run by the supervisor's first
+        poll, before the interpreter has even started; one at the calls directory's name
+        leaves the shim's `makedirs` nowhere to put a request.
         """
         with pytest.raises(ValueError, match="already uses"):
             guest_run_layout("/maf-sandbox/work/run-1", program=program)
@@ -1011,6 +1591,145 @@ class TestTheLayoutsOwnPromise:
         with pytest.raises(ValueError, match="backslash"):
             guest_run_layout(directory)
 
+    def test_a_directory_python_cannot_be_told_about_is_refused(self):
+        """`PYTHONPATH` separates on ':' and cannot quote one, and the shim's directory goes
+        there. `/runs/job:slot` would reach the interpreter as `/runs/job` plus a *relative*
+        `slot/host_tools`, resolved against the guest's own working directory — where a guest
+        file at that path becomes the module the program imports."""
+        with pytest.raises(ValueError, match="must not contain ':'"):
+            guest_run_layout("/runs/job:slot")
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "maf_host_tools.so",
+            "maf_host_tools.pyc",
+            "maf_host_tools.cpython-313-x86_64-linux-gnu.so",
+        ],
+    )
+    def test_a_program_that_would_be_its_own_shim_is_refused(self, name: str):
+        """The shim's own name is the one importable member of the transport's filenames, so it
+        needs the stem rule rather than the exact-name refusal the others get.
+
+        The three fail differently and both ways are dead. An extension is tried before source,
+        so a `.so` twin *answers* the `import maf_host_tools` that is the program's own first
+        act and the run dies on an invalid header. A `.pyc` twin does not answer it — sourceless
+        bytecode ranks after source, and the real shim is beside it by construction — but a
+        program the interpreter must load as bytecode is not a program, and the run dies on a
+        bad magic number instead.
+        """
+        with pytest.raises(ValueError, match="the shim's own module name"):
+            guest_run_layout("/maf-sandbox/work/run-1", program=name)
+
+    def test_every_module_the_shim_imports_is_refused_as_a_program_name(self):
+        """Derived from the shim rather than listed, so adding an import cannot outrun it.
+
+        The program sits beside the shim and their directory is first on the path, so a
+        program named for something the shim imports *is* what the shim gets — and the
+        traceback names a missing attribute rather than the collision that caused it.
+        """
+        source = host_tool_shim(("a", "b"))
+        tree = ast.parse(source)
+        imported = {
+            alias.name.split(".")[0]
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Import)
+            for alias in node.names
+        } | {
+            node.module.split(".")[0]
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module
+        }
+        assert imported, "the shim parsed to no imports, so this would prove nothing"
+
+        for module in sorted(imported):
+            with pytest.raises(ValueError, match="the generated shim imports"):
+                guest_run_layout("/maf-sandbox/work/run-1", program=f"{module}.py")
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "encodings.py",
+            "site.py",
+            "sitecustomize.py",
+            "usercustomize.py",
+            # Matched by stem, because the suffix decides only which loader answers. An
+            # extension is tried before source and a sourceless `.pyc` after it, so a `.so`
+            # twin outranks the `.py` above while a `.pyc` twin answers when no source is
+            # there — which is this directory, where the kind writes one file.
+            "encodings.pyc",
+            "sitecustomize.pyc",
+            "encodings.so",
+            "site.cpython-313-x86_64-linux-gnu.so",
+            # Reached during startup on a guest older than 3.11, whose stdlib is not frozen.
+            # Listed rather than derived from `_STARTUP_STEMS`: a test that iterates the set
+            # under test cannot notice a name being dropped from it, which is the mistake this
+            # list exists to catch.
+            "abc.py",
+            "codecs.py",
+            "genericpath.py",
+            "io.py",
+            "posixpath.py",
+            "stat.py",
+            "_collections_abc.py",
+            "_sitebuiltins.py",
+            "_bootlocale.py",
+        ],
+    )
+    def test_a_program_the_interpreter_imports_on_its_way_up_is_refused(self, name: str):
+        """The transport's directory is on the path from startup, not from when the script is
+        found, so a program under one of these is reached during initialisation —
+        `sitecustomize.py` running twice over, `encodings.py` ending the interpreter before it
+        can say why."""
+        with pytest.raises(ValueError, match="imports at startup"):
+            guest_run_layout("/maf-sandbox/work/run-1", program=name)
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            # No loader suffix is `.backup.py`, so `import json` never probes this file. The
+            # refusal used to split on the first dot and take it for `json`.
+            "json.backup.py",
+            "sitecustomize.old.py",
+            "encodings.v2.py",
+            "maf_host_tools.backup.py",
+            # One dot, but no loader answers to the suffix — the same over-refusal wearing a
+            # shorter name, and the reason the check is against a suffix set rather than
+            # against "has exactly one dot".
+            "json.txt",
+            "site.sh",
+            "maf_host_tools.custom",
+            # No suffix at all: nothing imports it, and the launcher runs it by path.
+            "program",
+        ],
+    )
+    def test_a_dotted_name_no_loader_claims_is_allowed(self, name: str):
+        """The refusal is on the module a file would answer to, not on its first component.
+
+        `FileFinder` looks for a name plus one of its loaders' suffixes, so `json.py` and every
+        extension spelling of `json` answer to `json` while `json.backup.py` answers to
+        nothing. Refusing the second is refusing a name that cannot collide — a breaking
+        validation wider than the collision behind it.
+        """
+        layout = guest_run_layout("/maf-sandbox/work/run-1", program=name)
+
+        assert layout.program == f"/maf-sandbox/work/run-1/host_tools/{name}"
+
+    @pytest.mark.parametrize(
+        "name", ["json.abi3.so", "json.cpython-313-x86_64-linux-gnu.so", "json.anything.so"]
+    )
+    def test_a_tagged_extension_spelling_is_still_refused(self, name: str):
+        """A suffix with an interior dot is always an extension one, and its tag belongs to the
+        guest's interpreter rather than to this package.
+
+        `json.anything.so` is in the list on purpose: it cannot be told from a real ABI tag
+        without knowing the guest's, so it is refused too. That is the one place this still
+        answers wider than the collision, and it is the safe direction — the alternative is
+        letting a genuine `json.cpython-...-.so` through on an interpreter we did not predict.
+        """
+        with pytest.raises(ValueError, match="the generated shim imports"):
+            guest_run_layout("/maf-sandbox/work/run-1", program=name)
+
     def test_a_directory_spelled_the_long_way_round_is_kept_the_short_way(self):
         """One directory, two spellings, is a difference waiting to matter.
 
@@ -1021,8 +1740,30 @@ class TestTheLayoutsOwnPromise:
         layout = guest_run_layout("/work/missing/../run-1")
 
         assert layout.directory == "/work/run-1"
-        assert layout.program == "/work/run-1/program.py"
+        assert layout.work == "/work/run-1/work"
+        assert layout.program == "/work/run-1/host_tools/program.py"
         assert ".." not in layout.calls
+
+    def test_what_a_model_can_name_and_what_the_transport_owns_are_two_directories(self):
+        """Nothing a kind writes on a model's say-so goes near the transport's directory.
+
+        The separation is the guarantee, so there is no name for a kind to get wrong —
+        including the ones a lexical check misses, like a package directory or a compiled
+        extension resolving ahead of the shim's source.
+        """
+        layout = guest_run_layout("/work/run-1")
+        owned = (
+            layout.program,
+            layout.shim,
+            layout.launcher,
+            layout.calls,
+            layout.output,
+            layout.exit_code,
+        )
+
+        assert all(path.startswith(f"{layout.directory}/host_tools/") for path in owned)
+        assert not any(path.startswith(f"{layout.work}/") for path in owned)
+        assert layout.work != layout.directory, "the guest's own directory is the run's root"
 
     def test_the_paths_it_does_accept_are_all_inside_the_run_directory(self):
         """The promise the two checks above exist to keep."""
@@ -1095,6 +1836,21 @@ class TestWhatAFinishedRunIsAllowedToSay:
         assert result.exit_code == 0, "a finished run came back as something else"
         assert result.stdout == "it ran"
 
+    def test_output_larger_than_one_response_may_be_still_comes_back_whole(self):
+        """The output is capped at the run's total, not at the per-response ceiling.
+
+        The program's stdout is not a tool response, and a program may print more than one
+        response may return — capped at the per-file leg, this output would be dropped whole
+        by a number chosen for something else.
+        """
+        limits = TransferLimits(max_bytes_per_file=64, max_total_bytes=4096, max_files=4)
+        guest = _ScriptedGuest([], output="x" * 200)
+        result = _run(guest, HostToolRun(_registry(response_limits=limits)))
+
+        assert result.exit_code == 0
+        assert result.stdout == "x" * 200
+        assert result.stderr == ""
+
     def test_a_backends_own_failure_to_hand_over_output_keeps_the_exit_code(self):
         """The other `TimeoutError`: a backend's own, raised while the run still has time.
 
@@ -1117,7 +1873,11 @@ class TestWhatAFinishedRunIsAllowedToSay:
 
         assert result.exit_code == 7, "a finished run was reported as something else"
         assert result.stdout == ""
-        assert "a FIFO the service reports as a regular file" in result.stderr
+        assert "could not be read" in result.stderr
+        # A client's timeout text is where an endpoint, a subscription or a request id lives,
+        # and every kind renders this value for a model. The diagnosis belongs in the log; what
+        # a caller is owed here is that the output is missing.
+        assert "a FIFO the service reports as a regular file" not in result.stderr
 
     def test_a_marker_that_lands_in_the_last_poll_interval_is_still_found(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1216,6 +1976,55 @@ class TestWhatAFinishedRunIsAllowedToSay:
         assert result.stdout == ""
         assert "could not be read" in result.stderr
         assert "program_output.txt" in result.stderr, "the reason names no file"
+
+    def test_a_backend_failure_that_is_no_timeout_still_propagates_after_the_marker(self):
+        """Only a timeout on the output read is absorbed into "could not be read".
+
+        A permission error is the backend saying something is wrong, and swallowing it
+        would report a healthy run with missing output — losing the one sentence that says
+        what actually happened.
+        """
+
+        class _CannotHandItOver(_ScriptedGuest):
+            async def read_file(self, path: str, *, working_directory: str, max_bytes: int):
+                if path.endswith("program_output.txt"):
+                    raise PermissionError("the daemon said no")
+                return await super().read_file(
+                    path, working_directory=working_directory, max_bytes=max_bytes
+                )
+
+        guest = _CannotHandItOver([], exit_code=7)
+        with pytest.raises(PermissionError, match="the daemon said no"):
+            _run(guest, HostToolRun(_registry()))
+
+    def test_output_that_is_not_utf8_comes_back_repaired_rather_than_dropped(self):
+        """One bad byte in a program's own output must not read as a program that said nothing.
+
+        The output is quoted back to a human, so a replacement character beats losing the
+        whole of it — unlike a request, where a repaired byte would be acted on.
+        """
+        guest = _ScriptedGuest([], finish=False)
+        guest.files[_LAYOUT.output] = b"caf\xe9 done"
+        guest.files[_LAYOUT.exit_code] = b"0"
+        result = _run(guest, HostToolRun(_registry()))
+
+        assert result.exit_code == 0
+        assert result.stdout == "caf� done"
+        assert result.stderr == ""
+
+    def test_a_marker_that_is_not_a_number_still_means_a_finished_run(self):
+        """The marker's appearance is the fact; its content is only the guest's claim.
+
+        Content this cannot trust reads as exit 1 — raising instead would crash the
+        supervisor on bytes any guest can write.
+        """
+        guest = _ScriptedGuest([], finish=False)
+        guest.files[_LAYOUT.output] = b"it ran"
+        guest.files[_LAYOUT.exit_code] = b"oops"
+        result = _run(guest, HostToolRun(_registry()))
+
+        assert result.exit_code == 1
+        assert result.stdout == "it ran"
 
 
 class TestWhatAnEmptyOutputMeans:
@@ -1324,6 +2133,135 @@ class TestWhoseTimeoutItWas:
         with pytest.raises(TimeoutError, match="did not finish within"):
             _run(_Stalls([]), HostToolRun(_registry()), timeout=0.2)
 
+    def test_the_two_are_told_apart_by_type_and_not_by_reading_the_message(self):
+        """The two are told apart by type, which is the only thing a caller can branch on.
+
+        One means the program ran out and may still be running; the other means a
+        control-plane call ran out and says nothing about the program at all.
+        """
+
+        class _BoundsItsOwnStat(_ScriptedGuest):
+            async def stat_file(self, path: str, *, working_directory: str):
+                raise TimeoutError("the service bounds this read")
+
+        with pytest.raises(TimeoutError) as backends:
+            _run(_BoundsItsOwnStat([], finish=False), HostToolRun(_registry()), timeout=30.0)
+        assert not isinstance(backends.value, SandboxProgramTimeout), (
+            "a backend's own bound was typed as the run's, with 29s still on the clock"
+        )
+
+        wedged = _ScriptedGuest([], finish=False)
+        wedged.files[_LAYOUT.output] = b"step 1 done"
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(wedged, HostToolRun(_registry()), timeout=0.05)
+        assert expired.value.output == "step 1 done", "the quote a caller surfaces was not carried"
+        assert "step 1 done" in str(expired.value), "the message stopped carrying it too"
+
+    def test_the_runs_bound_expiring_before_the_program_starts_is_still_the_runs(self):
+        """Budget exhausted during the upload is the run's own timeout, publicly typed.
+
+        This `_within` sits outside the supervisor loop, so nothing else converts what it
+        raises; untranslated, a module-private type would cross the public boundary.
+        """
+
+        class _StallsOnTheUpload(_ScriptedGuest):
+            async def write_file(self, path: str, content: str | bytes) -> None:
+                await asyncio.sleep(3600)
+
+        with pytest.raises(SandboxProgramTimeout, match="before the program was started") as gone:
+            _run(_StallsOnTheUpload([], finish=False), HostToolRun(_registry()), timeout=0.1)
+
+        assert gone.value.output == "", "a program that never started printed something"
+
+    def test_the_budget_running_out_while_starting_is_the_runs_own_either_way(self):
+        """Both startup legs spend the same budget, so both classify as the run's own.
+
+        The upload and the `exec` that starts the launcher are one situation — the budget gone
+        before the program was going — and which leg it lands on is a matter of milliseconds.
+        """
+
+        class _BoundsTheStart(_ScriptedGuest):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                raise TimeoutError("the service bounds this exec")
+
+        with pytest.raises(SandboxProgramTimeout, match="while starting the program") as spent:
+            _run(_BoundsTheStart([], finish=False), HostToolRun(_registry()), timeout=30.0)
+
+        # A client's timeout text is where an endpoint or a request id lives, and this
+        # message reaches a model. It stays on `__cause__` for a caller that wants it.
+        assert "the service bounds this exec" not in str(spent.value)
+        assert str(spent.value.__cause__) == "the service bounds this exec"
+
+    def test_a_bare_backend_timeout_leaves_no_dangling_reason(self):
+        """A backend's own text never reaches the message, and its absence leaves no seam.
+
+        The shipped backends bound `exec` with `asyncio.wait_for`, whose `TimeoutError` is
+        empty, so this is the ordinary shape rather than an edge of one."""
+
+        class _BoundsTheStartSilently(_ScriptedGuest):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                raise TimeoutError  # exactly what `asyncio.wait_for` raises
+
+        with pytest.raises(SandboxProgramTimeout) as spent:
+            _run(_BoundsTheStartSilently([], finish=False), HostToolRun(_registry()), timeout=30.0)
+
+        assert str(spent.value) == "the run's 30s were gone while starting the program"
+        assert not str(spent.value).endswith("—"), "the message trails off into nothing"
+
+    def test_the_hosts_note_is_not_passed_off_as_the_programs_own_words(self):
+        """`output` is what a caller quotes under "Output so far", so only stdout belongs in it.
+
+        An output dropped for its size leaves the host explaining why. On the success path that
+        explanation goes to `stderr`; putting it in `output` here would hand a model host prose
+        in the position its program's own words occupy.
+        """
+
+        class _PrintsTooMuchThenHangs(_ScriptedGuest):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                started = await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+                self.files[_LAYOUT.output] = b"x" * 200
+                return started
+
+        limits = TransferLimits(max_bytes_per_file=64, max_total_bytes=32, max_files=4)
+        guest = _PrintsTooMuchThenHangs([], finish=False)
+
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry(response_limits=limits)), timeout=0.1)
+
+        assert expired.value.output == "", "the host's note was handed over as program output"
+        assert "larger than the host will read" in str(expired.value), "the note went missing"
+        # The attribute is only half of it: `Output so far:` is a promise about whose words
+        # follow, and the note appearing under that label breaks it in the message too.
+        assert "Output so far" not in str(expired.value), (
+            "the host's note is wearing the label that means the program's own stdout"
+        )
+
+    def test_an_ordinary_expiry_blames_no_transport_call(self, monkeypatch: pytest.MonkeyPatch):
+        """A run that simply ran out must not report a sandbox that answered promptly.
+
+        The clause naming a stalled call exists for the call that ran out. On the plain
+        path every stat came back on time, and a message carrying it anyway sends the
+        reader chasing a healthy backend.
+        """
+        ahead = {"seconds": 0.0}
+        monkeypatch.setattr(host_tools_over_exec, "time", _Shifted(time.monotonic, ahead))
+
+        class _OutlivedInSilence(_ScriptedGuest):
+            async def stat_file(self, path: str, *, working_directory: str):
+                if path.endswith(".request.json"):
+                    ahead["seconds"] += 60.0
+                return await super().stat_file(path, working_directory=working_directory)
+
+        guest = _OutlivedInSilence([], finish=False)
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=5.0)
+
+        assert "the sandbox did not answer" not in str(expired.value), (
+            "a plain expiry was blamed on a transport call"
+        )
+
 
 class TestTheGuestsOwnDiagnostic:
     def test_a_fractional_patience_is_reported_as_itself(self, tmp_path: Path):
@@ -1391,6 +2329,33 @@ class TestWhatAFailedReadMeans:
         guest = _RefusesLate([("add", {"left": 1, "right": 1})])
         _run(guest, HostToolRun(_registry()))
         assert "larger than the host will read" in guest.answers[0]["refusal"]
+
+    def test_a_backend_failure_on_the_way_out_does_not_replace_the_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The last look and the output read are diagnostics, and a diagnostic must not win.
+
+        Both run only once the run is already being reported as expired, so whatever the
+        backend raises there — a timeout or anything else — has to read as "nothing found":
+        the caller is owed the run's own reason, not the failure of reading the reason.
+        """
+        ahead = {"seconds": 0.0}
+        monkeypatch.setattr(host_tools_over_exec, "time", _Shifted(time.monotonic, ahead))
+
+        class _DiesOnceExpired(_ScriptedGuest):
+            expired = False
+
+            async def stat_file(self, path: str, *, working_directory: str):
+                if self.expired:
+                    raise PermissionError("the daemon said no")
+                if path.endswith(".request.json"):
+                    self.expired = True
+                    ahead["seconds"] += 60.0
+                return await super().stat_file(path, working_directory=working_directory)
+
+        guest = _DiesOnceExpired([], finish=False)
+        with pytest.raises(SandboxProgramTimeout, match="did not finish within"):
+            _run(guest, HostToolRun(_registry()), timeout=5.0)
 
 
 class TestWhatABackendMayHaveIgnored:

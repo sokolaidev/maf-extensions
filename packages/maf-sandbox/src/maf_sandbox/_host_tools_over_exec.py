@@ -71,14 +71,151 @@ CALLS_DIRECTORY = "host_tool_calls"
 OUTPUT_FILE = "program_output.txt"
 EXIT_FILE = "program_exit_code"
 
+#: Where the launcher stages the exit code before renaming it into place. A program under
+#: this name is truncated to the exit digits and renamed away by the launcher's own last
+#: line. The launcher stages beside whatever marker its layout declares; deriving this from
+#: :data:`EXIT_FILE` keeps the two agreeing for any layout :func:`guest_run_layout` built,
+#: which is the only kind the refusal guards.
+_STAGED_EXIT_FILE = f"{EXIT_FILE}.part"
+
 #: The module a guest program imports to reach the host. Written beside the program.
 SHIM_MODULE = "maf_host_tools.py"
 
 _LAUNCHER = "run_program.sh"
 
-#: Every name :func:`guest_run_layout` puts in the run directory. Derived from the constants
-#: above rather than listed again, so a name added there cannot be handed to a guest program.
-_RESERVED_NAMES = frozenset({SHIM_MODULE, _LAUNCHER, OUTPUT_FILE, EXIT_FILE, CALLS_DIRECTORY})
+#: The program's working directory, and the only one a kind puts guest-named files in. A model
+#: naming a file names it *here*, so no name it can choose reaches the transport's own.
+WORK_DIRECTORY = "work"
+
+#: Where everything the transport owns lives, beside the work directory rather than in it.
+_TRANSPORT_DIRECTORY = "host_tools"
+
+#: Every name the transport puts in that directory — the layout's own files and the
+#: launcher's staged exit marker. Not a kind's business, and deliberately not exported: two
+#: directories are what make a guest-supplied name harmless, and that is what replaced the
+#: list of names a kind used to have to refuse.
+_TRANSPORT_FILENAMES = frozenset(
+    {SHIM_MODULE, _LAUNCHER, OUTPUT_FILE, EXIT_FILE, _STAGED_EXIT_FILE, CALLS_DIRECTORY}
+)
+
+#: Module names a ``program`` may not be called, and why they are matched by **stem**.
+#:
+#: A file in this directory is importable, because the directory is on the interpreter's path
+#: from startup — so what matters is the module name a file would answer to, not the spelling
+#: of its suffix. ``FileFinder`` tries extension suffixes first, then source, then bytecode, so
+#: ``json.cpython-313-x86_64-linux-gnu.so`` outranks ``json.py``; refusing exact filenames
+#: would leave every one of those twins open. See :func:`_module_a_program_answers_to` for
+#: which spellings reach a module and which, like ``json.backup.py``, reach nothing.
+#:
+#: :data:`_STARTUP_STEMS` is what CPython reaches on its way up, where a collision fails before
+#: the program is ever the script: ``encodings`` takes the interpreter down with a
+#: path-configuration dump, and ``sitecustomize`` and ``usercustomize`` are executed by
+#: ``site``, so a program under either name runs twice. ``site`` itself is refused as the
+#: module that imports the other two. The stdlib names below them are reached only on a guest
+#: whose standard library is not frozen, and are refused everywhere rather than conditionally,
+#: because the guest's version is not this package's to pin — ``interpreter`` defaults to
+#: ``python3``, and what that is belongs to the image.
+#:
+#: Deliberately *not* "everything imported before the script runs", which is not a set anyone
+#: can write down: a ``.pth`` file may import any name it likes, so an image with setuptools
+#: reaches ``_distutils_hack``. A floor under the common failures, not a proof for any guest.
+_STARTUP_STEMS = frozenset(
+    {
+        "encodings",
+        "site",
+        "sitecustomize",
+        "usercustomize",
+        # Reached from a file during startup before 3.11, where the stdlib is not frozen.
+        "abc",
+        "codecs",
+        "genericpath",
+        "io",
+        "posixpath",
+        "stat",
+        "_collections_abc",
+        "_sitebuiltins",
+        # Reached the same way on 3.8 and 3.9, through the `TextIOWrapper` that `site` builds
+        # to read a `.pth` file. Removed from the stdlib in 3.10.
+        "_bootlocale",
+    }
+)
+
+#: :data:`_SHIM_STEMS` is what the generated shim imports, and the collision is with the shim
+#: rather than the interpreter: the two share a directory, so a program named ``json`` *is*
+#: what the shim's own ``import json`` finds. The program's body runs a second time under that
+#: name and every dispatch afterwards dies on an attribute the real module would have had —
+#: a traceback that names ``dumps`` and never the collision.
+#:
+#: Only ``json`` is resolved from a directory on a current guest; ``os`` and ``time`` are
+#: refused too, because which modules are frozen is a per-version detail rather than a
+#: contract, and refusing a program name no kind wants costs nothing where missing one costs
+#: a traceback that points elsewhere.
+#:
+#: Derived from the shim by a test that parses it, so adding an import cannot leave this
+#: behind.
+_SHIM_STEMS = frozenset({"json", "os", "time"})
+
+#: The shim's own module name, which is the one importable member of
+#: :data:`_TRANSPORT_FILENAMES` — and so the one that needs the stem rule rather than the
+#: exact-name refusal the rest of that set gets. A ``maf_host_tools.so`` beside the real
+#: ``maf_host_tools.py`` wins the program's very first import, because extensions are tried
+#: before source, and the run dies on an invalid ELF header rather than on anything that names
+#: the collision. Derived from :data:`SHIM_MODULE` so the two cannot drift apart.
+_SHIM_MODULE_STEM = SHIM_MODULE.split(".", 1)[0]
+
+
+#: The one-dot suffixes some loader answers to, across the platforms a guest may run — the
+#: union of ``SOURCE_SUFFIXES``, ``BYTECODE_SUFFIXES`` and ``EXTENSION_SUFFIXES`` on POSIX
+#: (``py``, ``pyc``, ``so``) and on Windows (``py``, ``pyw``, ``pyc``, ``pyd``). Held here
+#: rather than read from :mod:`importlib.machinery`, which would answer for *this* interpreter
+#: on *this* platform and so refuse the wrong set for a guest that is neither. A union means
+#: each platform refuses a little more than it has to — ``json.pyw`` is inert on POSIX — which
+#: is the same direction of error as the tagged-extension rule below, and taken for the same
+#: reason: the guest's platform is no more knowable here than its ABI tag.
+_LOADER_SUFFIXES = frozenset({"py", "pyc", "pyw", "so", "pyd"})
+
+
+def _module_a_program_answers_to(program: str) -> str | None:
+    """The module name an import in this directory would reach ``program`` by, or ``None``.
+
+    ``FileFinder`` looks for a *name plus one of its loaders' suffixes*, so `json.py`,
+    `json.pyc` and every extension spelling of `json` answer to ``json`` — while `json.txt`
+    and `json.backup.py` answer to nothing, the first because no loader claims `.txt` and the
+    second because none claims `.backup.py`. A program under either can be run by path and
+    never imported, so refusing it would be refusing a name that cannot collide.
+
+    A suffix carrying an interior dot is always an extension one (`.abi3.so`,
+    `.cpython-313-x86_64-linux-gnu.so`), and its tag belongs to the guest's interpreter, which
+    is not this package's to pin. So anything ending `.so` or `.pyd` is read as a tagged
+    extension and refused on the name in front of it — the one place this still answers more
+    broadly than the collision, and the safe direction to be wrong in.
+    """
+    head, dot, suffix = program.partition(".")
+    if not dot:
+        # No suffix, so no loader claims it; the launcher runs it by path regardless.
+        return None
+    if "." in suffix:
+        return head if suffix.endswith((".so", ".pyd")) else None
+    return head if suffix in _LOADER_SUFFIXES else None
+
+
+class SandboxProgramTimeout(TimeoutError):
+    """The *run's own* bound expired: the guest program did not finish in the time it was given.
+
+    A :class:`TimeoutError` subclass, so a caller that only wants "it timed out" is unaffected.
+    Catch it specifically to distinguish the two things a ``TimeoutError`` from this transport
+    can mean: **this** one is the run's budget, and the program may still be running; a bare
+    one is a backend failing for a reason of its own and says nothing about the program.
+
+    ``output`` is what the program had printed when the run was given up on, already capped —
+    empty on the two starting legs, where there is nothing to have read yet. An attribute
+    rather than message text, so a caller can surface the program's own stdout alone.
+    """
+
+    def __init__(self, message: str, *, output: str = "") -> None:
+        super().__init__(message)
+        self.output = output
+
 
 #: How long the guest blocks on one call before giving up on the host, and how often it looks.
 #: Bounded on both sides. It has to outlast the host's poll interval by a wide margin or a slow
@@ -115,9 +252,26 @@ _NOT_JSON = "Error: this host-tool request is not valid JSON"
 
 @dataclass(frozen=True)
 class GuestRunLayout:
-    """Where one run's files live inside the guest, as absolute guest paths."""
+    """Where one run's files live inside the guest, as absolute guest paths.
+
+    Two directories under one run, and which file goes in which is the whole defence against
+    a guest-supplied name colliding with the machinery serving its own call:
+
+    * :attr:`work` is the program's working directory. Everything a *model* names — files
+      shared in, artifacts written out — lives here, and a kind may put anything here.
+    * everything else lives in a sibling the model can never name into, because a kind writes
+      guest-named files only to :attr:`work` and collects only from it.
+
+    :attr:`program` is in the second one, beside the shim, and that placement is load-bearing
+    rather than tidy. ``sys.path[0]`` is the directory of the *script*, not the working
+    directory, so a program run from :attr:`work` would put :attr:`work` ahead of the shim on
+    the import path and a guest file named ``maf_host_tools.py`` would become the module the
+    program imports. Run from beside the shim, that file is not on ``sys.path`` at all: a
+    script's working directory is never added to it.
+    """
 
     directory: str
+    work: str
     program: str
     shim: str
     launcher: str
@@ -130,17 +284,39 @@ def guest_run_layout(run_directory: str, *, program: str = "program.py") -> Gues
     """The paths :func:`dispatch_over_exec` expects, derived from one run's directory.
 
     A kind writes ``program`` and :attr:`GuestRunLayout.shim`; everything else is written here.
+
     ``run_directory`` must be absolute, free of backslashes — the grammar
-    :func:`~maf_sandbox.paths.confine_guest_path` enforces on every pull call — and fresh per
-    run, on which see this module's docstring. ``program`` must be a plain file name the
-    layout does not already use. All but freshness are refused here; freshness is not visible
-    from a path, and a stale exit marker ends the next run on its first poll. The directory
-    comes back normalised, so ``..`` is fine to pass and one spelling reaches every call.
+    :func:`~maf_sandbox.paths.confine_guest_path` enforces on every pull call — free of ``:``,
+    which ``PYTHONPATH`` uses to separate entries and cannot quote, and fresh per run, on which
+    see this module's docstring. The directory comes back normalised, so ``..`` is fine to pass
+    and one spelling reaches every call.
+
+    ``program`` must be a plain file name, and not one of three families this directory makes
+    dangerous: a name the layout already uses, a name the generated shim imports, or a name
+    CPython imports at startup. The last two are matched by the **module the file would answer
+    to**, since a suffix decides only which loader answers — ``json.py`` and ``json.abi3.so``
+    are refused where ``json.backup.py``, which no loader claims, is not. See
+    :data:`_SHIM_STEMS` and :data:`_STARTUP_STEMS` for what each collision does.
+
+    Everything but freshness is refused here; freshness is not visible from a path, and a stale
+    exit marker ends the next run on its first poll.
     """
     if not posixpath.isabs(run_directory):
         raise ValueError(
             f"run_directory must be an absolute guest path, not {run_directory!r}: every path "
             "in the layout is joined onto it and resolved against it again by the pull calls"
+        )
+    if ":" in run_directory:
+        # `PYTHONPATH` has no escape for its own separator, and the launcher puts the shim's
+        # directory there. Under `/runs/job:slot` the interpreter reads two entries — `/runs/job`
+        # and a *relative* `slot/host_tools`, resolved against the guest's working directory —
+        # so a guest file at `slot/host_tools/maf_host_tools.py` becomes importable. Refused
+        # here rather than encoded around, because a path this cannot carry is one the whole
+        # arrangement cannot carry.
+        raise ValueError(
+            f"run_directory must not contain ':', and {run_directory!r} does: the shim's "
+            "directory is passed to the guest through PYTHONPATH, which uses ':' to separate "
+            "entries and offers no way to quote one"
         )
     # Twice on purpose: containment against itself is trivially true, so only the spelling
     # is under test.
@@ -150,23 +326,54 @@ def guest_run_layout(run_directory: str, *, program: str = "program.py") -> Gues
             f"program must be a plain file name, not {program!r}: it is written beside the "
             "shim and imports it, which only works when the two share a directory"
         )
-    if program in _RESERVED_NAMES:
+    if program in _TRANSPORT_FILENAMES:
         # Each collision breaks the run in its own way and none of them say so: the shell
         # truncates the output file before the interpreter opens the program, the launcher
-        # and the shim are written over whatever the kind put there, and the calls directory
-        # cannot be created where a file already is.
+        # and the shim are written over whatever the kind put there, the calls directory
+        # cannot be created where a file already is, and a program at the staged exit-marker
+        # name is truncated and renamed away by the launcher once it exits. A *model* cannot
+        # reach these names — that is what the two directories are for — but the kind's own
+        # `program` lands in the same one, so this stays a refusal at the one door it can
+        # still come through.
         raise ValueError(
             f"program must not be a name this layout already uses, and {program!r} is one of "
-            f"{sorted(_RESERVED_NAMES)}"
+            f"{sorted(_TRANSPORT_FILENAMES)}"
         )
+    stem = _module_a_program_answers_to(program)
+    if stem == _SHIM_MODULE_STEM:
+        raise ValueError(
+            f"program must not answer to the shim's own module name, and {program!r} answers "
+            f"to {stem!r}: the name is reserved for the shim, because a file here under it "
+            f"with a loader's suffix either shadows the import the program opens with or "
+            f"cannot be run as a program, and no suffix makes the name worth allowing"
+        )
+    if stem in _SHIM_STEMS:
+        raise ValueError(
+            f"program must not be named for a module the generated shim imports, and "
+            f"{program!r} answers to {stem!r}, one of {sorted(_SHIM_STEMS)}: it shares a "
+            "directory with the shim, which is first on the interpreter's path, so the shim "
+            "would import the program instead of the module it meant"
+        )
+    if stem in _STARTUP_STEMS:
+        # This directory is on the interpreter's path from *startup*, not only once the script
+        # is found, so a file named for something the interpreter imports on its way up runs —
+        # or fails — before the program does. `_STARTUP_STEMS` says what each one does.
+        raise ValueError(
+            f"program must not be named for a module CPython imports at startup, and "
+            f"{program!r} answers to {stem!r}, one of {sorted(_STARTUP_STEMS)}: this directory "
+            "is on the path before the program is the script, so such a file is reached during "
+            "initialisation"
+        )
+    served = posixpath.join(run_directory, _TRANSPORT_DIRECTORY)
     return GuestRunLayout(
         directory=run_directory,
-        program=posixpath.join(run_directory, program),
-        shim=posixpath.join(run_directory, SHIM_MODULE),
-        launcher=posixpath.join(run_directory, _LAUNCHER),
-        calls=posixpath.join(run_directory, CALLS_DIRECTORY),
-        output=posixpath.join(run_directory, OUTPUT_FILE),
-        exit_code=posixpath.join(run_directory, EXIT_FILE),
+        work=posixpath.join(run_directory, WORK_DIRECTORY),
+        program=posixpath.join(served, program),
+        shim=posixpath.join(served, SHIM_MODULE),
+        launcher=posixpath.join(served, _LAUNCHER),
+        calls=posixpath.join(served, CALLS_DIRECTORY),
+        output=posixpath.join(served, OUTPUT_FILE),
+        exit_code=posixpath.join(served, EXIT_FILE),
     )
 
 
@@ -381,8 +588,9 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
     different launcher; that is a backend's business, and this one is a helper rather than a
     protocol.
     """
-    # Three invariants, and the command is built whole so `_quote` applies to finished strings
-    # rather than to fragments nested inside an already quoted `sh -c '…'`.
+    # The command is built whole so `_quote` applies to finished strings rather than to
+    # fragments nested inside an already quoted `sh -c '…'`. What it has to preserve:
+    #
     #   * `PYTHONUNBUFFERED`, because this file is the timeout's only witness and CPython
     #     block-buffers stdout into a redirection. Through the environment because
     #     `interpreter` need not be CPython: the variable costs a program that is not Python
@@ -392,14 +600,69 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
     #     cheapest way to know the rename stays inside one filesystem and so stays atomic.
     #   * `nohup … &`, because `exec` returns when its command does and the program must
     #     outlive it — see this function's docstring.
+    #   * `mkdir -p` because a run whose kind shared no files has nothing else to create the
+    #     work directory, guarded because `sh` does not stop on a failed command: an unguarded
+    #     `cd` leaves the program running wherever the launcher was exec'd, writing artifacts
+    #     where nothing collects them and exiting 0. A non-zero launcher is already reported.
+    #   * The program runs *in* the work directory and *from* the transport's, with the
+    #     transport's on `PYTHONPATH` besides — `sys.path[0]` follows the script, but that is
+    #     a default `PYTHONSAFEPATH` switches off, and then the path is all there is.
+    #   * **An inherited path entry is kept only if it is absolute, canonical, and outside the
+    #     run tree**, and `PYTHONNOUSERSITE` goes with it, because `site` reaches
+    #     `$PYTHONUSERBASE/lib/pythonX.Y/site-packages` without consulting the path at all.
+    #     Together they keep the guest's own files off *interpreter startup*, where a
+    #     `sitecustomize` a model wrote runs before the program and seeds `sys.modules` with a
+    #     shim of its own. Each test earns its place: relative resolves against the directory
+    #     this launcher just changed to; absolute can still name a run, where a host places
+    #     them predictably; and the comparison is textual, so `/runs/./current/work` would pass
+    #     a prefix test and reach the same directory. The user base is switched off rather than
+    #     filtered because filtering it leaves the hole behind `HOME`, which it falls back to.
+    #     A symlink into the tree needs a `realpath` POSIX `sh` does not have and is not
+    #     caught; `PYTHONHOME` pointed here breaks the guest outright rather than substituting
+    #     anything, so it is left alone. The README's upgrade note has what this costs an image.
     staged = f"{layout.exit_code}.part"
+    # The shim's own directory, which is the one an import has to reach; `program` is beside
+    # it by construction, and reading it from the shim keeps the two from being separated.
+    importable = posixpath.dirname(layout.shim)
+    # Quoting is what stops a run directory containing `*` or `?` from matching more than
+    # itself; stripping the separator keeps the two patterns below from becoming `//*`, and
+    # collapses a run directory of `/` to `''|/*`, dropping every absolute entry.
+    enclosing = _quote(layout.directory.rstrip("/"))
     inner = (
-        f"PYTHONUNBUFFERED=1 {_quote(interpreter)} {_quote(layout.program)} "
+        f"PYTHONUNBUFFERED=1 PYTHONNOUSERSITE=1 {_quote(interpreter)} {_quote(layout.program)} "
         f"> {_quote(layout.output)} 2>&1; "
         f"printf %s $? > {_quote(staged)}; mv {_quote(staged)} {_quote(layout.exit_code)}"
     )
     return (
-        f"#!/bin/sh\ncd {_quote(layout.directory)}\nnohup sh -c {_quote(inner)} >/dev/null 2>&1 &\n"
+        "#!/bin/sh\n"
+        f"mkdir -p {_quote(layout.work)} && cd {_quote(layout.work)} || exit 1\n"
+        "maf_kept=''\n"
+        # `set -f` because the expansion below is deliberately unquoted, for the word splitting
+        # `IFS=:` gives it — and an unquoted word is globbed as well as split. The guest owns
+        # the directory that would be globbed against, and Python never globs `PYTHONPATH`, so
+        # an inherited `/opt/plugins/*` has to reach it as itself.
+        "set -f\n"
+        "IFS=:\n"
+        "for maf_entry in ${PYTHONPATH:-}; do\n"
+        '  case "$maf_entry" in\n'
+        # Both dropping branches come before the keeping one, because `case` takes the first
+        # match: demote either and `/*` claims the entry first and the test never runs.
+        # Non-canonical first of all — it is the one that decides whether the next test is
+        # comparing spellings or directories.
+        "    */./*|*/../*|*//*|*/.|*/..) ;;\n"
+        f"    {enclosing}|{enclosing}/*) ;;\n"
+        '    /*) maf_kept="${maf_kept:+$maf_kept:}$maf_entry" ;;\n'
+        "  esac\n"
+        "done\n"
+        "unset IFS\n"
+        "set +f\n"
+        f'PYTHONPATH={_quote(importable)}"${{maf_kept:+:$maf_kept}}"\n'
+        "export PYTHONPATH\n"
+        # Prefixed, then removed: a bare `kept` or `entry` collides with an image that exports
+        # one, and an exported name stays exported — the guest would read the launcher's
+        # leftovers where its own value belongs.
+        "unset maf_kept maf_entry\n"
+        f"nohup sh -c {_quote(inner)} >/dev/null 2>&1 &\n"
     )
 
 
@@ -442,9 +705,14 @@ async def dispatch_over_exec(
         ``stdout`` and the exit code it recorded.
 
     Raises:
-        TimeoutError: The program left no exit marker before the deadline. Its output up to
-            that point is in the message; the process may still be running, and disposing of
-            the sandbox is what stops it.
+        SandboxProgramTimeout: The run's own bound expired. Where the program had started,
+            its output up to that point is in the message and on ``output``, and the process
+            may still be running — disposing of the sandbox is what stops it. On the two
+            starting legs, the launcher upload and the ``exec`` that runs it, ``output`` is
+            empty instead: the output file does not exist yet, and on a backend that
+            began the command before its own call returned there may be output nobody read.
+            Distinct from a bare ``TimeoutError`` below, which is a backend failing for a
+            reason of its own and says nothing about whether the program is still going.
         Exception: Whatever the backend raises from a stat or a read that is not a file
             simply not being there yet. A permanent failure — a permission error, a client
             that cannot reach its daemon — is reported as itself rather than retried until
@@ -494,18 +762,38 @@ async def dispatch_over_exec(
     # Before `exec`, not after: the bound is on the whole program, and a launcher that takes
     # most of it would otherwise hand supervision a second full timeout to spend.
     deadline = time.monotonic() + timeout
-    await _within(
-        deadline,
-        "the launcher upload",
-        sandbox.write_file(layout.launcher, launcher_script(layout, interpreter)),
-    )
-    started = await sandbox.exec(
-        f"sh {_quote(layout.launcher)}",
-        working_directory=layout.directory,
-        # What is left after writing the launcher, not another full bound: on a remote backend
-        # that upload is a round trip, and handing `exec` the original would add it back.
-        timeout=max(0.0, deadline - time.monotonic()),
-    )
+    try:
+        await _within(
+            deadline,
+            "the launcher upload",
+            sandbox.write_file(layout.launcher, launcher_script(layout, interpreter)),
+        )
+    except _DeadlineExpired as gone:
+        # The one `_within` outside the supervisor loop, so nothing else converts what it
+        # raises, and a module-private type would otherwise cross the public boundary.
+        raise SandboxProgramTimeout(
+            f"the run's {timeout:g}s were gone before the program was started — {gone}"
+        ) from gone
+    try:
+        started = await sandbox.exec(
+            f"sh {_quote(layout.launcher)}",
+            working_directory=layout.directory,
+            # What is left after writing the launcher, not another full bound: on a remote
+            # backend that upload is a round trip, and handing `exec` the original would add
+            # it back.
+            timeout=max(0.0, deadline - time.monotonic()),
+        )
+    except TimeoutError as spent:
+        # `exec` was handed this run's remainder, so its expiry is this run's — every
+        # `TimeoutError` from it, without re-reading a clock that may be a resolution behind
+        # the timer that fired. The backend's own text stays in the log for the same reason it
+        # does in `_completed`: this message reaches a model through whichever kind is running.
+        logger.warning(
+            "host tools: the run ran out while starting the program: %s", error_detail(spent)
+        )
+        raise SandboxProgramTimeout(
+            f"the run's {timeout:g}s were gone while starting the program"
+        ) from spent
     if started.exit_code != 0:
         return ExecResult(
             stdout=started.stdout,
@@ -530,9 +818,11 @@ async def dispatch_over_exec(
             landed = await _marker_if_present(sandbox, layout, giving_up)
             if landed is not None:
                 return await _completed(sandbox, run, layout, landed, deadline)
-            raise TimeoutError(
-                f"the guest program did not finish within {timeout:g}s. Output so far: "
-                f"{(await _final_output(sandbox, run, layout, giving_up))[:2000]}"
+            printed, note = await _final_output(sandbox, run, layout, giving_up)
+            raise SandboxProgramTimeout(
+                f"the guest program did not finish within {timeout:g}s. "
+                f"{_output_clause(printed, note)}",
+                output=printed[:2000],
             )
         try:
             finished = await _read_if_present(
@@ -570,9 +860,11 @@ async def dispatch_over_exec(
             # them. Only the transport is bounded that way, so the message says which call ran
             # out while still leading with the failure the caller asked about. A backend's own
             # `TimeoutError` is deliberately not caught here — see `_within`.
-            raise TimeoutError(
+            printed, note = await _final_output(sandbox, run, layout, giving_up)
+            raise SandboxProgramTimeout(
                 f"the guest program did not finish within {timeout:g}s — {stalled}. "
-                f"Output so far: {(await _final_output(sandbox, run, layout, giving_up))[:2000]}"
+                f"{_output_clause(printed, note)}",
+                output=printed[:2000],
             ) from stalled
         # Clamped: an unclamped sleep overruns the deadline by a whole interval, so a 0.1s
         # bound with a 10s interval would wait ten seconds to notice it had passed.
@@ -628,10 +920,17 @@ async def _completed(
         # untouched, and the grace above guarantees a window where it does. Propagating one
         # would say the program never finished — the single thing the marker has disproved —
         # so the backend's sentence goes beside the exit code it would otherwise replace.
-        logger.warning("host tools: the program finished but its output did not")
+        logger.warning(
+            "host tools: the program finished but its output did not: %s", error_detail(unread)
+        )
+        # Ours names the call and nothing else, and a caller is owed which read gave up. A
+        # backend's is a client's own text — endpoint, subscription, request id — and this
+        # value is rendered for a model by every kind that has one, so it stays in the log.
+        # The distinction is the same one `SandboxProgramTimeout` exists to draw.
+        blamed = f": {unread}" if isinstance(unread, _DeadlineExpired) else ""
         return ExecResult(
             stdout="",
-            stderr=f"the program finished, but its output could not be read: {unread}",
+            stderr=f"the program finished, but its output could not be read{blamed}",
             exit_code=_exit_code_from(finished),
         )
     return ExecResult(
@@ -760,7 +1059,8 @@ class _DeadlineExpired(TimeoutError):
     A `TimeoutError` reaching the supervisor means one of two unrelated things, and only one
     of them is the run ending. Named so the loop can catch its own and let a backend's — which
     carries a diagnosis the run-level message would erase — go to the caller intact. A subclass
-    of `TimeoutError` because that is still what the caller is told the run raises.
+    of `TimeoutError` because a backend's own is one too, and the pair the caller has to tell
+    apart is `SandboxProgramTimeout` against everything else; this one never leaves the module.
     """
 
 
@@ -882,10 +1182,26 @@ async def _read_if_present(
         return _NotText()
 
 
+def _output_clause(printed: str, note: str) -> str:
+    """The output half of a timeout message — the program's words, or the host's reason.
+
+    Never both, and never the second wearing the first's label: `Output so far:` is a promise
+    that what follows is the program's own stdout, and "the output was larger than the host
+    will read" is the host talking. A reader who cannot tell them apart is being told the
+    program printed a sentence about itself.
+    """
+    return f"no output was read — {note}" if note else f"Output so far: {printed[:2000]}"
+
+
 async def _final_output(
     sandbox: Sandbox, run: HostToolRun, layout: GuestRunLayout, until: float
-) -> str:
-    """What the program printed, for the timeout message — on a short allowance of its own.
+) -> tuple[str, str]:
+    """What the program printed, and separately the host's note — on a short allowance.
+
+    Two values rather than one because they go to different places. The note ("output was
+    larger than the host will read") is the *host* speaking, and a caller quoting it under
+    "Output so far" hands a model host prose in the position its own stdout occupies — which
+    is what the success path already avoids by routing the same note to ``stderr``.
 
     The run's deadline has passed by the time this is called, so reading under it would expire
     instantly and the message would carry nothing. This buys a couple of seconds for the
@@ -906,15 +1222,16 @@ async def _final_output(
             cap=_output_cap(run),
             deadline=until,
         )
-        # The note when there is one, so a timed-out run whose output was refused for its size
-        # does not quote emptiness at a reader who cannot tell that from a silent program.
-        return _as_text(value) or _why_no_output(value)
+        # The note travels beside the text, not instead of it: a timed-out run whose output was
+        # refused for its size must not quote emptiness at a reader who cannot tell that from a
+        # silent program, and must not pass the note off as the program's own words either.
+        return _as_text(value), _why_no_output(value)
     except Exception as failure:  # noqa: BLE001 — a diagnostic must not replace the failure
         # Not just `TimeoutError`: `stat_file` may raise anything a backend's client raises,
         # and this runs while a `TimeoutError` is being constructed. Losing the run's own
         # reason to a failure in reading the reason is the one outcome worth ruling out.
         logger.warning("host tools: could not read the program's output: %s", error_detail(failure))
-        return ""
+        return "", ""
 
 
 def _as_text(value: str | _TooLarge | _NotText | None) -> str:

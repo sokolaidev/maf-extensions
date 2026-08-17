@@ -934,6 +934,8 @@ class TestPolicyVocabularyExports:
             "SandboxCapabilityDenied",
             "SandboxCapabilityNotSupported",
             "SandboxIdentityDenied",
+            "SandboxProgramTimeout",
+            "WORK_DIRECTORY",
             "SourceIntegrity",
             "meets_floor",
             "sandbox_tool",
