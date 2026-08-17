@@ -1684,6 +1684,46 @@ class TestTheLayoutsOwnPromise:
         with pytest.raises(ValueError, match="imports at startup"):
             guest_run_layout("/maf-sandbox/work/run-1", program=name)
 
+    @pytest.mark.parametrize(
+        "name",
+        [
+            # No loader suffix is `.backup.py`, so `import json` never probes this file. The
+            # refusal used to split on the first dot and take it for `json`.
+            "json.backup.py",
+            "sitecustomize.old.py",
+            "encodings.v2.py",
+            "maf_host_tools.backup.py",
+            # No suffix at all: nothing imports it, and the launcher runs it by path.
+            "program",
+        ],
+    )
+    def test_a_dotted_name_no_loader_claims_is_allowed(self, name: str):
+        """The refusal is on the module a file would answer to, not on its first component.
+
+        `FileFinder` looks for a name plus one of its loaders' suffixes, so `json.py` and every
+        extension spelling of `json` answer to `json` while `json.backup.py` answers to
+        nothing. Refusing the second is refusing a name that cannot collide — a breaking
+        validation wider than the collision behind it.
+        """
+        layout = guest_run_layout("/maf-sandbox/work/run-1", program=name)
+
+        assert layout.program == f"/maf-sandbox/work/run-1/host_tools/{name}"
+
+    @pytest.mark.parametrize(
+        "name", ["json.abi3.so", "json.cpython-313-x86_64-linux-gnu.so", "json.anything.so"]
+    )
+    def test_a_tagged_extension_spelling_is_still_refused(self, name: str):
+        """A suffix with an interior dot is always an extension one, and its tag belongs to the
+        guest's interpreter rather than to this package.
+
+        `json.anything.so` is in the list on purpose: it cannot be told from a real ABI tag
+        without knowing the guest's, so it is refused too. That is the one place this still
+        answers wider than the collision, and it is the safe direction — the alternative is
+        letting a genuine `json.cpython-...-.so` through on an interpreter we did not predict.
+        """
+        with pytest.raises(ValueError, match="the generated shim imports"):
+            guest_run_layout("/maf-sandbox/work/run-1", program=name)
+
     def test_a_directory_spelled_the_long_way_round_is_kept_the_short_way(self):
         """One directory, two spellings, is a difference waiting to matter.
 

@@ -104,7 +104,8 @@ _TRANSPORT_FILENAMES = frozenset(
 #: from startup — so what matters is the module name a file would answer to, not the spelling
 #: of its suffix. ``FileFinder`` tries extension suffixes first, then source, then bytecode, so
 #: ``json.cpython-313-x86_64-linux-gnu.so`` outranks ``json.py``; refusing exact filenames
-#: would leave every one of those twins open. Everything up to the first dot is the stem.
+#: would leave every one of those twins open. See :func:`_module_a_program_answers_to` for
+#: which spellings reach a module and which, like ``json.backup.py``, reach nothing.
 #:
 #: :data:`_STARTUP_STEMS` is what CPython reaches on its way up, where a collision fails before
 #: the program is ever the script: ``encodings`` takes the interpreter down with a
@@ -161,6 +162,27 @@ _SHIM_STEMS = frozenset({"json", "os", "time"})
 #: before source, and the run dies on an invalid ELF header rather than on anything that names
 #: the collision. Derived from :data:`SHIM_MODULE` so the two cannot drift apart.
 _SHIM_MODULE_STEM = SHIM_MODULE.split(".", 1)[0]
+
+
+def _module_a_program_answers_to(program: str) -> str | None:
+    """The module name an import in this directory would reach ``program`` by, or ``None``.
+
+    ``FileFinder`` looks for a *name plus one of its loaders' suffixes*, so `json.py`,
+    `json.pyc` and every extension spelling of `json` answer to ``json`` — but `json.backup.py`
+    answers to nothing, because no loader suffix is `.backup.py`. Splitting on the first dot
+    treats the two alike and refuses a program name that cannot collide with anything.
+
+    A suffix carrying an interior dot is always an extension one (`.abi3.so`,
+    `.cpython-313-x86_64-linux-gnu.so`), and its tag belongs to the guest's interpreter, which
+    is not this package's to pin. So anything ending `.so` or `.pyd` is read as a tagged
+    extension and refused on the name in front of it — the one place this still answers more
+    broadly than the collision, and the safe direction to be wrong in.
+    """
+    head, dot, suffix = program.partition(".")
+    if not dot:
+        # No suffix, so no loader claims it; the launcher runs it by path regardless.
+        return None
+    return head if "." not in suffix or suffix.endswith((".so", ".pyd")) else None
 
 
 class SandboxProgramTimeout(TimeoutError):
@@ -257,9 +279,10 @@ def guest_run_layout(run_directory: str, *, program: str = "program.py") -> Gues
 
     ``program`` must be a plain file name, and not one of three families this directory makes
     dangerous: a name the layout already uses, a name the generated shim imports, or a name
-    CPython imports at startup. The last two are matched by **stem**, since a suffix decides
-    only which loader answers — see :data:`_SHIM_STEMS` and :data:`_STARTUP_STEMS` for what
-    each collision does.
+    CPython imports at startup. The last two are matched by the **module the file would answer
+    to**, since a suffix decides only which loader answers — ``json.py`` and ``json.abi3.so``
+    are refused where ``json.backup.py``, which no loader claims, is not. See
+    :data:`_SHIM_STEMS` and :data:`_STARTUP_STEMS` for what each collision does.
 
     Everything but freshness is refused here; freshness is not visible from a path, and a stale
     exit marker ends the next run on its first poll.
@@ -302,11 +325,11 @@ def guest_run_layout(run_directory: str, *, program: str = "program.py") -> Gues
             f"program must not be a name this layout already uses, and {program!r} is one of "
             f"{sorted(_TRANSPORT_FILENAMES)}"
         )
-    stem = program.split(".", 1)[0]
+    stem = _module_a_program_answers_to(program)
     if stem == _SHIM_MODULE_STEM:
         raise ValueError(
             f"program must not answer to the shim's own module name, and {program!r} answers "
-            f"to {stem!r}: the stem is reserved for the shim, because a file here under it "
+            f"to {stem!r}: the name is reserved for the shim, because a file here under it "
             f"with a loader's suffix either shadows the import the program opens with or "
             f"cannot be run as a program, and no suffix makes the name worth allowing"
         )
