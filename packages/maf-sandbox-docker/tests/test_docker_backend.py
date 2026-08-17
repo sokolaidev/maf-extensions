@@ -32,7 +32,7 @@ from maf_sandbox import (
     SandboxTransferCapExceeded,
 )
 
-from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
+from maf_sandbox_docker import BACKEND_NAME, DockerSandboxBackend, DockerSandboxConfig
 from maf_sandbox_docker._backend import (
     _container_name,
     _DockerResult,
@@ -243,7 +243,24 @@ class TestBackendIdentity:
         assert Capability.FILES_LIST not in DockerSandboxBackend(DockerSandboxConfig()).capabilities
 
     def test_is_named_docker(self):
+        # The literal, on purpose. `name == BACKEND_NAME` below pins them to each other and
+        # would stay green if both moved together — and both moving together is precisely the
+        # change that silently breaks every host with `selected="docker"` in its configuration.
         assert DockerSandboxBackend(DockerSandboxConfig()).name == "docker"
+
+    def test_the_exported_constant_is_the_name_the_backend_answers_to(self):
+        """#411: the value exists without building a backend, and cannot drift from it."""
+        assert BACKEND_NAME == DockerSandboxBackend(DockerSandboxConfig()).name
+
+    def test_selecting_by_the_constant_resolves_to_this_backend(self):
+        """What the constant is for, exercised rather than asserted.
+
+        `selected=` is a string match against `.name`, so this is the only test that would fail
+        if the constant were right and the property were reading something else.
+        """
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+        router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER, selected=BACKEND_NAME)
+        assert router.backend is backend
 
     def test_declares_transfer_limits(self):
         limits = DockerSandboxBackend(DockerSandboxConfig()).limits

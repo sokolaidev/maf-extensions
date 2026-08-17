@@ -27,11 +27,12 @@ This package imports no host application and no agent framework.
 
 from __future__ import annotations
 
-from ._backend import WslcSandboxBackend
+from ._backend import BACKEND_NAME, WslcSandboxBackend
 from ._config import WslcSandboxConfig
 from ._proxy import build_context as proxy_build_context
 
 __all__ = [
+    "BACKEND_NAME",
     "MafSandboxWslcExperimentalWarning",
     "WslcSandboxBackend",
     "WslcSandboxConfig",

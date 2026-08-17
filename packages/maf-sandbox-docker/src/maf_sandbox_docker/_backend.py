@@ -52,7 +52,25 @@ from ._proxy import build_context
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["DockerSandboxBackend"]
+__all__ = ["BACKEND_NAME", "DockerSandboxBackend"]
+
+#: The name :attr:`DockerSandboxBackend.name` answers to, and the value
+#: :class:`~maf_sandbox.SandboxRouter`'s ``selected=`` matches on.
+#:
+#: Public because a host choosing a backend from its own configuration needs the value before
+#: it has a backend to read it off, and building one to learn a constant is a lot of machinery
+#: for a fixed string (#411). The property below returns this, so the two cannot disagree.
+#:
+#: Not a knob. Unlike the in-process backend in ``maf_sandbox.testing``, which takes ``name=``
+#: so a host can register several apart, this one is fixed: ``"docker"`` is the word the socket
+#: contract is called, and a host reading ``selected="docker"`` should get plain containers.
+#:
+#: Import it qualified or aliased when more than one backend package is in play. Every backend
+#: exports this same symbol, so two `from … import BACKEND_NAME` lines shadow each other and
+#: the second wins silently. Either `import maf_sandbox_docker` and reach it as
+#: `maf_sandbox_docker.BACKEND_NAME`, or alias at the import:
+#: `from maf_sandbox_docker import BACKEND_NAME as DOCKER_BACKEND`.
+BACKEND_NAME = "docker"
 
 # Written at create and read back on purge, so the engine is the durable record, not this
 # process. The scheme matches wslc's so the label vocabulary is one thing across backends.
@@ -414,7 +432,7 @@ class DockerSandboxBackend:
 
     @property
     def name(self) -> str:
-        return "docker"
+        return BACKEND_NAME
 
     @property
     def isolation(self) -> Isolation:
