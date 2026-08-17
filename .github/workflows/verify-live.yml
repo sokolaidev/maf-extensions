@@ -223,11 +223,17 @@ jobs:
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
 
       # Fail early and by name if the environment was never configured — azure/login's own
-      # error for an empty client-id does not say which field is missing. Only the six
-      # variables samples/03_acas_codeact itself reads: no registry and no image variable —
-      # CODEACT_IMAGE is a hardcoded, fully-qualified MCR reference in the sample.
+      # error for an empty client-id does not say which field is missing, which is the whole
+      # reason the login triple is checked here too and not only the six variables
+      # samples/03_acas_codeact itself reads. No registry and no image variable among those
+      # six: CODEACT_IMAGE is a hardcoded, fully-qualified MCR reference in the sample.
+      # The triple is checked and deliberately *not* exported to the run step below — see the
+      # note there about EnvironmentCredential.
       - name: Check the live configuration is present
         env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
           ACAS_SANDBOX_ENDPOINT: ${{ vars.ACAS_SANDBOX_ENDPOINT }}
           ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ vars.ACAS_SANDBOX_SUBSCRIPTION_ID }}
           ACAS_SANDBOX_RESOURCE_GROUP: ${{ vars.ACAS_SANDBOX_RESOURCE_GROUP }}
@@ -237,7 +243,8 @@ jobs:
         run: |
           set -euo pipefail
           missing=()
-          for name in ACAS_SANDBOX_ENDPOINT ACAS_SANDBOX_SUBSCRIPTION_ID ACAS_SANDBOX_RESOURCE_GROUP \
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
+            ACAS_SANDBOX_ENDPOINT ACAS_SANDBOX_SUBSCRIPTION_ID ACAS_SANDBOX_RESOURCE_GROUP \
             ACAS_SANDBOX_GROUP AZURE_OPENAI_ENDPOINT AZURE_OPENAI_CHAT_MODEL; do
             [ -n "${!name}" ] || missing+=("$name")
           done
@@ -942,11 +949,16 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
 
-      # The same six sample 03 reads, and for the same reason: no registry and no image
-      # variable, because CODEACT_IMAGE is a hardcoded, fully-qualified MCR reference in the
-      # sample. Both samples boot the same disk image, so nothing new has to be imported.
+      # The same nine sample 03's job checks: the six this sample reads — no registry and no
+      # image variable, because CODEACT_IMAGE is a hardcoded, fully-qualified MCR reference —
+      # plus the three azure/login consumes below, whose own error for an empty client-id does
+      # not say which field is missing. Both samples boot the same disk image, so nothing new
+      # has to be imported.
       - name: Check the live configuration is present
         env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
           ACAS_SANDBOX_ENDPOINT: ${{ vars.ACAS_SANDBOX_ENDPOINT }}
           ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ vars.ACAS_SANDBOX_SUBSCRIPTION_ID }}
           ACAS_SANDBOX_RESOURCE_GROUP: ${{ vars.ACAS_SANDBOX_RESOURCE_GROUP }}
@@ -956,7 +968,8 @@ jobs:
         run: |
           set -euo pipefail
           missing=()
-          for name in ACAS_SANDBOX_ENDPOINT ACAS_SANDBOX_SUBSCRIPTION_ID ACAS_SANDBOX_RESOURCE_GROUP \
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
+            ACAS_SANDBOX_ENDPOINT ACAS_SANDBOX_SUBSCRIPTION_ID ACAS_SANDBOX_RESOURCE_GROUP \
             ACAS_SANDBOX_GROUP AZURE_OPENAI_ENDPOINT AZURE_OPENAI_CHAT_MODEL; do
             [ -n "${!name}" ] || missing+=("$name")
           done
