@@ -56,6 +56,12 @@ __all__ = ["BACKEND_NAME", "AcasEntryPayloadIncomplete", "AcasSandboxBackend"]
 #: for a fixed string (#411) — more here than anywhere else, since constructing this backend
 #: means a subscription, a credential and a resource group. The property below returns this,
 #: so the two cannot disagree.
+#:
+#: Import it qualified or aliased when more than one backend package is in play. Every backend
+#: exports this same symbol, so two `from … import BACKEND_NAME` lines shadow each other and
+#: the second wins silently. Either `import maf_sandbox_acas` and reach it as
+#: `maf_sandbox_acas.BACKEND_NAME`, or alias at the import:
+#: `from maf_sandbox_acas import BACKEND_NAME as ACAS_BACKEND`.
 BACKEND_NAME = "acas"
 
 

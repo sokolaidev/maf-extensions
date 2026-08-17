@@ -51,6 +51,12 @@ __all__ = ["BACKEND_NAME", "WslcSandboxBackend"]
 #: Worth having even though this backend runs on one platform: a host that registers it on
 #: Windows and something else elsewhere still selects by name, and that selection is written
 #: where the platform check is, not where the backend is built.
+#:
+#: Import it qualified or aliased when more than one backend package is in play. Every backend
+#: exports this same symbol, so two `from … import BACKEND_NAME` lines shadow each other and
+#: the second wins silently. Either `import maf_sandbox_wslc` and reach it as
+#: `maf_sandbox_wslc.BACKEND_NAME`, or alias at the import:
+#: `from maf_sandbox_wslc import BACKEND_NAME as WSLC_BACKEND`.
 BACKEND_NAME = "wslc"
 
 # Written at create and read back on purge, so wslc is the durable record, not this process.

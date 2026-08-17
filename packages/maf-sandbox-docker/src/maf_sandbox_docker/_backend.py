@@ -64,6 +64,12 @@ __all__ = ["BACKEND_NAME", "DockerSandboxBackend"]
 #: Not a knob. Unlike the in-process backend in ``maf_sandbox.testing``, which takes ``name=``
 #: so a host can register several apart, this one is fixed: ``"docker"`` is the word the socket
 #: contract is called, and a host reading ``selected="docker"`` should get plain containers.
+#:
+#: Import it qualified or aliased when more than one backend package is in play. Every backend
+#: exports this same symbol, so two `from … import BACKEND_NAME` lines shadow each other and
+#: the second wins silently. Either `import maf_sandbox_docker` and reach it as
+#: `maf_sandbox_docker.BACKEND_NAME`, or alias at the import:
+#: `from maf_sandbox_docker import BACKEND_NAME as DOCKER_BACKEND`.
 BACKEND_NAME = "docker"
 
 # Written at create and read back on purge, so the engine is the durable record, not this
