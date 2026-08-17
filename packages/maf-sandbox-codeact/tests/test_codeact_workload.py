@@ -1907,14 +1907,7 @@ class TestAProgramThatCallsOut:
         assert sandbox.answers == [{"value": 4}, {"value": 4}]
 
     def test_the_program_is_written_where_the_launcher_goes_looking_for_it(self):
-        """The launcher runs `layout.program`, which is in the transport's directory and not in
-        the one the program's own working directory points at.
-
-        Nothing else in this suite can see this: these fakes script a result rather than
-        running anything, so a program written to the run directory instead would leave the
-        launcher exec'ing a path that does not exist — on every real dispatching run, and on no
-        test. Both halves are asserted, because writing it to *both* places would satisfy the
-        first alone while leaving a copy where a model's files are.
+        """Write the program only to ``layout.program``, where the launcher executes it."""
         """
         sandbox = _CallingSandbox("_round_half_up", {"value": 0.5})
         _run(_dispatching(sandbox, _round_half_up), "print('hi')")
