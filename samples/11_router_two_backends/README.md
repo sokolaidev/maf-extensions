@@ -1,6 +1,6 @@
-# 11 — two backends, one router: who serves, who cannot, who gets cleaned up
+# 11 — two backends, one router: who serves, who cannot, what they can reach, who gets cleaned up
 
-Every sample before this one hands `SandboxRouter` a single backend. This one registers two and shows the three things that follow.
+Every sample before this one hands `SandboxRouter` a single backend. This one registers two and shows the three things that follow — and then, in act 4, the other axis the router decides on.
 
 ```
 app  ->  maf_sandbox (router)  ->  [ in-process | docker ]  ->  the sandbox
@@ -14,6 +14,8 @@ app  ->  maf_sandbox (router)  ->  [ in-process | docker ]  ->  the sandbox
 **A spec can raise the bar. It cannot change who serves.** If the selected backend cannot meet what a spec asks for, the router refuses. It does not look at the other backend, even when the other backend would obviously do. Act 2 shows both refusals with `docker` registered and unused.
 
 **Disposal is the exception.** `dispose` and `dispose_scope` go to *every* registered backend, which is the one place holding more than one is live at run time.
+
+**And egress is decided by the deployment, not the workload.** Act 4 runs one agent against one Bicep file twice, changing nothing but whether the backend has an egress proxy — and the compiler succeeds once and fails once.
 
 ## Why the refusals are the point
 
@@ -42,27 +44,69 @@ Isolation is the axis acts 1 and 2 are about. Egress is the other one the two-ax
 
 The rule is not symmetrical, and the asymmetry is the idea. A backend that cannot confine as *precisely* as a spec asked still serves: `DockerSandboxConfig()` with no proxy declares `Egress.CLOSED`, so a spec allowing `mcr.microsoft.com` gets a container with no network at all. That is **more** confinement than was asked for, the router logs a warning naming the hosts that will be unreachable, and the workload fails loudly at the fetch. A backend that cannot confine **at all** — `Egress.UNRESTRICTED` — is refused instead, because silently widening what a workload reaches produces no symptom anybody sees. `Egress`'s own docstring is where that is written down; act 3 is where you can watch it.
 
-Act 4 then enforces one for real. Set `egress_proxy_image` and the same backend class declares `Egress.ALLOWLIST`: each sandbox gets its own internal network and a dual-homed proxy, and the container has **no route out except that proxy**. The allowlisted host answers `200`; a host the spec never named answers `000`, which is curl reporting that no connection was made at all rather than a server saying no. Nothing inside the container was configured to cooperate — `HTTP_PROXY` tells ordinary clients where to look, and the topology is what enforces the list.
+## Act 4: the workload that makes egress a real question
 
-The proxy image is built rather than pulled, from a recipe that ships inside the package:
+Act 3 ends on a promise — *the workload will report what it could not fetch*. Act 4 is where that stops being a sentence.
 
-```bash
-python -c "from maf_sandbox_docker import proxy_build_context; print(proxy_build_context())"
-docker build -t maf-egress-proxy:local "$(python -c 'from maf_sandbox_docker import proxy_build_context; print(proxy_build_context())')"
-export MAF_EGRESS_PROXY_IMAGE=maf-egress-proxy:local
+An agent validates `main.bicep`, which contains one line that changes everything:
+
+```bicep
+module storage 'br/public:avm/res/storage/storage-account:0.9.1' = {
 ```
 
-Without that variable act 4 skips itself and prints those commands. The live check treats a skip as a failure, because a run that confined nothing prints every other line exactly as a run that confined something.
+`br/public:` means the compiler cannot type-check that module until it has **downloaded** it. So this file cannot be validated in a closed sandbox — not because a rule says so, but because the work is impossible. Sample 05's `main.bicep` is the deliberate opposite: no modules, nothing to restore, validates entirely offline. The pair is the point.
 
-**One thing act 4 cannot show**, and it is worth knowing before adapting it: a kind that needs no network and a kind that was simply never asked both write `egress_allow=()` today, so this sample has to spell the empty case the same way whether it means "deny everything" or "no opinion". That conflation is [#403](https://github.com/sokolaidev/maf-extensions/issues/403).
+**The allowlist is the workload's, and the sample does not write it.** `bicep_sandbox_spec()` names four hosts, and the sample prints them by reading them back:
+
+| host | why |
+|---|---|
+| `mcr.microsoft.com` | the registry the module artifact comes from |
+| `*.data.mcr.microsoft.com` | where that registry redirects the blob download |
+| `aka.ms` | the module index's published address, which redirects |
+| `live-data.bicep.azure.com` | where it redirects to |
+
+Both redirect hops have to be allowed; the redirector alone answers with a `Location` pointing at a host that is still denied. [#7](https://github.com/sokolaidev/maf-extensions/issues/7) is where each of the four was established.
+
+**Act 4 runs the same agent twice, and changes exactly one thing.** Same file, same spec, same instructions, same model — only the deployment's wiring differs:
+
+| | `DockerSandboxConfig()` | `DockerSandboxConfig(egress_proxy_image=…)` |
+|---|---|---|
+| declares | `Egress.CLOSED` | `Egress.ALLOWLIST` |
+| container gets | `--network none` | an internal network and a dual-homed proxy |
+| the compiler says | `BCP192: Unable to restore the artifact … (Resource temporarily unavailable (mcr.microsoft.com:443))` | no diagnostics |
+
+Nothing inside the container was configured to cooperate. `HTTP_PROXY` only tells ordinary clients where to look; the container has **no route out except the proxy**, so the topology enforces the list rather than the variables.
+
+**Both halves carry the claim, and neither is redundant.** A container with the host's network would restore under both postures. A container that could not start at all would fail under both. Only the pair says the wiring is what decided it — which is why the live check requires `FAILED` closed *and* `RESTORED` allowlisted, and treats a skipped act 4 as a failure. A run that confined nothing prints every other line exactly as a run that confined something.
+
+What act 4 does **not** try to show is that the proxy denies an unlisted host. That is the backend's own property, pinned by `TestAllowlistEgress` in `maf-sandbox-docker`, and repeating it here with `curl` would have been a unit test wearing a sample's clothes. What only a sample can show is the consequence: real work that succeeds or fails on the deployment's egress posture.
+
+**Two things worth knowing before adapting it.** A kind that needs no network and a kind that was simply never asked both write `egress_allow=()` today, so the empty case is spelled the same way whether it means "deny everything" or "no opinion" — that conflation is [#403](https://github.com/sokolaidev/maf-extensions/issues/403). And pass `egress_proxy_image=None` rather than `""` for the closed posture: an empty string declares `CLOSED` and then fails trying to start a proxy, which is [#407](https://github.com/sokolaidev/maf-extensions/issues/407).
 
 ## Run
 
+Acts 1, 2, 3 and 5 need a Docker-compatible engine and nothing else. Act 4 needs two locally built images and a chat model, and skips itself with instructions when any of them is missing.
+
 ```bash
+# The Bicep sandbox, built from this repository — the same guest sample 05 uses.
+docker build -t bicep-sandbox:local images/bicep-sandbox
+
+# The egress proxy, built from a recipe that ships inside the installed package
+# rather than pulled as an image you would have to trust.
+docker build -t maf-egress-proxy:local \
+  "$(python -c 'from maf_sandbox_docker import proxy_build_context; print(proxy_build_context())')"
+
+export BICEP_SANDBOX_IMAGE=bicep-sandbox:local
+export MAF_EGRESS_PROXY_IMAGE=maf-egress-proxy:local
+export AZURE_OPENAI_ENDPOINT=https://<your-resource>.openai.azure.com
+export AZURE_OPENAI_CHAT_MODEL=<your-deployment-name>
+
+az login   # the model is reached with DefaultAzureCredential; there is no API key here
+
 cd samples/11_router_two_backends && uv run agent.py
 ```
 
-Needs a Docker-compatible engine and nothing else — no cloud account, no model. One optional variable, `MAF_EGRESS_PROXY_IMAGE`, turns act 4 on; without it the other four acts run and act 4 says how to build the image. The container image is the same dev-container base samples 06 and 08 use, and the command run inside it is `cat` on a file the sample wrote: this is about which backend runs a command, not what the command is.
+The image acts 1, 2 and 5 use is the same dev-container base samples 06 and 08 use, and the command run inside it is `cat` on a file the sample wrote: those acts are about which backend runs a command, not what the command is.
 
 There is one thing in acts 4 and 5 worth knowing if you adapt it. A fresh container has nothing at `work_dir`, so `exec` cannot change into it — the sample writes a file first, which creates the parents. That ordering is not decoration; it is why every kind pushes its inputs before running anything.
 
