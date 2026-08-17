@@ -72,7 +72,7 @@ Either way the kind requires `FILES_OUT` and **never** `FILES_LIST`: it collects
 
 ### Host tools
 
-Pass a `host_tools` registry and the program gets a way to call out, over the transport [`maf-sandbox`](https://github.com/sokolaidev/maf-extensions/tree/main/packages/maf-sandbox) gives any `EXEC` backend:
+Pass a `host_tools` registry and the program gets a way to call out over [`maf-sandbox`](https://github.com/sokolaidev/maf-extensions/tree/main/packages/maf-sandbox)'s opt-in transport for compatible `EXEC` backends:
 
 ```python
 from maf_sandbox import HostToolRegistry
