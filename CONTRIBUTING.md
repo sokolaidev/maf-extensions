@@ -18,7 +18,11 @@ uv run pytest -q
 uv run ruff check . && uv run ruff format --check .
 uv run pyright -p packages/maf-sandbox        # and -acas, -bicep, -codeact, -docker, -wslc
 uv run pyright                                # scripts/, tests/ and samples/
+uv run python scripts/check_md_code_blocks.py \
+    README.md 'packages/*/README.md' 'samples/**/*.md' RELEASING.md
 ```
+
+The last line lints the ```python blocks embedded in the markdown against the installed `maf_sandbox*` packages — a renamed export or a removed enum member in a README quickstart fails it. Wiring-only snippets that import none of the packages are skipped, so undefined `router`/`context` and top-level `await` are tolerated. It is report-only in CI for now (`continue-on-error`); the gate flips on once it has stayed green across a release or two ([#289](https://github.com/sokolaidev/maf-extensions/issues/289)).
 
 Type checking comes in two passes. The per-package one is **strict** and covers `src/` only — fixtures and hand-rolled fakes are not where a strict checker's objections are signal. The bare `uv run pyright` is the second: `scripts/`, `tests/` and `samples/` belong to no package, so no `-p` pass reaches them. It runs at *standard*. The test trees relax four rules to warnings for the loose fakes they are made of; `scripts/` and `samples/` relax nothing, and a sample suppresses a single site inline when it has to. `samples/` is in the pass because a sample naming an attribute a package deleted is otherwise caught by nothing until the sample runs for real, which is after a release ([#334](https://github.com/sokolaidev/maf-extensions/issues/334)).
 
