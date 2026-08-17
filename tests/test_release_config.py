@@ -24,6 +24,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from _version_prose import release_named_in
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = REPO_ROOT / "release-please-config.json"
@@ -508,35 +509,61 @@ class TestTheConstraintCommentsDoNotNameAVersion:
     *for*. A bare `1.0.0` is fine — that is the stability boundary, not a release pointer.
     """
 
-    _ZERO_VERSION = re.compile(r"0\.\d+\.\d+")
+    def _comment_lines_beside_the_constraint(self, package_path: str) -> list[str]:
+        """The comment block above the constraint, **and the constraint's own line**.
 
-    def _comment_block_above_the_constraint(self, package_path: str) -> list[str]:
+        Its own line, because that is where a trailing comment goes and the bump script
+        rewrites exactly that line: `"maf-sandbox>=0.16.0,<0.18",  # 0.13 for the work_dir
+        default` is legal TOML, is the most natural place to write the note, and walking only
+        upwards never looked at it (#385).
+        """
         lines = (REPO_ROOT / package_path / "pyproject.toml").read_text("utf-8").splitlines()
         for index, line in enumerate(lines):
             if "maf-sandbox>=" not in line:
                 continue
-            above: list[str] = []
+            beside = [line]
             cursor = index - 1
             while cursor >= 0 and lines[cursor].lstrip().startswith("#"):
-                above.append(lines[cursor])
+                beside.append(lines[cursor])
                 cursor -= 1
-            return above
+            return beside
         return []
 
     def test_no_dependent_names_a_maf_sandbox_release_in_prose(self):
         checked = 0
         for package_path in PACKAGE_PATHS:
-            block = self._comment_block_above_the_constraint(package_path)
-            if not block:
+            beside = self._comment_lines_beside_the_constraint(package_path)
+            if not beside:
                 continue
             checked += 1
-            for line in block:
-                assert not self._ZERO_VERSION.search(line), (
-                    f"{package_path}: {line.strip()!r} names a maf-sandbox release. The bump "
-                    "script moves the constraint and not this comment, so the number goes "
-                    "stale — say which release the floor is for, not which release that is."
+            for line in beside:
+                named = release_named_in(line)
+                assert named is None, (
+                    f"{package_path}: {line.strip()!r} names {named}. The bump script moves "
+                    "the constraint and not this comment, so the number goes stale — say "
+                    "which release the floor is for, not which release that is."
                 )
         assert checked, "expected at least one package to carry a maf-sandbox constraint"
+
+    def test_the_stability_boundary_every_package_names_is_still_allowed(self):
+        """The exemption, asserted where it would break rather than only in the reader's tests.
+
+        All five dependency comments say some form of "every release before 1.0.0 may include
+        breaking changes". A pattern matching the `0.0` inside `1.0.0` fails all five for
+        saying the one thing this guard means to permit — which is what the first attempt at
+        widening it did.
+        """
+        mentions = [
+            package_path
+            for package_path in PACKAGE_PATHS
+            if any(
+                "1.0.0" in line for line in self._comment_lines_beside_the_constraint(package_path)
+            )
+        ]
+        assert mentions, (
+            "no package comment mentions 1.0.0 any more, so this test guards nothing — either "
+            "the boilerplate changed or the reader stopped finding these lines"
+        )
 
 
 class TestReleasingNamesEveryPackageThatDispatchesTheLiveCheck:
