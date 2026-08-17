@@ -106,40 +106,25 @@ _TRANSPORT_FILENAMES = frozenset(
 #: ``json.cpython-313-x86_64-linux-gnu.so`` outranks ``json.py``; refusing exact filenames
 #: would leave every one of those twins open. Everything up to the first dot is the stem.
 #:
-#: Two families, refused for different reasons.
+#: :data:`_STARTUP_STEMS` is what CPython reaches on its way up, where a collision fails before
+#: the program is ever the script: ``encodings`` takes the interpreter down with a
+#: path-configuration dump, and ``sitecustomize`` and ``usercustomize`` are executed by
+#: ``site``, so a program under either name runs twice. ``site`` itself is refused as the
+#: module that imports the other two. The stdlib names below them are reached only on a guest
+#: whose standard library is not frozen, and are refused everywhere rather than conditionally,
+#: because the guest's version is not this package's to pin — ``interpreter`` defaults to
+#: ``python3``, and what that is belongs to the image.
 #:
-#: :data:`_STARTUP_STEMS` is what CPython reaches on its way up. ``encodings`` is imported
-#: before the interpreter can report anything and takes it down with a path-configuration
-#: dump. ``sitecustomize`` is executed by ``site``, so as a program it runs twice, once during
-#: startup and once as the script — as does ``usercustomize`` wherever user site is enabled,
-#: which is everywhere except a virtualenv. ``site`` does **not** shadow the stdlib module
-#: from here, checked on 3.11 through 3.13, and is refused anyway as the module that imports
-#: the other two, on the grounds that which path CPython resolves it by is an implementation
-#: detail rather than a promise.
-#:
-#: The second group is the stdlib that startup itself imports. It is empty on a guest whose
-#: standard library is frozen — 3.11 onwards — and on an older one it is the difference between
-#: a run and a path-configuration dump: on 3.10, ``site`` reaches ``os`` which reaches ``stat``
-#: through ordinary path lookup, so the program answers as that module during initialisation.
-#: The guest's version is not this package's to pin (``interpreter`` defaults to ``python3``,
-#: which is 3.10 on Ubuntu 22.04), so they are refused everywhere rather than conditionally.
-#:
-#: This is deliberately *not* "everything imported before the script runs", which is not a set
-#: anyone can write down: a ``.pth`` file may import any name it likes, so a guest image with
-#: setuptools reaches ``_distutils_hack`` and one with ``PYTHONWARNINGS`` reaches ``warnings``.
-#: Those belong to the image, and a constructor pretending to enumerate them would be making a
-#: promise it cannot keep. What is here was found by running a census against CPython 3.8
-#: through 3.13 — the top-level modules each imports from a file before running a script — so
-#: it is a floor under the common failures on those, and not a proof for any guest.
+#: Deliberately *not* "everything imported before the script runs", which is not a set anyone
+#: can write down: a ``.pth`` file may import any name it likes, so an image with setuptools
+#: reaches ``_distutils_hack``. A floor under the common failures, not a proof for any guest.
 _STARTUP_STEMS = frozenset(
     {
         "encodings",
         "site",
         "sitecustomize",
         "usercustomize",
-        # Reached during startup on a guest whose stdlib is not frozen. Censused on 3.8, 3.9
-        # and 3.10 by listing the top-level modules whose origin is a file, and empty from
-        # 3.11 — see this constant's docstring for what that census does and does not prove.
+        # Reached from a file during startup before 3.11, where the stdlib is not frozen.
         "abc",
         "codecs",
         "genericpath",
@@ -148,8 +133,8 @@ _STARTUP_STEMS = frozenset(
         "stat",
         "_collections_abc",
         "_sitebuiltins",
-        # 3.8 and 3.9, where `site` reading any `.pth` file builds a `TextIOWrapper` without
-        # an explicit encoding, and that imports this. Gone in 3.10, which removed the module.
+        # Reached the same way on 3.8 and 3.9, through the `TextIOWrapper` that `site` builds
+        # to read a `.pth` file. Removed from the stdlib in 3.10.
         "_bootlocale",
     }
 )
@@ -160,13 +145,10 @@ _STARTUP_STEMS = frozenset(
 #: name and every dispatch afterwards dies on an attribute the real module would have had —
 #: a traceback that names ``dumps`` and never the collision.
 #:
-#: Only ``json`` does that on a current guest. ``time`` is built in and ``os`` is frozen from
-#: 3.11, so neither is ever resolved from a directory. On 3.10 ``os`` *is* resolved from one —
-#: but by ``site``, during startup, so it fails as a member of :data:`_STARTUP_STEMS` would,
-#: dying before the program is the script rather than misleading a dispatch. Two mechanisms,
-#: one name, and which modules are frozen is a per-version detail rather than a contract.
-#: They are refused for the same reason the set is checked by stem: refusing a program name
-#: no kind wants costs nothing, and missing one costs a traceback that points elsewhere.
+#: Only ``json`` is resolved from a directory on a current guest; ``os`` and ``time`` are
+#: refused too, because which modules are frozen is a per-version detail rather than a
+#: contract, and refusing a program name no kind wants costs nothing where missing one costs
+#: a traceback that points elsewhere.
 #:
 #: Derived from the shim by a test that parses it, so adding an import cannot leave this
 #: behind.
@@ -589,51 +571,25 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
     #     transport's on `PYTHONPATH` besides — `sys.path[0]` follows the script, but that is
     #     a default `PYTHONSAFEPATH` switches off, and then the path is all there is.
     #   * **An inherited path entry is kept only if it is absolute, canonical, and outside the
-    #     run tree.** All three say one thing: nothing the guest writes may be importable at
-    #     *interpreter startup*, where a `sitecustomize` a model wrote runs before the program
-    #     does and can seed `sys.modules` with a shim of its own.
-    #
-    #     A relative entry resolves against the working directory, which this launcher has
-    #     just changed to the guest's own — so whatever the image meant by `.`, it does not
-    #     mean that here. An absolute one usually cannot name a per-run directory, but
-    #     "usually" is not a control: an image is free to export `/runs/current/work` and a
-    #     host to place a run at `/runs/current`, and then the guest's own directory is on the
-    #     startup path. Dropping the run tree costs nothing, because it did not exist when the
-    #     image was built and so can hold no dependency the image meant to name.
-    #
-    #     Canonical is what makes the third test mean anything. The comparison is textual, so
-    #     `/runs/./current/work` is a different string from `/runs/current/work` and the same
-    #     directory to the kernel; an entry carrying `/./`, `/../` or `//` is therefore dropped
-    #     rather than normalised. Dropping is the conservative half of the same rule — an entry
-    #     this cannot compare against the run tree is one it cannot vouch for — and lexical
-    #     normalisation in POSIX `sh` is a great deal of machinery for a spelling no image
-    #     needs. Being dropped costs a lost dependency root, which fails loudly at import.
-    #   * `PYTHONNOUSERSITE`, because `PYTHONPATH` is not the only inherited way into startup:
-    #     `site` adds `$PYTHONUSERBASE/lib/pythonX.Y/site-packages`, and a `sitecustomize`
-    #     there runs before the program exactly as one on the path would. Filtering that
-    #     variable too would leave the same hole behind `HOME`, which the user base falls back
-    #     to, so the whole mechanism goes off instead of being chased through its inputs. An
-    #     image installing with `pip install --user` loses those packages here; that fails at
-    #     import, where being wrong is visible.
-    #
-    #     Through the environment rather than `-s` for the reason `PYTHONUNBUFFERED` is above.
-    #
-    #     What none of this catches is a symlink from outside the tree into it: resolving one
-    #     needs a `realpath` POSIX `sh` does not have, and doing it later is no use, because
-    #     `sitecustomize` runs before any script this package could put in front of the
-    #     program. `PYTHONHOME` is the other way in and is left alone deliberately — pointed
-    #     at the run tree it replaces the standard library outright, which is a broken guest
-    #     rather than a substituted shim. `python -E` would settle the class entire, and is
-    #     refused for the reason `-u` is: `interpreter` need not be CPython, and it would also
-    #     discard the dependency roots an image legitimately puts on the path.
+    #     run tree**, and `PYTHONNOUSERSITE` goes with it, because `site` reaches
+    #     `$PYTHONUSERBASE/lib/pythonX.Y/site-packages` without consulting the path at all.
+    #     Together they keep the guest's own files off *interpreter startup*, where a
+    #     `sitecustomize` a model wrote runs before the program and seeds `sys.modules` with a
+    #     shim of its own. Each test earns its place: relative resolves against the directory
+    #     this launcher just changed to; absolute can still name a run, where a host places
+    #     them predictably; and the comparison is textual, so `/runs/./current/work` would pass
+    #     a prefix test and reach the same directory. The user base is switched off rather than
+    #     filtered because filtering it leaves the hole behind `HOME`, which it falls back to.
+    #     A symlink into the tree needs a `realpath` POSIX `sh` does not have and is not
+    #     caught; `PYTHONHOME` pointed here breaks the guest outright rather than substituting
+    #     anything, so it is left alone. The README's upgrade note has what this costs an image.
     staged = f"{layout.exit_code}.part"
     # The shim's own directory, which is the one an import has to reach; `program` is beside
     # it by construction, and reading it from the shim keeps the two from being separated.
     importable = posixpath.dirname(layout.shim)
-    # Quoted into a `case` pattern below, where quoting is what stops a run directory
-    # containing `*` or `?` from matching more than itself. The trailing separator is stripped
-    # so the two patterns do not become `//*`; a run directory of `/` collapses to `''|/*`,
-    # dropping every absolute entry, which is the honest reading of "inside the run tree".
+    # Quoting is what stops a run directory containing `*` or `?` from matching more than
+    # itself; stripping the separator keeps the two patterns below from becoming `//*`, and
+    # collapses a run directory of `/` to `''|/*`, dropping every absolute entry.
     enclosing = _quote(layout.directory.rstrip("/"))
     inner = (
         f"PYTHONUNBUFFERED=1 PYTHONNOUSERSITE=1 {_quote(interpreter)} {_quote(layout.program)} "
