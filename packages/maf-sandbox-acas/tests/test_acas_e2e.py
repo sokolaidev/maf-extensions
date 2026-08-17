@@ -413,9 +413,14 @@ class TestWhetherThisBackendCouldServeHostTools:
     """
 
     def test_the_guest_has_what_the_launcher_needs(self, live: _Live):
-        """`sh`, `nohup`, `printf` and `mv`, and the interpreter the generated shim is imported
-        by. A separate probe from the one below so a failure says which assumption broke."""
-        wanted = "sh nohup printf mv python3"
+        """What the shipped `launcher_script` runs on, and nothing more.
+
+        Deliberately not the interpreter: `launcher_script` takes that as a parameter, so which
+        one a guest needs is the kind's requirement — codeact wants `python3` for its shim —
+        and asserting it here would fail a backend over something `HOST_TOOLS` does not claim.
+        A separate probe from the one below so a failure says which assumption broke.
+        """
+        wanted = "sh nohup printf mv"
 
         async def scenario():
             # The work directory is not in the image; the real flow creates it by writing the
@@ -442,7 +447,12 @@ class TestWhetherThisBackendCouldServeHostTools:
         Two facts, and only the pair discriminates. The exit marker must be **absent** when the
         launcher's exec returns — otherwise the exec waited for the program and the transport
         would deadlock against a supervisor that has not started — and it must **appear**
-        afterwards, which is the survival this whole question is about. A session that resets
+        afterwards, which is the survival this whole question is about.
+
+        The program is shell rather than Python: whether `exec` detaches is a property of
+        the backend, and pinning it to the interpreter the shim happens to need would
+        report an image without Python as a backend that cannot detach. What the image
+        must carry is the probe above. A session that resets
         between calls passes the first and fails the second.
         """
         layout = guest_run_layout(f"{_WORK}/{uuid.uuid4().hex[:12]}")
@@ -454,9 +464,11 @@ class TestWhetherThisBackendCouldServeHostTools:
         async def scenario() -> None:
             await live.sandbox.write_file(
                 layout.program,
-                f"import time\ntime.sleep({program_seconds})\nprint('the program finished')\n",
+                f"sleep {program_seconds}\necho the program finished\n",
             )
-            await live.sandbox.write_file(layout.launcher, launcher_script(layout))
+            await live.sandbox.write_file(
+                layout.launcher, launcher_script(layout, interpreter="sh")
+            )
 
             started = asyncio.get_running_loop().time()
             launched = await live.sandbox.exec(

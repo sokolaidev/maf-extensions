@@ -383,8 +383,13 @@ class TestWhetherThisBackendCouldServeHostTools:
     """
 
     def test_the_guest_has_what_the_launcher_needs(self):
-        """`sh`, `nohup`, `printf` and `mv`, and the interpreter the generated shim is imported
-        by. A separate probe from the one below so a failure says which assumption broke."""
+        """What the shipped `launcher_script` runs on, and nothing more.
+
+        Deliberately not the interpreter: `launcher_script` takes that as a parameter, so which
+        one a guest needs is the kind's requirement — codeact wants `python3` for its shim —
+        and asserting it here would fail a backend over something `HOST_TOOLS` does not claim.
+        A separate probe from the one below so a failure says which assumption broke.
+        """
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig())
 
@@ -396,8 +401,7 @@ class TestWhetherThisBackendCouldServeHostTools:
                 # some earlier test having left it behind.
                 await sandbox.write_file(f"{_WORK}/probe/.keep", "")
                 result = await sandbox.exec(
-                    'for t in sh nohup printf mv python3; do command -v "$t" >/dev/null '
-                    '|| echo "$t"; done',
+                    'for t in sh nohup printf mv; do command -v "$t" >/dev/null || echo "$t"; done',
                     working_directory=_WORK,
                     timeout=60,
                 )
@@ -419,6 +423,11 @@ class TestWhetherThisBackendCouldServeHostTools:
         launcher's exec returns — otherwise the exec waited for the program and the transport
         would deadlock against a supervisor that has not started — and it must **appear**
         afterwards, which is the survival this whole question is about.
+
+        The program is shell rather than Python: whether `exec` detaches is a property of
+        the backend, and pinning it to the interpreter the shim happens to need would
+        report an image without Python as a backend that cannot detach. What the image
+        must carry is the probe above.
         """
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig())
@@ -430,9 +439,9 @@ class TestWhetherThisBackendCouldServeHostTools:
             try:
                 await sandbox.write_file(
                     layout.program,
-                    f"import time\ntime.sleep({program_seconds})\nprint('the program finished')\n",
+                    f"sleep {program_seconds}\necho the program finished\n",
                 )
-                await sandbox.write_file(layout.launcher, launcher_script(layout))
+                await sandbox.write_file(layout.launcher, launcher_script(layout, interpreter="sh"))
 
                 loop = asyncio.get_running_loop()
                 started = loop.time()
