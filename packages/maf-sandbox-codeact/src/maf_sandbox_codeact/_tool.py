@@ -606,9 +606,9 @@ async def _execute(
 
     # The names written into the model's own directory by something other than the program, so
     # neither an input nor an output may claim one. The manifest is reserved only where it
-    # means something. The program is reserved only where it shares that directory: a run that
-    # dispatches puts it in the transport's, beside the shim, where no name a model chooses can
-    # reach it — which is what 0.16 replaced a list of reserved transport names with.
+    # means something, and the program only where it shares that directory: a run that
+    # dispatches puts it in the transport's, beside the shim, where no name a model chooses
+    # can reach it.
     reserved: set[str] = set()
     if dispatch is None:
         reserved.add(_PROGRAM_FILENAME)

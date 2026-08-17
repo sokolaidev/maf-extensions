@@ -657,6 +657,18 @@ class TestMakeCodeactTools:
         with pytest.raises(SandboxCapabilityNotSupported):
             _tool(backend)
 
+    def test_a_registry_on_a_backend_that_cannot_serve_host_tools_is_refused_at_attach(self):
+        """The headline promise of this wiring, and nothing pinned it: no shipped backend
+        declares `HOST_TOOLS`, so wiring a registry has to fail where the tool is *built* —
+        not at the first call, and not silently.
+
+        `_PULLS` is what a real backend offers today. The refusal has to come from the
+        capability match rather than from the registry being empty, so the registry here has a
+        tool in it.
+        """
+        with pytest.raises(SandboxCapabilityNotSupported):
+            _tool(_backend(capabilities=_PULLS), host_tools=_registry(_round_half_up))
+
 
 class TestFidesDeclarations:
     """This tool declares no `source_integrity`, and that is a decision, not an omission.
@@ -1491,6 +1503,36 @@ class TestManifestOutputs:
         assert sink.names == ["r.csv"]
         assert "saved r.csv" in out
 
+    def test_the_manifest_is_read_from_the_work_directory_when_a_run_dispatches(self):
+        """`_read_manifest` stats a path built from the same prefix everything else uses, so a
+        dispatching run must look in `work/` rather than in the run directory.
+
+        This is the one mode × dispatch cell nothing else covers, and the prefix reaching this
+        read was unpinned until it existed: reverting it to the run directory left the whole
+        suite green while a real run answered "no outputs.json was written" and saved nothing.
+        """
+        sandbox = _FinishingSandbox()
+        sink = _RecordingSink()
+        tool = _tool(
+            _backend(sandbox, capabilities=_DISPATCHES),
+            host_tools=_registry(_round_half_up),
+            **_landing(CodeactOutputs.MANIFEST, sink),
+        )
+
+        out = _run_producing(
+            tool,
+            sandbox,
+            {
+                _MANIFEST_FILENAME: b'{"outputs": [{"path": "r.csv"}]}',
+                "r.csv": b"1,2",
+            },
+        )
+
+        (run_dir,) = _run_dirs(sandbox)
+        assert f"{run_dir}/{WORK_DIRECTORY}/{_MANIFEST_FILENAME}" in sandbox.contents
+        assert sink.names == ["r.csv"], out
+        assert "saved r.csv" in out
+
     def test_a_media_type_in_the_manifest_is_ignored_rather_than_forwarded(self):
         """The guest declaring how the host should handle its own bytes is worse than the
         sniffing `DeclaredOutput.media_type` exists to forbid: a sink may route on that value
@@ -1980,11 +2022,10 @@ class TestOnlyAnAttachedToolSealsTheRegistry:
 
 class TestWhatTheTwoDirectoriesMakeHarmless:
     """A run that dispatches puts the transport's files in `host_tools/` and the model's in
-    `work/`, so a name that used to be refused is now simply written.
+    `work/`, so a name that would collide is written instead of refused.
 
-    These names were refused until 0.16, against a list this kind had to keep complete —
-    `RESERVED_RUN_FILENAMES`, withdrawn before it shipped. The separation is what replaced it,
-    and the test that it worked is that these land rather than that a list still names them.
+    Two directories are the guarantee, so what pins it is that these names land — not that
+    some list still enumerates them.
     """
 
     @pytest.mark.parametrize(
@@ -2014,21 +2055,31 @@ class TestWhatTheTwoDirectoriesMakeHarmless:
         (run_dir,) = _run_dirs(sandbox)
         assert f"{run_dir}/{WORK_DIRECTORY}/{name}" in sandbox.files, sorted(sandbox.files)
 
-    def test_the_transports_own_files_are_not_in_the_directory_the_model_writes_into(self):
-        """The guarantee behind the case above, stated where a reader will look for it: what
-        the transport owns and what a model can name are two directories, so there is no name
-        to get wrong rather than a list that has to stay complete."""
+    def test_nothing_this_tool_writes_for_itself_lands_where_the_model_writes(self):
+        """The guarantee behind the case above: what the transport owns and what a model can
+        name are two directories, so there is no name to get wrong.
+
+        Asserted against the paths the *tool* wrote, not against the layout — `sandbox.layouts`
+        is built by the fake out of `guest_run_layout`, so asserting on it would restate a
+        `maf_sandbox` property and hold whatever this kind did with it.
+        """
         sandbox = _CallingSandbox("_round_half_up", {"value": 0.5})
-        _run(_dispatching(sandbox, _round_half_up), "print(1)")
+        tool = _tool(
+            _backend(sandbox, capabilities=_DISPATCHES),
+            host_tools=_registry(_round_half_up),
+            file_store=InMemoryStore({"data.csv": "a,b\n"}),
+        )
+        _run(tool, "print(1)", files=["data.csv"])
 
         (layout,) = sandbox.layouts
-        owned = (layout.program, layout.shim, layout.launcher, layout.output, layout.exit_code)
+        written = set(sandbox.files) | set(sandbox.contents)
+        under_work = {p for p in written if p.startswith(f"{layout.work}/")}
 
-        assert layout.work != layout.directory
-        for path in owned:
-            assert not path.startswith(f"{layout.work}/"), (
-                f"{path} sits in the directory model-named files are written into"
-            )
+        assert under_work == {f"{layout.work}/data.csv"}, (
+            f"the only thing in the model's directory should be the file it named: {under_work}"
+        )
+        assert {layout.program, layout.shim} <= written, "the transport's own files were written"
+        assert not {layout.program, layout.shim} & under_work
 
 
 class TestADegenerateRunBoundIsRefusedInThisKindsVoice:
@@ -2067,7 +2118,6 @@ def _neighbouring(dispatch: bool, **kw: Any):
     return tool, sandbox
 
 
-@pytest.mark.parametrize("dispatch", [False, True], ids=["no registry", "dispatch armed"])
 def _model_dir(sandbox: InProcessSandbox, dispatch: bool) -> str:
     """Where this run put the files a model named: the work subdirectory, or the run directory.
 
