@@ -15,12 +15,18 @@ mocked test is least likely to match reality: #139 and #142 both turned on the d
 between what the SDK reports and what the payload actually carries, and ``_files_payload``
 still reaches past the typed ``FileInfo`` for exactly that reason (#136).
 
-**It is the first real exercise of four probes.** ``maf_sandbox.conformance`` holds the pull
-surface to one shared set, four of which require :data:`~maf_sandbox.Capability.FILES_LIST`.
-`maf-sandbox-acas` is the only backend that declares it, so those four have been skipping
-everywhere they have ever run. :class:`TestFilesOutAgainstTheRealService` asserts that none of
-them skipped here, because a suite that quietly skips a third of itself is the shape of a green
-run that attacked nothing.
+**It is the first exercise of four probes against the service.** ``maf_sandbox.conformance``
+holds the pull surface to one shared set, four of which require
+:data:`~maf_sandbox.Capability.FILES_LIST`. `maf-sandbox-acas` is the only backend that declares
+it, so those four skip in ``test_docker_e2e.py`` — the only live suite a pull request can run —
+and everywhere else a real backend has ever answered them. They are *not* unrun:
+``test_acas_backend.py``'s ``TestTheSharedConformanceSuite`` puts all of them to a fake on every
+pull request, and says in its own docstring that it is the closest available until a live run
+exists. This is that run, and the difference is the whole point of the suite: a fake answers
+what this package believes, and #139 and #142 were both the package believing wrong.
+
+:class:`TestFilesOutAgainstTheRealService` asserts that none of them skipped here, because a
+suite that quietly skips a third of itself is the shape of a green run that attacked nothing.
 
 **Cost discipline.** Two sandboxes for the whole module. The probes and refusals share one,
 acquired by a module-scoped fixture and disposed at the end; the lifecycle test needs its own
@@ -135,14 +141,36 @@ def live(loop):
     backend = AcasSandboxBackend(_config())
     scope = f"e2e-{uuid.uuid4()}"
     key = _key(scope)
-    sandbox = loop.run_until_complete(backend.acquire(key, _spec()))
     try:
+        # Inside the guard, not above it. `_get_or_create` registers the id only after the
+        # long-running create returns, so an acquire that creates the sandbox and *then* fails
+        # — a transport drop, a poller timeout — leaves a running billable microVM this process
+        # never learned the id of. dispose_scope finds it anyway, by label, which is the whole
+        # reason it is the teardown here; it cannot do that from outside the try.
+        sandbox = loop.run_until_complete(backend.acquire(key, _spec()))
         yield _Live(loop, backend, key, sandbox)
     finally:
-        # dispose_scope rather than dispose: it reads the service's own labels, so a sandbox
-        # this process lost track of mid-run is still deleted rather than left to its timer.
         loop.run_until_complete(backend.dispose_scope(scope, "thread-1"))
         loop.run_until_complete(backend.aclose())
+
+
+async def _drains_to_empty(
+    backend: AcasSandboxBackend, scope: str, *, attempts: int = 10, delay: float = 6.0
+) -> int:
+    """Purge ``scope`` until the service reports nothing left; return the rounds it took.
+
+    The claim is convergence, not a single reading: deletion is asynchronous here, so the first
+    round can legitimately find a sandbox that is already terminating and delete it again.
+    What must not happen is that it never empties.
+    """
+    for round_number in range(1, attempts + 1):
+        if await backend.dispose_scope(scope, "thread-1") == 0:
+            return round_number
+        await asyncio.sleep(delay)
+    raise AssertionError(
+        f"{scope} still had sandboxes after {attempts} purges over "
+        f"{attempts * delay:.0f}s; teardown is not reaching the service"
+    )
 
 
 def _subject(live: _Live) -> PosixGuestSubject:
@@ -184,13 +212,19 @@ class TestALiveSandbox:
             await backend.dispose(_key(scope))
 
             # Read back through a *fresh* backend, which has an empty registry, so this asks
-            # the service by label rather than this process's memory. Nothing left to purge is
-            # the assertion; a suspended-but-undeleted sandbox would still be found here.
+            # the service by label rather than this process's memory. A suspended-but-undeleted
+            # sandbox is still found there, which is the thing worth proving does not happen.
+            #
+            # Polled rather than asserted once: `_delete` calls `begin_delete()` and never
+            # awaits the poller, so `dispose` above only *starts* the deletion and a sandbox
+            # still terminating is legitimately still listed. Asserting zero on the first call
+            # would be a race that reads as a teardown regression when it loses.
             fresh = AcasSandboxBackend(_config())
             try:
-                assert await fresh.dispose_scope(scope, "thread-1") == 0
+                rounds = await _drains_to_empty(fresh, scope)
             finally:
                 await fresh.aclose()
+            assert rounds >= 1
 
         try:
             loop.run_until_complete(scenario())
@@ -213,14 +247,14 @@ class TestFilesOutAgainstTheRealService:
         # so reaching here is the pass. This asserts the run happened at all.
         assert probe_results, "the conformance run returned no results"
 
-    def test_no_probe_skipped_so_the_listing_four_finally_ran(self, probe_results):
+    def test_no_probe_skipped_against_the_backend_that_declares_them(self, probe_results):
         """The coverage claim, measured rather than assumed.
 
-        Four probes require `FILES_LIST` and this is the only backend that declares it, so
-        until now they have skipped in every run they were part of. A suite that skips a third
-        of itself and reports success is the failure `run_files_out_probes` refuses for
-        `FILES_OUT` and cannot refuse for `FILES_LIST` — it is a legitimate skip everywhere
-        else. Here it is not, so the assertion lives here.
+        A skip is legitimate wherever `FILES_LIST` is not declared, so `run_files_out_probes`
+        cannot refuse one the way it refuses a missing `FILES_OUT`. Against *this* backend it
+        is not legitimate, so the assertion lives here — and it is what a green summary hides:
+        four of these probes are the listing ones, and a run that skipped them would report
+        exactly the same success as one that ran them.
         """
         results = probe_results
         skipped = {result.probe.name: result.skipped for result in results if result.skipped}
@@ -265,8 +299,14 @@ class TestFilesOutAgainstTheRealService:
             entry = await live.sandbox.stat_file("adir", working_directory=_WORK)
             assert entry is not None
             assert entry.kind is EntryKind.DIRECTORY
-            with pytest.raises(OSError):
+            with pytest.raises(OSError) as refused:
                 await live.sandbox.read_file("adir", working_directory=_WORK, max_bytes=1 << 20)
+            # FileNotFoundError is an OSError, and `read_file` raises it when its own re-stat
+            # comes back None — so a bare `raises(OSError)` passes on a directory that was
+            # never there and the refusal under test never happens.
+            assert not isinstance(refused.value, FileNotFoundError), (
+                "the directory was missing, so this passed without refusing anything"
+            )
 
         live.run(scenario())
 
@@ -294,18 +334,32 @@ class TestWhatOnlyTheServiceCanSay:
         """
 
         async def scenario() -> None:
+            # This test plants its own directory. It used to rely on `out/` existing because a
+            # test in another class had written into it first, so running this one alone made
+            # `mkfifo` fail with "No such file or directory" — and the guard below then reported
+            # a missing mkfifo and skipped green, dropping the only coverage of the read
+            # timeout. A skip that misnames its own cause is worse than a failure.
+            await live.sandbox.write_file(f"{_WORK}/out/.keep", b"")
+
             planted = await live.sandbox.exec(
                 ["mkfifo", "out/pipe"], working_directory=_WORK, timeout=_EXEC_TIMEOUT
             )
-            if planted.exit_code != 0:
-                pytest.skip(f"the guest image has no usable mkfifo: {planted.stderr.strip()}")
+            # Asserted, not skipped. `mkfifo` is a stated requirement of this harness the same
+            # way `ln` is of PosixGuestSubject, which raises rather than skipping when it is
+            # missing; an image that cannot plant the entry should stop the suite loudly.
+            assert planted.exit_code == 0, (
+                f"could not plant a fifo in the guest (exit {planted.exit_code}): "
+                f"{planted.stderr.strip()}"
+            )
 
             entry = await live.sandbox.stat_file("out/pipe", working_directory=_WORK)
             assert entry is not None, "the service did not report the fifo at all"
-            # Recorded rather than asserted: if the service ever learns to report a fifo as
-            # something other than a regular file, the timeout below stops being the only
-            # defence and this test should be rewritten around the classification instead.
-            assert entry.kind in (EntryKind.FILE, EntryKind.OTHER)
+            # The premise, and a tripwire on it: a fifo indistinguishable from a regular file
+            # is *why* the timeout is the only defence. `_stat_from_payload` can return only
+            # SYMLINK, DIRECTORY or FILE, so this cannot come back as OTHER however the service
+            # answers — if the payload ever grows a way to say "fifo", that helper is where it
+            # would have to be read, and this assertion is what fails first.
+            assert entry.kind is EntryKind.FILE
 
             with pytest.raises(TimeoutError):
                 await live.sandbox.read_file("out/pipe", working_directory=_WORK, max_bytes=1 << 20)

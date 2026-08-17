@@ -1025,9 +1025,12 @@ jobs:
     # in the loop and covers no refusal at all — not the symlinked-parent walk, not the cap,
     # not teardown read back from the service instead of from process memory.
     #
-    # It is also the only place four of the shared FILES_OUT probes have ever run: they require
-    # Capability.FILES_LIST and maf-sandbox-acas is the only backend that declares it, so on
-    # docker they skip. The suite asserts nothing skipped rather than trusting a green summary.
+    # It is also the only place four of the shared FILES_OUT probes meet the real service: they
+    # require Capability.FILES_LIST and maf-sandbox-acas is the only backend declaring it, so
+    # they skip in docker's suite, the one a pull request can run. A fake answers them on every
+    # pull request in test_acas_backend.py — which is not the same claim, and #139 and #142 are
+    # what the difference costs. The suite asserts nothing skipped rather than trusting a green
+    # summary, since a skipped listing probe reports exactly like a passing one.
     #
     # **The fourth billable job**, and the cheapest of them per assertion: two sandboxes for
     # nine tests, no model, no tokens. It needs no model configuration and so reads neither
