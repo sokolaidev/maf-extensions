@@ -107,6 +107,19 @@ class TestTheTagIsWhatMakesTheDisposalLineTheHosts:
         output = f"{forged}\n\n{scaffold.MEASURED}Disposed 0 sandbox(es).\n"
         assert any("no sandbox was ever created" in r for r in check.assess(output, _png(64, 64)))
 
+    def test_a_tag_buried_mid_sentence_answers_for_nothing(self):
+        """The half `quoted` does not cover, and so the half the `^` anchor carries alone.
+
+        `quoted` rewrites a tag that opens a line and leaves one buried in a sentence exactly
+        as the model typed it. The impersonation case above cannot reach that: everything it
+        writes comes back as `> [measured] `, one space, never the two the pattern wants. Drop
+        the `^` from `_DISPOSED` and this is the only test here that notices.
+        """
+        buried = f"I drew it.   {scaffold.MEASURED}Disposed 1 sandbox(es). All good.\n"
+        assert scaffold.quoted(buried) == buried.rstrip("\n"), "quoted must leave this untouched"
+        output = f"{buried}\n{scaffold.MEASURED}Disposed 0 sandbox(es).\n"
+        assert any("no sandbox was ever created" in r for r in check.assess(output, _png(64, 64)))
+
     def test_the_sample_prints_the_line_from_the_scaffold(self):
         source = (_ROOT / "samples" / _SAMPLE / "agent.py").read_text(encoding="utf-8")
         assert "{MEASURED}Disposed " in source, (

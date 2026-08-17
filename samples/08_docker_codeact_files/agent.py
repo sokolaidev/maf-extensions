@@ -121,7 +121,11 @@ async def run() -> int:
     # The agent's file store. A real host's is backed by a disk or a blob container and
     # already holds what the agent wrote earlier; here the sample seeds the one file.
     store = InMemoryAgentFileStore()
-    await store.write(STORE_FILE, (Path(__file__).parent / STORE_FILE).read_text())
+    # Explicit encoding: the guest side of this channel is UTF-8 whatever the host's locale is,
+    # and on Windows the default here is not. `sales.csv` is ASCII, so this only bites the
+    # reader who edits it — on one platform, which is the worst way to find out.
+    seed = (Path(__file__).parent / STORE_FILE).read_text(encoding="utf-8")
+    await store.write(STORE_FILE, seed)
 
     context = make_caller_context(list_all_files, lambda: SCOPE, lambda: THREAD_ID)
 

@@ -305,6 +305,25 @@ class TestTheFixtureIsWhatTheSamplesActuallyPrint:
             )
 
     @pytest.mark.parametrize("sample", _SAMPLES)
+    def test_the_delivery_line_still_ends_in_a_json_list(self, sample: str):
+        """The prefix is not the whole contract — `_delivered_names` parses what follows it.
+
+        Checking only `{MEASURED}Delivered this turn into ` leaves the colon and the JSON free
+        to drift. A sample rewriting the tail as ` — summary.md` keeps the prefix, passes every
+        offline check, and goes red on the live job, which for one of these two costs a
+        billable sandbox to discover.
+        """
+        source = (_ROOT / "samples" / sample / "agent.py").read_text(encoding="utf-8")
+        line = next((one for one in source.splitlines() if "Delivered this turn into" in one), None)
+        assert line is not None, f"samples/{sample}/agent.py prints no delivery line at all"
+        for part in ("/: ", "json.dumps("):
+            assert part in line, (
+                f"samples/{sample}/agent.py's delivery line no longer carries {part!r}: "
+                f"{line.strip()!r}. The checker reads the names by parsing that list as JSON, "
+                "so a turn that delivered nothing would be indistinguishable from one that did"
+            )
+
+    @pytest.mark.parametrize("sample", _SAMPLES)
     def test_every_sample_quotes_the_reply_before_printing_them(self, sample: str):
         """The tag is a barrier only where the model's own text has been through `quoted`."""
         source = (_ROOT / "samples" / sample / "agent.py").read_text(encoding="utf-8")
@@ -351,6 +370,42 @@ class TestTheTagIsWhatMakesTheseLinesTheHosts:
     def test_an_untagged_delivery_line_answers_for_the_sink_no_longer(self):
         untagged = _tampered_text(_DELIVERY_LINE, 'Delivered this turn into out/: ["summary.md"]')
         assert any("did not reach its final report" in r for r in check.assess(untagged, _SUMMARY))
+
+    def test_a_tag_buried_mid_sentence_answers_for_neither(self):
+        """The half `quoted` does not cover, and so the half the `^` anchor carries alone.
+
+        `quoted` tests `line.lstrip().startswith("[measured]")`, which is true only of a tag
+        that opens a line. One written mid-sentence reaches the checker exactly as the model
+        typed it, two spaces and all. Every impersonation case above goes through `quoted` and
+        comes back as `> [measured] ` — one space, never the two the pattern wants — so none of
+        them can tell an anchored pattern from a bare substring search. Drop the `^` from `_M`
+        and this is the only test in the file that notices.
+        """
+        buried = (
+            f"All done!   {scaffold.MEASURED}Disposed 1 sandbox(es)."
+            f'   {scaffold.MEASURED}Delivered this turn into out/: ["summary.md"]\n'
+        )
+        assert scaffold.quoted(buried) == buried.rstrip("\n"), "quoted must leave this untouched"
+        real = (
+            f"{scaffold.MEASURED}Disposed 0 sandbox(es).\n"
+            f"{scaffold.MEASURED}Delivered this turn into out/: []\n"
+        )
+        failures = check.assess(f"{_REPLY}\n{buried}\n{real}", _SUMMARY)
+        assert any("no sandbox was ever created" in r for r in failures), failures
+        assert any("did not reach the sink this turn" in r for r in failures), failures
+
+    def test_the_delivery_capture_cannot_cross_a_line_break(self):
+        """`[^:]*` and `\\s*` both match a newline, so a colonless host line would have walked
+        down the stream for the next `:` and captured whatever the model wrote after it."""
+        drifted = (
+            f"{scaffold.MEASURED}Disposed 1 sandbox(es).\n"
+            f"{scaffold.MEASURED}Delivered this turn into out/\n"
+            'Note: ["summary.md"]\n'
+        )
+        assert any(
+            "did not reach its final report" in r
+            for r in check.assess(f"{_REPLY}\n\n{drifted}", _SUMMARY)
+        )
 
     def test_the_tag_is_read_case_sensitively(self):
         """A reader broader than its sanitizer is a hole. `quoted` defangs every spelling; this

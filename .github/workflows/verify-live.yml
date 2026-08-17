@@ -3,13 +3,15 @@ name: Verify (live)
 # Installs the PUBLISHED wheels into a clean environment and runs the samples below, each
 # asserting that its own workload ran rather than that the program exited zero.
 #
-# **No check here reads the model's prose for anything it gates on.** Each sample that calls
-# a model prints a fenced block of what its tool returned, closed by a line tagged
-# `[measured]`, and its check reads that. The alternative was wrong in both directions: a
-# model that never called the tool could satisfy a check made over prose, and three healthy
-# releases went red over a run writing `**error**` where the pattern wanted `[error]` (#314).
+# **No check here decides a run on the model's prose alone.** A sample that judges a tool's
+# answer prints a fenced block of what the tool returned, closed by a line tagged `[measured]`,
+# and its check reads that. A sample that judges a landed file prints no block — it reads the
+# file, and off the tag it reads what the host counted: what the router disposed, and for 08 and
+# 14 what the sink took. The alternative was wrong in both directions: a model that never called
+# the tool could satisfy a check made over prose, and three healthy releases went red over a run
+# writing `**error**` where the pattern wanted `[error]` (#314).
 #
-# Most are paired: one workload against a billable Azure microVM and the same workload against
+# Half are paired: one workload against a billable Azure microVM and the same workload against
 # a container, so a red on one side alone names the backend. 01 and 05 report the compiler's
 # diagnostics; 03 and 06 return the 100th Fibonacci number from code run in the sandbox; 08 and
 # 14 land a declared summary on disk and check the file rather than the transcript. 07 lands one
@@ -695,8 +697,9 @@ jobs:
     # sample reads no configuration and calls no service at run time, so there is
     # nothing in `live-verify` for it and no federated credential to mint. (It is not
     # offline — checkout and `uv`'s resolve reach the network, as in every job here.) — the workflow-level
-    # `contents: read` is the whole of what it needs. It is the cheapest job here by some
-    # distance: every other one pays for inference at least, and two pay for a microVM.
+    # `contents: read` is the whole of what it needs. It is among the cheapest jobs here:
+    # sample-11 and sample-12 also call no model, and every one of the other nine pays for
+    # inference at least, of which three pay for a billable microVM as well (01, 03, 14).
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 

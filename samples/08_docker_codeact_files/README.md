@@ -77,7 +77,7 @@ The grand total is 1124. The per-region summary was saved as summary.md.
 
 `out/summary.md` then holds the per-region table: north 390, south 200, east 84, west 450.
 
-The wording of the first line is the model's and varies run to run. The two tagged ones are the sample's own report of what the router disposed and what the sink took, and the live check reads only those — a model writes into the same stream, so a reply saying "Disposed 1 sandbox(es)." would otherwise answer for the router. The reply is filtered before printing, so a line of it starting with that tag comes out quoted, `> [measured] …` ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)).
+The wording of the first line is the model's and varies run to run. The two tagged ones are the sample's own report of what the router disposed and what the sink took, and the live check reads *those two* off the tag — a model writes into the same stream, so a reply saying "Disposed 1 sandbox(es)." would otherwise answer for the router. It also looks for the grand total anywhere in the transcript, which in a healthy run means in the model's reply; that one is a claim about the answer reaching the model, and the evidence a program ran is the landed file, whose four region totals are that grand total decomposed. The reply is filtered before printing, so a line of it starting with that tag comes out quoted, `> [measured] …` ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)).
 
 [Sample 14](../14_acas_codeact_files/) is this sample on a real Azure sandbox — same task, same data, same two lines, one line of wiring changed — and one script checks both.
 

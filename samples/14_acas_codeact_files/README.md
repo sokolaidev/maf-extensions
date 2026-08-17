@@ -24,7 +24,7 @@ The application code is the evidence. `make_recording_sink`'s body is copied fro
 - **`await backend.aclose()`** on the way out. There is an HTTP client to close; the Docker backend has none.
 - **It creates a billable sandbox.** Sample 08 costs a container on your own machine.
 
-Everything else is the same file. Diff the two and the changed lines are the four above.
+Everything else is the same file. Diff the two and what changes is those four, the `THREAD_ID` that keys this sample's sandbox, and the dependency block — which swaps the backend package and, unlike 08's, names `azure-identity` because this one imports `DefaultAzureCredential` directly rather than through the Docker path.
 
 ## What the pull actually does here
 
@@ -32,7 +32,7 @@ Everything else is the same file. Diff the two and the changed lines are the fou
 
 **The read follows symlinks** — in the parent directories as much as in the final component — so every one of them is classified before a byte moves. A symlink is refused whether or not its target would have resolved somewhere legitimate.
 
-**A cap is a refusal, not a truncation.** This backend declares 32 MiB per file and 128 MiB per transfer, and it checks the size again against what arrived, because the SDK buffers the whole response rather than exposing an incremental hook. A file the service reports no size for is refused rather than read.
+**A cap is a refusal, not a truncation.** This backend declares 32 MiB per file and 128 MiB per transfer, and it checks the size again against what arrived, because the SDK buffers the whole response rather than exposing an incremental hook. A file the service reports no size for is refused rather than read. Those are the backend's ceilings, and they are not what a run of this sample hits first — the workload's own are tighter, and the section at the end says which.
 
 **One residual stays open, and is documented rather than hidden.** A guest that swaps the stat-ed file for a symlink between the two calls wins: the service follows it, and this API has no no-follow read. An atomic no-follow read or a frozen guest filesystem would close it; nothing available here does. On Docker the equivalent question has a different answer, which is the sort of thing only running the same workload on both surfaces makes visible.
 
@@ -68,7 +68,9 @@ Read these first; none of them is quick to arrange halfway through. They are sam
 
 No `ACAS_SANDBOX_REGISTRY`: `agent.py` names the image by its full MCR reference, and a fully-qualified reference is passed through untouched rather than qualified against a registry.
 
-With any of these unset the program says which and exits non-zero, rather than running. That is deliberate — `make_codeact_tools` returns an empty list when the router has no usable backend, so a half-configured run does not crash. It produces an agent with no tools, which answers from the model alone, and that failure looks exactly like success.
+With any of these unset the program says which and exits non-zero, rather than running. That is deliberate, and the failure it avoids is specific: `make_codeact_tools` returns an **empty list** when the router holds no backend at all, so a run configured with nothing does not crash — it builds an agent with no tools, which answers from the model alone, and that looks exactly like success.
+
+Only that case is quiet. A backend that *is* registered and cannot serve the workload is refused loudly instead: below the isolation floor raises at `SandboxRouter(...)`, and a missing capability raises `SandboxCapabilityNotSupported` out of `make_codeact_tools`.
 
 ## Running it
 
@@ -95,12 +97,10 @@ Sample 08 prints the same two lines over the same numbers. That is what makes a 
 
 Sample 08's [refusals](../08_docker_codeact_files/README.md#when-it-goes-wrong) — a file outside the listing, a name that traverses, a declared output never written — are the kind's and read the same here. These are this backend's:
 
-**`No sandbox backend: execute_code was not attached.`** — the router has no usable backend. Check the four `ACAS_SANDBOX_*` variables.
-
 **A disk image that cannot be resolved** — the image was named but never imported into the sandbox group. The error names the reference it looked for, and that reference has to match the one the import step used exactly.
 
 **`SandboxCapabilityNotSupported` at startup** — the backend cannot do what `execute_code` was configured to need. With both channels wired that is `EXEC`, `FILES_IN` and `FILES_OUT`; this backend declares all three plus `FILES_LIST`, so this only appears against a swapped-in backend that declares less. Note which way it fails: the whole kind is refused at attach, so `execute_code` is absent rather than quietly thinner.
 
-**`SandboxTransferCapExceeded` on the way out** — the program wrote something larger than 32 MiB. The cap is this backend's, per file, and it refuses rather than truncating.
+**`SandboxTransferCapExceeded` on the way out** — the program wrote something larger than **8 MiB**, and the refusal names *this workload's* ceiling rather than the backend's. Two limits stack here and the tighter one binds: the sample passes no `files_out=`, so the CodeAct kind's default applies — 8 MiB per file, 32 MiB in total, 8 files — and collection is checked against the spec's, not the backend's. The backend's own 32 MiB/128 MiB is a ceiling above that and never binds in this sample. Either way it is a refusal and not a truncation.
 
 **`400 — Encrypted content is not supported with this model`** — the chat deployment is not a reasoning model. Nothing about the sandbox is involved, and the run fails before one is created.

@@ -25,6 +25,9 @@ this directory's README for the prerequisites and the environment variables.
 # requires-python = ">=3.12"
 # dependencies = [
 #     "agent-framework-openai",
+#     # Imported directly for `DefaultAzureCredential`, so it is named here rather than taken
+#     # on loan from maf-sandbox-acas, which happens to depend on it today.
+#     "azure-identity",
 #     "maf-sandbox-acas",
 #     "maf-sandbox-codeact",
 #     "maf-sandbox>=0.12",
@@ -142,7 +145,11 @@ async def run() -> int:
     # The agent's file store. A real host's is backed by a disk or a blob container and
     # already holds what the agent wrote earlier; here the sample seeds the one file.
     store = InMemoryAgentFileStore()
-    await store.write(STORE_FILE, (Path(__file__).parent / STORE_FILE).read_text())
+    # Explicit encoding: the guest side of this channel is UTF-8 whatever the host's locale is,
+    # and on Windows the default here is not. `sales.csv` is ASCII, so this only bites the
+    # reader who edits it — on one platform, which is the worst way to find out.
+    seed = (Path(__file__).parent / STORE_FILE).read_text(encoding="utf-8")
+    await store.write(STORE_FILE, seed)
 
     context = make_caller_context(list_all_files, lambda: SCOPE, lambda: THREAD_ID)
 
@@ -165,9 +172,11 @@ async def run() -> int:
     )
     if not tools:
         # Unreachable given the checks above; printed because the `[]` contract is worth
-        # stating. Worth knowing which way it fails, though: a backend not serving `FILES_OUT`
-        # loses the whole kind at attach rather than the output channel alone, so `execute_code`
-        # would be absent instead of quietly thinner. Sample 11 shows that refusal on purpose.
+        # stating. `[]` means one thing only — no backend was registered at all. A backend that
+        # *is* registered and cannot serve this spec never reaches here: a floor breach raises
+        # at `SandboxRouter(...)`, and a missing capability raises `SandboxCapabilityNotSupported`
+        # out of `make_codeact_tools` itself. So the whole kind is refused rather than the output
+        # channel quietly dropped — loudly, and before this line. Sample 11 shows that on purpose.
         print("No sandbox backend: execute_code was not attached.", file=sys.stderr)
         return 2
 
