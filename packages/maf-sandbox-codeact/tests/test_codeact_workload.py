@@ -1907,7 +1907,11 @@ class TestAProgramThatCallsOut:
         assert sandbox.answers == [{"value": 4}, {"value": 4}]
 
     def test_the_program_is_written_where_the_launcher_goes_looking_for_it(self):
-        """Write the program only to ``layout.program``, where the launcher executes it."""
+        """Write the program only to ``layout.program``, where the launcher executes it.
+
+        The two negative assertions are why this is `only`: a copy left in the run directory
+        or in `work/` would satisfy the first assertion while still putting the program where
+        a model's files are.
         """
         sandbox = _CallingSandbox("_round_half_up", {"value": 0.5})
         _run(_dispatching(sandbox, _round_half_up), "print('hi')")
@@ -1965,6 +1969,25 @@ class _StallingSandbox(_ScriptedSandbox):
         return result
 
 
+class _SlowToTakeTheLauncherSandbox(_ScriptedSandbox):
+    """A guest whose launcher upload outlives the run's whole bound.
+
+    The transport gives up before `exec` is ever reached, so the program is never started —
+    the one `SandboxProgramTimeout` that is not the program overrunning.
+    """
+
+    #: Longer than the one second the test gives the run, so the deadline `_within` holds the
+    #: upload to is already gone when it returns. The factory refuses a non-positive
+    #: `exec_timeout_seconds` on a dispatching tool, so one second is the shortest bound that
+    #: reaches this path at all, and this has to outlast it.
+    _SLOWER_THAN_THE_RUN = 1.2
+
+    async def write_file(self, path: str, content: str | bytes) -> None:
+        await super().write_file(path, content)
+        if path.endswith(".sh"):
+            await asyncio.sleep(self._SLOWER_THAN_THE_RUN)
+
+
 class _StatTimingOutSandbox(_StallingSandbox):
     """A backend that bounds its own control-plane calls, as the shipped Docker one does.
 
@@ -1989,11 +2012,30 @@ class TestATimeoutSaysWhoseItWas:
         assert "docker cp" not in out, "the backend's own sentence reached the transcript"
 
     def test_a_program_that_runs_out_is_quoted_as_far_as_it_got(self):
+        """The transport's own sentence is surfaced rather than rebuilt, so the wording is
+        `did not finish within` rather than this kind's older `timed out after`.
+
+        Rebuilding it from `SandboxProgramTimeout.output` alone loses the case below and the
+        host's reason for having read no output, both of which live only in the message.
+        """
         sandbox = _StallingSandbox(printed=b"step 1 done\nstep 2 done")
         out = _run(_dispatching(sandbox, _round_half_up, exec_timeout_seconds=1), "print('x')")
 
-        assert "timed out after 1s" in out
+        assert "did not finish within 1s" in out, out
         assert "step 2 done" in out, "the partial output the transport paid to read was dropped"
+
+    def test_a_run_that_expires_before_the_program_starts_does_not_blame_the_program(self):
+        """`SandboxProgramTimeout` covers the launcher upload too, where nothing ran.
+
+        Telling a model its program timed out sends it rewriting code that never executed, and
+        the distinction exists nowhere but the transport's message — the exception type is the
+        same and `output` is empty either way.
+        """
+        sandbox = _SlowToTakeTheLauncherSandbox()
+        out = _run(_dispatching(sandbox, _round_half_up, exec_timeout_seconds=1), "print('x')")
+
+        assert "before the program was started" in out, out
+        assert "did not finish" not in out, "a run that never started was reported as overrunning"
 
     def test_the_plain_path_still_reads_a_timeout_as_the_programs_own(self):
         """No dispatch, one `exec`, one bound: the equation this class complicates holds here."""

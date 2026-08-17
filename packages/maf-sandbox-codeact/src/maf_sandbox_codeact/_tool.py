@@ -714,15 +714,21 @@ async def _execute(
                 [_INTERPRETER, program_path], working_directory=run_dir, timeout=timeout
             )
     except SandboxProgramTimeout as expired:
-        # The transport's own bound, so the program really did run out — and it is still
-        # running: nothing here can stop a detached process, and no kind can dispose (#375).
+        # The transport's own bound — but *which* of its bounds is something only its message
+        # knows. The run can expire before the program is started at all, and that message
+        # says so where a reconstructed "the program timed out" would blame code that never
+        # ran. The message also carries the output clause, which is the program's stdout or
+        # the host's reason for having none; `output` is empty in the second case, so
+        # rebuilding the sentence from that attribute drops the reason silently.
+        #
+        # Surfaced whole rather than quoted from: the transport writes these model-safe, with
+        # a backend's own text kept to the log, which is the same rule this kind follows.
         logger.warning(
-            "execute_code: the program timed out after %ss and may still be running in the "
-            "sandbox; disposing it is what stops it",
-            timeout,
+            "execute_code: %s — if the program was started it is still running, and nothing "
+            "here can stop a detached process; disposing the sandbox is what does (#375)",
+            expired,
         )
-        quoted = f" Output so far:\n{expired.output}" if expired.output else ""
-        return f"Error: the program timed out after {timeout}s.{quoted}"
+        return f"Error: {expired}"
     except TimeoutError as unfinished:
         if dispatch is None:
             # One `exec`, one bound: a timeout here is that bound and nothing else.
