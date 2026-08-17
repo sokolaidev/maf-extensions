@@ -88,39 +88,39 @@ _TRANSPORT_DIRECTORY = "host_tools"
 #: and that is what replaced the list of names a kind used to have to refuse.
 _TRANSPORT_FILENAMES = frozenset({SHIM_MODULE, _LAUNCHER, OUTPUT_FILE, EXIT_FILE, CALLS_DIRECTORY})
 
-#: What **CPython's own startup imports unconditionally**, which this directory is on the path
-#: for. Refused as a ``program`` name rather than left to surprise a kind — not a model's
-#: choice, since a kind names its own program and nothing a model names lands here.
+#: Module names a ``program`` may not be called, and why they are matched by **stem**.
 #:
-#: Deliberately not "everything imported before the script runs", which is not a set anyone
-#: can write down: a ``.pth`` file may import any name it likes, so a guest image with
+#: A file in this directory is importable, because the directory is on the interpreter's path
+#: from startup — so what matters is the module name a file would answer to, not the spelling
+#: of its suffix. ``FileFinder`` tries extension suffixes first, then source, then bytecode, so
+#: ``json.cpython-313-x86_64-linux-gnu.so`` outranks ``json.py``; refusing exact filenames
+#: would leave every one of those twins open. Everything up to the first dot is the stem.
+#:
+#: Two families, refused for different reasons.
+#:
+#: :data:`_STARTUP_STEMS` is what CPython reaches on its way up. ``encodings`` is imported
+#: before the interpreter can report anything and takes it down with a path-configuration
+#: dump. ``sitecustomize`` is executed by ``site``, so as a program it runs twice, once during
+#: startup and once as the script — as does ``usercustomize`` wherever user site is enabled,
+#: which is everywhere except a virtualenv. ``site`` does **not** shadow the stdlib module
+#: from here, checked on 3.11 through 3.13, and is refused anyway as the module that imports
+#: the other two, on the grounds that which path CPython resolves it by is an implementation
+#: detail rather than a promise.
+#:
+#: This is deliberately *not* "everything imported before the script runs", which is not a set
+#: anyone can write down: a ``.pth`` file may import any name it likes, so a guest image with
 #: setuptools reaches ``_distutils_hack`` and one with ``PYTHONWARNINGS`` reaches ``warnings``.
-#: Those depend on the image, and a constructor that pretended to enumerate them would be
-#: making a promise it cannot keep. What is refused here is what ships with the interpreter.
-#:
-#: They do not fail alike, and the difference is measured rather than assumed. ``encodings``
-#: is imported before the interpreter can report anything and takes it down with a
-#: path-configuration dump. ``sitecustomize`` is executed by ``site`` on every interpreter, so
-#: as a program it runs twice, once during startup and once as the script; ``usercustomize``
-#: does the same *except* where user site is disabled, which is every virtualenv. ``site``
-#: itself does **not** shadow the stdlib module from here — checked on 3.11 through 3.13 — and
-#: is refused anyway, being the module that imports the other two, on the grounds that which
-#: of several paths CPython resolves it by is an implementation detail and not a promise.
-#:
-#: Both extensions, because a top-level ``.pyc`` still resolves from a path entry: an
-#: ``encodings.pyc`` is the same fatal failure as the source file, reached by its twin.
-_STARTUP_IMPORTED = frozenset(
-    f"{stem}{suffix}"
-    for stem in ("encodings", "site", "sitecustomize", "usercustomize")
-    for suffix in (".py", ".pyc")
-)
+#: Those belong to the image, and a constructor pretending to enumerate them would be making a
+#: promise it cannot keep.
+_STARTUP_STEMS = frozenset({"encodings", "site", "sitecustomize", "usercustomize"})
 
-#: What the generated shim imports, and therefore what a ``program`` beside it must not be
-#: named. They share a directory and it is first on the path, so a program called ``json.py``
-#: *is* the module the shim reaches for: the program's body runs a second time under that
-#: name, and every dispatch afterwards fails on an attribute the real module would have had.
-#: Derived from the shim rather than listed, so adding an import cannot leave this behind.
-_SHIM_IMPORTS = frozenset(f"{module}.py" for module in ("json", "os", "time"))
+#: :data:`_SHIM_STEMS` is what the generated shim imports, and the collision is with the shim
+#: rather than the interpreter: the two share a directory, so a program named ``json`` *is*
+#: what the shim's own ``import json`` finds. The program's body runs a second time under that
+#: name and every dispatch afterwards dies on an attribute the real module would have had —
+#: a traceback that names ``dumps`` and never the collision. Derived from the shim by a test
+#: that parses it, so adding an import there cannot leave this behind.
+_SHIM_STEMS = frozenset({"json", "os", "time"})
 
 
 class SandboxProgramTimeout(TimeoutError):
@@ -208,12 +208,21 @@ def guest_run_layout(run_directory: str, *, program: str = "program.py") -> Gues
     """The paths :func:`dispatch_over_exec` expects, derived from one run's directory.
 
     A kind writes ``program`` and :attr:`GuestRunLayout.shim`; everything else is written here.
+
     ``run_directory`` must be absolute, free of backslashes — the grammar
-    :func:`~maf_sandbox.paths.confine_guest_path` enforces on every pull call — and fresh per
-    run, on which see this module's docstring. ``program`` must be a plain file name the
-    layout does not already use. All but freshness are refused here; freshness is not visible
-    from a path, and a stale exit marker ends the next run on its first poll. The directory
-    comes back normalised, so ``..`` is fine to pass and one spelling reaches every call.
+    :func:`~maf_sandbox.paths.confine_guest_path` enforces on every pull call — free of ``:``,
+    which ``PYTHONPATH`` uses to separate entries and cannot quote, and fresh per run, on which
+    see this module's docstring. The directory comes back normalised, so ``..`` is fine to pass
+    and one spelling reaches every call.
+
+    ``program`` must be a plain file name, and not one of three families this directory makes
+    dangerous: a name the layout already uses, a name the generated shim imports, or a name
+    CPython imports at startup. The last two are matched by **stem**, since a suffix decides
+    only which loader answers — see :data:`_SHIM_STEMS` and :data:`_STARTUP_STEMS` for what
+    each collision does.
+
+    Everything but freshness is refused here; freshness is not visible from a path, and a stale
+    exit marker ends the next run on its first poll.
     """
     if not posixpath.isabs(run_directory):
         raise ValueError(
@@ -251,23 +260,23 @@ def guest_run_layout(run_directory: str, *, program: str = "program.py") -> Gues
             f"program must not be a name this layout already uses, and {program!r} is one of "
             f"{sorted(_TRANSPORT_FILENAMES)}"
         )
-    if program in _SHIM_IMPORTS:
-        # The shim is imported by the program and lives beside it, so a program under one of
-        # these names answers the shim's own `import` — and takes the dispatch surface down
-        # with it, in a way whose traceback names an attribute rather than the collision.
+    stem = program.split(".", 1)[0]
+    if stem in _SHIM_STEMS:
         raise ValueError(
-            f"program must not be a name the generated shim imports, and {program!r} is one "
-            f"of {sorted(_SHIM_IMPORTS)}: it shares a directory with the shim, which is first "
-            "on the interpreter's path, so the shim would import the program instead"
+            f"program must not be named for a module the generated shim imports, and "
+            f"{program!r} answers to {stem!r}, one of {sorted(_SHIM_STEMS)}: it shares a "
+            "directory with the shim, which is first on the interpreter's path, so the shim "
+            "would import the program instead of the module it meant"
         )
-    if program in _STARTUP_IMPORTED:
+    if stem in _STARTUP_STEMS:
         # This directory is on the interpreter's path from *startup*, not only once the script
         # is found, so a file named for something the interpreter imports on its way up runs —
-        # or fails — before the program does. `_STARTUP_IMPORTED` says what each one does.
+        # or fails — before the program does. `_STARTUP_STEMS` says what each one does.
         raise ValueError(
-            f"program must not be a name the interpreter imports at startup, and {program!r} "
-            f"is one of {sorted(_STARTUP_IMPORTED)}: this directory is on the path before the "
-            "program is the script, so such a file runs during initialisation"
+            f"program must not be named for a module CPython imports at startup, and "
+            f"{program!r} answers to {stem!r}, one of {sorted(_STARTUP_STEMS)}: this directory "
+            "is on the path before the program is the script, so such a file is reached during "
+            "initialisation"
         )
     served = posixpath.join(run_directory, _TRANSPORT_DIRECTORY)
     return GuestRunLayout(
@@ -595,7 +604,7 @@ async def dispatch_over_exec(
             its output up to that point is in the message and on ``output``, and the process
             may still be running — disposing of the sandbox is what stops it. On the two
             starting legs, the launcher upload and the ``exec`` that runs it, ``output`` is
-            empty instead: there was no run directory to read one from, and on a backend that
+            empty instead: the output file does not exist yet, and on a backend that
             began the command before its own call returned there may be output nobody read.
             Distinct from a bare ``TimeoutError`` below, which is a backend failing for a
             reason of its own and says nothing about whether the program is still going.

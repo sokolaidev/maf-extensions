@@ -527,7 +527,15 @@ class TestTheLauncherAgainstARealShell:
             text=True,
             timeout=60,
             check=True,
-            env={**os.environ, "PYTHONPATH": f"/image/libs:{work}/*:rel:"},
+            # `maf_kept` exported by the "image": without it the leak assertion below is
+            # vacuous, because a plain shell assignment never reaches a child's environment
+            # and the launcher's leftovers could only ever be visible through a name that was
+            # already exported. This is the one arrangement where the `unset` does work.
+            env={
+                **os.environ,
+                "PYTHONPATH": f"/image/libs:{work}/*:rel:",
+                "maf_kept": "the image's own",
+            },
         )
         marker = pathlib.Path(layout.exit_code)
         for _ in range(200):
@@ -541,7 +549,10 @@ class TestTheLauncherAgainstARealShell:
             "the guest's path is not the shim's directory followed by the absolute entries "
             "unchanged — a glob was expanded, an entry was dropped, or the order moved"
         )
-        assert leaked == "leaked: []", "the launcher's own variables reached the guest"
+        assert leaked == "leaked: []", (
+            "the launcher's own value for maf_kept reached the guest, where the image's "
+            "exported variable of that name used to be"
+        )
 
     @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
     @pytest.mark.skipif(
@@ -1304,9 +1315,12 @@ class TestTheLayoutsOwnPromise:
             "site.py",
             "sitecustomize.py",
             "usercustomize.py",
-            # A top-level `.pyc` resolves from a path entry too, so the fatal one has a twin.
+            # Matched by stem, because the suffix only decides which loader answers — and
+            # `FileFinder` tries extensions before source, so these outrank the `.py` above.
             "encodings.pyc",
             "sitecustomize.pyc",
+            "encodings.so",
+            "site.cpython-313-x86_64-linux-gnu.so",
         ],
     )
     def test_a_program_the_interpreter_imports_on_its_way_up_is_refused(self, name: str):
