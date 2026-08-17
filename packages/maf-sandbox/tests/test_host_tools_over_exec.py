@@ -1693,6 +1693,12 @@ class TestTheLayoutsOwnPromise:
             "sitecustomize.old.py",
             "encodings.v2.py",
             "maf_host_tools.backup.py",
+            # One dot, but no loader answers to the suffix — the same over-refusal wearing a
+            # shorter name, and the reason the check is against a suffix set rather than
+            # against "has exactly one dot".
+            "json.txt",
+            "site.sh",
+            "maf_host_tools.custom",
             # No suffix at all: nothing imports it, and the launcher runs it by path.
             "program",
         ],

@@ -164,13 +164,25 @@ _SHIM_STEMS = frozenset({"json", "os", "time"})
 _SHIM_MODULE_STEM = SHIM_MODULE.split(".", 1)[0]
 
 
+#: The one-dot suffixes some loader answers to, across the platforms a guest may run — the
+#: union of ``SOURCE_SUFFIXES``, ``BYTECODE_SUFFIXES`` and ``EXTENSION_SUFFIXES`` on POSIX
+#: (``py``, ``pyc``, ``so``) and on Windows (``py``, ``pyw``, ``pyc``, ``pyd``). Held here
+#: rather than read from :mod:`importlib.machinery`, which would answer for *this* interpreter
+#: on *this* platform and so refuse the wrong set for a guest that is neither. A union means
+#: each platform refuses a little more than it has to — ``json.pyw`` is inert on POSIX — which
+#: is the same direction of error as the tagged-extension rule below, and taken for the same
+#: reason: the guest's platform is no more knowable here than its ABI tag.
+_LOADER_SUFFIXES = frozenset({"py", "pyc", "pyw", "so", "pyd"})
+
+
 def _module_a_program_answers_to(program: str) -> str | None:
     """The module name an import in this directory would reach ``program`` by, or ``None``.
 
     ``FileFinder`` looks for a *name plus one of its loaders' suffixes*, so `json.py`,
-    `json.pyc` and every extension spelling of `json` answer to ``json`` — but `json.backup.py`
-    answers to nothing, because no loader suffix is `.backup.py`. Splitting on the first dot
-    treats the two alike and refuses a program name that cannot collide with anything.
+    `json.pyc` and every extension spelling of `json` answer to ``json`` — while `json.txt`
+    and `json.backup.py` answer to nothing, the first because no loader claims `.txt` and the
+    second because none claims `.backup.py`. A program under either can be run by path and
+    never imported, so refusing it would be refusing a name that cannot collide.
 
     A suffix carrying an interior dot is always an extension one (`.abi3.so`,
     `.cpython-313-x86_64-linux-gnu.so`), and its tag belongs to the guest's interpreter, which
@@ -182,7 +194,9 @@ def _module_a_program_answers_to(program: str) -> str | None:
     if not dot:
         # No suffix, so no loader claims it; the launcher runs it by path regardless.
         return None
-    return head if "." not in suffix or suffix.endswith((".so", ".pyd")) else None
+    if "." in suffix:
+        return head if suffix.endswith((".so", ".pyd")) else None
+    return head if suffix in _LOADER_SUFFIXES else None
 
 
 class SandboxProgramTimeout(TimeoutError):
