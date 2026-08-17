@@ -118,16 +118,18 @@ _TRANSPORT_FILENAMES = frozenset({SHIM_MODULE, _LAUNCHER, OUTPUT_FILE, EXIT_FILE
 #: anyone can write down: a ``.pth`` file may import any name it likes, so a guest image with
 #: setuptools reaches ``_distutils_hack`` and one with ``PYTHONWARNINGS`` reaches ``warnings``.
 #: Those belong to the image, and a constructor pretending to enumerate them would be making a
-#: promise it cannot keep. What is here was found by running a census against the interpreters
-#: this suite expects to meet; it is a floor under the common failures, not a proof.
+#: promise it cannot keep. What is here was found by running a census against CPython 3.8
+#: through 3.13 — the top-level modules each imports from a file before running a script — so
+#: it is a floor under the common failures on those, and not a proof for any guest.
 _STARTUP_STEMS = frozenset(
     {
         "encodings",
         "site",
         "sitecustomize",
         "usercustomize",
-        # Reached during startup on a guest whose stdlib is not frozen. Censused on 3.9 and
-        # 3.10 by listing the top-level modules whose origin is a file; 3.8 matches 3.10.
+        # Reached during startup on a guest whose stdlib is not frozen. Censused on 3.8, 3.9
+        # and 3.10 by listing the top-level modules whose origin is a file, and empty from
+        # 3.11 — see this constant's docstring for what that census does and does not prove.
         "abc",
         "codecs",
         "genericpath",
@@ -136,7 +138,8 @@ _STARTUP_STEMS = frozenset(
         "stat",
         "_collections_abc",
         "_sitebuiltins",
-        # 3.9 only, and reached by `site` — so its absence is fatal in the same way.
+        # 3.8 and 3.9, where `site` reading any `.pth` file builds a `TextIOWrapper` without
+        # an explicit encoding, and that imports this. Gone in 3.10, which removed the module.
         "_bootlocale",
     }
 )
@@ -309,8 +312,9 @@ def guest_run_layout(run_directory: str, *, program: str = "program.py") -> Gues
     if stem == _SHIM_MODULE_STEM:
         raise ValueError(
             f"program must not answer to the shim's own module name, and {program!r} answers "
-            f"to {stem!r}: the program's first act is to import that module, and a file here "
-            f"under this stem is either what the import finds or a program that cannot run"
+            f"to {stem!r}: the stem is reserved for the shim, because a file here under it "
+            f"with a loader's suffix either shadows the import the program opens with or "
+            f"cannot be run as a program, and no suffix makes the name worth allowing"
         )
     if stem in _SHIM_STEMS:
         raise ValueError(
