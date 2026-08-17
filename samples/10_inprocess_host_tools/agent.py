@@ -137,7 +137,7 @@ def act_three_permitted(identities: frozenset[Identity]) -> InProcessSandboxBack
     router.ensure_can_serve(spec)
     print(f"  ensure_can_serve({KIND!r}) returned. The kind may attach.")
     print("  One call is the whole of a host's wiring test — and the whole of this sample's")
-    print("  happy path, because what a dispatch would do next has no transport yet.\n")
+    print("  happy path, because a dispatch needs a guest program and this sample runs none.\n")
     # Handed back so `main` can read what it recorded rather than assert what it expects:
     # `InProcessSandboxBackend` appends to `keys` on every `acquire`.
     return backend
@@ -232,8 +232,9 @@ def main() -> int:
     done.append("refused")
 
     print("== What is not here ==\n")
-    print("  A dispatch. No shipped backend declares Capability.HOST_TOOLS, and the")
-    print("  transport a guest would send a request over is still being designed (#133).")
+    print("  A dispatch. The transport a guest sends a request over has landed (#327) and")
+    print("  maf-sandbox-codeact dispatches over it, but no shipped backend declares")
+    print("  Capability.HOST_TOOLS, so nothing serves one yet.")
     print("  Everything above is the half a host configures on day one regardless, and it")
     print("  is the half that decides whether the other half ever runs.\n")
 

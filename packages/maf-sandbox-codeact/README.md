@@ -33,11 +33,11 @@ Pass `router=None` — or a router with no backend — and you get `[]` back: an
 
 ## What the model gets
 
-One tool, `execute_code`. The program is written to a directory of its own and run as the argv `["python3", ".../program.py"]`, and the result is its stdout, its stderr when it wrote any, and its exit code when that was not zero. There is no REPL echo, so a program that computes without printing returns a sentence saying so.
+One tool, `execute_code`. The program is written to a directory of its own and run as the argv `["python3", ".../program.py"]`, and the result is its stdout, its stderr when it wrote any, and its exit code when that was not zero. Both of those change shape once `host_tools` is wired — a launcher runs the program and its stderr arrives merged into stdout — which the sections below cover. There is no REPL echo, so a program that computes without printing returns a sentence saying so.
 
 **Every call gets a fresh directory, and that is load-bearing rather than hygiene.** `acquire` is get-or-create, so the same sandbox serves every call in a conversation. Without a per-call directory a file deleted from the file store between rounds would still be there for the next program to read as current, and last round's output file would be collected as this round's — a stale answer presented as a live one, in a kind whose whole job is transforming files.
 
-Two further channels exist and neither is on by default. Wire neither and this is the stdout-only kind it has always been.
+Three further channels exist and none is on by default. Wire none and this is the stdout-only kind it has always been.
 
 ### Files in
 
@@ -70,13 +70,32 @@ Either way the kind requires `FILES_OUT` and **never** `FILES_LIST`: it collects
 
 **Where files land is the host's decision, never this kind's.** That is the point of the sink, and it matters more here than for any other kind: these bytes were authored by model-written code. A host that points the sink at the same store the agent's own file tools write to has given that code an unapproved `file_access_write`, and one that lets it overwrite has given it a way to influence a *different* tool on the next call. Point it somewhere the agent cannot otherwise reach.
 
+### Host tools
+
+Pass a `host_tools` registry and the program gets a way to call out over [`maf-sandbox`](https://github.com/sokolaidev/maf-extensions/tree/main/packages/maf-sandbox)'s opt-in transport for compatible `EXEC` backends:
+
+```python
+from maf_sandbox import HostToolRegistry
+from maf_sandbox_codeact import make_codeact_tools
+
+registry = HostToolRegistry()
+registry.register(exchange_rate)
+tools = make_codeact_tools(router, "data-analyst", context, host_tools=registry, image=...)
+```
+
+A non-empty registry widens `requires` by `Capability.HOST_TOOLS` **and** `Capability.FILES_OUT` together — the transport stats and reads its own request files and the exit marker over the same pull surface, so even a stdout-only program that calls a host function needs it. One requirement the capability set cannot express: the launcher `dispatch_over_exec` writes is POSIX shell and needs a guest with `sh` and `nohup`, so a Windows or distroless image is out whatever it declares. It also carries the registry's `identities`, so a router's `denied_identities` can refuse the widened spec at attach; raises `approval_mode` to `always_require` the moment any tool declares `Identity.USER`, since which call would exercise the caller's own authority is not knowable before the program runs; and makes the host's own `outbound_max_confidentiality` apply the moment a tool declares a sink or leaves the question unanswered — an **unstamped** tool is read as carrying something out, like every other undeclared leg — even though nothing lands, which is the one flow a derivation reading only the spec cannot see. **Reading the registry seals it**, so pass `host_tools` only once everything is registered: a `register` afterwards is refused at the host's own call site. Only where a sandbox is configured, though — an unconfigured host attaches nothing and derives nothing from the registry, so nothing is sealed and a late `register` is allowed. A host developing with sandboxing off meets that refusal in production.
+
+At call time the tool writes the generated guest module beside the program and runs `dispatch_over_exec` under a fresh `HostToolRun` per call. A dispatching run is two guest directories: the transport's files — the program, the module, the launcher, the output and exit marker — live in `host_tools/`, and everything a model names in `files=` or `outputs=` lives in `work/`, which is the program's working directory. So none of the transport's names is reserved against a model-supplied one; there is nothing for the two to collide over. Without a registry the run is the flat directory it has always been, and there `program.py` is still refused as an input or output name. The description the model reads names the dispatchable tools and the one call form that always works, and qualifies the "no network access" claim: the sandbox still has none of its own, and the listed tools are the only way past it.
+
+**No shipped backend declares `Capability.HOST_TOOLS` yet.** A stdout-only program with host tools wired needs `{EXEC, FILES_IN, FILES_OUT, HOST_TOOLS}` — which already drops `maf-sandbox-wslc`, whose backend declares only `{EXEC, FILES_IN}` — and none of this repository's shipped backends declare `HOST_TOOLS` at all, so wiring `host_tools` today is refused where the tool would have been built: `make_codeact_tools` raises `SandboxCapabilityNotSupported`. Not a dormant wiring that starts working when a backend arrives — a construction-time failure, which is the same refusal an unservable spec gets anywhere else, met earlier than most. Wire it when a backend can serve it.
+
 ## Threat model
 
-**The source is never a command line.** Model-written code reaches the interpreter as file *content* and the command is a fixed two-element argv — a sequence, not a shell string — so there is no command line for the source to be part of, nothing to quote, and nothing to escape. That is the security-relevant decision in this package and it is pinned by a test.
+**The source is never a command line.** Model-written code reaches the interpreter as file *content*, on both roads, so there is no command line for it to be part of and nothing about the source to quote or escape. That is the security-relevant decision in this package. Wire no `host_tools` and the command is a fixed two-element argv — a sequence, not a shell string, so no shell runs at all — and that is the path the pinning test covers. Wire one and the run goes through `dispatch_over_exec`, which does use `sh`: it execs a shell line naming the launcher it wrote, and that launcher nests a quoted `sh -c` to redirect the program's output and record its exit code. Every path in either is fixed or generated host-side — the interpreter, the transport's own filenames, and a work directory with a per-call run id — and `maf-sandbox` single-quotes each one; the model contributes none of them.
 
 **Egress is closed.** `SandboxSpec.egress_allow` is empty, stated as a property of the workload rather than of configuration: the program computes, it does not fetch. A backend that cannot confine egress at all is refused at attach.
 
-**Nothing is dispatchable from inside.** There is no host-tool registry in this version, and that emptiness is the security story rather than a missing feature: the program cannot open a socket and cannot call a host function, so it initiates nothing. The output sink does not change that — the kind calls it host-side, after the program has exited, and nothing inside the sandbox can reach it. A host wanting a hard stop denies `FILES_OUT`.
+**Nothing is dispatchable from inside, on any shipped backend.** A `host_tools` registry can be wired, and doing so widens the spec's `requires` by `Capability.HOST_TOOLS` — but no shipped backend declares it, so the widened spec is refused at attach rather than reaching a sandbox. The program still cannot open a socket and cannot call a host function, and it initiates nothing; that is a property of today's backends, not a missing feature of this kind. The output sink does not change that either — the kind calls it host-side, after the program has exited, and nothing inside the sandbox can reach it. A host wanting a hard stop on host tools denies `Capability.HOST_TOOLS`; on outputs, `FILES_OUT`.
 
 **A file store is ingress, and it is the host's own.** "Nothing can get in" describes what the *program* can initiate, not what the host puts there. With `file_store` wired, caller-selected files are written into the sandbox before the program runs — deliberately, and constrained to the caller's listing, so the model cannot widen the set. What that content *is* remains the host's to know: a file in the store may itself carry text from somewhere untrusted, and a program that parses it is running on input the sandbox did not vet. Wire no store and this paragraph does not apply.
 
@@ -92,7 +111,7 @@ Either way the kind requires `FILES_OUT` and **never** `FILES_LIST`: it collects
 
 ## What this version is not
 
-Host-tool dispatch and the `RUN_CODE` road served by an embedded-interpreter backend are absent on purpose. The design that governs them — capabilities declared by backends and required by specs, and what `HOST_TOOLS` would have to carry before it ships — is [`docs/design/two-axis-sandbox-policy.md`](https://github.com/sokolaidev/maf-extensions/blob/main/docs/design/two-axis-sandbox-policy.md); the file channels above are specified in [`docs/design/files-out.md`](https://github.com/sokolaidev/maf-extensions/blob/main/docs/design/files-out.md).
+The `RUN_CODE` road served by an embedded-interpreter backend is absent on purpose — this kind only ever asks for `EXEC`. Host-tool dispatch is wired (`host_tools`, above), but nothing can serve it: no shipped backend declares `Capability.HOST_TOOLS`, so passing a registry is refused at the factory rather than reaching a sandbox. The design that governs capabilities — declared by backends, required by specs, and what `HOST_TOOLS` carries — is [`docs/design/two-axis-sandbox-policy.md`](https://github.com/sokolaidev/maf-extensions/blob/main/docs/design/two-axis-sandbox-policy.md); the file channels above are specified in [`docs/design/files-out.md`](https://github.com/sokolaidev/maf-extensions/blob/main/docs/design/files-out.md).
 
 There is also **no way to delete a file from a sandbox**, which is why staleness is answered by a fresh directory per call rather than by cleaning the old one. A long conversation therefore accumulates one directory per call until the sandbox is disposed — and a program that walks upwards can still open them. The fresh directory removes staleness from the *namespace*, so a program reading `data.csv` gets this call's or nothing; it does not put earlier rounds out of reach. Everything reachable that way belongs to the same conversation and the same agent, since that is what a sandbox is keyed by.
 
