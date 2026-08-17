@@ -253,6 +253,13 @@ class TestTheHappyPath:
         assert result.exit_code == 127
         assert guest.answers == []
 
+    def test_a_launcher_that_fails_without_a_word_still_gets_a_reason(self):
+        """An empty ``stderr`` beside a non-zero exit tells a caller nothing it can act on,
+        so the transport supplies the sentence itself."""
+        guest = _ScriptedGuest([], launcher_exit_code=127)
+        result = _run(guest, HostToolRun(_registry()))
+        assert result.stderr == "the launcher did not start the program"
+
 
 class TestWhatTheGuestIsAllowedToSee:
     def test_an_unregistered_name_comes_back_as_a_sentence(self):
@@ -436,6 +443,54 @@ class TestTheSupervisorsOwnBounds:
                 )
             )
         assert dispatched == [], "a request read inside the bound was dispatched after it"
+
+    def test_the_poll_interval_actually_throttles_the_polling(self):
+        """The interval is the only thing between a remote backend and a stat per loop tick.
+
+        Refusing zero is not enough if the sleep itself goes missing: a run bounded at a
+        quarter second polls a handful of times at 0.05s, and thousands of times unthrottled.
+        """
+        looks: list[str] = []
+
+        class _CountsTheLooks(_ScriptedGuest):
+            async def stat_file(self, path: str, *, working_directory: str):
+                if path.endswith("program_exit_code"):
+                    looks.append(path)
+                return await super().stat_file(path, working_directory=working_directory)
+
+        guest = _CountsTheLooks([], finish=False)
+        with pytest.raises(SandboxProgramTimeout):
+            _run(guest, HostToolRun(_registry()), timeout=0.25, poll=0.05)
+
+        assert 0 < len(looks) <= 25, f"{len(looks)} marker looks in 0.25s at a 0.05s interval"
+
+    def test_what_a_timeout_quotes_is_capped(self):
+        """`output` and the message both quote the program, and both are bounded.
+
+        Uncapped, a program that printed megabytes puts them whole into an exception a kind
+        renders for a model — "already capped" is the attribute's own contract, and it has
+        to hold on both give-up paths: the plain expiry, and the transport call that ran out.
+        """
+
+        class _StallsOnTheFirstMarkerLook(_ScriptedGuest):
+            stalled = False
+
+            async def stat_file(self, path: str, *, working_directory: str):
+                if path.endswith("program_exit_code") and not self.stalled:
+                    self.stalled = True
+                    await asyncio.sleep(3600)
+                return await super().stat_file(path, working_directory=working_directory)
+
+        quiet = _ScriptedGuest([], finish=False)
+        held_up = _StallsOnTheFirstMarkerLook([], finish=False)
+        for guest in (quiet, held_up):
+            guest.files[_LAYOUT.output] = b"x" * 3000
+            with pytest.raises(SandboxProgramTimeout) as expired:
+                _run(guest, HostToolRun(_registry()), timeout=0.05)
+
+            assert expired.value.output == "x" * 2000
+            assert "x" * 2000 in str(expired.value), "the quote lost its label or its text"
+            assert "x" * 2001 not in str(expired.value), "the message quotes more than the cap"
 
 
 class TestTheLauncher:
@@ -815,6 +870,59 @@ class TestTheLauncherAgainstARealShell:
             stop.write_text("", encoding="utf-8")
             _reap(tmp_path / "pid")
 
+    @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+    def test_the_launcher_leaves_the_programs_own_ending_behind(self, tmp_path: Path):
+        """The two facts the supervisor reads are the program's own, made where it says.
+
+        The exit code must be what the program exited with, not what the launcher wishes it
+        had. Stderr belongs in the output file — `ExecResult.stderr` is the host's channel
+        on this transport, so a guest's complaints have nowhere else to land. And a relative
+        artifact must land in the work directory, which is the only place a kind collects.
+        """
+        directory = tmp_path.as_posix()
+        served, work = f"{directory}/host_tools", f"{directory}/work"
+        pathlib.Path(served).mkdir(parents=True, exist_ok=True)
+        layout = GuestRunLayout(
+            directory=directory,
+            work=work,
+            program=f"{served}/program.py",
+            shim=f"{served}/{SHIM_MODULE}",
+            launcher=f"{served}/run_program.sh",
+            calls=f"{served}/{CALLS_DIRECTORY}",
+            output=f"{served}/program_output.txt",
+            exit_code=f"{served}/program_exit_code",
+        )
+        pathlib.Path(layout.program).write_text(
+            "import sys\n"
+            "print('to stdout')\n"
+            "print('to stderr', file=sys.stderr)\n"
+            "open('artifact.txt', 'w').close()\n"
+            "sys.exit(3)\n",
+            encoding="utf-8",
+        )
+        pathlib.Path(layout.launcher).write_text(
+            launcher_script(layout, sys.executable.replace("\\", "/")), encoding="utf-8"
+        )
+
+        subprocess.run(  # noqa: S603 - a shell script this test just wrote
+            ["sh", layout.launcher], cwd=directory, capture_output=True, timeout=60, check=True
+        )
+        marker = pathlib.Path(layout.exit_code)
+        deadline = time.monotonic() + 20
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+
+        assert marker.read_text(encoding="utf-8") == "3", "the exit code is not the program's"
+        printed = pathlib.Path(layout.output).read_text(encoding="utf-8")
+        assert "to stdout" in printed
+        assert "to stderr" in printed, "the guest's stderr went where the host never reads"
+        assert pathlib.Path(work, "artifact.txt").exists(), (
+            "the program did not run in the work directory"
+        )
+        assert not pathlib.Path(directory, "artifact.txt").exists(), (
+            "a relative artifact escaped the work directory"
+        )
+
 
 class TestWhatAWrapperCanTakeAway:
     @staticmethod
@@ -1012,6 +1120,36 @@ class TestTheGeneratedShim:
             "the staged file was incomplete at the moment it became visible"
         )
 
+    def test_a_response_caught_mid_write_is_retried_rather_than_raised(self, tmp_path: Path):
+        """A backend may make the supervisor's one write visible in pieces.
+
+        Half a JSON document is a `ValueError`, and treating it as an answer kills a call
+        that was about to succeed; the shim polls again instead, exactly as for a file that
+        is not there yet.
+        """
+        module = self._load(tmp_path)
+        calls = tmp_path / CALLS_DIRECTORY
+        calls.mkdir(parents=True, exist_ok=True)
+        response = calls / "0001.response.json"
+        response.write_text('{"value": "who', encoding="utf-8")
+        answered: list[Any] = []
+
+        def call_it() -> None:
+            answered.append(module.call("anything"))
+
+        caller = threading.Thread(target=call_it)
+        caller.start()
+        request = calls / "0001.request.json"
+        deadline = time.monotonic() + 5
+        while not request.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert request.exists(), "the shim wrote no request"
+        time.sleep(0.25)  # several poll intervals spent on the torn response
+        response.write_text('{"value": "whole"}', encoding="utf-8")
+        caller.join(timeout=5)
+
+        assert answered == ["whole"], "a torn read was treated as the answer"
+
 
 class TestNamesThatAreNotWhatTheyLookLike:
     """Identifier normalisation, where a wrapper name and a shim global can be the same name."""
@@ -1072,6 +1210,17 @@ class TestWhatTheSupervisorRefusesToParse:
         _run(guest, HostToolRun(registry))
         assert seen == [], f"the tool ran on repaired bytes: {seen}"
         assert "not valid JSON" in guest.answers[0]["refusal"]
+
+    def test_a_request_that_is_json_but_not_an_object_is_refused(self):
+        """`json.loads` happily returns a list, and `.get` on one crashes the supervisor.
+
+        Like every other malformed request, it has to come back as a sentence: the guest
+        cannot retry it either way, and the run must outlive it.
+        """
+        guest = _ScriptedGuest([("add", {"left": 1, "right": 1})], raw_request=b"[1, 2, 3]")
+        _run(guest, HostToolRun(_registry()))
+        assert "must be a JSON object" in guest.answers[0]["refusal"]
+        assert "value" not in guest.answers[0]
 
 
 class TestWhatTheDeadlineCovers:
@@ -1292,6 +1441,19 @@ class TestTheLayoutsOwnPromise:
         whatever the kind put there; and `program_exit_code.part` is where the launcher stages
         the exit code, so the program's own file is truncated to the exit digits and renamed
         away as it exits. Nothing in any of them points at the name that caused it.
+        """
+        with pytest.raises(ValueError, match="already uses"):
+            guest_run_layout("/maf-sandbox/work/run-1", program=program)
+
+    @pytest.mark.parametrize("program", ["program_exit_code", "host_tool_calls"])
+    def test_the_marker_and_the_calls_directory_are_refused_as_program_names_too(
+        self, program: str
+    ):
+        """The quiet halves of the same refusal.
+
+        A program at the marker's name is read as a finished run by the supervisor's first
+        poll, before the interpreter has even started; one at the calls directory's name
+        leaves the shim's `makedirs` nowhere to put a request.
         """
         with pytest.raises(ValueError, match="already uses"):
             guest_run_layout("/maf-sandbox/work/run-1", program=program)
@@ -1646,6 +1808,55 @@ class TestWhatAFinishedRunIsAllowedToSay:
         assert "could not be read" in result.stderr
         assert "program_output.txt" in result.stderr, "the reason names no file"
 
+    def test_a_backend_failure_that_is_no_timeout_still_propagates_after_the_marker(self):
+        """Only a timeout on the output read is absorbed into "could not be read".
+
+        A permission error is the backend saying something is wrong, and swallowing it
+        would report a healthy run with missing output — losing the one sentence that says
+        what actually happened.
+        """
+
+        class _CannotHandItOver(_ScriptedGuest):
+            async def read_file(self, path: str, *, working_directory: str, max_bytes: int):
+                if path.endswith("program_output.txt"):
+                    raise PermissionError("the daemon said no")
+                return await super().read_file(
+                    path, working_directory=working_directory, max_bytes=max_bytes
+                )
+
+        guest = _CannotHandItOver([], exit_code=7)
+        with pytest.raises(PermissionError, match="the daemon said no"):
+            _run(guest, HostToolRun(_registry()))
+
+    def test_output_that_is_not_utf8_comes_back_repaired_rather_than_dropped(self):
+        """One bad byte in a program's own output must not read as a program that said nothing.
+
+        The output is quoted back to a human, so a replacement character beats losing the
+        whole of it — unlike a request, where a repaired byte would be acted on.
+        """
+        guest = _ScriptedGuest([], finish=False)
+        guest.files[_LAYOUT.output] = b"caf\xe9 done"
+        guest.files[_LAYOUT.exit_code] = b"0"
+        result = _run(guest, HostToolRun(_registry()))
+
+        assert result.exit_code == 0
+        assert result.stdout == "caf� done"
+        assert result.stderr == ""
+
+    def test_a_marker_that_is_not_a_number_still_means_a_finished_run(self):
+        """The marker's appearance is the fact; its content is only the guest's claim.
+
+        Content this cannot trust reads as exit 1 — raising instead would crash the
+        supervisor on bytes any guest can write.
+        """
+        guest = _ScriptedGuest([], finish=False)
+        guest.files[_LAYOUT.output] = b"it ran"
+        guest.files[_LAYOUT.exit_code] = b"oops"
+        result = _run(guest, HostToolRun(_registry()))
+
+        assert result.exit_code == 1
+        assert result.stdout == "it ran"
+
 
 class TestWhatAnEmptyOutputMeans:
     def test_an_output_dropped_for_its_size_says_so(self):
@@ -1858,6 +2069,30 @@ class TestWhoseTimeoutItWas:
             "the host's note is wearing the label that means the program's own stdout"
         )
 
+    def test_an_ordinary_expiry_blames_no_transport_call(self, monkeypatch: pytest.MonkeyPatch):
+        """A run that simply ran out must not report a sandbox that answered promptly.
+
+        The clause naming a stalled call exists for the call that ran out. On the plain
+        path every stat came back on time, and a message carrying it anyway sends the
+        reader chasing a healthy backend.
+        """
+        ahead = {"seconds": 0.0}
+        monkeypatch.setattr(host_tools_over_exec, "time", _Shifted(time.monotonic, ahead))
+
+        class _OutlivedInSilence(_ScriptedGuest):
+            async def stat_file(self, path: str, *, working_directory: str):
+                if path.endswith(".request.json"):
+                    ahead["seconds"] += 60.0
+                return await super().stat_file(path, working_directory=working_directory)
+
+        guest = _OutlivedInSilence([], finish=False)
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=5.0)
+
+        assert "the sandbox did not answer" not in str(expired.value), (
+            "a plain expiry was blamed on a transport call"
+        )
+
 
 class TestTheGuestsOwnDiagnostic:
     def test_a_fractional_patience_is_reported_as_itself(self, tmp_path: Path):
@@ -1925,6 +2160,33 @@ class TestWhatAFailedReadMeans:
         guest = _RefusesLate([("add", {"left": 1, "right": 1})])
         _run(guest, HostToolRun(_registry()))
         assert "larger than the host will read" in guest.answers[0]["refusal"]
+
+    def test_a_backend_failure_on_the_way_out_does_not_replace_the_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The last look and the output read are diagnostics, and a diagnostic must not win.
+
+        Both run only once the run is already being reported as expired, so whatever the
+        backend raises there — a timeout or anything else — has to read as "nothing found":
+        the caller is owed the run's own reason, not the failure of reading the reason.
+        """
+        ahead = {"seconds": 0.0}
+        monkeypatch.setattr(host_tools_over_exec, "time", _Shifted(time.monotonic, ahead))
+
+        class _DiesOnceExpired(_ScriptedGuest):
+            expired = False
+
+            async def stat_file(self, path: str, *, working_directory: str):
+                if self.expired:
+                    raise PermissionError("the daemon said no")
+                if path.endswith(".request.json"):
+                    self.expired = True
+                    ahead["seconds"] += 60.0
+                return await super().stat_file(path, working_directory=working_directory)
+
+        guest = _DiesOnceExpired([], finish=False)
+        with pytest.raises(SandboxProgramTimeout, match="did not finish within"):
+            _run(guest, HostToolRun(_registry()), timeout=5.0)
 
 
 class TestWhatABackendMayHaveIgnored:
