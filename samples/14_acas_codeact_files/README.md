@@ -1,6 +1,6 @@
 # 14 — CodeAct with files in and files out (ACA sandbox)
 
-[Sample 08](../08_docker_codeact_files/) with the backend swapped and nothing else rethought. Same task, same `sales.csv`, same two channels, same sink. The wiring differences come to four, and they are listed below.
+[Sample 08](../08_docker_codeact_files/) with the backend swapped and nothing else rethought. Same task, same `sales.csv`, same two channels, same sink. What differs is listed below: three changes to the code, and one to what a run of it costs.
 
 ```
 app  ->  maf_sandbox (router)  ->  maf_sandbox_acas  ->  the sandbox
@@ -24,7 +24,7 @@ The application code is the evidence. `make_recording_sink`'s body is copied fro
 - **`await backend.aclose()`** on the way out. There is an HTTP client to close; the Docker backend has none.
 - **It creates a billable sandbox.** Sample 08 costs a container on your own machine.
 
-Everything else is the same file. Diff the two and what changes is those four, the `THREAD_ID` that keys this sample's sandbox, and one line of the dependency block, where `maf-sandbox-docker` becomes `maf-sandbox-acas`. The two Azure entries are the same in both, because both import `DefaultAzureCredential` for the model client and neither gets it from its backend.
+Everything else is the same file. Diff the two and what changes is the three code rows above — the backend swap taking its four `ACAS_SANDBOX_*` variables and their `require_env_vars` check with it — plus the `THREAD_ID` that keys this sample's sandbox and the dependency block, where `maf-sandbox-docker` becomes `maf-sandbox-acas` and a comment explains why the two Azure entries are there. Those two entries themselves are the same in both samples: each imports `DefaultAzureCredential` for its model client, and neither gets it from its backend.
 
 ## What the pull actually does here
 
@@ -70,7 +70,7 @@ No `ACAS_SANDBOX_REGISTRY`: `agent.py` names the image by its full MCR reference
 
 With any of these unset the program says which and exits non-zero, rather than running. That is deliberate, and the failure it avoids is specific: `make_codeact_tools` returns an **empty list** when the router holds no backend at all, so a run configured with nothing does not crash — it builds an agent with no tools, which answers from the model alone, and that looks exactly like success.
 
-Only that case is quiet. A backend that *is* registered and cannot serve the workload is refused loudly instead: below the isolation floor raises at `SandboxRouter(...)`, and a missing capability raises `SandboxCapabilityNotSupported` out of `make_codeact_tools`.
+Only that case is quiet. A backend that *is* registered and cannot serve the workload is refused loudly instead, and every mismatch raises: an isolation floor at `SandboxRouter(...)`, and the rest out of `make_codeact_tools` itself — `SandboxCapabilityNotSupported` for a missing capability, and its siblings for a transfer ceiling below what the workload asks or an egress promise the backend will not make.
 
 ## Running it
 

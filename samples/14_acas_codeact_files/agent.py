@@ -26,8 +26,9 @@ this directory's README for the prerequisites and the environment variables.
 # dependencies = [
 #     "agent-framework-openai",
 #     # Both named because this file imports `azure.identity.aio.DefaultAzureCredential`
-#     # directly, and the async credential builds an aiohttp transport — which ships behind
-#     # azure-core's `aio` extra, not with azure-core itself. Sample 08 declares the same pair
+#     # directly, and the async credential builds azure-core's aiohttp transport. That code
+#     # ships with azure-core; `aiohttp` itself arrives only with the `aio` extra, which is
+#     # why the extra rather than the bare name. Sample 08 declares the same pair
 #     # for the same import. Leaving either out resolves today only on loan: aiohttp arrives
 #     # through maf-sandbox-acas's own SDK dependency, and a preview SDK is a thin thing to
 #     # rest an ImportError on.

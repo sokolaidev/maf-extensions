@@ -899,7 +899,7 @@ jobs:
     # The pull surface on a second backend, which is the whole reason this job exists (#300).
     # Sample 08 is its pair and the assertion is shared, so a red here while 08 is green is a
     # statement about ACAS rather than about the channels: same task, same sales.csv, same two
-    # measured lines, four lines of wiring different. Reading a file back out of *this* backend is
+    # measured lines, a different backend underneath. Reading a file back out of *this* backend is
     # a stat and a read over a preview control plane, where a mocked test is least likely to
     # match reality — #139 and #142 both turned on the difference between what the SDK reported
     # and what the payload carried, and until this job the pull surface here was exercised by

@@ -231,14 +231,18 @@ class TestTheSummaryIsReadInTheModelsOwnAlphabet:
 
     def test_a_capitalised_region_name_is_still_the_region(self):
         """The likeliest real shape: the task asks for a Markdown table, and a model writing
-        one puts `| North | 390 |` in it about as often as the lowercase form."""
-        titled = _SUMMARY.replace("north", "North").replace("east", "East")
-        assert titled != _SUMMARY
+        one puts `| North | 390 |` in it about as often as the lowercase form.
+
+        One `_tampered_text` per name rather than a chained `replace` with a single guard —
+        that guard passes when either substitution matched, so a fixture that stopped spelling
+        one of them lowercase would leave half this case testing nothing.
+        """
+        titled = _tampered_text("east", "East", _tampered_text("north", "North", _SUMMARY))
         assert check.assess(_HEALTHY, titled) == []
 
     @pytest.mark.parametrize("shout", ["NORTH", "NoRtH"])
     def test_any_casing_of_a_region_name_counts(self, shout: str):
-        assert check.assess(_HEALTHY, _SUMMARY.replace("north", shout)) == []
+        assert check.assess(_HEALTHY, _tampered_text("north", shout, _SUMMARY)) == []
 
     def test_a_character_that_grows_when_lowered_does_not_shift_the_segments(self):
         """`"İ".lower()` is two characters, so offsets taken from a lowered copy and slices
@@ -345,12 +349,18 @@ class TestTheFixtureIsWhatTheSamplesActuallyPrint:
         source = (_ROOT / "samples" / sample / "agent.py").read_text(encoding="utf-8")
         line = next((one for one in source.splitlines() if "Delivered this turn into" in one), None)
         assert line is not None, f"samples/{sample}/agent.py prints no delivery line at all"
-        for part in ("/: ", "json.dumps(delivered)"):
-            assert part in line, (
-                f"samples/{sample}/agent.py's delivery line no longer carries {part!r}: "
-                f"{line.strip()!r}. The checker reads the names by parsing that list as JSON, "
-                "so a turn that delivered nothing would be indistinguishable from one that did"
-            )
+        assert "/: " in line, (
+            f"samples/{sample}/agent.py's delivery line no longer carries '/: ': "
+            f"{line.strip()!r}. `_DELIVERED` splits the line on that colon"
+        )
+        # Ends there, not merely contains it: `_DELIVERED` captures to end of line and hands
+        # the lot to `json.loads`, so a trailing ` this turn` would make a healthy run
+        # unparseable — offline-green, live-red, which is what this class exists to prevent.
+        assert line.rstrip().endswith('{json.dumps(delivered)}")'), (
+            f"samples/{sample}/agent.py's delivery line no longer *ends* in the JSON list: "
+            f"{line.strip()!r}. The checker parses everything after the colon, so anything "
+            "printed after the list stops the names being read at all"
+        )
 
     @pytest.mark.parametrize("sample", _SAMPLES)
     def test_every_sample_quotes_the_reply_before_printing_them(self, sample: str):
