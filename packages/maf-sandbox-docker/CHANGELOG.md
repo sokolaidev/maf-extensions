@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.3.3...maf-sandbox-docker-v0.4.0) (2026-08-17)
+
+
+### Features
+
+* **backends:** each backend exports the name `selected=` matches on ([#414](https://github.com/sokolaidev/maf-extensions/issues/414)) ([672c9b2](https://github.com/sokolaidev/maf-extensions/commit/672c9b2fcdf7b94fd0c37d7c225f66b909a259a1))
+* **docker:** declare HOST_TOOLS, so a kind wiring a host-tool registry attaches here ([#410](https://github.com/sokolaidev/maf-extensions/issues/410)) ([b7a3fa2](https://github.com/sokolaidev/maf-extensions/commit/b7a3fa2bad747a1c365e2e177ed020f41f40ece8))
+
+
+### Bug Fixes
+
+* **docker:** an empty egress_proxy_image is no proxy configured, as the declaration already said ([#419](https://github.com/sokolaidev/maf-extensions/issues/419)) ([d40ddf7](https://github.com/sokolaidev/maf-extensions/commit/d40ddf72914e58b6d905d9677489d1db2c6d4c68))
+* require maf-sandbox 0.16.0 in the dependents and 0.16 in the samples, and admit 0.17 ([#386](https://github.com/sokolaidev/maf-extensions/issues/386)) ([7133401](https://github.com/sokolaidev/maf-extensions/commit/713340192dbc710c9c18f498a6615fc401332682))
+
 ## [0.3.3](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.3.2...maf-sandbox-docker-v0.3.3) (2026-08-16)
 
 
