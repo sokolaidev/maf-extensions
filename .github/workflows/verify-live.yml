@@ -3,6 +3,14 @@ name: Verify (live)
 # Installs the PUBLISHED wheels into a clean environment and runs the samples below, each
 # asserting that its own workload ran rather than that the program exited zero.
 #
+# **One job is not a sample and does not install published wheels**: `acas-e2e` runs
+# `maf-sandbox-acas`'s live suite from this checkout. Everything else here asks "does the
+# published set still work"; that one asks "does the real service still do what the backend
+# believes" — refusals, confinement, teardown read back from the service — which a sample with a
+# model in the loop cannot ask (#306). It is listed here rather than in its own workflow because
+# this is where the `live-verify` environment, the OIDC login and the billable-run gating already
+# live, and splitting it would duplicate all three.
+#
 # **No check here can be satisfied by the model's prose.** A sample that judges a tool's answer
 # prints a fenced block of what the tool returned, closed by a line tagged `[measured]`, and its
 # check reads that. A sample that judges a landed file prints no block — it reads the file, and
@@ -184,11 +192,13 @@ jobs:
     # Three per run since sample-14 joined — 01, 03 and 14 — and three per run is not three
     # overall: the workflow-level `concurrency` block above is keyed per package, so a release
     # train verifying several packages has several runs in flight and each holds its own. What
-    # each package costs is the number of these three its `if` admits: `maf-sandbox` and
-    # `maf-sandbox-acas` three, `maf-sandbox-codeact` two (03 and 14), `maf-sandbox-bicep` one
-    # (01), everything else none. So a train releasing all four peaks at nine concurrent billable
-    # sandboxes for the twenty minutes the timeout allows, where it was six before this sample.
-    # Total spend is unchanged by the concurrency; only the peak moved. (#325.)
+    # each package costs is the number of billable jobs its `if` admits: `maf-sandbox` and
+    # `maf-sandbox-acas` four (01, 03, 14 and `acas-e2e`), `maf-sandbox-codeact` two (03 and 14),
+    # `maf-sandbox-bicep` one (01), everything else none. Count sandboxes rather than jobs, since
+    # `acas-e2e` uses two — one shared by its probes, one the lifecycle test disposes as the thing
+    # under test. So a train releasing all four peaks at thirteen concurrent billable sandboxes
+    # for the twenty minutes the timeout allows, where it was nine before the live suite and six
+    # before sample 14. Total spend is unchanged by the concurrency; only the peak moved. (#325.)
     # Empty input (verify-everything) or a package sample-03 actually exercises: the router
     # (maf-sandbox) and the backend it runs on (maf-sandbox-acas) both affect it, and so does
     # its own package (maf-sandbox-codeact); a maf-sandbox-bicep or maf-sandbox-wslc release
@@ -1004,3 +1014,95 @@ jobs:
           # is making. stdlib-only, so the runner's own python3 runs it.
           python3 "$HARNESS"/scripts/check_live_codeact_files_sample.py \
             /tmp/sample14-out.txt samples/14_acas_codeact_files/out/summary.md
+
+  acas-e2e:
+    name: maf-sandbox-acas conformance against a live sandbox group
+    # **The one job here that is not a sample**, and the one that does not install published
+    # wheels: it runs the workspace suite from this checkout, because it tests a backend rather
+    # than what a reader can install. Everything below it in this file answers "does the
+    # published set still work"; this one answers "does the real service still do what this
+    # backend believes", which no sample can (#306). A sample proves a happy path with a model
+    # in the loop and covers no refusal at all — not the symlinked-parent walk, not the cap,
+    # not teardown read back from the service instead of from process memory.
+    #
+    # It is also the only place four of the shared FILES_OUT probes meet the real service: they
+    # require Capability.FILES_LIST and maf-sandbox-acas is the only backend declaring it, so
+    # they skip in docker's suite, the one a pull request can run. A fake answers them on every
+    # pull request in test_acas_backend.py — which is not the same claim, and #139 and #142 are
+    # what the difference costs. The suite asserts nothing skipped rather than trusting a green
+    # summary, since a skipped listing probe reports exactly like a passing one.
+    #
+    # **The fourth billable job**, and the cheapest of them per assertion: two sandboxes for
+    # nine tests, no model, no tokens. It needs no model configuration and so reads neither
+    # AZURE_OPENAI variable — the rule stated on the header applies, a job reads what it uses.
+    #
+    # maf-sandbox and maf-sandbox-acas only: the conformance probes live in the core and the
+    # backend under test is the other, and no kind is involved.
+    if: >-
+      inputs.package == ''
+      || contains(fromJSON('["maf-sandbox", "maf-sandbox-acas"]'), inputs.package)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: live-verify
+    permissions:
+      # Mints the OIDC token azure/login exchanges. No secret is involved.
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      # The five the suite reads plus the three azure/login consumes. No model variables: this
+      # job calls no model. BICEP_SANDBOX_IMAGE is here because it supplies the guest below —
+      # any Linux image in the registry with sh, ln, cat and mkfifo would do, and this is the
+      # one already known to pull.
+      - name: Check the live configuration is present
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          ACAS_SANDBOX_ENDPOINT: ${{ vars.ACAS_SANDBOX_ENDPOINT }}
+          ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ vars.ACAS_SANDBOX_SUBSCRIPTION_ID }}
+          ACAS_SANDBOX_RESOURCE_GROUP: ${{ vars.ACAS_SANDBOX_RESOURCE_GROUP }}
+          ACAS_SANDBOX_GROUP: ${{ vars.ACAS_SANDBOX_GROUP }}
+          ACAS_SANDBOX_REGISTRY: ${{ vars.ACAS_SANDBOX_REGISTRY }}
+          BICEP_SANDBOX_IMAGE: ${{ vars.BICEP_SANDBOX_IMAGE }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
+            ACAS_SANDBOX_ENDPOINT ACAS_SANDBOX_SUBSCRIPTION_ID ACAS_SANDBOX_RESOURCE_GROUP \
+            ACAS_SANDBOX_GROUP ACAS_SANDBOX_REGISTRY BICEP_SANDBOX_IMAGE; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::the live-verify environment is missing variables: ${missing[*]}. See docs/maintainers.md."
+            exit 1
+          fi
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sync workspace
+        run: uv sync --locked
+
+      # `-ra` because this suite skips itself when either variable it gates on is empty, and the
+      # check above has already made that impossible: a skip here is a bug rather than a
+      # configuration gap, and without the summary it reads identically to a pass.
+      - name: Run the ACAS live suite
+        env:
+          ACAS_SANDBOX_ENDPOINT: ${{ vars.ACAS_SANDBOX_ENDPOINT }}
+          ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ vars.ACAS_SANDBOX_SUBSCRIPTION_ID }}
+          ACAS_SANDBOX_RESOURCE_GROUP: ${{ vars.ACAS_SANDBOX_RESOURCE_GROUP }}
+          ACAS_SANDBOX_GROUP: ${{ vars.ACAS_SANDBOX_GROUP }}
+          ACAS_SANDBOX_REGISTRY: ${{ vars.ACAS_SANDBOX_REGISTRY }}
+          MAF_SANDBOX_ACAS_E2E_IMAGE: ${{ vars.BICEP_SANDBOX_IMAGE }}
+        run: |
+          set -euo pipefail
+          uv run pytest packages/maf-sandbox-acas/tests/test_acas_e2e.py -q -ra
