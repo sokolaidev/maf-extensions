@@ -406,10 +406,11 @@ class TestWhetherThisBackendCouldServeHostTools:
     launcher returns immediately by design, and the appearance of the exit-code file is the only
     thing that tells the supervisor the run is over.
 
-    Nothing here declares anything. This answers whether ACAS *could*, against the service rather
-    than against a reading of the SDK, on the shared sandbox so it bills nothing extra. If a
-    session does not keep the process, no wording of the capability makes the transport work
-    here and #365's answer for this backend is C rather than A.
+    This ran before the backend declared anything, to answer whether ACAS *could* — against the
+    service rather than against a reading of the SDK, on the shared sandbox so it bills nothing
+    extra. It passed, and #417 turned that answer into the declaration, so this is now the
+    evidence the claim rests on: if a session stops keeping the process, the capability comes
+    off rather than being reworded.
     """
 
     def test_the_guest_has_what_the_launcher_needs(self, live: _Live):

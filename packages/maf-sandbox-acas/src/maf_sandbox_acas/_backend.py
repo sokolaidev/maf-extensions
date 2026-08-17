@@ -492,12 +492,29 @@ class AcasSandboxBackend:
         # FILES_LIST as well as FILES_OUT, which is the split's own test — name the backend
         # that lacks it. Enumeration is native here and unavailable on the backends that
         # transport a named path only.
+        #
+        # HOST_TOOLS is the one member with no method behind it, so what it asserts here is
+        # narrower than the others and worth stating: `exec` **detaches**. A process started by
+        # one call outlives it and is observable from the next, because the sandbox is a microVM
+        # the group keeps between calls rather than a session torn down per dispatch — which is
+        # what `dispatch_over_exec` is built on, its launcher returning at once and the exit-code
+        # file being the run's only witness. This is the backend where that could not be taken on
+        # faith, since every call is an HTTP round trip to a remote control plane, so
+        # `test_acas_e2e.py` measures it against the service rather than against a reading of the
+        # SDK.
+        #
+        # It is *not* a claim about the image. The shipped launcher wants `sh`, `nohup`, `printf`
+        # and `mv`, and a kind wants whatever interpreter it names — codeact wants `python3` —
+        # none of which this backend chooses, since `spec.image` does. That gap is #111's axis,
+        # and it is the same gap `EXEC` already has: a kind execing `python3` against an image
+        # without Python fails inside the sandbox today.
         return frozenset(
             {
                 Capability.EXEC,
                 Capability.FILES_IN,
                 Capability.FILES_OUT,
                 Capability.FILES_LIST,
+                Capability.HOST_TOOLS,
             }
         )
 
