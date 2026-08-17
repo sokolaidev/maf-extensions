@@ -35,6 +35,7 @@ release-please owns all four. Adding a changelog entry or bumping a version by h
    ```bash
    uv sync && uv run pytest -q && uv run ruff check . && uv run ruff format --check .
    uv run pyright -p packages/maf-sandbox && uv run pyright -p packages/maf-sandbox-acas && uv run pyright -p packages/maf-sandbox-bicep && uv run pyright -p packages/maf-sandbox-codeact && uv run pyright -p packages/maf-sandbox-docker && uv run pyright -p packages/maf-sandbox-wslc
+   uv run pyright   # scripts/, tests/ and samples/, which no per-package pass sees
    ```
    CI runs these **and more**: it builds every wheel, checks their metadata, and installs each one into a clean environment and uses it. Green locally is not the full gate — do not report it as one.
 2. Title it as above.

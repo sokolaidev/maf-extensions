@@ -1,8 +1,9 @@
 """Pins the behavior sample 09's ``NoIsolationBackend`` actually carries.
 
-The sample is not a uv workspace member and not in any ``testpaths``, so this is the one
-repo-level test that imports it — by putting the sample directory on ``sys.path`` — and
-exercises the load-bearing parts a reader cannot see from the docstrings alone:
+The sample is not a uv workspace member and not in any ``testpaths``. ``test_sample_modules_import.py``
+imports it, along with every other sample, which proves only that its module level runs; this is
+the suite that *exercises* the load-bearing parts a reader cannot see from the docstrings alone,
+by putting the sample directory on ``sys.path``:
 
 * ``exec`` runs a real subprocess off the event loop (a worker thread), so concurrent tool
   calls do not serialize on one ``subprocess.run`` blocking the loop.

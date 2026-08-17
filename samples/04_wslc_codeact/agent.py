@@ -84,7 +84,12 @@ async def run() -> int:
     backend = WslcSandboxBackend(WslcSandboxConfig())
 
     # Below the router's default `microvm` floor; opted down explicitly.
-    router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
+    # `WslcSandboxBackend` does not satisfy the `SandboxBackend` protocol (#370). Registering
+    # it is still right: the router accepts it, and this workload writes only text.
+    router = SandboxRouter(
+        [backend],  # pyright: ignore[reportArgumentType] - #370
+        min_isolation=Isolation.CONTAINER,
+    )
 
     context = make_caller_context(
         list_no_files,

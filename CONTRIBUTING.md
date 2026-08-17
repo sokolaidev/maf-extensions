@@ -6,7 +6,7 @@ Thanks for looking. These packages are early (`0.x`) and the API may still move,
 
 ```bash
 uv sync            # one workspace, one lock, every package editable
-uv run pytest -q   # the whole suite, about a second
+uv run pytest -q   # the whole suite, about half a minute
 ```
 
 `agent-framework-core` resolves from PyPI at the range each package declares — deliberately the same artifact a consumer of the published wheel gets, not a development pin.
@@ -16,10 +16,11 @@ uv run pytest -q   # the whole suite, about a second
 ```bash
 uv run pytest -q
 uv run ruff check . && uv run ruff format --check .
-uv run pyright -p packages/maf-sandbox        # and -acas, -bicep, -codeact, -wslc
+uv run pyright -p packages/maf-sandbox        # and -acas, -bicep, -codeact, -docker, -wslc
+uv run pyright                                # scripts/, tests/ and samples/
 ```
 
-Type checking is **strict** and per package, and it covers `src/` only — fixtures and hand-rolled fakes are not where a strict checker's objections are signal.
+Type checking comes in two passes. The per-package one is **strict** and covers `src/` only — fixtures and hand-rolled fakes are not where a strict checker's objections are signal. The bare `uv run pyright` is the second: `scripts/`, `tests/` and `samples/` belong to no package, so no `-p` pass reaches them. It runs at *standard*. The test trees relax four rules to warnings for the loose fakes they are made of; `scripts/` and `samples/` relax nothing, and a sample suppresses a single site inline when it has to. `samples/` is in the pass because a sample naming an attribute a package deleted is otherwise caught by nothing until the sample runs for real, which is after a release ([#334](https://github.com/sokolaidev/maf-extensions/issues/334)).
 
 CI runs all of that, plus something worth knowing about: it builds each wheel, installs it into a clean environment and *uses* it. That catches the class of defect no test here can see — a missing `py.typed`, a file the build backend never included, an import that only resolved because the workspace had every sibling on the path.
 

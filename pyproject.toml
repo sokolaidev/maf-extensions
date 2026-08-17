@@ -17,6 +17,10 @@ dev = [
     "pyright>=1.1.411,<1.2",
     # Release checks (metadata validation of built sdists/wheels).
     "twine>=6,<7",
+    # Every sample that talks to a model imports this, and nothing else here pulls it in.
+    # Wide where the tooling bands are narrow, and deliberately: a sample declares it unpinned,
+    # so a check held to an older minor would pass against a version no live run uses.
+    "agent-framework-openai>=1.13.0,<2",
 ]
 
 # Lint rules for the tree *outside* packages/* — samples/, tests/, scripts/, which belong to no
@@ -40,11 +44,15 @@ extend-select = ["I", "UP", "D100", "D101", "D103", "D104"]
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["D101", "D103"]
 
-# Repo-level pyright for the code the per-package strict configs do not cover: scripts/ and the
-# test trees. Package src/ stays on its own per-package strict config (uv run pyright -p
-# packages/<pkg>, include = ["src"]), which -p selects directly; this config never applies to src.
+# Repo-level pyright for the code the per-package strict configs do not cover: scripts/, the
+# test trees and samples/. Package src/ stays on its own per-package strict config (uv run
+# pyright -p packages/<pkg>, include = ["src"]), which -p selects directly; this config never
+# applies to src.
+#
+# samples/ is here because nothing else catches a sample naming an attribute another package
+# deleted until the sample runs for real, which is `verify-live`, after a release.
 [tool.pyright]
-include = ["scripts", "tests", "packages/*/tests/**"]
+include = ["scripts", "tests", "samples", "packages/*/tests/**"]
 typeCheckingMode = "standard"
 # scripts/ is under no execution environment, so it stays at full standard — the phase-1
 # behavior, unchanged. Each test tree is its own execution environment (root takes a single
@@ -56,7 +64,15 @@ typeCheckingMode = "standard"
 # them; every other rule stays an error and catches real drift. reportMissingImports is
 # deliberately not relaxed. The tests/ env also puts sample 09 on extraPaths so pyright can
 # resolve the runtime sys.path import in test_no_isolation_backend.py instead of suppressing it.
+#
+# **samples/ relaxes nothing** — a sample is code an adopter copies, and the two sites that would
+# want those four are not loose fakes. They carry an inline `# pyright: ignore[...]` naming the
+# reason. Its execution environment exists to *tighten*: reportUnnecessaryTypeIgnoreComment fails
+# the build on a suppression that no longer suppresses anything, which is what makes suppressing
+# inline safe. Scoped here rather than at the root, where the package test trees still carry
+# stale ones.
 executionEnvironments = [
+  { root = "samples", reportUnnecessaryTypeIgnoreComment = "error" },
   { root = "tests", extraPaths = ["samples/09_inprocess_bicep"], reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
   { root = "packages/maf-sandbox/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
   { root = "packages/maf-sandbox-acas/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
