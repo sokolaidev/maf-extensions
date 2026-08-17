@@ -349,17 +349,15 @@ class TestTheFixtureIsWhatTheSamplesActuallyPrint:
         source = (_ROOT / "samples" / sample / "agent.py").read_text(encoding="utf-8")
         line = next((one for one in source.splitlines() if "Delivered this turn into" in one), None)
         assert line is not None, f"samples/{sample}/agent.py prints no delivery line at all"
-        assert "/: " in line, (
-            f"samples/{sample}/agent.py's delivery line no longer carries '/: ': "
-            f"{line.strip()!r}. `_DELIVERED` splits the line on that colon"
-        )
-        # Ends there, not merely contains it: `_DELIVERED` captures to end of line and hands
-        # the lot to `json.loads`, so a trailing ` this turn` would make a healthy run
-        # unparseable — offline-green, live-red, which is what this class exists to prevent.
-        assert line.rstrip().endswith('{json.dumps(delivered)}")'), (
-            f"samples/{sample}/agent.py's delivery line no longer *ends* in the JSON list: "
-            f"{line.strip()!r}. The checker parses everything after the colon, so anything "
-            "printed after the list stops the names being read at all"
+        # One suffix, pinned whole: the colon, then the JSON, then the end of the line. Two
+        # separate checks — a colon somewhere, the JSON at the end — would still let text sit
+        # *between* them, and `/: names {json.dumps(delivered)}` passes both while a live run
+        # hands `names [...]` to `json.loads`.
+        assert line.rstrip().endswith('/: {json.dumps(delivered)}")'), (
+            f"samples/{sample}/agent.py's delivery line no longer ends in '/: ' followed "
+            f"directly by the JSON list: {line.strip()!r}. The checker parses everything after "
+            "the colon, so anything printed between the colon and the list stops the names "
+            "being read at all"
         )
 
     @pytest.mark.parametrize("sample", _SAMPLES)

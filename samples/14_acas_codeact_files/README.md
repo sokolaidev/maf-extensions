@@ -1,6 +1,6 @@
 # 14 — CodeAct with files in and files out (ACA sandbox)
 
-[Sample 08](../08_docker_codeact_files/) with the backend swapped and nothing else rethought. Same task, same `sales.csv`, same two channels, same sink. What differs is listed below: three changes to the code, and one to what a run of it costs.
+[Sample 08](../08_docker_codeact_files/) with the backend swapped and nothing else rethought. Same task, same `sales.csv`, same two channels, same sink. What differs is listed below.
 
 ```
 app  ->  maf_sandbox (router)  ->  maf_sandbox_acas  ->  the sandbox

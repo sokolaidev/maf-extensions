@@ -34,7 +34,7 @@ Everything else is sample 06 unchanged: the same image, the same backend, the sa
 
 ## Where the sink points, and why it is the interesting decision
 
-`make_markdown_sink` writes under this directory's `out/`. The agent's file store is a separate `InMemoryAgentFileStore`, and **the two are deliberately not the same place**.
+`make_recording_sink` writes under this directory's `out/`. The agent's file store is a separate `InMemoryAgentFileStore`, and **the two are deliberately not the same place**.
 
 That matters more here than for any other kind, because these bytes were authored by model-written code. A host that points the sink at the store the agent's own file tools write to has handed that code an unapproved `file_access_write`; one that lets it overwrite has given it a way to influence a *different* tool on the next call. Point the sink somewhere the agent cannot otherwise reach — which is what this sample does, and the reason `out/` is a plain directory on the host rather than another store.
 
