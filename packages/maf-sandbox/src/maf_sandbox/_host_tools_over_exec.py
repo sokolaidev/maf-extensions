@@ -31,10 +31,16 @@ Three costs, named here rather than discovered later:
   calls concurrently has the second answered only after the first. Concurrent means threads
   *and* processes: the shim claims each number with an exclusive create, so a program that
   forks or spawns cannot have two workers writing one request path.
-- **The files outlive the call.** Nothing in the protocol deletes, so requests and responses
-  sit in the guest filesystem until the sandbox is disposed of. A fresh per-run directory is
-  what keeps one run's traffic out of the next one's; it is the caller's to provide, and
-  :func:`guest_run_layout` names the paths inside it.
+- **Cleanup is this transport's own doing, because the protocol offers none.** Nothing in the
+  vocabulary deletes, so the files a run leaves would sit in the guest until the sandbox was
+  disposed of — readable by every later run in it, since ``acquire`` is get-or-create. What
+  removes them is ``rm`` over the ``exec`` the dispatch path already requires, which works
+  here and is not a general answer: a guest without a POSIX shell has no cleanup at all
+  (#438). :func:`dispatch_over_exec` reclaims the directory it owns on every exit path;
+  :attr:`GuestRunLayout.work` is the caller's, because artifacts are collected after this
+  returns, and :func:`reclaim_run` is what a kind calls for it. A fresh per-run directory is
+  still required — it is what keeps one run's traffic out of the next one's while both are
+  live, and it is the caller's to provide.
 """
 
 from __future__ import annotations
