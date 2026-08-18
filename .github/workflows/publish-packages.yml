@@ -517,7 +517,8 @@ jobs:
   # a release dispatches the live check unless no published dependent admits the core yet, which
   # is the one window where a red would be about the ordering of the train rather than the code.
   # A breaking release whose dependents still import runs all the same — the work check proved
-  # they are not stranded — which is the case the changelog flag used to skip and #337 reopened.
+  # they are not stranded, and the changelog's breaking flag is context for that run, not the
+  # dispatch. See #337.
   # A dependent's own publish leaves the output empty, and empty means "go".
   verify:
     name: Verify against a live sandbox
