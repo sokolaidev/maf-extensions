@@ -244,8 +244,10 @@ class SandboxProgramTimeout(TimeoutError):
       program is running: the same value covers a pid too malformed to aim at, a pid the host
       could not read, and a ``kill`` that reported no such process because the program had
       already exited. What it says is that this transport did not stop anything.
-    - ``"absent"`` — the run ended before any launcher ran, so nothing was started and there
-      is nothing to clean up after.
+    - ``"absent"`` — the run ended before any launcher ran, so no program was started and
+      none is running. It says nothing about *files*: a kind writes the program, the shim and
+      the model's shared-in files into the run directory before dispatching, so
+      :func:`reclaim_run` is owed here exactly as it is on every other outcome.
     - ``"unrecorded"`` — the launcher returned and no pid ever appeared. The launcher may have
       failed before publishing one, so this is not evidence of a running program either — it
       is the absence of any handle on whether there is one.
@@ -275,6 +277,18 @@ class SandboxProgramTimeout(TimeoutError):
         super().__init__(message)
         self.output = output
         self.signal = signal
+
+
+class _TheRunsOwnTimeout(SandboxProgramTimeout):
+    """The timeout this supervisor raised, told apart from one it merely caught.
+
+    :class:`SandboxProgramTimeout` is public and documented as constructible elsewhere, so a
+    :class:`~maf_sandbox.Sandbox` implementation may raise one from a call of its own. Deciding
+    on the type alone would read that as this run's own bound — already stopped and reported —
+    and the cleanup would skip the signal, then remove the pid that was the only handle on a
+    program still going. Callers catch the public type and are never handed this name; it
+    exists so the cleanup can tell whose timeout it is holding.
+    """
 
 
 #: How long the guest blocks on one call before giving up on the host, and how often it looks.
@@ -864,8 +878,10 @@ async def dispatch_over_exec(
         )
         handled = True
         return result
-    except SandboxProgramTimeout:
-        # Its own bound, which `_supervise` has already stopped the program for and reported.
+    except _TheRunsOwnTimeout:
+        # This run's own bound, which `_supervise` has already stopped the program for and
+        # reported. Deliberately not the public type: a backend raising one of those is a
+        # program nobody stopped, and it belongs on the path below with every other failure.
         handled = True
         raise
     finally:
@@ -903,7 +919,7 @@ async def _supervise(
     except _DeadlineExpired as gone:
         # The one `_within` outside the supervisor loop, so nothing else converts what it
         # raises, and a module-private type would otherwise cross the public boundary.
-        raise SandboxProgramTimeout(
+        raise _TheRunsOwnTimeout(
             f"the run's {timeout:g}s were gone before the program was started — {gone}",
             # Explicit, though it is also what a bare construction would say least of: this is
             # the one leg that never ran a launcher, so it is the only one entitled to claim
@@ -950,7 +966,7 @@ async def _supervise(
         fate = _nothing_is_proven(
             await _stop_the_program(sandbox, layout, until=_a_grace_from_now())
         )
-        raise SandboxProgramTimeout(
+        raise _TheRunsOwnTimeout(
             f"the run's {timeout:g}s were gone while starting the program"
             f"{_clause_while_starting(fate)}",
             signal=fate,
@@ -986,7 +1002,7 @@ async def _supervise(
             fate = _started_something(
                 await _stop_the_program(sandbox, layout, until=_a_grace_from_now())
             )
-            raise SandboxProgramTimeout(
+            raise _TheRunsOwnTimeout(
                 f"the guest program did not finish within {timeout:g}s"
                 f"{_clause_after_the_launcher_started(fate)}. "
                 f"{_output_clause(printed, note)}",
@@ -1034,7 +1050,7 @@ async def _supervise(
                 await _stop_the_program(sandbox, layout, until=_a_grace_from_now())
             )
             failure = f"{stalled}{_clause_after_the_launcher_started(fate)}"
-            raise SandboxProgramTimeout(
+            raise _TheRunsOwnTimeout(
                 f"the guest program did not finish within {timeout:g}s — {failure}. "
                 f"{_output_clause(printed, note)}",
                 output=printed[:2000],
@@ -1130,7 +1146,8 @@ async def reclaim_run(sandbox: Sandbox, layout: GuestRunLayout, *, timeout: floa
 
     Raises:
         ValueError: when ``timeout`` is not a finite positive number of seconds. An infinite one
-            reaches the backend's own ``exec`` bound, where it means this never returns.
+            reaches the backend's own ``exec`` bound, where it means this never returns. Checked
+            before the layout, so a bad argument is never answered as a refusal instead.
 
     Returns:
         Whether the run directory is gone. ``False`` is a data-retention failure rather than a
@@ -1138,6 +1155,11 @@ async def reclaim_run(sandbox: Sandbox, layout: GuestRunLayout, *, timeout: floa
         is left stays readable by every later run in this sandbox — and the caller is expected
         to escalate, which means disposing the sandbox.
     """
+    # Before the layout, because this one is the caller's own mistake and the check below
+    # answers `False` — which a caller is told to escalate as a data-retention failure. Reached
+    # in the other order, a bad `timeout` reports as one of those instead of as itself.
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError(f"timeout must be a finite positive number of seconds, not {timeout}")
     strays = [
         path
         for path in (
@@ -1162,8 +1184,6 @@ async def reclaim_run(sandbox: Sandbox, layout: GuestRunLayout, *, timeout: floa
             ", ".join(sorted(strays)),
         )
         return False
-    if not math.isfinite(timeout) or timeout <= 0:
-        raise ValueError(f"timeout must be a finite positive number of seconds, not {timeout}")
     return await _remove_tree(sandbox, layout.directory, until=time.monotonic() + timeout)
 
 

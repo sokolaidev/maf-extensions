@@ -2639,8 +2639,8 @@ class _GuestThatRecordsTheKill(_ScriptedGuest):
         if "kill" in str(command):
             # Recorded *after* the yield and the budget check, so a command the transport
             # issued with no time to spend does not count as one the guest ran. A fake that
-            # records on entry cannot tell "sent" from "attempted", which is how a cleanup
-            # given a zero budget once passed every test that claimed to check it.
+            # records on entry cannot tell "sent" from "attempted", and every assertion in
+            # this file about what the guest was made to do rests on that distinction.
             await _spend(timeout, str(command))
             self.commands.append(str(command))
             return ExecResult(stdout="", exit_code=self._kill_exit_code)
@@ -3526,6 +3526,28 @@ class TestWhatEveryExitPathOwesTheRun:
 
         assert guest.kills != [], f"a failed run left its program running: {guest.commands}"
 
+    def test_a_backends_own_program_timeout_is_not_this_runs_own(self):
+        """`SandboxProgramTimeout` is public, so a backend may raise one for a bound of its own.
+
+        Deciding on the type alone reads that as this supervisor's timeout — already stopped
+        and reported — so the emergency stop is skipped and the reclaim then removes the pid
+        that was the only handle on a program still going. Provenance has to decide it, not
+        `isinstance`.
+        """
+
+        class _RaisesTheSharedType(_GuestThatRecordsTheKill):
+            async def stat_file(self, path: str, *, working_directory: str):
+                if path == _LAYOUT.exit_code:
+                    raise SandboxProgramTimeout("a bound of the backend's own")
+                return await super().stat_file(path, working_directory=working_directory)
+
+        guest = _RaisesTheSharedType([], finish=False)
+        with pytest.raises(SandboxProgramTimeout) as raised:
+            _run(guest, HostToolRun(_registry()), timeout=5.0)
+
+        assert "a bound of the backend's own" in str(raised.value), "the run's reason was lost"
+        assert guest.kills != [], f"a backend's timeout skipped the stop: {guest.commands}"
+
     def test_the_transport_will_not_remove_a_work_directory_beneath_it(self):
         """The other direction: `work` under the transport's own directory goes with it.
 
@@ -3698,6 +3720,31 @@ class TestAPidAndALayoutThatCannotBeUsed:
         guest = _GuestThatRecordsRemovals([], finish=True)
         with pytest.raises(ValueError, match="finite positive number"):
             asyncio.run(reclaim_run(guest, _LAYOUT, timeout=bad))
+        assert guest.removals == []
+
+    @pytest.mark.parametrize("bad", [0.0, -1.0, float("inf"), float("nan")])
+    def test_reclaim_run_checks_its_timeout_before_the_layout(self, bad: float):
+        """Validation of an argument may not depend on whether a different one is any good.
+
+        A layout with files outside the run is *answered* `False`, and that is a retention
+        failure a caller escalates. Judged first, it would have a bad `timeout` come back as
+        one of those rather than as the programming error it is — and the escalation a caller
+        then performs is a sandbox disposal earned by nothing.
+        """
+        elsewhere = GuestRunLayout(
+            directory="/maf-sandbox/work/run-1",
+            work="/maf-sandbox/work/somewhere-else",
+            program="/maf-sandbox/work/run-1/host_tools/program.py",
+            shim=f"/maf-sandbox/work/run-1/host_tools/{SHIM_MODULE}",
+            launcher="/maf-sandbox/work/run-1/host_tools/run_program.sh",
+            calls=f"/maf-sandbox/work/run-1/host_tools/{CALLS_DIRECTORY}",
+            output="/maf-sandbox/work/run-1/host_tools/program_output.txt",
+            exit_code="/maf-sandbox/work/run-1/host_tools/program_exit_code",
+            pid="/maf-sandbox/work/run-1/host_tools/program_pid",
+        )
+        guest = _GuestThatRecordsRemovals([], finish=True)
+        with pytest.raises(ValueError, match="finite positive number"):
+            asyncio.run(reclaim_run(guest, elsewhere, timeout=bad))
         assert guest.removals == []
 
     def test_a_pid_the_host_could_not_look_for_claims_nothing_about_a_program(self):
