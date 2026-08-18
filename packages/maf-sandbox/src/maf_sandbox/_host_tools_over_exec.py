@@ -1150,10 +1150,14 @@ async def reclaim_run(sandbox: Sandbox, layout: GuestRunLayout, *, timeout: floa
             before the layout, so a bad argument is never answered as a refusal instead.
 
     Returns:
-        Whether the run directory is gone. ``False`` is a data-retention failure rather than a
-        tidiness one — nothing in the protocol deletes and ``acquire`` is get-or-create, so what
-        is left stays readable by every later run in this sandbox — and the caller is expected
-        to escalate, which means disposing the sandbox.
+        Whether the ``rm`` succeeded — the guest's own status for one command, not a promise
+        the directory stays gone. A program's children are never signalled, so one that
+        outlived the run can write a path back into existence after the removal returns.
+        ``False`` is the load-bearing answer: a data-retention failure rather than a tidiness
+        one — nothing in the protocol deletes and ``acquire`` is get-or-create, so what is left
+        stays readable by every later run in this sandbox — and the caller is expected to
+        escalate, which means disposing the sandbox. ``True`` narrows the window rather than
+        closing it, and a caller that needs the data provably gone disposes either way.
     """
     # Before the layout, because this one is the caller's own mistake and the check below
     # answers `False` — which a caller is told to escalate as a data-retention failure. Reached
