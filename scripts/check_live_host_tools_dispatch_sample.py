@@ -5,30 +5,26 @@ The live workflow installs the *published* wheels, runs the sample and pipes its
     python samples/15_acas_codeact_host_tools/agent.py | tee out.txt
     python scripts/check_live_host_tools_dispatch_sample.py out.txt   # or: ... | python …
 
-**What is asserted and what is only recorded is the whole design of this check.**
+**What is asserted is chosen so that a model's mood cannot decide a release.** Both routes run
+Python in the sandbox, so both are held to the same two things, and both are properties of
+machinery rather than of prose:
 
-A model stands between the library and stdout twice over, so the two routes cannot be held to
-the same standard:
+- **The program printed the exact total.** Read from the framework's record of what
+  `execute_code` returned, so an interpreter produced it. Not exact means the program did not
+  run, did not get its prices, or ignored them.
+- **What the model wrote into a tool call.** Dispatched, it must be nothing: the program is
+  written before any dispatch happens, so there is no price to embed. Directly, it must be
+  something: the values arrive as tool results and the only road into the program is for the
+  model to write them into its source. That contrast is the sample's whole finding, and both
+  halves of it are structural — neither depends on the model being clever or careless.
 
-- **The program must have printed the exact total.** That line is read from the framework's
-  record of what `execute_code` returned, not from anything the model wrote, so an interpreter
-  produced it: anything other than exact means the program did not run, did not call out, or
-  did not use what came back. It is the only line here worth failing a release over.
-- **Whether the model then relayed it is recorded, not required.** Observed to fail on a real
-  run: the program printed the total and the reply named a different number. That is a fact
-  about a model repeating a figure, and folding it into the assertion above would have blamed
-  the sandbox for it.
-- The two **no-sandbox** routes are *recorded, never required*. The one-pass route has been
-  wrong on every run of it — but the shown-working route, which is the same model and the
-  same prices with room to write the line totals down, is right on every run. So neither
-  is a fact about the model's arithmetic, and a check that pinned either would be pinning
-  a model's habits. What the sample measures is what each road cost and where the sum was
-  computed; the success line names which of the two landed.
+Wall clock and tokens are recorded and never bounded. They are what the sample exists to
+publish, and a threshold would turn a measurement into a pass mark on somebody else's control
+plane. What a model *said*, in prose, is never read at all.
 
-Every line read must carry the `[measured]` tag (#314). A model that writes
-``[measured] direct route: reply carries 218.15: True`` into its prose is answering for the
-host, and the sample's `quoted()` prefixes any such line with `> ` — so a tagged line at the
-left margin is the sample's own. Lines are matched anchored to guard that.
+Every line read must carry the `[measured]` tag at the left margin (#314). The sample's
+`quoted()` prefixes any tagged line inside a model's reply with `> `, so prose that tries to
+answer for the host is visibly not the host answering.
 
 Exits non-zero listing every reason it failed.
 """
@@ -42,20 +38,21 @@ from pathlib import Path
 #: The tag the sample puts on every line it measured, and the guard against a model writing one.
 _TAG = "[measured]"
 
-#: The three routes, spelled as the sample spells them. Only the first is held to an answer;
-#: see the module docstring for why the other two are recorded instead.
+#: The two roads to the same function, spelled as the sample spells them.
 _DISPATCH = "dispatch route"
-_ONE_PASS = "one-pass route"
-_SHOWN = "shown-working route"
-_UNAIDED = (_ONE_PASS, _SHOWN)
-_ROUTES = (_DISPATCH, *_UNAIDED)
-
-#: Spelled once, for the patterns below.
+_DIRECT = "direct route"
+_ROUTES = (_DISPATCH, _DIRECT)
 _ANY_ROUTE = "|".join(re.escape(name) for name in _ROUTES)
 
-#: How many distinct SKUs the order names. The program has to ask for every one of them, since
-#: no price is reachable any other way — fewer means it guessed one.
+#: Act 4 names the same two by their short form.
+_SHORT = {"dispatched": _DISPATCH, "direct": _DIRECT}
+
+#: How many distinct SKUs the order names. Every one has to be asked for, since no price is
+#: reachable any other way — fewer means one was invented.
 _SKUS = 3
+
+#: What the sample prints when the model wrote no price into any tool call.
+_NONE = "none"
 
 _F = re.MULTILINE
 
@@ -63,37 +60,28 @@ _F = re.MULTILINE
 #: write a program that asks twice — so only the distinct figure is pinned.
 _DISPATCHES = re.compile(rf"^\s*{re.escape(_TAG)}\s+dispatches:\s+(\d+)\s+across\s+(\d+)\s+SKU", _F)
 
-#: `<route>: N call(s), X.XXs, N tokens`. Wall clock and tokens are recorded, not bounded:
-#: they are what the sample exists to publish, and a threshold here would turn a measurement
-#: into a pass mark on somebody else's control plane.
+#: `<route>: N lookup(s), N message(s), X.XXs, N tokens`
 _COST = re.compile(
-    rf"^\s*{re.escape(_TAG)}\s+({_ANY_ROUTE}):\s+(\d+)\s+call\(s\),\s+"
+    rf"^\s*{re.escape(_TAG)}\s+({_ANY_ROUTE}):\s+(\d+)\s+lookup\(s\),\s+\d+\s+message\(s\),\s+"
     r"([\d.]+)s,\s+(\d+|None)\s+tokens",
     _F,
 )
 
-#: `dispatch route: the program printed 218.15: True` — the sandbox's own stdout, and the one
-#: assertion this check will fail a run over.
+#: `<route>: the program printed 218.15: True`
 _PRINTED = re.compile(
-    rf"^\s*{re.escape(_TAG)}\s+dispatch route:\s+the program printed\s+[\d.]+:\s+(True|False)",
+    rf"^\s*{re.escape(_TAG)}\s+({_ANY_ROUTE}):\s+the program printed\s+[\d.]+:\s+(True|False)",
     _F,
 )
 
-#: `<route>: reply carries 218.15: True`
-_CARRIES = re.compile(
-    rf"^\s*{re.escape(_TAG)}\s+({_ANY_ROUTE}):\s+reply carries\s+"
-    r"([\d.]+):\s+(True|False)",
+#: `<route>: prices the model wrote into code: none` — or a list of them.
+_WROTE = re.compile(
+    rf"^\s*{re.escape(_TAG)}\s+({_ANY_ROUTE}):\s+prices the model wrote into code:\s+(.+?)\s*$",
     _F,
 )
 
-#: Act 4 restates the sandbox verdict, and the three reply verdicts. Restating is the point:
-#: each pair has to agree, or one of them was written by something other than the run.
-_SANDBOX_VERDICT = re.compile(
-    rf"^\s*{re.escape(_TAG)}\s+the sandbox computed the exact total:\s+(True|False)", _F
-)
-
-_VERDICT = re.compile(
-    rf"^\s*{re.escape(_TAG)}\s+({_ANY_ROUTE}) reached the exact total:\s+(True|False)",
+#: `prices the model handled, dispatched: 0 of 3` — act 4 restating the line above.
+_HANDLED = re.compile(
+    rf"^\s*{re.escape(_TAG)}\s+prices the model handled,\s+(dispatched|direct):\s+(\d+)\s+of\s+\d+",
     _F,
 )
 
@@ -104,8 +92,7 @@ _ROUND_TRIP = re.compile(
     _F,
 )
 
-#: The footer. One sandbox, deleted rather than left to the lifecycle timers — this one is
-#: billable, so a sample that leaks it costs money quietly.
+#: The footer. Billable, so this one is not a formality.
 _DISPOSED = re.compile(rf"^\s*{re.escape(_TAG)}\s+Disposed\s+(\d+)\s+sandbox\(es\)\.", _F)
 
 
@@ -127,7 +114,7 @@ def _once[M](matches: list[M], what: str) -> tuple[M | None, list[str]]:
 
 
 def _assess_dispatch_happened(output: str) -> list[str]:
-    """Every SKU was asked for, which is the only way a price reaches the program."""
+    """Every SKU was asked for, which is the only way a price reaches the guest."""
     match, failures = _once(_DISPATCHES.findall(output), "dispatches")
     if match is None:
         return failures
@@ -137,67 +124,84 @@ def _assess_dispatch_happened(output: str) -> list[str]:
             f"the program asked for {distinct} distinct SKU(s) and the order names {_SKUS} — a "
             "price it did not ask for is a price it invented, and no other road reaches one"
         )
-    if total < distinct:
-        failures.append(f"{total} dispatch(es) covering {distinct} SKU(s) is not arithmetic")
     if total == 0:
         failures.append("nothing was dispatched at all, so the sample measured a road not taken")
     return failures
 
 
-def _assess_both_routes_reported(output: str) -> tuple[dict[str, bool], list[str]]:
-    """Both routes report a cost and a verdict, and the verdicts are internally consistent."""
+def _assess_both_routes_ran(output: str) -> list[str]:
+    """Each route reports a cost, and each one reached the function at least once."""
     failures: list[str] = []
-    carried: dict[str, bool] = {}
-
     for route in _ROUTES:
         cost, problems = _once([m for m in _COST.findall(output) if m[0] == route], f"{route} cost")
         failures.extend(problems)
         if cost is not None and int(cost[1]) == 0:
-            failures.append(f"{route} reports 0 calls, so it never reached the function at all")
+            failures.append(f"{route} reports 0 lookups, so it never reached the function at all")
+    return failures
 
-        says, problems = _once([m for m in _CARRIES.findall(output) if m[0] == route], route)
+
+def _assess_the_interpreter_computed_it(output: str) -> list[str]:
+    """Both routes run Python, so both are held to what the interpreter printed."""
+    failures: list[str] = []
+    for route in _ROUTES:
+        match, problems = _once(
+            [m for m in _PRINTED.findall(output) if m[0] == route], f"{route} program printed"
+        )
         failures.extend(problems)
-        if says is not None:
-            carried[route] = says[2] == "True"
-
-    # Act 4 restates both. Disagreement means one of the four lines did not come from this run.
-    verdicts = dict(_VERDICT.findall(output))
-    for route, exact in carried.items():
-        restated = verdicts.get(route)
-        if restated is None:
-            failures.append(f"act 4 never restated the {route} verdict")
-        elif (restated == "True") != exact:
+        if match is not None and match[1] != "True":
             failures.append(
-                f"the {route} is reported as {exact} where it is measured and {restated} where "
-                "it is summarised — the two lines describe one run and disagree"
+                f"the {route}'s program did not print the exact total — an interpreter computed "
+                "it from prices the host supplied, so this is not a model getting arithmetic "
+                "wrong. Either the program never ran, or it did not use what it was told"
             )
-    return carried, failures
+    return failures
 
 
-def _assess_the_program_computed_it(output: str) -> list[str]:
-    """The one hard assertion, and it is about the sandbox rather than about the model.
+def _assess_who_carried_the_prices(output: str) -> list[str]:
+    """The finding, and both halves of it are structural.
 
-    Read from the line the sample fills in from `tool_results`, which is the framework's record
-    of what `execute_code` returned. A model can claim a total; it cannot put one there.
+    Dispatched: the program is written before a dispatch can happen, so a price cannot be in
+    it. Directly: the values arrive as tool results and the only way into the program is for
+    the model to write them there. Neither turns on how the model felt that morning.
     """
-    match, failures = _once(_PRINTED.findall(output), "the program printed")
-    if match is None:
-        return failures
-    if match != "True":
+    failures: list[str] = []
+    wrote: dict[str, str] = {}
+    for route in _ROUTES:
+        match, problems = _once(
+            [m for m in _WROTE.findall(output) if m[0] == route], f"{route} prices written"
+        )
+        failures.extend(problems)
+        if match is not None:
+            wrote[route] = match[1].strip()
+
+    if wrote.get(_DISPATCH, _NONE) != _NONE:
         failures.append(
-            "the program did not print the exact total — an interpreter computed it from prices "
-            "the host supplied, so this is not a model getting arithmetic wrong. Either the "
-            "program never ran, or it did not use what it was told"
+            f"the dispatched route wrote {wrote[_DISPATCH]} into a tool call — the program is "
+            "written before any dispatch happens, so a price cannot have reached it that way. "
+            "Either the model was handed one somewhere it should not have been, or this line "
+            "no longer measures what it says"
+        )
+    if wrote.get(_DIRECT) == _NONE:
+        failures.append(
+            "the direct route wrote no price into a tool call, so the contrast this sample "
+            "exists to show did not happen — on that road the model has to carry each value "
+            "into the program, and a run where it did not is not comparable"
         )
 
-    restated = _SANDBOX_VERDICT.findall(output)
-    if not restated:
-        failures.append("act 4 never restated whether the sandbox computed the exact total")
-    elif restated[0] != match:
-        failures.append(
-            f"the sandbox is reported as {match} where it is measured and {restated[0]} where it "
-            "is summarised — the two lines describe one run and disagree"
-        )
+    # Act 4 restates both as counts. Disagreement means one of the four lines is not from this run.
+    restated = _HANDLED.findall(output)
+    for short, count in restated:
+        route = _SHORT[short]
+        if route not in wrote:
+            continue
+        listed = 0 if wrote[route] == _NONE else wrote[route].count("'") // 2
+        if int(count) != listed:
+            failures.append(
+                f"act 4 says the model handled {count} price(s) on the {route} where the route "
+                f"itself reported {listed} — the two lines describe one run and disagree"
+            )
+    if len(restated) != len(_ROUTES):
+        failures.append("act 4 did not restate both routes' price counts")
     return failures
 
 
@@ -218,7 +222,7 @@ def _assess_round_trip(output: str) -> list[str]:
 
 
 def _assess_the_sandbox_went_away(output: str) -> list[str]:
-    """Billable, so this one is not a formality."""
+    """Billable, and one sandbox serves both routes."""
     match, failures = _once(_DISPOSED.findall(output), "Disposed")
     if match is None:
         return failures
@@ -232,11 +236,11 @@ def _assess_the_sandbox_went_away(output: str) -> list[str]:
 
 def assess(output: str) -> list[str]:
     """Every reason the run does not show a real, measured dispatch."""
-    _, failures = _assess_both_routes_reported(output)
     return [
         *_assess_dispatch_happened(output),
-        *failures,
-        *_assess_the_program_computed_it(output),
+        *_assess_both_routes_ran(output),
+        *_assess_the_interpreter_computed_it(output),
+        *_assess_who_carried_the_prices(output),
         *_assess_round_trip(output),
         *_assess_the_sandbox_went_away(output),
     ]
@@ -260,21 +264,11 @@ def main(argv: list[str]) -> int:
             print(f"  - {reason}", file=sys.stderr)
         return 1
 
-    # Named rather than silent: the direct route is the half this check does not enforce, so
-    # the reader is told which way it went on this run instead of inferring it from a green.
-    landed = unaided_routes_that_landed(output)
-    alongside = ", ".join(landed) if landed else "neither route without one"
-    print(f"OK  the program dispatched and computed the exact total; reached also by: {alongside}")
+    print(
+        "OK  both routes computed the exact total in the sandbox; the model carried every "
+        "price on one road and none of them on the other"
+    )
     return 0
-
-
-def unaided_routes_that_landed(output: str) -> list[str]:
-    """Which no-sandbox routes happened to land on the total. Reported, never required."""
-    return [
-        route
-        for route, _, exact in _CARRIES.findall(output)
-        if route in _UNAIDED and exact == "True"
-    ]
 
 
 if __name__ == "__main__":

@@ -16,26 +16,39 @@ app  ->  maf_sandbox (router)  ->  maf_sandbox_acas  ->  the sandbox
 
 > a call-heavy program can cost more round trips than the direct tool calling this pattern exists to replace
 
-So the sample runs the same question three ways.
+So the sample asks one question two ways, and **both of them run Python in the sandbox**:
 
-1. **Dispatched.** The model writes a program, the program calls out once per SKU, and an interpreter does the arithmetic.
-2. **One-pass.** The same function handed to the model as an ordinary tool. It calls, then answers with the total and nothing else.
-3. **Shown-working.** Route 2 with one sentence added: write each line total down first, then add them up.
+1. **Dispatched.** The model writes a program; the program calls `unit_price` from inside the guest, over the transport, and computes.
+2. **Direct.** `execute_code` with no registry, plus the same function as an ordinary tool. The model calls it for each price, then writes those numbers into the program it runs.
 
-All three read the same price table through the same Python body, so a difference between them is never a difference in what the model was told.
+**Holding the interpreter constant is the whole design.** An earlier draft of this sample gave the dispatched route a Python interpreter and the other route nothing but the tool — and then reported that the second one got the arithmetic wrong. It did, reliably. But that measures whether a model can add decimals in one forward pass, which is samples 03 and 06's subject, not dispatch's. Attributing it to the transport was simply wrong, and the finding below only appeared once the confound was removed.
 
-**The third route exists because two would licence a wrong conclusion.** Measured over fifteen runs of route 2, the model is wrong every time and differently each time — `214.00`, `211.55`, `205.65`, `203.95`, `233.20`, `216.85`, `196.35`, `180.55`, `203.60`, `201.80`, and on. Route 3 is the same model with the same prices, and it is exact every time, with identical working:
+## What it actually costs, and what it actually buys
 
+From a live run:
+
+| | dispatched | direct |
+| --- | --- | --- |
+| total the program printed | `218.15` | `218.15` |
+| wall clock | 12.35s | 4.09s |
+| tokens | 1328 | 1665 |
+| model messages | 3 | 5 |
+| **prices the model wrote into code** | **none** | **all three** |
+
+Both are correct, so correctness is not what a round trip buys. The cost is wall clock — about a second per call on this backend — and it is not paid in tokens; the two land close and which is cheaper depends on how much the guest program prints.
+
+What it buys is the last row. On the direct route every price arrives as a tool result and the only road into the program is for the model to write it into the source:
+
+```python
+execute_code({"code": "a=3*41.75
+b=7*12.4
+c=2*3.05
+print(f'{a+b+c:.2f}')"})
 ```
-3 x 41.75 = 125.25   7 x 12.40 = 86.80   2 x 3.05 = 6.10
-125.25 + 86.80 + 6.10 = 218.15
-```
 
-So the finding is not "a model cannot add". Route 2 reports `reasoning_tokens=0` and an answer about ten tokens long: it has **nowhere to do the arithmetic**, and answers in a single forward pass. Give it somewhere — visible tokens, or an interpreter — and it is right.
+Those numbers are now in the transcript, the context window, and whatever logs either reaches. On the dispatched route the model writes none of them, and cannot: the program is written *before* any dispatch can answer, so there is no value to embed. The prices travel guest → host → guest without the model as courier.
 
-Two explanations were ruled out rather than argued away. The tool returns the correct price on every call, and the model receives it: the trace shows `result='41.75' | '12.4' | '3.05'` on every run. And labelling each answer `SKU-A=41.75` instead of a bare `41.75`, so no association has to be remembered, changes nothing — five more runs, five more wrong totals, one of them `218.10`, which is a cent out and the signature of estimating rather than mis-pairing.
-
-What route 3 costs is the honest comparison against dispatch: it buys the same correctness, and it pays into the transcript, where the sum is generated text nothing checked. The sandbox is the only route where the arithmetic was **executed**.
+**The claim is exactly that narrow.** It is not "the prices stay out of the transcript" — a dispatched program may `print` one, and in the run above it did, which is why `prices the model received` is reported on its own line and says so. What the transport decides is whether the *model* has to handle the value. That is the leg a `sink` declaration describes, and it is the reason `Capability.HOST_TOOLS` is a policy question rather than a convenience.
 
 ## Why the prices have to be secret
 
@@ -43,7 +56,7 @@ What route 3 costs is the honest comparison against dispatch: it buys the same c
 
 That is what makes the measurement mean something. If the model could guess a plausible price the sample would measure nothing: a run that skipped every dispatch would still print a number, and the number would look fine. Here a skipped dispatch is a wrong total, and the check says so.
 
-The quantities are awkward for the same reason sample 03 refuses a number a model can recite. The arithmetic has to be work.
+The quantities are awkward, but that no longer carries any weight: both routes compute with an interpreter, so neither is being asked to do mental arithmetic. What matters is only that the *prices* are unguessable, which is what makes a skipped dispatch visible as a wrong total.
 
 ## What a dispatch proves on this backend, and not on a local one
 
@@ -63,15 +76,12 @@ The interval runs from the host **answering** one call to the **next arriving** 
 
 ## What the check does and does not enforce
 
-This is the unusual part, and it is deliberate.
+Both routes run Python, so both are held to the same two things, and both are properties of machinery rather than prose:
 
-**Exactly one line is enforced: that the program printed the exact total.** It is read from the framework's own record of what `execute_code` returned, not from anything the model wrote, so an interpreter produced it. Anything other than exact means the program did not run, did not call out, or ignored what came back.
+- **The program printed the exact total** — read from the framework's record of what `execute_code` returned.
+- **Who wrote the prices into a tool call** — none on the dispatched route, all of them on the direct one. Both halves are structural: one is impossible, the other is forced.
 
-**Every reply verdict is recorded and never required — including the dispatch route's.** That last part is a correction, and it was earned. An earlier version of this check asserted that the model's *reply* carried the total, and a real run broke it: the program printed `218.15` and the reply said `239.75`. The sandbox had done its job; the model lost the number on the way to the answer. Enforcing the reply would have failed a release for that, and blamed the wrong component.
-
-So the sample reports two separate facts about the dispatch route — what the sandbox computed, and whether the model relayed it — and only the first can fail a run.
-
-The two no-sandbox routes are recorded for the same reason in the other direction: a check that depended on route 2 staying wrong would assert that a model stays bad at addition, and would go red the day that stops being true. The success line names which routes landed, so a green never hides it.
+**Wall clock and tokens are recorded and never bounded**, and what the model *said* is never read at all. That is deliberate, and it was earned twice. An earlier check required the model's reply to carry the total, and a live run printed `218.15` from the sandbox while the reply said `239.75` — it would have failed a release and blamed the sandbox. An earlier draft also leaned on the direct route staying wrong, which would have gone red the day it stopped being.
 
 Every line the check reads has to carry the `[measured]` tag at the left margin ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)). The sample's `quoted()` prefixes any tagged line inside a model's reply with `> `, so prose that tries to answer for the host is visibly not the host answering.
 
@@ -118,6 +128,6 @@ uv run python scripts/check_live_host_tools_dispatch_sample.py out.txt
 
 **A dispatched program that hangs leaves the sandbox behind.** [#375](https://github.com/sokolaidev/maf-extensions/issues/375) — a dispatched program that outlives its timeout keeps running and no kind can dispose the sandbox holding it. On this backend that is a billable sandbox nobody can reap, and it is a live defect now that two backends declare the capability. It is the reason the footer counts what it disposed.
 
-**The sandbox line says the program did not print the total.** This is the one failure that fails a run. Read the transcript: the program is in it. The usual cause is a program that hardcoded a price rather than calling for it, which the SKU-coverage line catches first.
+**A program did not print the total.** This fails the run, for either route. This is the one failure that fails a run. Read the transcript: the program is in it. The usual cause is a program that hardcoded a price rather than calling for it, which the SKU-coverage line catches first.
 
-**The sandbox computed it and the reply did not carry it.** Not a failure, and the two lines are separate so you can see it. The model was handed the right number and did not repeat it — worth knowing about a deployment, and nothing to do with the sandbox.
+**The dispatched route reports prices the model wrote into code.** This should be impossible, and the check fails on it. Either the program is being written after a dispatch answered, or that line has stopped measuring tool-call arguments only.

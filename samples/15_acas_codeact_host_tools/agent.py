@@ -1,4 +1,4 @@
-"""A program inside a sandbox calling back into the host, and what the round trip costs.
+"""A program inside a sandbox calling back into the host, and what the round trip buys.
 
 Every other sample sends things *in* to a sandbox and takes results *out*.  This one opens the
 other direction::
@@ -11,19 +11,27 @@ Sample 10 is the configuration half: what a host declares before any of this may
 answered at attach with no sandbox and no model.  This is the traffic half (#302).  Read 10
 first; the acts below use its vocabulary and do not re-teach it.
 
-Two things it exists to measure, neither of which a local backend answers honestly:
+#133 says the trade-off is what the feature lives or dies on and should be measured rather
+than assumed::
 
-- **The program outlives the `exec` that started it.**  ACAS's `exec` is blocking and
-  timeout-bounded, and the guest shim blocks on a response file the host can only write while
-  the program is still running.  So a dispatch that is answered *at all* proves the launcher
-  detached and the supervisor took over.  Nothing below asserts that; it is the precondition
-  of act 2 producing any number.
-- **What a round trip costs, against what it buys.**  #133 says the trade-off is what the
-  feature lives or dies on and should be measured rather than assumed.  Act 4 puts three
-  routes side by side: the question answered by a program that dispatches, by a model calling
-  the same function and reporting the total alone, and by the same model asked to write its
-  working down first.  The third is what keeps the comparison honest — without it the second
-  reads as "a model cannot add", and the README shows that is not what is happening.
+    a call-heavy program can cost more round trips than the direct tool calling this
+    pattern exists to replace
+
+So acts 2 and 3 ask one question two ways, and **both of them run Python in the sandbox**.
+The only thing that differs is where the price lookups happen: inside the guest, over the
+transport, or in the model's own tool loop.  Holding the interpreter constant is the whole
+point — a comparison that gave one side code execution and not the other would be measuring
+CodeAct, which samples 03 and 06 already do, and calling it a measurement of dispatch.
+
+What that leaves is the difference the capability actually makes, and act 4 names it: on the
+dispatched route the model never *handles* a price.  It cannot — it is never given one.  On
+the direct route every price arrives as a tool result and has to be written back out into the
+source of the program that needs it.
+
+Note the narrowness of that claim.  It is not "the prices stay out of the transcript": a
+dispatched program is free to print one, and the run this sample's README quotes did.  It is
+that the model is not the courier, which is the part the transport decides and the part a
+`sink` declaration is about.
 
 Running this needs a real Azure subscription and **creates a billable sandbox** — see this
 directory's README for the prerequisites and the environment variables.
@@ -77,26 +85,24 @@ AGENT_DIR = "order-desk"
 #: Python, so the guest needs `sh`, `nohup` and `python3` — a devcontainer image has all three.
 CODEACT_IMAGE = "mcr.microsoft.com/devcontainers/python:3.13-bookworm"
 
-#: The host's price list, and the point of the sample: it is not in the sandbox, the sandbox
-#: has no egress to go and find it, and no model has seen it. A program that wants these
-#: numbers has one way to get them, which is to call back out.
+#: The host's price list. Not in the image, not in the file store, and unreachable from the
+#: sandbox — with no `egress_allow` the guest initiates nothing at all. A program that wants
+#: these numbers has one road to them, and act 4 is about which road it took.
 PRICES = {"SKU-A": 41.75, "SKU-B": 12.40, "SKU-C": 3.05}
 
-#: Quantities the task names. Awkward on purpose, in the spirit of sample 03 refusing a number
-#: a model could recite: the arithmetic has to be work, or the sample proves nothing about
-#: where the answer came from.
+#: The order the task names.
 ORDER = (("SKU-A", 3), ("SKU-B", 7), ("SKU-C", 2))
 
-#: What the order costs. Computed here, from the same two constants the guest reaches through
-#: the tool — so both routes are scored against a truth neither of them produced.
+#: What the order costs. Computed here, from the same two constants both routes reach through
+#: the same function, so each is scored against a truth neither produced.
 EXPECTED = sum(quantity * PRICES[sku] for sku, quantity in ORDER)
 
-#: The name every route registers the function under, and the name act 2's program calls.
+#: The name both routes register the function under.
 TOOL_NAME = "unit_price"
 
-#: The kind's tool, read for what the program printed rather than for what the model said
-#: about it. `tool_results` matches by `call_id`, so this is the framework's record of the
-#: sandbox's own stdout — the one line in this sample no model has a hand in.
+#: The kind's tool. Read for what the program printed rather than for what the model said about
+#: it: `tool_results` matches by `call_id`, so it is the framework's record of the sandbox's own
+#: stdout — the one line in this sample no model has a hand in.
 CODEACT_TOOL = "execute_code"
 
 TASK = (
@@ -118,23 +124,31 @@ SANDBOX_VARS = (
 #: here — `az login` is enough.
 MODEL_VARS = ("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_CHAT_MODEL")
 
-#: Every route gets the same standing order, so act 4 compares the road the answer travelled
-#: rather than how hard each side was pushed.
+#: The same standing order for both routes, and the sentence that keeps the comparison fair is
+#: the first one: *both* sides must compute with the interpreter. Without it the direct route
+#: would be a model doing decimal arithmetic in one forward pass, which it is bad at — a real
+#: effect, and the wrong one to attribute to dispatch. Sample 03 is where that belongs.
 INSTRUCTIONS = (
-    "You answer with numbers you computed, never numbers you worked out in your head. "
-    f"Prices are not yours to guess: every price must come from the {TOOL_NAME} tool."
+    "You answer with numbers an interpreter computed. Never do arithmetic yourself: always "
+    f"run Python with {CODEACT_TOOL} to work out the total. Prices are not yours to guess: "
+    f"every price must come from {TOOL_NAME}."
 )
 
-#: Added to `INSTRUCTIONS` for the third route, and the reason there is a third one. Measured
-#: over fifteen runs of this task, a model asked for the total and nothing else answers in one
-#: pass with no reasoning tokens and is wrong every time; asked to put the line totals on the
-#: page first, it is exact every time. So "the model got it wrong" is not the finding — the
-#: finding is that it had nowhere to do the arithmetic, and this route is what separates the
-#: two. Labelling the tool's answers `SKU-A=41.75` instead of `41.75` changes nothing, which
-#: is how the mis-pairing explanation was ruled out.
-SHOW_YOUR_WORKING = (
-    " Before you give the total, write out each line as quantity x unit price = line total, "
-    "one per line, then add the line totals together and show that addition."
+#: The one sentence that cannot be shared, because the two routes reach the same function by
+#: genuinely different roads and a model has to be told which one it has. Act 2's `unit_price`
+#: is not in its tool list at all — it is reachable only from inside the guest, and the
+#: `execute_code` description says so — so an instruction naming it as a tool sends the model
+#: looking for something it does not have. Measured: without this, the program came out with
+#: placeholder zeros and printed `ERROR: unit_price data missing`, dispatching nothing at all.
+FROM_INSIDE = (
+    f" {TOOL_NAME} is a host tool, not one of yours: your program calls it from inside the "
+    f'sandbox with maf_host_tools.call("{TOOL_NAME}", sku=...).'
+)
+
+#: Act 3's counterpart, deliberately the same shape so neither side is pushed harder.
+FROM_THE_TOOL_LIST = (
+    f" {TOOL_NAME} is one of your tools: call it for each price, then pass the numbers you got "
+    "into the program you run."
 )
 
 
@@ -204,12 +218,13 @@ def dispatchable(ledger: Ledger) -> Any:
 def directly(ledger: Ledger) -> Any:
     """The same function as an ordinary MAF tool, for act 3.
 
-    No `@sandbox_tool` stamp, and that asymmetry is act 3's subject rather than an oversight:
-    the declarations describe *dispatch*, and a tool the model calls itself never crosses a
-    sandbox boundary — it is already inside whatever MAF governs.
+    No `@sandbox_tool` stamp, and the asymmetry is act 3's subject rather than an oversight:
+    those declarations describe an information flow that leaves the host and comes back, and a
+    tool the model calls itself never crosses a sandbox boundary. It crosses the conversation
+    instead, which is the thing act 4 measures.
     """
 
-    @tool
+    @tool(name=TOOL_NAME)
     def unit_price(sku: str) -> float:
         """The unit price for a SKU, from the host's internal price list."""
         return price_of(sku, ledger)
@@ -218,13 +233,9 @@ def directly(ledger: Ledger) -> Any:
 
 
 def agent_for(
-    env: dict[str, str],
-    credential: DefaultAzureCredential,
-    tools: list[Any],
-    *,
-    working: bool = False,
+    env: dict[str, str], credential: DefaultAzureCredential, tools: list[Any], how: str
 ) -> Agent:
-    """One agent shape, built three times, differing only in its tools and its standing order."""
+    """One agent shape, built twice: same task, same arithmetic rule, different road in."""
     return Agent(
         client=OpenAIChatClient(
             model=env["AZURE_OPENAI_CHAT_MODEL"],
@@ -232,28 +243,66 @@ def agent_for(
             credential=credential,
         ),
         name=AGENT_DIR,
-        instructions=INSTRUCTIONS + (SHOW_YOUR_WORKING if working else ""),
+        instructions=INSTRUCTIONS + how,
         tools=tools,
     )
 
 
-def carries_the_total(reply: str) -> bool:
-    """Whether the reply carries the exact total, as a substring.
+def carries_the_total(text: str) -> bool:
+    """Whether `text` carries the exact total, as a substring.
 
-    A substring and not a parse, deliberately: `$218.15`, `**218.15**` and `218.15` all say the
-    same thing, and a pattern tight enough to reject a wrong answer is loose enough to reject a
-    right one dressed differently. What a substring cannot do is accept a *near* miss — which is
-    the only failure mode in play, because a model doing this arithmetic itself lands close and
-    wrong rather than exact.
+    A substring and not a parse: `$218.15`, `**218.15**` and `218.15` all say the same thing,
+    and a pattern tight enough to reject a wrong answer is loose enough to reject a right one
+    dressed differently.
     """
-    return f"{EXPECTED:.2f}" in reply
+    return f"{EXPECTED:.2f}" in text
 
 
-def report(route: str, seconds: float, usage: dict[str, Any], calls: int, exact: bool) -> None:
-    """One route's numbers, on the two tagged lines the live check reads."""
+def _prices_in(text: str | None) -> set[str]:
+    """Both spellings, because a float renders as `12.4` where the table writes `12.40`."""
+    body = text or ""
+    return {
+        f"{price:.2f}" for price in PRICES.values() if f"{price:.2f}" in body or str(price) in body
+    }
+
+
+def prices_the_model_wrote(response: object) -> list[str]:
+    """Which of the host's prices the model wrote into a tool call — in practice, into code.
+
+    **This is what the sample is really measuring**, and the narrowness is the point. Only
+    tool-call *arguments* are read, so what it answers is: did the model have to carry a price
+    from one place to another? On the direct route that is forced — the numbers arrive as tool
+    results and the only way into the program is for the model to write them into its source.
+    On the dispatched route it is impossible: the program is written *before* any dispatch
+    happens, so there is no price to embed even if the model wanted to.
+
+    Deliberately not "anywhere in the messages", and not the final reply either. A dispatched
+    program may print a price, and a model may then repeat it — both real, both the program's
+    choice rather than the transport's, and both reported on the `received` line instead.
+    Conflating the two is how this sample got its comparison wrong the first time.
+    """
+    seen: set[str] = set()
+    for message in getattr(response, "messages", []):
+        for content in getattr(message, "contents", []) or []:
+            seen |= _prices_in(getattr(content, "arguments", None))
+    return sorted(seen)
+
+
+def prices_the_model_received(response: object) -> list[str]:
+    """Which prices came back to the model as tool results, by either road."""
+    seen: set[str] = set()
+    for message in getattr(response, "messages", []):
+        for content in getattr(message, "contents", []) or []:
+            seen |= _prices_in(getattr(content, "result", None))
+    return sorted(seen)
+
+
+def report(route: str, seconds: float, usage: dict[str, Any], calls: int, turns: int) -> None:
+    """One route's cost, on the line the live check reads."""
     tokens = usage.get("total_token_count")
-    print(f"{MEASURED}{route}: {calls} call(s), {seconds:.2f}s, {tokens} tokens")
-    print(f"{MEASURED}{route}: reply carries {EXPECTED:.2f}: {exact}")
+    print(
+        f"{MEASURED}{route}: {calls} lookup(s), {turns} message(s), {seconds:.2f}s, {tokens} tokens"
+    )
 
 
 def act_one_what_the_host_wired(ledger: Ledger) -> HostToolRegistry:
@@ -276,15 +325,12 @@ def act_one_what_the_host_wired(ledger: Ledger) -> HostToolRegistry:
     return registry
 
 
-async def act_two_the_program_calls_out(
-    env: dict[str, str],
-    credential: DefaultAzureCredential,
-    registry: HostToolRegistry,
-    ledger: Ledger,
-) -> tuple[SandboxRouter, bool, bool]:
-    """One turn, on a real microVM, whose program cannot finish without the host."""
-    print("== 2. A program that cannot answer without calling out ==\n")
+def sandbox_router(env: dict[str, str]) -> SandboxRouter:
+    """One backend, one router, the default floor.
 
+    No `min_isolation`: the default is `MICROVM` and this backend meets it, so the outward
+    channel opens at the highest rung the ladder has rather than an opted-down one.
+    """
     backend = AcasSandboxBackend(
         AcasSandboxConfig(
             endpoint=env["ACAS_SANDBOX_ENDPOINT"],
@@ -293,51 +339,63 @@ async def act_two_the_program_calls_out(
             sandbox_group=env["ACAS_SANDBOX_GROUP"],
         )
     )
-    # No `min_isolation`: the default floor is `MICROVM` and this backend meets it, so the
-    # outward channel opens at the highest rung the ladder has rather than an opted-down one.
-    router = SandboxRouter([backend])
-    context = make_caller_context(list_all_files, lambda: SCOPE, lambda: THREAD_ID)
+    return SandboxRouter([backend])
 
+
+def codeact_for(router: SandboxRouter, registry: HostToolRegistry | None) -> list[Any]:
+    """`execute_code`, with or without the outward channel. The one argument that differs."""
+    context = make_caller_context(list_all_files, lambda: SCOPE, lambda: THREAD_ID)
     tools = make_codeact_tools(
         router,
         AGENT_DIR,
         context,
-        # The one argument that opens the outward direction. A non-empty registry widens the
-        # spec by HOST_TOOLS *and* FILES_OUT — the transport stats and reads its own request
-        # files — and both are refused at construction by a backend that cannot serve them.
+        # A non-empty registry widens the spec by HOST_TOOLS *and* FILES_OUT — the transport
+        # stats and reads its own request files — and both are refused at construction by a
+        # backend that cannot serve them.
         host_tools=registry,
         image=CODEACT_IMAGE,
     )
     if not tools:
         print("No sandbox backend: execute_code was not attached.", file=sys.stderr)
         raise SystemExit(2)
+    return tools
 
-    agent = agent_for(env, credential, tools)
+
+async def act_two_the_program_calls_out(
+    env: dict[str, str],
+    credential: DefaultAzureCredential,
+    router: SandboxRouter,
+    registry: HostToolRegistry,
+    ledger: Ledger,
+) -> tuple[bool, list[str]]:
+    """The lookups happen inside the guest, over the transport."""
+    print("== 2. The lookups happen inside the sandbox ==\n")
+
+    agent = agent_for(env, credential, codeact_for(router, registry), FROM_INSIDE)
     started = time.perf_counter()
     response = await agent.run(TASK)
     seconds = time.perf_counter() - started
 
-    # Two different questions, and keeping them apart is the whole point of this act.
-    #
-    # `printed` is what the sandbox put on stdout, read from the framework's own record of what
-    # the tool returned rather than from anything the model wrote. An interpreter produced it,
-    # so it is exact or the program was wrong — there is no third outcome, and it is the only
-    # claim here worth failing a release over.
-    #
-    # `relayed` is whether the model then repeated it. That is a separate act of trust, and it
-    # has been observed to fail: a run where the program printed the total and the reply named
-    # a different number. Folding the two together would have blamed the sandbox for it.
+    # `printed` is the sandbox's own stdout, from the framework's record of what the tool
+    # returned. An interpreter produced it, so it is exact or the program was wrong.
     printed = tool_results(response, CODEACT_TOOL)
     computed = any(carries_the_total(result) for result in printed)
-    relayed = carries_the_total(response.text)
+    wrote = prices_the_model_wrote(response)
+    got = prices_the_model_received(response)
 
     print(quoted(response.text))
     print()
     print(f"{MEASURED}dispatches: {len(ledger.asked)} across {len(set(ledger.asked))} SKU(s)")
     report(
-        "dispatch route", seconds, dict(response.usage_details or {}), len(ledger.asked), relayed
+        "dispatch route",
+        seconds,
+        dict(response.usage_details or {}),
+        len(ledger.asked),
+        len(response.messages),
     )
     print(f"{MEASURED}dispatch route: the program printed {EXPECTED:.2f}: {computed}")
+    print(f"{MEASURED}dispatch route: prices the model wrote into code: {wrote or 'none'}")
+    print(f"{MEASURED}dispatch route: prices the model received: {got or 'none'}")
 
     trips = ledger.round_trips
     if trips:
@@ -346,94 +404,98 @@ async def act_two_the_program_calls_out(
             f"min {min(trips):.2f}s, median {median(trips):.2f}s, max {max(trips):.2f}s"
         )
     print()
-    return router, computed, relayed
+    return computed, wrote
 
 
-async def _without_a_sandbox(
-    env: dict[str, str], credential: DefaultAzureCredential, route: str, *, working: bool
-) -> bool:
-    """One no-sandbox route: the same function as an ordinary tool, the same question."""
-    ledger = Ledger()
-    agent = agent_for(env, credential, [directly(ledger)], working=working)
+async def act_three_the_model_looks_them_up(
+    env: dict[str, str],
+    credential: DefaultAzureCredential,
+    router: SandboxRouter,
+    ledger: Ledger,
+) -> tuple[bool, list[str]]:
+    """The same question, the same interpreter, the lookups in the model's own tool loop.
+
+    `execute_code` without a registry, plus the same function as an ordinary MAF tool. So the
+    arithmetic is still executed rather than written — the only thing that moved is who asks
+    for a price, and therefore what has to travel through the conversation to reach the program.
+    """
+    print("== 3. The lookups happen in the model's tool loop ==\n")
+
+    tools = [*codeact_for(router, None), directly(ledger)]
+    agent = agent_for(env, credential, tools, FROM_THE_TOOL_LIST)
     started = time.perf_counter()
     response = await agent.run(TASK)
     seconds = time.perf_counter() - started
 
-    exact = carries_the_total(response.text)
+    printed = tool_results(response, CODEACT_TOOL)
+    computed = any(carries_the_total(result) for result in printed)
+    wrote = prices_the_model_wrote(response)
+    got = prices_the_model_received(response)
+
     print(quoted(response.text))
     print()
-    report(route, seconds, dict(response.usage_details or {}), len(ledger.asked), exact)
+    report(
+        "direct route",
+        seconds,
+        dict(response.usage_details or {}),
+        len(ledger.asked),
+        len(response.messages),
+    )
+    print(f"{MEASURED}direct route: the program printed {EXPECTED:.2f}: {computed}")
+    print(f"{MEASURED}direct route: prices the model wrote into code: {wrote or 'none'}")
+    print(f"{MEASURED}direct route: prices the model received: {got or 'none'}")
     print()
-    return exact
-
-
-async def act_three_the_model_calls_it_itself(
-    env: dict[str, str], credential: DefaultAzureCredential
-) -> tuple[bool, bool]:
-    """The same question, the same function, no sandbox — asked two ways.
-
-    Two, because one would licence the wrong conclusion. A single no-sandbox route coming back
-    wrong reads as "the model cannot add", and that is not what is happening: asked for the
-    total and nothing else it answers in one pass with no reasoning tokens, and asked to put
-    the line totals on the page first it is exact. The second route is what stops act 4
-    claiming the first thing.
-    """
-    print("== 3. The same question, answered without a sandbox ==\n")
-    print("  Asked twice: once for the total alone, once for the working first.\n")
-
-    one_pass = await _without_a_sandbox(env, credential, "one-pass route", working=False)
-    shown = await _without_a_sandbox(env, credential, "shown-working route", working=True)
-    return one_pass, shown
+    return computed, wrote
 
 
 def act_four_what_the_round_trip_bought(
-    computed: bool, relayed: bool, one_pass: bool, shown: bool
+    dispatched: list[str], direct: list[str], total: int
 ) -> None:
-    """The comparison. Three routes, one price table, and what each did with it.
+    """The comparison, once correctness has stopped being the variable.
 
-    All three read the same table through the same Python body, so a difference between them is
-    never a difference in what the model was told.
+    Both routes computed with the same interpreter and both got the same number, so what is
+    left is the cost of each road and what travelled down it.
     """
     print("== 4. What the round trips bought ==\n")
-    print(f"  The order costs {EXPECTED:.2f}. All three routes were given the same prices.\n")
-    print(f"{MEASURED}the sandbox computed the exact total:        {computed}")
-    print(f"{MEASURED}dispatch route reached the exact total:      {relayed}")
-    print(f"{MEASURED}one-pass route reached the exact total:      {one_pass}")
-    print(f"{MEASURED}shown-working route reached the exact total: {shown}")
+    print(f"{MEASURED}prices the model handled, dispatched: {len(dispatched)} of {total}")
+    print(f"{MEASURED}prices the model handled, direct:     {len(direct)} of {total}")
     print()
-    print("  Only the first line is a fact about the sandbox. The three below it are facts")
-    print("  about a model relaying, guessing or writing down a sum it was handed.\n")
-    print("  The one-pass route is much the cheapest and has nowhere to do the arithmetic: no")
-    print("  reasoning tokens, and an answer about ten tokens long. The shown-working route")
-    print("  buys the same correctness the sandbox does and pays for it in tokens — but it")
-    print("  pays into the transcript, where the sum is generated text nothing checked. The")
-    print("  dispatch route is the slowest, and the only one where the arithmetic was executed")
-    print("  rather than written. A round trip does not buy a cleverer model. It buys a place")
-    print("  to compute that is not the model.\n")
+    print("  Both routes ran Python and both reached the same total, so correctness is not")
+    print("  what a round trip buys — sample 03 already showed what an interpreter is for.")
+    print("  What it buys is the line above. Dispatched, the model is never handed a price,")
+    print("  so it writes none: the values go guest to host and back without it. Directly,")
+    print("  every price arrives as a tool result and the model writes each one into the")
+    print("  source of the program that needs it, where it stays — in the transcript, the")
+    print("  context window, and whatever logs either of those reaches.")
+    print()
+    print("  That is the trade #133 asked to have measured, and the price is wall clock: a")
+    print("  round trip per call, against a tool call the model was going to make anyway.")
+    print("  Tokens are not the axis — the two routes land close, and which is cheaper")
+    print("  depends on how much the guest program decides to print.\n")
 
 
 async def run() -> int:
-    """Wire the stack, run all three routes, and take the sandbox down again."""
+    """Wire the stack, run both routes against one sandbox, and take it down again."""
     env = require_env_vars(SANDBOX_VARS + MODEL_VARS)
     if env is None:
         return 2
 
     dispatch_ledger = Ledger()
+    direct_ledger = Ledger()
     registry = act_one_what_the_host_wired(dispatch_ledger)
 
     credential = DefaultAzureCredential()
-    router: SandboxRouter | None = None
+    router = sandbox_router(env)
     try:
-        router, computed, relayed = await act_two_the_program_calls_out(
-            env, credential, registry, dispatch_ledger
+        _, dispatched = await act_two_the_program_calls_out(
+            env, credential, router, registry, dispatch_ledger
         )
-        one_pass, shown = await act_three_the_model_calls_it_itself(env, credential)
-        act_four_what_the_round_trip_bought(computed, relayed, one_pass, shown)
+        _, direct = await act_three_the_model_looks_them_up(env, credential, router, direct_ledger)
+        act_four_what_the_round_trip_bought(dispatched, direct, len(PRICES))
     finally:
-        if router is not None:
-            # Deletes rather than relying on the lifecycle timers — see sample 01's README.
-            deleted = await router.dispose_scope(SCOPE, THREAD_ID)
-            print(f"{MEASURED}Disposed {deleted} sandbox(es).")
+        # Deletes rather than relying on the lifecycle timers — see sample 01's README.
+        deleted = await router.dispose_scope(SCOPE, THREAD_ID)
+        print(f"{MEASURED}Disposed {deleted} sandbox(es).")
         await credential.close()
     return 0
 
