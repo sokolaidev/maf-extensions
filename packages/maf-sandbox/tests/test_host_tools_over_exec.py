@@ -2233,7 +2233,10 @@ class TestWhoseTimeoutItWas:
         with pytest.raises(SandboxProgramTimeout) as spent:
             _run(_BoundsTheStartSilently([], finish=False), HostToolRun(_registry()), timeout=30.0)
 
-        assert str(spent.value) == "the run's 30s were gone while starting the program"
+        assert str(spent.value) == (
+            "the run's 30s were gone while starting the program"
+            " (whether it got as far as starting one could not be established)"
+        )
         assert not str(spent.value).endswith("—"), "the message trails off into nothing"
 
     def test_the_hosts_note_is_not_passed_off_as_the_programs_own_words(self):
@@ -2760,7 +2763,7 @@ class TestTheLegWhereTheLauncherItselfRanOut:
         assert "it had started the program and was sent SIGKILL" in str(expired.value)
 
     def test_no_pid_leaves_the_message_exactly_as_it_was(self):
-        """Nothing was started, so nothing is claimed — pinned on the whole sentence."""
+        """A missing pid claims nothing either way — pinned on the whole sentence."""
 
         class _BoundsTheStartSilently(_ScriptedGuest):
             async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
@@ -2768,7 +2771,10 @@ class TestTheLegWhereTheLauncherItselfRanOut:
 
         with pytest.raises(SandboxProgramTimeout) as expired:
             _run(_BoundsTheStartSilently([], finish=False), HostToolRun(_registry()), timeout=30.0)
-        assert str(expired.value) == "the run's 30s were gone while starting the program"
+        assert str(expired.value) == (
+            "the run's 30s were gone while starting the program"
+            " (whether it got as far as starting one could not be established)"
+        )
 
 
 class TestThePidFileIsTheLayoutsOwn:
@@ -2975,7 +2981,7 @@ class TestStoppingOnTheOtherTwoLegs:
         assert "may still be running" in str(expired.value)
 
     def test_a_pid_that_was_never_written_says_nothing_new(self):
-        """The one case that stays silent: the launcher left no pid, so nothing was started."""
+        """No pid, and no kill to attempt — but the sentence still may not say nothing ran."""
 
         class _BoundsTheStartWithNothingWritten(_GuestThatRecordsTheKill):
             async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
@@ -2989,7 +2995,10 @@ class TestStoppingOnTheOtherTwoLegs:
             _run(guest, HostToolRun(_registry()), timeout=30.0)
 
         assert guest.kills == []
-        assert str(expired.value) == "the run's 30s were gone while starting the program"
+        assert str(expired.value) == (
+            "the run's 30s were gone while starting the program"
+            " (whether it got as far as starting one could not be established)"
+        )
 
     def test_a_pid_the_host_cannot_read_hedges_rather_than_going_quiet(self):
         """A backend failure is not evidence that nothing was started."""
@@ -3706,13 +3715,13 @@ class TestWhatACallerCanBranchOn:
             _run(guest, HostToolRun(_registry()), timeout=0.2)
         assert expired.value.signal == expected
 
-    def test_a_run_that_never_started_is_not_a_run_with_a_lost_pid(self):
-        """The two states a missing pid can mean, and the only one that needs nothing further.
+    def test_a_launcher_that_ran_out_may_still_have_started_something(self):
+        """A missing pid on this leg is not evidence that nothing is running.
 
-        Reaching the supervisor loop at all means the launcher exited cleanly, so a missing pid
-        there is a program running without a handle — `unrecorded`, asserted above. Here the
-        launcher's own `exec` never returned, so nothing was started and there is nothing to
-        escalate. Reported as one value a caller could neither ignore nor act on safely.
+        The launcher backgrounds the interpreter and publishes the pid on the line after, so an
+        `exec` that expires between the two leaves a program running and nothing to point at.
+        Reported as `absent` — the one outcome documented as needing nothing further — a caller
+        would be told to walk away from a sandbox that is still executing.
         """
 
         class _BoundsTheStart(_ScriptedGuest):
@@ -3721,7 +3730,22 @@ class TestWhatACallerCanBranchOn:
 
         with pytest.raises(SandboxProgramTimeout) as expired:
             _run(_BoundsTheStart([], finish=False), HostToolRun(_registry()), timeout=30.0)
-        assert expired.value.signal == "absent"
+        assert expired.value.signal == "unknown"
+
+    def test_only_the_leg_that_never_reached_a_launcher_says_nothing_started(self):
+        """`absent` has to stay reachable, or the one safe-to-ignore outcome describes nothing.
+
+        Here the run's budget goes on the upload, so no launcher ever ran and nothing can have
+        started. This is the only leg entitled to say so.
+        """
+
+        class _StallsOnTheUpload(_ScriptedGuest):
+            async def write_file(self, path: str, content: str | bytes) -> None:
+                await asyncio.sleep(3600)
+
+        with pytest.raises(SandboxProgramTimeout) as gone:
+            _run(_StallsOnTheUpload([], finish=False), HostToolRun(_registry()), timeout=0.1)
+        assert gone.value.signal == "absent"
 
     def test_the_message_and_the_attribute_cannot_drift(self):
         """The prose is generated from the same value, so one cannot contradict the other."""

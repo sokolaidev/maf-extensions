@@ -241,13 +241,18 @@ class SandboxProgramTimeout(TimeoutError):
       kernel can discard it, the pid is read from a file the program can rewrite, and children
       are never signalled.
     - ``"refused"`` — a pid was recorded and no signal reached it, so something is running.
-    - ``"absent"`` — nothing was started, so there is nothing to clean up after.
+    - ``"absent"`` — the run ended before any launcher ran, so nothing was started and there
+      is nothing to clean up after.
     - ``"unrecorded"`` — the launcher started something and no pid ever appeared, so a program
       is running that this host has no handle on.
-    - ``"unknown"`` — the host could not find out, which is evidence of neither.
+    - ``"unknown"`` — the host could not establish which of those it was: the pid could not be
+      read, or the launcher's own call expired between starting the program and publishing its
+      pid. Evidence of neither, and the only honest answer for that window.
 
-    ``"absent"`` is the only one that needs nothing further. Every other value leaves a program
-    this transport did not stop, and disposing the sandbox is what remains.
+    Only ``"absent"`` says a program was never started. **None of the others confirms one was
+    stopped** — not even ``"sent"``, for the reasons above — so a host that needs termination
+    rather than a best effort applies its own policy on top, and disposing the sandbox is what
+    that policy has to reach for.
 
     ``output`` is what the program had printed when the run was given up on, already capped —
     empty on the two starting legs, where there is nothing to have read yet. An attribute
@@ -910,10 +915,12 @@ async def _supervise(
         # still have started one — the same case that leaves output nobody read. The marker is
         # read first, as `_stop_the_program` requires: this leg is reachable when the launcher
         # had time to run to completion, so the program has most likely finished.
-        fate: _Fate = "absent"
+        fate: _Fate = "unknown"
         if await _marker_if_present(sandbox, layout, _a_grace_from_now()) is None:
             # A grace of its own, measured after the marker read rather than shared with it.
-            fate = await _stop_the_program(sandbox, layout, until=_a_grace_from_now())
+            fate = _nothing_is_proven(
+                await _stop_the_program(sandbox, layout, until=_a_grace_from_now())
+            )
         raise SandboxProgramTimeout(
             f"the run's {timeout:g}s were gone while starting the program"
             f"{_clause_while_starting(fate)}",
@@ -1131,6 +1138,16 @@ async def reclaim_run(sandbox: Sandbox, layout: GuestRunLayout, *, timeout: floa
     return await _remove_tree(sandbox, layout.directory, until=time.monotonic() + timeout)
 
 
+def _nothing_is_proven(fate: _Fate) -> _Fate:
+    """`absent` on the leg where the launcher's own ``exec`` ran out proves nothing.
+
+    The launcher backgrounds the interpreter and publishes the pid on the line after, so a call
+    that expires between the two leaves a program running and no pid to show for it. Only the
+    upload leg — which never ran a launcher at all — may say nothing was started.
+    """
+    return "unknown" if fate == "absent" else fate
+
+
 def _started_something(fate: _Fate) -> _Fate:
     """`absent` on a leg where the launcher returned 0 means the pid never appeared.
 
@@ -1153,19 +1170,18 @@ def _clause_after_the_launcher_started(fate: _Fate) -> str:
 
 
 def _clause_while_starting(fate: _Fate) -> str:
-    """For the leg where the launcher's own ``exec`` ran out, which may have started nothing.
+    """For the leg where the launcher's own ``exec`` ran out.
 
-    The call cannot say whether the launcher got as far as starting anything, so the pid
-    decides: no pid, and the message claims nothing.
+    The launcher backgrounds the interpreter and writes the pid down on the line after, so a
+    call that expires between the two leaves a program running and no pid to point at. A
+    missing pid is therefore not evidence of a missing program, and neither is a pid the host
+    failed to read: both hedge rather than claim. ``"absent"`` cannot reach here — the caller
+    maps it through :func:`_nothing_is_proven` — and would earn the same hedge if it did.
     """
-    if fate == "absent":
-        return ""
     if fate == "sent":
         return f" (it had started the program{_SIGNALLED})"
-    if fate == "unknown":
-        # The pid could not be looked for, so whether a program was started is exactly what
-        # this host does not know. Saying it started would replace one unknown with a claim.
-        return " (whether it had started the program could not be established)"
+    if fate in ("absent", "unknown"):
+        return " (whether it got as far as starting one could not be established)"
     return f" (it had started the program{_NOT_SIGNALLED})"
 
 
