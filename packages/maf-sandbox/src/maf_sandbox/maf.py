@@ -286,39 +286,6 @@ class SandboxToolSession:
         except Exception as exc:  # noqa: BLE001
             return f"Error: could not list the file store: {exc}"
 
-    async def dispose(self, key: SandboxKey) -> bool:
-        """Destroy this conversation's sandboxes for ``key``. Best-effort; never raises.
-
-        **The escalation of last resort, and deliberately blunt.** It takes a key rather than a
-        run, because a key is the finest thing a backend can address: `SandboxBackend.dispose`
-        deletes every *kind's* sandbox for it, and two concurrent calls in one conversation
-        share it. So this ends work that has nothing to do with whatever went wrong.
-
-        That price is worth paying for exactly one thing — a run whose files could not be
-        removed. Nothing in the protocol deletes, `acquire` is get-or-create, and a run
-        directory that survives is readable by every later run in the same sandbox for the life
-        of the conversation. A failed call is recoverable; data left where the next program can
-        read it is not. Destroying the sandbox is what removes it.
-
-        Not for an ordinary failure, and not for a timeout on its own: `dispatch_over_exec`
-        stops the program it started and reclaims its own files, and a kind reclaims the run.
-        This is for when that reporting says it did not work.
-
-        Returns:
-            Whether disposal was attempted without error. ``False`` means the sandbox — and the
-            run directory inside it — is still there, and nothing further here can reach it.
-        """
-        try:
-            await self._router.dispose(key)
-        except Exception as refused:  # noqa: BLE001 — a failed disposal must not mask its cause
-            self._logger.warning(
-                f"{self._log_prefix}: could not dispose the sandbox for this conversation, "
-                "so a run's files stay readable by the next run in it: %s",
-                error_detail(refused),
-            )
-            return False
-        return True
-
     async def acquire(self, key: SandboxKey) -> Sandbox | str:
         """A running sandbox for ``key``, or the message to return when there is none.
 
