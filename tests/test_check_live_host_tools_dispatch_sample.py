@@ -3,9 +3,9 @@
 `_HEALTHY` is a real run of `samples/15_acas_codeact_host_tools` against a live ACAS sandbox
 and a live model, verbatim apart from the two tables the model produced.
 
-The suite is organised around what the check is *allowed* to fail a release for. Seven live
+The suite is organised around what the check is *allowed* to fail a release for. Twelve live
 runs went into choosing that: the figures below moved between them — 18 to 29 lookups, 35s to
-87s, two to four dispatched round trips — and what did not move is what is asserted.
+87s, two to four dispatched tool-calling rounds — and what did not move is what is asserted.
 
 What each test pins is the property, not the run that produced it: an assertion keyed on a
 model's prose, a totals matcher blind to a thousands separator, or an enumeration reading the
@@ -68,8 +68,8 @@ Oregon	TOTAL	3514.35
 
 == 4. What the round trips bought ==
 
-  [measured] sales figures the model handled, dispatched: 0 of 12
-  [measured] sales figures the model handled, direct:     12 of 12
+  [measured] sales figures the model wrote into code, dispatched: 0 of 12
+  [measured] sales figures the model wrote into code, direct:     12 of 12
 
 == 5. What the runs left in the guest ==
 
@@ -234,12 +234,12 @@ class TestTheDenominatorIsNotTheRunsToChoose:
                 "direct route: sales figures the model wrote into code: 0 of 0",
             ),
             (
-                "sales figures the model handled, dispatched: 0 of 12",
-                "sales figures the model handled, dispatched: 0 of 0",
+                "sales figures the model wrote into code, dispatched: 0 of 12",
+                "sales figures the model wrote into code, dispatched: 0 of 0",
             ),
             (
-                "sales figures the model handled, direct:     12 of 12",
-                "sales figures the model handled, direct:     0 of 0",
+                "sales figures the model wrote into code, direct:     12 of 12",
+                "sales figures the model wrote into code, direct:     0 of 0",
             ),
         ):
             zeroed = zeroed.replace(old, new)
@@ -259,8 +259,8 @@ class TestTheDenominatorIsNotTheRunsToChoose:
                 "direct route: sales figures the model wrote into code: 7 of 7",
             ),
             (
-                "sales figures the model handled, direct:     12 of 12",
-                "sales figures the model handled, direct:     7 of 7",
+                "sales figures the model wrote into code, direct:     12 of 12",
+                "sales figures the model wrote into code, direct:     7 of 7",
             ),
         ):
             shrunk = shrunk.replace(old, new)
@@ -366,8 +366,8 @@ class TestWhoCarriedTheFigures:
             "[measured] dispatch route: sales figures the model wrote into code: 0 of 12",
             "[measured] dispatch route: sales figures the model wrote into code: 4 of 12",
         ).replace(
-            "[measured] sales figures the model handled, dispatched: 0 of 12",
-            "[measured] sales figures the model handled, dispatched: 4 of 12",
+            "[measured] sales figures the model wrote into code, dispatched: 0 of 12",
+            "[measured] sales figures the model wrote into code, dispatched: 4 of 12",
         )
         assert any("before any dispatch can answer" in r for r in check.assess(broken))
 
@@ -376,8 +376,8 @@ class TestWhoCarriedTheFigures:
             "[measured] direct route: sales figures the model wrote into code: 12 of 12",
             "[measured] direct route: sales figures the model wrote into code: 0 of 12",
         ).replace(
-            "[measured] sales figures the model handled, direct:     12 of 12",
-            "[measured] sales figures the model handled, direct:     0 of 12",
+            "[measured] sales figures the model wrote into code, direct:     12 of 12",
+            "[measured] sales figures the model wrote into code, direct:     0 of 12",
         )
         assert any("not the comparison this sample makes" in r for r in check.assess(broken))
 
@@ -387,8 +387,8 @@ class TestWhoCarriedTheFigures:
             "disagree" in r
             for r in check.assess(
                 _swap(
-                    "[measured] sales figures the model handled, direct:     12 of 12",
-                    "[measured] sales figures the model handled, direct:     12 of 7",
+                    "[measured] sales figures the model wrote into code, direct:     12 of 12",
+                    "[measured] sales figures the model wrote into code, direct:     12 of 7",
                 )
             )
         )
@@ -398,8 +398,8 @@ class TestWhoCarriedTheFigures:
             "disagree" in r
             for r in check.assess(
                 _swap(
-                    "[measured] sales figures the model handled, direct:     12 of 12",
-                    "[measured] sales figures the model handled, direct:     7 of 12",
+                    "[measured] sales figures the model wrote into code, direct:     12 of 12",
+                    "[measured] sales figures the model wrote into code, direct:     7 of 12",
                 )
             )
         )
@@ -407,7 +407,7 @@ class TestWhoCarriedTheFigures:
     def test_a_missing_restatement_fails(self):
         assert any(
             "act 4 dispatched restatement" in r
-            for r in check.assess(_without("sales figures the model handled, dispatched"))
+            for r in check.assess(_without("sales figures the model wrote into code, dispatched"))
         )
 
 
@@ -496,8 +496,8 @@ class TestACountIsNotAMatch:
             "[measured] direct route: sales figures the model wrote into code: 12 of 12",
             "[measured] direct route: sales figures the model wrote into code: 7 of 12",
         ).replace(
-            "[measured] sales figures the model handled, direct:     12 of 12",
-            "[measured] sales figures the model handled, direct:     7 of 12",
+            "[measured] sales figures the model wrote into code, direct:     12 of 12",
+            "[measured] sales figures the model wrote into code, direct:     7 of 12",
         )
         assert any("7 of 12" in r for r in check.assess(broken))
 
@@ -510,10 +510,10 @@ class TestACountIsNotAMatch:
 
     def test_two_restatements_of_one_route_and_none_of_the_other_fails(self):
         """Both are two lines, so a length check passes while act 4 omits half the comparison."""
-        doubled = _without("sales figures the model handled, dispatched").replace(
-            "  [measured] sales figures the model handled, direct:     12 of 12",
-            "  [measured] sales figures the model handled, direct:     12 of 12\n"
-            "  [measured] sales figures the model handled, direct:     12 of 12",
+        doubled = _without("sales figures the model wrote into code, dispatched").replace(
+            "  [measured] sales figures the model wrote into code, direct:     12 of 12",
+            "  [measured] sales figures the model wrote into code, direct:     12 of 12\n"
+            "  [measured] sales figures the model wrote into code, direct:     12 of 12",
         )
         reasons = check.assess(doubled)
         assert any("act 4 dispatched restatement" in r for r in reasons)
@@ -540,6 +540,32 @@ class TestTheRoundTripLine:
 
     def test_a_missing_round_trip_line_fails(self):
         assert any("round trip" in r for r in check.assess(_without("round trip:")))
+
+    def test_a_round_that_asked_for_two_programs_counts_as_two(self):
+        """A boundary is per program, and one round can ask for several.
+
+        The healthy run has one `execute_code` per round, so a checker reading the round count
+        agrees with the emitter for the wrong reason. Batch two into a round and the two part:
+        three programs leave 22 gaps, not the 23 the round count predicts.
+        """
+        batched = _swap(
+            "dispatch route: tool calls per round: [1, 1]",
+            "dispatch route: tool calls per round: [1, 2]",
+        )
+        assert any("in 3 program(s)" in r for r in check.assess(batched))
+        assert check.assess(batched.replace("round trip: 23 gap(s)", "round trip: 22 gap(s)")) == []
+
+    def test_a_dispatched_shape_that_is_not_counts_fails(self):
+        """The programs come from the shape, so a shape that is not numbers has to say so."""
+        assert any(
+            "not a list of counts" in r
+            for r in check.assess(
+                _swap(
+                    "dispatch route: tool calls per round: [1, 1]",
+                    "dispatch route: tool calls per round: [1, one]",
+                )
+            )
+        )
 
 
 class TestTheCapWasBudgeted:
@@ -659,7 +685,7 @@ class TestTheCommandLine:
         "direct route: state totals",
         "dispatch route: sales figures the model wrote",
         "direct route: sales figures the model wrote",
-        "sales figures the model handled, direct",
+        "sales figures the model wrote into code, direct",
         "round trip:",
         "run directories across both sandboxes",
         "transport files left behind",

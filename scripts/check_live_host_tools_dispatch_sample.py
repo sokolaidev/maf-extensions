@@ -11,7 +11,7 @@ interpreter's output or a structural property of the two roads:
 
 - **Both programs printed both state totals.** Read from the framework's record of what
   `execute_code` returned, so an interpreter produced them.
-- **Direct needed more model round trips than dispatch.** Direct batches within a stage and
+- **Direct needed more tool-calling rounds than dispatch.** Direct batches within a stage and
   never across one, so it pays per stage; dispatch resolves the whole walk inside one program.
 - **Who carried the sales figures.** None on the dispatched route — the program is written
   before any dispatch can answer, so a figure cannot be in it — and all of them on the direct
@@ -52,7 +52,7 @@ _SHORT = {"dispatched": _DISPATCH, "direct": _DIRECT}
 #: How many states the summary covers, and so how many totals each program must print.
 _STATES = 2
 
-#: The walk's stages. Direct pays a model round trip for each, which is the whole comparison,
+#: The walk's stages. Direct pays a tool-calling round for each, which is the comparison,
 #: so a run where the shape collapsed is a run that measured something else.
 _STAGES = 4
 
@@ -92,7 +92,9 @@ _TOTALS = _tagged(rf"({_ANY_ROUTE}):\s+state totals the program printed:\s+(\d+)
 _WROTE = _tagged(
     rf"({_ANY_ROUTE}):\s+sales figures the model wrote into code:\s+(\d+)\s+of\s+(\d+)"
 )
-_HANDLED = _tagged(r"sales figures the model handled,\s+(dispatched|direct):\s+(\d+)\s+of\s+(\d+)")
+_RESTATED = _tagged(
+    r"sales figures the model wrote into code,\s+(dispatched|direct):\s+(\d+)\s+of\s+(\d+)"
+)
 _ROUND_TRIP = _tagged(
     rf"({_ANY_ROUTE}):\s+round trip:\s+(\d+)\s+gap\(s\),\s+min\s+([\d.]+)s,\s+"
     r"median\s+([\d.]+)s,\s+max\s+([\d.]+)s"
@@ -237,16 +239,17 @@ def _assess_both_interpreters_answered(output: str) -> list[str]:
 def _assess_direct_pays_per_stage(output: str) -> list[str]:
     """The structural comparison: batching within a stage, never across one."""
     found, failures = _per_route(output, _TRIPS, "round-trip count")
-    shapes, problems = _per_route(output, _SHAPE, "lookups per round trip")
+    shapes, problems = _per_route(output, _SHAPE, "tool calls per round")
     failures.extend(problems)
 
     if len(found) == len(_ROUTES):
         dispatched, direct = int(found[_DISPATCH][2]), int(found[_DIRECT][2])
         if direct <= dispatched:
             failures.append(
-                f"the direct route took {direct} model round trip(s) and the dispatched route "
-                f"{dispatched} — the comparison this sample exists for is that walking the "
-                "stages in the model's own loop costs more of them, and this run did not show it"
+                f"the direct route took {direct} tool-calling round(s) and the dispatched "
+                f"route {dispatched} — the comparison this sample exists for is that walking "
+                "the stages in the model's own loop costs more of them, and this run did not "
+                "show it"
             )
     for route, match in found.items():
         if int(match[1]) == 0:
@@ -258,7 +261,7 @@ def _assess_direct_pays_per_stage(output: str) -> list[str]:
         # about the run — it is one of the two lines not describing it.
         if route in found and len(groups) != int(found[route][2]):
             failures.append(
-                f"{route} reports {found[route][2]} model round trip(s) and a shape with "
+                f"{route} reports {found[route][2]} tool-calling round(s) and a shape with "
                 f"{len(groups)} entr(y/ies); the sample derives both from one list, so these "
                 "cannot both be from this run"
             )
@@ -310,7 +313,8 @@ def _assess_who_carried_the_figures(output: str) -> list[str]:
     # nothing at all about half the comparison.
     for short, route in _SHORT.items():
         match, problems = _once(
-            [m for m in _HANDLED.findall(output) if m[0] == short], f"act 4 {short} restatement"
+            [m for m in _RESTATED.findall(output) if m[0] == short],
+            f"act 4 {short} restatement",
         )
         failures.extend(problems)
         if match is not None and int(match[2]) != _FIGURES:
@@ -320,8 +324,8 @@ def _assess_who_carried_the_figures(output: str) -> list[str]:
             )
         if match is not None and route in wrote and (int(match[1]), int(match[2])) != wrote[route]:
             failures.append(
-                f"act 4 says the model handled {match[1]} of {match[2]} figure(s) on the "
-                f"{route} where the route itself reported {wrote[route][0]} of "
+                f"act 4 says the model wrote {match[1]} of {match[2]} figure(s) into code on "
+                f"the {route} where the route itself reported {wrote[route][0]} of "
                 f"{wrote[route][1]} — the two lines describe one run and disagree"
             )
     return failures
@@ -351,16 +355,29 @@ def _assess_the_round_trips(output: str) -> list[str]:
     # rather than a file round trip. So *n* calls over *p* programs leave exactly *n - p*.
     # Checking only that the count is positive would accept a line claiming 25 lookups and one
     # measured gap, which is a median over a twenty-fifth of the run.
-    reported = {route: (int(count), int(rounds)) for route, count, rounds in _TRIPS.findall(output)}
-    if _DISPATCH in reported:
-        lookups, rounds = reported[_DISPATCH]
-        if gaps != lookups - rounds:
+    #
+    # *p* is programs, and a round is not one: on this route every tool call is an
+    # `execute_code`, and one round can ask for several. So it comes from the shape, whose
+    # entries are those calls, rather than from the round count — which is also what keeps
+    # this independent of the emitter instead of agreeing with whatever it did.
+    counted = {route: int(count) for route, count, _ in _TRIPS.findall(output)}
+    shaped = dict(_SHAPE.findall(output))
+    groups = [g.strip() for g in shaped.get(_DISPATCH, "").split(",") if g.strip()]
+    if _DISPATCH in counted and groups:
+        if not all(g.isdigit() for g in groups):
             failures.append(
-                f"{gaps} round-trip gap(s) were measured across {lookups} dispatched lookup(s) "
-                f"in {rounds} program(s), where dropping one gap per program boundary leaves "
-                f"{lookups - rounds} — so the summary describes a different set of calls from "
-                "the one the route reported"
+                f"the dispatched shape [{', '.join(groups)}] is not a list of counts, so how "
+                "many programs are behind the round-trip summary cannot be read from it"
             )
+        else:
+            lookups, programs = counted[_DISPATCH], sum(int(g) for g in groups)
+            if gaps != lookups - programs:
+                failures.append(
+                    f"{gaps} round-trip gap(s) were measured across {lookups} dispatched "
+                    f"lookup(s) in {programs} program(s), where dropping one gap per program "
+                    f"boundary leaves {lookups - programs} — so the summary describes a "
+                    "different set of calls from the one the route reported"
+                )
     if not low <= mid <= high:
         failures.append(
             f"min {low}s, median {mid}s and max {high}s are not ordered — whatever produced "
@@ -474,7 +491,8 @@ def main(argv: list[str]) -> int:
     print(
         f"OK  both programs answered from the sandbox; the walk cost "
         f"{trips.get(_DIRECT, '?')} tool-calling rounds in the model's loop against "
-        f"{trips.get(_DISPATCH, '?')} dispatched, and the model carried no data on the second"
+        f"{trips.get(_DISPATCH, '?')} dispatched, and the model wrote no data into code on "
+        "the second"
     )
     return 0
 

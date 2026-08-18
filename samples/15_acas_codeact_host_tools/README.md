@@ -90,7 +90,7 @@ Disposing the sandbox is the only thing that removes them, which is what the foo
 
 ## What the check enforces
 
-Ten live runs decided this. The lookup count moved between 18 and 29, wall clock between 35s and 87s, dispatched tool-calling rounds between two and four. What did not move is what is asserted:
+Twelve live runs decided this. The lookup count moved between 18 and 29, wall clock between 35s and 87s, dispatched tool-calling rounds between two and four. What did not move is what is asserted:
 
 - **Both programs printed both state totals** — read from the framework's record of what `execute_code` returned, so an interpreter produced them.
 - **Direct needed more tool-calling rounds than dispatch**, and its shape shows at least four batches — one per stage. The shape and the round count come from one list, so they have to agree.

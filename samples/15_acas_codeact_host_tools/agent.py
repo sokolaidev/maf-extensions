@@ -29,9 +29,10 @@ constant is what keeps this a measurement of dispatch rather than of CodeAct, wh
 and 06 already cover.
 
 What that isolates is the thing the capability decides, and act 4 names it: direct tool calling
-batches *within* a stage but never across one, so it pays a model round trip per stage and
-every value it fetched crosses the conversation.  Dispatch pays a transport round trip per
-call — serially, always (#439) — and the model handles nothing.
+batches *within* a stage but never across one, so it pays a tool-calling round per stage
+and every value it fetched crosses the conversation.  Dispatch pays a transport round trip
+per call — serially, always (#439) — and the model writes none of the data into code:
+what comes back to it is the program's finished table.
 
 Act 5 is what the runs left in the guest, which #302 asks for and which is only half
 answerable: a fresh directory per run is real, and cleaning it up is #438.
@@ -134,8 +135,8 @@ NAIVE_LOOKUPS = len(STATES) * 2 + len(SALES) + sum(len(rows) for rows in SALES.v
 DISPATCH_CAP = NAIVE_LOOKUPS + 11
 
 #: The four lookups, and the order they have to happen in. Naming the stages here rather than
-#: leaving them implicit, because the count is the measurement: a stage is what direct tool
-#: calling pays a model round trip for, and what dispatch does not.
+#: leaving them implicit, because the count is the measurement: a stage costs direct tool
+#: calling one tool-calling round, and dispatch none.
 STAGES = ("state_id", "stores_in_state", "store_sales", "product_name")
 
 #: A served call leaves three files: the id its caller claimed, the request, and the answer.
@@ -211,7 +212,7 @@ INSTRUCTIONS = (
 #: The last clause is load-bearing. **The pattern pays off only when one program owns the whole
 #: walk** — a model given the sandbox and no such instruction will use it as a REPL, fetching
 #: in one call and computing in the next, which puts it back in the middle of the data and
-#: costs a model round trip per step.
+#: costs a tool-calling round per step.
 FROM_INSIDE = (
     " Those four lookups are host tools, not yours. Your program calls them from inside the "
     'sandbox with maf_host_tools.call("state_id", state_name=...), then "stores_in_state" '
@@ -509,14 +510,18 @@ async def one_route(
     # Only the dispatched route has round trips to report. The direct route's lookups run in
     # the host process between two model turns, so the same arithmetic yields microseconds, and
     # printing that under the same name would invite a reader to compare two different things.
-    # One entry per program the route ran, which is what tells `round_trips` how many of the
-    # gaps span a boundary rather than a file round trip.
-    trips = ledger.round_trips(len(calls_per_message(response)))
-    if trips and route == DISPATCH_ROUTE:
-        print(
-            f"{MEASURED}{route}: round trip: {len(trips)} gap(s), min {min(trips):.2f}s, "
-            f"median {median(trips):.2f}s, max {max(trips):.2f}s"
-        )
+    if route == DISPATCH_ROUTE:
+        # Programs, not rounds. `calls_per_message` groups by message and one message can ask
+        # for several calls at once, so the number of programs is the sum of the groups rather
+        # than how many groups there are — on this route every call is an `execute_code`, the
+        # lookups being host tools the model never sees. Passing the round count would leave
+        # one boundary per batched message in the sample, timing a model turn as a round trip.
+        trips = ledger.round_trips(sum(calls_per_message(response)))
+        if trips:
+            print(
+                f"{MEASURED}{route}: round trip: {len(trips)} gap(s), min {min(trips):.2f}s, "
+                f"median {median(trips):.2f}s, max {max(trips):.2f}s"
+            )
     print()
     return carried
 
@@ -525,20 +530,24 @@ def act_four_what_the_round_trips_bought(dispatched: int, direct: int) -> None:
     """The comparison, once correctness has stopped being the variable."""
     print("== 4. What the round trips bought ==\n")
     total = len(AMOUNTS_EXPECTED)
-    print(f"{MEASURED}sales figures the model handled, dispatched: {dispatched} of {total}")
-    print(f"{MEASURED}sales figures the model handled, direct:     {direct} of {total}")
+    # "wrote into code", not "handled": the dispatched program's printed table goes back to
+    # the model as a tool result, and it carries figures. What never happens on that route is
+    # the model putting one into a call of its own, which is the narrower thing measured here.
+    print(f"{MEASURED}sales figures the model wrote into code, dispatched: {dispatched} of {total}")
+    print(f"{MEASURED}sales figures the model wrote into code, direct:     {direct} of {total}")
     print()
     print("  Both routes ran Python and both reached the same table, so correctness is not what")
     print("  a round trip buys — sample 03 already showed what an interpreter is for.")
     print()
-    print("  Direct tool calling batches within a stage and never across one, so it pays a model")
-    print("  round trip per stage of the walk, and every figure it fetched had to be written back")
-    print("  into the program by the model. Those values are in the transcript, the context")
-    print("  window, and whatever logs either of them reaches — and they stay there, turn after")
-    print("  turn, which is a ceiling long before it is a bill.")
+    print("  Direct tool calling batches within a stage and never across one, so it pays one")
+    print("  tool-calling round per stage of the walk, and every figure it fetched had to be")
+    print("  written back into the program by the model. Those values are in the transcript,")
+    print("  the context window, and whatever logs either of them reaches — and they stay")
+    print("  there, turn after turn, which is a ceiling long before it is a bill.")
     print()
     print("  Dispatch pays a transport round trip per call instead, serially and with no batching")
-    print("  available at any layer (#439), and the model handles nothing. That is the trade:")
+    print("  available at any layer (#439), and the model writes none of the data into code —")
+    print("  what comes back to it is the program's finished table. That is the trade:")
     print("  wall clock, which is spent per run, against context, which accumulates.\n")
 
 
