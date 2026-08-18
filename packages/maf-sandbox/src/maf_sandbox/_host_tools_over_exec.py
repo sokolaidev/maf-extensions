@@ -889,8 +889,7 @@ async def _supervise(
         # The launcher backgrounds the program and returns, so an `exec` that ran out may
         # still have started one — the same case that leaves output nobody read. A grace of
         # The marker first, as `_stop_the_program` requires: this leg is reachable when the
-        # launcher had time to run to completion, so the program may have finished and its pid
-        # been reused.
+        # launcher had time to run to completion, so the program has most likely finished.
         giving_up = _a_grace_from_now()
         fate: _Fate = "absent"
         if await _marker_if_present(sandbox, layout, giving_up) is None:
@@ -1104,10 +1103,15 @@ async def _reclaim_the_transports_own(
     split, including every request and response the run exchanged with the host.
     """
     served = posixpath.dirname(layout.shim)
-    if guest_path_relative_to(served, layout.work) is not None or served == layout.directory:
-        # Confining to the run is not enough on its own: `work` is inside the run, so a layout
-        # whose shim sits there would have this delete the model's files and every artifact a
-        # kind is about to collect — on success, where nothing would look wrong.
+    overlaps = (
+        guest_path_relative_to(served, layout.work) is not None
+        or guest_path_relative_to(layout.work, served) is not None
+    )
+    if overlaps or served == layout.directory:
+        # Confining to the run is not enough on its own, and neither is one direction: `work`
+        # inside the transport directory is deleted with it just as surely as the other way
+        # round. Either overlap would have this remove the model's files and every artifact a
+        # kind is about to collect — on success, where nothing else would look wrong.
         logger.warning(
             "host tools: refusing to remove %r — it is the run itself or holds the model's "
             "files, so this layout does not separate the two directories",
@@ -1130,9 +1134,11 @@ def _a_grace_from_now() -> float:
 async def _stop_the_program(sandbox: Sandbox, layout: GuestRunLayout, *, until: float) -> _Fate:
     """Kill the guest program, and say whether it was stopped — never a raise.
 
-    **Only call this once the exit marker is absent.** That ordering is load-bearing: a landed
-    marker means the process is gone, and a pid whose process is gone can have been reused by
-    the guest, so checking it first is what keeps this from signalling something else.
+    **Only call this once the exit marker is absent.** That ordering narrows the window in
+    which the pid has already been recycled — it does not close it: the program can exit, be
+    reaped and have its number reissued between that read and this signal. Closing it needs an
+    identity that stays valid through the signal, which is #437; until then a caller may
+    conclude that a signal was sent to that number, not that it reached the run.
 
     ``SIGKILL`` rather than ``SIGTERM`` — the program has already overrun its only bound, and
     its output is unbuffered, so there is no flush to wait for.

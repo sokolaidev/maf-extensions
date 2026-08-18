@@ -3464,6 +3464,33 @@ class TestWhatTheSecondReviewFound:
 
         assert guest.kills != [], f"a failed run left its program running: {guest.commands}"
 
+    def test_the_transport_will_not_remove_a_work_directory_beneath_it(self):
+        """The other direction: `work` under the transport's own directory goes with it.
+
+        One-directional confinement passes this layout — the transport directory is not inside
+        `work` — and `rm -rf` on it takes the model's files and every artifact anyway.
+        """
+        run = "/maf-sandbox/work/run-1"
+        served = f"{run}/host_tools"
+        nested = GuestRunLayout(
+            directory=run,
+            work=f"{served}/work",
+            program=f"{served}/program.py",
+            shim=f"{served}/{SHIM_MODULE}",
+            launcher=f"{served}/run_program.sh",
+            calls=f"{served}/{CALLS_DIRECTORY}",
+            output=f"{served}/program_output.txt",
+            exit_code=f"{served}/program_exit_code",
+            pid=f"{served}/program_pid",
+        )
+        guest = _GuestThatRecordsRemovals([], finish=True)
+        asyncio.run(
+            host_tools_over_exec._reclaim_the_transports_own(
+                guest, nested, until=time.monotonic() + 5.0
+            )
+        )
+        assert guest.removals == [], f"the model's directory went with it: {guest.commands}"
+
     def test_the_transport_will_not_remove_the_model_s_own_directory(self):
         """Confinement to the run is not enough, because `work` is inside the run.
 
