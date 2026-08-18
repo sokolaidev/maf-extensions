@@ -146,8 +146,7 @@ Every value the package accepts or emits is a `StrEnum` member or named constant
 | `InProcessSandboxBackend` (`maf_sandbox.testing`) | backend (shipped) | `none` (overridable) | anything a test claims | overridable |
 | Monty (`agent-framework-monty`, re-seamed) | backend | `runtime` | `RUN_CODE, HOST_TOOLS` — no `EXEC`, no I/O by construction | `closed` |
 | Wasmtime-class WASM runtimes | backend | `runtime` | `RUN_CODE` + capability-gated imports | `closed` (WASI capabilities are opt-in) |
-| Hyperlight (`agent-framework-hyperlight`, re-seamed) | backend | `microvm` | `RUN_CODE, HOST_TOOLS, FILES_IN, SNAPSHOT` | `closed` |
-| [hyperlight-sandbox](https://github.com/hyperlight-dev/hyperlight-sandbox) | backend | `microvm` | `RUN_CODE, HOST_TOOLS, FILES_IN, FILES_OUT, NETWORK, SNAPSHOT` | `allowlist` |
+| Hyperlight (`maf-sandbox-hyperlight`, proposed — [hyperlight-backend-proposal.md](hyperlight-backend-proposal.md)) | backend *family* — declarations derive from the configured guest | `microvm`, measured against the standard on (wasm × WHP) | `RUN_CODE, FILES_IN, FILES_OUT, FILES_LIST, SNAPSHOT` (+`HOST_TOOLS` pending #369) | `allowlist` — the earlier `closed` reading of this row was wrong: `allowed_domains` is native per-entry enforcement |
 | [mxc](https://github.com/microsoft/mxc) | backend *family* — declarations derive from the configured containment | per containment | per containment | per containment |
 | Docker Sandbox | backend (dev machine) | `microvm` | `EXEC, FILES_IN, FILES_OUT, NETWORK` | `allowlist` (deny-all proxy) |
 | Kata on AKS | backend | `microvm` only as configured per the standard | `EXEC, FILES_IN` + image contents | per NetworkPolicy |
