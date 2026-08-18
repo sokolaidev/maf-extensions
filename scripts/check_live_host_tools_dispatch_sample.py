@@ -9,8 +9,10 @@ The live workflow installs the *published* wheels, runs the sample and pipes its
 Python in the sandbox and both walk the same four stages, so what is enforced is either an
 interpreter's output or a structural property of the two roads:
 
-- **Both programs printed both state totals.** Read from the framework's record of what
-  `execute_code` returned, so an interpreter produced them.
+- **Both programs printed the whole table.** Both state totals *and* all six per-state,
+  per-product cells, read from the framework's record of what `execute_code` returned, so an
+  interpreter produced them. The totals alone would not do: a total is a sum, and a sum
+  survives the loss of a row underneath it.
 - **Direct needed more tool-calling rounds than dispatch.** Direct batches within a stage and
   never across one, so it pays per stage; dispatch resolves the whole walk inside one program.
 - **Who carried the sales figures.** None on the dispatched route — the program is written
@@ -20,7 +22,13 @@ interpreter's output or a structural property of the two roads:
 - **The runs left their transport files behind.** #302 asks for the per-run subdirectory and
   its cleanup; the directory is real and the cleanup does not exist (#438), so the count going
   *up* is the honest thing to assert. A served call leaves three files — the claimed id, the
-  request and the answer — so the answered subset is what says how much traffic there was.
+  request and the answer — which is one floor, and every recorded lookup leaves an answer,
+  which is the other. Between them a broken enumeration cannot pass as traffic.
+- **The gaps behind the round-trip summary were the ones the transport made.** One gap is
+  dropped per program boundary, and only a program that dispatched leaves a boundary. The
+  guest settles how many there were: the transport creates a run's call directory on its first
+  dispatch and not before, so act 5's count of runs that dispatched is the number, measured
+  rather than inferred from the model's messages.
 
 Wall clock, tokens and lookup counts are recorded and never bounded. They are what the sample
 exists to publish, and a threshold would turn a measurement into a pass mark on somebody
@@ -76,6 +84,10 @@ _REGISTRY_DEFAULT_CAP = 16
 #: sales amounts, so a program can print both totals without ever asking for one.
 _PRODUCTS = 3
 
+#: One per state and product: the table the task asks for, and the thing the state totals
+#: cannot establish on their own, a total being a sum that hides its terms.
+_CELLS = _STATES * _PRODUCTS
+
 _F = re.MULTILINE
 
 
@@ -89,6 +101,9 @@ _TRIPS = _tagged(rf"({_ANY_ROUTE}):\s+(\d+)\s+lookup\(s\) over\s+(\d+)\s+tool-ca
 _SHAPE = _tagged(rf"({_ANY_ROUTE}):\s+tool calls per round:\s+\[([^\]]*)\]")
 _COST = _tagged(rf"({_ANY_ROUTE}):\s+([\d.]+)s,\s+(\d+)\s+tokens")
 _TOTALS = _tagged(rf"({_ANY_ROUTE}):\s+state totals the program printed:\s+(\d+)\s+of\s+(\d+)")
+_CELLS_LINE = _tagged(
+    rf"({_ANY_ROUTE}):\s+product totals the program printed:\s+(\d+)\s+of\s+(\d+)"
+)
 _WROTE = _tagged(
     rf"({_ANY_ROUTE}):\s+sales figures the model wrote into code:\s+(\d+)\s+of\s+(\d+)"
 )
@@ -233,6 +248,21 @@ def _assess_both_interpreters_answered(output: str) -> list[str]:
                 "interpreter computed them from data the host supplied, so a missing one means "
                 "the program did not finish the walk rather than that a model was careless"
             )
+
+    # The totals are sums, so they survive a table that lost its rows. These are the rows.
+    cells, problems = _per_route(output, _CELLS_LINE, "product totals")
+    failures.extend(problems)
+    for route, match in cells.items():
+        printed, expected = int(match[1]), int(match[2])
+        if expected != _CELLS:
+            failures.append(f"{route} scored itself out of {expected} product totals, not {_CELLS}")
+        if printed != expected:
+            failures.append(
+                f"the {route}'s program printed {printed} of {expected} per-state, per-product "
+                "totals. Both state totals can be right while a row underneath them is missing "
+                "or wrong, because a total hides its terms — these are the table the task asked "
+                "for, and they are what says the two routes reached the same answer"
+            )
     return failures
 
 
@@ -349,6 +379,17 @@ def _assess_the_round_trips(output: str) -> list[str]:
     gaps, low, mid, high = int(match[1]), float(match[2]), float(match[3]), float(match[4])
     if gaps < 1:
         failures.append("the round-trip line reports no gaps, so nothing was measured")
+    if high <= 0:
+        failures.append(
+            "the round-trip summary is all zeroes. A dispatch is a file written, polled for and "
+            "read back across the control plane, so zero is not a fast run — it is the "
+            "measurement having disappeared, the same way a token count of zero is"
+        )
+    elif mid <= 0:
+        failures.append(
+            f"the median round trip is {mid}s over {gaps} gap(s), so at least half of them took "
+            "no time at all, which a file round trip through the control plane cannot do"
+        )
 
     # The ledger times the interval between consecutive calls — *n* dispatches give *n - 1* —
     # and then drops the one gap per program boundary, because those contain a model turn
@@ -356,28 +397,42 @@ def _assess_the_round_trips(output: str) -> list[str]:
     # Checking only that the count is positive would accept a line claiming 25 lookups and one
     # measured gap, which is a median over a twenty-fifth of the run.
     #
-    # *p* is programs, and a round is not one: on this route every tool call is an
-    # `execute_code`, and one round can ask for several. So it comes from the shape, whose
-    # entries are those calls, rather than from the round count — which is also what keeps
-    # this independent of the emitter instead of agreeing with whatever it did.
+    # *p* is the programs that **dispatched**, which is neither the round count nor the program
+    # count: one round can ask for several `execute_code` calls, and a program that dispatches
+    # nothing leaves no boundary in the ledger to drop. The guest settles it rather than the
+    # emitter — the transport creates a run's call directory on its first dispatch and not
+    # before, so act 5's count of runs that dispatched *is* p, measured on the filesystem.
     counted = {route: int(count) for route, count, _ in _TRIPS.findall(output)}
     shaped = dict(_SHAPE.findall(output))
     groups = [g.strip() for g in shaped.get(_DISPATCH, "").split(",") if g.strip()]
-    if _DISPATCH in counted and groups:
-        if not all(g.isdigit() for g in groups):
+    # A missing or doubled line is `_assess_what_the_runs_left`'s to report, not this one's.
+    seen = _DISPATCHING.findall(output)
+    dispatching = int(seen[0]) if len(seen) == 1 else None
+
+    if _DISPATCH in counted and dispatching is not None:
+        lookups = counted[_DISPATCH]
+        if gaps != lookups - dispatching:
             failures.append(
-                f"the dispatched shape [{', '.join(groups)}] is not a list of counts, so how "
-                "many programs are behind the round-trip summary cannot be read from it"
+                f"{gaps} round-trip gap(s) were measured across {lookups} dispatched lookup(s), "
+                f"where {dispatching} program(s) dispatched and dropping one gap per boundary "
+                f"leaves {lookups - dispatching} — so the summary describes a different set of "
+                "calls from the one the guest is holding"
             )
-        else:
-            lookups, programs = counted[_DISPATCH], sum(int(g) for g in groups)
-            if gaps != lookups - programs:
-                failures.append(
-                    f"{gaps} round-trip gap(s) were measured across {lookups} dispatched "
-                    f"lookup(s) in {programs} program(s), where dropping one gap per program "
-                    f"boundary leaves {lookups - programs} — so the summary describes a "
-                    "different set of calls from the one the route reported"
-                )
+    if groups and not all(g.isdigit() for g in groups):
+        failures.append(
+            f"the dispatched shape [{', '.join(groups)}] is not a list of counts, so how many "
+            "programs the route ran cannot be read from it"
+        )
+    elif groups and dispatching is not None:
+        programs = sum(int(g) for g in groups)
+        if programs != dispatching:
+            failures.append(
+                f"the dispatched route ran {programs} program(s) and the guest holds "
+                f"{dispatching} that dispatched. One gap is dropped per program the route ran, "
+                "and only a program that dispatched leaves a boundary to drop, so these have to "
+                "agree or the summary above dropped genuine round trips as though they were "
+                "model turns"
+            )
     if not low <= mid <= high:
         failures.append(
             f"min {low}s, median {mid}s and max {high}s are not ordered — whatever produced "
@@ -417,6 +472,22 @@ def _assess_what_the_runs_left(output: str) -> list[str]:
         failures.append(
             "no answered call was found among the files left behind, so nothing in the guest "
             "records a dispatch having been served"
+        )
+
+    # Two floors the transport cannot go under, so a broken enumeration cannot pass as traffic.
+    if total < 3 * answers:
+        failures.append(
+            f"{total} transport file(s) hold {answers} answered call(s), where a served call "
+            f"leaves three — the id its caller claimed, the request and the answer — so "
+            f"{3 * answers} is the floor. Below it the enumeration found less than it counted"
+        )
+    dispatched = {route: int(count) for route, count, _ in _TRIPS.findall(output)}
+    if _DISPATCH in dispatched and answers < dispatched[_DISPATCH]:
+        failures.append(
+            f"the guest holds {answers} answered call(s) against the {dispatched[_DISPATCH]} "
+            "lookup(s) the dispatched route recorded. The host answers every call it serves and "
+            "nothing deletes the answer, so fewer answers than lookups is the enumeration "
+            "having missed part of the traffic rather than the run having made less of it"
         )
     return failures
 

@@ -90,13 +90,14 @@ Disposing the sandbox is the only thing that removes them, which is what the foo
 
 ## What the check enforces
 
-Twelve live runs decided this. The lookup count moved between 18 and 29, wall clock between 35s and 87s, dispatched tool-calling rounds between two and four. What did not move is what is asserted:
+Thirteen live runs decided this. The lookup count moved between 18 and 29, wall clock between 35s and 87s, dispatched tool-calling rounds between two and four. What did not move is what is asserted:
 
-- **Both programs printed both state totals** — read from the framework's record of what `execute_code` returned, so an interpreter produced them.
+- **Both programs printed the whole table** — both state totals *and* all six per-state, per-product cells, read from the framework's record of what `execute_code` returned, so an interpreter produced them. The totals alone would not do it: a total is a sum, and a sum survives losing a row underneath it. The cells are matched to the cent rather than as text, because a program that adds floats prints `1791.1499999999999` for a cell worth `1791.15` — the right answer, and one a string match would have failed a correct run for.
 - **Direct needed more tool-calling rounds than dispatch**, and its shape shows at least four batches — one per stage. The shape and the round count come from one list, so they have to agree.
 - **Who carried the figures**: none dispatched, all of them direct. Both halves are structural — one is impossible, the other is forced.
 - **All four lookup stages ran, on both routes.** A count is not enough: a per-state total is a sum of the sales amounts, so a program can skip `product_name`, print both totals and satisfy a count-and-shape check while never touching the stage the comparison is about. The dispatched route's table must also name all three products, because that model is never handed one — the direct route's model holds them and usually labels the table in its own reply, so that half is recorded rather than required.
-- **The runs left transport files behind,** and at least one of them is an answered call. Zero of either would mean the enumeration looked somewhere the transport does not write.
+- **The runs left transport files behind,** and enough of them. Zero would mean the enumeration looked somewhere the transport does not write, and two floors say the rest: there is at least one file for every three answers, because a served call leaves the claimed id, the request and the answer; and at least one answer for every lookup the route recorded, because the host answers every call it serves and nothing deletes it.
+- **The gaps dropped were program boundaries, and the guest says how many there were.** One gap is dropped per boundary, and only a program that dispatched leaves one — the transport creates a run's call directory on its first dispatch and not before, so act 5's count of runs that dispatched is that number, read off the filesystem rather than inferred from the messages. A run whose programs and dispatching runs disagree dropped genuine round trips as though they were model turns, and fails.
 
 Wall clock, tokens and lookup counts are **recorded and never bounded**, and what a model *said* is never read. Every line the check reads carries the `[measured]` tag at the left margin ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)); `quoted()` prefixes any tagged line inside a model's reply with `> `, so prose that tries to answer for the host is visibly not the host answering.
 

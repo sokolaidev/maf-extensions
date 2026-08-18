@@ -57,8 +57,10 @@ the routes cannot share one.
 from __future__ import annotations
 
 import asyncio
+import re
 import sys
 import time
+from collections.abc import Iterable
 from pathlib import Path
 from statistics import median
 from typing import Any
@@ -176,6 +178,13 @@ def truth() -> dict[str, dict[str, float]]:
 
 TRUTH = truth()
 STATE_TOTALS = {state: round(sum(rows.values()), 2) for state, rows in TRUTH.items()}
+
+#: Every per-state, per-product cell of the answer — the table the task asks for, one row per
+#: state and product. The state totals do not establish it: a total is a sum, and a sum hides
+#: its terms, so a program can print both totals and still have omitted a state's rows or got
+#: every one of them wrong. Six cells, all distinct, and distinct from the totals and from the
+#: twelve raw amounts, so a match is not an accident of the dataset.
+PRODUCT_CELLS = tuple(amount for rows in TRUTH.values() for amount in rows.values())
 
 TASK = (
     "Produce a summary table of total sales by product for these two states: "
@@ -412,11 +421,21 @@ def amounts_the_model_wrote(response: object) -> int:
     return len({amount.rstrip("0").rstrip(".") for amount in seen})
 
 
-def totals_in(text: str) -> int:
-    """How many of the state totals the guest program actually printed."""
-    return sum(
-        1 for total in STATE_TOTALS.values() if f"{total:.2f}" in text or f"{total:,.2f}" in text
-    )
+#: A decimal number as a program prints one, thousands separator and all.
+_PRINTED_NUMBER = re.compile(r"\d[\d,]*\.\d+")
+
+
+def figures_in(text: str, expected: Iterable[float]) -> int:
+    """How many of `expected` the guest program printed, matched to the cent.
+
+    Numerically rather than as text, because a program summing floats prints
+    `1791.1499999999999` for a cell worth `1791.15` — the right answer and the wrong substring,
+    and that is a live run rather than a hypothetical. How a program formats its output is the
+    model's to choose and is not what this measures, so matching the string would have failed a
+    correct program for its presentation.
+    """
+    printed = [float(found.replace(",", "")) for found in _PRINTED_NUMBER.findall(text)]
+    return sum(1 for want in expected if any(abs(got - want) < 0.005 for got in printed))
 
 
 def report(
@@ -440,7 +459,14 @@ def report(
         f"out {usage.get('output_token_count')})"
     )
     print(
-        f"{MEASURED}{route}: state totals the program printed: {totals_in(printed)} of {len(STATE_TOTALS)}"
+        f"{MEASURED}{route}: state totals the program printed: "
+        f"{figures_in(printed, STATE_TOTALS.values())} of {len(STATE_TOTALS)}"
+    )
+    # The totals alone would pass a program that printed them and nothing underneath, so the
+    # cells are counted separately: this is the table the task asked for, row by row.
+    print(
+        f"{MEASURED}{route}: product totals the program printed: "
+        f"{figures_in(printed, PRODUCT_CELLS)} of {len(PRODUCT_CELLS)}"
     )
     named = sum(1 for product in PRODUCTS.values() if product in printed)
     print(f"{MEASURED}{route}: product names in the table: {named} of {len(PRODUCTS)}")

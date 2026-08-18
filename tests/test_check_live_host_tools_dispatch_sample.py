@@ -3,7 +3,7 @@
 `_HEALTHY` is a real run of `samples/15_acas_codeact_host_tools` against a live ACAS sandbox
 and a live model, verbatim apart from the two tables the model produced.
 
-The suite is organised around what the check is *allowed* to fail a release for. Twelve live
+The suite is organised around what the check is *allowed* to fail a release for. Thirteen live
 runs went into choosing that: the figures below moved between them — 18 to 29 lookups, 35s to
 87s, two to four dispatched tool-calling rounds — and what did not move is what is asserted.
 
@@ -49,6 +49,7 @@ Oregon	TOTAL	3514.35
   [measured] dispatch route: lookup stages exercised: 4 of 4 (product_name, state_id, store_sales, stores_in_state)
   [measured] dispatch route: 42.40s, 3616 tokens (in 2960, cached 1024, out 656)
   [measured] dispatch route: state totals the program printed: 2 of 2
+  [measured] dispatch route: product totals the program printed: 6 of 6
   [measured] dispatch route: product names in the table: 3 of 3
   [measured] dispatch route: sales figures the model wrote into code: 0 of 12
   [measured] dispatch route: round trip: 23 gap(s), min 1.08s, median 1.11s, max 1.60s
@@ -63,6 +64,7 @@ Oregon	TOTAL	3514.35
   [measured] direct route: lookup stages exercised: 4 of 4 (product_name, state_id, store_sales, stores_in_state)
   [measured] direct route: 14.60s, 6217 tokens (in 5559, cached 2048, out 658)
   [measured] direct route: state totals the program printed: 2 of 2
+  [measured] direct route: product totals the program printed: 6 of 6
   [measured] direct route: product names in the table: 0 of 3
   [measured] direct route: sales figures the model wrote into code: 12 of 12
 
@@ -112,6 +114,32 @@ class TestBothProgramsHadToAnswer:
     def test_a_missing_totals_line_fails(self, route: str):
         assert check.assess(_without(f"{route}: state totals")) != []
 
+    @pytest.mark.parametrize("route", ["dispatch route", "direct route"])
+    def test_a_table_missing_a_row_fails(self, route: str):
+        """Both state totals can be right while a row underneath one of them is gone.
+
+        The totals are sums. A program that dropped Oregon's Gasket row and printed a total
+        computed before it — or after it, from the same sales rows — satisfies `2 of 2` and
+        answers a different question from the one asked.
+        """
+        broken = _swap(
+            f"[measured] {route}: product totals the program printed: 6 of 6",
+            f"[measured] {route}: product totals the program printed: 5 of 6",
+        )
+        assert any("hides its terms" in r for r in check.assess(broken))
+
+    @pytest.mark.parametrize("route", ["dispatch route", "direct route"])
+    def test_a_table_scored_out_of_its_own_number_fails(self, route: str):
+        broken = _swap(
+            f"[measured] {route}: product totals the program printed: 6 of 6",
+            f"[measured] {route}: product totals the program printed: 4 of 4",
+        )
+        assert any("not 6" in r for r in check.assess(broken))
+
+    @pytest.mark.parametrize("route", ["dispatch route", "direct route"])
+    def test_a_missing_product_totals_line_fails(self, route: str):
+        assert check.assess(_without(f"{route}: product totals")) != []
+
 
 class TestDirectPaysPerStage:
     """The structural comparison, and the reason the workload has four stages."""
@@ -146,7 +174,12 @@ class TestDirectPaysPerStage:
         assert any("no lookups at all" in r for r in check.assess(broken))
 
     def test_more_dispatched_round_trips_than_measured_is_fine(self):
-        """Two to four was the live range; the check bounds the comparison, not the value."""
+        """Two to four was the live range; the check bounds the comparison, not the value.
+
+        Every line a third program would move has to move with it — the shape, the gap count,
+        the run directories, and the traffic those runs left. A variant that raises the lookups
+        alone is not a slower healthy run, it is a run that cannot have happened.
+        """
         assert (
             check.assess(
                 _swap(
@@ -157,6 +190,13 @@ class TestDirectPaysPerStage:
                 .replace(
                     "dispatch route: tool calls per round: [1, 1]",
                     "dispatch route: tool calls per round: [1, 1, 1]",
+                )
+                .replace("run directories across both sandboxes: 3", "…dirs…")
+                .replace("of those, runs that dispatched: 2", "of those, runs that dispatched: 3")
+                .replace("…dirs…", "run directories across both sandboxes: 4")
+                .replace(
+                    "transport files left behind: 75, of which answered calls: 25",
+                    "transport files left behind: 87, of which answered calls: 29",
                 )
             )
             == []
@@ -449,6 +489,30 @@ class TestTheRunsLeftTheirTrafficBehind:
             )
         )
 
+    def test_fewer_files_than_three_per_answer_fails(self):
+        """A served call leaves three files, so 25 answers cannot sit in 25 files."""
+        assert any(
+            "is the floor" in r
+            for r in check.assess(
+                _swap(
+                    "[measured] transport files left behind: 75, of which answered calls: 25",
+                    "[measured] transport files left behind: 25, of which answered calls: 25",
+                )
+            )
+        )
+
+    def test_fewer_answers_than_lookups_fails(self):
+        """25 lookups the route recorded cannot have left one answer in the guest."""
+        assert any(
+            "missed part of the traffic" in r
+            for r in check.assess(
+                _swap(
+                    "[measured] transport files left behind: 75, of which answered calls: 25",
+                    "[measured] transport files left behind: 75, of which answered calls: 1",
+                )
+            )
+        )
+
     def test_more_answers_than_files_fails(self):
         assert any(
             "not arithmetic" in r
@@ -541,22 +605,32 @@ class TestTheRoundTripLine:
     def test_a_missing_round_trip_line_fails(self):
         assert any("round trip" in r for r in check.assess(_without("round trip:")))
 
-    def test_a_round_that_asked_for_two_programs_counts_as_two(self):
-        """A boundary is per program, and one round can ask for several.
-
-        The healthy run has one `execute_code` per round, so a checker reading the round count
-        agrees with the emitter for the wrong reason. Batch two into a round and the two part:
-        three programs leave 22 gaps, not the 23 the round count predicts.
-        """
-        batched = _swap(
-            "dispatch route: tool calls per round: [1, 1]",
-            "dispatch route: tool calls per round: [1, 2]",
+    def test_a_gap_count_the_guest_contradicts_fails(self):
+        """The boundary count is the guest's, not the emitter's arithmetic about itself."""
+        assert any(
+            "different set of calls from the one the guest" in r
+            for r in check.assess(_swap("runs that dispatched: 2", "runs that dispatched: 3"))
         )
-        assert any("in 3 program(s)" in r for r in check.assess(batched))
-        assert check.assess(batched.replace("round trip: 23 gap(s)", "round trip: 22 gap(s)")) == []
+
+    def test_a_program_that_dispatched_nothing_fails(self):
+        """A probe program has no boundary, so dropping a gap for it drops a real round trip.
+
+        Three `execute_code` calls where the guest holds two run directories that dispatched:
+        the emitter drops two gaps for two boundaries that are not both there, and the largest
+        genuine transport gap goes with them. Nothing in the summary looks wrong afterwards,
+        which is why the guest has to be asked.
+        """
+        probed = _swap(
+            "[measured] dispatch route: 25 lookup(s) over 2 tool-calling round(s)",
+            "[measured] dispatch route: 25 lookup(s) over 3 tool-calling round(s)",
+        ).replace(
+            "dispatch route: tool calls per round: [1, 1]",
+            "dispatch route: tool calls per round: [1, 1, 1]",
+        )
+        assert any("have to agree" in r for r in check.assess(probed))
 
     def test_a_dispatched_shape_that_is_not_counts_fails(self):
-        """The programs come from the shape, so a shape that is not numbers has to say so."""
+        """The program count comes from the shape, so a shape that is not numbers has to say so."""
         assert any(
             "not a list of counts" in r
             for r in check.assess(
@@ -564,6 +638,24 @@ class TestTheRoundTripLine:
                     "dispatch route: tool calls per round: [1, 1]",
                     "dispatch route: tool calls per round: [1, one]",
                 )
+            )
+        )
+
+    def test_an_all_zero_summary_fails(self):
+        """Ordered, and every figure zero: the measurement disappeared rather than went fast."""
+        assert any(
+            "all zeroes" in r
+            for r in check.assess(
+                _swap("min 1.08s, median 1.11s, max 1.60s", "min 0.00s, median 0.00s, max 0.00s")
+            )
+        )
+
+    def test_a_zero_median_fails(self):
+        """One real maximum does not rescue a median of zero across twenty-three gaps."""
+        assert any(
+            "no time at all" in r
+            for r in check.assess(
+                _swap("min 1.08s, median 1.11s, max 1.60s", "min 0.00s, median 0.00s, max 1.60s")
             )
         )
 
@@ -599,12 +691,18 @@ class TestWhatIsRecordedAndNeverBounded:
         )
 
     def test_a_chatty_program_passes(self):
+        """Same two programs, four more lookups — and four more answers in the guest."""
         assert (
             check.assess(
                 _swap(
                     "[measured] dispatch route: 25 lookup(s) over 2 tool-calling round(s)",
                     "[measured] dispatch route: 29 lookup(s) over 2 tool-calling round(s)",
-                ).replace("round trip: 23 gap(s)", "round trip: 27 gap(s)")
+                )
+                .replace("round trip: 23 gap(s)", "round trip: 27 gap(s)")
+                .replace(
+                    "transport files left behind: 75, of which answered calls: 25",
+                    "transport files left behind: 87, of which answered calls: 29",
+                )
             )
             == []
         )
