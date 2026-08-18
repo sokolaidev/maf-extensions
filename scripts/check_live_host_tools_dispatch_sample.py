@@ -65,6 +65,17 @@ _FIGURES = 12
 #: One sandbox per route, so neither route's program can read the other's leftovers.
 _SANDBOXES = 2
 
+#: The walk's own arithmetic, and the registry default it has to clear. Pinned here for the
+#: reason `_FIGURES` is: read off the sample's own line, `32 (the walk needs 2 at best, 12
+#: written naively)` grades itself and passes while demonstrating nothing.
+_MINIMUM_LOOKUPS = 12
+_NAIVE_LOOKUPS = 21
+_REGISTRY_DEFAULT_CAP = 16
+
+#: Product names, which only the by-product table needs. A per-state total is a sum of the
+#: sales amounts, so a program can print both totals without ever asking for one.
+_PRODUCTS = 3
+
 _F = re.MULTILINE
 
 
@@ -86,6 +97,8 @@ _ROUND_TRIP = _tagged(
     rf"({_ANY_ROUTE}):\s+round trip:\s+(\d+)\s+gap\(s\),\s+min\s+([\d.]+)s,\s+"
     r"median\s+([\d.]+)s,\s+max\s+([\d.]+)s"
 )
+_STAGES_RUN = _tagged(rf"({_ANY_ROUTE}):\s+lookup stages exercised:\s+(\d+)\s+of\s+(\d+)")
+_NAMED = _tagged(rf"({_ANY_ROUTE}):\s+product names in the table:\s+(\d+)\s+of\s+(\d+)")
 _RUN_DIRS = _tagged(r"run directories across both sandboxes:\s+(\d+)")
 _DISPATCHING = _tagged(r"of those, runs that dispatched:\s+(\d+)")
 _LEFT = _tagged(r"transport files left behind:\s+(\d+), of which answered calls:\s+(\d+)")
@@ -131,6 +144,18 @@ def _assess_the_cap_was_budgeted(output: str) -> list[str]:
     if match is None:
         return failures
     cap, minimum, naive = int(match[0]), int(match[1]), int(match[2])
+    if (minimum, naive) != (_MINIMUM_LOOKUPS, _NAIVE_LOOKUPS):
+        failures.append(
+            f"the run describes a walk needing {minimum} at best and {naive} written naively, "
+            f"where this one needs {_MINIMUM_LOOKUPS} and {_NAIVE_LOOKUPS}. The cap is graded "
+            "against these two figures, so a run supplying its own makes the grade its own"
+        )
+    if cap <= _REGISTRY_DEFAULT_CAP:
+        failures.append(
+            f"the run allowed {cap} dispatches, which the registry allows by default "
+            f"({_REGISTRY_DEFAULT_CAP}). The sample is here because this workload does not fit "
+            "the default, and a run that never raised it is not showing that"
+        )
     if cap < minimum:
         failures.append(
             f"the run allowed {cap} dispatches where the walk needs at least {minimum} — the "
@@ -146,6 +171,50 @@ def _assess_the_cap_was_budgeted(output: str) -> list[str]:
             "without caching. A budget that only fits the efficient program is decided by how "
             "the model felt, and this sample is here because the default does not fit at all"
         )
+    return failures
+
+
+def _assess_the_whole_walk_happened(output: str) -> list[str]:
+    """All four stages, and the by-product table the last one exists for.
+
+    Lookup *count* is not enough. A program can take the first three stages — state ids, store
+    lists, sales rows — skip `product_name`, print both state totals from the amounts alone and
+    satisfy a count-and-shape check, while never producing the table the task asks for and
+    never touching the stage the comparison is about.
+    """
+    failures: list[str] = []
+    stages, problems = _per_route(output, _STAGES_RUN, "lookup stages")
+    failures.extend(problems)
+    for route, match in stages.items():
+        run, expected = int(match[1]), int(match[2])
+        if expected != _STAGES:
+            failures.append(f"{route} scored itself out of {expected} stages, not {_STAGES}")
+        if run != expected:
+            failures.append(
+                f"{route} exercised {run} of {expected} lookup stages. The walk is the workload: "
+                "a route that skipped one still prints state totals, because those are sums of "
+                "the amounts, and measures a shorter chain than the one described"
+            )
+
+    named, problems = _per_route(output, _NAMED, "product names")
+    failures.extend(problems)
+    for route, match in named.items():
+        found, expected = int(match[1]), int(match[2])
+        if expected != _PRODUCTS:
+            failures.append(f"{route} scored itself out of {expected} products, not {_PRODUCTS}")
+        # Enforced on the dispatched route only, and the asymmetry is the sample's subject
+        # rather than a loophole. There the model is never handed a product name, so a named
+        # table can only have come from the program — which is what makes the fourth stage
+        # visible. On the direct route the model holds the names from its own tool loop and
+        # routinely labels the table in its reply while the program returns bare numbers;
+        # measured at 0 of 3 on a healthy run. Requiring it there would fail a correct run for
+        # doing the presentation in the place that route naturally does it.
+        if route == _DISPATCH and found != expected:
+            failures.append(
+                f"the dispatched program's table names {found} of {expected} products. The model "
+                "on that route never receives a product name, so the names can only come from "
+                "the program — and a table without them is the fourth stage never having run"
+            )
     return failures
 
 
@@ -277,17 +346,21 @@ def _assess_the_round_trips(output: str) -> list[str]:
     if gaps < 1:
         failures.append("the round-trip line reports no gaps, so nothing was measured")
 
-    # The ledger times the interval between consecutive calls, so *n* dispatches yield exactly
-    # *n - 1* of them. Checking only that the count is positive would accept a line claiming
-    # 21 lookups and one measured gap, which is a median over a twentieth of the run.
-    lookups = {route: int(count) for route, count, _ in _TRIPS.findall(output)}
-    if _DISPATCH in lookups and gaps != lookups[_DISPATCH] - 1:
-        failures.append(
-            f"{gaps} round-trip gap(s) were measured across {lookups[_DISPATCH]} dispatched "
-            f"lookup(s), and consecutive pairs of {lookups[_DISPATCH]} calls are "
-            f"{lookups[_DISPATCH] - 1} — so the summary describes a different set of calls "
-            "from the one the route reported"
-        )
+    # The ledger times the interval between consecutive calls — *n* dispatches give *n - 1* —
+    # and then drops the one gap per program boundary, because those contain a model turn
+    # rather than a file round trip. So *n* calls over *p* programs leave exactly *n - p*.
+    # Checking only that the count is positive would accept a line claiming 25 lookups and one
+    # measured gap, which is a median over a twenty-fifth of the run.
+    reported = {route: (int(count), int(rounds)) for route, count, rounds in _TRIPS.findall(output)}
+    if _DISPATCH in reported:
+        lookups, rounds = reported[_DISPATCH]
+        if gaps != lookups - rounds:
+            failures.append(
+                f"{gaps} round-trip gap(s) were measured across {lookups} dispatched lookup(s) "
+                f"in {rounds} program(s), where dropping one gap per program boundary leaves "
+                f"{lookups - rounds} — so the summary describes a different set of calls from "
+                "the one the route reported"
+            )
     if not low <= mid <= high:
         failures.append(
             f"min {low}s, median {mid}s and max {high}s are not ordered — whatever produced "
@@ -370,6 +443,7 @@ def assess(output: str) -> list[str]:
         *_assess_the_cap_was_budgeted(output),
         *_assess_the_cost_was_measured(output),
         *_assess_both_interpreters_answered(output),
+        *_assess_the_whole_walk_happened(output),
         *_assess_direct_pays_per_stage(output),
         *_assess_who_carried_the_figures(output),
         *_assess_the_round_trips(output),

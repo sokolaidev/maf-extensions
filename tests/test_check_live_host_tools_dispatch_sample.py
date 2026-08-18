@@ -44,12 +44,14 @@ state	product	total_sales
 Washington	TOTAL	3564.55
 Oregon	TOTAL	3514.35
 
-  [measured] dispatch route: 21 lookup(s) over 3 tool-calling round(s)
-  [measured] dispatch route: tool calls per round: [1, 1, 1]
-  [measured] dispatch route: 48.07s, 6270 tokens (in 5101, cached 2560, out 1169)
+  [measured] dispatch route: 25 lookup(s) over 2 tool-calling round(s)
+  [measured] dispatch route: tool calls per round: [1, 1]
+  [measured] dispatch route: lookup stages exercised: 4 of 4 (product_name, state_id, store_sales, stores_in_state)
+  [measured] dispatch route: 42.40s, 3616 tokens (in 2960, cached 1024, out 656)
   [measured] dispatch route: state totals the program printed: 2 of 2
+  [measured] dispatch route: product names in the table: 3 of 3
   [measured] dispatch route: sales figures the model wrote into code: 0 of 12
-  [measured] dispatch route: round trip: 20 gap(s), min 1.13s, median 1.34s, max 6.96s
+  [measured] dispatch route: round trip: 23 gap(s), min 1.08s, median 1.11s, max 1.60s
 
 == 3. The lookups happen in the model's tool loop ==
 
@@ -58,8 +60,10 @@ Oregon	TOTAL	3514.35
 
   [measured] direct route: 12 lookup(s) over 5 tool-calling round(s)
   [measured] direct route: tool calls per round: [2, 2, 5, 3, 1]
+  [measured] direct route: lookup stages exercised: 4 of 4 (product_name, state_id, store_sales, stores_in_state)
   [measured] direct route: 14.60s, 6217 tokens (in 5559, cached 2048, out 658)
   [measured] direct route: state totals the program printed: 2 of 2
+  [measured] direct route: product names in the table: 0 of 3
   [measured] direct route: sales figures the model wrote into code: 12 of 12
 
 == 4. What the round trips bought ==
@@ -71,7 +75,7 @@ Oregon	TOTAL	3514.35
 
   [measured] run directories across both sandboxes: 3
   [measured] of those, runs that dispatched: 2
-  [measured] transport files left behind: 63, of which answered calls: 21
+  [measured] transport files left behind: 75, of which answered calls: 25
 
   [measured] Disposed 2 sandbox(es).
 """
@@ -118,7 +122,7 @@ class TestDirectPaysPerStage:
             for r in check.assess(
                 _swap(
                     "[measured] direct route: 12 lookup(s) over 5 tool-calling round(s)",
-                    "[measured] direct route: 12 lookup(s) over 3 tool-calling round(s)",
+                    "[measured] direct route: 12 lookup(s) over 2 tool-calling round(s)",
                 )
             )
         )
@@ -138,7 +142,7 @@ class TestDirectPaysPerStage:
     @pytest.mark.parametrize("route", ["dispatch route", "direct route"])
     def test_a_route_that_made_no_lookups_fails(self, route: str):
         line = [r for r in _HEALTHY.splitlines() if f"{route}: " in r and "lookup(s) over" in r][0]
-        broken = _swap(line, line.replace("21 lookup", "0 lookup").replace("12 lookup", "0 lookup"))
+        broken = _swap(line, line.replace("25 lookup", "0 lookup").replace("12 lookup", "0 lookup"))
         assert any("no lookups at all" in r for r in check.assess(broken))
 
     def test_more_dispatched_round_trips_than_measured_is_fine(self):
@@ -146,13 +150,13 @@ class TestDirectPaysPerStage:
         assert (
             check.assess(
                 _swap(
-                    "[measured] dispatch route: 21 lookup(s) over 3 tool-calling round(s)",
-                    "[measured] dispatch route: 29 lookup(s) over 4 tool-calling round(s)",
+                    "[measured] dispatch route: 25 lookup(s) over 2 tool-calling round(s)",
+                    "[measured] dispatch route: 29 lookup(s) over 3 tool-calling round(s)",
                 )
-                .replace("round trip: 20 gap(s)", "round trip: 28 gap(s)")
+                .replace("round trip: 23 gap(s)", "round trip: 26 gap(s)")
                 .replace(
+                    "dispatch route: tool calls per round: [1, 1]",
                     "dispatch route: tool calls per round: [1, 1, 1]",
-                    "dispatch route: tool calls per round: [1, 1, 1, 1]",
                 )
             )
             == []
@@ -164,7 +168,7 @@ class TestTwoViewsOfOneListHaveToAgree:
 
     @pytest.mark.parametrize(
         ("route", "shape"),
-        [("dispatch route", "[1, 1, 1]"), ("direct route", "[2, 2, 5, 3, 1]")],
+        [("dispatch route", "[1, 1]"), ("direct route", "[2, 2, 5, 3, 1]")],
     )
     def test_a_shape_shorter_than_the_trip_count_fails(self, route: str, shape: str):
         trimmed = ", ".join(shape.strip("[]").split(", ")[:-1])
@@ -272,8 +276,8 @@ class TestAMissingMeasurementIsNotAMeasurement:
             "0 tokens" in r
             for r in check.assess(
                 _swap(
-                    "[measured] dispatch route: 48.07s, 6270 tokens",
-                    "[measured] dispatch route: 48.07s, 0 tokens",
+                    "[measured] dispatch route: 42.40s, 3616 tokens",
+                    "[measured] dispatch route: 42.40s, 0 tokens",
                 )
             )
         )
@@ -283,11 +287,76 @@ class TestAMissingMeasurementIsNotAMeasurement:
         assert (
             check.assess(
                 _swap(
-                    "[measured] dispatch route: 48.07s, 6270 tokens",
-                    "[measured] dispatch route: 48.07s, None tokens",
+                    "[measured] dispatch route: 42.40s, 3616 tokens",
+                    "[measured] dispatch route: 42.40s, None tokens",
                 )
             )
             != []
+        )
+
+
+class TestTheWholeWalkHappened:
+    """A count and a shape do not say the fourth stage ran."""
+
+    @pytest.mark.parametrize("route", ["dispatch route", "direct route"])
+    def test_a_route_that_skipped_a_stage_fails(self, route: str):
+        """State totals are sums of amounts, so a program can skip product_name and look whole."""
+        assert any(
+            "measures a shorter chain" in r
+            for r in check.assess(
+                _swap(
+                    f"[measured] {route}: lookup stages exercised: 4 of 4 "
+                    "(product_name, state_id, store_sales, stores_in_state)",
+                    f"[measured] {route}: lookup stages exercised: 3 of 4 "
+                    "(state_id, store_sales, stores_in_state)",
+                )
+            )
+        )
+
+    @pytest.mark.parametrize("route", ["dispatch route", "direct route"])
+    def test_a_missing_stages_line_fails(self, route: str):
+        assert check.assess(_without(f"{route}: lookup stages exercised")) != []
+
+    def test_a_dispatched_table_without_product_names_fails(self):
+        """The model on that route never sees a name, so an unnamed table is a skipped stage."""
+        assert any(
+            "never receives a product name" in r
+            for r in check.assess(
+                _swap(
+                    "[measured] dispatch route: product names in the table: 3 of 3",
+                    "[measured] dispatch route: product names in the table: 0 of 3",
+                )
+            )
+        )
+
+    def test_the_direct_table_naming_nothing_is_fine(self):
+        """Measured at 0 of 3 on a healthy run: that model labels in its reply, not its program."""
+        assert check.assess(_HEALTHY) == []
+
+
+class TestTheWorkloadArithmeticIsPinned:
+    """The cap is graded against these two figures, so the run cannot supply them."""
+
+    def test_a_run_describing_a_smaller_walk_fails(self):
+        assert any(
+            "makes the grade its own" in r
+            for r in check.assess(
+                _swap(
+                    "[measured] dispatch cap for the run: 32 (the walk needs 12 at best, 21 written naively)",
+                    "[measured] dispatch cap for the run: 32 (the walk needs 2 at best, 12 written naively)",
+                )
+            )
+        )
+
+    def test_a_cap_at_the_registry_default_fails(self):
+        assert any(
+            "the registry allows by default" in r
+            for r in check.assess(
+                _swap(
+                    "[measured] dispatch cap for the run: 32 (the walk",
+                    "[measured] dispatch cap for the run: 16 (the walk",
+                )
+            )
         )
 
 
@@ -351,7 +420,7 @@ class TestTheRunsLeftTheirTrafficBehind:
             "does not write" in r
             for r in check.assess(
                 _swap(
-                    "[measured] transport files left behind: 63, of which answered calls: 21",
+                    "[measured] transport files left behind: 75, of which answered calls: 25",
                     "[measured] transport files left behind: 0, of which answered calls: 0",
                 )
             )
@@ -374,8 +443,8 @@ class TestTheRunsLeftTheirTrafficBehind:
             "records a dispatch having been served" in r
             for r in check.assess(
                 _swap(
-                    "[measured] transport files left behind: 63, of which answered calls: 21",
-                    "[measured] transport files left behind: 63, of which answered calls: 0",
+                    "[measured] transport files left behind: 75, of which answered calls: 25",
+                    "[measured] transport files left behind: 75, of which answered calls: 0",
                 )
             )
         )
@@ -385,8 +454,8 @@ class TestTheRunsLeftTheirTrafficBehind:
             "not arithmetic" in r
             for r in check.assess(
                 _swap(
-                    "[measured] transport files left behind: 63, of which answered calls: 21",
-                    "[measured] transport files left behind: 5, of which answered calls: 21",
+                    "[measured] transport files left behind: 75, of which answered calls: 25",
+                    "[measured] transport files left behind: 5, of which answered calls: 25",
                 )
             )
         )
@@ -436,7 +505,7 @@ class TestACountIsNotAMatch:
         """21 lookups yield exactly 20 gaps; one gap is a median over a twentieth of the run."""
         assert any(
             "different set of calls" in r
-            for r in check.assess(_swap("round trip: 20 gap(s)", "round trip: 1 gap(s)"))
+            for r in check.assess(_swap("round trip: 23 gap(s)", "round trip: 1 gap(s)"))
         )
 
     def test_two_restatements_of_one_route_and_none_of_the_other_fails(self):
@@ -456,7 +525,7 @@ class TestTheRoundTripLine:
         assert any(
             "not ordered" in r
             for r in check.assess(
-                _swap("min 1.13s, median 1.34s, max 6.96s", "min 2.00s, median 1.34s, max 6.96s")
+                _swap("min 1.08s, median 1.11s, max 1.60s", "min 2.00s, median 1.11s, max 1.60s")
             )
         )
 
@@ -496,7 +565,7 @@ class TestWhatIsRecordedAndNeverBounded:
         assert (
             check.assess(
                 _swap(
-                    "[measured] dispatch route: 48.07s, 6270 tokens (in 5101, cached 2560, out 1169)",
+                    "[measured] dispatch route: 42.40s, 3616 tokens (in 2960, cached 1024, out 656)",
                     "[measured] dispatch route: 240.00s, 99999 tokens (in 99000, cached 0, out 999)",
                 )
             )
@@ -507,9 +576,9 @@ class TestWhatIsRecordedAndNeverBounded:
         assert (
             check.assess(
                 _swap(
-                    "[measured] dispatch route: 21 lookup(s) over 3 tool-calling round(s)",
-                    "[measured] dispatch route: 29 lookup(s) over 3 tool-calling round(s)",
-                ).replace("round trip: 20 gap(s)", "round trip: 28 gap(s)")
+                    "[measured] dispatch route: 25 lookup(s) over 2 tool-calling round(s)",
+                    "[measured] dispatch route: 29 lookup(s) over 2 tool-calling round(s)",
+                ).replace("round trip: 23 gap(s)", "round trip: 27 gap(s)")
             )
             == []
         )
@@ -562,7 +631,7 @@ class TestTheCommandLine:
         path.write_text(_HEALTHY, encoding="utf-8")
         assert check.main(["check", str(path)]) == 0
         out = capsys.readouterr().out
-        assert "5 tool-calling rounds" in out and "3 dispatched" in out
+        assert "5 tool-calling rounds" in out and "2 dispatched" in out
 
     def test_a_broken_run_exits_one_and_says_why(self, tmp_path: Path, capsys):
         path = tmp_path / "out.txt"
@@ -583,7 +652,7 @@ class TestTheCommandLine:
     "line",
     [
         "dispatch cap for the run",
-        "dispatch route: 21 lookup(s)",
+        "dispatch route: 25 lookup(s)",
         "direct route: 12 lookup(s)",
         "direct route: tool calls per round",
         "dispatch route: state totals",

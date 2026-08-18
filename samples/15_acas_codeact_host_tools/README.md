@@ -46,6 +46,8 @@ Read `[2, 2, 5, 3, 1]` — the first four entries *are* the walk, and the last i
 
 Dispatch resolves the whole walk inside one program and pays a *transport* round trip per call instead — serially, always, with no batching available at any layer ([#439](https://github.com/sokolaidev/maf-extensions/issues/439)).
 
+**One gap per program boundary is dropped before those figures are taken.** A route runs several programs against one ledger, and the interval between the last call of one and the first call of the next holds a model turn and a launcher rather than a file round trip. There are exactly as many such boundaries as programs minus one, and they are the largest gaps in the set — leaving them in put the reported maximum at 4–7s against a median of 1.1s.
+
 Both answers are correct, so correctness is not what a round trip buys. What it buys is the last row.
 
 ## Where the data ends up, which is the real trade
@@ -93,6 +95,7 @@ Ten live runs decided this. The lookup count moved between 18 and 29, wall clock
 - **Both programs printed both state totals** — read from the framework's record of what `execute_code` returned, so an interpreter produced them.
 - **Direct needed more tool-calling rounds than dispatch**, and its shape shows at least four batches — one per stage. The shape and the round count come from one list, so they have to agree.
 - **Who carried the figures**: none dispatched, all of them direct. Both halves are structural — one is impossible, the other is forced.
+- **All four lookup stages ran, on both routes.** A count is not enough: a per-state total is a sum of the sales amounts, so a program can skip `product_name`, print both totals and satisfy a count-and-shape check while never touching the stage the comparison is about. The dispatched route's table must also name all three products, because that model is never handed one — the direct route's model holds them and usually labels the table in its own reply, so that half is recorded rather than required.
 - **The runs left transport files behind,** and at least one of them is an answered call. Zero of either would mean the enumeration looked somewhere the transport does not write.
 
 Wall clock, tokens and lookup counts are **recorded and never bounded**, and what a model *said* is never read. Every line the check reads carries the `[measured]` tag at the left margin ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)); `quoted()` prefixes any tagged line inside a model's reply with `> `, so prose that tries to answer for the host is visibly not the host answering.

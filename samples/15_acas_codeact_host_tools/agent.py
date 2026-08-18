@@ -249,12 +249,35 @@ class Ledger:
         self._answered.append(time.perf_counter())
 
     @property
-    def round_trips(self) -> list[float]:
-        """One entry per consecutive pair, so *n* calls yield *n - 1* of them."""
-        return [
+    def stages(self) -> set[str]:
+        """Which of the four lookups were actually reached.
+
+        A count alone does not say the walk happened: the per-state totals are sums of the
+        sales amounts, so a program can skip `product_name` entirely, print both totals and
+        look complete while never producing the by-product table the task asks for — and never
+        touching the fourth stage the comparison is about.
+        """
+        return {asked.split("(", 1)[0] for asked in self.asked}
+
+    def round_trips(self, programs: int) -> list[float]:
+        """Gaps between consecutive calls, with the ones that span two programs removed.
+
+        One entry per consecutive pair, so *n* calls yield *n - 1*. But a route runs `programs`
+        separate programs against the same ledger, and the gap between the last call of one and
+        the first call of the next contains a model turn and a launcher, not a file round trip.
+
+        There are exactly `programs - 1` such boundaries and they are the largest gaps in the
+        set — a model turn is seconds where the transport is about one — so dropping the
+        largest that many times removes them. The assumption is stated rather than hidden: if a
+        genuinely slow transport gap ever exceeded a boundary, this drops that instead and the
+        boundary shows up in the maximum, which is visible rather than silent.
+        """
+        gaps = sorted(
             self._arrived[index + 1] - self._answered[index]
             for index in range(len(self._answered) - 1)
-        ]
+        )
+        boundaries = max(0, programs - 1)
+        return gaps[: len(gaps) - boundaries] if boundaries else gaps
 
 
 def build(stamp: Any, ledger: Ledger) -> list[Any]:
@@ -407,6 +430,10 @@ def report(
     )
     print(f"{MEASURED}{route}: tool calls per round: {grouped}")
     print(
+        f"{MEASURED}{route}: lookup stages exercised: {len(ledger.stages)} of {len(STAGES)} "
+        f"({', '.join(sorted(ledger.stages))})"
+    )
+    print(
         f"{MEASURED}{route}: {seconds:.2f}s, {usage.get('total_token_count')} tokens "
         f"(in {usage.get('input_token_count')}, cached {usage.get('cache_read_input_token_count')}, "
         f"out {usage.get('output_token_count')})"
@@ -414,6 +441,8 @@ def report(
     print(
         f"{MEASURED}{route}: state totals the program printed: {totals_in(printed)} of {len(STATE_TOTALS)}"
     )
+    named = sum(1 for product in PRODUCTS.values() if product in printed)
+    print(f"{MEASURED}{route}: product names in the table: {named} of {len(PRODUCTS)}")
     carried = amounts_the_model_wrote(response)
     print(
         f"{MEASURED}{route}: sales figures the model wrote into code: "
@@ -480,7 +509,9 @@ async def one_route(
     # Only the dispatched route has round trips to report. The direct route's lookups run in
     # the host process between two model turns, so the same arithmetic yields microseconds, and
     # printing that under the same name would invite a reader to compare two different things.
-    trips = ledger.round_trips
+    # One entry per program the route ran, which is what tells `round_trips` how many of the
+    # gaps span a boundary rather than a file round trip.
+    trips = ledger.round_trips(len(calls_per_message(response)))
     if trips and route == DISPATCH_ROUTE:
         print(
             f"{MEASURED}{route}: round trip: {len(trips)} gap(s), min {min(trips):.2f}s, "
