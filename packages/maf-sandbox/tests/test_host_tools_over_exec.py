@@ -17,6 +17,7 @@ import ast
 import asyncio
 import importlib.util
 import json
+import logging
 import os
 import pathlib
 import posixpath
@@ -51,6 +52,7 @@ from maf_sandbox import (
     guest_run_layout,
     host_tool_shim,
     launcher_script,
+    reclaim_run,
     sandbox_tool,
 )
 from maf_sandbox import _host_tools_over_exec as host_tools_over_exec
@@ -373,7 +375,11 @@ class TestTheSupervisorsOwnBounds:
 
         class _SlowToStart(_ScriptedGuest):
             async def exec(self, command, *, working_directory: str, timeout: float):
-                await asyncio.sleep(0.15)
+                # The launcher only. The kill and the cleanup are `exec`s too, and they run
+                # after the deadline by design — slowing those would measure the price of
+                # reclaiming the run rather than the thing this test is named for.
+                if not str(command).startswith(("kill", "rm ")):
+                    await asyncio.sleep(0.15)
                 return await super().exec(
                     command, working_directory=working_directory, timeout=timeout
                 )
@@ -2932,3 +2938,221 @@ class TestStoppingOnTheOtherTwoLegs:
 
         assert guest.kills == [], f"a non-numeric pid reached a command: {guest.commands}"
         assert str(expired.value) == "the run's 30s were gone while starting the program"
+
+
+class _GuestThatRecordsRemovals(_GuestThatRecordsTheKill):
+    """Records `rm` as well as `kill`, and can refuse either."""
+
+    def __init__(self, *args: Any, remove_exit_code: int = 0, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._remove_exit_code = remove_exit_code
+
+    async def exec(
+        self, command: str | Any, *, working_directory: str, timeout: float
+    ) -> ExecResult:
+        if str(command).startswith("rm "):
+            self.commands.append(str(command))
+            await asyncio.sleep(0)
+            return ExecResult(stdout="", exit_code=self._remove_exit_code)
+        return await super().exec(command, working_directory=working_directory, timeout=timeout)
+
+    @property
+    def removals(self) -> list[str]:
+        return [command for command in self.commands if command.startswith("rm ")]
+
+
+class TestTheTransportReclaimsItsOwnFiles:
+    """Nothing in the protocol deletes, so the transport reaches for the `exec` it already has.
+
+    The files it writes carry a run's host-tool traffic — every argument a program passed to a
+    host tool and every value it got back — plus the program a model wrote. Left behind, they
+    are readable by the next run in the same sandbox, because `acquire` is get-or-create.
+    """
+
+    def test_a_successful_run_does_not_leave_its_files_behind(self):
+        """The common path, and the one a cleanup wired only into failure would miss."""
+        guest = _GuestThatRecordsRemovals([], finish=True)
+        result = _run(guest, HostToolRun(_registry()), timeout=5.0)
+        assert result.exit_code == 0
+        assert len(guest.removals) == 1, guest.commands
+        assert posixpath.dirname(_LAYOUT.shim) in guest.removals[0]
+
+    def test_a_run_that_timed_out_does_not_leave_its_files_behind(self):
+        guest = _GuestThatRecordsRemovals([], finish=False)
+        with pytest.raises(SandboxProgramTimeout):
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert len(guest.removals) == 1, guest.commands
+
+    def test_a_launcher_that_never_started_the_program_still_reclaims(self):
+        guest = _GuestThatRecordsRemovals([], finish=False, launcher_exit_code=1)
+        result = _run(guest, HostToolRun(_registry()), timeout=5.0)
+        assert result.exit_code != 0
+        assert len(guest.removals) == 1, guest.commands
+
+    def test_a_backend_failing_mid_run_still_reclaims(self):
+        """`finally`, not a happy-path call: whatever a backend raises, the files still go."""
+
+        class _DiesMidRun(_GuestThatRecordsRemovals):
+            async def stat_file(self, path: str, *, working_directory: str):
+                if path == _LAYOUT.exit_code:
+                    raise PermissionError("the daemon said no")
+                return await super().stat_file(path, working_directory=working_directory)
+
+        guest = _DiesMidRun([], finish=False)
+        with pytest.raises(PermissionError):
+            _run(guest, HostToolRun(_registry()), timeout=5.0)
+        assert len(guest.removals) == 1, guest.commands
+
+    def test_the_work_directory_is_left_for_the_kind_to_collect_from(self):
+        """The split that makes this safe on the success path.
+
+        Artifacts live in `work` and a kind collects them *after* this returns, so a transport
+        that removed the run would delete the outputs of every successful run. It removes its
+        own sibling and nothing else.
+        """
+        guest = _GuestThatRecordsRemovals([], finish=True)
+        _run(guest, HostToolRun(_registry()), timeout=5.0)
+        removed = guest.removals[0]
+        assert posixpath.dirname(_LAYOUT.shim) in removed
+        assert _LAYOUT.work not in removed
+        assert f"rm -rf '{_LAYOUT.directory}'" not in removed
+
+    def test_a_refused_removal_says_what_is_left_readable(self, caplog):
+        guest = _GuestThatRecordsRemovals([], finish=True, remove_exit_code=1)
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox"):
+            _run(guest, HostToolRun(_registry()), timeout=5.0)
+        assert "readable by the next run" in caplog.text, caplog.text
+
+    def test_a_backend_that_refuses_the_removal_does_not_fail_the_run(self):
+        """A run that worked must not be reported as failed because its cleanup did not."""
+
+        class _RefusesToRemove(_GuestThatRecordsRemovals):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                if str(command).startswith("rm "):
+                    raise PermissionError("the daemon said no")
+                return await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+
+        result = _run(_RefusesToRemove([], finish=True), HostToolRun(_registry()), timeout=5.0)
+        assert result.exit_code == 0
+
+
+class TestReclaimingTheWholeRun:
+    """`reclaim_run` is the kind's half — the work directory, and everything a model wrote."""
+
+    def test_it_removes_the_run_directory(self):
+        guest = _GuestThatRecordsRemovals([], finish=True)
+        assert asyncio.run(reclaim_run(guest, _LAYOUT, timeout=5.0)) is True
+        assert guest.removals == [f"rm -rf '{_LAYOUT.directory}'; exit 0"]
+
+    def test_a_refusal_is_reported_rather_than_raised(self):
+        guest = _GuestThatRecordsRemovals([], finish=True, remove_exit_code=1)
+        assert asyncio.run(reclaim_run(guest, _LAYOUT, timeout=5.0)) is False
+
+    def test_a_backend_failure_is_reported_rather_than_raised(self):
+        class _Refuses(_GuestThatRecordsRemovals):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                raise PermissionError("the daemon said no")
+
+        assert asyncio.run(reclaim_run(_Refuses([], finish=True), _LAYOUT, timeout=5.0)) is False
+
+
+class TestWhatIsTooBroadToDelete:
+    """`rm -rf` is irreversible, so the path gets a guard that does not depend on the factory."""
+
+    @pytest.mark.parametrize("directory", ["/", "/tmp", "relative/run", "", "/runs/../.."])
+    def test_a_path_that_is_not_a_run_directory_is_refused(self, directory: str):
+        from maf_sandbox._host_tools_over_exec import _removable
+
+        assert not _removable(directory)
+
+    def test_a_real_run_directory_passes(self):
+        from maf_sandbox._host_tools_over_exec import _removable
+
+        assert _removable("/maf-sandbox/work/run-1")
+
+    def test_nothing_is_exec_d_for_a_path_it_refuses(self):
+        broken = GuestRunLayout(
+            directory="/",
+            work="/work",
+            program="/program.py",
+            shim="/maf_host_tools.py",
+            launcher="/run_program.sh",
+            calls="/host_tool_calls",
+            output="/program_output.txt",
+            exit_code="/program_exit_code",
+            pid="/program_pid",
+        )
+        guest = _GuestThatRecordsRemovals([], finish=True)
+        assert asyncio.run(reclaim_run(guest, broken, timeout=5.0)) is False
+        assert guest.removals == [], f"a refused path still reached a command: {guest.commands}"
+
+
+class TestRemovalAgainstARealShell:
+    """A scripted guest proves a command was *issued*; only a filesystem proves it worked."""
+
+    @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+    @pytest.mark.skipif(os.pathsep != ":", reason="the guest paths here are POSIX")
+    def test_the_command_the_transport_sends_removes_the_tree(self, tmp_path: Path):
+        """The literal `rm -rf …; exit 0`, run by `sh`, against a directory with files in it."""
+        directory = (tmp_path / "run-1").as_posix()
+        served = f"{directory}/host_tools"
+        pathlib.Path(served).mkdir(parents=True, exist_ok=True)
+        pathlib.Path(served, "program_output.txt").write_text("secret output", encoding="utf-8")
+        pathlib.Path(served, "host_tool_calls").mkdir()
+        pathlib.Path(served, "host_tool_calls", "0001.request.json").write_text(
+            '{"arguments": {"account": "sensitive"}}', encoding="utf-8"
+        )
+
+        # Built the way the transport builds it, so a change to the quoting is caught here too.
+        from maf_sandbox._host_tools_over_exec import _quote
+
+        command = f"rm -rf {_quote(served)}; exit 0"
+        done = subprocess.run(
+            ["sh", "-c", command], cwd=tmp_path.as_posix(), capture_output=True, timeout=60
+        )
+
+        assert done.returncode == 0, done.stderr
+        assert not pathlib.Path(served).exists(), "the transport's files survived the removal"
+        assert pathlib.Path(directory).exists(), "the run directory went with them"
+
+    @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+    @pytest.mark.skipif(os.pathsep != ":", reason="the guest paths here are POSIX")
+    def test_a_directory_that_is_already_gone_is_not_an_error(self, tmp_path: Path):
+        """Why the command ends `exit 0`: a run reclaimed twice must not report a failure."""
+        from maf_sandbox._host_tools_over_exec import _quote
+
+        missing = (tmp_path / "never-existed").as_posix()
+        done = subprocess.run(
+            ["sh", "-c", f"rm -rf {_quote(missing)}; exit 0"],
+            cwd=tmp_path.as_posix(),
+            capture_output=True,
+            timeout=60,
+        )
+        assert done.returncode == 0, done.stderr
+
+    @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+    @pytest.mark.skipif(os.pathsep != ":", reason="the guest paths here are POSIX")
+    def test_a_run_directory_holding_shell_metacharacters_removes_only_itself(self, tmp_path: Path):
+        """Quoting, asked of a shell: an unquoted `*` would take the sibling with it."""
+        from maf_sandbox._host_tools_over_exec import _quote
+
+        awkward = (tmp_path / "run *; touch pwned").as_posix()
+        pathlib.Path(awkward).mkdir(parents=True)
+        pathlib.Path(awkward, "inside").write_text("x", encoding="utf-8")
+        keep = tmp_path / "run-2"
+        keep.mkdir()
+        (keep / "survivor").write_text("x", encoding="utf-8")
+
+        done = subprocess.run(
+            ["sh", "-c", f"rm -rf {_quote(awkward)}; exit 0"],
+            cwd=tmp_path.as_posix(),
+            capture_output=True,
+            timeout=60,
+        )
+
+        assert done.returncode == 0, done.stderr
+        assert not pathlib.Path(awkward).exists()
+        assert (keep / "survivor").exists(), "the removal reached a directory it did not name"
+        assert not (tmp_path / "pwned").exists(), "the name was evaluated as a command"

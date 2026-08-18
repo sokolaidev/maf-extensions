@@ -252,6 +252,13 @@ _GUEST_POLL_SECONDS = 0.05
 #: a *returned* result's window, not only a diagnostic's.
 _FINAL_READ_GRACE = 2.0
 
+#: What the cleanup gets, on top of a run's own budget. Its own grace for the reason the final
+#: read has one: by the time it runs the remainder is zero on every path that matters, and a
+#: cleanup given no time is no cleanup — which here means a run's files stay readable by the
+#: next run in the same sandbox. Longer than the final read because a recursive delete of a
+#: run that wrote a lot is slower than one stat.
+_RECLAIM_GRACE = 10.0
+
 #: What writing one answer may spend when the run's own bound has already passed. Small, and
 #: not the run's remainder: a dispatch may finish after the deadline by design, and the answer
 #: to a tool that has already acted is worth one more round trip to record.
@@ -798,6 +805,38 @@ async def dispatch_over_exec(
         )
     # Before `exec`, not after: the bound is on the whole program, and a launcher that takes
     # most of it would otherwise hand supervision a second full timeout to spend.
+    # Validated before the wrapper, so a bad argument is a plain `ValueError` from the
+    # caller's own mistake rather than something that has a run to reclaim.
+    try:
+        return await _supervise(
+            sandbox,
+            run,
+            layout,
+            timeout=timeout,
+            poll_interval=poll_interval,
+            interpreter=interpreter,
+        )
+    finally:
+        # Every exit path: the value returned, the timeout raised, and whatever a backend
+        # raised for reasons of its own. A successful run leaves exactly as much behind as
+        # a failed one, and it is the common case.
+        #
+        # A grace of its own rather than the run's remainder, which is zero by now on every
+        # path that matters: a cleanup given no time is no cleanup, and the whole reason
+        # this is here is that the files are not supposed to survive the call.
+        await _reclaim_the_transports_own(sandbox, layout, until=time.monotonic() + _RECLAIM_GRACE)
+
+
+async def _supervise(
+    sandbox: Sandbox,
+    run: HostToolRun,
+    layout: GuestRunLayout,
+    *,
+    timeout: float,
+    poll_interval: float,
+    interpreter: str,
+) -> ExecResult:
+    """The body of :func:`dispatch_over_exec`, minus the cleanup that wraps it."""
     deadline = time.monotonic() + timeout
     try:
         await _within(
@@ -931,6 +970,81 @@ _Fate = Literal["stopped", "running", "absent"]
 _STILL_RUNNING = " and could not be stopped, so it may still be running"
 
 
+def _removable(directory: str) -> bool:
+    """Is ``directory`` specific enough to hand to ``rm -rf``?
+
+    The paths here come from :func:`guest_run_layout`, which already refuses a relative one —
+    so this is not the primary defence, it is the one that still holds if a caller builds a
+    layout by hand. An irreversible recursive delete gets a guard that does not depend on
+    something else having run.
+
+    Two components at minimum, because ``/`` and ``/tmp`` are the shapes that turn a cleanup
+    into an outage, and no run directory this transport is given looks like either.
+    """
+    if not posixpath.isabs(directory) or ".." in directory.split("/"):
+        return False
+    return len([part for part in directory.split("/") if part]) >= 2
+
+
+async def _remove_tree(sandbox: Sandbox, directory: str, *, until: float) -> bool:
+    """Delete ``directory`` and everything under it — never a raise.
+
+    There is no delete in the protocol, and this needs none: the dispatch path already
+    requires ``EXEC``, and on a POSIX guest that is a delete primitive exactly as it is a kill
+    primitive. Which is the whole reason the files could outlive the call in the first place —
+    nothing was reaching for the tool that was already there.
+
+    ``exit 0`` is deliberate. ``rm -rf`` says nothing about a path that was never there, and a
+    run whose directory is already gone is reclaimed by any reading that matters.
+    """
+    if not _removable(directory):
+        logger.warning("host tools: refusing to remove %r — it is not a run directory", directory)
+        return False
+    try:
+        removed = await _within(
+            until,
+            "the cleanup",
+            sandbox.exec(
+                f"rm -rf {_quote(directory)}; exit 0",
+                working_directory=posixpath.dirname(directory) or "/",
+                timeout=max(0.0, until - time.monotonic()),
+            ),
+        )
+    except Exception as refused:  # noqa: BLE001 — an unreclaimed run is a leak, not a fault
+        logger.warning("host tools: could not remove %s: %s", directory, error_detail(refused))
+        return False
+    if removed.exit_code != 0:
+        logger.warning(
+            "host tools: the guest refused to remove %s: exit %d", directory, removed.exit_code
+        )
+        return False
+    return True
+
+
+async def reclaim_run(sandbox: Sandbox, layout: GuestRunLayout, *, timeout: float = 30.0) -> bool:
+    """Remove a whole run — every file this transport wrote, and every file the model did.
+
+    **A kind's to call, in a ``finally``, once it has collected whatever it means to keep.**
+    :func:`dispatch_over_exec` cannot do it: artifacts live in :attr:`GuestRunLayout.work` and
+    collection happens after the transport has returned, so a transport that removed the run
+    would delete the outputs on its way out. What the transport does reclaim on its own is its
+    half — see the note on that function — and this is the other half plus that one again,
+    which costs nothing and is what makes it safe to call after any path at all.
+
+    Why it matters that this is called and not merely available: nothing in the protocol
+    deletes, ``acquire`` is get-or-create, and a sandbox therefore accumulates one run
+    directory per call for the life of a conversation. Every one of them holds the program a
+    model wrote, the files a host shared into it, and the artifacts it produced — readable by
+    the next run in the same sandbox.
+
+    Returns:
+        Whether the run directory is gone. **A ``False`` here is a data-retention failure, not
+        a tidiness one**, and the caller is expected to escalate — disposing the sandbox is
+        what remains, and losing a warm sandbox is the cheaper of the two outcomes.
+    """
+    return await _remove_tree(sandbox, layout.directory, until=time.monotonic() + timeout)
+
+
 def _clause_after_the_launcher_started(fate: _Fate) -> str:
     """For the two legs inside the supervisor loop, where the launcher returned 0.
 
@@ -957,6 +1071,29 @@ def _clause_while_starting(fate: _Fate) -> str:
     if fate == "stopped":
         return " (it had started the program, which was stopped)"
     return f" (it had started the program{_STILL_RUNNING})"
+
+
+async def _reclaim_the_transports_own(
+    sandbox: Sandbox, layout: GuestRunLayout, *, until: float
+) -> None:
+    """Remove the sibling directory this transport owns — never a raise.
+
+    Not the run: :attr:`GuestRunLayout.work` holds the model's files and the artifacts a kind
+    collects *after* this function's caller has returned, so removing it here would delete the
+    outputs of a successful run. What goes is everything on this side of the split — the
+    program a model wrote, the generated shim, the launcher, the captured output, the exit
+    marker, the pid, and every request and response the run exchanged with the host. Those are
+    the files with a host tool's arguments and results in them.
+
+    On **every** exit path, which is the point. A run that ends well leaves as much behind as
+    one that times out, and the successful path is the common one.
+    """
+    if not await _remove_tree(sandbox, posixpath.dirname(layout.shim), until=until):
+        logger.warning(
+            "host tools: run %s kept its transport files, which hold this run's host-tool "
+            "traffic; they are readable by the next run in this sandbox until it is disposed",
+            layout.directory,
+        )
 
 
 async def _stop_the_program(sandbox: Sandbox, layout: GuestRunLayout, *, until: float) -> _Fate:

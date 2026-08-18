@@ -81,6 +81,7 @@ from ._host_tools_over_exec import (
     guest_run_layout,
     host_tool_shim,
     launcher_script,
+    reclaim_run,
 )
 from ._outputs import (
     MAX_ARTIFACT_NAME_BYTES,
@@ -216,6 +217,7 @@ __all__ = [
     "guest_run_layout",
     "host_tool_shim",
     "launcher_script",
+    "reclaim_run",
     "landing_outputs",
     "make_file_system_sink",
     "meets_floor",
