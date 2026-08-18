@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import posixpath
 import shutil
 import subprocess
 import uuid
@@ -29,13 +30,17 @@ import pytest
 from maf_sandbox import (
     Capability,
     EntryKind,
+    HostToolRegistry,
+    HostToolRun,
     Isolation,
     SandboxKey,
+    SandboxProgramTimeout,
     SandboxRouter,
     SandboxSpec,
     SandboxTransferCapExceeded,
     TransferLimits,
     collect_outputs,
+    dispatch_over_exec,
     guest_run_layout,
     launcher_script,
 )
@@ -482,6 +487,70 @@ class TestWhetherThisBackendCouldServeHostTools:
                     layout.output, working_directory=_WORK, max_bytes=1 << 16
                 )
                 assert output.decode().strip() == "the program finished", output
+            finally:
+                await backend.dispose(_key(scope))
+
+        asyncio.run(scenario())
+
+
+class TestWhatOnlyARealRunawayCanSettle:
+    """The two claims #375's fix rests on, against a container instead of a double.
+
+    Offline they are stitched from separately-faked halves: the launcher records a pid (real
+    shell), the transport emits a kill (fake), that command fails against a dead pid (real
+    shell). Nothing joins them, so nothing shows the process actually dies or the files
+    actually go. One container, one runaway, both questions.
+    """
+
+    def test_a_runaway_is_dead_and_its_files_are_gone_when_the_call_returns(self):
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+        layout = guest_run_layout(f"{_WORK}/{uuid.uuid4().hex[:12]}")
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(_key(scope), _spec())
+            try:
+                # A shell program, for the reason the probe above gives: whether the transport
+                # stops a run is not a question about the guest's interpreter.
+                await sandbox.write_file(layout.program, "while true; do :; done\n")
+                await sandbox.write_file(layout.shim, "")
+
+                with pytest.raises(SandboxProgramTimeout) as expired:
+                    await dispatch_over_exec(
+                        sandbox,
+                        HostToolRun(HostToolRegistry()),
+                        layout,
+                        timeout=5.0,
+                        poll_interval=0.5,
+                        interpreter="sh",
+                    )
+
+                # 1. It says it stopped the program — silence is what that looks like.
+                assert "may still be running" not in str(expired.value), expired.value
+
+                # 2. And it is true. `pgrep -f` over the program's own path: the pid is gone
+                #    from the container, not merely un-signalled.
+                alive = await sandbox.exec(
+                    f"pgrep -f {layout.program} >/dev/null && echo alive || echo gone",
+                    working_directory=_WORK,
+                    timeout=60,
+                )
+                assert alive.stdout.strip() == "gone", (
+                    "the program survived a timeout the transport reported as stopped: "
+                    f"{alive.stdout!r}"
+                )
+
+                # 3. The transport's own files are gone from the filesystem, not just from a
+                #    list of commands somebody issued.
+                served = posixpath.dirname(layout.shim)
+                listed = await sandbox.exec(
+                    f"ls -A {served} 2>/dev/null | wc -l",
+                    working_directory=_WORK,
+                    timeout=60,
+                )
+                assert listed.stdout.strip() == "0", (
+                    f"the transport left files behind in {served}: {listed.stdout!r}"
+                )
             finally:
                 await backend.dispose(_key(scope))
 
