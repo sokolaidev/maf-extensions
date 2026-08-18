@@ -223,7 +223,7 @@ def _module_a_program_answers_to(program: str) -> str | None:
 #: What :class:`SandboxProgramTimeout` reports about the program it was raised for. Public,
 #: because acting on it is a caller's business and matching the message text is not an
 #: interface. :data:`_Fate` is the same vocabulary, kept private only for the internal plumbing.
-SignalOutcome = Literal["sent", "refused", "absent", "unknown"]
+SignalOutcome = Literal["sent", "refused", "absent", "unrecorded", "unknown"]
 
 
 class SandboxProgramTimeout(TimeoutError):
@@ -241,13 +241,13 @@ class SandboxProgramTimeout(TimeoutError):
       kernel can discard it, the pid is read from a file the program can rewrite, and children
       are never signalled.
     - ``"refused"`` — a pid was recorded and no signal reached it, so something is running.
-    - ``"absent"`` — no pid was recorded. Where the launcher's own ``exec`` never returned that
-      means nothing had started; where it returned cleanly, something did and the pid never
-      appeared, which the message hedges about.
+    - ``"absent"`` — nothing was started, so there is nothing to clean up after.
+    - ``"unrecorded"`` — the launcher started something and no pid ever appeared, so a program
+      is running that this host has no handle on.
     - ``"unknown"`` — the host could not find out, which is evidence of neither.
 
-    Anything but ``"sent"`` and ``"absent"`` leaves work behind that only disposing the sandbox
-    removes.
+    ``"absent"`` is the only one that needs nothing further. Every other value leaves a program
+    this transport did not stop, and disposing the sandbox is what remains.
 
     ``output`` is what the program had printed when the run was given up on, already capped —
     empty on the two starting legs, where there is nothing to have read yet. An attribute
@@ -947,7 +947,9 @@ async def _supervise(
             # Output first, so the program's own words are off the guest before it dies — but
             # on a fresh grace, because the reads above can spend `giving_up` entirely and a
             # kill with nothing left to spend is the runaway this path exists to stop.
-            fate = await _stop_the_program(sandbox, layout, until=_a_grace_from_now())
+            fate = _started_something(
+                await _stop_the_program(sandbox, layout, until=_a_grace_from_now())
+            )
             raise SandboxProgramTimeout(
                 f"the guest program did not finish within {timeout:g}s"
                 f"{_clause_after_the_launcher_started(fate)}. "
@@ -992,7 +994,9 @@ async def _supervise(
             # out while still leading with the failure the caller asked about. A backend's own
             # `TimeoutError` is deliberately not caught here — see `_within`.
             printed, note = await _final_output(sandbox, run, layout, giving_up)
-            fate = await _stop_the_program(sandbox, layout, until=_a_grace_from_now())
+            fate = _started_something(
+                await _stop_the_program(sandbox, layout, until=_a_grace_from_now())
+            )
             failure = f"{stalled}{_clause_after_the_launcher_started(fate)}"
             raise SandboxProgramTimeout(
                 f"the guest program did not finish within {timeout:g}s — {failure}. "
@@ -1125,6 +1129,17 @@ async def reclaim_run(sandbox: Sandbox, layout: GuestRunLayout, *, timeout: floa
     if not math.isfinite(timeout) or timeout <= 0:
         raise ValueError(f"timeout must be a finite positive number of seconds, not {timeout}")
     return await _remove_tree(sandbox, layout.directory, until=time.monotonic() + timeout)
+
+
+def _started_something(fate: _Fate) -> _Fate:
+    """`absent` on a leg where the launcher returned 0 means the pid never appeared.
+
+    `_stop_the_program` sees a missing pid file and cannot know which of those it is; the two
+    legs inside the supervisor loop can, because reaching them at all means the launcher exited
+    cleanly. Reported as one value, a caller could neither ignore it safely nor escalate on it
+    safely.
+    """
+    return "unrecorded" if fate == "absent" else fate
 
 
 def _clause_after_the_launcher_started(fate: _Fate) -> str:

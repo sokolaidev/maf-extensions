@@ -3697,7 +3697,7 @@ class TestWhatACallerCanBranchOn:
         [
             pytest.param("4242", 0, "sent", id="sent"),
             pytest.param("4242", 1, "refused", id="a-signal-that-did-not-land"),
-            pytest.param(None, 0, "absent", id="no-pid-after-the-launcher-returned"),
+            pytest.param(None, 0, "unrecorded", id="no-pid-after-the-launcher-returned"),
         ],
     )
     def test_the_outcome_reaches_the_caller(self, pid, kill_exit_code, expected):
@@ -3706,8 +3706,14 @@ class TestWhatACallerCanBranchOn:
             _run(guest, HostToolRun(_registry()), timeout=0.2)
         assert expired.value.signal == expected
 
-    def test_a_run_that_never_started_says_so(self):
-        """The launcher's own `exec` ran out with nothing recorded: nothing to act on."""
+    def test_a_run_that_never_started_is_not_a_run_with_a_lost_pid(self):
+        """The two states a missing pid can mean, and the only one that needs nothing further.
+
+        Reaching the supervisor loop at all means the launcher exited cleanly, so a missing pid
+        there is a program running without a handle — `unrecorded`, asserted above. Here the
+        launcher's own `exec` never returned, so nothing was started and there is nothing to
+        escalate. Reported as one value a caller could neither ignore nor act on safely.
+        """
 
         class _BoundsTheStart(_ScriptedGuest):
             async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
