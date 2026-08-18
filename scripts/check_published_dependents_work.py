@@ -383,11 +383,9 @@ def main(argv: list[str]) -> int:
     for failure in failures:
         print(failure, file=sys.stderr)
     if dispatch:
-        # The post-upload dispatch check: the upload already happened and is immutable, so a
-        # newly-admitting dependent that breaks cannot be refused. Dispatch the live check
-        # (an admitting dependent exists) and surface the break as red rather than silently
-        # shipping — the tradeoff #443 accepts over refusing before the upload (#443 option 2
-        # would serialize publishes instead). The caller reads stderr for the annotation.
+        # The upload already happened, so a break cannot be refused — dispatch the live check
+        # and surface the break as red rather than silently shipping (#443). The caller reads
+        # stderr for the annotation.
         print(
             f"\nA dependent that admits maf-sandbox {positionals[0]} breaks at import time. "
             "The upload is immutable, so the live check is dispatched (live_check=run) and the "

@@ -157,6 +157,27 @@ def condition_after(workflow: Path, anchor: str) -> str:
     return " ".join(body)
 
 
+def _job_block(workflow: Path, job_key: str) -> str:
+    """One job's body as text, from its key line to the next job's key line.
+
+    Preceding comment lines stay with the previous job's block, so the block starts at the key.
+    Read as text, no YAML dependency, for the same reason `run_block` gives. The next-job scan
+    matches only a bare key at the jobs-map indent (two spaces), so a `run:` script line — however
+    deeply indented — cannot end the block early.
+    """
+    lines = workflow.read_text(encoding="utf-8").splitlines()
+    start = next(index for index, line in enumerate(lines) if line.strip() == job_key)
+    end = next(
+        (
+            index
+            for index, line in enumerate(lines[start + 1 :], start + 1)
+            if re.match(r"^  [A-Za-z][\w-]*:\s*$", line)
+        ),
+        len(lines),
+    )
+    return "\n".join(lines[start:end])
+
+
 def dispatched_packages() -> set[str]:
     """The packages whose publish dispatches the live check, from the `verify` gate itself."""
     condition = condition_after(PUBLISH_WORKFLOW, "verify:")
@@ -760,16 +781,7 @@ class TestTheBuildWorkCheckIsEarlyValidation:
 
 
 class TestThePreUploadRecheckIsBreakRefusalOnly:
-    """The re-check before the upload refuses a breaking core; it no longer decides the dispatch.
-
-    The `pypi` environment holds for as long as a reviewer takes, and the index can move under the
-    build verdict, so this re-test runs at upload rather than frozen at build — but the upload
-    itself is still a window during which a dependent can admit, so any verdict reached here is
-    provisional. The dispatch verdict is the post-upload step's (#443). This step's one job is to
-    refuse the upload when a version that admitted since build no longer imports: a break exits 1
-    and `set -e` fails the step before the upload is reached. It writes no `live_check` output and
-    no skip summary — neither is the dispatch decision's to make.
-    """
+    """The pre-upload re-check refuses newly discovered breaks without deciding dispatch."""
 
     _STEP = "Re-verify only newly admitting published versions import against this core"
 
@@ -819,20 +831,12 @@ class TestThePreUploadRecheckIsBreakRefusalOnly:
 
 
 class TestThePostUploadDispatchGatesTheLiveCheck:
-    """The dispatch decision, read off the post-upload check in the publish job.
+    """The dispatch decision, read off the post-upload check in its own job.
 
-    The pre-upload re-check refuses a breaking core before it ships; the dispatch decision is made
-    here, after the upload, so a dependent that admits during the upload window — between the
-    pre-upload re-check and the upload completing — is counted rather than racing a `skip` frozen
-    at the re-check (#443). `run` means at least one admitting dependent was tested and every one
-    imported; `skip` means none admits after the upload, the one window where a red would be about
-    the ordering of the train (#273). A dependent that admitted and breaks in that window cannot be
-    refused (the upload is immutable), so `--dispatch` emits `run` — the live check is dispatched —
-    and the break is surfaced as `::error::` rather than the release refused.
-
-    What has to hold: the two jobs stay gated alike, a verdict the step never reached (a
-    dependent's own publish) dispatches rather than holds, a break dispatches and surfaces red
-    rather than fails the step, and the step runs only for a real core release.
+    `run` dispatches the live check; `skip` suppresses it for the #273 ordering window; a break
+    after the upload dispatches and surfaces red rather than refuses, since the upload is immutable
+    (#443). The check lives outside `publish` (which holds `id-token: write`) because it imports
+    newly-published dependent code.
     """
 
     _STEP = "Decide the live-check dispatch after the upload"
@@ -867,7 +871,7 @@ class TestThePostUploadDispatchGatesTheLiveCheck:
         # `--dispatch` makes the script emit `live_check=run` to stdout and the break to stderr,
         # exit 0: the upload is immutable, so the live check is dispatched and the break surfaced
         # as `::error::` rather than the release refused (#443). The step must not fail — a failed
-        # publish job would suppress the very live check it just decided to dispatch.
+        # dispatch job would suppress the very live check it just decided to dispatch.
         result = _execute_step(
             tmp_path,
             self._STEP,
@@ -896,7 +900,7 @@ class TestThePostUploadDispatchGatesTheLiveCheck:
         """
         for job in self._GATED_JOBS:
             condition = condition_after(PUBLISH_WORKFLOW, job)
-            assert "needs.publish.outputs.live_check != 'skip'" in condition, job
+            assert "needs.dispatch.outputs.live_check != 'skip'" in condition, job
 
     def test_the_two_jobs_are_gated_alike(self):
         """`verify` needs `wait-for-propagation`, so a gate on one and not the other is a trap.
@@ -912,3 +916,25 @@ class TestThePostUploadDispatchGatesTheLiveCheck:
         condition = condition_after(PUBLISH_WORKFLOW, f"- name: {self._STEP}")
         assert "needs.build.outputs.package == 'maf-sandbox'" in condition
         assert "needs.build.outputs.target == 'pypi'" in condition
+
+    def test_the_dispatch_check_runs_outside_the_publish_jobs_credential(self):
+        """The check imports newly-published dependent code, so it must not hold `id-token: write`.
+
+        `publish` mints the OIDC token that is the PyPI credential; running the import there would
+        let a dependent that appeared in the upload window execute module-level code with that
+        token in reach. The check lives in its own read-only job, and the publish job no longer
+        runs it.
+        """
+        publish_block = _job_block(PUBLISH_WORKFLOW, "publish:")
+        dispatch_block = _job_block(PUBLISH_WORKFLOW, "dispatch:")
+        # The permissions key line at six spaces, not a comment that merely mentions it.
+        credential = re.compile(r"^      id-token: write\s*$", re.MULTILINE)
+        assert credential.search(publish_block), "the publishing credential stays with publish"
+        assert not credential.search(dispatch_block), (
+            "the dispatch check imports untrusted dependent code, so it must not hold id-token"
+        )
+        assert re.search(r"^      contents: read\s*$", dispatch_block, re.MULTILINE)
+        assert f"- name: {self._STEP}" not in publish_block, (
+            "the dispatch step must not run inside the publish job"
+        )
+        assert f"- name: {self._STEP}" in dispatch_block

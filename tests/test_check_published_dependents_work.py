@@ -927,10 +927,7 @@ class TestMain:
         tmp_path: Path,
         capsys: pytest.CaptureFixture[str],
     ):
-        # The post-upload dispatch check: a dependent admitted during the upload window (docker
-        # 0.7.0, not in the build snapshot) and breaks. `--dispatch` does not refuse — the upload
-        # is immutable — so it emits `live_check=run` (an admitting dependent exists, so the live
-        # check is dispatched) and the break to stderr, and exits 0 (#443).
+        # Once the upload is immutable, a newly discovered break must dispatch instead of refusing.
         def fake_fetch(distribution: str) -> dict[str, list[str]]:
             if distribution == "maf-sandbox-docker":
                 return {
