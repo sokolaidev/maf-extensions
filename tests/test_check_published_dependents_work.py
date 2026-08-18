@@ -693,8 +693,9 @@ class TestMain:
         # The snapshot is the full admitting set build tested, as sorted (distribution, version)
         # pairs: every dependent's 0.6.0 plus docker's old 0.2.0.
         assert json.loads(snap.read_text()) == [[d, v] for d, v in _ADMITTING_AT_BUILD]
-        # The build job's dispatch verdict is read off this same invocation, so it is emitted
-        # here alongside the snapshot: every admitting dependent imported, so the live check runs.
+        # The build run emits its provisional verdict here alongside the snapshot: every admitting
+        # dependent imported, so the provisional reading is `run`. The dispatch verdict is the
+        # upload-time re-check's, not this one (#337).
         assert "live_check=run" in capsys.readouterr().out
 
     def test_emit_snapshot_is_written_even_when_a_break_refuses(

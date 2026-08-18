@@ -315,8 +315,10 @@ jobs:
       contents: read
     outputs:
       # The dispatch verdict the downstream jobs gate on, read off the upload-time re-check below.
-      # Empty for a dependent's own publish or a TestPyPI rehearsal — the re-check only runs for a
-      # real core release — and empty means "go", so those dispatch the live check. See #337.
+      # The re-check only runs for a real core release, so this is empty for any other publish; a
+      # dependent's own PyPI publish leaves it empty, and empty means "go", so it still dispatches.
+      # A TestPyPI rehearsal never reaches the gate — both downstream jobs require target == 'pypi'
+      # first. See #337.
       live_check: ${{ steps.recheck.outputs.live_check }}
     steps:
       # Into a subdirectory of its own, and before the artifact arrives. `actions/checkout`
