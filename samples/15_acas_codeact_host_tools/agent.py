@@ -100,16 +100,14 @@ AGENT_DIR = "analyst"
 #: which is the same gap act 5 reports. Two keys is what isolation looks like when deletion is
 #: not on the table.
 #: And a run in the id, not only a route. `dispose_scope` selects on the labels the backend
-#: stamped and asks the *service* for them, not this process, so two runs sharing a thread id
-#: share a delete. `verify-live` keys its concurrency by package (#325) and this job runs for
-#: three of them, so a release train has three of these in flight against one sandbox group:
-#: with a fixed id the first to finish deletes the other two's running sandboxes and counts
-#: them as its own. Every GitHub job has `GITHUB_RUN_ID` and `GITHUB_RUN_ATTEMPT`; a local run
-#: has neither and takes the process id, which is as unique as one machine needs.
+#: stamped and asks the *service* for them rather than this process, so an id two runs share
+#: is a delete they share — and the runs that verify a release are concurrent against one
+#: sandbox group. Unique per run, then, and short enough to stay a readable label rather than
+#: the digest the backend substitutes past its length limit. #445 is the other samples.
 #:
-#: The cost is that an id nothing reuses is an id nothing tidies: a run killed before act 6
-#: leaves a sandbox no later run will purge, and it bills until the group's lifecycle timers
-#: reach it. That is the same #375 exposure the footer count exists to make visible.
+#: The cost, since it is a trade rather than a free fix: an id nothing reuses is an id nothing
+#: tidies. A run killed before act 6 leaves a sandbox for the group's lifecycle timers, which
+#: is the #375 exposure the footer count exists to make visible.
 _RUN = os.environ.get("GITHUB_RUN_ID") or f"local-{os.getpid()}"
 _ATTEMPT = os.environ.get("GITHUB_RUN_ATTEMPT", "1")
 DISPATCH_THREAD = f"15-host-tools-{_RUN}-{_ATTEMPT}-dispatch"
@@ -274,28 +272,31 @@ class Ledger:
         """
         return {asked.split("(", 1)[0] for asked in self.asked}
 
-    def round_trips(self, programs: int) -> list[float]:
-        """Gaps between consecutive calls, with the ones that span two programs removed.
+    def round_trips(self, programs: int) -> tuple[list[float], list[float]]:
+        """The gaps between consecutive calls, split into transport ones and program boundaries.
 
-        One entry per consecutive pair, so *n* calls yield *n - 1*. But a route runs `programs`
+        One entry per consecutive pair, so *n* calls yield *n - 1*. A route runs `programs`
         separate programs against the same ledger, and the gap between the last call of one and
-        the first call of the next contains a model turn and a launcher, not a file round trip.
+        the first call of the next holds a model turn and a launcher rather than a file round
+        trip. There are exactly `programs - 1` of those while the programs run one after
+        another, which is what the live check enforces: calls in one assistant message run
+        concurrently, and two programs interleaved in one ledger have no boundary to find.
 
-        There are exactly `programs - 1` such boundaries **while the programs run one after
-        another**, and they are the largest gaps in the set — a model turn is seconds where the
-        transport is about one — so dropping the largest that many times removes them. Calls in
-        one assistant message run concurrently, so a route batching two `execute_code` calls
-        would interleave two programs in this one ledger and none of that holds; the live check
-        refuses such a run rather than this code guessing which gap belongs to whom. The assumption is stated rather than hidden: if a
-        genuinely slow transport gap ever exceeded a boundary, this drops that instead and the
-        boundary shows up in the maximum, which is visible rather than silent.
+        **Which gaps they are is inferred from size, not recorded.** Nothing here is told what
+        program a call belongs to, so this takes the largest `programs - 1` and calls them the
+        boundaries. Both halves are returned rather than one, because that inference is only
+        sound while the two are far apart — a model turn is seconds where a file written and
+        read back is about one — and the run publishes the margin so the check can hold them
+        apart instead of trusting the sort. Attributing a call to its program would take the
+        transport saying which run it served, which is a library surface this sample does not
+        have (#446).
         """
         gaps = sorted(
             self._arrived[index + 1] - self._answered[index]
             for index in range(len(self._answered) - 1)
         )
-        boundaries = max(0, programs - 1)
-        return gaps[: len(gaps) - boundaries] if boundaries else gaps
+        kept = len(gaps) - max(0, programs - 1)
+        return gaps[:kept], gaps[kept:]
 
 
 def build(stamp: Any, ledger: Ledger) -> list[Any]:
@@ -630,11 +631,19 @@ async def one_route(
         # than how many groups there are — on this route every call is an `execute_code`, the
         # lookups being host tools the model never sees. Passing the round count would leave
         # one boundary per batched message in the sample, timing a model turn as a round trip.
-        trips = ledger.round_trips(sum(calls_per_message(response)))
+        trips, boundaries = ledger.round_trips(sum(calls_per_message(response)))
         if trips:
             print(
                 f"{MEASURED}{route}: round trip: {len(trips)} gap(s), min {min(trips):.2f}s, "
                 f"median {median(trips):.2f}s, max {max(trips):.2f}s"
+            )
+        if trips and boundaries:
+            # What the line above rests on. The boundaries were chosen by being the largest,
+            # so the smallest of them exceeding the largest kept gap is arithmetic; how far it
+            # exceeds it is the measurement, and it is what says the two are different things.
+            print(
+                f"{MEASURED}{route}: program boundaries dropped: {len(boundaries)}, smallest "
+                f"{min(boundaries):.2f}s against a {max(trips):.2f}s largest round trip"
             )
     print()
     return carried

@@ -3,7 +3,7 @@
 `_HEALTHY` is a real run of `samples/15_acas_codeact_host_tools` against a live ACAS sandbox
 and a live model, verbatim apart from the two tables the model produced.
 
-The suite is organised around what the check is *allowed* to fail a release for. Nineteen live
+The suite is organised around what the check is *allowed* to fail a release for. Twenty live
 runs went into choosing that: the figures below moved between them — 18 to 29 lookups, 35s to
 87s, two to four dispatched tool-calling rounds — and what did not move is what is asserted.
 
@@ -54,6 +54,7 @@ Oregon	TOTAL	3514.35
   [measured] dispatch route: product names in the table: 3 of 3
   [measured] dispatch route: sales figures the model wrote into code: 0 of 12
   [measured] dispatch route: round trip: 23 gap(s), min 1.08s, median 1.11s, max 1.60s
+  [measured] dispatch route: program boundaries dropped: 1, smallest 5.38s against a 1.60s largest round trip
 
 == 3. The lookups happen in the model's tool loop ==
 
@@ -285,8 +286,9 @@ class TestDirectPaysPerStage:
         """Two to four was the live range; the check bounds the comparison, not the value.
 
         Every line a third program would move has to move with it — the shape, the gap count,
-        the run directories, and the traffic those runs left. A variant that raises the lookups
-        alone is not a slower healthy run, it is a run that cannot have happened.
+        the boundaries dropped, the run directories, and the traffic those runs left. A variant
+        that raises the lookups alone is not a slower healthy run, it is a run that cannot have
+        happened.
         """
         assert (
             check.assess(
@@ -295,6 +297,7 @@ class TestDirectPaysPerStage:
                     "[measured] dispatch route: 29 lookup(s) over 3 tool-calling round(s)",
                 )
                 .replace("round trip: 23 gap(s)", "round trip: 26 gap(s)")
+                .replace("program boundaries dropped: 1,", "program boundaries dropped: 2,")
                 .replace(
                     "dispatch route: tool calls per round: [1, 1]",
                     "dispatch route: tool calls per round: [1, 1, 1]",
@@ -906,6 +909,52 @@ class TestTheRoundTripLine:
             for r in check.assess(
                 _swap("min 1.08s, median 1.11s, max 1.60s", "min 0.00s, median 0.00s, max 1.60s")
             )
+        )
+
+
+class TestTheBoundariesTheSummaryRestsOn:
+    """Which gaps are boundaries is inferred from size, so both halves have to be published.
+
+    Nothing in the numbers can say the inference was right — a boundary and a slow transport
+    call are two durations. What the check can say is that the two lines describe one sorted
+    set of gaps and one boundary per program after the first, and that the margin is on the
+    page for a reader to judge.
+    """
+
+    _LINE = (
+        "[measured] dispatch route: program boundaries dropped: 1, smallest 5.38s against a "
+        "1.60s largest round trip"
+    )
+
+    def test_a_missing_boundary_line_fails(self):
+        """Two programs dispatched, so one gap was dropped and the reader is owed which."""
+        assert any(
+            "no program boundary was reported" in r
+            for r in check.assess(_HEALTHY.replace(f"  {self._LINE}\n", ""))
+        )
+
+    def test_a_boundary_count_that_is_not_one_per_program_fails(self):
+        assert any(
+            "not the ones the summary describes" in r
+            for r in check.assess(
+                _swap("program boundaries dropped: 1,", "program boundaries dropped: 2,")
+            )
+        )
+
+    def test_a_largest_gap_that_disagrees_with_the_summary_fails(self):
+        """Both lines quote the maximum of the kept gaps, so they cannot differ."""
+        assert any(
+            "counted from different sets" in r
+            for r in check.assess(
+                _swap("against a 1.60s largest round trip", "against a 2.90s largest round trip")
+            )
+        )
+
+    def test_a_boundary_smaller_than_a_kept_gap_fails(self):
+        """The boundaries are the largest gaps by construction, so this cannot arise."""
+        assert any(
+            "did not come from one sorted set" in r
+            for r in check.assess(_swap("smallest 5.38s against", "smallest 1.40s against"))
         )
 
 

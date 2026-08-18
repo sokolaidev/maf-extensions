@@ -121,6 +121,10 @@ _ROUND_TRIP = _tagged(
     rf"({_ANY_ROUTE}):\s+round trip:\s+(\d+)\s+gap\(s\),\s+min\s+([\d.]+)s,\s+"
     r"median\s+([\d.]+)s,\s+max\s+([\d.]+)s"
 )
+_BOUNDARIES = _tagged(
+    rf"({_ANY_ROUTE}):\s+program boundaries dropped:\s+(\d+),\s+smallest\s+([\d.]+)s\s+"
+    r"against a\s+([\d.]+)s\s+largest round trip"
+)
 _STAGES_RUN = _tagged(rf"({_ANY_ROUTE}):\s+lookup stages exercised:\s+(\d+)\s+of\s+(\d+)")
 _NAMED = _tagged(rf"({_ANY_ROUTE}):\s+product names in the table:\s+(\d+)\s+of\s+(\d+)")
 _RUN_DIRS = _tagged(r"run directories across both sandboxes:\s+(\d+)")
@@ -541,6 +545,39 @@ def _assess_the_round_trips(output: str) -> list[str]:
                 "agree or the summary above dropped genuine round trips as though they were "
                 "model turns"
             )
+    # Which gaps are boundaries is inferred from size, so the run publishes the margin and
+    # this holds the two lines to one another. Not that the margin is wide enough — nothing in
+    # the numbers can say that, and a threshold picked from the runs so far would fail a later
+    # one the way the dispatch cap did twice. What it can say is that both lines describe the
+    # same set of gaps, and that one boundary was dropped per program after the first.
+    dropped = _BOUNDARIES.findall(output)
+    if dropped and dispatching is not None:
+        _, count, smallest, largest = dropped[0]
+        if int(count) != dispatching - 1:
+            failures.append(
+                f"{count} program boundary/ies were dropped where {dispatching} program(s) "
+                f"dispatched, and a route running them one after another leaves "
+                f"{dispatching - 1} — so the gaps below are not the ones the summary describes"
+            )
+        if abs(float(largest) - high) >= 0.005:
+            failures.append(
+                f"the boundary line quotes a {largest}s largest round trip where the summary "
+                f"above reports {high}s. Both are the maximum of the gaps that were kept, so "
+                "these two lines were counted from different sets"
+            )
+        if float(smallest) <= float(largest):
+            failures.append(
+                f"the smallest boundary dropped is {smallest}s against a {largest}s gap that "
+                "was kept. The boundaries are chosen by being the largest, so this cannot "
+                "happen and the split did not come from one sorted set of gaps"
+            )
+    elif dispatching is not None and dispatching > 1:
+        failures.append(
+            f"{dispatching} program(s) dispatched and no program boundary was reported. Each "
+            "one after the first leaves a gap holding a model turn, and dropping those is what "
+            "the summary above rests on — unreported, the reader cannot see what it rests on"
+        )
+
     if not low <= mid <= high:
         failures.append(
             f"min {low}s, median {mid}s and max {high}s are not ordered — whatever produced "
