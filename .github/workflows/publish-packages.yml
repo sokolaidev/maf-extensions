@@ -104,14 +104,9 @@ jobs:
           echo "target=${target}" >> "$GITHUB_OUTPUT"
           echo "publishing ${package} ${version} to ${target}"
 
-      # Context for the run, not the dispatch decision. A breaking core release used to skip the
-      # live check on the changelog's say-so, and 0.14.0 showed why that was wrong: the rename
-      # broke host applications, not the dependents — every one imported clean against the
-      # candidate — so a live run would have meant something and did not happen. The work check
-      # in this job answers whether the dependents are stranded; this step only reports that the
-      # release declares breaking changes, for a reviewer reading the run. The changelog is where
-      # "breaking" survives, because the number cannot say it: `bump-minor-pre-major` makes a
-      # breaking change a minor like any `feat:`. See #337.
+      # The changelog's breaking flag is informational: it does not identify whether published
+      # dependents are stranded. The work check below makes the live-check dispatch decision;
+      # this step only adds context to the run summary. See #337.
       #
       # Core releases only — a dependent's own publish strands nothing above it — and only for
       # the real index, matching the work check's own gate. A detector that cannot answer writes
