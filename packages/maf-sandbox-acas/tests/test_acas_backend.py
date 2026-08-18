@@ -357,6 +357,238 @@ class TestResolveDiskImageId:
         with pytest.raises(ValueError, match="import_disk_image"):
             asyncio.run(resolve_disk_image_id(client, None, "acr.io/x:1"))
 
+    def test_nothing_configured_offers_both_namespaces(self):
+        """The message is where a new deployment learns it need not import anything."""
+        with pytest.raises(ValueError, match="python-3.13") as raised:
+            asyncio.run(resolve_disk_image_id(_FakeGroupClient(), None, None))
+        assert "import_disk_image" in str(raised.value)
+
+
+# ---------------------------------------------------------------------------
+# The two image namespaces — one the service prebuilt, one this deployment imported
+# ---------------------------------------------------------------------------
+
+
+def _catalogue_entry(name: str):
+    from azure.containerapps.sandbox import PublicDiskImage
+
+    return PublicDiskImage(name=name)
+
+
+class _CataloguedGroupClient:
+    """Records how the create call named its source, which is the whole question here.
+
+    ``begin_create_sandbox`` takes the two namespaces as two different keywords — ``disk``
+    for a prebuilt name, ``disk_id`` for an imported disk image — and the SDK refuses them
+    together. Capturing ``**source`` rather than a fixed signature is what lets a test say
+    which keyword was used *and* that the other was absent.
+    """
+
+    def __init__(self, catalogue: list[str] | None = None, images: list | None = None) -> None:
+        self._catalogue = catalogue or []
+        self._images = images or []
+        self.public_list_calls = 0
+        self.source: dict | None = None
+        self.create_calls = 0
+
+    def list_public_disk_images(self):
+        entries = [_catalogue_entry(name) for name in self._catalogue]
+        return _FakePager(entries, on_iter=self._count_public)
+
+    def list_disk_images(self):
+        return _FakePager(self._images)
+
+    def get_sandbox_client(self, sandbox_id: str):
+        return _FakeSandboxClient(sandbox_id)
+
+    async def begin_create_sandbox(self, *, labels, egress_policy, **source):
+        self.create_calls += 1
+        self.source = source
+
+        class _Poller:
+            async def result(self):
+                return _CreatedSandbox("sbx-1")
+
+        return _Poller()
+
+    def _count_public(self):
+        self.public_list_calls += 1
+
+
+class TestNamesAPrebuiltImage:
+    """No registry and no tag. The tag is what carries the distinction."""
+
+    def test_a_bare_name_is_one_the_service_provides(self):
+        from maf_sandbox_acas._images import names_a_prebuilt_image
+
+        assert names_a_prebuilt_image("python-3.13")
+        assert names_a_prebuilt_image("ubuntu")
+        assert names_a_prebuilt_image("node-22")
+
+    def test_a_tagged_repository_is_not(self):
+        """The trap. `bicep-sandbox:0.46.1` has no registry either, and sample 01 ships it."""
+        from maf_sandbox_acas._images import names_a_prebuilt_image
+
+        assert not names_a_prebuilt_image("bicep-sandbox:0.46.1")
+        assert not names_a_prebuilt_image("bicep-sandbox:0.46.1-1")
+
+    def test_a_qualified_reference_is_not(self):
+        from maf_sandbox_acas._images import names_a_prebuilt_image
+
+        assert not names_a_prebuilt_image("mcr.microsoft.com/devcontainers/python:3.13-bookworm")
+
+    def test_a_repository_path_without_a_tag_is_not(self):
+        """A slash means a repository path or a registry, and neither is a catalogue name."""
+        from maf_sandbox_acas._images import names_a_prebuilt_image
+
+        assert not names_a_prebuilt_image("library/ubuntu")
+
+    def test_a_digest_reference_is_not(self):
+        from maf_sandbox_acas._images import names_a_prebuilt_image
+
+        assert not names_a_prebuilt_image("ubuntu@sha256:0123456789abcdef")
+
+    def test_no_image_at_all_is_not(self):
+        from maf_sandbox_acas._images import names_a_prebuilt_image
+
+        assert not names_a_prebuilt_image("")
+
+
+class TestResolvePrebuiltImageName:
+    def setup_method(self):
+        from maf_sandbox_acas._images import _prebuilt_name_cache
+
+        _prebuilt_name_cache.clear()
+
+    def test_returns_the_name_the_catalogue_holds(self):
+        from maf_sandbox_acas._images import resolve_prebuilt_image_name
+
+        client = _CataloguedGroupClient(catalogue=["ubuntu", "python-3.13"])
+        assert asyncio.run(resolve_prebuilt_image_name(client, "python-3.13")) == "python-3.13"
+
+    def test_a_hit_is_cached(self):
+        from maf_sandbox_acas._images import resolve_prebuilt_image_name
+
+        client = _CataloguedGroupClient(catalogue=["python-3.13"])
+        asyncio.run(resolve_prebuilt_image_name(client, "python-3.13"))
+        asyncio.run(resolve_prebuilt_image_name(client, "python-3.13"))
+        assert client.public_list_calls == 1
+
+    def test_a_miss_is_not_cached(self):
+        """An image the service adds later must be found, not refused for the process's life."""
+        from maf_sandbox_acas._images import resolve_prebuilt_image_name
+
+        client = _CataloguedGroupClient(catalogue=[])
+        with pytest.raises(ValueError):
+            asyncio.run(resolve_prebuilt_image_name(client, "python-3.14"))
+        client._catalogue = ["python-3.14"]
+        assert asyncio.run(resolve_prebuilt_image_name(client, "python-3.14")) == "python-3.14"
+        assert client.public_list_calls == 2
+
+    def test_refuses_an_unknown_name_and_says_what_there_is(self):
+        from maf_sandbox_acas._images import resolve_prebuilt_image_name
+
+        client = _CataloguedGroupClient(catalogue=["python-3.13", "ubuntu"])
+        with pytest.raises(ValueError, match="provides no image named 'bicep-sandbox'") as raised:
+            asyncio.run(resolve_prebuilt_image_name(client, "bicep-sandbox"))
+        # The catalogue, so a forgotten tag is diagnosable from the message alone.
+        assert "python-3.13, ubuntu" in str(raised.value)
+        assert "repository:tag" in str(raised.value)
+
+    def test_says_so_rather_than_listing_nothing(self):
+        from maf_sandbox_acas._images import resolve_prebuilt_image_name
+
+        client = _CataloguedGroupClient(catalogue=[])
+        with pytest.raises(ValueError, match="catalogue is empty"):
+            asyncio.run(resolve_prebuilt_image_name(client, "python-3.13"))
+
+    def test_a_nameless_entry_does_not_become_a_blank_in_the_offer(self):
+        """Otherwise the catalogue reads `It provides: , python-3.13` and looks corrupt."""
+        from maf_sandbox_acas._images import resolve_prebuilt_image_name
+
+        client = _CataloguedGroupClient(catalogue=["", "python-3.13"])
+        with pytest.raises(ValueError) as raised:
+            asyncio.run(resolve_prebuilt_image_name(client, "node-22"))
+        assert "It provides: python-3.13." in str(raised.value)
+
+
+class TestWhichNamespaceASpecBootsFrom:
+    """`acquire` reads `image` and picks a namespace; these pin which keyword it creates with."""
+
+    def setup_method(self):
+        from maf_sandbox_acas._images import _disk_image_cache, _prebuilt_name_cache
+
+        _disk_image_cache.clear()
+        _prebuilt_name_cache.clear()
+
+    @staticmethod
+    def _key():
+        return SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+
+    def test_a_bare_name_boots_from_the_catalogue(self):
+        from maf_sandbox import SandboxSpec
+
+        client = _CataloguedGroupClient(catalogue=["python-3.13"])
+        backend = _backend_with(client)
+        asyncio.run(backend.acquire(self._key(), SandboxSpec(kind="codeact", image="python-3.13")))
+        assert client.source == {"disk": "python-3.13"}
+
+    def test_a_tagged_reference_still_boots_from_an_imported_disk_image(self):
+        """Byte-for-byte the old path: qualified by the registry, resolved to an id."""
+        from maf_sandbox import SandboxSpec
+
+        client = _CataloguedGroupClient(
+            images=[_disk_image("img-1", "acr.azurecr.io/bicep-sandbox:0.46.1")]
+        )
+        backend = _backend_with(client, _config(registry="acr.azurecr.io"))
+        asyncio.run(
+            backend.acquire(self._key(), SandboxSpec(kind="bicep", image="bicep-sandbox:0.46.1"))
+        )
+        assert client.source == {"disk_id": "img-1"}
+        assert client.public_list_calls == 0
+
+    def test_a_pinned_id_skips_the_catalogue_too(self):
+        """`image_id` promises resolution is skipped, and the catalogue is resolution."""
+        from maf_sandbox import SandboxSpec
+
+        client = _CataloguedGroupClient(catalogue=["python-3.13"])
+        backend = _backend_with(client)
+        asyncio.run(
+            backend.acquire(
+                self._key(),
+                SandboxSpec(kind="codeact", image="python-3.13", image_id="pinned-id"),
+            )
+        )
+        assert client.source == {"disk_id": "pinned-id"}
+        assert client.public_list_calls == 0
+
+    def test_the_created_log_names_the_image_it_booted(self, caplog):
+        """An operator reading this line is usually asking which namespace it came from."""
+        from maf_sandbox import SandboxSpec
+
+        client = _CataloguedGroupClient(catalogue=["python-3.13"])
+        backend = _backend_with(client)
+        with caplog.at_level(logging.INFO, logger="maf_sandbox_acas"):
+            asyncio.run(
+                backend.acquire(self._key(), SandboxSpec(kind="codeact", image="python-3.13"))
+            )
+        created = [r for r in caplog.records if "sandbox created" in r.getMessage()]
+        assert len(created) == 1
+        assert "disk_image=python-3.13" in created[0].getMessage()
+
+    def test_an_unknown_bare_name_refuses_before_anything_is_created(self):
+        """A billable sandbox must not exist by the time the name turns out to be wrong."""
+        from maf_sandbox import SandboxSpec
+
+        client = _CataloguedGroupClient(catalogue=["python-3.13"])
+        backend = _backend_with(client)
+        with pytest.raises(ValueError, match="provides no image named 'bicep-sandbox'"):
+            asyncio.run(
+                backend.acquire(self._key(), SandboxSpec(kind="bicep", image="bicep-sandbox"))
+            )
+        assert client.create_calls == 0
+        assert backend._registry == {}
+
 
 # ---------------------------------------------------------------------------
 # dispose_scope — cross-replica purge

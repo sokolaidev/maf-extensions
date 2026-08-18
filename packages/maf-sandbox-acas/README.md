@@ -54,7 +54,18 @@ router = SandboxRouter([backend])  # microVM isolation meets the router's defaul
 | `capabilities` | `EXEC, FILES_IN, FILES_OUT, FILES_LIST, HOST_TOOLS` — declares only what it implements today |
 | `limits` | the transfer ceilings a spec may not exceed, per direction |
 
-`tests/test_acas_e2e.py` is the live suite, skipped unless `ACAS_SANDBOX_ENDPOINT` and `MAF_SANDBOX_ACAS_E2E_IMAGE` name a sandbox group and a guest image. It is what exercises the real data plane — the shared `FILES_OUT` conformance probes, the cap and confinement refusals, the read timeout that turns a fifo from a hang into a refusal, and teardown read back from the service rather than from this process's memory. It runs in `verify-live.yml`, not on a pull request, because every sandbox in it is billable.
+**Two image namespaces, and `spec.image` says which by whether it carries a tag.** The service prebuilds images and keeps them Ready for every sandbox group — `python-3.13`, `node-22`, `ubuntu` and a dozen more — and a spec reaches them by naming one, with **no registry and no tag**, because the version is part of the name. Anything else is the `repository:tag` the rest of this package is written around: qualified by the configured `registry` and resolved against the disk images this deployment imported with `scripts/import_disk_image.py`.
+
+```python
+codeact_sandbox_spec(image="python-3.13")           # the service already has it — import nothing
+bicep_sandbox_spec(image="bicep-sandbox:0.46.1")    # yours, imported once, qualified by `registry`
+```
+
+The tag is what separates them, and it has to be: `bicep-sandbox:0.46.1` names no registry either, so a rule that looked only for a registry would swallow every deployment configuring an imported image the way `SandboxSpec` documents. A bare name the service does not have is refused before anything is created, with the catalogue in the message — the likely way to arrive at one is a forgotten tag, and the fix is then visible where the error is. `image_id` still skips both lookups, as the field promises.
+
+Microsoft's docs call these *public images*, glossed as "prebuilt images available to all sandbox groups", in the same paragraph that calls Docker Hub a public registry. This package says **prebuilt** to keep those apart; the SDK spells them `list_public_disk_images()` and `begin_create_sandbox(disk=…)`.
+
+`tests/test_acas_e2e.py` is the live suite, skipped unless `ACAS_SANDBOX_ENDPOINT` and `MAF_SANDBOX_ACAS_E2E_IMAGE` name a sandbox group and a guest image. It is what exercises the real data plane — the shared `FILES_OUT` conformance probes, the cap and confinement refusals, the read timeout that turns a fifo from a hang into a refusal, and teardown read back from the service rather than from this process's memory. It runs in `verify-live.yml`, not on a pull request, because every sandbox in it is billable. Most of it shares one sandbox; the prebuilt-image probes need a second, booted from `python-3.13` (override with `MAF_SANDBOX_ACAS_E2E_PREBUILT`), because a name from the catalogue is the thing they exist to prove boots.
 
 **`Capability.FILES_LIST` as well as `FILES_OUT`, and this is the only backend that declares it.** The service enumerates a directory natively, which is the test the protocol's split applies — name the backend that lacks it. A kind whose output names are unpredictable is refused on Docker and wslc and served here.
 
