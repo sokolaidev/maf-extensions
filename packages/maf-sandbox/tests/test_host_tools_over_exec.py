@@ -2601,6 +2601,19 @@ class TestTheShimsSequenceAllocation:
 # ---------------------------------------------------------------------------------------------
 
 
+async def _spend(timeout: float, command: str) -> None:
+    """Refuse a command the transport gave no time to run, as a real backend would.
+
+    Every backend bounds its own call with the `timeout` it was handed — docker with
+    `asyncio.wait_for`, acas the same — so a zero or negative budget is a `TimeoutError`
+    before anything reaches the guest. A fake that ignores the argument reports success for
+    work that could never have happened.
+    """
+    if timeout <= 0:
+        raise TimeoutError(f"no time left to run {command!r}")
+    await asyncio.sleep(0)
+
+
 class _GuestThatRecordsTheKill(_ScriptedGuest):
     """A guest whose launcher writes a pid, and which remembers every command exec'd at it.
 
@@ -2620,10 +2633,15 @@ class _GuestThatRecordsTheKill(_ScriptedGuest):
     async def exec(
         self, command: str | Any, *, working_directory: str, timeout: float
     ) -> ExecResult:
-        self.commands.append(str(command))
         if "kill" in str(command):
-            await asyncio.sleep(0)
+            # Recorded *after* the yield and the budget check, so a command the transport
+            # issued with no time to spend does not count as one the guest ran. A fake that
+            # records on entry cannot tell "sent" from "attempted", which is how a cleanup
+            # given a zero budget once passed every test that claimed to check it.
+            await _spend(timeout, str(command))
+            self.commands.append(str(command))
             return ExecResult(stdout="", exit_code=self._kill_exit_code)
+        self.commands.append(str(command))
         started = await super().exec(command, working_directory=working_directory, timeout=timeout)
         if self._pid is not None:
             self.files[_LAYOUT.pid] = self._pid.encode("utf-8")
@@ -2927,13 +2945,12 @@ class TestStoppingOnTheOtherTwoLegs:
         assert "4242" in "".join(guest.kills), f"nothing was killed: {guest.commands}"
         assert "may still be running" not in str(expired.value)
 
-    def test_the_starting_leg_does_not_invent_a_program_from_an_unusable_pid(self):
-        """`absent` and `running` are different answers, and this leg is where that shows.
+    def test_a_pid_that_cannot_be_used_still_hedges(self):
+        """`absent` is reserved for no pid at all; anything unusable is reported as running.
 
-        A pid file holding something that is not a number is no handle on a process, so the
-        message must stay as it was rather than announcing a program that may be running. The
-        two are indistinguishable on the other legs — both hedge — so the discrimination lives
-        here, which is also where a swallowed `int()` failure would otherwise hide.
+        A pid file holding something that is not a number is no handle on a process — but the
+        guest can put it there, so treating it as "nothing was started" would be a one-line
+        opt-out from being killed *and* from being mentioned. The signal is still not sent.
         """
 
         class _BoundsTheStartOverGarbage(_GuestThatRecordsTheKill):
@@ -2949,7 +2966,47 @@ class TestStoppingOnTheOtherTwoLegs:
             _run(guest, HostToolRun(_registry()), timeout=30.0)
 
         assert guest.kills == [], f"a non-numeric pid reached a command: {guest.commands}"
+        assert "may still be running" in str(expired.value)
+
+    def test_a_pid_that_was_never_written_says_nothing_new(self):
+        """The one case that stays silent: the launcher left no pid, so nothing was started."""
+
+        class _BoundsTheStartWithNothingWritten(_GuestThatRecordsTheKill):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                self.commands.append(str(command))
+                if "kill" in str(command):
+                    return ExecResult(stdout="", exit_code=0)
+                raise TimeoutError
+
+        guest = _BoundsTheStartWithNothingWritten([], finish=False, pid=None)
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=30.0)
+
+        assert guest.kills == []
         assert str(expired.value) == "the run's 30s were gone while starting the program"
+
+    def test_a_pid_the_host_cannot_read_hedges_rather_than_going_quiet(self):
+        """A backend failure is not evidence that nothing was started."""
+
+        class _PidUnreadable(_GuestThatRecordsTheKill):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                self.commands.append(str(command))
+                if "kill" in str(command):
+                    return ExecResult(stdout="", exit_code=0)
+                self.files[_LAYOUT.pid] = b"4242"
+                raise TimeoutError
+
+            async def read_file(self, path: str, *, working_directory: str, max_bytes: int):
+                if path == _LAYOUT.pid:
+                    raise PermissionError("the daemon said no")
+                return await super().read_file(
+                    path, working_directory=working_directory, max_bytes=max_bytes
+                )
+
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(_PidUnreadable([], finish=False), HostToolRun(_registry()), timeout=30.0)
+
+        assert "may still be running" in str(expired.value)
 
 
 class _GuestThatRecordsRemovals(_GuestThatRecordsTheKill):
@@ -2963,8 +3020,10 @@ class _GuestThatRecordsRemovals(_GuestThatRecordsTheKill):
         self, command: str | Any, *, working_directory: str, timeout: float
     ) -> ExecResult:
         if str(command).startswith("rm "):
+            # After the budget check, for the reason the kill is: a removal the transport had
+            # no time to run is not a removal, and recording it on entry hid exactly that.
+            await _spend(timeout, str(command))
             self.commands.append(str(command))
-            await asyncio.sleep(0)
             return ExecResult(stdout="", exit_code=self._remove_exit_code)
         return await super().exec(command, working_directory=working_directory, timeout=timeout)
 
@@ -3102,12 +3161,12 @@ class TestWhatIsTooBroadToDelete:
 
 
 class TestRemovalAgainstARealShell:
-    """A scripted guest proves a command was *issued*; only a filesystem proves it worked."""
+    """A fake proves a command was issued; only a filesystem proves it removed anything."""
 
     @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
     @pytest.mark.skipif(os.pathsep != ":", reason="the guest paths here are POSIX")
     def test_the_command_the_transport_sends_removes_the_tree(self, tmp_path: Path):
-        """The literal `rm -rf …; exit 0`, run by `sh`, against a directory with files in it."""
+        """The command is taken from a dispatch, not hand-built, so the two cannot diverge."""
         directory = (tmp_path / "run-1").as_posix()
         served = f"{directory}/host_tools"
         pathlib.Path(served).mkdir(parents=True, exist_ok=True)
@@ -3117,10 +3176,15 @@ class TestRemovalAgainstARealShell:
             '{"arguments": {"account": "sensitive"}}', encoding="utf-8"
         )
 
-        # Built the way the transport builds it, so a change to the quoting is caught here too.
-        from maf_sandbox._host_tools_over_exec import _quote
+        layout = guest_run_layout(directory)
+        guest = _GuestThatRecordsRemovals([], finish=True)
+        asyncio.run(
+            host_tools_over_exec._reclaim_the_transports_own(
+                guest, layout, until=time.monotonic() + 5.0
+            )
+        )
+        (command,) = guest.removals
 
-        command = f"rm -rf {_quote(served)}; exit 0"
         done = subprocess.run(
             ["sh", "-c", command], cwd=tmp_path.as_posix(), capture_output=True, timeout=60
         )
@@ -3128,21 +3192,6 @@ class TestRemovalAgainstARealShell:
         assert done.returncode == 0, done.stderr
         assert not pathlib.Path(served).exists(), "the transport's files survived the removal"
         assert pathlib.Path(directory).exists(), "the run directory went with them"
-
-    @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
-    @pytest.mark.skipif(os.pathsep != ":", reason="the guest paths here are POSIX")
-    def test_a_directory_that_is_already_gone_is_not_an_error(self, tmp_path: Path):
-        """Why the command ends `exit 0`: a run reclaimed twice must not report a failure."""
-        from maf_sandbox._host_tools_over_exec import _quote
-
-        missing = (tmp_path / "never-existed").as_posix()
-        done = subprocess.run(
-            ["sh", "-c", f"rm -rf {_quote(missing)}; exit 0"],
-            cwd=tmp_path.as_posix(),
-            capture_output=True,
-            timeout=60,
-        )
-        assert done.returncode == 0, done.stderr
 
     @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
     @pytest.mark.skipif(os.pathsep != ":", reason="the guest paths here are POSIX")
@@ -3158,7 +3207,7 @@ class TestRemovalAgainstARealShell:
         (keep / "survivor").write_text("x", encoding="utf-8")
 
         done = subprocess.run(
-            ["sh", "-c", f"rm -rf {_quote(awkward)}; exit 0"],
+            ["sh", "-c", f"rm -rf {_quote(awkward)}"],
             cwd=tmp_path.as_posix(),
             capture_output=True,
             timeout=60,
@@ -3171,10 +3220,9 @@ class TestRemovalAgainstARealShell:
 
 
 class TestTheCommandsKeepTheGuestsAnswer:
-    """A fake returns whatever exit code it is told to; a shell returns the real one.
+    """A fake returns the exit code it was told to; only a shell returns the real one.
 
-    Both commands here once ended `; exit 0`, which made every run of them succeed. The fakes
-    could not see it — they never ran a shell — so these ask one.
+    Which command status reaches the caller is a property of the shell, so it is asked of one.
     """
 
     @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
@@ -3342,3 +3390,103 @@ class TestWhatTheTransportWillNotDelete:
         )
         assert len(guest.removals) == 1, guest.commands
         assert posixpath.dirname(_LAYOUT.shim) in guest.removals[0]
+
+
+class TestWhatTheSecondReviewFound:
+    """Each of these pins a fix that survived its own mutation until it was written."""
+
+    def test_a_slow_pid_read_does_not_cost_the_program_its_signal(self):
+        """The read and the signal are separately bounded.
+
+        Sharing one budget means a backend slow enough to spend it on the read leaves nothing
+        for the `exec` that carries the kill, so the runaway survives a code path that looks
+        like it stopped it.
+        """
+        ahead = {"seconds": 0.0}
+
+        class _SlowPidRead(_GuestThatRecordsTheKill):
+            async def read_file(self, path: str, *, working_directory: str, max_bytes: int):
+                if path == _LAYOUT.pid:
+                    ahead["seconds"] += host_tools_over_exec._FINAL_READ_GRACE + 1.0
+                return await super().read_file(
+                    path, working_directory=working_directory, max_bytes=max_bytes
+                )
+
+        guest = _SlowPidRead([], finish=False)
+        with pytest.MonkeyPatch.context() as patched:
+            patched.setattr(host_tools_over_exec, "time", _Shifted(time.monotonic, ahead))
+            with pytest.raises(SandboxProgramTimeout):
+                _run(guest, HostToolRun(_registry()), timeout=0.2)
+
+        assert guest.kills != [], f"the read spent the kill's budget: {guest.commands}"
+
+    def test_the_starting_leg_does_not_kill_a_run_that_finished(self):
+        """`_stop_the_program` requires the marker check, and this leg once skipped it.
+
+        Reachable when the launcher had time to run to completion but its `exec` reply did
+        not arrive: the program is done, its pid may already belong to something else, and
+        killing by it signals a stranger while reporting the run as stopped.
+        """
+
+        class _FinishedButTheExecRanOut(_GuestThatRecordsTheKill):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                self.commands.append(str(command))
+                if "kill" in str(command):
+                    return ExecResult(stdout="", exit_code=0)
+                # The program ran and left both facts behind; only the reply was lost.
+                self.files[_LAYOUT.pid] = b"4242"
+                self.files[_LAYOUT.exit_code] = b"0"
+                raise TimeoutError
+
+        guest = _FinishedButTheExecRanOut([], finish=False)
+        with pytest.raises(SandboxProgramTimeout):
+            _run(guest, HostToolRun(_registry()), timeout=30.0)
+
+        assert guest.kills == [], f"a finished run was killed by pid: {guest.commands}"
+
+    def test_a_run_that_failed_for_another_reason_is_still_stopped(self):
+        """The kill belongs to every exit, not only to the ones the transport itself reports.
+
+        A backend failing mid-run leaves a detached program nobody has stopped — and the
+        cleanup is about to remove the pid, output and exit marker that would have identified
+        it, so nothing later can find it either.
+        """
+
+        class _DiesMidRun(_GuestThatRecordsTheKill):
+            async def stat_file(self, path: str, *, working_directory: str):
+                if path == _LAYOUT.exit_code:
+                    raise PermissionError("the daemon said no")
+                return await super().stat_file(path, working_directory=working_directory)
+
+        guest = _DiesMidRun([], finish=False)
+        with pytest.raises(PermissionError):
+            _run(guest, HostToolRun(_registry()), timeout=5.0)
+
+        assert guest.kills != [], f"a failed run left its program running: {guest.commands}"
+
+    def test_the_transport_will_not_remove_the_model_s_own_directory(self):
+        """Confinement to the run is not enough, because `work` is inside the run.
+
+        A layout whose shim sits in `work` makes the transport's cleanup delete the files a
+        kind shared in and every artifact it is about to collect — on the success path, where
+        nothing else would look wrong.
+        """
+        run = "/maf-sandbox/work/run-1"
+        collapsed = GuestRunLayout(
+            directory=run,
+            work=f"{run}/work",
+            program=f"{run}/work/program.py",
+            shim=f"{run}/work/{SHIM_MODULE}",
+            launcher=f"{run}/work/run_program.sh",
+            calls=f"{run}/work/{CALLS_DIRECTORY}",
+            output=f"{run}/work/program_output.txt",
+            exit_code=f"{run}/work/program_exit_code",
+            pid=f"{run}/work/program_pid",
+        )
+        guest = _GuestThatRecordsRemovals([], finish=True)
+        asyncio.run(
+            host_tools_over_exec._reclaim_the_transports_own(
+                guest, collapsed, until=time.monotonic() + 5.0
+            )
+        )
+        assert guest.removals == [], f"the model's directory was removed: {guest.commands}"

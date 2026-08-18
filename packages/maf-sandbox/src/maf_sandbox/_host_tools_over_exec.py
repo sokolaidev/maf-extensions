@@ -743,6 +743,10 @@ async def dispatch_over_exec(
         poll_interval: How often to look for the next request or the exit marker.
         interpreter: The guest's Python.
 
+    Removes the transport's own directory before returning, on every exit path, so nothing
+    it wrote survives the call. :attr:`GuestRunLayout.work` is left for the caller, which
+    collects artifacts from it after this returns and reclaims it with :func:`reclaim_run`.
+
     Returns:
         The program's own :class:`~maf_sandbox.ExecResult` — its redirected output as
         ``stdout`` and the exit code it recorded.
@@ -807,10 +811,12 @@ async def dispatch_over_exec(
         )
     # Before `exec`, not after: the bound is on the whole program, and a launcher that takes
     # most of it would otherwise hand supervision a second full timeout to spend.
-    # Validated before the wrapper, so a bad argument is a plain `ValueError` from the
-    # caller's own mistake rather than something that has a run to reclaim.
+    # Validated before the wrapper, so a bad argument raises plainly. The run directory is
+    # then left alone, which is the right way round: the caller has already written the
+    # program and the shim into it and has not yet been told the call is going nowhere.
+    handled = False
     try:
-        return await _supervise(
+        result = await _supervise(
             sandbox,
             run,
             layout,
@@ -818,14 +824,25 @@ async def dispatch_over_exec(
             poll_interval=poll_interval,
             interpreter=interpreter,
         )
+        handled = True
+        return result
+    except SandboxProgramTimeout:
+        # Its own bound, which `_supervise` has already stopped the program for and reported.
+        handled = True
+        raise
     finally:
         # Every exit path: the value returned, the timeout raised, and whatever a backend
         # raised for reasons of its own. A successful run leaves exactly as much behind as
         # a failed one, and it is the common case.
         #
-        # A grace of its own rather than the run's remainder, which is zero by now on every
-        # path that matters: a cleanup given no time is no cleanup, and the whole reason
-        # this is here is that the files are not supposed to survive the call.
+        if not handled:
+            # `_supervise` reports its own timeouts and stops the program itself. Anything else
+            # leaving this function — a backend failing mid-run — leaves a detached program
+            # nobody has stopped, and the reclaim below is about to remove the files that would
+            # have identified it.
+            giving_up = _a_grace_from_now()
+            if await _marker_if_present(sandbox, layout, giving_up) is None:
+                await _stop_the_program(sandbox, layout, until=giving_up)
         await _reclaim_the_transports_own(sandbox, layout, until=time.monotonic() + _RECLAIM_GRACE)
 
 
@@ -871,9 +888,13 @@ async def _supervise(
         )
         # The launcher backgrounds the program and returns, so an `exec` that ran out may
         # still have started one — the same case that leaves output nobody read. A grace of
-        # its own, because the run's remainder is already zero here and a kill on no time is
-        # no kill at all.
-        fate = await _stop_the_program(sandbox, layout, until=_a_grace_from_now())
+        # The marker first, as `_stop_the_program` requires: this leg is reachable when the
+        # launcher had time to run to completion, so the program may have finished and its pid
+        # been reused.
+        giving_up = _a_grace_from_now()
+        fate: _Fate = "absent"
+        if await _marker_if_present(sandbox, layout, giving_up) is None:
+            fate = await _stop_the_program(sandbox, layout, until=giving_up)
         raise SandboxProgramTimeout(
             f"the run's {timeout:g}s were gone while starting the program"
             f"{_clause_while_starting(fate)}"
@@ -962,9 +983,11 @@ async def _supervise(
         await asyncio.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
 
 
-#: What :func:`_stop_the_program` found. ``"absent"`` is not a quieter ``"running"``: it means
-#: no pid was ever written down, and on the leg where the launcher's own ``exec`` never
-#: returned that is the difference between a program nobody can stop and no program at all.
+#: What :func:`_stop_the_program` found. ``"absent"`` is not a quieter ``"running"``: it is
+#: reserved for *no pid file at all*, which on the leg where the launcher's own ``exec`` never
+#: returned is the difference between a program nobody can stop and no program to stop.
+#: Anything else unusable — unreadable, oversized, not a positive integer — is ``"running"``,
+#: because a host that cannot tell must not report the reassuring answer.
 _Fate = Literal["stopped", "running", "absent"]
 
 #: Said once, where a program is known to have been started and could not be stopped. Silence
@@ -1071,12 +1094,20 @@ async def _reclaim_the_transports_own(
 ) -> None:
     """Remove the sibling directory this transport owns — never a raise.
 
-    Not the run: :attr:`GuestRunLayout.work` holds artifacts a kind collects after the caller
-    returns, so removing it here would delete the outputs of a successful run.
-    :func:`reclaim_run` is that half. What goes is this side of the split, including every
-    request and response the run exchanged with the host.
+    Not the run — see :func:`reclaim_run` for the other half. What goes is this side of the
+    split, including every request and response the run exchanged with the host.
     """
     served = posixpath.dirname(layout.shim)
+    if guest_path_relative_to(served, layout.work) is not None or served == layout.directory:
+        # Confining to the run is not enough on its own: `work` is inside the run, so a layout
+        # whose shim sits there would have this delete the model's files and every artifact a
+        # kind is about to collect — on success, where nothing would look wrong.
+        logger.warning(
+            "host tools: refusing to remove %r — it is the run itself or holds the model's "
+            "files, so this layout does not separate the two directories",
+            served,
+        )
+        return
     if not await _remove_tree(sandbox, served, until=until, inside=layout.directory):
         logger.warning(
             "host tools: run %s kept its transport files, which hold this run's host-tool "
@@ -1113,24 +1144,34 @@ async def _stop_the_program(sandbox: Sandbox, layout: GuestRunLayout, *, until: 
         # once the run is already being reported as expired, so a backend failing here means
         # the program could not be stopped, never that the caller loses the run's own reason.
         logger.warning("host tools: could not read the program's pid: %s", error_detail(unreadable))
-        return "absent"
+        # Not `absent`: the pid could not be *read*, which is no evidence that none was written.
+        # One leg reports `absent` by saying nothing at all, and silence is the wrong answer to
+        # a program whose fate is unknown.
+        return "running"
     pid = running.strip() if isinstance(running, str) else ""
     # ASCII digits and positive, both load-bearing. `str.isdigit` admits other numeral systems
     # that `int` then normalises, and `kill -KILL 0` signals the whole process group rather
     # than one program — and the file is guest-writable, so its contents are not this host's
     # to trust. A real `$!` is always a positive ASCII integer.
-    if not (pid.isascii() and pid.isdigit()) or int(pid) <= 0:
+    if not pid:
         return "absent"
+    if not (pid.isascii() and pid.isdigit()) or int(pid) <= 0:
+        # Something was written and it is not a pid. A guest can arrange that deliberately, so
+        # this hedges rather than reporting the run as nothing-to-stop.
+        return "running"
+    # Its own deadline, not what is left of the read's: a slow pid read would otherwise leave
+    # the signal no time to be sent, which is the runaway this exists to stop.
+    sending = _a_grace_from_now()
     try:
         killed = await _within(
-            until,
+            sending,
             "the kill",
             sandbox.exec(
                 # Only stderr is discarded. `kill` failing — a pid already gone, a signal
                 # refused — has to reach the caller, which reports it as still running.
                 f"kill -KILL {pid} 2>/dev/null",
                 working_directory=layout.directory,
-                timeout=max(0.0, until - time.monotonic()),
+                timeout=max(0.0, sending - time.monotonic()),
             ),
         )
     except Exception as refused:  # noqa: BLE001 — a failed kill is a leak, not a fault
