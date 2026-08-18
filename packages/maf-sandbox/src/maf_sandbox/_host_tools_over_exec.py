@@ -1018,7 +1018,9 @@ def _removable(directory: str) -> bool:
     """
     if not posixpath.isabs(directory) or ".." in directory.split("/"):
         return False
-    return len([part for part in directory.split("/") if part]) >= 2
+    # Counted on the normalised path: `/tmp/.` is two components as written and one as meant,
+    # and the guard has to answer for what the directory *is*.
+    return len([part for part in posixpath.normpath(directory).split("/") if part]) >= 2
 
 
 async def _remove_tree(

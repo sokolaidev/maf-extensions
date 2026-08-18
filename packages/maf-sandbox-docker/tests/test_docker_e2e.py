@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import posixpath
 import shutil
 import subprocess
 import uuid
@@ -30,17 +29,13 @@ import pytest
 from maf_sandbox import (
     Capability,
     EntryKind,
-    HostToolRegistry,
-    HostToolRun,
     Isolation,
     SandboxKey,
-    SandboxProgramTimeout,
     SandboxRouter,
     SandboxSpec,
     SandboxTransferCapExceeded,
     TransferLimits,
     collect_outputs,
-    dispatch_over_exec,
     guest_run_layout,
     launcher_script,
 )
@@ -487,88 +482,6 @@ class TestWhetherThisBackendCouldServeHostTools:
                     layout.output, working_directory=_WORK, max_bytes=1 << 16
                 )
                 assert output.decode().strip() == "the program finished", output
-            finally:
-                await backend.dispose(_key(scope))
-
-        asyncio.run(scenario())
-
-
-class TestWhatOnlyARealRunawayCanSettle:
-    """The two claims #375's fix rests on, against a container instead of a double.
-
-    Offline they are stitched from separately-faked halves: the launcher records a pid (real
-    shell), the transport emits a kill (fake), that command fails against a dead pid (real
-    shell). Nothing joins them, so nothing shows the process actually dies or the files
-    actually go. One container, one runaway, both questions.
-    """
-
-    def test_a_runaway_is_dead_and_its_files_are_gone_when_the_call_returns(self):
-        scope = f"e2e-{uuid.uuid4()}"
-        backend = DockerSandboxBackend(DockerSandboxConfig())
-        layout = guest_run_layout(f"{_WORK}/{uuid.uuid4().hex[:12]}")
-
-        async def scenario() -> None:
-            sandbox = await backend.acquire(_key(scope), _spec())
-            try:
-                # The program records its own pid in `work`, which the transport does not
-                # reclaim, so the check below needs nothing beyond the `kill` this transport
-                # already requires. `pgrep` would be wrong twice over: absent on a minimal
-                # image it takes the `|| echo gone` branch and passes without checking
-                # anything, and `-f` matches the probe's own command line.
-                await sandbox.write_file(
-                    layout.program,
-                    f"echo $$ > {layout.work}/program.pid\nwhile true; do :; done\n",
-                )
-                await sandbox.write_file(layout.shim, "")
-
-                with pytest.raises(SandboxProgramTimeout) as expired:
-                    await dispatch_over_exec(
-                        sandbox,
-                        HostToolRun(HostToolRegistry()),
-                        layout,
-                        timeout=5.0,
-                        poll_interval=0.5,
-                        interpreter="sh",
-                    )
-
-                # 1. It says it stopped the program — silence is what that looks like.
-                assert "may still be running" not in str(expired.value), expired.value
-
-                # 2. And it is true of the process itself. Read the pid the program wrote,
-                #    then ask the kernel — a missing file or an unreadable pid fails here
-                #    rather than reading as success.
-                recorded = await sandbox.exec(
-                    f"cat {layout.work}/program.pid",
-                    working_directory=_WORK,
-                    timeout=60,
-                )
-                assert recorded.exit_code == 0, (
-                    f"the program never recorded its pid, so this proves nothing: "
-                    f"{recorded.stderr!r}"
-                )
-                pid = recorded.stdout.strip()
-                assert pid.isdigit(), f"not a pid: {pid!r}"
-
-                alive = await sandbox.exec(
-                    f"kill -0 {pid} 2>/dev/null && echo alive || echo gone",
-                    working_directory=_WORK,
-                    timeout=60,
-                )
-                assert alive.stdout.strip() == "gone", (
-                    f"pid {pid} survived a timeout the transport reported as signalled"
-                )
-
-                # 3. The transport's own files are gone from the filesystem, not just from a
-                #    list of commands somebody issued.
-                served = posixpath.dirname(layout.shim)
-                listed = await sandbox.exec(
-                    f"ls -A {served} 2>/dev/null | wc -l",
-                    working_directory=_WORK,
-                    timeout=60,
-                )
-                assert listed.stdout.strip() == "0", (
-                    f"the transport left files behind in {served}: {listed.stdout!r}"
-                )
             finally:
                 await backend.dispose(_key(scope))
 

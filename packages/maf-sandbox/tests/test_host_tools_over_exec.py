@@ -3138,7 +3138,20 @@ class TestReclaimingTheWholeRun:
 class TestWhatIsTooBroadToDelete:
     """`rm -rf` is irreversible, so the path gets a guard that does not depend on the factory."""
 
-    @pytest.mark.parametrize("directory", ["/", "/tmp", "relative/run", "", "/runs/../.."])
+    @pytest.mark.parametrize(
+        "directory",
+        [
+            "/",
+            "/tmp",
+            "relative/run",
+            "",
+            "/runs/../..",
+            # Two components as written, one as meant. `rm` happens to refuse a `.` operand,
+            # but the guard must answer for the directory rather than its spelling.
+            "/tmp/.",
+            "/etc/./",
+        ],
+    )
     def test_a_path_that_is_not_a_run_directory_is_refused(self, directory: str):
         from maf_sandbox._host_tools_over_exec import _removable
 
