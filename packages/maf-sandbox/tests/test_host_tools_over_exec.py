@@ -2757,7 +2757,7 @@ class TestTheLegWhereTheLauncherItselfRanOut:
         with pytest.raises(SandboxProgramTimeout) as expired:
             _run(guest, HostToolRun(_registry()), timeout=30.0)
         assert "4242" in "".join(guest.kills)
-        assert "it had started the program, which was stopped" in str(expired.value)
+        assert "it had started the program and was sent SIGKILL" in str(expired.value)
 
     def test_no_pid_leaves_the_message_exactly_as_it_was(self):
         """Nothing was started, so nothing is claimed — pinned on the whole sentence."""

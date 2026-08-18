@@ -983,17 +983,23 @@ async def _supervise(
         await asyncio.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
 
 
-#: What :func:`_stop_the_program` found. ``"absent"`` is not a quieter ``"running"``: it is
-#: reserved for *no pid file at all*, which on the leg where the launcher's own ``exec`` never
-#: returned is the difference between a program nobody can stop and no program to stop.
-#: Anything else unusable — unreadable, oversized, not a positive integer — is ``"running"``,
-#: because a host that cannot tell must not report the reassuring answer.
-_Fate = Literal["stopped", "running", "absent"]
+#: What :func:`_stop_the_program` did — not what became of the program, which this host cannot
+#: see. ``SIGKILL`` is accepted for a process that then survives it: a pid the guest chose, or
+#: pid 1 in the guest's own namespace, both make ``kill`` exit 0 while the target lives. So the
+#: strongest of these means *signalled*, and the docs say what that is and is not worth.
+#:
+#: ``"absent"`` is not a quieter ``"refused"``: it is reserved for *no pid file at all*, which
+#: on the leg where the launcher's own ``exec`` never returned is the difference between a
+#: program nobody can signal and no program to signal. Anything else unusable — unreadable,
+#: oversized, not a positive integer — is ``"refused"``, because a host that cannot tell must
+#: not report the reassuring answer.
+_Fate = Literal["signalled", "refused", "absent"]
 
 #: Said once, where a program is known to have been started and could not be stopped. Silence
 #: when the kill worked, because a stopped program is what a timeout is supposed to mean and a
 #: caller reading "and was stopped" on every expiry learns nothing from it.
-_STILL_RUNNING = " and could not be stopped, so it may still be running"
+_SIGNALLED = " and was sent SIGKILL"
+_NOT_SIGNALLED = " and could not be signalled, so it may still be running"
 
 
 def _removable(directory: str) -> bool:
@@ -1073,7 +1079,7 @@ def _clause_after_the_launcher_started(fate: _Fate) -> str:
     A missing pid hedges rather than staying quiet: the launcher returned 0, so something
     started, and between a needless disposal and a silent leak this errs towards the disposal.
     """
-    return "" if fate == "stopped" else _STILL_RUNNING
+    return _SIGNALLED if fate == "signalled" else _NOT_SIGNALLED
 
 
 def _clause_while_starting(fate: _Fate) -> str:
@@ -1084,9 +1090,9 @@ def _clause_while_starting(fate: _Fate) -> str:
     """
     if fate == "absent":
         return ""
-    if fate == "stopped":
-        return " (it had started the program, which was stopped)"
-    return f" (it had started the program{_STILL_RUNNING})"
+    if fate == "signalled":
+        return f" (it had started the program{_SIGNALLED})"
+    return f" (it had started the program{_NOT_SIGNALLED})"
 
 
 async def _reclaim_the_transports_own(
@@ -1131,8 +1137,14 @@ async def _stop_the_program(sandbox: Sandbox, layout: GuestRunLayout, *, until: 
     ``SIGKILL`` rather than ``SIGTERM`` — the program has already overrun its only bound, and
     its output is unbuffered, so there is no flush to wait for.
 
+    **Sending the signal is not seeing it work.** The pid comes from a file the program itself
+    can write, and ``kill`` reports success for a signal the kernel accepts and discards, so a
+    guest that names another process — or pid 1 in its own namespace — survives a call that
+    returns ``"signalled"``. Children are not reached either. What a caller may conclude is
+    that the signal was sent; #437 is what would make it more.
+
     Returns:
-        ``"stopped"``, ``"running"`` when a pid was found and the kill did not land, or
+        ``"signalled"``, ``"refused"`` when a pid was found and the kill did not land, or
         ``"absent"`` when no pid was there to use. The last two are kept apart because one leg
         reports them differently: a pid is the only evidence this transport has that a program
         was ever started at all.
@@ -1177,7 +1189,7 @@ async def _stop_the_program(sandbox: Sandbox, layout: GuestRunLayout, *, until: 
     except Exception as refused:  # noqa: BLE001 — a failed kill is a leak, not a fault
         logger.warning("host tools: could not stop the guest program: %s", error_detail(refused))
         return "running"
-    return "stopped" if killed.exit_code == 0 else "running"
+    return "signalled" if killed.exit_code == 0 else "refused"
 
 
 async def _marker_if_present(
