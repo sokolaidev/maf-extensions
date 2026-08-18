@@ -120,9 +120,10 @@ def act_three_permitted(identities: frozenset[Identity]) -> InProcessSandboxBack
     """
     print("== 3. A host that permits it ==\n")
 
-    # No shipped backend declares HOST_TOOLS, so one is built that does. `InProcessSandboxBackend`
-    # takes its capabilities as an argument, which makes it the honest way to show the permitted
-    # shape without pretending a real backend serves this yet.
+    # Docker and ACAS declare HOST_TOOLS, but reaching either needs an engine or a subscription
+    # and this sample needs neither. `InProcessSandboxBackend` takes its capabilities as an
+    # argument, so the permitted shape can be shown with nothing installed. The router does not
+    # know the difference — a declaration is a declaration, whoever made it.
     backend = InProcessSandboxBackend(
         name="in-process (host tools declared by hand)",
         capabilities=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
@@ -232,9 +233,10 @@ def main() -> int:
     done.append("refused")
 
     print("== What is not here ==\n")
-    print("  A dispatch. The transport a guest sends a request over has landed (#327) and")
-    print("  maf-sandbox-codeact dispatches over it, but no shipped backend declares")
-    print("  Capability.HOST_TOOLS, so nothing serves one yet.")
+    print("  A dispatch. The transport a guest sends a request over has landed (#327),")
+    print("  maf-sandbox-codeact dispatches over it, and the docker and acas backends")
+    print("  declare Capability.HOST_TOOLS — so one would run. It needs a real sandbox,")
+    print("  a guest program and a model, and this sample uses none of the three (#302).")
     print("  Everything above is the half a host configures on day one regardless, and it")
     print("  is the half that decides whether the other half ever runs.\n")
 
