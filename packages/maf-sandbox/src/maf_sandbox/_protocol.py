@@ -379,11 +379,14 @@ class SandboxSpec:
     ``kind`` names the workload (``"bicep"`` today), and it is **part of the sandbox's
     identity, not a display label**: a backend must never serve two kinds from one sandbox,
     because the first spec to arrive would decide the image and the egress policy for both —
-    see :meth:`SandboxBackend.acquire`.  ``image`` is normally
-    ``repository:tag`` — *where* images live is a property of the deployment, so the backend
-    qualifies it with its own registry; a fully-qualified reference is passed through
-    untouched.  The ACAS backend then resolves the result to an imported disk image, while a
-    Docker backend would hand it to ``docker run``.  ``image_id`` is an escape hatch for a
+    see :meth:`SandboxBackend.acquire`.  ``image`` is a reference the **backend** resolves,
+    and nothing here parses it.  ``repository:tag`` is the usual shape, and *where* images live
+    is a property of the deployment, so a backend may complete an unqualified reference from
+    its own configuration.  But which namespace a given string names is the backend's rule to
+    state, in the backend's own documentation — a Docker backend hands it to ``docker run``;
+    the ACAS backend resolves it against its sandbox group.  This field holding no opinion is
+    what lets a backend read a second namespace out of it without changing it, and what keeps
+    the promise in this docstring's first line.  ``image_id`` is an escape hatch for a
     backend-native pinned id that skips resolution entirely.
 
     ``egress_allow`` is an allowlist of hostnames — **everything not listed is denied**, so
