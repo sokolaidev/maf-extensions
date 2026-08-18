@@ -63,6 +63,11 @@ _FAST = 0.001
 _RUN = "/maf-sandbox/work/run-1"
 _LAYOUT = guest_run_layout(_RUN)
 
+#: The signal the transport sends, for the tests that send it themselves. Read through
+#: `getattr` because this file is type-checked on Windows, where `signal` has no `SIGKILL` —
+#: the tests that use it are skipped there, but pyright reads them anyway.
+_SIGKILL = getattr(signal, "SIGKILL", 9)
+
 #: Scripted in place of a name: the caller took this number and could not publish under it.
 _ABANDONED = "<abandoned>"
 
@@ -653,6 +658,7 @@ class TestTheLauncherAgainstARealShell:
             calls=f"{served}/{CALLS_DIRECTORY}",
             output=f"{served}/program_output.txt",
             exit_code=f"{served}/program_exit_code",
+            pid=f"{served}/program_pid",
         )
         pathlib.Path(layout.launcher).write_text(
             launcher_script(layout, sys.executable), encoding="utf-8"
@@ -776,6 +782,7 @@ class TestTheLauncherAgainstARealShell:
             calls=f"{served}/{CALLS_DIRECTORY}",
             output=f"{served}/program_output.txt",
             exit_code=f"{served}/program_exit_code",
+            pid=f"{served}/program_pid",
         )
         pathlib.Path(layout.launcher).write_text(
             launcher_script(layout, sys.executable), encoding="utf-8"
@@ -847,6 +854,7 @@ class TestTheLauncherAgainstARealShell:
             calls=f"{served}/{CALLS_DIRECTORY}",
             output=f"{served}/program_output.txt",
             exit_code=f"{served}/program_exit_code",
+            pid=f"{served}/program_pid",
         )
         pathlib.Path(layout.program).write_text("open('escaped', 'w').close()\n", encoding="utf-8")
         pathlib.Path(layout.launcher).write_text(
@@ -947,6 +955,7 @@ class TestTheLauncherAgainstARealShell:
             calls=f"{served}/{CALLS_DIRECTORY}",
             output=f"{served}/program_output.txt",
             exit_code=f"{served}/program_exit_code",
+            pid=f"{served}/program_pid",
         )
         pathlib.Path(served).mkdir(parents=True, exist_ok=True)
         stop = tmp_path / "stop"
@@ -1014,6 +1023,7 @@ class TestTheLauncherAgainstARealShell:
             calls=f"{served}/{CALLS_DIRECTORY}",
             output=f"{served}/program_output.txt",
             exit_code=f"{served}/program_exit_code",
+            pid=f"{served}/program_pid",
         )
         pathlib.Path(layout.program).write_text(
             "import sys\n"
@@ -2566,3 +2576,359 @@ class TestTheShimsSequenceAllocation:
 
         assert len(answers) == 32
         assert len(set(answers)) == 32, f"two callers shared an identifier: {sorted(answers)}"
+
+
+# ---------------------------------------------------------------------------------------------
+# Stopping a run that overran (#375)
+# ---------------------------------------------------------------------------------------------
+
+
+class _GuestThatRecordsTheKill(_ScriptedGuest):
+    """A guest whose launcher writes a pid, and which remembers every command exec'd at it.
+
+    The pid lands on `exec` rather than in the constructor, because that is when the real
+    launcher writes it: a pid present before the program started would let a test pass against
+    a transport that killed something it had no business killing.
+    """
+
+    def __init__(
+        self, *args: Any, pid: str | None = "4242", kill_exit_code: int = 0, **kwargs: Any
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.commands: list[str] = []
+        self._pid = pid
+        self._kill_exit_code = kill_exit_code
+
+    async def exec(
+        self, command: str | Any, *, working_directory: str, timeout: float
+    ) -> ExecResult:
+        self.commands.append(str(command))
+        if "kill" in str(command):
+            await asyncio.sleep(0)
+            return ExecResult(stdout="", exit_code=self._kill_exit_code)
+        started = await super().exec(command, working_directory=working_directory, timeout=timeout)
+        if self._pid is not None:
+            self.files[_LAYOUT.pid] = self._pid.encode("utf-8")
+        return started
+
+    @property
+    def kills(self) -> list[str]:
+        return [command for command in self.commands if "kill" in command]
+
+
+class TestStoppingARunThatOverran:
+    """A dispatched program that times out is killed rather than left going (#375).
+
+    The transport starts the program detached, so the timeout fires in the supervisor and not
+    inside an `exec` a backend could tear down with its container. What it has instead is the
+    pid the launcher wrote and the `exec` every other leg of this transport already runs on —
+    no protocol method, and no capability past the `EXEC` and `FILES_OUT` the dispatch path
+    requires anyway.
+    """
+
+    def test_the_program_is_killed_by_the_pid_the_launcher_wrote(self):
+        guest = _GuestThatRecordsTheKill([], finish=False, pid="4242")
+        with pytest.raises(SandboxProgramTimeout):
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert len(guest.kills) == 1, guest.commands
+        assert "4242" in guest.kills[0]
+        assert "-KILL" in guest.kills[0], "a runaway that already overran is not owed a TERM"
+
+    def test_a_landed_kill_is_not_narrated(self):
+        """A stopped program is what a timeout should mean; saying so every time is noise."""
+        guest = _GuestThatRecordsTheKill([], finish=False, kill_exit_code=0)
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert "may still be running" not in str(expired.value)
+
+    def test_a_kill_that_did_not_land_says_the_program_may_still_be_running(self):
+        """The one case that costs somebody something, so the one that gets the words."""
+        guest = _GuestThatRecordsTheKill([], finish=False, kill_exit_code=1)
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert "may still be running" in str(expired.value)
+
+    def test_no_pid_hedges_rather_than_going_quiet(self):
+        """The launcher returned 0, so something started; a missing pid does not say otherwise.
+
+        Between a needless disposal and a silent leak this errs towards the disposal, because
+        the silent leak is the defect the whole change exists to remove.
+        """
+        guest = _GuestThatRecordsTheKill([], finish=False, pid=None)
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert guest.kills == [], "a kill was issued with no pid to aim it at"
+        assert "may still be running" in str(expired.value)
+
+    def test_a_pid_that_is_not_a_number_is_never_spliced_into_a_kill(self):
+        guest = _GuestThatRecordsTheKill([], finish=False, pid="; rm -rf /")
+        with pytest.raises(SandboxProgramTimeout):
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert guest.kills == [], f"a non-numeric pid reached a command: {guest.commands}"
+
+    def test_the_exit_marker_is_read_before_anything_is_killed(self):
+        """A finished run must not be killed by pid: the guest may have reused the number.
+
+        The marker landing is what proves the process is gone, and a pid whose process is gone
+        can belong to something else by the time this looks.
+        """
+        guest = _GuestThatRecordsTheKill([], finish=True)
+        result = _run(guest, HostToolRun(_registry()), timeout=5.0)
+        assert result.exit_code == 0
+        assert guest.kills == [], "a finished run was killed by pid"
+
+    def test_a_backend_that_refuses_the_kill_does_not_replace_the_runs_own_reason(self):
+        """The kill is a remedy on the way out, and a remedy must never win over the report."""
+
+        class _RefusesToKill(_GuestThatRecordsTheKill):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                if "kill" in str(command):
+                    raise PermissionError("the daemon said no")
+                return await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+
+        with pytest.raises(SandboxProgramTimeout, match="did not finish within"):
+            _run(_RefusesToKill([], finish=False), HostToolRun(_registry()), timeout=0.2)
+
+    def test_an_unreadable_pid_does_not_replace_the_runs_own_reason(self):
+        class _DiesOnThePidRead(_GuestThatRecordsTheKill):
+            async def read_file(self, path: str, *, working_directory: str, max_bytes: int):
+                if path == _LAYOUT.pid:
+                    raise PermissionError("the daemon said no")
+                return await super().read_file(
+                    path, working_directory=working_directory, max_bytes=max_bytes
+                )
+
+        with pytest.raises(SandboxProgramTimeout, match="did not finish within"):
+            _run(_DiesOnThePidRead([], finish=False), HostToolRun(_registry()), timeout=0.2)
+
+
+class TestTheLegWhereTheLauncherItselfRanOut:
+    """`exec` bounding the launcher cannot say whether a program was started, so the pid does."""
+
+    def test_a_pid_left_behind_is_killed_and_reported(self):
+        class _BoundsTheStartAfterLaunching(_GuestThatRecordsTheKill):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                self.commands.append(str(command))
+                if "kill" in str(command):
+                    return ExecResult(stdout="", exit_code=0)
+                # Started, and then the call itself ran out — the case the docstring calls out.
+                self.files[_LAYOUT.pid] = b"4242"
+                raise TimeoutError
+
+        guest = _BoundsTheStartAfterLaunching([], finish=False)
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=30.0)
+        assert "4242" in "".join(guest.kills)
+        assert "it had started the program, which was stopped" in str(expired.value)
+
+    def test_no_pid_leaves_the_message_exactly_as_it_was(self):
+        """Nothing was started, so nothing is claimed — pinned on the whole sentence."""
+
+        class _BoundsTheStartSilently(_ScriptedGuest):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                raise TimeoutError
+
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(_BoundsTheStartSilently([], finish=False), HostToolRun(_registry()), timeout=30.0)
+        assert str(expired.value) == "the run's 30s were gone while starting the program"
+
+
+class TestThePidFileIsTheLayoutsOwn:
+    def test_a_program_cannot_be_named_for_it(self):
+        for name in ("program_pid", "program_pid.part"):
+            with pytest.raises(ValueError, match="name this layout already uses"):
+                guest_run_layout("/runs/one", program=name)
+
+    def test_it_sits_beside_the_exit_marker_where_a_model_cannot_name_into(self):
+        layout = guest_run_layout("/runs/one")
+        assert layout.pid == posixpath.join(posixpath.dirname(layout.exit_code), "program_pid")
+        assert not layout.pid.startswith(layout.work + "/")
+
+
+class TestThePidAgainstARealShell:
+    """What the launcher writes down, asked of a shell rather than of a reading of one.
+
+    Gated on a real POSIX platform rather than only on `sh` being present: Git Bash answers
+    `which sh` on Windows, and the pid it reports is not the one `os.kill` takes there. These
+    run on Linux — in CI, and in a container locally.
+    """
+
+    @staticmethod
+    def _laid_out(tmp_path: Path) -> GuestRunLayout:
+        directory = tmp_path.as_posix()
+        served = f"{directory}/host_tools"
+        pathlib.Path(served).mkdir(parents=True, exist_ok=True)
+        pathlib.Path(f"{directory}/work").mkdir(parents=True, exist_ok=True)
+        return GuestRunLayout(
+            directory=directory,
+            work=f"{directory}/work",
+            program=f"{served}/program.py",
+            shim=f"{served}/{SHIM_MODULE}",
+            launcher=f"{served}/run_program.sh",
+            calls=f"{served}/{CALLS_DIRECTORY}",
+            output=f"{served}/program_output.txt",
+            exit_code=f"{served}/program_exit_code",
+            pid=f"{served}/program_pid",
+        )
+
+    @staticmethod
+    def _appears(path: str, *, within: float = 30.0) -> str:
+        deadline = time.monotonic() + within
+        while time.monotonic() < deadline:
+            found = pathlib.Path(path)
+            if found.exists():
+                text = found.read_text(encoding="utf-8").strip()
+                if text:
+                    return text
+            time.sleep(0.05)
+        raise AssertionError(f"{path} never appeared")
+
+    @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+    @pytest.mark.skipif(os.pathsep != ":", reason="pids here are not the ones os.kill takes")
+    def test_the_pid_written_down_is_the_programs_own(self, tmp_path: Path):
+        """Not the wrapper shell's, which is what a naive `$!` on the `nohup` would record.
+
+        The distinction is the whole fix: killing the wrapper leaves the interpreter orphaned
+        and running, which is indistinguishable from not having killed anything at all. So the
+        program reports its own pid and the two are compared.
+        """
+        layout = self._laid_out(tmp_path)
+        pathlib.Path(layout.program).write_text("import os\nprint(os.getpid())\n", encoding="utf-8")
+        pathlib.Path(layout.launcher).write_text(
+            launcher_script(layout, sys.executable), encoding="utf-8"
+        )
+
+        subprocess.run(
+            ["sh", layout.launcher], cwd=layout.directory, capture_output=True, timeout=60
+        )
+        self._appears(layout.exit_code)
+
+        recorded = self._appears(layout.pid)
+        printed = pathlib.Path(layout.output).read_text(encoding="utf-8").strip()
+        assert recorded == printed, (
+            f"the launcher recorded {recorded} but the program is {printed} — the pid is the "
+            "wrapper's, and killing it would leave the program running"
+        )
+
+    @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+    @pytest.mark.skipif(os.pathsep != ":", reason="pids here are not the ones os.kill takes")
+    def test_killing_the_recorded_pid_stops_a_program_that_would_not_stop(self, tmp_path: Path):
+        """The end-to-end claim, minus the backend: this pid, this signal, that program gone."""
+        layout = self._laid_out(tmp_path)
+        pathlib.Path(layout.program).write_text(
+            "import time\nwhile True:\n    time.sleep(0.05)\n", encoding="utf-8"
+        )
+        pathlib.Path(layout.launcher).write_text(
+            launcher_script(layout, sys.executable), encoding="utf-8"
+        )
+
+        subprocess.run(
+            ["sh", layout.launcher], cwd=layout.directory, capture_output=True, timeout=60
+        )
+        running = int(self._appears(layout.pid))
+
+        # Alive first, or "gone after the kill" would pass against a program that never started.
+        os.kill(running, 0)
+        os.kill(running, _SIGKILL)
+
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline:
+            try:
+                os.kill(running, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.05)
+        os.kill(running, _SIGKILL)  # do not leave it behind if the assertion fails
+        raise AssertionError(f"{running} survived SIGKILL, so the recorded pid is not the program")
+
+    @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+    @pytest.mark.skipif(os.pathsep != ":", reason="the launcher's path handling is POSIX")
+    def test_the_exit_code_still_means_the_programs_own_status(self, tmp_path: Path):
+        """`wait $!` is what keeps that true now the interpreter runs in the background.
+
+        Without it `$?` would be the `printf` that recorded the pid — zero, whatever the
+        program did, which would report every failing program as a success.
+        """
+        layout = self._laid_out(tmp_path)
+        pathlib.Path(layout.program).write_text("raise SystemExit(3)\n", encoding="utf-8")
+        pathlib.Path(layout.launcher).write_text(
+            launcher_script(layout, sys.executable), encoding="utf-8"
+        )
+
+        subprocess.run(
+            ["sh", layout.launcher], cwd=layout.directory, capture_output=True, timeout=60
+        )
+        assert self._appears(layout.exit_code) == "3"
+
+
+class TestTheLaunchersPidMarker:
+    def test_the_pid_lands_by_rename(self):
+        """The same discipline the exit marker gets, and for the same reason.
+
+        Written straight to its name, the supervisor can read the empty file a redirection
+        leaves for a moment; an empty pid is discarded, so the run it could have stopped is
+        left going instead. Rare, and silent, which is the pair worth a rename.
+        """
+        layout = guest_run_layout("/maf-sandbox/work/run-1")
+        inner = shlex.split(launcher_script(layout).splitlines()[-1].removesuffix(" &"))[3]
+        assert f"{layout.pid}.part" in inner, "the pid is written straight to its name"
+        assert f"mv '{layout.pid}.part' '{layout.pid}'" in inner
+
+
+class TestStoppingOnTheOtherTwoLegs:
+    """Leg A is the deadline seen at the top of the loop; these are the other two."""
+
+    def test_a_deadline_that_expires_inside_an_iteration_still_kills(self):
+        """The `_DeadlineExpired` path, which reports the call that ran out rather than the loop.
+
+        A separate leg with a separate message, so a kill wired into one and not the other is
+        invisible to a test that only drives the loop's own deadline.
+        """
+        ahead = {"seconds": 0.0}
+
+        class _RunsOutMidIteration(_GuestThatRecordsTheKill):
+            expired = False
+
+            async def stat_file(self, path: str, *, working_directory: str):
+                if not self.expired and path == _LAYOUT.exit_code:
+                    # Jump the clock past the deadline while a transport call is in flight, so
+                    # the expiry surfaces as `_DeadlineExpired` rather than at the top of the
+                    # loop. `_Shifted` is what the module reads the time through.
+                    self.expired = True
+                    ahead["seconds"] += 600.0
+                return await super().stat_file(path, working_directory=working_directory)
+
+        guest = _RunsOutMidIteration([], finish=False)
+        with pytest.MonkeyPatch.context() as patched:
+            patched.setattr(host_tools_over_exec, "time", _Shifted(time.monotonic, ahead))
+            with pytest.raises(SandboxProgramTimeout) as expired:
+                _run(guest, HostToolRun(_registry()), timeout=5.0)
+
+        assert "4242" in "".join(guest.kills), f"nothing was killed: {guest.commands}"
+        assert "may still be running" not in str(expired.value)
+
+    def test_the_starting_leg_does_not_invent_a_program_from_an_unusable_pid(self):
+        """`absent` and `running` are different answers, and this leg is where that shows.
+
+        A pid file holding something that is not a number is no handle on a process, so the
+        message must stay as it was rather than announcing a program that may be running. The
+        two are indistinguishable on the other legs — both hedge — so the discrimination lives
+        here, which is also where a swallowed `int()` failure would otherwise hide.
+        """
+
+        class _BoundsTheStartOverGarbage(_GuestThatRecordsTheKill):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                self.commands.append(str(command))
+                if "kill" in str(command):
+                    return ExecResult(stdout="", exit_code=0)
+                self.files[_LAYOUT.pid] = b"not-a-pid"
+                raise TimeoutError
+
+        guest = _BoundsTheStartOverGarbage([], finish=False)
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=30.0)
+
+        assert guest.kills == [], f"a non-numeric pid reached a command: {guest.commands}"
+        assert str(expired.value) == "the run's 30s were gone while starting the program"

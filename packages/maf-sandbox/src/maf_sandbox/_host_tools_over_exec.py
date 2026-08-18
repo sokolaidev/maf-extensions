@@ -49,7 +49,7 @@ import symtable
 import time
 import unicodedata
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from ._error_detail import error_detail
 from ._outputs import SandboxTransferCapExceeded
@@ -78,6 +78,12 @@ EXIT_FILE = "program_exit_code"
 #: which is the only kind the refusal guards.
 _STAGED_EXIT_FILE = f"{EXIT_FILE}.part"
 
+#: Where the launcher records the program's process id, so a run that overruns can be stopped
+#: rather than left going. Staged and renamed like the exit marker and for the same reason: a
+#: reader must never see the empty file a redirection leaves for a moment.
+PID_FILE = "program_pid"
+_STAGED_PID_FILE = f"{PID_FILE}.part"
+
 #: The module a guest program imports to reach the host. Written beside the program.
 SHIM_MODULE = "maf_host_tools.py"
 
@@ -95,7 +101,16 @@ _TRANSPORT_DIRECTORY = "host_tools"
 #: directories are what make a guest-supplied name harmless, and that is what replaced the
 #: list of names a kind used to have to refuse.
 _TRANSPORT_FILENAMES = frozenset(
-    {SHIM_MODULE, _LAUNCHER, OUTPUT_FILE, EXIT_FILE, _STAGED_EXIT_FILE, CALLS_DIRECTORY}
+    {
+        SHIM_MODULE,
+        _LAUNCHER,
+        OUTPUT_FILE,
+        EXIT_FILE,
+        _STAGED_EXIT_FILE,
+        PID_FILE,
+        _STAGED_PID_FILE,
+        CALLS_DIRECTORY,
+    }
 )
 
 #: Module names a ``program`` may not be called, and why they are matched by **stem**.
@@ -204,8 +219,14 @@ class SandboxProgramTimeout(TimeoutError):
 
     A :class:`TimeoutError` subclass, so a caller that only wants "it timed out" is unaffected.
     Catch it specifically to distinguish the two things a ``TimeoutError`` from this transport
-    can mean: **this** one is the run's budget, and the program may still be running; a bare
-    one is a backend failing for a reason of its own and says nothing about the program.
+    can mean: **this** one is the run's budget; a bare one is a backend failing for a reason of
+    its own and says nothing about the program.
+
+    The transport kills the program on its way out, over the same ``exec`` it runs everything
+    else on, so the usual case is that it is no longer running. When the kill does not land the
+    message says so in as many words — *"could not be stopped, so it may still be running"* —
+    and a caller that means to act on the difference should read that rather than assume
+    either way.
 
     ``output`` is what the program had printed when the run was given up on, already capped —
     empty on the two starting legs, where there is nothing to have read yet. An attribute
@@ -278,6 +299,7 @@ class GuestRunLayout:
     calls: str
     output: str
     exit_code: str
+    pid: str
 
 
 def guest_run_layout(run_directory: str, *, program: str = "program.py") -> GuestRunLayout:
@@ -374,6 +396,7 @@ def guest_run_layout(run_directory: str, *, program: str = "program.py") -> Gues
         calls=posixpath.join(served, CALLS_DIRECTORY),
         output=posixpath.join(served, OUTPUT_FILE),
         exit_code=posixpath.join(served, EXIT_FILE),
+        pid=posixpath.join(served, PID_FILE),
     )
 
 
@@ -581,8 +604,9 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
 
     Detached is the whole point — ``exec`` blocks until its command returns, so a program that
     waits for the host would deadlock against a supervisor that has not started. The launcher
-    returns immediately and leaves two facts behind: the program's output, and its exit code in
-    a file whose appearance is what tells the supervisor the run is over.
+    returns immediately and leaves three facts behind: the program's output, its exit code in
+    a file whose appearance is what tells the supervisor the run is over, and the program's pid,
+    which is what lets a run that overruns be stopped instead of left going (#375).
 
     POSIX shell, and a guest that has ``nohup``. A Windows guest or a distroless image needs a
     different launcher; that is a backend's business, and this one is a helper rather than a
@@ -600,6 +624,13 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
     #     cheapest way to know the rename stays inside one filesystem and so stays atomic.
     #   * `nohup … &`, because `exec` returns when its command does and the program must
     #     outlive it — see this function's docstring.
+    #   * The **interpreter** runs in the background and `$!` is written down, so the pid
+    #     recorded is the program's own rather than the wrapper shell's — killing the wrapper
+    #     would leave the interpreter orphaned and running, which is the whole failure this
+    #     records against (#375). `wait $!` then puts the program back in the foreground of
+    #     this shell, so `$?` is still the program's status and the exit marker means exactly
+    #     what it meant before. The pid lands by rename for the same reason the exit code
+    #     does: a supervisor reading it must never get the empty file a redirection leaves.
     #   * `mkdir -p` because a run whose kind shared no files has nothing else to create the
     #     work directory, guarded because `sh` does not stop on a failed command: an unguarded
     #     `cd` leaves the program running wherever the launcher was exec'd, writing artifacts
@@ -621,6 +652,7 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
     #     caught; `PYTHONHOME` pointed here breaks the guest outright rather than substituting
     #     anything, so it is left alone. The README's upgrade note has what this costs an image.
     staged = f"{layout.exit_code}.part"
+    staged_pid = f"{layout.pid}.part"
     # The shim's own directory, which is the one an import has to reach; `program` is beside
     # it by construction, and reading it from the shim keeps the two from being separated.
     importable = posixpath.dirname(layout.shim)
@@ -630,7 +662,9 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
     enclosing = _quote(layout.directory.rstrip("/"))
     inner = (
         f"PYTHONUNBUFFERED=1 PYTHONNOUSERSITE=1 {_quote(interpreter)} {_quote(layout.program)} "
-        f"> {_quote(layout.output)} 2>&1; "
+        f"> {_quote(layout.output)} 2>&1 & "
+        f"printf %s $! > {_quote(staged_pid)}; mv {_quote(staged_pid)} {_quote(layout.pid)}; "
+        f"wait $!; "
         f"printf %s $? > {_quote(staged)}; mv {_quote(staged)} {_quote(layout.exit_code)}"
     )
     return (
@@ -706,11 +740,14 @@ async def dispatch_over_exec(
 
     Raises:
         SandboxProgramTimeout: The run's own bound expired. Where the program had started,
-            its output up to that point is in the message and on ``output``, and the process
-            may still be running — disposing of the sandbox is what stops it. On the two
-            starting legs, the launcher upload and the ``exec`` that runs it, ``output`` is
-            empty instead: the output file does not exist yet, and on a backend that
-            began the command before its own call returned there may be output nobody read.
+            its output up to that point is in the message and on ``output``, and the program
+            is killed before this is raised — by pid, over ``exec``, which is why no capability
+            beyond the ones this transport already needs is involved. A kill that does not land
+            leaves the process going, and the message says so; disposing of the sandbox is then
+            what stops it. On the two starting legs, the launcher upload and the ``exec`` that
+            runs it, ``output`` is empty instead: the output file does not exist yet, and on a
+            backend that began the command before its own call returned there may be output
+            nobody read — so the kill is attempted on the second of those legs too.
             Distinct from a bare ``TimeoutError`` below, which is a backend failing for a
             reason of its own and says nothing about whether the program is still going.
         Exception: Whatever the backend raises from a stat or a read that is not a file
@@ -791,8 +828,14 @@ async def dispatch_over_exec(
         logger.warning(
             "host tools: the run ran out while starting the program: %s", error_detail(spent)
         )
+        # The launcher backgrounds the program and returns, so an `exec` that ran out may
+        # still have started one — the same case that leaves output nobody read. A grace of
+        # its own, because the run's remainder is already zero here and a kill on no time is
+        # no kill at all.
+        fate = await _stop_the_program(sandbox, layout, until=time.monotonic() + _FINAL_READ_GRACE)
         raise SandboxProgramTimeout(
             f"the run's {timeout:g}s were gone while starting the program"
+            f"{_clause_while_starting(fate)}"
         ) from spent
     if started.exit_code != 0:
         return ExecResult(
@@ -819,8 +862,12 @@ async def dispatch_over_exec(
             if landed is not None:
                 return await _completed(sandbox, run, layout, landed, deadline)
             printed, note = await _final_output(sandbox, run, layout, giving_up)
+            # After the output, so what the program printed is read off the guest before it is
+            # killed rather than raced against the kill.
+            fate = await _stop_the_program(sandbox, layout, until=giving_up)
             raise SandboxProgramTimeout(
-                f"the guest program did not finish within {timeout:g}s. "
+                f"the guest program did not finish within {timeout:g}s"
+                f"{_clause_after_the_launcher_started(fate)}. "
                 f"{_output_clause(printed, note)}",
                 output=printed[:2000],
             )
@@ -861,14 +908,118 @@ async def dispatch_over_exec(
             # out while still leading with the failure the caller asked about. A backend's own
             # `TimeoutError` is deliberately not caught here — see `_within`.
             printed, note = await _final_output(sandbox, run, layout, giving_up)
+            fate = await _stop_the_program(sandbox, layout, until=giving_up)
+            failure = f"{stalled}{_clause_after_the_launcher_started(fate)}"
             raise SandboxProgramTimeout(
-                f"the guest program did not finish within {timeout:g}s — {stalled}. "
+                f"the guest program did not finish within {timeout:g}s — {failure}. "
                 f"{_output_clause(printed, note)}",
                 output=printed[:2000],
             ) from stalled
         # Clamped: an unclamped sleep overruns the deadline by a whole interval, so a 0.1s
         # bound with a 10s interval would wait ten seconds to notice it had passed.
         await asyncio.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
+
+
+#: What :func:`_stop_the_program` found. ``"absent"`` is not a quieter ``"running"``: it means
+#: no pid was ever written down, and on the leg where the launcher's own ``exec`` never
+#: returned that is the difference between a program nobody can stop and no program at all.
+_Fate = Literal["stopped", "running", "absent"]
+
+#: Said once, where a program is known to have been started and could not be stopped. Silence
+#: when the kill worked, because a stopped program is what a timeout is supposed to mean and a
+#: caller reading "and was stopped" on every expiry learns nothing from it.
+_STILL_RUNNING = " and could not be stopped, so it may still be running"
+
+
+def _clause_after_the_launcher_started(fate: _Fate) -> str:
+    """For the two legs inside the supervisor loop, where the launcher returned 0.
+
+    A missing pid hedges here rather than staying quiet. The launcher backgrounds the program
+    and writes the pid in its next breath, so on this leg "no pid" is a launcher that died
+    between the two — unlikely, and not evidence that nothing is running. Between a needless
+    disposal and a silent leak, this errs towards the disposal, because the silent leak is the
+    defect the whole change exists to remove.
+    """
+    return "" if fate == "stopped" else _STILL_RUNNING
+
+
+def _clause_while_starting(fate: _Fate) -> str:
+    """For the leg where the launcher's own ``exec`` ran out, which may have started nothing.
+
+    A backend that bounds ``exec`` with :func:`asyncio.wait_for` can raise before the guest ran
+    a byte, and can equally raise after the launcher backgrounded the program — the call itself
+    cannot say which. So this leg reads the pid rather than guessing: a pid means something was
+    started and its fate is worth reporting, and no pid means the message says nothing new,
+    which is what it said before any of this existed.
+    """
+    if fate == "absent":
+        return ""
+    if fate == "stopped":
+        return " (it had started the program, which was stopped)"
+    return f" (it had started the program{_STILL_RUNNING})"
+
+
+async def _stop_the_program(sandbox: Sandbox, layout: GuestRunLayout, *, until: float) -> _Fate:
+    """Kill the guest program, and say whether it was stopped — never a raise.
+
+    The transport starts the program detached, so nothing about *starting* it gives the host a
+    handle on it afterwards. What it does have is the pid the launcher wrote down and the
+    ``exec`` this whole transport is built on: on a POSIX guest that pair is a kill primitive,
+    which is why this does not need a protocol method, a new capability, or a backend that
+    knows what a run is (#375).
+
+    **Only called when the exit marker is absent**, which both callers have just established.
+    That ordering is what makes the pid safe to use: a marker that has landed means the process
+    is gone, and a pid whose process is gone can have been reused by the guest for something
+    else. Reading the marker first turns "kill the run" into "kill a process that is still the
+    run", and skipping that check would eventually kill an innocent process instead.
+
+    ``SIGKILL`` rather than ``SIGTERM``: a graceful stop is worth offering to something that
+    might clean up, and this program has already overrun the only bound it was given, so the
+    host is out of time to spend waiting for it to take the hint. Nothing is lost by the
+    abruptness either — the launcher runs the interpreter unbuffered into its output file, so
+    there is no buffer left to flush.
+
+    Best effort, and the caller's message says which way it went. A guest that answers nothing,
+    a pid file that never landed, a backend that refuses the ``exec`` — each leaves the program
+    running, which is exactly the state the caller reported before this existed.
+
+    Returns:
+        ``"stopped"``, ``"running"`` when a pid was found and the kill did not land, or
+        ``"absent"`` when no pid was there to use. The last two are kept apart because one leg
+        reports them differently: a pid is the only evidence this transport has that a program
+        was ever started at all.
+    """
+    try:
+        running = await _read_if_present(sandbox, layout, layout.pid, cap=32, deadline=until)
+    except Exception as unreadable:  # noqa: BLE001 — a kill must not replace the timeout
+        # The same rule `_marker_if_present` follows, and for the same reason: this runs only
+        # once the run is already being reported as expired, so a backend failing here means
+        # the program could not be stopped, never that the caller loses the run's own reason.
+        logger.warning("host tools: could not read the program's pid: %s", error_detail(unreadable))
+        return "absent"
+    if not isinstance(running, str) or not running.strip().isdigit():
+        # No pid, a pid too large to be one, or bytes that are not a number. The launcher
+        # writes it before the program's first instruction, so the usual reason is that the
+        # run expired before the launcher got that far.
+        return "absent"
+    try:
+        killed = await _within(
+            until,
+            "the kill",
+            sandbox.exec(
+                # `2>/dev/null` and the `exit 0`: a pid that has already gone makes `kill`
+                # report a failure, and this is not the place to turn a race the caller
+                # already handles into a backend error. Whether it worked is read back below.
+                f"kill -KILL {int(running.strip())} 2>/dev/null; exit 0",
+                working_directory=layout.directory,
+                timeout=max(0.0, until - time.monotonic()),
+            ),
+        )
+    except Exception as refused:  # noqa: BLE001 — a failed kill is a leak, not a fault
+        logger.warning("host tools: could not stop the guest program: %s", error_detail(refused))
+        return "running"
+    return "stopped" if killed.exit_code == 0 else "running"
 
 
 async def _marker_if_present(
