@@ -85,8 +85,10 @@ SCOPE = "samples"
 THREAD_ID = "15-acas-codeact-host-tools"
 AGENT_DIR = "analyst"
 
-#: Sample 14's image, imported into the sandbox group as a disk image. The transport's launcher
-#: is POSIX shell and its shim is Python, so the guest needs `sh`, `nohup` and `python3`.
+#: Sample 14's image, available to the sandbox group as a disk image. The transport's launcher
+#: is POSIX shell and its shim is Python, so the guest needs `sh`, `nohup`, `mkdir`, `mv`,
+#: `printf` and `python3` — a distroless or Windows image cannot serve this whatever it
+#: declares.
 CODEACT_IMAGE = "mcr.microsoft.com/devcontainers/python:3.13-bookworm"
 
 # --------------------------------------------------------------------------------------
@@ -113,14 +115,10 @@ SALES = {
 MINIMUM_LOOKUPS = len(STATES) * 2 + len(SALES) + len(PRODUCTS)
 NAIVE_LOOKUPS = len(STATES) * 2 + len(SALES) + sum(len(rows) for rows in SALES.values())
 
-#: `HostToolRegistry` defaults to 16 dispatches a run, and this walk does not fit — measured by
-#: running into it: the program came back with "Need more host-tool budget to complete the
-#: table" and half a summary. The cap is a real safety bound rather than a formality, and a
-#: call-heavy host budgets for it out loud instead of discovering it in production.
-#:
-#: Set above the worst observed rather than above the arithmetic: real runs used 18 to 26
-#: lookups, more than the naive figure, because the model writes the program and this file
-#: does not get a say in how carefully.
+#: The registry's default is 16 a run and this walk does not fit, so a call-heavy host has to
+#: raise it deliberately. Set above the naive figure rather than at it: the model writes the
+#: program, and one that re-reads a product name it already has costs more than the arithmetic
+#: predicts. A program that exhausts the budget returns a partial answer, not an error.
 DISPATCH_CAP = NAIVE_LOOKUPS + 11
 
 #: The four lookups, and the order they have to happen in. Naming the stages here rather than
@@ -128,15 +126,22 @@ DISPATCH_CAP = NAIVE_LOOKUPS + 11
 #: calling pays a model round trip for, and what dispatch does not.
 STAGES = ("state_id", "stores_in_state", "store_sales", "product_name")
 
+#: A served call leaves three files: the id its caller claimed, the request, and the answer.
+#: Counting the answers separately is what makes the total legible — a bare file count reads
+#: as three times the traffic there was.
+_RESPONSE_SUFFIX = ".response.json"
+
 #: The two roads, spelled once.
 DISPATCH_ROUTE = "dispatch route"
 DIRECT_ROUTE = "direct route"
 
-#: Every sales figure, in both spellings a float renders as. Act 4 counts how many of these
-#: the model had to write down.
+#: Every sales figure, in both spellings a float renders as, and the distinct set behind them.
+#: Act 4 reports how many the model had to write down against how many there are, so a run
+#: that carried some but not all is visible rather than rounded to "some".
 AMOUNTS = {f"{amount:.2f}" for rows in SALES.values() for _, amount in rows} | {
     str(amount) for rows in SALES.values() for _, amount in rows
 }
+AMOUNTS_EXPECTED = {f"{amount:.2f}" for rows in SALES.values() for _, amount in rows}
 
 
 def truth() -> dict[str, dict[str, float]]:
@@ -189,12 +194,12 @@ INSTRUCTIONS = (
 )
 
 #: The sentence that cannot be shared, because the two routes reach the same four functions by
-#: genuinely different roads. Act 2's lookups are not in the model's tool list at all.
+#: genuinely different roads: act 2's lookups are not in the model's tool list at all.
 #:
-#: The last clause is load-bearing and was measured: without it the model used the sandbox as a
-#: REPL — seven `execute_code` calls, six model round trips, and every sales figure written
-#: into code by hand. Both of dispatch's advantages disappear. **The pattern pays off only when
-#: one program owns the whole walk**, and a model will not do that unless told.
+#: The last clause is load-bearing. **The pattern pays off only when one program owns the whole
+#: walk** — a model given the sandbox and no such instruction will use it as a REPL, fetching
+#: in one call and computing in the next, which puts it back in the middle of the data and
+#: costs a model round trip per step.
 FROM_INSIDE = (
     " Those four lookups are host tools, not yours. Your program calls them from inside the "
     'sandbox with maf_host_tools.call("state_id", state_name=...), then "stores_in_state" '
@@ -381,7 +386,7 @@ def report(
     print(
         f"{MEASURED}{route}: {len(ledger.asked)} lookup(s) over {len(grouped)} model round trip(s)"
     )
-    print(f"{MEASURED}{route}: lookups per round trip: {grouped}")
+    print(f"{MEASURED}{route}: tool calls per model round trip: {grouped}")
     print(
         f"{MEASURED}{route}: {seconds:.2f}s, {usage.get('total_token_count')} tokens "
         f"(in {usage.get('input_token_count')}, cached {usage.get('cache_read_input_token_count')}, "
@@ -390,10 +395,12 @@ def report(
     print(
         f"{MEASURED}{route}: state totals the program printed: {totals_in(printed)} of {len(STATE_TOTALS)}"
     )
+    carried = amounts_the_model_wrote(response)
     print(
-        f"{MEASURED}{route}: sales figures the model wrote into code: {amounts_the_model_wrote(response)}"
+        f"{MEASURED}{route}: sales figures the model wrote into code: "
+        f"{carried} of {len(AMOUNTS_EXPECTED)}"
     )
-    return amounts_the_model_wrote(response)
+    return carried
 
 
 def act_one_what_the_host_wired(ledger: Ledger) -> HostToolRegistry:
@@ -467,8 +474,9 @@ async def one_route(
 def act_four_what_the_round_trips_bought(dispatched: int, direct: int) -> None:
     """The comparison, once correctness has stopped being the variable."""
     print("== 4. What the round trips bought ==\n")
-    print(f"{MEASURED}sales figures the model handled, dispatched: {dispatched}")
-    print(f"{MEASURED}sales figures the model handled, direct:     {direct}")
+    total = len(AMOUNTS_EXPECTED)
+    print(f"{MEASURED}sales figures the model handled, dispatched: {dispatched} of {total}")
+    print(f"{MEASURED}sales figures the model handled, direct:     {direct} of {total}")
     print()
     print("  Both routes ran Python and both reached the same table, so correctness is not what")
     print("  a round trip buys — sample 03 already showed what an interpreter is for.")
@@ -501,11 +509,9 @@ async def act_five_what_the_runs_left_behind(
     runs = await sandbox.list_dir(".", working_directory=spec.work_dir)
     directories = sorted(entry.path.rstrip("/").split("/")[-1] for entry in runs)
 
-    # `guest_run_layout` puts the transport under `<run>/host_tools/`, and the calls beneath
-    # that — not directly in the run directory. Spelled out because looking in the obvious
-    # wrong place and swallowing the error reported "0 files left behind" across three runs of
-    # this sample, which is the exact shape of a measurement that proves nothing.
-    dispatched_runs, left = 0, 0
+    # `guest_run_layout` puts the transport under `<run>/host_tools/`, with the calls beneath
+    # that — not directly in the run directory.
+    dispatched_runs, left, answered = 0, 0, 0
     for run in directories:
         try:
             entries = await sandbox.list_dir(f"{run}/host_tools", working_directory=spec.work_dir)
@@ -518,15 +524,15 @@ async def act_five_what_the_runs_left_behind(
         if not any(entry.path.rstrip("/").endswith(CALLS_DIRECTORY) for entry in entries):
             continue
         dispatched_runs += 1
-        left += len(
-            await sandbox.list_dir(
-                f"{run}/host_tools/{CALLS_DIRECTORY}", working_directory=spec.work_dir
-            )
+        files = await sandbox.list_dir(
+            f"{run}/host_tools/{CALLS_DIRECTORY}", working_directory=spec.work_dir
         )
+        left += len(files)
+        answered += sum(1 for entry in files if entry.path.endswith(_RESPONSE_SUFFIX))
 
     print(f"{MEASURED}run directories in the guest: {len(directories)}")
     print(f"{MEASURED}of those, runs that dispatched: {dispatched_runs}")
-    print(f"{MEASURED}request and response files left behind: {left}")
+    print(f"{MEASURED}transport files left behind: {left}, of which answered calls: {answered}")
     print()
     print("  A fresh directory per run is what keeps one run's traffic out of the next one's,")
     print("  and on a warm sandbox that is not hypothetical: every run above is still here.")
@@ -585,6 +591,9 @@ async def run() -> int:
         # stops a program a supervisor gave up on (#375).
         deleted = await router.dispose_scope(SCOPE, THREAD_ID)
         print(f"{MEASURED}Disposed {deleted} sandbox(es).")
+        # The backend holds pooled clients of its own, so disposing the sandbox is not the
+        # whole teardown — samples 01, 03 and 14 close it the same way.
+        await backend.aclose()
         await credential.close()
     return 0
 

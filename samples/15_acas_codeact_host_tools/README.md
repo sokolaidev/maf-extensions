@@ -34,13 +34,13 @@ From a live run:
 | --- | --- | --- |
 | lookups | 21 | 12 |
 | **model round trips** | **3** | **5** |
-| lookups per round trip | `[1, 1, 1]` | `[2, 2, 5, 3, 1]` |
+| tool calls per model round trip | `[1, 1, 1]` | `[2, 2, 5, 3, 1]` |
 | wall clock | 48.07s | 14.60s |
 | tokens | 6,270 | 6,217 |
 | **sales figures the model wrote into code** | **0** | **12** |
 | state totals the program printed | 2 of 2 | 2 of 2 |
 
-Read `[2, 2, 5, 3, 1]` — that *is* the walk. Two state ids, two store lists, five sales rows, three product names, then the program. **Direct tool calling batches within a stage and never across one**, because it cannot ask for a store's sales until it has been told the store ids. So it pays a model round trip per stage.
+Read `[2, 2, 5, 3, 1]` — the first four entries *are* the walk, and the last is the program. Two state ids, two store lists, five sales rows, three product names, then one `execute_code`. On the dispatched side every entry is `execute_code`; the lookups do not appear there at all, because they never reach the model. **Direct tool calling batches within a stage and never across one**, because it cannot ask for a store's sales until it has been told the store ids. So it pays a model round trip per stage.
 
 Dispatch resolves the whole walk inside one program and pays a *transport* round trip per call instead — serially, always, with no batching available at any layer ([#439](https://github.com/sokolaidev/maf-extensions/issues/439)).
 
@@ -62,7 +62,7 @@ Dispatched, the model writes none of them and *cannot*: the program exists befor
 
 ## The dispatch cap is real, and this workload exceeds the default
 
-`HostToolRegistry` allows 16 dispatches a run. This walk needs up to 21 written naively, and live runs used 18 to 29. The first attempt hit the cap and came back with half a table and `Need more host-tool budget to complete the table`.
+`HostToolRegistry` allows 16 dispatches a run. This walk needs up to 21 written naively, and live runs used 18 to 29 — so the default does not fit it. A program that exhausts the budget does not raise: it comes back with a partial answer and `Need more host-tool budget to complete the table` in its output, which is a wrong summary rather than a failure.
 
 So the sample budgets for it out loud. A call-heavy host has to, and the arithmetic is not the whole story: the *model* writes the program, and a program that looks up a product name per sales row asks twelve times where a caching one asks three.
 
@@ -78,7 +78,9 @@ So a dispatch that is answered at all proves the launcher detached and the super
 
 Act 5 enumerates the work root with `list_dir`, which needs `Capability.FILES_LIST` — ACAS declares it and Docker does not, so this act is one more reason the sample belongs on this backend.
 
-A fresh directory per run is real, and on a warm sandbox it is not hypothetical: every run of both acts is still there when act 5 looks. What is *not* there is any cleanup. The transport says so itself — *"Nothing in the protocol deletes"* — and [#438](https://github.com/sokolaidev/maf-extensions/issues/438) is the general case: no kind is obliged to clean up, and the protocol gives it nothing to clean up with. Sixty-three request and response files survived one run of this sample.
+A fresh directory per run is real, and on a warm sandbox it is not hypothetical: every run of both acts is still there when act 5 looks. What is *not* there is any cleanup. The transport says so itself — *"Nothing in the protocol deletes"* — and [#438](https://github.com/sokolaidev/maf-extensions/issues/438) is the general case: no kind is obliged to clean up, and the protocol gives it nothing to clean up with.
+
+Sixty-three transport files survived one run of this sample. That is **three per served call** — the id the caller claimed with an exclusive create, the request, and the answer — so the sample reports the answered subset alongside the total, because a bare file count reads as three times the traffic there was.
 
 Disposing the sandbox is the only thing that removes them, which is what the footer does.
 
@@ -89,14 +91,14 @@ Seven live runs decided this. The lookup count moved between 18 and 29, wall clo
 - **Both programs printed both state totals** — read from the framework's record of what `execute_code` returned, so an interpreter produced them.
 - **Direct needed more model round trips than dispatch**, and its shape shows at least four batches — one per stage.
 - **Who carried the figures**: none dispatched, all of them direct. Both halves are structural — one is impossible, the other is forced.
-- **The runs left transport files behind.** Zero would mean the sample looked in the wrong place, which is exactly what it did before `host_tools/` was in the path.
+- **The runs left transport files behind,** and at least one of them is an answered call. Zero of either would mean the enumeration looked somewhere the transport does not write.
 
 Wall clock, tokens and lookup counts are **recorded and never bounded**, and what a model *said* is never read. Every line the check reads carries the `[measured]` tag at the left margin ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)); `quoted()` prefixes any tagged line inside a model's reply with `> `, so prose that tries to answer for the host is visibly not the host answering.
 
 ## Prerequisites
 
 - An Azure subscription with the [Container Apps Sandboxes](https://learn.microsoft.com/azure/container-apps/sandboxes) preview enabled, and a sandbox group.
-- `mcr.microsoft.com/devcontainers/python:3.13-bookworm` available to that group — sample 14's image, so a group set up for that one already has it. The guest needs `sh`, `nohup` and `python3`: the launcher is POSIX shell and the shim is Python, so a distroless or Windows image cannot serve this whatever it declares.
+- `mcr.microsoft.com/devcontainers/python:3.13-bookworm` available to that group — sample 14's image, so a group set up for that one already has it. The launcher is POSIX shell and the shim is Python, so the guest needs **`sh`, `nohup`, `mkdir`, `mv`, `printf` and `python3`** — the launcher creates the working directory, redirects output and renames the exit marker into place. A distroless or Windows image cannot serve this whatever it declares.
 - An Azure OpenAI deployment. No key: `az login` is enough.
 
 **This creates a billable sandbox.** One, serving both acts and act 5's enumeration, disposed at the end rather than left to the lifecycle timers — the check fails the run if it was not.

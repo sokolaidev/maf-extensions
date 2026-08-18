@@ -1177,10 +1177,9 @@ jobs:
         run: |
           set -euo pipefail
           uv run --no-project samples/15_acas_codeact_host_tools/agent.py | tee /tmp/sample15-out.txt
-          # The dispatched total has to be exact — a program computed it from prices the host
-          # supplied. What the model made of the same prices unaided is recorded and not
-          # required; the check's success line says which way it went. stdlib-only, so the
-          # runner's own python3 runs it.
+          # Both routes compute in the sandbox, so both are held to the totals their programs
+          # printed; what the check compares is how many model round trips each road cost and
+          # which of them carried the data. stdlib-only, so the runner's own python3 runs it.
           python3 "$HARNESS"/scripts/check_live_host_tools_dispatch_sample.py /tmp/sample15-out.txt
 
   acas-e2e:

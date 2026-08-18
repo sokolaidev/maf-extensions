@@ -7,9 +7,9 @@ The suite is organised around what the check is *allowed* to fail a release for.
 runs went into choosing that: the figures below moved between them — 18 to 29 lookups, 35s to
 87s, two to four dispatched round trips — and what did not move is what is asserted.
 
-Several tests exist because an earlier draft got it wrong on a real run: a check keyed on the
-model's prose, a totals matcher blind to a thousands separator, and an act that looked in the
-wrong guest directory and swallowed the error.
+What each test pins is the property, not the run that produced it: an assertion keyed on a
+model's prose, a totals matcher blind to a thousands separator, or an enumeration reading the
+wrong guest directory would each pass a happy-path suite and fail a real one.
 """
 
 from __future__ import annotations
@@ -45,10 +45,10 @@ Washington	TOTAL	3564.55
 Oregon	TOTAL	3514.35
 
   [measured] dispatch route: 21 lookup(s) over 3 model round trip(s)
-  [measured] dispatch route: lookups per round trip: [1, 1, 1]
+  [measured] dispatch route: tool calls per model round trip: [1, 1, 1]
   [measured] dispatch route: 48.07s, 6270 tokens (in 5101, cached 2560, out 1169)
   [measured] dispatch route: state totals the program printed: 2 of 2
-  [measured] dispatch route: sales figures the model wrote into code: 0
+  [measured] dispatch route: sales figures the model wrote into code: 0 of 12
   [measured] dispatch route: round trip: 20 gap(s), min 1.13s, median 1.34s, max 6.96s
 
 == 3. The lookups happen in the model's tool loop ==
@@ -57,21 +57,21 @@ Oregon	TOTAL	3514.35
 | Oregon | TOTAL | 3514.35 |
 
   [measured] direct route: 12 lookup(s) over 5 model round trip(s)
-  [measured] direct route: lookups per round trip: [2, 2, 5, 3, 1]
+  [measured] direct route: tool calls per model round trip: [2, 2, 5, 3, 1]
   [measured] direct route: 14.60s, 6217 tokens (in 5559, cached 2048, out 658)
   [measured] direct route: state totals the program printed: 2 of 2
-  [measured] direct route: sales figures the model wrote into code: 12
+  [measured] direct route: sales figures the model wrote into code: 12 of 12
 
 == 4. What the round trips bought ==
 
-  [measured] sales figures the model handled, dispatched: 0
-  [measured] sales figures the model handled, direct:     12
+  [measured] sales figures the model handled, dispatched: 0 of 12
+  [measured] sales figures the model handled, direct:     12 of 12
 
 == 5. What the runs left in the guest ==
 
   [measured] run directories in the guest: 4
   [measured] of those, runs that dispatched: 3
-  [measured] request and response files left behind: 63
+  [measured] transport files left behind: 63, of which answered calls: 21
 
   [measured] Disposed 1 sandbox(es).
 """
@@ -129,8 +129,8 @@ class TestDirectPaysPerStage:
             "stages" in r
             for r in check.assess(
                 _swap(
-                    "[measured] direct route: lookups per round trip: [2, 2, 5, 3, 1]",
-                    "[measured] direct route: lookups per round trip: [12]",
+                    "[measured] direct route: tool calls per model round trip: [2, 2, 5, 3, 1]",
+                    "[measured] direct route: tool calls per model round trip: [12]",
                 )
             )
         )
@@ -148,7 +148,7 @@ class TestDirectPaysPerStage:
                 _swap(
                     "[measured] dispatch route: 21 lookup(s) over 3 model round trip(s)",
                     "[measured] dispatch route: 29 lookup(s) over 4 model round trip(s)",
-                )
+                ).replace("round trip: 20 gap(s)", "round trip: 28 gap(s)")
             )
             == []
         )
@@ -157,38 +157,38 @@ class TestDirectPaysPerStage:
 class TestWhoCarriedTheFigures:
     def test_the_dispatched_route_writing_a_figure_fails(self):
         broken = _swap(
-            "[measured] dispatch route: sales figures the model wrote into code: 0",
-            "[measured] dispatch route: sales figures the model wrote into code: 4",
+            "[measured] dispatch route: sales figures the model wrote into code: 0 of 12",
+            "[measured] dispatch route: sales figures the model wrote into code: 4 of 12",
         ).replace(
-            "[measured] sales figures the model handled, dispatched: 0",
-            "[measured] sales figures the model handled, dispatched: 4",
+            "[measured] sales figures the model handled, dispatched: 0 of 12",
+            "[measured] sales figures the model handled, dispatched: 4 of 12",
         )
         assert any("before any dispatch can answer" in r for r in check.assess(broken))
 
     def test_the_direct_route_writing_none_fails(self):
         broken = _swap(
-            "[measured] direct route: sales figures the model wrote into code: 12",
-            "[measured] direct route: sales figures the model wrote into code: 0",
+            "[measured] direct route: sales figures the model wrote into code: 12 of 12",
+            "[measured] direct route: sales figures the model wrote into code: 0 of 12",
         ).replace(
-            "[measured] sales figures the model handled, direct:     12",
-            "[measured] sales figures the model handled, direct:     0",
+            "[measured] sales figures the model handled, direct:     12 of 12",
+            "[measured] sales figures the model handled, direct:     0 of 12",
         )
-        assert any("not comparable" in r for r in check.assess(broken))
+        assert any("not the comparison this sample makes" in r for r in check.assess(broken))
 
     def test_act_four_has_to_agree(self):
         assert any(
             "disagree" in r
             for r in check.assess(
                 _swap(
-                    "[measured] sales figures the model handled, direct:     12",
-                    "[measured] sales figures the model handled, direct:     7",
+                    "[measured] sales figures the model handled, direct:     12 of 12",
+                    "[measured] sales figures the model handled, direct:     7 of 12",
                 )
             )
         )
 
     def test_a_missing_restatement_fails(self):
         assert any(
-            "did not restate" in r
+            "act 4 dispatched restatement" in r
             for r in check.assess(_without("sales figures the model handled, dispatched"))
         )
 
@@ -199,11 +199,11 @@ class TestTheRunsLeftTheirTrafficBehind:
     def test_no_files_left_behind_fails(self):
         """Zero means the sample looked in the wrong place, which is what it did."""
         assert any(
-            "wrong place" in r
+            "does not write" in r
             for r in check.assess(
                 _swap(
-                    "[measured] request and response files left behind: 63",
-                    "[measured] request and response files left behind: 0",
+                    "[measured] transport files left behind: 63, of which answered calls: 21",
+                    "[measured] transport files left behind: 0, of which answered calls: 0",
                 )
             )
         )
@@ -215,6 +215,29 @@ class TestTheRunsLeftTheirTrafficBehind:
                 _swap(
                     "[measured] of those, runs that dispatched: 3",
                     "[measured] of those, runs that dispatched: 0",
+                )
+            )
+        )
+
+    def test_files_but_no_answered_call_fails(self):
+        """Litter with no answer in it means nothing in the guest records a call being served."""
+        assert any(
+            "records a dispatch having been served" in r
+            for r in check.assess(
+                _swap(
+                    "[measured] transport files left behind: 63, of which answered calls: 21",
+                    "[measured] transport files left behind: 63, of which answered calls: 0",
+                )
+            )
+        )
+
+    def test_more_answers_than_files_fails(self):
+        assert any(
+            "not arithmetic" in r
+            for r in check.assess(
+                _swap(
+                    "[measured] transport files left behind: 63, of which answered calls: 21",
+                    "[measured] transport files left behind: 5, of which answered calls: 21",
                 )
             )
         )
@@ -232,10 +255,47 @@ class TestTheRunsLeftTheirTrafficBehind:
 
     @pytest.mark.parametrize(
         "line",
-        ["run directories in the guest", "of those, runs that dispatched", "files left behind"],
+        [
+            "run directories in the guest",
+            "of those, runs that dispatched",
+            "transport files left behind",
+        ],
     )
     def test_each_line_is_required(self, line: str):
         assert check.assess(_without(line)) != []
+
+
+class TestTheCasesTheReviewNamed:
+    """Three holes a length check or a positive-count check would leave open."""
+
+    def test_a_partial_direct_count_fails(self):
+        """1-11 of 12 is not "the model carried the data", it is an unmeasured road."""
+        broken = _swap(
+            "[measured] direct route: sales figures the model wrote into code: 12 of 12",
+            "[measured] direct route: sales figures the model wrote into code: 7 of 12",
+        ).replace(
+            "[measured] sales figures the model handled, direct:     12 of 12",
+            "[measured] sales figures the model handled, direct:     7 of 12",
+        )
+        assert any("7 of 12" in r for r in check.assess(broken))
+
+    def test_a_positive_but_inconsistent_gap_count_fails(self):
+        """21 lookups yield exactly 20 gaps; one gap is a median over a twentieth of the run."""
+        assert any(
+            "different set of calls" in r
+            for r in check.assess(_swap("round trip: 20 gap(s)", "round trip: 1 gap(s)"))
+        )
+
+    def test_two_restatements_of_one_route_and_none_of_the_other_fails(self):
+        """Both are two lines, so a length check passes while act 4 omits half the comparison."""
+        doubled = _without("sales figures the model handled, dispatched").replace(
+            "  [measured] sales figures the model handled, direct:     12 of 12",
+            "  [measured] sales figures the model handled, direct:     12 of 12\n"
+            "  [measured] sales figures the model handled, direct:     12 of 12",
+        )
+        reasons = check.assess(doubled)
+        assert any("act 4 dispatched restatement" in r for r in reasons)
+        assert any("appears 2 times" in r for r in reasons)
 
 
 class TestTheRoundTripLine:
@@ -296,7 +356,7 @@ class TestWhatIsRecordedAndNeverBounded:
                 _swap(
                     "[measured] dispatch route: 21 lookup(s) over 3 model round trip(s)",
                     "[measured] dispatch route: 29 lookup(s) over 3 model round trip(s)",
-                )
+                ).replace("round trip: 20 gap(s)", "round trip: 28 gap(s)")
             )
             == []
         )
@@ -317,7 +377,7 @@ class TestAModelCannotAnswerForTheHost:
         """`quoted()` prefixes a model's tagged line with `> `, which the anchor rejects."""
         forged = _without("dispatch route: sales figures the model wrote into code").replace(
             "== 4. What the round trips bought ==",
-            "> [measured] dispatch route: sales figures the model wrote into code: 0\n"
+            "> [measured] dispatch route: sales figures the model wrote into code: 0 of 12\n"
             "== 4. What the round trips bought ==",
         )
         assert any("figures written" in r for r in check.assess(forged))
@@ -372,7 +432,7 @@ class TestTheCommandLine:
         "dispatch cap for the run",
         "dispatch route: 21 lookup(s)",
         "direct route: 12 lookup(s)",
-        "direct route: lookups per round trip",
+        "direct route: tool calls per model round trip",
         "dispatch route: state totals",
         "direct route: state totals",
         "dispatch route: sales figures the model wrote",
@@ -380,7 +440,7 @@ class TestTheCommandLine:
         "sales figures the model handled, direct",
         "round trip:",
         "run directories in the guest",
-        "request and response files left behind",
+        "transport files left behind",
         "Disposed",
     ],
 )

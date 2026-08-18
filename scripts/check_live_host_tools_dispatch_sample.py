@@ -19,7 +19,8 @@ interpreter's output or a structural property of the two roads:
   model to write them into its source.
 - **The runs left their transport files behind.** #302 asks for the per-run subdirectory and
   its cleanup; the directory is real and the cleanup does not exist (#438), so the count going
-  *up* is the honest thing to assert.
+  *up* is the honest thing to assert. A served call leaves three files — the claimed id, the
+  request and the answer — so the answered subset is what says how much traffic there was.
 
 Wall clock, tokens and lookup counts are recorded and never bounded. They are what the sample
 exists to publish, and a threshold would turn a measurement into a pass mark on somebody
@@ -65,18 +66,20 @@ def _tagged(pattern: str) -> re.Pattern[str]:
 
 _CAP = _tagged(r"dispatch cap for the run:\s+(\d+)\s+\(the walk needs\s+(\d+)")
 _TRIPS = _tagged(rf"({_ANY_ROUTE}):\s+(\d+)\s+lookup\(s\) over\s+(\d+)\s+model round trip\(s\)")
-_SHAPE = _tagged(rf"({_ANY_ROUTE}):\s+lookups per round trip:\s+\[([^\]]*)\]")
+_SHAPE = _tagged(rf"({_ANY_ROUTE}):\s+tool calls per model round trip:\s+\[([^\]]*)\]")
 _COST = _tagged(rf"({_ANY_ROUTE}):\s+([\d.]+)s,\s+(\d+|None)\s+tokens")
 _TOTALS = _tagged(rf"({_ANY_ROUTE}):\s+state totals the program printed:\s+(\d+)\s+of\s+(\d+)")
-_WROTE = _tagged(rf"({_ANY_ROUTE}):\s+sales figures the model wrote into code:\s+(\d+)")
-_HANDLED = _tagged(r"sales figures the model handled,\s+(dispatched|direct):\s+(\d+)")
+_WROTE = _tagged(
+    rf"({_ANY_ROUTE}):\s+sales figures the model wrote into code:\s+(\d+)\s+of\s+(\d+)"
+)
+_HANDLED = _tagged(r"sales figures the model handled,\s+(dispatched|direct):\s+(\d+)\s+of\s+\d+")
 _ROUND_TRIP = _tagged(
     rf"({_ANY_ROUTE}):\s+round trip:\s+(\d+)\s+gap\(s\),\s+min\s+([\d.]+)s,\s+"
     r"median\s+([\d.]+)s,\s+max\s+([\d.]+)s"
 )
 _RUN_DIRS = _tagged(r"run directories in the guest:\s+(\d+)")
 _DISPATCHING = _tagged(r"of those, runs that dispatched:\s+(\d+)")
-_LEFT = _tagged(r"request and response files left behind:\s+(\d+)")
+_LEFT = _tagged(r"transport files left behind:\s+(\d+), of which answered calls:\s+(\d+)")
 _DISPOSED = _tagged(r"Disposed\s+(\d+)\s+sandbox\(es\)\.")
 
 
@@ -175,31 +178,41 @@ def _assess_direct_pays_per_stage(output: str) -> list[str]:
 def _assess_who_carried_the_figures(output: str) -> list[str]:
     """The finding, and both halves are structural rather than a matter of model mood."""
     found, failures = _per_route(output, _WROTE, "figures written")
-    wrote = {route: int(match[1]) for route, match in found.items()}
+    wrote = {route: (int(match[1]), int(match[2])) for route, match in found.items()}
 
-    if wrote.get(_DISPATCH, 0) != 0:
+    if wrote.get(_DISPATCH, (0, 0))[0] != 0:
         failures.append(
-            f"the dispatched route wrote {wrote[_DISPATCH]} sales figure(s) into a tool call — "
-            "the program is written before any dispatch can answer, so a figure cannot have "
-            "reached it that way, and this line has stopped measuring what it says"
+            f"the dispatched route wrote {wrote[_DISPATCH][0]} sales figure(s) into a tool "
+            "call — the program is written before any dispatch can answer, so a figure cannot "
+            "have reached it that way, and this line has stopped measuring what it says"
         )
-    if _DIRECT in wrote and wrote[_DIRECT] == 0:
-        failures.append(
-            "the direct route wrote no sales figure into a tool call, so the contrast this "
-            "sample exists to show did not happen — on that road every value has to cross the "
-            "model to reach the program, and a run where none did is not comparable"
-        )
-
-    restated = _HANDLED.findall(output)
-    for short, count in restated:
-        route = _SHORT[short]
-        if route in wrote and int(count) != wrote[route]:
+    if _DIRECT in wrote:
+        carried, expected = wrote[_DIRECT]
+        if carried != expected:
+            # Not "more than none". Every figure has to cross the model on that road, so a
+            # partial count is a run that got its data from somewhere this sample did not
+            # measure — and it would still read as the contrast while understating it.
             failures.append(
-                f"act 4 says the model handled {count} figure(s) on the {route} where the route "
-                f"itself reported {wrote[route]} — the two lines describe one run and disagree"
+                f"the direct route wrote {carried} of {expected} sales figures into a tool "
+                "call. On that road every value has to cross the model to reach the program, "
+                "so anything short of all of them means the run is not the comparison this "
+                "sample makes"
             )
-    if len(restated) != len(_ROUTES):
-        failures.append("act 4 did not restate both routes' figure counts")
+
+    # One restatement per route, matched by route rather than counted. Two for `direct` and
+    # none for `dispatched` is also two lines, and would pass a length check while act 4 said
+    # nothing at all about half the comparison.
+    for short, route in _SHORT.items():
+        match, problems = _once(
+            [m for m in _HANDLED.findall(output) if m[0] == short], f"act 4 {short} restatement"
+        )
+        failures.extend(problems)
+        if match is not None and route in wrote and int(match[1]) != wrote[route][0]:
+            failures.append(
+                f"act 4 says the model handled {match[1]} figure(s) on the {route} where the "
+                f"route itself reported {wrote[route][0]} — the two lines describe one run "
+                "and disagree"
+            )
     return failures
 
 
@@ -221,6 +234,18 @@ def _assess_the_round_trips(output: str) -> list[str]:
     gaps, low, mid, high = int(match[1]), float(match[2]), float(match[3]), float(match[4])
     if gaps < 1:
         failures.append("the round-trip line reports no gaps, so nothing was measured")
+
+    # The ledger times the interval between consecutive calls, so *n* dispatches yield exactly
+    # *n - 1* of them. Checking only that the count is positive would accept a line claiming
+    # 21 lookups and one measured gap, which is a median over a twentieth of the run.
+    lookups = {route: int(count) for route, count, _ in _TRIPS.findall(output)}
+    if _DISPATCH in lookups and gaps != lookups[_DISPATCH] - 1:
+        failures.append(
+            f"{gaps} round-trip gap(s) were measured across {lookups[_DISPATCH]} dispatched "
+            f"lookup(s), and consecutive pairs of {lookups[_DISPATCH]} calls are "
+            f"{lookups[_DISPATCH] - 1} — so the summary describes a different set of calls "
+            "from the one the route reported"
+        )
     if not low <= mid <= high:
         failures.append(
             f"min {low}s, median {mid}s and max {high}s are not ordered — whatever produced "
@@ -247,11 +272,19 @@ def _assess_what_the_runs_left(output: str) -> list[str]:
         failures.append(
             f"{dispatching} run(s) dispatched out of {dirs} in the guest, which is not arithmetic"
         )
-    if int(left) < 1:  # type: ignore[arg-type]
+    total, answers = int(left[0]), int(left[1])  # type: ignore[index]
+    if total < 1:
         failures.append(
-            "no request or response files were found in the guest. Nothing deletes them — the "
-            "protocol has no way (#438) — so zero means the sample looked in the wrong place, "
-            "which is what it did before `host_tools/` was in the path"
+            "no transport files were found in the guest. Nothing deletes them — the protocol "
+            "has no way (#438) — so zero means the enumeration looked somewhere the transport "
+            "does not write"
+        )
+    if answers > total:
+        failures.append(f"{answers} answered call(s) among {total} file(s) is not arithmetic")
+    if answers < 1:
+        failures.append(
+            "no answered call was found among the files left behind, so nothing in the guest "
+            "records a dispatch having been served"
         )
     return failures
 
