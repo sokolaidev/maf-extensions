@@ -24,11 +24,12 @@ interpreter's output or a structural property of the two roads:
   *up* is the honest thing to assert. A served call leaves three files — the claimed id, the
   request and the answer — which is one floor, and every recorded lookup leaves an answer,
   which is the other. Between them a broken enumeration cannot pass as traffic.
-- **The gaps behind the round-trip summary were the ones the transport made.** One gap is
-  dropped per program boundary, and only a program that dispatched leaves a boundary. The
-  guest settles how many there were: the transport creates a run's call directory on its first
-  dispatch and not before, so act 5's count of runs that dispatched is the number, measured
-  rather than inferred from the model's messages.
+- **The gaps behind the round-trip summary were the ones the transport made.** *n* calls give
+  *n - 1* intervals between consecutive calls, and *p* programs put *p - 1* boundaries among
+  them, so what is left of the transport is *n - p*. Only a program that dispatched can hold a
+  boundary, and the guest is what says how many did: the transport creates a run's call
+  directory on its first dispatch and not before, so act 5's count of runs that dispatched is
+  *p*, measured rather than inferred from the model's messages.
 
 Wall clock, tokens and lookup counts are recorded and never bounded. They are what the sample
 exists to publish, and a threshold would turn a measurement into a pass mark on somebody
@@ -282,8 +283,18 @@ def _assess_direct_pays_per_stage(output: str) -> list[str]:
                 "show it"
             )
     for route, match in found.items():
-        if int(match[1]) == 0:
+        lookups = int(match[1])
+        if lookups == 0:
             failures.append(f"{route} made no lookups at all, so it answered from somewhere else")
+        elif lookups < _MINIMUM_LOOKUPS:
+            # The walk is fixed, so its floor is arithmetic rather than a tolerance: two state
+            # ids, two store lists, five stores' sales and three product names. A run under it
+            # did not fetch what the table is made of, whichever route it was on.
+            failures.append(
+                f"{route} made {lookups} lookup(s) where the walk needs {_MINIMUM_LOOKUPS} at "
+                "best — two state ids, two store lists, five stores' sales rows and three "
+                "product names. A ledger this short cannot have produced the table above it"
+            )
 
     for route, shape in shapes.items():
         groups = [g for g in shape[1].split(",") if g.strip()]
@@ -510,12 +521,20 @@ def _assess_the_sandbox_went_away(output: str) -> list[str]:
 def _assess_the_cost_was_measured(output: str) -> list[str]:
     """Each route publishes a cost, and the token half of it is a real figure.
 
-    Wall clock is recorded and never bounded — a slow control plane is a finding. Tokens are
-    different only at zero: every route here invokes the model, so nought is usage reporting
-    having gone missing, which is the `None` case wearing a number.
+    Wall clock is recorded and never bounded *above* — a slow control plane is a finding, and a
+    threshold would make this a pass mark on somebody else's. Zero is the exception at both
+    ends: every route here invokes a model over the network and runs a program in a microVM, so
+    nought seconds and nought tokens are both a measurement having gone missing rather than a
+    run that was free or instant. They are the `None` case wearing a number.
     """
     found, failures = _per_route(output, _COST, "cost")
     for route, match in found.items():
+        if float(match[1]) <= 0:
+            failures.append(
+                f"{route} reports {match[1]}s of wall clock. Every route here waits on a model "
+                "and on a sandbox, so zero is the clock never having been read rather than a "
+                "run that took no time"
+            )
         if int(match[2]) == 0:
             failures.append(
                 f"{route} reports 0 tokens. Every route here invokes the model, so this is a "

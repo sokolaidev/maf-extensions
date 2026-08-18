@@ -173,6 +173,21 @@ class TestDirectPaysPerStage:
         broken = _swap(line, line.replace("25 lookup", "0 lookup").replace("12 lookup", "0 lookup"))
         assert any("no lookups at all" in r for r in check.assess(broken))
 
+    @pytest.mark.parametrize(("route", "count"), [("dispatch route", 25), ("direct route", 12)])
+    def test_a_route_below_the_minimum_walk_fails(self, route: str, count: int):
+        """Zero is not the only count that cannot have produced the table.
+
+        The walk is fixed at twelve lookups — two state ids, two store lists, five stores'
+        sales and three product names — so eleven is a run that fetched less than the answer is
+        made of. The direct route sits *on* that floor in a healthy run, which is what makes it
+        a floor rather than a margin.
+        """
+        broken = _swap(
+            f"[measured] {route}: {count} lookup(s) over",
+            f"[measured] {route}: 11 lookup(s) over",
+        )
+        assert any("cannot have produced the table" in r for r in check.assess(broken))
+
     def test_more_dispatched_round_trips_than_measured_is_fine(self):
         """Two to four was the live range; the check bounds the comparison, not the value.
 
@@ -688,6 +703,18 @@ class TestWhatIsRecordedAndNeverBounded:
                 )
             )
             == []
+        )
+
+    @pytest.mark.parametrize(
+        ("route", "seconds"), [("dispatch route", "42.40s"), ("direct route", "14.60s")]
+    )
+    def test_a_route_that_took_no_time_fails(self, route: str, seconds: str):
+        """Nonzero tokens do not rescue a clock that was never read."""
+        assert any(
+            "the clock never having been read" in r
+            for r in check.assess(
+                _swap(f"[measured] {route}: {seconds},", f"[measured] {route}: 0.00s,")
+            )
         )
 
     def test_a_chatty_program_passes(self):
