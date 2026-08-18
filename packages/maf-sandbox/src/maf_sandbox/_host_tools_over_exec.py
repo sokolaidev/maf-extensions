@@ -1356,6 +1356,14 @@ async def _marker_if_present(
     Called once, on the way to reporting a run as unfinished, so it answers a question rather
     than adding a failure: whatever a backend raises here means the same as nothing being
     there, and the run's own reason is the one worth keeping.
+
+    ``None`` is therefore "no marker was seen", never "no marker exists", and the callers that
+    go on to :func:`_stop_the_program` are meant to act on it as it stands. A look that failed
+    is evidence about the transport rather than about the guest, and withholding the signal
+    for it would trade a kill that may be needless for a program nothing can find again — the
+    reclaim removes the pid file on the way out. Absence actually observed is worth little
+    more, for the reason :func:`_stop_the_program` gives: the pid is stat'd, read and only
+    then signalled, so what the kill acts on is a stale answer either way.
     """
     try:
         marker = await _read_if_present(sandbox, layout, layout.exit_code, cap=32, deadline=until)
