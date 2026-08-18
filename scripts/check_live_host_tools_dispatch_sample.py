@@ -358,7 +358,17 @@ def _assess_direct_pays_per_stage(output: str) -> list[str]:
         # asked for, so a shape of words has a length and means nothing, and a zero is a
         # message that was never an entry. Both routes: either length is read as a round count,
         # and the dispatched one is summed for the programs behind the round-trip summary.
-        if not all(entry.isdigit() and int(entry) > 0 for entry in groups):
+        if not groups:
+            # Refused before the rule below, which an empty list passes by having nothing to
+            # break it, and it would then agree with a round count of zero. Both routes reach
+            # the sandbox through `execute_code` and that is itself a tool call, so a route
+            # with a table above it made at least one.
+            failures.append(
+                f"the {route} reports no tool calls at all, and its table came from an "
+                "`execute_code` call, which is one. An empty shape describes a run that asked "
+                "the model for nothing"
+            )
+        elif not all(entry.isdigit() and int(entry) > 0 for entry in groups):
             failures.append(
                 f"the {route}'s shape [{', '.join(groups)}] is not a list of positive counts, "
                 "so the rounds and programs it is supposed to describe cannot be read from it"
@@ -373,6 +383,19 @@ def _assess_direct_pays_per_stage(output: str) -> list[str]:
             )
     if _DIRECT in shapes:
         groups = [g for g in shapes[_DIRECT][1].split(",") if g.strip()]
+        # Length says how many times the model waited; the entries say what it asked for. On
+        # this route every lookup is a tool call in the model's own loop, and the program that
+        # printed the table is one more, so the shape holds at least one call the walk did not.
+        if _DIRECT in found and all(g.strip().isdigit() for g in groups):
+            calls, lookups = sum(int(g) for g in groups), int(found[_DIRECT][1])
+            if calls <= lookups:
+                failures.append(
+                    f"the direct route's shape holds {calls} tool call(s) against {lookups} "
+                    "lookup(s) and the `execute_code` that printed its table. Every one of "
+                    "those is a call in the model's loop, so the shape is short by "
+                    f"{lookups + 1 - calls} and is not the list the line above it was counted "
+                    "from"
+                )
         if len(groups) < _STAGES:
             failures.append(
                 f"the direct route asked in {len(groups)} batch(es) and the walk has {_STAGES} "

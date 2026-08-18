@@ -142,6 +142,21 @@ class TestTheProgramThatAnswered:
             sample.PRODUCT_CELLS
         )
 
+    def test_the_table_wins_against_the_same_values_in_the_wrong_places(self):
+        """Two programs can hold the same six values with only one of them a table.
+
+        `_SWAPPED` and `_HONEST` are that pair, so nothing the cells, the totals or the product
+        names can see separates them. Which one the route is graded on must not come down to
+        the order it happened to run them in.
+        """
+        assert sample.the_program_that_answered([_SWAPPED, _HONEST]) == _HONEST
+        assert sample.the_program_that_answered([_HONEST, _SWAPPED]) == _HONEST
+
+    def test_the_rank_leads_on_the_rows(self):
+        """The four signals in order, and the only one that can tell those two apart."""
+        assert sample.graded(_HONEST) > sample.graded(_SWAPPED)
+        assert sample.graded(_HONEST)[1:] == sample.graded(_SWAPPED)[1:]
+
     def test_the_program_with_the_table_is_the_one_scored(self):
         """A probe that printed nothing does not displace the program that answered."""
         assert sample.the_program_that_answered(["3.13.1\n", _HONEST]) == _HONEST

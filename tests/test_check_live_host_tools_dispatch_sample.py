@@ -197,6 +197,36 @@ class TestDirectPaysPerStage:
             )
         )
 
+    @pytest.mark.parametrize("shape", ["[1, 1, 1, 1, 1]", "[4, 3, 2, 2, 1]"])
+    def test_a_direct_shape_too_small_to_hold_its_lookups_fails(self, shape: str):
+        """Five tool calls cannot be twelve lookups, and neither can twelve.
+
+        On this route every lookup is a tool call in the model's own loop and the program that
+        printed the table is one more, so the entries have to sum *past* the lookup count. Both
+        shapes are five entries long, which is why the length alone cannot say this.
+        """
+        assert any(
+            "is short by" in r
+            for r in check.assess(
+                _swap(
+                    "[measured] direct route: tool calls per round: [2, 2, 5, 3, 1]",
+                    f"[measured] direct route: tool calls per round: {shape}",
+                )
+            )
+        )
+
+    def test_a_direct_shape_holding_its_lookups_and_one_program_passes(self):
+        """Thirteen against twelve is the floor: the walk, plus the one program."""
+        assert not any(
+            "is short by" in r
+            for r in check.assess(
+                _swap(
+                    "[measured] direct route: tool calls per round: [2, 2, 5, 3, 1]",
+                    "[measured] direct route: tool calls per round: [3, 3, 3, 3, 1]",
+                )
+            )
+        )
+
     def test_a_collapsed_direct_shape_fails(self):
         """One batch means the stages stopped depending on each other."""
         assert any(
@@ -271,11 +301,10 @@ class TestTwoViewsOfOneListHaveToAgree:
         ],
     )
     def test_a_shape_that_is_not_counts_fails(self, route: str, shape: str, words: str):
-        """A shape of words has a length, and the length is read as the round count.
+        """A shape of words has a length and nothing else, and the length is read as a count.
 
-        Numeric validation used to reach the dispatched shape only, because that is the one
-        summed for the programs. The direct one is counted too — its length is a round count
-        and its size decides whether the walk batched per stage.
+        Both routes: either shape's length is that route's round count, and the dispatched
+        one's entries are summed for the programs behind the round-trip summary.
         """
         assert any(
             "not a list of positive counts" in r
@@ -283,6 +312,35 @@ class TestTwoViewsOfOneListHaveToAgree:
                 _swap(
                     f"[measured] {route}: tool calls per round: {shape}",
                     f"[measured] {route}: tool calls per round: {words}",
+                )
+            )
+        )
+
+    @pytest.mark.parametrize(
+        ("route", "shape", "rounds"),
+        [("dispatch route", "[1, 1]", 2), ("direct route", "[2, 2, 5, 3, 1]", 5)],
+    )
+    def test_an_empty_shape_fails(self, route: str, shape: str, rounds: int):
+        """Every rule about the entries holds of no entries, so the emptiness is its own rule.
+
+        With the round count moved to zero to match, an empty shape agrees with itself and with
+        every count derived from it, and a route whose table came from an `execute_code` call
+        is reported as having asked the model for nothing.
+        """
+        assert any(
+            "reports no tool calls at all" in r
+            for r in check.assess(
+                _swap(
+                    f"[measured] {route}: tool calls per round: {shape}",
+                    f"[measured] {route}: tool calls per round: []",
+                )
+                .replace(
+                    f"[measured] {route}: 12 lookup(s) over {rounds} tool-calling round(s)",
+                    f"[measured] {route}: 12 lookup(s) over 0 tool-calling round(s)",
+                )
+                .replace(
+                    f"[measured] {route}: 25 lookup(s) over {rounds} tool-calling round(s)",
+                    f"[measured] {route}: 25 lookup(s) over 0 tool-calling round(s)",
                 )
             )
         )
@@ -621,7 +679,7 @@ class TestTheRunsLeftTheirTrafficBehind:
     """#302's per-run subdirectory, and the cleanup #438 says nobody can do."""
 
     def test_no_files_left_behind_fails(self):
-        """Zero means the sample looked in the wrong place, which is what it did."""
+        """The transport writes a file per call and nothing deletes it, so zero cannot be."""
         assert any(
             "does not write" in r
             for r in check.assess(

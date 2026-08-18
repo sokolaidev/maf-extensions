@@ -460,15 +460,31 @@ def rows_in(text: str) -> int:
     )
 
 
+def graded(printed: str) -> tuple[int, int, int, int]:
+    """What one program's output is worth, most specific first: rows, cells, names, totals.
+
+    One function because it is two things that must not disagree — the figures a route reports
+    and the key that picks the program they are reported for. The cells cannot separate a table
+    from the same six values against the wrong states, and neither can the totals or the names;
+    only the rows can, so they lead.
+    """
+    return (
+        rows_in(printed),
+        figures_in(printed, PRODUCT_CELLS),
+        sum(1 for product in PRODUCTS.values() if product in printed),
+        figures_in(printed, STATE_TOTALS.values()),
+    )
+
+
 def the_program_that_answered(results: list[str]) -> str:
     """The one `execute_code` result the table was in, of however many the route ran.
 
     Joining them would let two programs satisfy the checks between them — one printing
     Washington, the other Oregon — where the task asks for one table and this route's
-    instruction asks for one program that owns the whole walk. Chosen on the cells, which are
-    the body of that table; a tie keeps the earlier program.
+    instruction asks for one program that owns the whole walk. Ranked on what the route is
+    graded on, so the order the programs ran in cannot decide which one answers for the route.
     """
-    return max(results, key=lambda one: figures_in(one, PRODUCT_CELLS), default="")
+    return max(results, key=graded, default="")
 
 
 def report(
@@ -477,6 +493,7 @@ def report(
     """One route's numbers, on the tagged lines the live check reads."""
     grouped = calls_per_message(response)
     printed = the_program_that_answered(tool_results(response, "execute_code"))
+    rows, cells, named, totals = graded(printed)
     print(
         f"{MEASURED}{route}: {len(ledger.asked)} lookup(s) over {len(grouped)} "
         f"tool-calling round(s)"
@@ -491,24 +508,14 @@ def report(
         f"(in {usage.get('input_token_count')}, cached {usage.get('cache_read_input_token_count')}, "
         f"out {usage.get('output_token_count')})"
     )
-    print(
-        f"{MEASURED}{route}: state totals the program printed: "
-        f"{figures_in(printed, STATE_TOTALS.values())} of {len(STATE_TOTALS)}"
-    )
+    print(f"{MEASURED}{route}: state totals the program printed: {totals} of {len(STATE_TOTALS)}")
     # The totals alone would pass a program that printed them and nothing underneath, so the
     # cells are counted separately: this is the table the task asked for, row by row.
-    print(
-        f"{MEASURED}{route}: product totals the program printed: "
-        f"{figures_in(printed, PRODUCT_CELLS)} of {len(PRODUCT_CELLS)}"
-    )
-    named = sum(1 for product in PRODUCTS.values() if product in printed)
+    print(f"{MEASURED}{route}: product totals the program printed: {cells} of {len(PRODUCT_CELLS)}")
     print(f"{MEASURED}{route}: product names in the table: {named} of {len(PRODUCTS)}")
     # Required of the dispatched route only, for the reason the names are: that model is never
     # handed a product name, so a row it labelled correctly can only have come from the walk.
-    print(
-        f"{MEASURED}{route}: table rows the program printed: {rows_in(printed)} "
-        f"of {len(PRODUCT_CELLS)}"
-    )
+    print(f"{MEASURED}{route}: table rows the program printed: {rows} of {len(PRODUCT_CELLS)}")
     carried = amounts_the_model_wrote(response)
     print(
         f"{MEASURED}{route}: sales figures the model wrote into code: "
