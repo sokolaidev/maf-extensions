@@ -240,19 +240,24 @@ class SandboxProgramTimeout(TimeoutError):
     - ``"sent"`` — a ``SIGKILL`` reached the pid. Not a promise the program is gone: the
       kernel can discard it, the pid is read from a file the program can rewrite, and children
       are never signalled.
-    - ``"refused"`` — a pid was recorded and no signal reached it, so something is running.
+    - ``"refused"`` — a pid was recorded and the signal did not land. Not evidence that a
+      program is running: the same value covers a pid too malformed to aim at, a pid the host
+      could not read, and a ``kill`` that reported no such process because the program had
+      already exited. What it says is that this transport did not stop anything.
     - ``"absent"`` — the run ended before any launcher ran, so nothing was started and there
       is nothing to clean up after.
-    - ``"unrecorded"`` — the launcher started something and no pid ever appeared, so a program
-      is running that this host has no handle on.
+    - ``"unrecorded"`` — the launcher returned and no pid ever appeared. The launcher may have
+      failed before publishing one, so this is not evidence of a running program either — it
+      is the absence of any handle on whether there is one.
     - ``"unknown"`` — the host could not establish which of those it was: the pid could not be
       read, or the launcher's own call expired between starting the program and publishing its
       pid. Evidence of neither, and the only honest answer for that window.
 
     Only ``"absent"`` says a program was never started. **None of the others confirms one was
-    stopped** — not even ``"sent"``, for the reasons above — so a host that needs termination
-    rather than a best effort applies its own policy on top, and disposing the sandbox is what
-    that policy has to reach for.
+    stopped, and none confirms one is running** — not even ``"sent"``, for the reasons above.
+    They are degrees of not knowing, so a host that needs termination rather than a best
+    effort applies its own policy on top, and disposing the sandbox is what that policy has to
+    reach for.
 
     ``output`` is what the program had printed when the run was given up on, already capped —
     empty on the two starting legs, where there is nothing to have read yet. An attribute
@@ -908,19 +913,32 @@ async def _supervise(
         # `TimeoutError` from it, without re-reading a clock that may be a resolution behind
         # the timer that fired. The backend's own text stays in the log for the same reason it
         # does in `_completed`: this message reaches a model through whichever kind is running.
+        # The launcher backgrounds the program and returns, so an `exec` that ran out may
+        # still have started one, and this leg is reachable only once the launcher had time to
+        # run — so the marker is read before anything is concluded, which is also the order
+        # `_stop_the_program` requires.
+        landed = await _marker_if_present(sandbox, layout, _a_grace_from_now())
+        if landed is not None:
+            # The marker is proof the program finished, so what ran out was the reply and not
+            # the run. Raising here would discard an exit code already in hand; the supervisor
+            # loop makes the same recovery when a call runs out on top of a landed marker.
+            logger.warning(
+                "host tools: the run finished, but the call that started it had already run "
+                "out: %s",
+                error_detail(spent),
+            )
+            return await _completed(sandbox, run, layout, landed, deadline)
+        # `exec` was handed this run's remainder, so its expiry is this run's — every
+        # `TimeoutError` from it, without re-reading a clock that may be a resolution behind
+        # the timer that fired. The backend's own text stays in the log for the same reason it
+        # does in `_completed`: this message reaches a model through whichever kind is running.
         logger.warning(
             "host tools: the run ran out while starting the program: %s", error_detail(spent)
         )
-        # The launcher backgrounds the program and returns, so an `exec` that ran out may
-        # still have started one — the same case that leaves output nobody read. The marker is
-        # read first, as `_stop_the_program` requires: this leg is reachable when the launcher
-        # had time to run to completion, so the program has most likely finished.
-        fate: _Fate = "unknown"
-        if await _marker_if_present(sandbox, layout, _a_grace_from_now()) is None:
-            # A grace of its own, measured after the marker read rather than shared with it.
-            fate = _nothing_is_proven(
-                await _stop_the_program(sandbox, layout, until=_a_grace_from_now())
-            )
+        # A grace of its own, measured after the marker read rather than shared with it.
+        fate = _nothing_is_proven(
+            await _stop_the_program(sandbox, layout, until=_a_grace_from_now())
+        )
         raise SandboxProgramTimeout(
             f"the run's {timeout:g}s were gone while starting the program"
             f"{_clause_while_starting(fate)}",

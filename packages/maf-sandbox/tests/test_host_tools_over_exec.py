@@ -2690,8 +2690,8 @@ class TestStoppingARunThatOverran:
     def test_no_pid_hedges_rather_than_going_quiet(self):
         """The launcher returned 0, so something started; a missing pid does not say otherwise.
 
-        Between a needless disposal and a silent leak this errs towards the disposal, because
-        the silent leak is the defect the whole change exists to remove.
+        The hedge errs towards a needless disposal rather than a silent leak: a caller told
+        that nothing is running has no way back, while one told to check does.
         """
         guest = _GuestThatRecordsTheKill([], finish=False, pid=None)
         with pytest.raises(SandboxProgramTimeout) as expired:
@@ -3450,12 +3450,12 @@ class TestWhatEveryExitPathOwesTheRun:
 
         assert guest.kills != [], f"the read spent the kill's budget: {guest.commands}"
 
-    def test_the_starting_leg_does_not_kill_a_run_that_finished(self):
-        """The marker is read before the signal, because a finished pid can be reused.
+    def test_the_starting_leg_returns_a_run_that_finished(self):
+        """A lost `exec` reply is not a lost run, and a finished pid may belong to a stranger.
 
-        Reachable when the launcher had time to run to completion but its `exec` reply did
-        not arrive: the program is done, its pid may already belong to something else, and
-        signalling by it would reach a stranger while reporting the run as stopped.
+        Reachable when the launcher had time to run to completion but its `exec` reply did not
+        arrive. The marker settles it: the program is done, so its exit code is the answer and
+        signalling by a pid that may already have been reused would reach something else.
         """
 
         class _FinishedButTheExecRanOut(_GuestThatRecordsTheKill):
@@ -3469,9 +3469,9 @@ class TestWhatEveryExitPathOwesTheRun:
                 raise TimeoutError
 
         guest = _FinishedButTheExecRanOut([], finish=False)
-        with pytest.raises(SandboxProgramTimeout):
-            _run(guest, HostToolRun(_registry()), timeout=30.0)
+        finished = _run(guest, HostToolRun(_registry()), timeout=30.0)
 
+        assert finished.exit_code == 0, "a run that finished was reported as a timeout"
         assert guest.kills == [], f"a finished run was killed by pid: {guest.commands}"
 
     def test_a_run_that_failed_for_another_reason_is_still_stopped(self):
@@ -3553,10 +3553,9 @@ class TestAPidAndALayoutThatCannotBeUsed:
     def test_a_pid_too_large_to_read_hedges_rather_than_going_quiet(self):
         """`absent` means no pid file; an oversized one is a file that exists and cannot be used.
 
-        The read returns a sentinel rather than a string for anything over the cap, and that
-        used to collapse into `absent` — which on the launcher-`exec` leg is reported by saying
-        nothing at all. A guest padding the file past 32 bytes would have opted out of both the
-        signal and the mention.
+        The read returns a sentinel rather than a string for anything over the cap. Collapsing
+        that into `absent` would let a guest padding the file past 32 bytes opt out of both the
+        signal and the mention of it, so it reports as a pid that cannot be used.
         """
 
         class _OversizedPid(_GuestThatRecordsTheKill):
