@@ -172,6 +172,9 @@ class _CallingSandbox(_ScriptedSandbox):
 
     async def exec(self, command, *, working_directory, timeout):
         result = await super().exec(command, working_directory=working_directory, timeout=timeout)
+        if str(command).startswith(("kill", "rm ")):
+            # Neither starts a program, so neither is a run this fake should record.
+            return result
         layout = guest_run_layout(working_directory, program=_PROGRAM_FILENAME)
         self.layouts.append(layout)
         self._outstanding = layout
@@ -214,6 +217,9 @@ class _FinishingSandbox(_ProducingSandbox):
 
     async def exec(self, command, *, working_directory, timeout):
         result = await super().exec(command, working_directory=working_directory, timeout=timeout)
+        if str(command).startswith(("kill", "rm ")):
+            # Neither starts a program, so neither is a run this fake should record.
+            return result
         layout = guest_run_layout(working_directory, program=_PROGRAM_FILENAME)
         self.contents[layout.output] = b"ran"
         self.contents[layout.exit_code] = b"0"
@@ -2335,6 +2341,9 @@ class _StallingSandbox(_ScriptedSandbox):
 
     async def exec(self, command, *, working_directory, timeout):
         result = await super().exec(command, working_directory=working_directory, timeout=timeout)
+        if str(command).startswith(("kill", "rm ")):
+            # Neither starts a program, so neither is a run this fake should record.
+            return result
         layout = guest_run_layout(working_directory, program=_PROGRAM_FILENAME)
         self.contents[layout.output] = self.printed
         return result
