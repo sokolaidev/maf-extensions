@@ -81,6 +81,11 @@ _MINIMUM_LOOKUPS = 12
 _NAIVE_LOOKUPS = 21
 _REGISTRY_DEFAULT_CAP = 16
 
+#: The worst live run of thirteen. The naive figure is what the walk costs written carelessly,
+#: not a ceiling — the model writes the program, and a program that re-reads a name it already
+#: has costs more than either arithmetic predicts. A cap has to clear this, not that.
+_OBSERVED_MAX_LOOKUPS = 29
+
 #: Product names, which only the by-product table needs. A per-state total is a sum of the
 #: sales amounts, so a program can print both totals without ever asking for one.
 _PRODUCTS = 3
@@ -188,6 +193,17 @@ def _assess_the_cap_was_budgeted(output: str) -> list[str]:
             f"the run allowed {cap} dispatches against {naive} for the same walk written "
             "without caching. A budget that only fits the efficient program is decided by how "
             "the model felt, and this sample is here because the default does not fit at all"
+        )
+    elif cap <= _OBSERVED_MAX_LOOKUPS:
+        # Above both arithmetics and still short: neither figure is a ceiling, because the
+        # model writes the program. A cap here passes on the run that budgeted it and
+        # truncates the next one, which is the worst way for this to fail — intermittently,
+        # with a partial table and no error.
+        failures.append(
+            f"the run allowed {cap} dispatches, above the {naive} the walk costs written "
+            f"carelessly but not above the {_OBSERVED_MAX_LOOKUPS} a live run has actually "
+            "used. Neither arithmetic is a ceiling — the model writes the program — so a cap "
+            "in this range truncates a later run rather than this one"
         )
     return failures
 

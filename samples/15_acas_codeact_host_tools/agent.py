@@ -106,12 +106,8 @@ DIRECT_THREAD = "15-acas-codeact-host-tools-direct"
 #: declares.
 CODEACT_IMAGE = "mcr.microsoft.com/devcontainers/python:3.13-bookworm"
 
-# --------------------------------------------------------------------------------------
-# Three tables, as a real deployment would have them: in the host, behind a lookup, and
-# nowhere the sandbox can reach. With no `egress_allow` the guest initiates nothing at all,
-# so a program that wants any of this has exactly one road to it.
-# --------------------------------------------------------------------------------------
-
+#: Three tables in the host process, and the spec below asks for no `egress_allow`, so the
+#: guest initiates nothing: a program that wants any of this has one road to it.
 STATES = {"Washington": "ST-WA", "Oregon": "ST-OR"}
 STORES = {"ST-WA": ["STO-101", "STO-102", "STO-103"], "ST-OR": ["STO-201", "STO-202"]}
 PRODUCTS = {"PRD-1": "Widget", "PRD-2": "Gasket", "PRD-3": "Flange"}
@@ -438,12 +434,23 @@ def figures_in(text: str, expected: Iterable[float]) -> int:
     return sum(1 for want in expected if any(abs(got - want) < 0.005 for got in printed))
 
 
+def the_program_that_answered(results: list[str]) -> str:
+    """The one `execute_code` result the table was in, of however many the route ran.
+
+    Joining them would let two programs satisfy the checks between them — one printing
+    Washington, the other Oregon — where the task asks for one table and this route's
+    instruction asks for one program that owns the whole walk. Chosen on the cells, which are
+    the body of that table; a tie keeps the earlier program.
+    """
+    return max(results, key=lambda one: figures_in(one, PRODUCT_CELLS), default="")
+
+
 def report(
     route: str, seconds: float, usage: dict[str, Any], ledger: Ledger, response: object
 ) -> int:
     """One route's numbers, on the tagged lines the live check reads."""
     grouped = calls_per_message(response)
-    printed = "\n".join(tool_results(response, "execute_code"))
+    printed = the_program_that_answered(tool_results(response, "execute_code"))
     print(
         f"{MEASURED}{route}: {len(ledger.asked)} lookup(s) over {len(grouped)} "
         f"tool-calling round(s)"

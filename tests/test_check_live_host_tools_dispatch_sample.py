@@ -3,7 +3,7 @@
 `_HEALTHY` is a real run of `samples/15_acas_codeact_host_tools` against a live ACAS sandbox
 and a live model, verbatim apart from the two tables the model produced.
 
-The suite is organised around what the check is *allowed* to fail a release for. Thirteen live
+The suite is organised around what the check is *allowed* to fail a release for. Fourteen live
 runs went into choosing that: the figures below moved between them — 18 to 29 lookups, 35s to
 87s, two to four dispatched tool-calling rounds — and what did not move is what is asserted.
 
@@ -261,6 +261,34 @@ class TestTheCapIsJudgedAgainstTheWorkload:
                     "[measured] dispatch cap for the run: 21 (the walk needs 12",
                 )
             )
+        )
+
+    def test_a_cap_above_the_naive_figure_but_below_a_real_run_fails(self):
+        """22 clears both arithmetics and would still truncate the run that used 29.
+
+        The worst failure shape this check has: such a cap passes on the run that chose it and
+        truncates the next one, which comes back with half a table and no error.
+        """
+        assert any(
+            "truncates a later run" in r
+            for r in check.assess(
+                _swap(
+                    "[measured] dispatch cap for the run: 32 (the walk needs 12",
+                    "[measured] dispatch cap for the run: 22 (the walk needs 12",
+                )
+            )
+        )
+
+    def test_a_cap_above_the_worst_live_run_is_fine(self):
+        """The bound is the workload's, not a copy of the sample's constant."""
+        assert (
+            check.assess(
+                _swap(
+                    "[measured] dispatch cap for the run: 32 (the walk needs 12",
+                    "[measured] dispatch cap for the run: 30 (the walk needs 12",
+                )
+            )
+            == []
         )
 
     def test_a_cap_below_the_minimum_still_reports_the_truncation(self):

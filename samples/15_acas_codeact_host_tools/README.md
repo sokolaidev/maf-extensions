@@ -66,7 +66,7 @@ Dispatched, the model writes none of them and *cannot*: the program exists befor
 
 ## The dispatch cap is real, and this workload exceeds the default
 
-`HostToolRegistry` allows 16 dispatches a run. This walk needs up to 21 written naively, and live runs used 18 to 29 — so the default does not fit it. A program that exhausts the budget does not raise: it comes back with a partial answer and `Need more host-tool budget to complete the table` in its output, which is a wrong summary rather than a failure.
+`HostToolRegistry` allows 16 dispatches a run. Written carelessly — one product-name lookup per sales row — the walk costs 21, and that is a baseline rather than a ceiling: the model writes the program, and live runs used 18 to 29. So neither the default nor the arithmetic fits it. A program that exhausts the budget does not raise: it comes back with a partial answer and `Need more host-tool budget to complete the table` in its output, which is a wrong summary rather than a failure.
 
 So the sample budgets for it out loud. A call-heavy host has to, and the arithmetic is not the whole story: the *model* writes the program, and a program that looks up a product name per sales row asks twelve times where a caching one asks three.
 
@@ -90,9 +90,9 @@ Disposing the sandbox is the only thing that removes them, which is what the foo
 
 ## What the check enforces
 
-Thirteen live runs decided this. The lookup count moved between 18 and 29, wall clock between 35s and 87s, dispatched tool-calling rounds between two and four. What did not move is what is asserted:
+Fourteen live runs decided this. The lookup count moved between 18 and 29, wall clock between 35s and 87s, dispatched tool-calling rounds between two and four. What did not move is what is asserted:
 
-- **Both programs printed the whole table** — both state totals *and* all six per-state, per-product cells, read from the framework's record of what `execute_code` returned, so an interpreter produced them. The totals alone would not do it: a total is a sum, and a sum survives losing a row underneath it. The cells are matched to the cent rather than as text, because a program that adds floats prints `1791.1499999999999` for a cell worth `1791.15` — the right answer, and one a string match would have failed a correct run for.
+- **Both routes had one program print the whole table** — both state totals *and* all six per-state, per-product cells, in a single `execute_code` result, read from the framework's record rather than from a model's prose. One result, not all of them joined: the task asks for one table, and two programs printing a state each would otherwise satisfy it between them. The totals alone would not do it: a total is a sum, and a sum survives losing a row underneath it. The cells are matched to the cent rather than as text, because a program that adds floats prints `1791.1499999999999` for a cell worth `1791.15` — the right answer, and one a string match would have failed a correct run for.
 - **Direct needed more tool-calling rounds than dispatch**, and its shape shows at least four batches — one per stage. The shape and the round count come from one list, so they have to agree.
 - **Who carried the figures**: none dispatched, all of them direct. Both halves are structural — one is impossible, the other is forced.
 - **All four lookup stages ran, on both routes.** A count is not enough: a per-state total is a sum of the sales amounts, so a program can skip `product_name`, print both totals and satisfy a count-and-shape check while never touching the stage the comparison is about. The dispatched route's table must also name all three products, because that model is never handed one — the direct route's model holds them and usually labels the table in its own reply, so that half is recorded rather than required.
