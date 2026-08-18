@@ -920,3 +920,137 @@ class TestMain:
             == 1
         )
         assert "snapshot not found" in capsys.readouterr().err
+
+    def test_dispatch_with_a_newly_admitting_break_emits_run_and_does_not_refuse(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ):
+        # Once the upload is immutable, a newly discovered break must dispatch instead of refusing.
+        def fake_fetch(distribution: str) -> dict[str, list[str]]:
+            if distribution == "maf-sandbox-docker":
+                return {
+                    "0.2.0": ["maf-sandbox<0.12,>=0.10.0"],
+                    "0.6.0": ["maf-sandbox<0.13,>=0.11.0"],
+                    "0.7.0": ["maf-sandbox<0.13,>=0.11.0"],
+                }
+            return {"0.6.0": ["maf-sandbox<0.13,>=0.10.0"]}
+
+        monkeypatch.setattr(check, "fetch_version_requirements", fake_fetch)
+
+        def _breaks_070(_wheel: Path, distribution: str, version_str: str) -> str | None:
+            if distribution == "maf-sandbox-docker" and version_str == "0.7.0":
+                return "ImportError: cannot import name 'CallerContext'"
+            return None
+
+        monkeypatch.setattr(check, "install_and_import", _breaks_070)
+        snap = tmp_path / "snap.json"
+        check.write_snapshot(snap, _ADMITTING_AT_BUILD)
+        assert (
+            check.main(
+                [
+                    _ARGV0,
+                    "0.11.0",
+                    str(self._wheel(tmp_path)),
+                    "--since-snapshot",
+                    str(snap),
+                    "--dispatch",
+                ]
+            )
+            == 0
+        )
+        captured = capsys.readouterr()
+        assert "live_check=run" in captured.out
+        assert "maf-sandbox-docker==0.7.0: ImportError" in captured.err
+        # The refusal prose belongs to the pre-upload guard, not the post-upload dispatch.
+        assert "Release order" not in captured.err
+        assert "#443" in captured.err or "443" in captured.err
+
+    def test_dispatch_with_nothing_new_emits_run_installing_nothing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ):
+        # `--dispatch` does not change the common case: the admitting set at upload matches what
+        # build tested, the diff is empty, install_and_import is never called, and the verdict is
+        # run — the build-tested versions are immutable and still import.
+        monkeypatch.setattr(check, "fetch_version_requirements", _fake_fetch_with_docker_020)
+
+        calls: list[tuple[str, str]] = []
+
+        def _spy(_wheel: Path, distribution: str, version: str) -> str | None:
+            calls.append((distribution, version))
+            return None
+
+        monkeypatch.setattr(check, "install_and_import", _spy)
+        snap = tmp_path / "snap.json"
+        check.write_snapshot(snap, _ADMITTING_AT_BUILD)
+        assert (
+            check.main(
+                [
+                    _ARGV0,
+                    "0.11.0",
+                    str(self._wheel(tmp_path)),
+                    "--since-snapshot",
+                    str(snap),
+                    "--dispatch",
+                ]
+            )
+            == 0
+        )
+        assert calls == []
+        assert "live_check=run" in capsys.readouterr().out
+
+    def test_dispatch_with_nothing_admitting_emits_skip(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ):
+        # The skip path is unaffected by `--dispatch`: nothing admits after the upload, so the
+        # live check is skipped — the #273 window held through the upload.
+        monkeypatch.setattr(
+            check,
+            "fetch_version_requirements",
+            lambda _d: {"0.6.0": ["maf-sandbox<0.11,>=0.10.0"]},  # ceiling excludes 0.11.0
+        )
+        monkeypatch.setattr(check, "install_and_import", _ok)
+        snap = tmp_path / "snap.json"
+        check.write_snapshot(snap, [])  # build tested nothing
+        assert (
+            check.main(
+                [
+                    _ARGV0,
+                    "0.11.0",
+                    str(self._wheel(tmp_path)),
+                    "--since-snapshot",
+                    str(snap),
+                    "--dispatch",
+                ]
+            )
+            == 0
+        )
+        assert "live_check=skip" in capsys.readouterr().out
+
+    def test_dispatch_with_emit_snapshot_is_a_usage_error(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ):
+        # `--dispatch` derives the verdict after the upload; `--emit-snapshot` records what the
+        # build run tested. The two belong to different runs, so combining them is a misuse.
+        snap = tmp_path / "snap.json"
+        assert (
+            check.main(
+                [
+                    _ARGV0,
+                    "0.11.0",
+                    str(self._wheel(tmp_path)),
+                    "--emit-snapshot",
+                    str(snap),
+                    "--dispatch",
+                ]
+            )
+            == 2
+        )
+        assert "usage:" in capsys.readouterr().err
