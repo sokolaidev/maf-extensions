@@ -2876,8 +2876,14 @@ class TestThePidAgainstARealShell:
             except ProcessLookupError:
                 return
             time.sleep(0.05)
-        os.kill(running, _SIGKILL)  # do not leave it behind if the assertion fails
-        raise AssertionError(f"{running} survived SIGKILL, so the recorded pid is not the program")
+        # Deliberately not signalled again. By now the number may belong to something else —
+        # the wait above is exactly long enough for the guest to have recycled it — and a
+        # second SIGKILL would land on a stranger on the machine running the tests. A pid
+        # that outlived a SIGKILL is a failure worth reporting, not one worth chasing.
+        raise AssertionError(
+            f"{running} survived SIGKILL, so the recorded pid is not the program; it may "
+            f"still be running on this machine"
+        )
 
     @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
     @pytest.mark.skipif(os.pathsep != ":", reason="the launcher's path handling is POSIX")
@@ -3517,3 +3523,67 @@ class TestWhatTheSecondReviewFound:
             )
         )
         assert guest.removals == [], f"the model's directory was removed: {guest.commands}"
+
+
+class TestWhatTheFourthReviewFound:
+    def test_a_pid_too_large_to_read_hedges_rather_than_going_quiet(self):
+        """`absent` means no pid file; an oversized one is a file that exists and cannot be used.
+
+        The read returns a sentinel rather than a string for anything over the cap, and that
+        used to collapse into `absent` — which on the launcher-`exec` leg is reported by saying
+        nothing at all. A guest padding the file past 32 bytes would have opted out of both the
+        signal and the mention.
+        """
+
+        class _OversizedPid(_GuestThatRecordsTheKill):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                self.commands.append(str(command))
+                if "kill" in str(command):
+                    return ExecResult(stdout="", exit_code=0)
+                self.files[_LAYOUT.pid] = b"4" * 4096
+                raise TimeoutError
+
+        guest = _OversizedPid([], finish=False)
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=30.0)
+
+        assert guest.kills == []
+        assert "may still be running" in str(expired.value), str(expired.value)
+
+    def test_a_layout_that_scatters_the_transports_files_is_refused(self):
+        """The directory to delete is inferred from `shim`, so the rest must agree with it.
+
+        A layout that puts the exit marker elsewhere would have this remove a directory holding
+        only some of what it owns, and leave the rest behind — wrong in both directions at once.
+        """
+        run = "/maf-sandbox/work/run-1"
+        served = f"{run}/host_tools"
+        scattered = GuestRunLayout(
+            directory=run,
+            work=f"{run}/work",
+            program=f"{served}/program.py",
+            shim=f"{served}/{SHIM_MODULE}",
+            launcher=f"{served}/run_program.sh",
+            calls=f"{served}/{CALLS_DIRECTORY}",
+            output=f"{served}/program_output.txt",
+            # Somewhere else entirely: the transport owns it and would not remove it.
+            exit_code=f"{run}/elsewhere/program_exit_code",
+            pid=f"{served}/program_pid",
+        )
+        guest = _GuestThatRecordsRemovals([], finish=True)
+        asyncio.run(
+            host_tools_over_exec._reclaim_the_transports_own(
+                guest, scattered, until=time.monotonic() + 5.0
+            )
+        )
+        assert guest.removals == [], f"a scattered layout was still removed: {guest.commands}"
+
+    def test_a_layout_the_factory_built_is_not_refused(self):
+        """The guard above must not reject the shape every kind actually uses."""
+        guest = _GuestThatRecordsRemovals([], finish=True)
+        asyncio.run(
+            host_tools_over_exec._reclaim_the_transports_own(
+                guest, _LAYOUT, until=time.monotonic() + 5.0
+            )
+        )
+        assert len(guest.removals) == 1, guest.commands

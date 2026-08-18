@@ -754,10 +754,12 @@ async def dispatch_over_exec(
     Raises:
         SandboxProgramTimeout: The run's own bound expired. Where the program had started,
             its output up to that point is in the message and on ``output``, and the program
-            is killed before this is raised — by pid, over ``exec``, which is why no capability
-            beyond the ones this transport already needs is involved. A kill that does not land
-            leaves the process going, and the message says so; disposing of the sandbox is then
-            what stops it. On the two starting legs, the launcher upload and the ``exec`` that
+            has been sent ``SIGKILL`` before this is raised — by pid, over ``exec``, which is
+            why no capability beyond the ones this transport already needs is involved. That is
+            not the same as the program being gone: ``kill`` reports success for a signal the
+            kernel discards, the pid is read from a file the program can rewrite, and children
+            are not signalled at all. Where the signal could not be sent the message says so,
+            and disposing of the sandbox is then what stops it. On the two starting legs, the launcher upload and the ``exec`` that
             runs it, ``output`` is empty instead: the output file does not exist yet, and on a
             backend that began the command before its own call returned there may be output
             nobody read — so the kill is attempted on the second of those legs too.
@@ -1102,6 +1104,28 @@ async def _reclaim_the_transports_own(
     split, including every request and response the run exchanged with the host.
     """
     served = posixpath.dirname(layout.shim)
+    scattered = [
+        path
+        for path in (
+            layout.program,
+            layout.launcher,
+            layout.calls,
+            layout.output,
+            layout.exit_code,
+            layout.pid,
+        )
+        if posixpath.dirname(path) != served
+    ]
+    if scattered:
+        # The directory to delete is inferred from one field, so the others have to agree with
+        # it. A layout that spreads them keeps files this owns while removing a directory that
+        # holds something else — both halves wrong, and silently.
+        logger.warning(
+            "host tools: refusing to remove %r — this layout puts %s outside it",
+            served,
+            ", ".join(sorted(scattered)),
+        )
+        return
     overlaps = (
         guest_path_relative_to(served, layout.work) is not None
         or guest_path_relative_to(layout.work, served) is not None
@@ -1165,16 +1189,17 @@ async def _stop_the_program(sandbox: Sandbox, layout: GuestRunLayout, *, until: 
         # One leg reports `absent` by saying nothing at all, and silence is the wrong answer to
         # a program whose fate is unknown.
         return "refused"
+    if running is None:
+        # The only state that means no program was recorded. Everything below is a file that
+        # exists and cannot be used, which is a different answer and one leg reports it as one.
+        return "absent"
     pid = running.strip() if isinstance(running, str) else ""
     # ASCII digits and positive, both load-bearing. `str.isdigit` admits other numeral systems
     # that `int` then normalises, and `kill -KILL 0` signals the whole process group rather
     # than one program — and the file is guest-writable, so its contents are not this host's
-    # to trust. A real `$!` is always a positive ASCII integer.
-    if not pid:
-        return "absent"
+    # to trust. A real `$!` is always a positive ASCII integer. An oversized read arrives here
+    # as a sentinel rather than a string, and is unusable in the same way.
     if not (pid.isascii() and pid.isdigit()) or int(pid) <= 0:
-        # Something was written and it is not a pid. A guest can arrange that deliberately, so
-        # this hedges rather than reporting the run as nothing-to-stop.
         return "refused"
     # Its own deadline, not what is left of the read's: a slow pid read would otherwise leave
     # the signal no time to be sent, which is the runaway this exists to stop.
