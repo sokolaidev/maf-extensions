@@ -759,13 +759,16 @@ class TestMakeCodeactTools:
             _tool(backend)
 
     def test_a_registry_on_a_backend_that_cannot_serve_host_tools_is_refused_at_attach(self):
-        """No shipped backend declares `HOST_TOOLS`, so wiring a registry has to fail where
-        the tool is *built* — not at the first call, and not silently. That is the promise the
-        module docstring and the README both make, and this is where it is held.
+        """Wiring a registry a backend cannot serve has to fail where the tool is *built* —
+        not at the first call, and not silently. That is the promise the module docstring and
+        the README both make, and this is where it is held.
 
-        `_PULLS` is what a real backend offers today. The refusal has to come from the
-        capability match rather than from the registry being empty, so the registry here has a
-        tool in it.
+        `_PULLS` is `{EXEC, FILES_IN, FILES_OUT}` — every file channel dispatch rides on, and
+        `HOST_TOOLS` withheld. No shipped backend has that shape: docker and acas declare the
+        capability, and wslc lacks `FILES_OUT` as well. Built rather than borrowed on purpose,
+        so the refusal can only come from the one capability under test. It has to come from
+        the capability match rather than from the registry being empty, so the registry here
+        has a tool in it.
         """
         with pytest.raises(SandboxCapabilityNotSupported):
             _tool(_backend(capabilities=_PULLS), host_tools=_registry(_round_half_up))

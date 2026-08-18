@@ -13,9 +13,10 @@ Channels the host chooses among, and stdout is always there.  A
 exist rather than only data the model wrote into its own source.  An **output sink** plus a
 :class:`CodeactOutputs` mode adds a way for files the program produces to reach host state.
 A **host-tool registry** adds functions the program may call out to, served over
-:func:`~maf_sandbox.dispatch_over_exec` — and no shipped backend declares
-:data:`~maf_sandbox.Capability.HOST_TOOLS`, so that wiring is *refused* until one does,
-where the tool would have been built rather than at the first call.  An **egress allowlist**
+:func:`~maf_sandbox.dispatch_over_exec` on a backend declaring
+:data:`~maf_sandbox.Capability.HOST_TOOLS` — the Docker and ACA Sandboxes backends do; the
+WSL container backend does not, and against it that wiring is *refused* where the tool would
+have been built rather than at the first call.  An **egress allowlist**
 opens named hosts to the program; empty by default, so the network stays closed unless a host
 opens it.
 Wire none of them and this is the stdout-only kind it has always been, with nothing
