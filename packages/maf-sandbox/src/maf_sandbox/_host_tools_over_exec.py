@@ -991,12 +991,12 @@ async def _supervise(
 #: pid 1 in the guest's own namespace, both make ``kill`` exit 0 while the target lives. So the
 #: strongest of these means *signalled*, and the docs say what that is and is not worth.
 #:
-#: ``"absent"`` is not a quieter ``"refused"``: it is reserved for *no pid file at all*, which
-#: on the leg where the launcher's own ``exec`` never returned is the difference between a
-#: program nobody can signal and no program to signal. Anything else unusable — unreadable,
-#: oversized, not a positive integer — is ``"refused"``, because a host that cannot tell must
-#: not report the reassuring answer.
-_Fate = Literal["signalled", "refused", "absent"]
+#: The three that are not ``"signalled"`` are kept apart because one leg reports them
+#: differently. ``"absent"`` is *no pid file at all*, so nothing was started; ``"refused"`` is a
+#: pid that exists and could not be used or signalled, so something was; ``"unknown"`` is a host
+#: that could not even look, which is evidence of neither. Collapsing the last two would have a
+#: backend hiccup assert that a program is running.
+_Fate = Literal["signalled", "refused", "absent", "unknown"]
 
 #: Said once, where a program is known to have been started and could not be stopped. Silence
 #: when the kill worked, because a stopped program is what a timeout is supposed to mean and a
@@ -1067,6 +1067,10 @@ async def reclaim_run(sandbox: Sandbox, layout: GuestRunLayout, *, timeout: floa
     reclaims before collecting loses them, and :func:`dispatch_over_exec` cannot do this itself
     for the same reason.
 
+    Raises:
+        ValueError: when ``timeout`` is not a finite positive number of seconds. An infinite one
+            reaches the backend's own ``exec`` bound, where it means this never returns.
+
     Returns:
         Whether the run directory is gone. ``False`` is a data-retention failure rather than a
         tidiness one — nothing in the protocol deletes and ``acquire`` is get-or-create, so what
@@ -1097,14 +1101,17 @@ async def reclaim_run(sandbox: Sandbox, layout: GuestRunLayout, *, timeout: floa
             ", ".join(sorted(strays)),
         )
         return False
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError(f"timeout must be a finite positive number of seconds, not {timeout}")
     return await _remove_tree(sandbox, layout.directory, until=time.monotonic() + timeout)
 
 
 def _clause_after_the_launcher_started(fate: _Fate) -> str:
     """For the two legs inside the supervisor loop, where the launcher returned 0.
 
-    A missing pid hedges rather than staying quiet: the launcher returned 0, so something
-    started, and between a needless disposal and a silent leak this errs towards the disposal.
+    Anything short of a signal hedges rather than staying quiet: the launcher returned 0, so
+    something started, and between a needless disposal and a silent leak this errs towards the
+    disposal.
     """
     return _SIGNALLED if fate == "signalled" else _NOT_SIGNALLED
 
@@ -1119,6 +1126,10 @@ def _clause_while_starting(fate: _Fate) -> str:
         return ""
     if fate == "signalled":
         return f" (it had started the program{_SIGNALLED})"
+    if fate == "unknown":
+        # The pid could not be looked for, so whether a program was started is exactly what
+        # this host does not know. Saying it started would replace one unknown with a claim.
+        return " (whether it had started the program could not be established)"
     return f" (it had started the program{_NOT_SIGNALLED})"
 
 
@@ -1219,7 +1230,7 @@ async def _stop_the_program(sandbox: Sandbox, layout: GuestRunLayout, *, until: 
         logger.warning(
             "host tools: could not look for the program's pid: %s", error_detail(unstattable)
         )
-        return "refused"
+        return "unknown"
     if recorded is None:
         return "absent"
     try:

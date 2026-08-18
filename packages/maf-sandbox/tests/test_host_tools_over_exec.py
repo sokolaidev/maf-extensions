@@ -3429,11 +3429,11 @@ class TestWhatEveryExitPathOwesTheRun:
         assert guest.kills != [], f"the read spent the kill's budget: {guest.commands}"
 
     def test_the_starting_leg_does_not_kill_a_run_that_finished(self):
-        """`_stop_the_program` requires the marker check, and this leg once skipped it.
+        """The marker is read before the signal, because a finished pid can be reused.
 
         Reachable when the launcher had time to run to completion but its `exec` reply did
         not arrive: the program is done, its pid may already belong to something else, and
-        killing by it signals a stranger while reporting the run as stopped.
+        signalling by it would reach a stranger while reporting the run as stopped.
         """
 
         class _FinishedButTheExecRanOut(_GuestThatRecordsTheKill):
@@ -3634,3 +3634,43 @@ class TestAPidAndALayoutThatCannotBeUsed:
 
         assert guest.kills == []
         assert "may still be running" in str(expired.value), str(expired.value)
+
+    @pytest.mark.parametrize("bad", [0.0, -1.0, float("inf"), float("nan")])
+    def test_reclaim_run_refuses_a_timeout_that_would_not_bound_it(self, bad: float):
+        """An infinite bound reaches the backend's own `exec`, where it means never returning.
+
+        The other public entry points in this module validate the same way, and this one is a
+        `finally`-path call — a caller that hangs here loses the run's own result too.
+        """
+        guest = _GuestThatRecordsRemovals([], finish=True)
+        with pytest.raises(ValueError, match="finite positive number"):
+            asyncio.run(reclaim_run(guest, _LAYOUT, timeout=bad))
+        assert guest.removals == []
+
+    def test_a_pid_the_host_could_not_look_for_claims_nothing_about_a_program(self):
+        """A failed stat is evidence of neither a started program nor an absent one.
+
+        The launcher-`exec` leg reports each state differently, so collapsing "could not look"
+        into "a pid was there and could not be signalled" would have a backend hiccup assert
+        that a program is running.
+        """
+
+        class _CannotStatThePid(_GuestThatRecordsTheKill):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                self.commands.append(str(command))
+                if "kill" in str(command):
+                    return ExecResult(stdout="", exit_code=0)
+                raise TimeoutError
+
+            async def stat_file(self, path: str, *, working_directory: str):
+                if path == _LAYOUT.pid:
+                    raise PermissionError("the daemon said no")
+                return await super().stat_file(path, working_directory=working_directory)
+
+        guest = _CannotStatThePid([], finish=False)
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=30.0)
+
+        message = str(expired.value)
+        assert "could not be established" in message, message
+        assert "(it had started the program" not in message, message
