@@ -176,11 +176,8 @@ def truth() -> dict[str, dict[str, float]]:
 TRUTH = truth()
 STATE_TOTALS = {state: round(sum(rows.values()), 2) for state, rows in TRUTH.items()}
 
-#: Every per-state, per-product cell of the answer — the table the task asks for, one row per
-#: state and product. The state totals do not establish it: a total is a sum, and a sum hides
-#: its terms, so a program can print both totals and still have omitted a state's rows or got
-#: every one of them wrong. Six cells, all distinct, and distinct from the totals and from the
-#: twelve raw amounts, so a match is not an accident of the dataset.
+#: Every per-state, per-product cell of the answer, which the two state totals do not
+#: establish: a total is a sum, and a sum survives losing a row underneath it.
 PRODUCT_CELLS = tuple(amount for rows in TRUTH.values() for amount in rows.values())
 
 TASK = (
@@ -418,8 +415,10 @@ def amounts_the_model_wrote(response: object) -> int:
     return len({amount.rstrip("0").rstrip(".") for amount in seen})
 
 
-#: A decimal number as a program prints one, thousands separator and all.
-_PRINTED_NUMBER = re.compile(r"\d[\d,]*\.\d+")
+#: A decimal number as a program prints one: thousands separators, and the sign, without
+#: which a table of correct magnitudes all negated reads as the right answer. The lookbehind
+#: keeps a hyphen that belongs to a label — `WA-1896.25` — from making one negative.
+_PRINTED_NUMBER = re.compile(r"(?<![\w.])-?\d[\d,]*\.\d+")
 
 #: What the CodeAct kind names a run directory: `uuid4().hex[:12]`.
 _RUN_ID = re.compile(r"[0-9a-f]{12}")

@@ -81,9 +81,9 @@ _MINIMUM_LOOKUPS = 12
 _NAIVE_LOOKUPS = 21
 _REGISTRY_DEFAULT_CAP = 16
 
-#: The worst live run of thirteen. The naive figure is what the walk costs written carelessly,
-#: not a ceiling — the model writes the program, and a program that re-reads a name it already
-#: has costs more than either arithmetic predicts. A cap has to clear this, not that.
+#: The worst live run so far. The naive figure is what the walk costs written carelessly, not
+#: a ceiling — the model writes the program, and one that re-reads a name it already has costs
+#: more than either arithmetic predicts. A cap has to clear this, not that.
 _OBSERVED_MAX_LOOKUPS = 29
 
 #: Product names, which only the by-product table needs. A per-state total is a sum of the
@@ -333,7 +333,16 @@ def _assess_direct_pays_per_stage(output: str) -> list[str]:
             )
 
     for route, shape in shapes.items():
-        groups = [g for g in shape[1].split(",") if g.strip()]
+        groups = [g.strip() for g in shape[1].split(",") if g.strip()]
+        # Read as counts before anything counts them. An entry is how many calls one message
+        # asked for, so a shape of words has a length and means nothing, and a zero is a
+        # message that was never an entry. Both routes: either length is read as a round count,
+        # and the dispatched one is summed for the programs behind the round-trip summary.
+        if not all(entry.isdigit() and int(entry) > 0 for entry in groups):
+            failures.append(
+                f"the {route}'s shape [{', '.join(groups)}] is not a list of positive counts, "
+                "so the rounds and programs it is supposed to describe cannot be read from it"
+            )
         # Both numbers are the same list counted two ways, so a disagreement is not a finding
         # about the run — it is one of the two lines not describing it.
         if route in found and len(groups) != int(found[route][2]):
@@ -465,12 +474,9 @@ def _assess_the_round_trips(output: str) -> list[str]:
                 f"leaves {lookups - dispatching} — so the summary describes a different set of "
                 "calls from the one the guest is holding"
             )
-    if groups and not all(g.isdigit() for g in groups):
-        failures.append(
-            f"the dispatched shape [{', '.join(groups)}] is not a list of counts, so how many "
-            "programs the route ran cannot be read from it"
-        )
-    elif groups and dispatching is not None:
+    # A shape that is not a list of counts is `_assess_direct_pays_per_stage`'s to report, on
+    # both routes at once; here it only means the programs cannot be summed.
+    if groups and all(entry.isdigit() for entry in groups) and dispatching is not None:
         programs = sum(int(g) for g in groups)
         if programs != dispatching:
             failures.append(

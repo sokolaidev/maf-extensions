@@ -264,6 +264,49 @@ class TestTwoViewsOfOneListHaveToAgree:
     """The trip count and the shape are the same list counted twice."""
 
     @pytest.mark.parametrize(
+        ("route", "shape", "words"),
+        [
+            ("dispatch route", "[1, 1]", "[one, one]"),
+            ("direct route", "[2, 2, 5, 3, 1]", "[two, two, five, three, one]"),
+        ],
+    )
+    def test_a_shape_that_is_not_counts_fails(self, route: str, shape: str, words: str):
+        """A shape of words has a length, and the length is read as the round count.
+
+        Numeric validation used to reach the dispatched shape only, because that is the one
+        summed for the programs. The direct one is counted too — its length is a round count
+        and its size decides whether the walk batched per stage.
+        """
+        assert any(
+            "not a list of positive counts" in r
+            for r in check.assess(
+                _swap(
+                    f"[measured] {route}: tool calls per round: {shape}",
+                    f"[measured] {route}: tool calls per round: {words}",
+                )
+            )
+        )
+
+    @pytest.mark.parametrize(
+        ("route", "shape"),
+        [("dispatch route", "[1, 1]"), ("direct route", "[2, 2, 5, 3, 1]")],
+    )
+    def test_a_shape_entry_of_zero_fails(self, route: str, shape: str):
+        """A message with no tool call is not an entry, so no entry can be zero."""
+        zeroed = (
+            shape.replace("[1", "[0", 1) if shape.startswith("[1") else shape.replace("[2", "[0", 1)
+        )
+        assert any(
+            "not a list of positive counts" in r
+            for r in check.assess(
+                _swap(
+                    f"[measured] {route}: tool calls per round: {shape}",
+                    f"[measured] {route}: tool calls per round: {zeroed}",
+                )
+            )
+        )
+
+    @pytest.mark.parametrize(
         ("route", "shape"),
         [("dispatch route", "[1, 1]"), ("direct route", "[2, 2, 5, 3, 1]")],
     )
@@ -713,18 +756,6 @@ class TestTheRoundTripLine:
             "dispatch route: tool calls per round: [1, 1, 1]",
         )
         assert any("have to agree" in r for r in check.assess(probed))
-
-    def test_a_dispatched_shape_that_is_not_counts_fails(self):
-        """The program count comes from the shape, so a shape that is not numbers has to say so."""
-        assert any(
-            "not a list of counts" in r
-            for r in check.assess(
-                _swap(
-                    "dispatch route: tool calls per round: [1, 1]",
-                    "dispatch route: tool calls per round: [1, one]",
-                )
-            )
-        )
 
     def test_an_all_zero_summary_fails(self):
         """Ordered, and every figure zero: the measurement disappeared rather than went fast."""
