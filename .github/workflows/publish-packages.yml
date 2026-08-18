@@ -63,10 +63,10 @@ jobs:
       version: ${{ steps.resolve.outputs.version }}
       target: ${{ steps.resolve.outputs.target }}
       # Context only — a breaking release whose dependents still import runs the live check
-      # all the same. The dispatch decision is `live_check` on the publish job below, read off
-      # the upload-time re-check (the `pypi` environment can hold while the index moves, so a
-      # verdict frozen here at build can be stale by upload). See #337 for why the changelog
-      # flag is not the gate.
+      # all the same. The dispatch decision is `live_check` on the dispatch job below, read off
+      # the post-upload dispatch check (the `pypi` environment can hold while the index moves,
+      # and the upload itself is a window, so a verdict frozen here at build can be stale by the
+      # time the core is public). See #337 for why the changelog flag is not the gate.
       breaking: ${{ steps.breaking.outputs.breaking }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -236,10 +236,11 @@ jobs:
           echo "$output"
           # The script prints `live_check=run` when it tested at least one admitting dependent
           # and every one imported, or `live_check=skip` when none admits the candidate yet — the
-          # #273 window. This is the build-time reading only; the upload-time re-check in the
-          # publish job emits the dispatch verdict, because the `pypi` environment can hold while
-          # the index moves, so a `skip` reached here can be stale by upload (#337). A break exits
-          # 1 and fails this step before the dispatch is decided.
+          # #273 window. This is the build-time reading only; the post-upload dispatch job emits
+          # the dispatch verdict, because the `pypi` environment can hold while the index moves
+          # and the upload itself is a window, so a `skip` reached here can be stale by the time
+          # the core is public (#337, #443). A break exits 1 and fails this step before the
+          # dispatch is decided.
           verdict="$(printf '%s\n' "$output" | grep -m1 '^live_check=' || true)"
           case "$verdict" in
             live_check=run|live_check=skip) ;;
@@ -249,7 +250,7 @@ jobs:
             {
               echo "### No published dependent admits \`maf-sandbox\` ${VERSION} yet (build-time reading)"
               echo
-              echo "The upload-time re-check in the publish job decides whether the live check runs, because a dependent can admit in the approval window. If one does, the check runs; otherwise it is skipped, and the dependents' own publishes dispatch it. See [#273](https://github.com/sokolaidev/maf-extensions/issues/273) and [#337](https://github.com/sokolaidev/maf-extensions/issues/337)."
+              echo "The post-upload dispatch job decides whether the live check runs, because a dependent can admit in the approval window or during the upload. If one does, the check runs; otherwise it is skipped, and the dependents' own publishes dispatch it. See [#273](https://github.com/sokolaidev/maf-extensions/issues/273), [#337](https://github.com/sokolaidev/maf-extensions/issues/337) and [#443](https://github.com/sokolaidev/maf-extensions/issues/443)."
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
@@ -313,13 +314,6 @@ jobs:
       # A job-level block replaces the workflow's outright, so anything unlisted here is
       # `none` — without this the sparse checkout below cannot read the repository.
       contents: read
-    outputs:
-      # The dispatch verdict the downstream jobs gate on, read off the upload-time re-check below.
-      # The re-check only runs for a real core release, so this is empty for any other publish; a
-      # dependent's own PyPI publish leaves it empty, and empty means "go", so it still dispatches.
-      # A TestPyPI rehearsal never reaches the gate — both downstream jobs require target == 'pypi'
-      # first. See #337.
-      live_check: ${{ steps.recheck.outputs.live_check }}
     steps:
       # Into a subdirectory of its own, and before the artifact arrives. `actions/checkout`
       # cleans the directory it checks out, so a checkout at the workspace root — in any
@@ -373,15 +367,12 @@ jobs:
           && needs.build.outputs.target == 'pypi'
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
 
-      # The build job ran the thorough all-versions check and recorded the pairs it tested; this
-      # re-check emits the dispatch verdict the downstream jobs gate on. The `pypi` environment
-      # holds here for as long as a reviewer takes, and the index can move under the verdict the
-      # build run reached before the wait — a dependent can upload a new version, or a yanked
-      # version can be unyanked, in that window — so the dispatch is decided now, at upload, not
-      # frozen at build. A published wheel is immutable, so a version build already tested imports
-      # the same now and is not re-run; only versions admitting now that were not in the build
-      # snapshot are re-tested. The common case, where nothing new appeared, installs nothing.
-      # See #337.
+      # Break refusal only — does NOT decide the dispatch. A version that admitted since build
+      # and no longer imports exits 1, and `set -e` fails this step before the upload is reached.
+      # A dependent can still admit during the upload window (between this re-check and `Publish`
+      # completing), so the dispatch verdict is the post-upload dispatch job's, not this step's
+      # (#443). Only versions admitting now that were not in the build snapshot are re-tested; a
+      # published wheel is immutable, so build-tested versions import the same now. See #337.
       - name: Re-verify only newly admitting published versions import against this core
         id: recheck
         if: >-
@@ -391,23 +382,9 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           set -euo pipefail
-          output="$(python3 release-guard/scripts/check_published_dependents_work.py "$VERSION" \
+          python3 release-guard/scripts/check_published_dependents_work.py "$VERSION" \
             dist/maf_sandbox-${VERSION}-py3-none-any.whl \
-            --since-snapshot admitting-snapshot.json)"
-          echo "$output"
-          verdict="$(printf '%s\n' "$output" | grep -m1 '^live_check=' || true)"
-          case "$verdict" in
-            live_check=run|live_check=skip) ;;
-            *) echo "::error::upload-time re-check printed no live_check verdict" >&2; exit 1 ;;
-          esac
-          echo "$verdict" >> "$GITHUB_OUTPUT"
-          if [ "$verdict" = "live_check=skip" ]; then
-            {
-              echo "### The live check is being skipped"
-              echo
-              echo "No published dependent admits \`maf-sandbox\` ${VERSION} at upload time, so a live run would go red for the ordering of the release train rather than for the code. The dependents' own publishes dispatch it, which is when its answer starts meaning something. See [#273](https://github.com/sokolaidev/maf-extensions/issues/273)."
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
+            --since-snapshot admitting-snapshot.json
 
       - name: Publish
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
@@ -428,6 +405,103 @@ jobs:
               echo "- Install: \`pip install ${{ needs.build.outputs.package }}==${{ needs.build.outputs.version }}\`"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # The dispatch verdict the downstream jobs gate on, decided once the upload is complete so a
+  # dependent that admits during the upload window is counted rather than racing a `skip` frozen
+  # before it (#443). The local core wheel is what gets imported, so this does not wait for index
+  # propagation. This is a separate job from `publish` on purpose: the check installs and imports
+  # newly-published dependents from PyPI, running their module-level code, so it must not hold the
+  # `id-token: write` that `publish` mints the publishing credential with — a dependent that
+  # appeared in the upload window could otherwise request and exfiltrate that token. The job runs
+  # for every PyPI publish; the check itself is gated to maf-sandbox, so a dependent's own publish
+  # leaves the output empty, and empty means "go" (#337, #443).
+  dispatch:
+    name: Decide the live-check dispatch
+    needs: [build, publish]
+    if: needs.build.outputs.target == 'pypi'
+    runs-on: ubuntu-latest
+    permissions:
+      # Read-only, and deliberately no `id-token: write` — see the job comment above. This job
+      # imports newly-published dependent code, so it must not hold the publishing credential.
+      contents: read
+    outputs:
+      live_check: ${{ steps.decide.outputs.live_check }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: needs.build.outputs.package == 'maf-sandbox'
+        with:
+          path: release-guard
+          sparse-checkout: |
+            scripts
+            packages/*/pyproject.toml
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: needs.build.outputs.package == 'maf-sandbox'
+        with:
+          name: dist-${{ needs.build.outputs.package }}
+          path: dist/
+
+      # Only the core on the real index uploaded one; download-artifact errors if absent, so this
+      # download is gated to match.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: needs.build.outputs.package == 'maf-sandbox'
+        with:
+          name: admitting-snapshot
+          path: .
+
+      - name: Install uv
+        if: needs.build.outputs.package == 'maf-sandbox'
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Decide the live-check dispatch after the upload
+        id: decide
+        if: >-
+          needs.build.outputs.package == 'maf-sandbox'
+          && needs.build.outputs.target == 'pypi'
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          output="$(python3 release-guard/scripts/check_published_dependents_work.py "$VERSION" \
+            dist/maf_sandbox-${VERSION}-py3-none-any.whl \
+            --since-snapshot admitting-snapshot.json --dispatch 2>dispatch-break.txt)"
+          echo "$output"
+          verdict="$(printf '%s\n' "$output" | grep -m1 '^live_check=' || true)"
+          case "$verdict" in
+            live_check=run|live_check=skip) ;;
+            *) echo "::error::post-upload dispatch check printed no live_check verdict" >&2; exit 1 ;;
+          esac
+          echo "$verdict" >> "$GITHUB_OUTPUT"
+          if [ -s dispatch-break.txt ]; then
+            # A dependent admitted and broke during the upload window. The upload is immutable, so
+            # the release ships; surface the break as a red annotation and dispatch the live check
+            # (the verdict is run). See #443.
+            while IFS= read -r line; do
+              if [ -n "$line" ]; then
+                echo "::error::${line}"
+              fi
+            done < dispatch-break.txt
+            {
+              echo "### A dependent broke after the upload"
+              echo
+              echo "A published dependent that admitted \`maf-sandbox\` ${VERSION} during the upload window breaks at import time. The upload is immutable, so the release ships and the live check is dispatched rather than the release refused. The break is real and needs a follow-up release that keeps the dependent importing. See [#443](https://github.com/sokolaidev/maf-extensions/issues/443)."
+              echo
+              echo '<details><summary>The import failures</summary>'
+              echo
+              echo '```'
+              cat dispatch-break.txt
+              echo '```'
+              echo '</details>'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ "$verdict" = "live_check=skip" ]; then
+            {
+              echo "### The live check is being skipped"
+              echo
+              echo "No published dependent admits \`maf-sandbox\` ${VERSION} after the upload, so a live run would go red for the ordering of the release train rather than for the code. The dependents' own publishes dispatch it, which is when its answer starts meaning something. See [#273](https://github.com/sokolaidev/maf-extensions/issues/273)."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   # Only reached by a hand-pushed tag: an automated release already has its Release, made by
   # release-please when its PR merged. See docs/maintainers.md for why that order is forced.
@@ -504,10 +578,10 @@ jobs:
   # blocks the same text. (#271.)
   wait-for-propagation:
     name: Wait for the index to show the new version
-    needs: [build, publish]
+    needs: [build, dispatch]
     if: >-
       needs.build.outputs.target == 'pypi'
-      && needs.publish.outputs.live_check != 'skip'
+      && needs.dispatch.outputs.live_check != 'skip'
       && contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-bicep", "maf-sandbox-codeact", "maf-sandbox-docker"]'), needs.build.outputs.package)
     runs-on: ubuntu-latest
     steps:
@@ -540,21 +614,21 @@ jobs:
   # both docker jobs (neither creates a billable sandbox) and not the ACAS ones. A batch release
   # calls this once per package; per-package concurrency keeps those calls independent (#325).
   #
-  # `live_check != 'skip'` is the dispatch decision, read off the upload-time re-check the publish
-  # job runs: a release dispatches the live check unless no published dependent admits the core at
-  # upload time, which is the one window where a red would be about the ordering of the train
-  # rather than the code. The verdict is measured at upload, not build, because the `pypi`
-  # environment can hold while the index moves — a dependent can admit in the approval window, and
-  # a `skip` frozen at build would wrongly suppress the check (#337). A breaking release whose
-  # dependents still import runs all the same, and the changelog's breaking flag is context for
-  # that run, not the dispatch. A dependent's own publish leaves the output empty, and empty means
-  # "go".
+  # `live_check != 'skip'` is the dispatch decision, read off the post-upload dispatch job: a
+  # release dispatches the live check unless no published dependent admits the core after the
+  # upload, which is the one window where a red would be about the ordering of the train rather
+  # than the code. The verdict is measured after the upload, not at build, because the `pypi`
+  # environment can hold while the index moves and the upload itself is a window — a dependent can
+  # admit in the approval window or during the upload, and a `skip` frozen at build would wrongly
+  # suppress the check (#337, #443). A breaking release whose dependents still import runs all the
+  # same, and the changelog's breaking flag is context for that run, not the dispatch. A
+  # dependent's own publish leaves the output empty, and empty means "go".
   verify:
     name: Verify against a live sandbox
-    needs: [build, publish, wait-for-propagation]
+    needs: [build, dispatch, wait-for-propagation]
     if: >-
       needs.build.outputs.target == 'pypi'
-      && needs.publish.outputs.live_check != 'skip'
+      && needs.dispatch.outputs.live_check != 'skip'
       && contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-bicep", "maf-sandbox-codeact", "maf-sandbox-docker"]'), needs.build.outputs.package)
     uses: ./.github/workflows/verify-live.yml
     with:
