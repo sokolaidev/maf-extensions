@@ -23,12 +23,15 @@ check's concern and is skipped here, and one not yet on PyPI is skipped too. A n
 fatal rather than skipped: passing because PyPI could not be reached is the one outcome that would
 make this check worthless — the same stance as the admit check.
 
-The build job reads its dispatch verdict off a ``live_check=`` line on stdout, printed only on the
-thorough (``--emit-snapshot`` / no-snapshot) run, never on the ``--since-snapshot`` re-check:
-``live_check=run`` when at least one admitting dependent was tested and every one imported, and
-``live_check=skip`` when none admits the candidate yet — the window where a live run would go red
-for the ordering of the release train rather than for the code ([#273]). A break exits 1 and
-refuses the release before the dispatch is decided, so there is no verdict line for it.
+Both runs print a ``live_check=`` verdict on stdout: ``live_check=run`` when at least one
+admitting dependent was tested and every one imported, and ``live_check=skip`` when none admits the
+candidate yet — the window where a live run would go red for the ordering of the release train
+rather than for the code ([#273]). The build run's verdict is provisional — early validation that
+refuses the release on a break before a human is asked to approve. The dispatch decision is the
+upload-time re-check's verdict, because the ``pypi`` environment can hold for as long as a reviewer
+takes and the index moves under a verdict reached before the wait: a dependent can upload or unyank
+in that window, so a ``skip`` frozen at build can be stale by upload. A break exits 1 and refuses
+the release before the dispatch is decided, so there is no verdict line for it.
 """
 
 from __future__ import annotations
@@ -321,10 +324,22 @@ def main(argv: list[str]) -> int:
             return 1
         to_test = newly_admitting(candidates, snapshot)
         if not to_test:
-            print(
-                f"no published dependent admits maf-sandbox {positionals[0]} "
-                "that was not already tested at build; nothing to re-verify"
-            )
+            # The dispatch verdict is this re-check's to emit, not the build run's: the `pypi`
+            # environment can hold while the index moves, so the verdict measured at build can be
+            # stale by upload (#337). An empty diff is one of two states — still nothing admits
+            # (skip), or every admitting version was already tested at build and a published wheel
+            # is immutable, so it still imports (run).
+            if not candidates:
+                print(
+                    f"no published dependent admits maf-sandbox {positionals[0]}; nothing to verify"
+                )
+                print("live_check=skip")
+            else:
+                print(
+                    f"no published dependent admits maf-sandbox {positionals[0]} "
+                    "that was not already tested at build; nothing to re-verify"
+                )
+                print("live_check=run")
             return 0
     else:
         if emit_snapshot is not None:
@@ -343,6 +358,7 @@ def main(argv: list[str]) -> int:
                 f"every published dependent newly admitting maf-sandbox {positionals[0]} "
                 f"imports against it ({names})"
             )
+            print("live_check=run")
         else:
             print(
                 f"every published dependent that admits maf-sandbox {positionals[0]} "

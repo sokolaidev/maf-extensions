@@ -703,25 +703,19 @@ class TestTheBreakingDetectorIsInformational:
         assert "steps.resolve.outputs.target == 'pypi'" in condition
 
 
-class TestTheWorkCheckGatesTheLiveCheck:
-    """The dispatch decision, and the ways it could go wrong.
+class TestTheBuildWorkCheckIsEarlyValidation:
+    """The build run refuses a breaking core before a human is asked to approve, and records a
+    provisional reading for the approver — but it no longer decides the dispatch.
 
-    The work check installs the candidate core beside each admitting published dependent and
-    imports it; the build job reads its verdict off a `live_check=` line and gates
-    `wait-for-propagation` and `verify` on it. `run` means at least one dependent was tested and
-    every one imported, so a red live check would be about the code; `skip` means none admits the
-    candidate yet, the one window where a red would be about the ordering of the train (#273). A
-    break exits 1 and refuses the release before the dispatch is decided.
-
-    What has to hold: the two jobs stay gated alike, a verdict the step never reached (a
-    dependent's own publish) dispatches rather than holds, and a break fails the step rather than
-    dispatches on a guess.
+    The dispatch verdict is the upload-time re-check's (#337): the `pypi` environment can hold
+    while the index moves, so a `skip` reached at build can be stale by upload. This step's job is
+    to fail the release on a break before the approval gate, and to say in the summary what the
+    build-time reading was. It writes no `live_check` output for downstream jobs to gate on.
     """
 
     _STEP = "Verify the published dependents import against this core"
-    _GATED_JOBS = ("wait-for-propagation:", "verify:")
 
-    def test_a_pass_emits_run_and_no_skip_summary(self, tmp_path: Path):
+    def test_a_pass_writes_no_skip_summary(self, tmp_path: Path):
         result = _execute_step(
             tmp_path,
             self._STEP,
@@ -730,10 +724,10 @@ class TestTheWorkCheckGatesTheLiveCheck:
         )
         assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
         output, summary = _step_outputs(tmp_path)
-        assert output.strip() == "live_check=run"
+        assert output.strip() == "", "the build step is early validation, not the dispatch"
         assert summary == "", "the live check runs, so the summary has nothing to report"
 
-    def test_nothing_admitting_emits_skip_and_says_why(self, tmp_path: Path):
+    def test_nothing_admitting_writes_a_provisional_summary(self, tmp_path: Path):
         result = _execute_step(
             tmp_path,
             self._STEP,
@@ -742,8 +736,8 @@ class TestTheWorkCheckGatesTheLiveCheck:
         )
         assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
         output, summary = _step_outputs(tmp_path)
-        assert output.strip() == "live_check=skip"
-        assert "273" in summary, "a skipped run has to point at the reason it was skipped"
+        assert output.strip() == "", "the build step is early validation, not the dispatch"
+        assert "273" in summary, "a provisional skip has to point at the reason"
         assert "maf-sandbox" in summary and "0.13.0" in summary
 
     def test_a_break_fails_the_step(self, tmp_path: Path):
@@ -758,16 +752,79 @@ class TestTheWorkCheckGatesTheLiveCheck:
         output, _summary = _step_outputs(tmp_path)
         assert output.strip() == ""
 
+    def test_the_work_check_only_runs_for_a_real_core_release(self):
+        """A dependent's own publish strands nothing above it, and a rehearsal stays frictionless."""
+        condition = condition_after(PUBLISH_WORKFLOW, f"- name: {self._STEP}")
+        assert "steps.resolve.outputs.package == 'maf-sandbox'" in condition
+        assert "steps.resolve.outputs.target == 'pypi'" in condition
+
+
+class TestTheUploadTimeRecheckGatesTheLiveCheck:
+    """The dispatch decision, read off the upload-time re-check in the publish job.
+
+    The re-check runs after the `pypi` environment's approval gate, so it sees the index as it
+    stands at upload — the latest moment before the core ships. `run` means at least one
+    admitting dependent was tested and every one imported; `skip` means none admits at upload
+    time, the one window where a red would be about the ordering of the train (#273). Measuring
+    the verdict here, not at build, is what stops a `skip` frozen at build from suppressing the
+    check when a dependent admits in the approval window (#337). A break exits 1 and refuses the
+    upload before the dispatch is decided.
+
+    What has to hold: the two jobs stay gated alike, a verdict the step never reached (a
+    dependent's own publish) dispatches rather than holds, and a break fails the step rather than
+    dispatches on a guess.
+    """
+
+    _STEP = "Re-verify only newly admitting published versions import against this core"
+    _GATED_JOBS = ("wait-for-propagation:", "verify:")
+
+    def test_a_pass_emits_run_and_no_skip_summary(self, tmp_path: Path):
+        result = _execute_step(
+            tmp_path,
+            self._STEP,
+            'python3() { printf "every published dependent newly admitting maf-sandbox 0.13.0 '
+            'imports against it (maf-sandbox-bicep==0.5.6)\\nlive_check=run\\n"; }',
+        )
+        assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+        output, summary = _step_outputs(tmp_path)
+        assert output.strip() == "live_check=run"
+        assert summary == "", "the live check runs, so the summary has nothing to report"
+
+    def test_nothing_admitting_at_upload_emits_skip_and_says_why(self, tmp_path: Path):
+        result = _execute_step(
+            tmp_path,
+            self._STEP,
+            'python3() { printf "no published dependent admits maf-sandbox 0.13.0; nothing to '
+            'verify\\nlive_check=skip\\n"; }',
+        )
+        assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+        output, summary = _step_outputs(tmp_path)
+        assert output.strip() == "live_check=skip"
+        assert "273" in summary, "a skipped run has to point at the reason it was skipped"
+        assert "maf-sandbox" in summary and "0.13.0" in summary
+
+    def test_a_break_fails_the_step(self, tmp_path: Path):
+        # A break refuses the upload before the dispatch is decided: `set -e` ends the step on the
+        # script's exit 1, so no verdict is written and the gate is never reached.
+        result = _execute_step(
+            tmp_path,
+            self._STEP,
+            'python3() { echo "maf-sandbox-docker==0.7.0: ImportError" >&2; return 1; }',
+        )
+        assert result.returncode != 0, "a break must fail the step, not dispatch on a guess"
+        output, _summary = _step_outputs(tmp_path)
+        assert output.strip() == ""
+
     def test_a_verdict_the_step_never_reached_still_dispatches(self):
         """A skipped step leaves the output empty, and empty has to mean "go".
 
-        The work check only runs for a real core release, so every dependent's own publish
-        reaches the gate with `live_check` unset. `!= 'skip'` is what makes that dispatch;
-        `== 'run'` would silently stop the live check for every dependent release.
+        The re-check only runs for a real core release, so every dependent's own publish reaches
+        the gate with `live_check` unset. `!= 'skip'` is what makes that dispatch; `== 'run'`
+        would silently stop the live check for every dependent release.
         """
         for job in self._GATED_JOBS:
             condition = condition_after(PUBLISH_WORKFLOW, job)
-            assert "needs.build.outputs.live_check != 'skip'" in condition, job
+            assert "needs.publish.outputs.live_check != 'skip'" in condition, job
 
     def test_the_two_jobs_are_gated_alike(self):
         """`verify` needs `wait-for-propagation`, so a gate on one and not the other is a trap.
@@ -778,8 +835,8 @@ class TestTheWorkCheckGatesTheLiveCheck:
         conditions = {job: condition_after(PUBLISH_WORKFLOW, job) for job in self._GATED_JOBS}
         assert len(set(conditions.values())) == 1, conditions
 
-    def test_the_work_check_only_runs_for_a_real_core_release(self):
+    def test_the_recheck_only_runs_for_a_real_core_release(self):
         """A dependent's own publish strands nothing above it, and a rehearsal stays frictionless."""
         condition = condition_after(PUBLISH_WORKFLOW, f"- name: {self._STEP}")
-        assert "steps.resolve.outputs.package == 'maf-sandbox'" in condition
-        assert "steps.resolve.outputs.target == 'pypi'" in condition
+        assert "needs.build.outputs.package == 'maf-sandbox'" in condition
+        assert "needs.build.outputs.target == 'pypi'" in condition

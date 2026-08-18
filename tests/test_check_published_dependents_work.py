@@ -757,9 +757,9 @@ class TestMain:
         assert calls == []
         out = capsys.readouterr().out
         assert "nothing to re-verify" in out
-        # The verdict is the thorough run's to emit, not the re-check's: the build job already
-        # decided the dispatch, and this invocation only re-tests what is newly admitting.
-        assert "live_check=" not in out
+        # The re-check emits the dispatch verdict: the admitting set is unchanged since build, and
+        # a published wheel is immutable, so the versions build tested still import — run.
+        assert "live_check=run" in out
 
     def test_since_snapshot_retests_a_newly_admitting_version(
         self,
@@ -797,7 +797,7 @@ class TestMain:
         out = capsys.readouterr().out
         assert "maf-sandbox-docker==0.7.0" in out
         assert "0.2.0" not in out
-        assert "live_check=" not in out
+        assert "live_check=run" in out
 
     def test_since_snapshot_refuses_when_a_newly_admitting_version_breaks(
         self,
@@ -839,6 +839,60 @@ class TestMain:
         captured = capsys.readouterr()
         assert "maf-sandbox-docker==0.7.0: ImportError" in captured.err
         assert "Release order" in captured.err
+        # A break refuses the upload before the dispatch is decided, so no verdict is printed.
+        assert "live_check=" not in captured.out
+
+    def test_since_snapshot_still_skips_when_nothing_admits_at_upload(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ):
+        # Build found nothing admitting either (empty snapshot), and nothing admitted in the
+        # approval window, so the upload-time verdict is still skip — the #273 window held.
+        monkeypatch.setattr(
+            check,
+            "fetch_version_requirements",
+            lambda _d: {"0.6.0": ["maf-sandbox<0.11,>=0.10.0"]},  # ceiling excludes 0.11.0
+        )
+        monkeypatch.setattr(check, "install_and_import", _ok)
+        snap = tmp_path / "snap.json"
+        check.write_snapshot(snap, [])  # build tested nothing
+        assert (
+            check.main(
+                [_ARGV0, "0.11.0", str(self._wheel(tmp_path)), "--since-snapshot", str(snap)]
+            )
+            == 0
+        )
+        assert "live_check=skip" in capsys.readouterr().out
+
+    def test_since_snapshot_recovers_when_a_dependent_admits_in_the_window(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ):
+        # Build found nothing admitting and would have emitted `skip` (empty snapshot). A
+        # dependent then uploaded an admitting version during the approval window, so the
+        # upload-time re-check sees it, re-tests it, and the verdict flips to run — the stale-skip
+        # case the upload-time dispatch exists to fix (#337).
+        monkeypatch.setattr(
+            check,
+            "fetch_version_requirements",
+            lambda _d: {"0.6.0": ["maf-sandbox<0.13,>=0.11.0"]},  # admits 0.11.0
+        )
+        monkeypatch.setattr(check, "install_and_import", _ok)
+        snap = tmp_path / "snap.json"
+        check.write_snapshot(snap, [])  # build tested nothing
+        assert (
+            check.main(
+                [_ARGV0, "0.11.0", str(self._wheel(tmp_path)), "--since-snapshot", str(snap)]
+            )
+            == 0
+        )
+        out = capsys.readouterr().out
+        assert "maf-sandbox-acas==0.6.0" in out  # newly admitting, re-tested
+        assert "live_check=run" in out
 
     def test_since_snapshot_with_a_missing_snapshot_fails_closed(
         self,
