@@ -335,34 +335,117 @@ missing. Where the decision was clear, an issue exists.
 Not on the ledger: interpreter-state persistence. Both stacks wipe state per call via
 restore; parity is already exact.
 
-## What reading cannot answer — the live-probe list
+## What reading could not answer — measured (2026-08-18)
 
-1. Does a host-side write into `input_dir` after creation appear in the guest, and does it
-   survive `restore`? (Decides the whole `FILES_IN`/`write_file` story.)
-2. Does the micro-VM standard's four-point bar hold, point by point?
-3. Cold-start and restore latency, and guest memory headroom under the Windows 400Mi default
-   — the numbers that decide whether warm reuse is a nicety or a requirement.
-4. Whether `run()` honours a timeout at all — `Sandbox.run` takes none, and our `exec`
-   contract is timeout-bounded. An unbounded guest loop may hold the worker thread forever
-   ("GuestFunctionCallAlreadyInProgress" strings in the native module hint at the failure
-   mode).
-5. The conformance suite's applicability to a backend that raises from `exec` — what subset
-   of probes a `RUN_CODE`-shaped backend must pass.
-6. Whether any no-hypervisor or in-process fallback is reachable from the Python stack.
-   Upstream Hyperlight had a debug mode of that shape; one reachable here would collapse the
-   `microvm` claim, so its absence is verified rather than assumed.
-7. The FFI callback's mechanics: which thread it fires on (the trampoline design assumes
-   the sandbox's worker), what an exception raised inside it does to the guest, and whether
-   the marshaling envelope's overhead is a knowable constant to declare as
-   `framing_bytes`.
+The seven questions this section used to list were put to the running stack. Where an
+answer below contradicts a guess in the sections above, the answer wins; the earlier text
+stays as the record of what reading alone could and could not see.
+
+**The environment finding that preceded every probe:** the published wheels are skewed.
+`hyperlight-sandbox-python-guest` 0.5.0 ships an AOT compiled with Wasmtime 36.0.11;
+`hyperlight-sandbox-backend-wasm` 0.4.0 embeds 36.0.7; the native binding only
+deserializes precompiled artifacts, so every `run()` fails and there is no JIT fallback.
+`hyperlight-sandbox` 0.4.0 pins the guest `>=0.4.0` with no compatible upper bound, so a
+naive install produces a stack that cannot execute at all. Every measurement below is from
+the exact matched trio — all three packages at 0.4.0 — on Windows over WHP. "Pre-1.0: pin
+tightly" is now a demonstrated failure mode, not advice.
+
+1. **Input visibility and restore — the `FILES_IN` story resolves cleanly.** `/input` is a
+   live, read-only host passthrough: a file written host-side after creation *and after the
+   snapshot* is visible in the guest, still visible after `restore()`, and host-side edits
+   read fresh. Guest writes into `/input` refuse with `PermissionError`. So per-call
+   `write_file` for data files is implementable by writing to the host input dir — no
+   re-snapshot, no content-signature cache. The counterpart surprise: **`restore()` deletes
+   host-side `/output` files written after the snapshot.** The pull surface must collect
+   before any restore; that ordering is a contract requirement, not a nicety.
+2. **The micro-VM bar holds on (wasm × WHP), all four points.** Point 1 live:
+   `winhvplatform.dll` loaded in the process actually running the sandbox, on two
+   independent runs. Point 2 live: the guest's environment is empty, every host path probe
+   refuses by absence (`FileNotFoundError`, never `PermissionError` — no host filesystem is
+   exposed at all), and the metadata endpoint is unreachable even when explicitly
+   allowlisted (connection refused — no route to link-local). Point 3 live: default is
+   deny-all (`ErrorCode_HttpRequestDenied`), `allow_domain` produces a strict per-entry
+   allowlist — a permitted sandbox still refuses unlisted hosts. Point 4 by inference: the
+   only guest↔host channels observed are `call_tool`, `http_get`, `http_post` (injected
+   globals, not importable modules) plus the constructor's two directories. This is the
+   family table's first evidence row; (wasm × KVM) remains its own confirmation.
+3. **Latency makes warm reuse the whole model; memory is the tight bound.** Constructor
+   ~50–70 ms (lazy — it loads nothing); first `run()` ~4.2 s (the real cold start: module
+   load plus guest heap); `snapshot()` ~0.65 s; `restore()`+run ~8.7 ms steady state; plain
+   run ~0.4 ms; a 1 MB code string adds ~16 ms. The sobering number: a hard abort ("Guest
+   aborted: 13 Out of physical memory") at **~40–50 MB of user allocation** under the 400Mi
+   Windows default — CPython-in-wasm consumes most of the budget before user code runs.
+4. **`run()` cannot be bounded from inside — a timeout needs a process boundary.** The
+   native surface is seven methods; no interrupt, deadline, fuel, or cancellation exists at
+   any layer. An infinite loop blocks the calling thread indefinitely (65 s observed, no
+   return); only an OS-level kill of the process ends it, after which the host is healthy
+   and a fresh sandbox works immediately. Failures split into two classes with different
+   recoveries: **host-level aborts poison the sandbox permanently** (every later call fails
+   instantly with "The sandbox was poisoned") — but **`restore(snapshot)` heals poison**;
+   a hang is the one failure restore cannot reach, because the thread is stuck. So the
+   adapter's shape is: snapshot after setup, restore to recover from aborts, kill-and-
+   recreate the process for timeouts — and `run_code`'s timeout must exclude the one-time
+   cold start. Two 0.4.0 platform bugs found on the way: `time.sleep` panics the runtime
+   ("no Tokio reactor") and poisons the sandbox; `os.listdir` fails on every path
+   (errno 44) — only direct `open()` works. The wider guest catalog for the instructions
+   contract: no `threading`, no `subprocess`, no `os.fork`, no `socket`/`ssl`/`urllib`; the
+   guest's execution namespace injects `call_tool`, `http_get`, `http_post`, `json`, `out`;
+   `allow_domain` requires scheme-qualified targets at this version.
+5. **The conformance suite applies nearly whole.** All 12 probe bodies in
+   `maf_sandbox.conformance` call only `stat_file`/`read_file`/`list_dir` — none touch
+   `exec` — so they run unchanged against this backend's pull surface. What breaks is one
+   fixture: `PosixGuestSubject.plant_symlink` shells `ln -sfn` over `exec`, and `plant_layout`
+   runs before any probe, so the shipped subject fails the whole suite at setup. The
+   substitute is exactly what the module's own seam anticipated: a subject that plants
+   files and links directly on the host side of `output_path()` — the code under test still
+   has to walk the same real paths and discover the links itself. Six `run_code`
+   conformance probes were drafted in the suite's own style (timeout honored; nonzero exit
+   distinct from refusal; stdout/stderr separated; oversize code refused not truncated; no
+   shell reachable; queue-time refusal distinguishable — the last blocked on #381's
+   contract decision).
+6. **No fallback exists: boot-or-refuse, verified aggressively.** No constructor kwarg, no
+   env var (every plausible "disable hypervisor" name is inert — `winhvplatform.dll` stays
+   loaded with all of them set), and no string in the compiled backend names an in-process
+   or dry-run path. The only hypervisor-absence code path in the binary is the hard error
+   "No hypervisor was found". The `HYPERLIGHT_*_SURROGATES` variables that do exist tune
+   WHP's surrogate helper processes, not the boundary.
+7. **The FFI callback's mechanics, exactly.** It fires synchronously **on the same OS
+   thread that called `run()`** — no hidden worker. A host exception surfaces in-guest as a
+   catchable `RuntimeError("Tool '<name>' failed: <type>: <msg>")` and the sandbox stays
+   healthy; an unregistered name gets the same wrapper. Kwargs marshal with full fidelity
+   (nested structures, non-ASCII intact); positional args refuse with a plain `TypeError`;
+   unsupported return types arrive as `str()` — settled by the datetime case, str not repr.
+   Registration after the first run refuses with an explicit message; a duplicate name
+   silently last-wins. And the envelope is not a guess anymore: the shared output buffer is
+   **16,376 bytes**, required = payload + **~192 bytes of framing** (constant across three
+   failure sizes), so `framing_bytes` is a measured number — and exceeding the buffer is an
+   in-guest-uncatchable abort that poisons the sandbox until a restore. Per-call round
+   trips: ~0.07 ms at 10 B, ~0.3 ms at 15 KB. The trampoline's response ceiling must sit
+   well below 16 KB, which also means the backend's declared host-tool `TransferLimits` are
+   far below this package's defaults.
+
+### What the measurements change in the design above
+
+Three upgrades and one confirmation. The `FILES_IN` caveat in the fit table dissolves —
+`write_file` is a plain host-side write. The `run_code` timeout obligation in #381 gains
+its implementation shape: process-per-sandbox (or abandon-and-leak), with snapshot/restore
+as the abort-recovery primitive — the thread-confined actor alone cannot bound a runaway.
+The trampoline design gains hard numbers: a sub-16 KB response ceiling and a measured
+~192-byte `framing_bytes`, plus the rule that oversize is a poisoning abort, not a clean
+refusal, so the ceiling must be enforced host-side *before* the value crosses. And the
+family table's `microvm` claim for (wasm × WHP) moves from "pending the bar" to "measured
+against the bar" — with the memory headroom (~40–50 MB user allocation) recorded as the
+number a workload's spec has to respect long before any transfer cap matters.
 
 ## Verdict
 
 Yes — the package can back a backend, and the right dependency is `hyperlight-sandbox`
-directly (0.4.x, pre-1.0: pin tightly). It slots in as the suite's first runtime-shaped
-backend: `microvm` isolation with `ALLOWLIST` egress, serving `RUN_CODE` workloads, refusing
-`EXEC` ones honestly at attach. Nothing found in the source contradicts #371's sequencing —
-the suite-side prerequisites still come first — but the source removes the feasibility
-unknowns: the API surface is public and stable-by-intent, the egress is allowlist-grade, the
-pull pair is implementable without a false declaration, and the two real costs are named
-(thread confinement, platform envelope) rather than lurking.
+directly (pinned to an exact matched trio; the published ranges are demonstrably unsafe).
+It slots in as the suite's first runtime-shaped backend: `microvm` isolation with
+`ALLOWLIST` egress, serving `RUN_CODE` workloads, refusing `EXEC` ones honestly at attach.
+Nothing found in the source contradicts #371's sequencing — the suite-side prerequisites
+still come first — and with the probes run, the remaining unknowns are engineering choices
+rather than feasibility questions: the bar is measured on (wasm × WHP), the pull pair and
+per-call `write_file` are implementable against live host directories, the trampoline has
+exact constants to build to, and the two failure classes have named recoveries (restore
+for aborts, process kill for hangs).
