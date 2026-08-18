@@ -5,22 +5,25 @@ The live workflow installs the *published* wheels, runs the sample and pipes its
     python samples/15_acas_codeact_host_tools/agent.py | tee out.txt
     python scripts/check_live_host_tools_dispatch_sample.py out.txt   # or: ... | python …
 
-**What is asserted is chosen so that a model's mood cannot decide a release.** Both routes run
-Python in the sandbox, so both are held to the same two things, and both are properties of
-machinery rather than of prose:
+**What is asserted is chosen so a model's mood cannot decide a release.** Both routes run
+Python in the sandbox and both walk the same four stages, so what is enforced is either an
+interpreter's output or a structural property of the two roads:
 
-- **The program printed the exact total.** Read from the framework's record of what
-  `execute_code` returned, so an interpreter produced it. Not exact means the program did not
-  run, did not get its prices, or ignored them.
-- **What the model wrote into a tool call.** Dispatched, it must be nothing: the program is
-  written before any dispatch happens, so there is no price to embed. Directly, it must be
-  something: the values arrive as tool results and the only road into the program is for the
-  model to write them into its source. That contrast is the sample's whole finding, and both
-  halves of it are structural — neither depends on the model being clever or careless.
+- **Both programs printed both state totals.** Read from the framework's record of what
+  `execute_code` returned, so an interpreter produced them.
+- **Direct needed more model round trips than dispatch.** Direct batches within a stage and
+  never across one, so it pays per stage; dispatch resolves the whole walk inside one program.
+- **Who carried the sales figures.** None on the dispatched route — the program is written
+  before any dispatch can answer, so a figure cannot be in it — and all of them on the direct
+  route, where the values arrive as tool results and the only road into the program is for the
+  model to write them into its source.
+- **The runs left their transport files behind.** #302 asks for the per-run subdirectory and
+  its cleanup; the directory is real and the cleanup does not exist (#438), so the count going
+  *up* is the honest thing to assert.
 
-Wall clock and tokens are recorded and never bounded. They are what the sample exists to
-publish, and a threshold would turn a measurement into a pass mark on somebody else's control
-plane. What a model *said*, in prose, is never read at all.
+Wall clock, tokens and lookup counts are recorded and never bounded. They are what the sample
+exists to publish, and a threshold would turn a measurement into a pass mark on somebody
+else's control plane. What a model *said*, in prose, is never read.
 
 Every line read must carry the `[measured]` tag at the left margin (#314). The sample's
 `quoted()` prefixes any tagged line inside a model's reply with `> `, so prose that tries to
@@ -34,11 +37,9 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
+from typing import Any
 
-#: The tag the sample puts on every line it measured, and the guard against a model writing one.
 _TAG = "[measured]"
-
-#: The two roads to the same function, spelled as the sample spells them.
 _DISPATCH = "dispatch route"
 _DIRECT = "direct route"
 _ROUTES = (_DISPATCH, _DIRECT)
@@ -47,53 +48,36 @@ _ANY_ROUTE = "|".join(re.escape(name) for name in _ROUTES)
 #: Act 4 names the same two by their short form.
 _SHORT = {"dispatched": _DISPATCH, "direct": _DIRECT}
 
-#: How many distinct SKUs the order names. Every one has to be asked for, since no price is
-#: reachable any other way — fewer means one was invented.
-_SKUS = 3
+#: How many states the summary covers, and so how many totals each program must print.
+_STATES = 2
 
-#: What the sample prints when the model wrote no price into any tool call.
-_NONE = "none"
+#: The walk's stages. Direct pays a model round trip for each, which is the whole comparison,
+#: so a run where the shape collapsed is a run that measured something else.
+_STAGES = 4
 
 _F = re.MULTILINE
 
-#: `dispatches: 3 across 3 SKU(s)`. The count may exceed the SKU count — a model is free to
-#: write a program that asks twice — so only the distinct figure is pinned.
-_DISPATCHES = re.compile(rf"^\s*{re.escape(_TAG)}\s+dispatches:\s+(\d+)\s+across\s+(\d+)\s+SKU", _F)
 
-#: `<route>: N lookup(s), N message(s), X.XXs, N tokens`
-_COST = re.compile(
-    rf"^\s*{re.escape(_TAG)}\s+({_ANY_ROUTE}):\s+(\d+)\s+lookup\(s\),\s+\d+\s+message\(s\),\s+"
-    r"([\d.]+)s,\s+(\d+|None)\s+tokens",
-    _F,
+def _tagged(pattern: str) -> re.Pattern[str]:
+    """Anchored at the left margin, because that is what a model cannot forge."""
+    return re.compile(rf"^\s*{re.escape(_TAG)}\s+{pattern}", _F)
+
+
+_CAP = _tagged(r"dispatch cap for the run:\s+(\d+)\s+\(the walk needs\s+(\d+)")
+_TRIPS = _tagged(rf"({_ANY_ROUTE}):\s+(\d+)\s+lookup\(s\) over\s+(\d+)\s+model round trip\(s\)")
+_SHAPE = _tagged(rf"({_ANY_ROUTE}):\s+lookups per round trip:\s+\[([^\]]*)\]")
+_COST = _tagged(rf"({_ANY_ROUTE}):\s+([\d.]+)s,\s+(\d+|None)\s+tokens")
+_TOTALS = _tagged(rf"({_ANY_ROUTE}):\s+state totals the program printed:\s+(\d+)\s+of\s+(\d+)")
+_WROTE = _tagged(rf"({_ANY_ROUTE}):\s+sales figures the model wrote into code:\s+(\d+)")
+_HANDLED = _tagged(r"sales figures the model handled,\s+(dispatched|direct):\s+(\d+)")
+_ROUND_TRIP = _tagged(
+    rf"({_ANY_ROUTE}):\s+round trip:\s+(\d+)\s+gap\(s\),\s+min\s+([\d.]+)s,\s+"
+    r"median\s+([\d.]+)s,\s+max\s+([\d.]+)s"
 )
-
-#: `<route>: the program printed 218.15: True`
-_PRINTED = re.compile(
-    rf"^\s*{re.escape(_TAG)}\s+({_ANY_ROUTE}):\s+the program printed\s+[\d.]+:\s+(True|False)",
-    _F,
-)
-
-#: `<route>: prices the model wrote into code: none` — or a list of them.
-_WROTE = re.compile(
-    rf"^\s*{re.escape(_TAG)}\s+({_ANY_ROUTE}):\s+prices the model wrote into code:\s+(.+?)\s*$",
-    _F,
-)
-
-#: `prices the model handled, dispatched: 0 of 3` — act 4 restating the line above.
-_HANDLED = re.compile(
-    rf"^\s*{re.escape(_TAG)}\s+prices the model handled,\s+(dispatched|direct):\s+(\d+)\s+of\s+\d+",
-    _F,
-)
-
-#: `round trip: N gap(s), min X.XXs, median X.XXs, max X.XXs`
-_ROUND_TRIP = re.compile(
-    rf"^\s*{re.escape(_TAG)}\s+round trip:\s+(\d+)\s+gap\(s\),\s+min\s+([\d.]+)s,\s+"
-    r"median\s+([\d.]+)s,\s+max\s+([\d.]+)s",
-    _F,
-)
-
-#: The footer. Billable, so this one is not a formality.
-_DISPOSED = re.compile(rf"^\s*{re.escape(_TAG)}\s+Disposed\s+(\d+)\s+sandbox\(es\)\.", _F)
+_RUN_DIRS = _tagged(r"run directories in the guest:\s+(\d+)")
+_DISPATCHING = _tagged(r"of those, runs that dispatched:\s+(\d+)")
+_LEFT = _tagged(r"request and response files left behind:\s+(\d+)")
+_DISPOSED = _tagged(r"Disposed\s+(\d+)\s+sandbox\(es\)\.")
 
 
 def _once[M](matches: list[M], what: str) -> tuple[M | None, list[str]]:
@@ -113,104 +97,128 @@ def _once[M](matches: list[M], what: str) -> tuple[M | None, list[str]]:
     return matches[0], []
 
 
-def _assess_dispatch_happened(output: str) -> list[str]:
-    """Every SKU was asked for, which is the only way a price reaches the guest."""
-    match, failures = _once(_DISPATCHES.findall(output), "dispatches")
-    if match is None:
-        return failures
-    total, distinct = int(match[0]), int(match[1])
-    if distinct != _SKUS:
-        failures.append(
-            f"the program asked for {distinct} distinct SKU(s) and the order names {_SKUS} — a "
-            "price it did not ask for is a price it invented, and no other road reaches one"
-        )
-    if total == 0:
-        failures.append("nothing was dispatched at all, so the sample measured a road not taken")
-    return failures
-
-
-def _assess_both_routes_ran(output: str) -> list[str]:
-    """Each route reports a cost, and each one reached the function at least once."""
-    failures: list[str] = []
-    for route in _ROUTES:
-        cost, problems = _once([m for m in _COST.findall(output) if m[0] == route], f"{route} cost")
-        failures.extend(problems)
-        if cost is not None and int(cost[1]) == 0:
-            failures.append(f"{route} reports 0 lookups, so it never reached the function at all")
-    return failures
-
-
-def _assess_the_interpreter_computed_it(output: str) -> list[str]:
-    """Both routes run Python, so both are held to what the interpreter printed."""
+def _per_route(
+    output: str, pattern: re.Pattern[str], what: str
+) -> tuple[dict[str, Any], list[str]]:
+    """One match per route, or a reason for each that is missing or doubled."""
+    found: dict[str, Any] = {}
     failures: list[str] = []
     for route in _ROUTES:
         match, problems = _once(
-            [m for m in _PRINTED.findall(output) if m[0] == route], f"{route} program printed"
-        )
-        failures.extend(problems)
-        if match is not None and match[1] != "True":
-            failures.append(
-                f"the {route}'s program did not print the exact total — an interpreter computed "
-                "it from prices the host supplied, so this is not a model getting arithmetic "
-                "wrong. Either the program never ran, or it did not use what it was told"
-            )
-    return failures
-
-
-def _assess_who_carried_the_prices(output: str) -> list[str]:
-    """The finding, and both halves of it are structural.
-
-    Dispatched: the program is written before a dispatch can happen, so a price cannot be in
-    it. Directly: the values arrive as tool results and the only way into the program is for
-    the model to write them there. Neither turns on how the model felt that morning.
-    """
-    failures: list[str] = []
-    wrote: dict[str, str] = {}
-    for route in _ROUTES:
-        match, problems = _once(
-            [m for m in _WROTE.findall(output) if m[0] == route], f"{route} prices written"
+            [m for m in pattern.findall(output) if m[0] == route], f"{route} {what}"
         )
         failures.extend(problems)
         if match is not None:
-            wrote[route] = match[1].strip()
+            found[route] = match
+    return found, failures
 
-    if wrote.get(_DISPATCH, _NONE) != _NONE:
-        failures.append(
-            f"the dispatched route wrote {wrote[_DISPATCH]} into a tool call — the program is "
-            "written before any dispatch happens, so a price cannot have reached it that way. "
-            "Either the model was handed one somewhere it should not have been, or this line "
-            "no longer measures what it says"
-        )
-    if wrote.get(_DIRECT) == _NONE:
-        failures.append(
-            "the direct route wrote no price into a tool call, so the contrast this sample "
-            "exists to show did not happen — on that road the model has to carry each value "
-            "into the program, and a run where it did not is not comparable"
-        )
 
-    # Act 4 restates both as counts. Disagreement means one of the four lines is not from this run.
-    restated = _HANDLED.findall(output)
-    for short, count in restated:
-        route = _SHORT[short]
-        if route not in wrote:
-            continue
-        listed = 0 if wrote[route] == _NONE else wrote[route].count("'") // 2
-        if int(count) != listed:
-            failures.append(
-                f"act 4 says the model handled {count} price(s) on the {route} where the route "
-                f"itself reported {listed} — the two lines describe one run and disagree"
-            )
-    if len(restated) != len(_ROUTES):
-        failures.append("act 4 did not restate both routes' price counts")
+def _assess_the_cap_was_budgeted(output: str) -> list[str]:
+    """A call-heavy host has to raise the default, and saying so is half the lesson."""
+    match, failures = _once(_CAP.findall(output), "dispatch cap")
+    if match is None:
+        return failures
+    cap, minimum = int(match[0]), int(match[1])
+    if cap < minimum:
+        failures.append(
+            f"the run allowed {cap} dispatches where the walk needs at least {minimum} — the "
+            "program cannot finish, and the sample would be measuring a truncated one"
+        )
     return failures
 
 
-def _assess_round_trip(output: str) -> list[str]:
-    """A measurement was published, and its three figures are ordered."""
-    match, failures = _once(_ROUND_TRIP.findall(output), "round trip")
+def _assess_both_interpreters_answered(output: str) -> list[str]:
+    """Both routes compute in the sandbox, so both are held to what came back."""
+    found, failures = _per_route(output, _TOTALS, "state totals")
+    for route, match in found.items():
+        printed, expected = int(match[1]), int(match[2])
+        if expected != _STATES:
+            failures.append(f"{route} scored itself out of {expected} states, not {_STATES}")
+        if printed != expected:
+            failures.append(
+                f"the {route}'s program printed {printed} of {expected} state totals — an "
+                "interpreter computed them from data the host supplied, so a missing one means "
+                "the program did not finish the walk rather than that a model was careless"
+            )
+    return failures
+
+
+def _assess_direct_pays_per_stage(output: str) -> list[str]:
+    """The structural comparison: batching within a stage, never across one."""
+    found, failures = _per_route(output, _TRIPS, "round-trip count")
+    shapes, problems = _per_route(output, _SHAPE, "lookups per round trip")
+    failures.extend(problems)
+
+    if len(found) == len(_ROUTES):
+        dispatched, direct = int(found[_DISPATCH][2]), int(found[_DIRECT][2])
+        if direct <= dispatched:
+            failures.append(
+                f"the direct route took {direct} model round trip(s) and the dispatched route "
+                f"{dispatched} — the comparison this sample exists for is that walking the "
+                "stages in the model's own loop costs more of them, and this run did not show it"
+            )
+    for route, match in found.items():
+        if int(match[1]) == 0:
+            failures.append(f"{route} made no lookups at all, so it answered from somewhere else")
+
+    if _DIRECT in shapes:
+        groups = [g for g in shapes[_DIRECT][1].split(",") if g.strip()]
+        if len(groups) < _STAGES:
+            failures.append(
+                f"the direct route asked in {len(groups)} batch(es) and the walk has {_STAGES} "
+                "stages — fewer means it did not have to wait for one stage to answer before "
+                "asking the next, and the workload stopped being the one described"
+            )
+    return failures
+
+
+def _assess_who_carried_the_figures(output: str) -> list[str]:
+    """The finding, and both halves are structural rather than a matter of model mood."""
+    found, failures = _per_route(output, _WROTE, "figures written")
+    wrote = {route: int(match[1]) for route, match in found.items()}
+
+    if wrote.get(_DISPATCH, 0) != 0:
+        failures.append(
+            f"the dispatched route wrote {wrote[_DISPATCH]} sales figure(s) into a tool call — "
+            "the program is written before any dispatch can answer, so a figure cannot have "
+            "reached it that way, and this line has stopped measuring what it says"
+        )
+    if _DIRECT in wrote and wrote[_DIRECT] == 0:
+        failures.append(
+            "the direct route wrote no sales figure into a tool call, so the contrast this "
+            "sample exists to show did not happen — on that road every value has to cross the "
+            "model to reach the program, and a run where none did is not comparable"
+        )
+
+    restated = _HANDLED.findall(output)
+    for short, count in restated:
+        route = _SHORT[short]
+        if route in wrote and int(count) != wrote[route]:
+            failures.append(
+                f"act 4 says the model handled {count} figure(s) on the {route} where the route "
+                f"itself reported {wrote[route]} — the two lines describe one run and disagree"
+            )
+    if len(restated) != len(_ROUTES):
+        failures.append("act 4 did not restate both routes' figure counts")
+    return failures
+
+
+def _assess_the_round_trips(output: str) -> list[str]:
+    """Reported for the dispatched route only, and its three figures are ordered."""
+    matches = _ROUND_TRIP.findall(output)
+    if any(m[0] == _DIRECT for m in matches):
+        failures = [
+            "a round-trip line was printed for the direct route — its lookups run in the host "
+            "process between two model turns, so whatever that measured is not a round trip and "
+            "inviting the reader to compare it with the dispatched figure is the wrong reading"
+        ]
+    else:
+        failures = []
+    match, problems = _once([m for m in matches if m[0] == _DISPATCH], "dispatch round trip")
+    failures.extend(problems)
     if match is None:
         return failures
-    gaps, low, mid, high = int(match[0]), float(match[1]), float(match[2]), float(match[3])
+    gaps, low, mid, high = int(match[1]), float(match[2]), float(match[3]), float(match[4])
     if gaps < 1:
         failures.append("the round-trip line reports no gaps, so nothing was measured")
     if not low <= mid <= high:
@@ -221,27 +229,58 @@ def _assess_round_trip(output: str) -> list[str]:
     return failures
 
 
+def _assess_what_the_runs_left(output: str) -> list[str]:
+    """#302's per-run subdirectory, and the cleanup that #438 says nobody can do."""
+    failures: list[str] = []
+    dirs, problems = _once(_RUN_DIRS.findall(output), "run directories")
+    failures.extend(problems)
+    dispatching, problems = _once(_DISPATCHING.findall(output), "runs that dispatched")
+    failures.extend(problems)
+    left, problems = _once(_LEFT.findall(output), "files left behind")
+    failures.extend(problems)
+    if None in (dirs, dispatching, left):
+        return failures
+
+    if int(dispatching) < 1:  # type: ignore[arg-type]
+        failures.append("no run dispatched, so there is no transport traffic to have left behind")
+    if int(dirs) < int(dispatching):  # type: ignore[arg-type]
+        failures.append(
+            f"{dispatching} run(s) dispatched out of {dirs} in the guest, which is not arithmetic"
+        )
+    if int(left) < 1:  # type: ignore[arg-type]
+        failures.append(
+            "no request or response files were found in the guest. Nothing deletes them — the "
+            "protocol has no way (#438) — so zero means the sample looked in the wrong place, "
+            "which is what it did before `host_tools/` was in the path"
+        )
+    return failures
+
+
 def _assess_the_sandbox_went_away(output: str) -> list[str]:
-    """Billable, and one sandbox serves both routes."""
+    """Billable, and one sandbox serves both routes and act 5's enumeration."""
     match, failures = _once(_DISPOSED.findall(output), "Disposed")
     if match is None:
         return failures
     if int(match) != 1:
         failures.append(
             f"{match} sandbox(es) disposed where the sample acquires one — a sandbox this "
-            "sample leaves behind bills until the lifecycle timers reach it"
+            "sample leaves behind bills until the lifecycle timers reach it, and it is also "
+            "the only thing that removes the files act 5 counted"
         )
     return failures
 
 
 def assess(output: str) -> list[str]:
-    """Every reason the run does not show a real, measured dispatch."""
+    """Every reason the run does not show a real, measured, call-heavy dispatch."""
+    _, cost_problems = _per_route(output, _COST, "cost")
     return [
-        *_assess_dispatch_happened(output),
-        *_assess_both_routes_ran(output),
-        *_assess_the_interpreter_computed_it(output),
-        *_assess_who_carried_the_prices(output),
-        *_assess_round_trip(output),
+        *_assess_the_cap_was_budgeted(output),
+        *cost_problems,
+        *_assess_both_interpreters_answered(output),
+        *_assess_direct_pays_per_stage(output),
+        *_assess_who_carried_the_figures(output),
+        *_assess_the_round_trips(output),
+        *_assess_what_the_runs_left(output),
         *_assess_the_sandbox_went_away(output),
     ]
 
@@ -264,9 +303,11 @@ def main(argv: list[str]) -> int:
             print(f"  - {reason}", file=sys.stderr)
         return 1
 
+    trips = {route: count for route, _, count in _TRIPS.findall(output)}
     print(
-        "OK  both routes computed the exact total in the sandbox; the model carried every "
-        "price on one road and none of them on the other"
+        f"OK  both programs answered from the sandbox; the walk cost "
+        f"{trips.get(_DIRECT, '?')} model round trips in the model's loop against "
+        f"{trips.get(_DISPATCH, '?')} dispatched, and the model carried no data on the second"
     )
     return 0
 

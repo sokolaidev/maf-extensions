@@ -1,6 +1,6 @@
 # 15 — A program calling back into the host (ACA sandbox)
 
-Every other sample sends things *in* to a sandbox and takes results *out*. This one opens the other direction: model-written code, running inside a microVM, calling a function that executes in the host process.
+Every other sample sends things *in* to a sandbox and takes results *out*. This one opens the other direction: model-written code, running inside a microVM, calling functions that execute in the host process.
 
 ```
 app  ->  maf_sandbox (router)  ->  maf_sandbox_acas  ->  the sandbox
@@ -8,90 +8,98 @@ app  ->  maf_sandbox (router)  ->  maf_sandbox_acas  ->  the sandbox
               +------ a host function, dispatched ----------+
 ```
 
-**Read [sample 10's README](../10_inprocess_host_tools/README.md) first.** It is the configuration half — `@sandbox_tool`, the registry gate, the aggregate, the seal, and both ways a router refuses the whole kind — all answered at attach, with no sandbox and no model. This page is the traffic half ([#302](https://github.com/sokolaidev/maf-extensions/issues/302)) and does not re-teach any of it.
+**Read [sample 10's README](../10_inprocess_host_tools/README.md) first.** It is the configuration half — `@sandbox_tool`, the registry gate, the aggregate, the seal, and both ways a router refuses the whole kind — all answered at attach, with no sandbox and no model. This page is the traffic half ([#302](https://github.com/sokolaidev/maf-extensions/issues/302)).
 
-## The question this exists to answer
+## The workload, and why it looks like a database
 
-[#133](https://github.com/sokolaidev/maf-extensions/issues/133) says the trade-off is what the feature lives or dies on, and that it should be measured rather than assumed:
+[#133](https://github.com/sokolaidev/maf-extensions/issues/133) is specific about what needs measuring:
 
-> a call-heavy program can cost more round trips than the direct tool calling this pattern exists to replace
+> Each dispatch is at minimum one round trip — on a remote backend, an HTTP call — so a **call-heavy** program can cost more round trips than the direct tool calling this pattern exists to replace.
 
-So the sample asks one question two ways, and **both of them run Python in the sandbox**:
+A call-heavy workload is one where the calls *depend on each other*, so three tables and a question that cannot be answered without walking them in order:
 
-1. **Dispatched.** The model writes a program; the program calls `unit_price` from inside the guest, over the transport, and computes.
-2. **Direct.** `execute_code` with no registry, plus the same function as an ordinary tool. The model calls it for each price, then writes those numbers into the program it runs.
+```
+state name  ->  state id  ->  store ids  ->  sales rows  ->  product names
+```
 
-**Holding the interpreter constant is the whole design.** An earlier draft of this sample gave the dispatched route a Python interpreter and the other route nothing but the tool — and then reported that the second one got the arithmetic wrong. It did, reliably. But that measures whether a model can add decimals in one forward pass, which is samples 03 and 06's subject, not dispatch's. Attributing it to the transport was simply wrong, and the finding below only appeared once the confound was removed.
+Two states, five stores, three products: **four stages, twelve lookups at best**. Acts 2 and 3 answer it twice, and **both run Python in the sandbox** — the only thing that differs is where the lookups happen. Holding the interpreter constant is what keeps this a measurement of dispatch rather than of CodeAct, which samples 03 and 06 already cover.
 
-## What it actually costs, and what it actually buys
+The data lives in the host process, is not in the image or the file store, and the sandbox has no egress. A program that wants any of it has one road.
+
+## What the stages cost
 
 From a live run:
 
 | | dispatched | direct |
 | --- | --- | --- |
-| total the program printed | `218.15` | `218.15` |
-| wall clock | 12.35s | 4.09s |
-| tokens | 1328 | 1665 |
-| model messages | 3 | 5 |
-| **prices the model wrote into code** | **none** | **all three** |
+| lookups | 21 | 12 |
+| **model round trips** | **3** | **5** |
+| lookups per round trip | `[1, 1, 1]` | `[2, 2, 5, 3, 1]` |
+| wall clock | 48.07s | 14.60s |
+| tokens | 6,270 | 6,217 |
+| **sales figures the model wrote into code** | **0** | **12** |
+| state totals the program printed | 2 of 2 | 2 of 2 |
 
-Both are correct, so correctness is not what a round trip buys. The cost is wall clock — about a second per call on this backend — and it is not paid in tokens; the two land close and which is cheaper depends on how much the guest program prints.
+Read `[2, 2, 5, 3, 1]` — that *is* the walk. Two state ids, two store lists, five sales rows, three product names, then the program. **Direct tool calling batches within a stage and never across one**, because it cannot ask for a store's sales until it has been told the store ids. So it pays a model round trip per stage.
 
-What it buys is the last row. On the direct route every price arrives as a tool result and the only road into the program is for the model to write it into the source:
+Dispatch resolves the whole walk inside one program and pays a *transport* round trip per call instead — serially, always, with no batching available at any layer ([#439](https://github.com/sokolaidev/maf-extensions/issues/439)).
+
+Both answers are correct, so correctness is not what a round trip buys. What it buys is the last row.
+
+## Where the data ends up, which is the real trade
+
+On the direct route every figure arrives as a tool result and the only road into the program is for the model to write it into the source:
 
 ```python
-execute_code({"code": "a=3*41.75
-b=7*12.4
-c=2*3.05
-print(f'{a+b+c:.2f}')"})
+execute_code({"code": "wa = 1240.50 + 310.25 + 88.10 + 655.75 + ..."})
 ```
 
-Those numbers are now in the transcript, the context window, and whatever logs either reaches. On the dispatched route the model writes none of them, and cannot: the program is written *before* any dispatch can answer, so there is no value to embed. The prices travel guest → host → guest without the model as courier.
+Those values are now in the transcript, the context window, and whatever logs either reaches — and they stay there, turn after turn. That is a **ceiling** long before it is a bill: context is capped, and an agent that compacts to stay under it is paying a summarisation call and losing fidelity every time.
 
-**The claim is exactly that narrow.** It is not "the prices stay out of the transcript" — a dispatched program may `print` one, and in the run above it did, which is why `prices the model received` is reported on its own line and says so. What the transport decides is whether the *model* has to handle the value. That is the leg a `sink` declaration describes, and it is the reason `Capability.HOST_TOOLS` is a policy question rather than a convenience.
+Dispatched, the model writes none of them and *cannot*: the program exists before any dispatch can answer, so there is no value to embed.
 
-## Why the prices have to be secret
+**The claim is exactly that narrow.** It is not "the data stays out of the transcript" — a dispatched program is free to `print` a figure. What the transport decides is whether the *model* has to be the courier, which is the leg a `sink` declaration describes.
 
-`PRICES` lives in the host process. It is not in the image, not in the file store, and the sandbox has no egress — with no `egress_allow`, the guest initiates nothing at all. A program that wants a price has exactly one road to it.
+## The dispatch cap is real, and this workload exceeds the default
 
-That is what makes the measurement mean something. If the model could guess a plausible price the sample would measure nothing: a run that skipped every dispatch would still print a number, and the number would look fine. Here a skipped dispatch is a wrong total, and the check says so.
+`HostToolRegistry` allows 16 dispatches a run. This walk needs up to 21 written naively, and live runs used 18 to 29. The first attempt hit the cap and came back with half a table and `Need more host-tool budget to complete the table`.
 
-The quantities are awkward, but that no longer carries any weight: both routes compute with an interpreter, so neither is being asked to do mental arithmetic. What matters is only that the *prices* are unguessable, which is what makes a skipped dispatch visible as a wrong total.
+So the sample budgets for it out loud. A call-heavy host has to, and the arithmetic is not the whole story: the *model* writes the program, and a program that looks up a product name per sales row asks twelve times where a caching one asks three.
 
-## What a dispatch proves on this backend, and not on a local one
+## What a dispatch proves here, and not on a local backend
 
-ACAS's `exec` is blocking and timeout-bounded. The guest shim publishes a request file and then **blocks**, waiting for a response the host can only write while the program is still running. If the launcher had not detached, the `exec` that started the program would own it, the host would never get to write, and the program would sit there until its deadline.
+ACAS's `exec` is blocking and timeout-bounded. The guest shim publishes a request file and then **blocks**, waiting for a response the host can only write while the program is still running. If the launcher had not detached, the `exec` would own the program, the host would never get to write, and it would sit there until its deadline.
 
-So a dispatch that is answered *at all* proves the launcher detached and the supervisor took over. The sample does not assert that separately — it is the precondition of act 2 producing any number, and the reason [#365](https://github.com/sokolaidev/maf-extensions/issues/365) treats `Capability.HOST_TOOLS` as a claim about `exec` rather than about a method.
+So a dispatch that is answered at all proves the launcher detached and the supervisor took over — that is the precondition of act 2 producing any number, and the reason [#365](https://github.com/sokolaidev/maf-extensions/issues/365) treats `Capability.HOST_TOOLS` as a claim about `exec` rather than about a method.
 
-## Reading the round-trip line
+**What the sample cannot show is the other half of that.** #302 wants the timeout to be a supervisor bound rather than an exec bound, and #133 that *"a wedged guest needs its own ceiling"*. There is no such ceiling yet: [#375](https://github.com/sokolaidev/maf-extensions/issues/375) is the sandbox nobody disposes, and [#437](https://github.com/sokolaidev/maf-extensions/issues/437) is the kill that reaches only the interpreter's own pid.
 
-```
-[measured] round trip: 2 gap(s), min 1.09s, median 1.09s, max 1.10s
-```
+## What the runs leave in the guest
 
-The interval runs from the host **answering** one call to the **next arriving** — out through the response file, into the guest, back through the next request file. Serving one call is a `stat_file`, a `read_file` and a `write_file`, plus a `stat_file` per poll interval while it waits, so on a remote control plane the figure is dominated by HTTPS round trips rather than by the poll interval itself.
+Act 5 enumerates the work root with `list_dir`, which needs `Capability.FILES_LIST` — ACAS declares it and Docker does not, so this act is one more reason the sample belongs on this backend.
 
-**A gap below the supervisor's poll interval is not a fast round trip.** It is two calls that were outstanding together, which the transport allows — the guest shim claims request ids with `O_CREAT | O_EXCL` precisely so a threaded or forking program can have several in flight. A model that writes a concurrent program will produce a handful of near-zero gaps and a smaller median. Nothing filters those out; a measurement that drops its inconvenient samples is not one.
+A fresh directory per run is real, and on a warm sandbox it is not hypothetical: every run of both acts is still there when act 5 looks. What is *not* there is any cleanup. The transport says so itself — *"Nothing in the protocol deletes"* — and [#438](https://github.com/sokolaidev/maf-extensions/issues/438) is the general case: no kind is obliged to clean up, and the protocol gives it nothing to clean up with. Sixty-three request and response files survived one run of this sample.
 
-## What the check does and does not enforce
+Disposing the sandbox is the only thing that removes them, which is what the footer does.
 
-Both routes run Python, so both are held to the same two things, and both are properties of machinery rather than prose:
+## What the check enforces
 
-- **The program printed the exact total** — read from the framework's record of what `execute_code` returned.
-- **Who wrote the prices into a tool call** — none on the dispatched route, all of them on the direct one. Both halves are structural: one is impossible, the other is forced.
+Seven live runs decided this. The lookup count moved between 18 and 29, wall clock between 35s and 87s, dispatched round trips between two and four. What did not move is what is asserted:
 
-**Wall clock and tokens are recorded and never bounded**, and what the model *said* is never read at all. That is deliberate, and it was earned twice. An earlier check required the model's reply to carry the total, and a live run printed `218.15` from the sandbox while the reply said `239.75` — it would have failed a release and blamed the sandbox. An earlier draft also leaned on the direct route staying wrong, which would have gone red the day it stopped being.
+- **Both programs printed both state totals** — read from the framework's record of what `execute_code` returned, so an interpreter produced them.
+- **Direct needed more model round trips than dispatch**, and its shape shows at least four batches — one per stage.
+- **Who carried the figures**: none dispatched, all of them direct. Both halves are structural — one is impossible, the other is forced.
+- **The runs left transport files behind.** Zero would mean the sample looked in the wrong place, which is exactly what it did before `host_tools/` was in the path.
 
-Every line the check reads has to carry the `[measured]` tag at the left margin ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)). The sample's `quoted()` prefixes any tagged line inside a model's reply with `> `, so prose that tries to answer for the host is visibly not the host answering.
+Wall clock, tokens and lookup counts are **recorded and never bounded**, and what a model *said* is never read. Every line the check reads carries the `[measured]` tag at the left margin ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)); `quoted()` prefixes any tagged line inside a model's reply with `> `, so prose that tries to answer for the host is visibly not the host answering.
 
 ## Prerequisites
 
 - An Azure subscription with the [Container Apps Sandboxes](https://learn.microsoft.com/azure/container-apps/sandboxes) preview enabled, and a sandbox group.
-- `mcr.microsoft.com/devcontainers/python:3.13-bookworm` imported into that group as a disk image — sample 14's image, so a group set up for that one already has it. The guest needs `sh`, `nohup` and `python3`: the launcher is POSIX shell and the shim is Python. A distroless or Windows image cannot serve this whatever it declares. ([#412](https://github.com/sokolaidev/maf-extensions/issues/412) is why the import is needed at all — the backend cannot yet boot the public Python images the platform already publishes.)
+- `mcr.microsoft.com/devcontainers/python:3.13-bookworm` available to that group — sample 14's image, so a group set up for that one already has it. The guest needs `sh`, `nohup` and `python3`: the launcher is POSIX shell and the shim is Python, so a distroless or Windows image cannot serve this whatever it declares.
 - An Azure OpenAI deployment. No key: `az login` is enough.
 
-**This creates a billable sandbox.** One, disposed at the end rather than left to the lifecycle timers — the check fails the run if it was not.
+**This creates a billable sandbox.** One, serving both acts and act 5's enumeration, disposed at the end rather than left to the lifecycle timers — the check fails the run if it was not.
 
 ## Environment
 
@@ -122,12 +130,12 @@ uv run python scripts/check_live_host_tools_dispatch_sample.py out.txt
 
 ## When it goes wrong
 
+**`Need more host-tool budget to complete the table`.** The dispatch cap. `DISPATCH_CAP` in `agent.py` is set above the worst observed run; a bigger dataset needs a bigger budget, and the arithmetic in that comment is the place to start.
+
 **`SandboxCapabilityNotSupported` at construction.** The backend does not declare `Capability.HOST_TOOLS`. ACAS and Docker do; `maf-sandbox-wslc` does not, and a registry against it is refused where the tool would have been built rather than at the first call.
 
-**The program times out with no answer.** The launcher did not detach, or the guest has no `sh`/`nohup`. Check the image before anything else.
+**A program times out with no answer.** The launcher did not detach, or the guest has no `sh`/`nohup`. Check the image before anything else — and note #375: nothing disposes the sandbox that program is still running in.
 
-**A dispatched program that hangs leaves the sandbox behind.** [#375](https://github.com/sokolaidev/maf-extensions/issues/375) — a dispatched program that outlives its timeout keeps running and no kind can dispose the sandbox holding it. On this backend that is a billable sandbox nobody can reap, and it is a live defect now that two backends declare the capability. It is the reason the footer counts what it disposed.
+**The dispatched route wrote a figure into code.** The check fails on this and it should be impossible: the program is written before any dispatch can answer. Either the model was handed a value somewhere it should not have been, or that line has stopped measuring tool-call arguments only.
 
-**A program did not print the total.** This fails the run, for either route. This is the one failure that fails a run. Read the transcript: the program is in it. The usual cause is a program that hardcoded a price rather than calling for it, which the SKU-coverage line catches first.
-
-**The dispatched route reports prices the model wrote into code.** This should be impossible, and the check fails on it. Either the program is being written after a dispatch answered, or that line has stopped measuring tool-call arguments only.
+**`no such directory: '<run>/host_tools'`.** A run that never dispatched — act 3's, since without a registry the kind uses the flat run directory it always has. Act 5 catches that by its own type; anything else should still be heard.
