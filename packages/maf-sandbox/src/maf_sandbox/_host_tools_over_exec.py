@@ -1159,7 +1159,7 @@ async def _stop_the_program(sandbox: Sandbox, layout: GuestRunLayout, *, until: 
         # Not `absent`: the pid could not be *read*, which is no evidence that none was written.
         # One leg reports `absent` by saying nothing at all, and silence is the wrong answer to
         # a program whose fate is unknown.
-        return "running"
+        return "refused"
     pid = running.strip() if isinstance(running, str) else ""
     # ASCII digits and positive, both load-bearing. `str.isdigit` admits other numeral systems
     # that `int` then normalises, and `kill -KILL 0` signals the whole process group rather
@@ -1170,7 +1170,7 @@ async def _stop_the_program(sandbox: Sandbox, layout: GuestRunLayout, *, until: 
     if not (pid.isascii() and pid.isdigit()) or int(pid) <= 0:
         # Something was written and it is not a pid. A guest can arrange that deliberately, so
         # this hedges rather than reporting the run as nothing-to-stop.
-        return "running"
+        return "refused"
     # Its own deadline, not what is left of the read's: a slow pid read would otherwise leave
     # the signal no time to be sent, which is the runaway this exists to stop.
     sending = _a_grace_from_now()
@@ -1188,7 +1188,7 @@ async def _stop_the_program(sandbox: Sandbox, layout: GuestRunLayout, *, until: 
         )
     except Exception as refused:  # noqa: BLE001 — a failed kill is a leak, not a fault
         logger.warning("host tools: could not stop the guest program: %s", error_detail(refused))
-        return "running"
+        return "refused"
     return "signalled" if killed.exit_code == 0 else "refused"
 
 
