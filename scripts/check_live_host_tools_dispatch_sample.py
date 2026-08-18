@@ -62,7 +62,7 @@ _STAGES = 4
 #: whatever it is given.
 _FIGURES = 12
 
-#: One sandbox per route, so the routes cannot read each other's leftovers.
+#: One sandbox per route, so neither route's program can read the other's leftovers.
 _SANDBOXES = 2
 
 _F = re.MULTILINE
@@ -74,8 +74,8 @@ def _tagged(pattern: str) -> re.Pattern[str]:
 
 
 _CAP = _tagged(r"dispatch cap for the run:\s+(\d+)\s+\(the walk needs\s+(\d+)[^,]*,\s+(\d+)")
-_TRIPS = _tagged(rf"({_ANY_ROUTE}):\s+(\d+)\s+lookup\(s\) over\s+(\d+)\s+model round trip\(s\)")
-_SHAPE = _tagged(rf"({_ANY_ROUTE}):\s+tool calls per model round trip:\s+\[([^\]]*)\]")
+_TRIPS = _tagged(rf"({_ANY_ROUTE}):\s+(\d+)\s+lookup\(s\) over\s+(\d+)\s+tool-calling round\(s\)")
+_SHAPE = _tagged(rf"({_ANY_ROUTE}):\s+tool calls per round:\s+\[([^\]]*)\]")
 _COST = _tagged(rf"({_ANY_ROUTE}):\s+([\d.]+)s,\s+(\d+)\s+tokens")
 _TOTALS = _tagged(rf"({_ANY_ROUTE}):\s+state totals the program printed:\s+(\d+)\s+of\s+(\d+)")
 _WROTE = _tagged(
@@ -86,7 +86,7 @@ _ROUND_TRIP = _tagged(
     rf"({_ANY_ROUTE}):\s+round trip:\s+(\d+)\s+gap\(s\),\s+min\s+([\d.]+)s,\s+"
     r"median\s+([\d.]+)s,\s+max\s+([\d.]+)s"
 )
-_RUN_DIRS = _tagged(r"run directories in the guest:\s+(\d+)")
+_RUN_DIRS = _tagged(r"run directories across both sandboxes:\s+(\d+)")
 _DISPATCHING = _tagged(r"of those, runs that dispatched:\s+(\d+)")
 _LEFT = _tagged(r"transport files left behind:\s+(\d+), of which answered calls:\s+(\d+)")
 _DISPOSED = _tagged(r"Disposed\s+(\d+)\s+sandbox\(es\)\.")
@@ -332,7 +332,7 @@ def _assess_what_the_runs_left(output: str) -> list[str]:
 
 
 def _assess_the_sandbox_went_away(output: str) -> list[str]:
-    """Billable, and one sandbox serves both routes and act 5's enumeration."""
+    """Billable, and there are two — a sandbox per route, both read by act 5 and both gone."""
     match, failures = _once(_DISPOSED.findall(output), "Disposed")
     if match is None:
         return failures
@@ -346,12 +346,29 @@ def _assess_the_sandbox_went_away(output: str) -> list[str]:
     return failures
 
 
+def _assess_the_cost_was_measured(output: str) -> list[str]:
+    """Each route publishes a cost, and the token half of it is a real figure.
+
+    Wall clock is recorded and never bounded — a slow control plane is a finding. Tokens are
+    different only at zero: every route here invokes the model, so nought is usage reporting
+    having gone missing, which is the `None` case wearing a number.
+    """
+    found, failures = _per_route(output, _COST, "cost")
+    for route, match in found.items():
+        if int(match[2]) == 0:
+            failures.append(
+                f"{route} reports 0 tokens. Every route here invokes the model, so this is a "
+                "run whose usage never arrived rather than one that was free, and publishing "
+                "it as a measurement is what this check exists to stop"
+            )
+    return failures
+
+
 def assess(output: str) -> list[str]:
     """Every reason the run does not show a real, measured, call-heavy dispatch."""
-    _, cost_problems = _per_route(output, _COST, "cost")
     return [
         *_assess_the_cap_was_budgeted(output),
-        *cost_problems,
+        *_assess_the_cost_was_measured(output),
         *_assess_both_interpreters_answered(output),
         *_assess_direct_pays_per_stage(output),
         *_assess_who_carried_the_figures(output),
@@ -382,7 +399,7 @@ def main(argv: list[str]) -> int:
     trips = {route: count for route, _, count in _TRIPS.findall(output)}
     print(
         f"OK  both programs answered from the sandbox; the walk cost "
-        f"{trips.get(_DIRECT, '?')} model round trips in the model's loop against "
+        f"{trips.get(_DIRECT, '?')} tool-calling rounds in the model's loop against "
         f"{trips.get(_DISPATCH, '?')} dispatched, and the model carried no data on the second"
     )
     return 0

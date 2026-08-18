@@ -33,14 +33,16 @@ From a live run:
 | | dispatched | direct |
 | --- | --- | --- |
 | lookups | 21 | 12 |
-| **model round trips** | **3** | **5** |
-| tool calls per model round trip | `[1, 1, 1]` | `[2, 2, 5, 3, 1]` |
+| **tool-calling rounds** | **3** | **5** |
+| tool calls per round | `[1, 1, 1]` | `[2, 2, 5, 3, 1]` |
 | wall clock | 48.07s | 14.60s |
 | tokens | 6,270 | 6,217 |
 | **sales figures the model wrote into code** | **0** | **12** |
 | state totals the program printed | 2 of 2 | 2 of 2 |
 
-Read `[2, 2, 5, 3, 1]` — the first four entries *are* the walk, and the last is the program. Two state ids, two store lists, five sales rows, three product names, then one `execute_code`. On the dispatched side every entry is `execute_code`; the lookups do not appear there at all, because they never reach the model. **Direct tool calling batches within a stage and never across one**, because it cannot ask for a store's sales until it has been told the store ids. So it pays a model round trip per stage.
+Read `[2, 2, 5, 3, 1]` — the first four entries *are* the walk, and the last is the program. Two state ids, two store lists, five sales rows, three product names, then one `execute_code`. On the dispatched side every entry is `execute_code`; the lookups do not appear there at all, because they never reach the model. **Direct tool calling batches within a stage and never across one**, because it cannot ask for a store's sales until it has been told the store ids. So it pays a tool-calling round per stage.
+
+**Rounds, not model invocations.** The final message of a turn carries the answer and no tool call, so each route is invoked once more than the table counts — four and six. Both pay that extra invocation exactly once, so the *difference* is the same either way; the absolute figure is what the token arithmetic needs, and it is one higher than shown.
 
 Dispatch resolves the whole walk inside one program and pays a *transport* round trip per call instead — serially, always, with no batching available at any layer ([#439](https://github.com/sokolaidev/maf-extensions/issues/439)).
 
@@ -86,10 +88,10 @@ Disposing the sandbox is the only thing that removes them, which is what the foo
 
 ## What the check enforces
 
-Seven live runs decided this. The lookup count moved between 18 and 29, wall clock between 35s and 87s, dispatched round trips between two and four. What did not move is what is asserted:
+Ten live runs decided this. The lookup count moved between 18 and 29, wall clock between 35s and 87s, dispatched tool-calling rounds between two and four. What did not move is what is asserted:
 
 - **Both programs printed both state totals** — read from the framework's record of what `execute_code` returned, so an interpreter produced them.
-- **Direct needed more model round trips than dispatch**, and its shape shows at least four batches — one per stage.
+- **Direct needed more tool-calling rounds than dispatch**, and its shape shows at least four batches — one per stage. The shape and the round count come from one list, so they have to agree.
 - **Who carried the figures**: none dispatched, all of them direct. Both halves are structural — one is impossible, the other is forced.
 - **The runs left transport files behind,** and at least one of them is an answered call. Zero of either would mean the enumeration looked somewhere the transport does not write.
 

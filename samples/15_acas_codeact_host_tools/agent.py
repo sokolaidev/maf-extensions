@@ -36,8 +36,9 @@ call — serially, always (#439) — and the model handles nothing.
 Act 5 is what the runs left in the guest, which #302 asks for and which is only half
 answerable: a fresh directory per run is real, and cleaning it up is #438.
 
-Running this needs a real Azure subscription and **creates a billable sandbox** — see this
-directory's README for the prerequisites and the environment variables.
+Running this needs a real Azure subscription and **creates two billable sandboxes**, one per
+route — see this directory's README for the prerequisites, the environment variables, and why
+the routes cannot share one.
 """
 
 # /// script
@@ -344,10 +345,16 @@ def agent_for(
 def calls_per_message(response: object) -> list[int]:
     """Tool calls grouped by the assistant message that asked for them.
 
-    **This is the structural measurement.** Every entry is one model round trip: the turn stops
-    there, the framework runs whatever was asked for, and the model is invoked again. A route
-    that batches five lookups into one entry paid one round trip for five; a route that needed
-    five entries paid five.
+    **This is the structural measurement.** Every entry is one *tool-calling round*: the turn
+    stops there, the framework runs whatever was asked for, and the model is invoked again. A
+    route batching five lookups into one entry paid one round for five; one needing five
+    entries paid five.
+
+    Rounds, not model invocations. A message with no tool call is not an entry, and the last
+    message always is one — the model writes the answer after the final tool result — so each
+    route is invoked once more than this counts. Both pay that extra invocation exactly once,
+    which is why the *difference* between the routes is the same either way and the absolute
+    figure is not.
     """
     grouped = []
     for message in getattr(response, "messages", []):
@@ -395,9 +402,10 @@ def report(
     grouped = calls_per_message(response)
     printed = "\n".join(tool_results(response, "execute_code"))
     print(
-        f"{MEASURED}{route}: {len(ledger.asked)} lookup(s) over {len(grouped)} model round trip(s)"
+        f"{MEASURED}{route}: {len(ledger.asked)} lookup(s) over {len(grouped)} "
+        f"tool-calling round(s)"
     )
-    print(f"{MEASURED}{route}: tool calls per model round trip: {grouped}")
+    print(f"{MEASURED}{route}: tool calls per round: {grouped}")
     print(
         f"{MEASURED}{route}: {seconds:.2f}s, {usage.get('total_token_count')} tokens "
         f"(in {usage.get('input_token_count')}, cached {usage.get('cache_read_input_token_count')}, "
@@ -503,6 +511,42 @@ def act_four_what_the_round_trips_bought(dispatched: int, direct: int) -> None:
     print("  wall clock, which is spent per run, against context, which accumulates.\n")
 
 
+async def _what_one_sandbox_holds(
+    router: SandboxRouter, thread: str, registry: HostToolRegistry | None
+) -> tuple[int, int, int, int]:
+    """Run directories, how many dispatched, and the files those left, for one route's sandbox.
+
+    Acquiring returns the *same warm sandbox* the route used — same key, same spec — which is
+    the point of the act: the runs are still in it.
+    """
+    spec = codeact_sandbox_spec(image=CODEACT_IMAGE, host_tools=registry)
+    sandbox = await router.acquire(SandboxKey(SCOPE, thread, AGENT_DIR), spec)
+    runs = await sandbox.list_dir(".", working_directory=spec.work_dir)
+    directories = sorted(entry.path.rstrip("/").split("/")[-1] for entry in runs)
+
+    # `guest_run_layout` puts the transport under `<run>/host_tools/`, with the calls beneath
+    # that — not directly in the run directory.
+    dispatched, left, answered = 0, 0, 0
+    for run in directories:
+        try:
+            entries = await sandbox.list_dir(f"{run}/host_tools", working_directory=spec.work_dir)
+        except FileNotFoundError:
+            # A run that dispatched nothing. Without a registry the kind uses the flat run
+            # directory it always has, so there is no `host_tools/` and nothing was left.
+            # Caught by its own type rather than by a bare `except`, because "this run did not
+            # dispatch" is the distinction being counted and any other failure should be heard.
+            continue
+        if not any(entry.path.rstrip("/").endswith(CALLS_DIRECTORY) for entry in entries):
+            continue
+        dispatched += 1
+        files = await sandbox.list_dir(
+            f"{run}/host_tools/{CALLS_DIRECTORY}", working_directory=spec.work_dir
+        )
+        left += len(files)
+        answered += sum(1 for entry in files if entry.path.endswith(_RESPONSE_SUFFIX))
+    return len(directories), dispatched, left, answered
+
+
 async def act_five_what_the_runs_left_behind(
     router: SandboxRouter, registry: HostToolRegistry
 ) -> None:
@@ -511,37 +555,21 @@ async def act_five_what_the_runs_left_behind(
     Read with `list_dir`, which needs `Capability.FILES_LIST` — ACAS declares it and Docker does
     not, so this act is one of the reasons the sample belongs on this backend.
 
-    Acquiring here returns the *same warm sandbox* both acts used: same key, same spec. That is
-    the point of the act — the runs are still in it.
+    **Both** sandboxes, because there are two: reporting only the dispatched one would leave the
+    direct route's runs out of a count the act claims is what the whole sample left behind, and
+    would make the contrast invisible — the direct route's sandbox holds run directories with no
+    transport files in them at all, which is what "nothing was left" looks like next to the
+    other.
     """
     print("== 5. What the runs left in the guest ==\n")
-    spec = codeact_sandbox_spec(image=CODEACT_IMAGE, host_tools=registry)
-    sandbox = await router.acquire(SandboxKey(SCOPE, DISPATCH_THREAD, AGENT_DIR), spec)
-    runs = await sandbox.list_dir(".", working_directory=spec.work_dir)
-    directories = sorted(entry.path.rstrip("/").split("/")[-1] for entry in runs)
+    routes = ((DISPATCH_THREAD, registry), (DIRECT_THREAD, None))
+    totals = [await _what_one_sandbox_holds(router, thread, reg) for thread, reg in routes]
+    directories = sum(t[0] for t in totals)
+    dispatched_runs = sum(t[1] for t in totals)
+    left = sum(t[2] for t in totals)
+    answered = sum(t[3] for t in totals)
 
-    # `guest_run_layout` puts the transport under `<run>/host_tools/`, with the calls beneath
-    # that — not directly in the run directory.
-    dispatched_runs, left, answered = 0, 0, 0
-    for run in directories:
-        try:
-            entries = await sandbox.list_dir(f"{run}/host_tools", working_directory=spec.work_dir)
-        except FileNotFoundError:
-            # Act 3's runs. Without a registry the kind uses the flat run directory it always
-            # has, so there is no `host_tools/` and nothing to leave behind. Caught by its own
-            # type rather than by a bare `except`, because "this run did not dispatch" is the
-            # distinction being counted and any other failure should still be heard.
-            continue
-        if not any(entry.path.rstrip("/").endswith(CALLS_DIRECTORY) for entry in entries):
-            continue
-        dispatched_runs += 1
-        files = await sandbox.list_dir(
-            f"{run}/host_tools/{CALLS_DIRECTORY}", working_directory=spec.work_dir
-        )
-        left += len(files)
-        answered += sum(1 for entry in files if entry.path.endswith(_RESPONSE_SUFFIX))
-
-    print(f"{MEASURED}run directories in the guest: {len(directories)}")
+    print(f"{MEASURED}run directories across both sandboxes: {directories}")
     print(f"{MEASURED}of those, runs that dispatched: {dispatched_runs}")
     print(f"{MEASURED}transport files left behind: {left}, of which answered calls: {answered}")
     print()
@@ -554,7 +582,7 @@ async def act_five_what_the_runs_left_behind(
 
 
 async def run() -> int:
-    """Wire the stack, run both routes against one sandbox, and take it down again."""
+    """Wire the stack, run each route against its own sandbox, and take both down again."""
     env = require_env_vars(SANDBOX_VARS + MODEL_VARS)
     if env is None:
         return 2

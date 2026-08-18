@@ -1182,7 +1182,7 @@ jobs:
           set -euo pipefail
           uv run --no-project samples/15_acas_codeact_host_tools/agent.py | tee /tmp/sample15-out.txt
           # Both routes compute in the sandbox, so both are held to the totals their programs
-          # printed; what the check compares is how many model round trips each road cost and
+          # printed; what the check compares is how many tool-calling rounds each road cost and
           # which of them carried the data. stdlib-only, so the runner's own python3 runs it.
           python3 "$HARNESS"/scripts/check_live_host_tools_dispatch_sample.py /tmp/sample15-out.txt
 

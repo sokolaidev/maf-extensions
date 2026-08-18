@@ -44,8 +44,8 @@ state	product	total_sales
 Washington	TOTAL	3564.55
 Oregon	TOTAL	3514.35
 
-  [measured] dispatch route: 21 lookup(s) over 3 model round trip(s)
-  [measured] dispatch route: tool calls per model round trip: [1, 1, 1]
+  [measured] dispatch route: 21 lookup(s) over 3 tool-calling round(s)
+  [measured] dispatch route: tool calls per round: [1, 1, 1]
   [measured] dispatch route: 48.07s, 6270 tokens (in 5101, cached 2560, out 1169)
   [measured] dispatch route: state totals the program printed: 2 of 2
   [measured] dispatch route: sales figures the model wrote into code: 0 of 12
@@ -56,8 +56,8 @@ Oregon	TOTAL	3514.35
 | Washington | TOTAL | 3564.55 |
 | Oregon | TOTAL | 3514.35 |
 
-  [measured] direct route: 12 lookup(s) over 5 model round trip(s)
-  [measured] direct route: tool calls per model round trip: [2, 2, 5, 3, 1]
+  [measured] direct route: 12 lookup(s) over 5 tool-calling round(s)
+  [measured] direct route: tool calls per round: [2, 2, 5, 3, 1]
   [measured] direct route: 14.60s, 6217 tokens (in 5559, cached 2048, out 658)
   [measured] direct route: state totals the program printed: 2 of 2
   [measured] direct route: sales figures the model wrote into code: 12 of 12
@@ -69,7 +69,7 @@ Oregon	TOTAL	3514.35
 
 == 5. What the runs left in the guest ==
 
-  [measured] run directories in the guest: 2
+  [measured] run directories across both sandboxes: 3
   [measured] of those, runs that dispatched: 2
   [measured] transport files left behind: 63, of which answered calls: 21
 
@@ -117,8 +117,8 @@ class TestDirectPaysPerStage:
             "did not show it" in r
             for r in check.assess(
                 _swap(
-                    "[measured] direct route: 12 lookup(s) over 5 model round trip(s)",
-                    "[measured] direct route: 12 lookup(s) over 3 model round trip(s)",
+                    "[measured] direct route: 12 lookup(s) over 5 tool-calling round(s)",
+                    "[measured] direct route: 12 lookup(s) over 3 tool-calling round(s)",
                 )
             )
         )
@@ -129,8 +129,8 @@ class TestDirectPaysPerStage:
             "stages" in r
             for r in check.assess(
                 _swap(
-                    "[measured] direct route: tool calls per model round trip: [2, 2, 5, 3, 1]",
-                    "[measured] direct route: tool calls per model round trip: [12]",
+                    "[measured] direct route: tool calls per round: [2, 2, 5, 3, 1]",
+                    "[measured] direct route: tool calls per round: [12]",
                 )
             )
         )
@@ -146,13 +146,13 @@ class TestDirectPaysPerStage:
         assert (
             check.assess(
                 _swap(
-                    "[measured] dispatch route: 21 lookup(s) over 3 model round trip(s)",
-                    "[measured] dispatch route: 29 lookup(s) over 4 model round trip(s)",
+                    "[measured] dispatch route: 21 lookup(s) over 3 tool-calling round(s)",
+                    "[measured] dispatch route: 29 lookup(s) over 4 tool-calling round(s)",
                 )
                 .replace("round trip: 20 gap(s)", "round trip: 28 gap(s)")
                 .replace(
-                    "dispatch route: tool calls per model round trip: [1, 1, 1]",
-                    "dispatch route: tool calls per model round trip: [1, 1, 1, 1]",
+                    "dispatch route: tool calls per round: [1, 1, 1]",
+                    "dispatch route: tool calls per round: [1, 1, 1, 1]",
                 )
             )
             == []
@@ -172,8 +172,8 @@ class TestTwoViewsOfOneListHaveToAgree:
             "cannot both be from this run" in r
             for r in check.assess(
                 _swap(
-                    f"[measured] {route}: tool calls per model round trip: {shape}",
-                    f"[measured] {route}: tool calls per model round trip: [{trimmed}]",
+                    f"[measured] {route}: tool calls per round: {shape}",
+                    f"[measured] {route}: tool calls per round: [{trimmed}]",
                 )
             )
         )
@@ -266,6 +266,18 @@ class TestTheDenominatorIsNotTheRunsToChoose:
 
 
 class TestAMissingMeasurementIsNotAMeasurement:
+    def test_a_token_count_of_zero_fails(self):
+        """Every route here invokes the model, so nought is usage missing, not a free run."""
+        assert any(
+            "0 tokens" in r
+            for r in check.assess(
+                _swap(
+                    "[measured] dispatch route: 48.07s, 6270 tokens",
+                    "[measured] dispatch route: 48.07s, 0 tokens",
+                )
+            )
+        )
+
     def test_a_token_count_of_none_fails(self):
         """Usage reporting disappearing is a run that measured nothing, not a passing one."""
         assert (
@@ -393,7 +405,7 @@ class TestTheRunsLeftTheirTrafficBehind:
     @pytest.mark.parametrize(
         "line",
         [
-            "run directories in the guest",
+            "run directories across both sandboxes",
             "of those, runs that dispatched",
             "transport files left behind",
         ],
@@ -495,8 +507,8 @@ class TestWhatIsRecordedAndNeverBounded:
         assert (
             check.assess(
                 _swap(
-                    "[measured] dispatch route: 21 lookup(s) over 3 model round trip(s)",
-                    "[measured] dispatch route: 29 lookup(s) over 3 model round trip(s)",
+                    "[measured] dispatch route: 21 lookup(s) over 3 tool-calling round(s)",
+                    "[measured] dispatch route: 29 lookup(s) over 3 tool-calling round(s)",
                 ).replace("round trip: 20 gap(s)", "round trip: 28 gap(s)")
             )
             == []
@@ -550,7 +562,7 @@ class TestTheCommandLine:
         path.write_text(_HEALTHY, encoding="utf-8")
         assert check.main(["check", str(path)]) == 0
         out = capsys.readouterr().out
-        assert "5 model round trips" in out and "3 dispatched" in out
+        assert "5 tool-calling rounds" in out and "3 dispatched" in out
 
     def test_a_broken_run_exits_one_and_says_why(self, tmp_path: Path, capsys):
         path = tmp_path / "out.txt"
@@ -573,14 +585,14 @@ class TestTheCommandLine:
         "dispatch cap for the run",
         "dispatch route: 21 lookup(s)",
         "direct route: 12 lookup(s)",
-        "direct route: tool calls per model round trip",
+        "direct route: tool calls per round",
         "dispatch route: state totals",
         "direct route: state totals",
         "dispatch route: sales figures the model wrote",
         "direct route: sales figures the model wrote",
         "sales figures the model handled, direct",
         "round trip:",
-        "run directories in the guest",
+        "run directories across both sandboxes",
         "transport files left behind",
         "Disposed",
     ],
