@@ -16,9 +16,26 @@ app  ->  maf_sandbox (router)  ->  maf_sandbox_acas  ->  the sandbox
 
 > a call-heavy program can cost more round trips than the direct tool calling this pattern exists to replace
 
-So the sample runs the same question twice. Once with the function **dispatched** — the model writes a program, the program calls out once per SKU, and an interpreter does the arithmetic. Once **directly** — the same function handed to the model as an ordinary tool, which the model calls itself and then adds up in its head.
+So the sample runs the same question three ways.
 
-Both routes read the same price table through the same Python body. Any difference between them is a difference in what did the arithmetic, not in what either side was told.
+1. **Dispatched.** The model writes a program, the program calls out once per SKU, and an interpreter does the arithmetic.
+2. **One-pass.** The same function handed to the model as an ordinary tool. It calls, then answers with the total and nothing else.
+3. **Shown-working.** Route 2 with one sentence added: write each line total down first, then add them up.
+
+All three read the same price table through the same Python body, so a difference between them is never a difference in what the model was told.
+
+**The third route exists because two would licence a wrong conclusion.** Measured over fifteen runs of route 2, the model is wrong every time and differently each time — `214.00`, `211.55`, `205.65`, `203.95`, `233.20`, `216.85`, `196.35`, `180.55`, `203.60`, `201.80`, and on. Route 3 is the same model with the same prices, and it is exact every time, with identical working:
+
+```
+3 x 41.75 = 125.25   7 x 12.40 = 86.80   2 x 3.05 = 6.10
+125.25 + 86.80 + 6.10 = 218.15
+```
+
+So the finding is not "a model cannot add". Route 2 reports `reasoning_tokens=0` and an answer about ten tokens long: it has **nowhere to do the arithmetic**, and answers in a single forward pass. Give it somewhere — visible tokens, or an interpreter — and it is right.
+
+Two explanations were ruled out rather than argued away. The tool returns the correct price on every call, and the model receives it: the trace shows `result='41.75' | '12.4' | '3.05'` on every run. And labelling each answer `SKU-A=41.75` instead of a bare `41.75`, so no association has to be remembered, changes nothing — five more runs, five more wrong totals, one of them `218.10`, which is a cent out and the signature of estimating rather than mis-pairing.
+
+What route 3 costs is the honest comparison against dispatch: it buys the same correctness, and it pays into the transcript, where the sum is generated text nothing checked. The sandbox is the only route where the arithmetic was **executed**.
 
 ## Why the prices have to be secret
 
@@ -48,9 +65,13 @@ The interval runs from the host **answering** one call to the **next arriving** 
 
 This is the unusual part, and it is deliberate.
 
-**The dispatch route must reach the exact total.** That is not a claim about a model. The prices came from the host and the sum came from a Python interpreter, so anything other than exact means the program did not run, did not call out, or ignored what came back.
+**Exactly one line is enforced: that the program printed the exact total.** It is read from the framework's own record of what `execute_code` returned, not from anything the model wrote, so an interpreter produced it. Anything other than exact means the program did not run, did not call out, or ignored what came back.
 
-**The direct route is recorded and never required.** It is a model doing arithmetic in its head. Across every run so far it has been wrong, and differently wrong each time — `$214.00`, `$211.55`, `$205.65`, `$203.95`, `$233.20`. But a check that *depended* on it staying wrong would be asserting that a model stays bad at addition, which is not this repository's claim to make and would go red the day it stops being true. The success line names which way it went, so a green never hides it.
+**Every reply verdict is recorded and never required — including the dispatch route's.** That last part is a correction, and it was earned. An earlier version of this check asserted that the model's *reply* carried the total, and a real run broke it: the program printed `218.15` and the reply said `239.75`. The sandbox had done its job; the model lost the number on the way to the answer. Enforcing the reply would have failed a release for that, and blamed the wrong component.
+
+So the sample reports two separate facts about the dispatch route — what the sandbox computed, and whether the model relayed it — and only the first can fail a run.
+
+The two no-sandbox routes are recorded for the same reason in the other direction: a check that depended on route 2 staying wrong would assert that a model stays bad at addition, and would go red the day that stops being true. The success line names which routes landed, so a green never hides it.
 
 Every line the check reads has to carry the `[measured]` tag at the left margin ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)). The sample's `quoted()` prefixes any tagged line inside a model's reply with `> `, so prose that tries to answer for the host is visibly not the host answering.
 
@@ -97,4 +118,6 @@ uv run python scripts/check_live_host_tools_dispatch_sample.py out.txt
 
 **A dispatched program that hangs leaves the sandbox behind.** [#375](https://github.com/sokolaidev/maf-extensions/issues/375) — a dispatched program that outlives its timeout keeps running and no kind can dispose the sandbox holding it. On this backend that is a billable sandbox nobody can reap, and it is a live defect now that two backends declare the capability. It is the reason the footer counts what it disposed.
 
-**The total is wrong on the dispatch route.** Read the reply: the program is in the transcript. The usual cause is a program that hardcoded a price rather than calling for it, which the SKU-coverage line catches first.
+**The sandbox line says the program did not print the total.** This is the one failure that fails a run. Read the transcript: the program is in it. The usual cause is a program that hardcoded a price rather than calling for it, which the SKU-coverage line catches first.
+
+**The sandbox computed it and the reply did not carry it.** Not a failure, and the two lines are separate so you can see it. The model was handed the right number and did not repeat it — worth knowing about a deployment, and nothing to do with the sandbox.

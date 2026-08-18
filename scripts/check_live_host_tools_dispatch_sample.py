@@ -10,13 +10,20 @@ The live workflow installs the *published* wheels, runs the sample and pipes its
 A model stands between the library and stdout twice over, so the two routes cannot be held to
 the same standard:
 
-- The **dispatch** route must reach the exact total. That is not a claim about the model: the
-  sum was computed by a Python interpreter from prices the host handed it, so anything other
-  than exact means the program did not run, did not call out, or did not use what came back.
-- The **direct** route is *recorded, never required*. It is a model doing arithmetic in its
-  head. It has been wrong every time it has been run, and a check that depended on it staying
-  wrong would be asserting a model stays bad at addition — which is not this repository's
-  claim to make, and would go red on the day it stops being true.
+- **The program must have printed the exact total.** That line is read from the framework's
+  record of what `execute_code` returned, not from anything the model wrote, so an interpreter
+  produced it: anything other than exact means the program did not run, did not call out, or
+  did not use what came back. It is the only line here worth failing a release over.
+- **Whether the model then relayed it is recorded, not required.** Observed to fail on a real
+  run: the program printed the total and the reply named a different number. That is a fact
+  about a model repeating a figure, and folding it into the assertion above would have blamed
+  the sandbox for it.
+- The two **no-sandbox** routes are *recorded, never required*. The one-pass route has been
+  wrong on every run of it — but the shown-working route, which is the same model and the
+  same prices with room to write the line totals down, is right on every run. So neither
+  is a fact about the model's arithmetic, and a check that pinned either would be pinning
+  a model's habits. What the sample measures is what each road cost and where the sum was
+  computed; the success line names which of the two landed.
 
 Every line read must carry the `[measured]` tag (#314). A model that writes
 ``[measured] direct route: reply carries 218.15: True`` into its prose is answering for the
@@ -35,9 +42,16 @@ from pathlib import Path
 #: The tag the sample puts on every line it measured, and the guard against a model writing one.
 _TAG = "[measured]"
 
-#: The two SKU-bearing routes, spelled as the sample spells them.
+#: The three routes, spelled as the sample spells them. Only the first is held to an answer;
+#: see the module docstring for why the other two are recorded instead.
 _DISPATCH = "dispatch route"
-_DIRECT = "direct route"
+_ONE_PASS = "one-pass route"
+_SHOWN = "shown-working route"
+_UNAIDED = (_ONE_PASS, _SHOWN)
+_ROUTES = (_DISPATCH, *_UNAIDED)
+
+#: Spelled once, for the patterns below.
+_ANY_ROUTE = "|".join(re.escape(name) for name in _ROUTES)
 
 #: How many distinct SKUs the order names. The program has to ask for every one of them, since
 #: no price is reachable any other way — fewer means it guessed one.
@@ -53,22 +67,33 @@ _DISPATCHES = re.compile(rf"^\s*{re.escape(_TAG)}\s+dispatches:\s+(\d+)\s+across
 #: they are what the sample exists to publish, and a threshold here would turn a measurement
 #: into a pass mark on somebody else's control plane.
 _COST = re.compile(
-    rf"^\s*{re.escape(_TAG)}\s+(dispatch route|direct route):\s+(\d+)\s+call\(s\),\s+"
+    rf"^\s*{re.escape(_TAG)}\s+({_ANY_ROUTE}):\s+(\d+)\s+call\(s\),\s+"
     r"([\d.]+)s,\s+(\d+|None)\s+tokens",
+    _F,
+)
+
+#: `dispatch route: the program printed 218.15: True` — the sandbox's own stdout, and the one
+#: assertion this check will fail a run over.
+_PRINTED = re.compile(
+    rf"^\s*{re.escape(_TAG)}\s+dispatch route:\s+the program printed\s+[\d.]+:\s+(True|False)",
     _F,
 )
 
 #: `<route>: reply carries 218.15: True`
 _CARRIES = re.compile(
-    rf"^\s*{re.escape(_TAG)}\s+(dispatch route|direct route):\s+reply carries\s+"
+    rf"^\s*{re.escape(_TAG)}\s+({_ANY_ROUTE}):\s+reply carries\s+"
     r"([\d.]+):\s+(True|False)",
     _F,
 )
 
-#: Act 4 restates both verdicts. Restating is the point: the two have to agree, or one of them
-#: was written by something other than the run.
+#: Act 4 restates the sandbox verdict, and the three reply verdicts. Restating is the point:
+#: each pair has to agree, or one of them was written by something other than the run.
+_SANDBOX_VERDICT = re.compile(
+    rf"^\s*{re.escape(_TAG)}\s+the sandbox computed the exact total:\s+(True|False)", _F
+)
+
 _VERDICT = re.compile(
-    rf"^\s*{re.escape(_TAG)}\s+(dispatch|direct) route reached the exact total:\s+(True|False)",
+    rf"^\s*{re.escape(_TAG)}\s+({_ANY_ROUTE}) reached the exact total:\s+(True|False)",
     _F,
 )
 
@@ -124,7 +149,7 @@ def _assess_both_routes_reported(output: str) -> tuple[dict[str, bool], list[str
     failures: list[str] = []
     carried: dict[str, bool] = {}
 
-    for route in (_DISPATCH, _DIRECT):
+    for route in _ROUTES:
         cost, problems = _once([m for m in _COST.findall(output) if m[0] == route], f"{route} cost")
         failures.extend(problems)
         if cost is not None and int(cost[1]) == 0:
@@ -138,7 +163,7 @@ def _assess_both_routes_reported(output: str) -> tuple[dict[str, bool], list[str
     # Act 4 restates both. Disagreement means one of the four lines did not come from this run.
     verdicts = dict(_VERDICT.findall(output))
     for route, exact in carried.items():
-        restated = verdicts.get(route.split()[0])
+        restated = verdicts.get(route)
         if restated is None:
             failures.append(f"act 4 never restated the {route} verdict")
         elif (restated == "True") != exact:
@@ -149,15 +174,31 @@ def _assess_both_routes_reported(output: str) -> tuple[dict[str, bool], list[str
     return carried, failures
 
 
-def _assess_the_program_computed_it(carried: dict[str, bool]) -> list[str]:
-    """The one hard assertion: a program that ran and called out reaches the exact total."""
-    if carried.get(_DISPATCH) is False:
-        return [
-            "the dispatched reply does not carry the exact total — the prices came from the "
-            "host and the sum came from an interpreter, so this is not a model getting "
-            "arithmetic wrong. Either the program did not use what it was told, or it never ran"
-        ]
-    return []
+def _assess_the_program_computed_it(output: str) -> list[str]:
+    """The one hard assertion, and it is about the sandbox rather than about the model.
+
+    Read from the line the sample fills in from `tool_results`, which is the framework's record
+    of what `execute_code` returned. A model can claim a total; it cannot put one there.
+    """
+    match, failures = _once(_PRINTED.findall(output), "the program printed")
+    if match is None:
+        return failures
+    if match != "True":
+        failures.append(
+            "the program did not print the exact total — an interpreter computed it from prices "
+            "the host supplied, so this is not a model getting arithmetic wrong. Either the "
+            "program never ran, or it did not use what it was told"
+        )
+
+    restated = _SANDBOX_VERDICT.findall(output)
+    if not restated:
+        failures.append("act 4 never restated whether the sandbox computed the exact total")
+    elif restated[0] != match:
+        failures.append(
+            f"the sandbox is reported as {match} where it is measured and {restated[0]} where it "
+            "is summarised — the two lines describe one run and disagree"
+        )
+    return failures
 
 
 def _assess_round_trip(output: str) -> list[str]:
@@ -191,11 +232,11 @@ def _assess_the_sandbox_went_away(output: str) -> list[str]:
 
 def assess(output: str) -> list[str]:
     """Every reason the run does not show a real, measured dispatch."""
-    carried, failures = _assess_both_routes_reported(output)
+    _, failures = _assess_both_routes_reported(output)
     return [
         *_assess_dispatch_happened(output),
         *failures,
-        *_assess_the_program_computed_it(carried),
+        *_assess_the_program_computed_it(output),
         *_assess_round_trip(output),
         *_assess_the_sandbox_went_away(output),
     ]
@@ -221,14 +262,19 @@ def main(argv: list[str]) -> int:
 
     # Named rather than silent: the direct route is the half this check does not enforce, so
     # the reader is told which way it went on this run instead of inferring it from a green.
-    direct = "reached it too" if carried_direct(output) else "did not reach it"
-    print(f"OK  the program dispatched, computed the exact total, and the direct route {direct}")
+    landed = unaided_routes_that_landed(output)
+    alongside = ", ".join(landed) if landed else "neither route without one"
+    print(f"OK  the program dispatched and computed the exact total; reached also by: {alongside}")
     return 0
 
 
-def carried_direct(output: str) -> bool:
-    """Whether the direct route happened to land on the total. Reported, never required."""
-    return any(route == _DIRECT and exact == "True" for route, _, exact in _CARRIES.findall(output))
+def unaided_routes_that_landed(output: str) -> list[str]:
+    """Which no-sandbox routes happened to land on the total. Reported, never required."""
+    return [
+        route
+        for route, _, exact in _CARRIES.findall(output)
+        if route in _UNAIDED and exact == "True"
+    ]
 
 
 if __name__ == "__main__":

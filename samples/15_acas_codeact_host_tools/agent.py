@@ -19,9 +19,11 @@ Two things it exists to measure, neither of which a local backend answers honest
   detached and the supervisor took over.  Nothing below asserts that; it is the precondition
   of act 2 producing any number.
 - **What a round trip costs, against what it buys.**  #133 says the trade-off is what the
-  feature lives or dies on and should be measured rather than assumed.  Act 4 puts the two
-  routes side by side: the same question answered by a program that dispatches, and answered
-  by a model calling the same function itself.
+  feature lives or dies on and should be measured rather than assumed.  Act 4 puts three
+  routes side by side: the question answered by a program that dispatches, by a model calling
+  the same function and reporting the total alone, and by the same model asked to write its
+  working down first.  The third is what keeps the comparison honest — without it the second
+  reads as "a model cannot add", and the README shows that is not what is happening.
 
 Running this needs a real Azure subscription and **creates a billable sandbox** — see this
 directory's README for the prerequisites and the environment variables.
@@ -50,7 +52,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from _scaffold import MEASURED, quoted, require_env_vars
+from _scaffold import MEASURED, quoted, require_env_vars, tool_results
 from agent_framework import Agent, tool
 from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
@@ -89,8 +91,13 @@ ORDER = (("SKU-A", 3), ("SKU-B", 7), ("SKU-C", 2))
 #: the tool — so both routes are scored against a truth neither of them produced.
 EXPECTED = sum(quantity * PRICES[sku] for sku, quantity in ORDER)
 
-#: The name both routes register the function under, and the name act 2's program calls.
+#: The name every route registers the function under, and the name act 2's program calls.
 TOOL_NAME = "unit_price"
+
+#: The kind's tool, read for what the program printed rather than for what the model said
+#: about it. `tool_results` matches by `call_id`, so this is the framework's record of the
+#: sandbox's own stdout — the one line in this sample no model has a hand in.
+CODEACT_TOOL = "execute_code"
 
 TASK = (
     "Compute the total cost of this order and report it to two decimals: "
@@ -111,11 +118,23 @@ SANDBOX_VARS = (
 #: here — `az login` is enough.
 MODEL_VARS = ("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_CHAT_MODEL")
 
-#: Both routes get the same standing order, so act 4 compares the road the answer travelled
+#: Every route gets the same standing order, so act 4 compares the road the answer travelled
 #: rather than how hard each side was pushed.
 INSTRUCTIONS = (
     "You answer with numbers you computed, never numbers you worked out in your head. "
     f"Prices are not yours to guess: every price must come from the {TOOL_NAME} tool."
+)
+
+#: Added to `INSTRUCTIONS` for the third route, and the reason there is a third one. Measured
+#: over fifteen runs of this task, a model asked for the total and nothing else answers in one
+#: pass with no reasoning tokens and is wrong every time; asked to put the line totals on the
+#: page first, it is exact every time. So "the model got it wrong" is not the finding — the
+#: finding is that it had nowhere to do the arithmetic, and this route is what separates the
+#: two. Labelling the tool's answers `SKU-A=41.75` instead of `41.75` changes nothing, which
+#: is how the mis-pairing explanation was ruled out.
+SHOW_YOUR_WORKING = (
+    " Before you give the total, write out each line as quantity x unit price = line total, "
+    "one per line, then add the line totals together and show that addition."
 )
 
 
@@ -198,8 +217,14 @@ def directly(ledger: Ledger) -> Any:
     return unit_price
 
 
-def agent_for(env: dict[str, str], credential: DefaultAzureCredential, tools: list[Any]) -> Agent:
-    """One agent shape, built twice, differing only in what is in `tools`."""
+def agent_for(
+    env: dict[str, str],
+    credential: DefaultAzureCredential,
+    tools: list[Any],
+    *,
+    working: bool = False,
+) -> Agent:
+    """One agent shape, built three times, differing only in its tools and its standing order."""
     return Agent(
         client=OpenAIChatClient(
             model=env["AZURE_OPENAI_CHAT_MODEL"],
@@ -207,7 +232,7 @@ def agent_for(env: dict[str, str], credential: DefaultAzureCredential, tools: li
             credential=credential,
         ),
         name=AGENT_DIR,
-        instructions=INSTRUCTIONS,
+        instructions=INSTRUCTIONS + (SHOW_YOUR_WORKING if working else ""),
         tools=tools,
     )
 
@@ -256,7 +281,7 @@ async def act_two_the_program_calls_out(
     credential: DefaultAzureCredential,
     registry: HostToolRegistry,
     ledger: Ledger,
-) -> tuple[SandboxRouter, bool]:
+) -> tuple[SandboxRouter, bool, bool]:
     """One turn, on a real microVM, whose program cannot finish without the host."""
     print("== 2. A program that cannot answer without calling out ==\n")
 
@@ -292,11 +317,27 @@ async def act_two_the_program_calls_out(
     response = await agent.run(TASK)
     seconds = time.perf_counter() - started
 
-    exact = carries_the_total(response.text)
+    # Two different questions, and keeping them apart is the whole point of this act.
+    #
+    # `printed` is what the sandbox put on stdout, read from the framework's own record of what
+    # the tool returned rather than from anything the model wrote. An interpreter produced it,
+    # so it is exact or the program was wrong — there is no third outcome, and it is the only
+    # claim here worth failing a release over.
+    #
+    # `relayed` is whether the model then repeated it. That is a separate act of trust, and it
+    # has been observed to fail: a run where the program printed the total and the reply named
+    # a different number. Folding the two together would have blamed the sandbox for it.
+    printed = tool_results(response, CODEACT_TOOL)
+    computed = any(carries_the_total(result) for result in printed)
+    relayed = carries_the_total(response.text)
+
     print(quoted(response.text))
     print()
     print(f"{MEASURED}dispatches: {len(ledger.asked)} across {len(set(ledger.asked))} SKU(s)")
-    report("dispatch route", seconds, dict(response.usage_details or {}), len(ledger.asked), exact)
+    report(
+        "dispatch route", seconds, dict(response.usage_details or {}), len(ledger.asked), relayed
+    )
+    print(f"{MEASURED}dispatch route: the program printed {EXPECTED:.2f}: {computed}")
 
     trips = ledger.round_trips
     if trips:
@@ -305,16 +346,15 @@ async def act_two_the_program_calls_out(
             f"min {min(trips):.2f}s, median {median(trips):.2f}s, max {max(trips):.2f}s"
         )
     print()
-    return router, exact
+    return router, computed, relayed
 
 
-async def act_three_the_model_calls_it_itself(
-    env: dict[str, str], credential: DefaultAzureCredential, ledger: Ledger
+async def _without_a_sandbox(
+    env: dict[str, str], credential: DefaultAzureCredential, route: str, *, working: bool
 ) -> bool:
-    """The same question, the same function, and no sandbox anywhere."""
-    print("== 3. The same question, answered without a sandbox ==\n")
-
-    agent = agent_for(env, credential, [directly(ledger)])
+    """One no-sandbox route: the same function as an ordinary tool, the same question."""
+    ledger = Ledger()
+    agent = agent_for(env, credential, [directly(ledger)], working=working)
     started = time.perf_counter()
     response = await agent.run(TASK)
     seconds = time.perf_counter() - started
@@ -322,46 +362,73 @@ async def act_three_the_model_calls_it_itself(
     exact = carries_the_total(response.text)
     print(quoted(response.text))
     print()
-    report("direct route", seconds, dict(response.usage_details or {}), len(ledger.asked), exact)
+    report(route, seconds, dict(response.usage_details or {}), len(ledger.asked), exact)
     print()
     return exact
 
 
-def act_four_what_the_round_trip_bought(dispatched: bool, direct: bool) -> None:
-    """The comparison, stated as what each route did with the same prices.
+async def act_three_the_model_calls_it_itself(
+    env: dict[str, str], credential: DefaultAzureCredential
+) -> tuple[bool, bool]:
+    """The same question, the same function, no sandbox — asked two ways.
 
-    Both routes read the same table through the same body, so a difference between them is not
-    a difference in what the model knew. It is a difference in what did the arithmetic.
+    Two, because one would licence the wrong conclusion. A single no-sandbox route coming back
+    wrong reads as "the model cannot add", and that is not what is happening: asked for the
+    total and nothing else it answers in one pass with no reasoning tokens, and asked to put
+    the line totals on the page first it is exact. The second route is what stops act 4
+    claiming the first thing.
+    """
+    print("== 3. The same question, answered without a sandbox ==\n")
+    print("  Asked twice: once for the total alone, once for the working first.\n")
+
+    one_pass = await _without_a_sandbox(env, credential, "one-pass route", working=False)
+    shown = await _without_a_sandbox(env, credential, "shown-working route", working=True)
+    return one_pass, shown
+
+
+def act_four_what_the_round_trip_bought(
+    computed: bool, relayed: bool, one_pass: bool, shown: bool
+) -> None:
+    """The comparison. Three routes, one price table, and what each did with it.
+
+    All three read the same table through the same Python body, so a difference between them is
+    never a difference in what the model was told.
     """
     print("== 4. What the round trips bought ==\n")
-    print(f"  The order costs {EXPECTED:.2f}. Both routes were given the same prices.\n")
-    print(f"{MEASURED}dispatch route reached the exact total: {dispatched}")
-    print(f"{MEASURED}direct route reached the exact total:   {direct}")
+    print(f"  The order costs {EXPECTED:.2f}. All three routes were given the same prices.\n")
+    print(f"{MEASURED}the sandbox computed the exact total:        {computed}")
+    print(f"{MEASURED}dispatch route reached the exact total:      {relayed}")
+    print(f"{MEASURED}one-pass route reached the exact total:      {one_pass}")
+    print(f"{MEASURED}shown-working route reached the exact total: {shown}")
     print()
-    print("  The dispatch route is slower and costs more tokens — a program that calls out")
-    print("  pays a round trip per call, and the code it wrote is in the transcript. What it")
-    print("  buys is arithmetic done by an interpreter. The direct route pays for neither and")
-    print("  hands the sum to the model, which is the one step it has no way to check.\n")
+    print("  Only the first line is a fact about the sandbox. The three below it are facts")
+    print("  about a model relaying, guessing or writing down a sum it was handed.\n")
+    print("  The one-pass route is much the cheapest and has nowhere to do the arithmetic: no")
+    print("  reasoning tokens, and an answer about ten tokens long. The shown-working route")
+    print("  buys the same correctness the sandbox does and pays for it in tokens — but it")
+    print("  pays into the transcript, where the sum is generated text nothing checked. The")
+    print("  dispatch route is the slowest, and the only one where the arithmetic was executed")
+    print("  rather than written. A round trip does not buy a cleverer model. It buys a place")
+    print("  to compute that is not the model.\n")
 
 
 async def run() -> int:
-    """Wire the stack, run both routes, and take the sandbox down again."""
+    """Wire the stack, run all three routes, and take the sandbox down again."""
     env = require_env_vars(SANDBOX_VARS + MODEL_VARS)
     if env is None:
         return 2
 
     dispatch_ledger = Ledger()
-    direct_ledger = Ledger()
     registry = act_one_what_the_host_wired(dispatch_ledger)
 
     credential = DefaultAzureCredential()
     router: SandboxRouter | None = None
     try:
-        router, dispatched = await act_two_the_program_calls_out(
+        router, computed, relayed = await act_two_the_program_calls_out(
             env, credential, registry, dispatch_ledger
         )
-        direct = await act_three_the_model_calls_it_itself(env, credential, direct_ledger)
-        act_four_what_the_round_trip_bought(dispatched, direct)
+        one_pass, shown = await act_three_the_model_calls_it_itself(env, credential)
+        act_four_what_the_round_trip_bought(computed, relayed, one_pass, shown)
     finally:
         if router is not None:
             # Deletes rather than relying on the lifecycle timers — see sample 01's README.
