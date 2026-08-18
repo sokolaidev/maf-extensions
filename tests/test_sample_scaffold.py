@@ -3,13 +3,12 @@
 The duplication is deliberate and the reasoning is in `_scaffold.py`'s own docstring: a sample
 must run from a downloaded directory against wheels from PyPI, so it cannot import a module
 that only exists in this repository, and publishing one would make it API. That leaves
-copying, and copying without a test is how eight files drift into eight behaviours.
+copying, and copying without a test is how one file drifts into a behaviour per copy.
 
 Same precedent as `maf-sandbox-docker`'s proxy: duplicate, then pin.
 
 The behaviour is tested here too, and only here. `quoted`, `tool_results` and `evidence` are the
-contract between seven samples and two live checks (#314): the samples write the block, the
-checks read it. One copy of the file means one place to test what it emits, and every copy is
+contract between the samples that write the block and the live checks that read it (#314). One copy of the file means one place to test what it emits, and every copy is
 byte-identical by the assertion above, so testing the canonical one tests all of them.
 
 This suite is at the repository root rather than inside a package because `samples/` belongs to
@@ -50,7 +49,8 @@ def test_every_copy_is_byte_identical():
     """Byte-identical, not merely equivalent.
 
     A difference that looks cosmetic is still a difference a reader has to explain, and the
-    only honest answer for a file that exists eight times is that there is nothing to explain.
+    only honest answer for a file that exists once per sample is that there is nothing to
+    explain.
     """
     copies = {sample.name: (sample / _SCAFFOLD).read_bytes() for sample in _SAMPLE_DIRS}
     canonical_name, canonical = next(iter(copies.items()))

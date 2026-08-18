@@ -83,9 +83,9 @@ def _import(path: Path, sample: Path) -> list[str]:
     or a multi-file sample fails for a reason that has nothing to do with the library.
 
     Every module loaded *from this sample's directory* is then evicted from `sys.modules`, and
-    that is the load-bearing half. Thirteen samples carry a module named `_scaffold`: keep the
-    cache and the first sample imported answers every later `from _scaffold import …`, so twelve
-    are checked against a copy that is not theirs. Only this directory's modules go — the
+    that is the load-bearing half. Every sample carries a module named `_scaffold`: keep the
+    cache and the first sample imported answers every later `from _scaffold import …`, so all
+    the rest are checked against a copy that is not theirs. Only this directory's modules go — the
     framework and the SDKs stay cached, or each sample would pay to import them again.
 
     The evicted names come back so a caller can assert the load happened rather than infer it
