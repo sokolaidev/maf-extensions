@@ -3,7 +3,7 @@
 `_HEALTHY` is a real run of `samples/15_acas_codeact_host_tools` against a live ACAS sandbox
 and a live model, verbatim apart from the two tables the model produced.
 
-The suite is organised around what the check is *allowed* to fail a release for. Fifteen live
+The suite is organised around what the check is *allowed* to fail a release for. Sixteen live
 runs went into choosing that: the figures below moved between them — 18 to 29 lookups, 35s to
 87s, two to four dispatched tool-calling rounds — and what did not move is what is asserted.
 
@@ -601,6 +601,22 @@ class TestTheRunsLeftTheirTrafficBehind:
                 _swap(
                     "[measured] of those, runs that dispatched: 2",
                     "[measured] of those, runs that dispatched: 0",
+                )
+            )
+        )
+
+    def test_every_directory_dispatching_fails(self):
+        """The direct route's program leaves a run directory with no transport in it.
+
+        `3` and `2` in a healthy run: two dispatched, one is the direct route's. Equal counts
+        mean the enumeration read one sandbox and reported both.
+        """
+        assert any(
+            "one sandbox short" in r
+            for r in check.assess(
+                _swap(
+                    "[measured] run directories across both sandboxes: 3",
+                    "[measured] run directories across both sandboxes: 2",
                 )
             )
         )

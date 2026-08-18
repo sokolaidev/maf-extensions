@@ -440,7 +440,8 @@ def rows_in(text: str) -> int:
     The values alone are a multiset: swapping the two states' figures leaves the same six
     numbers and the same two totals. A row is matched on its product name and amount together,
     with the state read off the line itself or, for a table that groups by state, off the last
-    state named above it.
+    state named above it — and on naming *one* product, without which a line carrying all three
+    of a state's pairs answers for three rows at once.
     """
     current, state_of = None, []
     lines = text.splitlines()
@@ -448,9 +449,10 @@ def rows_in(text: str) -> int:
         named = [state for state in STATES if state in line]
         current = named[0] if len(named) == 1 else current
         state_of.append(current)
+    named = [[name for name in PRODUCTS.values() if name in line] for line in lines]
     return sum(
         any(
-            state_of[index] == state and product in line and figures_in(line, [amount])
+            state_of[index] == state and named[index] == [product] and figures_in(line, [amount])
             for index, line in enumerate(lines)
         )
         for state, products in TRUTH.items()

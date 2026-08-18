@@ -86,6 +86,19 @@ class TestRowsIn:
     def test_a_row_matches_whatever_it_is_separated_by(self, separator: str):
         assert sample.rows_in(_table(sample.TRUTH, separator)) == len(sample.PRODUCT_CELLS)
 
+    def test_a_line_carrying_a_whole_state_is_not_three_rows(self):
+        """One line per state, each with all three pairs on it, is two rows and not six.
+
+        Every cell scans every line, so without the one-product rule the same line answers for
+        Widget, Gasket and Flange at once and a two-line output scores `6 of 6`.
+        """
+        two_lines = "\n".join(
+            state + "".join(f"\t{name}\t{value}" for name, value in products.items())
+            for state, products in sample.TRUTH.items()
+        )
+        assert sample.figures_in(two_lines, sample.PRODUCT_CELLS) == len(sample.PRODUCT_CELLS)
+        assert sample.rows_in(two_lines) == 0
+
     def test_a_table_grouped_by_state_matches(self):
         """The state on a header line and the rows beneath it, which live runs have printed."""
         grouped = "\n".join(

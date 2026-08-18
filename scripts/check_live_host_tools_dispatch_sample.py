@@ -512,6 +512,17 @@ def _assess_what_the_runs_left(output: str) -> list[str]:
         failures.append(
             f"{dispatching} run(s) dispatched out of {dirs} in the guest, which is not arithmetic"
         )
+    elif int(dirs) == int(dispatching):  # type: ignore[arg-type]
+        # The direct route runs its program in a sandbox built with no registry, so its run
+        # directory has no transport in it and is counted here but not there. A run that
+        # reaches this act has one — its table came from an `execute_code` — so a count with
+        # none of them in it is an enumeration that read one sandbox and reported both.
+        failures.append(
+            f"all {dirs} run directories dispatched, so none of them is the direct route's. "
+            "That program runs in a sandbox with no registry and leaves a directory with no "
+            "transport in it, and its table above says it ran — so this count is one sandbox "
+            "short of what it claims to cover"
+        )
     total, answers = int(left[0]), int(left[1])  # type: ignore[index]
     if total < 1:
         failures.append(
