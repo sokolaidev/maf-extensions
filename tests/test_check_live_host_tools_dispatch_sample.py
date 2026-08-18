@@ -3,7 +3,7 @@
 `_HEALTHY` is a real run of `samples/15_acas_codeact_host_tools` against a live ACAS sandbox
 and a live model, verbatim apart from the two tables the model produced.
 
-The suite is organised around what the check is *allowed* to fail a release for. Fourteen live
+The suite is organised around what the check is *allowed* to fail a release for. Fifteen live
 runs went into choosing that: the figures below moved between them — 18 to 29 lookups, 35s to
 87s, two to four dispatched tool-calling rounds — and what did not move is what is asserted.
 
@@ -50,6 +50,7 @@ Oregon	TOTAL	3514.35
   [measured] dispatch route: 42.40s, 3616 tokens (in 2960, cached 1024, out 656)
   [measured] dispatch route: state totals the program printed: 2 of 2
   [measured] dispatch route: product totals the program printed: 6 of 6
+  [measured] dispatch route: table rows the program printed: 6 of 6
   [measured] dispatch route: product names in the table: 3 of 3
   [measured] dispatch route: sales figures the model wrote into code: 0 of 12
   [measured] dispatch route: round trip: 23 gap(s), min 1.08s, median 1.11s, max 1.60s
@@ -65,6 +66,7 @@ Oregon	TOTAL	3514.35
   [measured] direct route: 14.60s, 6217 tokens (in 5559, cached 2048, out 658)
   [measured] direct route: state totals the program printed: 2 of 2
   [measured] direct route: product totals the program printed: 6 of 6
+  [measured] direct route: table rows the program printed: 0 of 6
   [measured] direct route: product names in the table: 0 of 3
   [measured] direct route: sales figures the model wrote into code: 12 of 12
 
@@ -139,6 +141,46 @@ class TestBothProgramsHadToAnswer:
     @pytest.mark.parametrize("route", ["dispatch route", "direct route"])
     def test_a_missing_product_totals_line_fails(self, route: str):
         assert check.assess(_without(f"{route}: product totals")) != []
+
+    def test_a_dispatched_table_with_the_rows_wrong_fails(self):
+        """Every value present and attached to the wrong state is the same six numbers.
+
+        Swapping Washington's and Oregon's figures leaves the cells at 6 of 6 and the totals at
+        2 of 2, because both are multisets. Only the rows can tell.
+        """
+        broken = _swap(
+            "[measured] dispatch route: table rows the program printed: 6 of 6",
+            "[measured] dispatch route: table rows the program printed: 0 of 6",
+        )
+        assert any("the labels are what say" in r for r in check.assess(broken))
+
+    def test_the_direct_table_rows_are_recorded_not_required(self):
+        """That program prints figures its model labels, so it prints no rows at all.
+
+        The healthy run is the evidence: `0 of 6` there, measured, alongside `0 of 3` product
+        names. Requiring rows on that route would fail a correct run for doing the labelling
+        where the route naturally does it. Both ends are accepted.
+        """
+        assert check.assess(_HEALTHY) == []
+        assert (
+            check.assess(
+                _swap(
+                    "[measured] direct route: table rows the program printed: 0 of 6",
+                    "[measured] direct route: table rows the program printed: 6 of 6",
+                )
+            )
+            == []
+        )
+
+    @pytest.mark.parametrize("route", ["dispatch route", "direct route"])
+    def test_rows_scored_out_of_their_own_number_fails(self, route: str):
+        line = [r for r in _HEALTHY.splitlines() if f"{route}: table rows" in r][0]
+        broken = _swap(line, line.rsplit(":", 1)[0] + ": 4 of 4")
+        assert any("not 6" in r for r in check.assess(broken))
+
+    @pytest.mark.parametrize("route", ["dispatch route", "direct route"])
+    def test_a_missing_table_rows_line_fails(self, route: str):
+        assert check.assess(_without(f"{route}: table rows")) != []
 
 
 class TestDirectPaysPerStage:

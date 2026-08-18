@@ -73,6 +73,7 @@ from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
 from maf_sandbox import (
     CALLS_DIRECTORY,
+    EntryKind,
     HostToolRegistry,
     Identity,
     SandboxKey,
@@ -420,18 +421,42 @@ def amounts_the_model_wrote(response: object) -> int:
 #: A decimal number as a program prints one, thousands separator and all.
 _PRINTED_NUMBER = re.compile(r"\d[\d,]*\.\d+")
 
+#: What the CodeAct kind names a run directory: `uuid4().hex[:12]`.
+_RUN_ID = re.compile(r"[0-9a-f]{12}")
+
 
 def figures_in(text: str, expected: Iterable[float]) -> int:
     """How many of `expected` the guest program printed, matched to the cent.
 
-    Numerically rather than as text, because a program summing floats prints
-    `1791.1499999999999` for a cell worth `1791.15` — the right answer and the wrong substring,
-    and that is a live run rather than a hypothetical. How a program formats its output is the
-    model's to choose and is not what this measures, so matching the string would have failed a
-    correct program for its presentation.
+    Numerically rather than as text: a program summing floats prints `1791.1499999999999` for a
+    cell worth `1791.15`, and how it formats its output is the model's to choose.
     """
     printed = [float(found.replace(",", "")) for found in _PRINTED_NUMBER.findall(text)]
     return sum(1 for want in expected if any(abs(got - want) < 0.005 for got in printed))
+
+
+def rows_in(text: str) -> int:
+    """How many of the six cells the program printed *as rows*, state and product attached.
+
+    The values alone are a multiset: swapping the two states' figures leaves the same six
+    numbers and the same two totals. A row is matched on its product name and amount together,
+    with the state read off the line itself or, for a table that groups by state, off the last
+    state named above it.
+    """
+    current, state_of = None, []
+    lines = text.splitlines()
+    for line in lines:
+        named = [state for state in STATES if state in line]
+        current = named[0] if len(named) == 1 else current
+        state_of.append(current)
+    return sum(
+        any(
+            state_of[index] == state and product in line and figures_in(line, [amount])
+            for index, line in enumerate(lines)
+        )
+        for state, products in TRUTH.items()
+        for product, amount in products.items()
+    )
 
 
 def the_program_that_answered(results: list[str]) -> str:
@@ -477,6 +502,12 @@ def report(
     )
     named = sum(1 for product in PRODUCTS.values() if product in printed)
     print(f"{MEASURED}{route}: product names in the table: {named} of {len(PRODUCTS)}")
+    # Required of the dispatched route only, for the reason the names are: that model is never
+    # handed a product name, so a row it labelled correctly can only have come from the walk.
+    print(
+        f"{MEASURED}{route}: table rows the program printed: {rows_in(printed)} "
+        f"of {len(PRODUCT_CELLS)}"
+    )
     carried = amounts_the_model_wrote(response)
     print(
         f"{MEASURED}{route}: sales figures the model wrote into code: "
@@ -595,7 +626,13 @@ async def _what_one_sandbox_holds(
     spec = codeact_sandbox_spec(image=CODEACT_IMAGE, host_tools=registry)
     sandbox = await router.acquire(SandboxKey(SCOPE, thread, AGENT_DIR), spec)
     runs = await sandbox.list_dir(".", working_directory=spec.work_dir)
-    directories = sorted(entry.path.rstrip("/").split("/")[-1] for entry in runs)
+    # Kind *and* name, because the guest can write here: a program that walks up out of its
+    # work directory can leave a file beside the runs, and `list_dir` on `<file>/host_tools`
+    # raises rather than reporting nothing. The kind names a run `uuid4().hex[:12]`.
+    named = (
+        entry.path.rstrip("/").split("/")[-1] for entry in runs if entry.kind is EntryKind.DIRECTORY
+    )
+    directories = sorted(name for name in named if _RUN_ID.fullmatch(name))
 
     # `guest_run_layout` puts the transport under `<run>/host_tools/`, with the calls beneath
     # that — not directly in the run directory.

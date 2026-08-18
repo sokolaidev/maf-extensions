@@ -110,6 +110,7 @@ _TOTALS = _tagged(rf"({_ANY_ROUTE}):\s+state totals the program printed:\s+(\d+)
 _CELLS_LINE = _tagged(
     rf"({_ANY_ROUTE}):\s+product totals the program printed:\s+(\d+)\s+of\s+(\d+)"
 )
+_ROWS_LINE = _tagged(rf"({_ANY_ROUTE}):\s+table rows the program printed:\s+(\d+)\s+of\s+(\d+)")
 _WROTE = _tagged(
     rf"({_ANY_ROUTE}):\s+sales figures the model wrote into code:\s+(\d+)\s+of\s+(\d+)"
 )
@@ -279,6 +280,25 @@ def _assess_both_interpreters_answered(output: str) -> list[str]:
                 "totals. Both state totals can be right while a row underneath them is missing "
                 "or wrong, because a total hides its terms — these are the table the task asked "
                 "for, and they are what says the two routes reached the same answer"
+            )
+
+    # The cells are a multiset, so swapping the two states' figures leaves them intact. Rows
+    # carry the association, and are required of the dispatched route for the same reason its
+    # product names are: that model is never handed one, so a correctly labelled row can only
+    # have come from the walk. The direct route's program prints figures its model then labels,
+    # and has been measured printing no names at all, so there the rows are recorded.
+    rows, problems = _per_route(output, _ROWS_LINE, "table rows")
+    failures.extend(problems)
+    for route, match in rows.items():
+        printed, expected = int(match[1]), int(match[2])
+        if expected != _CELLS:
+            failures.append(f"{route} scored itself out of {expected} table rows, not {_CELLS}")
+        if route == _DISPATCH and printed != expected:
+            failures.append(
+                f"the dispatched program printed {printed} of {expected} rows with the state and "
+                "product attached. The six values can all be present and belong to the wrong "
+                "rows — two states' figures swapped leaves the same numbers and the same two "
+                "totals — so the labels are what say the table is the answer"
             )
     return failures
 
