@@ -13,9 +13,11 @@ So the interesting part is not the call. It is everything a host decides before 
 
 ## Nothing is dispatched here, and that is not an omission
 
-**No shipped backend declares `Capability.HOST_TOOLS`.** The constant lives in `maf_sandbox` — in the protocol, the registry and the router — and in none of `maf-sandbox-acas`, `-docker` or `-wslc`. The transport that carries a request out of a guest and a response back has landed ([#327](https://github.com/sokolaidev/maf-extensions/issues/327)), and `maf-sandbox-codeact` now dispatches over it when a host wires a `host_tools` registry — but with no backend declaring the capability, that wiring attaches nowhere yet.
+Dispatch needs three things this sample deliberately does without: a real sandbox, a guest program, and a model to write one. Everything below is answered at attach, before a backend is reached — which is what lets the whole thing run with nothing installed and nothing configured.
 
-That is why [`agent.py`](agent.py) builds its own backend to show the permitted path. `InProcessSandboxBackend` takes its capabilities as a constructor argument, so the sample can hand it `HOST_TOOLS` and watch the router agree. Having to write that by hand is the honest demonstration: if a shipped backend declared it, the sample would not need to.
+**Two shipped backends declare `Capability.HOST_TOOLS`**: `maf-sandbox-docker` ([#410](https://github.com/sokolaidev/maf-extensions/issues/410)) and `maf-sandbox-acas` ([#418](https://github.com/sokolaidev/maf-extensions/issues/418)). `maf-sandbox-wslc` does not. The transport that carries a request out of a guest and a response back landed before either ([#327](https://github.com/sokolaidev/maf-extensions/issues/327)), and `maf-sandbox-codeact` dispatches over it when a host wires a `host_tools` registry — so that wiring now attaches where it once could not.
+
+[`agent.py`](agent.py) still builds its own backend rather than borrowing one of those two, and the first paragraph is why. `InProcessSandboxBackend` takes its capabilities as a constructor argument, so the sample can hand it `HOST_TOOLS` and watch the router agree without a container engine, a subscription or a credential. Borrowing a declaring backend would drag all three in to demonstrate the same single call.
 
 What is real today is the half a host configures on day one regardless — and it is the half that decides whether the other half ever runs.
 
@@ -82,4 +84,4 @@ This sample reads no configuration, so its `verify-live.yml` job carries neither
 
 Sample 09 removed the billable sandbox. This one removes the model as well, and what remains is the part of the integration you can put in CI on every pull request: a host's posture, its registry, and the router agreeing or refusing.
 
-The dispatch counterpart — a program inside a real sandbox calling back out, with the round-trip cost measured — is [#302](https://github.com/sokolaidev/maf-extensions/issues/302). The contract, the transport and `maf-sandbox-codeact`'s kind integration it needs ([#133](https://github.com/sokolaidev/maf-extensions/issues/133)) have all landed; what still blocks it is a backend declaring `Capability.HOST_TOOLS`, which none does yet.
+The dispatch counterpart — a program inside a real sandbox calling back out, with the round-trip cost measured — is [#302](https://github.com/sokolaidev/maf-extensions/issues/302). Everything it needs is now in place: the contract, the transport and `maf-sandbox-codeact`'s kind integration ([#133](https://github.com/sokolaidev/maf-extensions/issues/133)), and two backends that declare the capability. What it still has to produce is the measurement — a round trip is worth what it costs, and nothing has published that number yet.
