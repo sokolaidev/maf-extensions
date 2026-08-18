@@ -90,7 +90,7 @@ Disposing the sandbox is the only thing that removes them, which is what the foo
 
 ## What the check enforces
 
-Seventeen live runs decided this. The lookup count moved between 18 and 29, wall clock between 35s and 87s, dispatched tool-calling rounds between two and four. What did not move is what is asserted:
+Eighteen live runs decided this. The lookup count moved between 18 and 29, wall clock between 35s and 87s, dispatched tool-calling rounds between two and four. What did not move is what is asserted:
 
 - **Both routes had one program print the whole table** — both state totals *and* all six per-state, per-product cells, and on the dispatched route those cells **as rows**, with the state and product attached: the values on their own are a multiset, and swapping the two states' figures leaves it and both totals intact. All of it in a single `execute_code` result, read from the framework's record rather than from a model's prose. One result, not all of them joined: the task asks for one table, and two programs printing a state each would otherwise satisfy it between them. The totals alone would not do it: a total is a sum, and a sum survives losing a row underneath it. The cells are matched to the cent rather than as text, because a program that adds floats prints `1791.1499999999999` for a cell worth `1791.15` — the right answer, and one a string match would have failed a correct run for.
 - **Direct needed more tool-calling rounds than dispatch**, and its shape shows at least four batches — one per stage. The shape and the round count come from one list, so they have to agree.

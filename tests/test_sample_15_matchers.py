@@ -63,6 +63,12 @@ def _table(cells: dict[str, dict[str, float]], separator: str = "\t") -> str:
 
 
 _HONEST = _table(sample.TRUTH)
+#: Every cell and both totals, and not one label. The check requires the rows and the product
+#: names of the dispatched route only, so on the direct route this is the whole answer.
+_UNLABELLED = "\n".join(
+    ["\t".join(str(value) for value in products.values()) for products in sample.TRUTH.values()]
+    + [f"{sum(products.values()):.2f}" for products in sample.TRUTH.values()]
+)
 #: Every value present, every one against the wrong state. The cells and both totals survive it.
 _SWAPPED = _table(dict(zip(sample.TRUTH, reversed(list(sample.TRUTH.values())), strict=True)))
 
@@ -91,6 +97,15 @@ class TestFiguresIn:
 
     def test_a_value_that_is_out_by_a_cent_does_not_match(self):
         assert sample.figures_in("Washington\tWidget\t1896.24", [1896.25]) == 0
+
+    @pytest.mark.parametrize("printed", ["1.79115e3", "1.79115e+03", "1.79115E3"])
+    def test_an_exponent_spells_the_value_it_is(self, printed: str):
+        """How the output is formatted is the model's to choose, and this is one of the ways."""
+        assert sample.figures_in(f"Oregon\tGasket\t{printed}", [1791.15]) == 1
+
+    def test_a_run_id_is_not_a_number(self):
+        """`1e3f4a2b9c0d` starts with something an exponent rule would read as a thousand."""
+        assert sample.figures_in("run 1e3f4a2b9c0d finished", [1000.0]) == 0
 
 
 class TestRowsIn:
@@ -154,7 +169,9 @@ class TestAmountsTheModelWrote:
         """`980.00` is the figure; `980` is the model writing it into its program."""
         assert sample.amounts_the_model_wrote(_Response(_Message('{"code": "x = [980]"}'))) == 1
 
-    @pytest.mark.parametrize("spelling", ["980", "980.0", "980.00", "980.000"])
+    @pytest.mark.parametrize(
+        "spelling", ["980", "980.0", "980.00", "980.000", "9.8e2", "9.8E+2", "98e1"]
+    )
     def test_every_spelling_of_one_amount_is_one_figure(self, spelling: str):
         written = _Response(_Message('{"code": "x = [' + spelling + ']"}'))
         assert sample.amounts_the_model_wrote(written) == 1
@@ -167,6 +184,10 @@ class TestAmountsTheModelWrote:
         written is a run failed for carrying nothing.
         """
         assert sample.amounts_the_model_wrote(_Response(_Message('{"x": ' + longer + "}"))) == 0
+
+    def test_a_number_that_is_only_the_front_of_a_token_is_not_a_figure(self):
+        """`980abc` is not the model writing 980 down, and the exponent rule must not make it one."""
+        assert sample.amounts_the_model_wrote(_Response(_Message('{"x": "980abc"}'))) == 0
 
     def test_an_identifier_is_not_a_figure(self):
         """The digits of `PRD-1` and `STO-202` are names, and no amount is worth 202."""
@@ -216,10 +237,22 @@ class TestTheProgramThatAnswered:
         assert sample.the_program_that_answered([_SWAPPED, _HONEST]) == _HONEST
         assert sample.the_program_that_answered([_HONEST, _SWAPPED]) == _HONEST
 
-    def test_the_rank_leads_on_the_rows(self):
-        """The four signals in order, and the only one that can tell those two apart."""
-        assert sample.graded(_HONEST) > sample.graded(_SWAPPED)
-        assert sample.graded(_HONEST)[1:] == sample.graded(_SWAPPED)[1:]
+    def test_a_complete_answer_beats_a_labelled_fragment(self):
+        """Both routes must print the table; only the dispatched one must label it.
+
+        So an unlabelled program holding every cell and both totals has answered, and a probe
+        that labelled one row has not. Ranking the labels first reports the fragment and throws
+        away a run that was right.
+        """
+        probe = "Washington\tWidget\t1896.25"
+        assert sample.the_program_that_answered([probe, _UNLABELLED]) == _UNLABELLED
+        assert sample.the_program_that_answered([_UNLABELLED, probe]) == _UNLABELLED
+
+    def test_the_rows_break_the_tie_underneath_the_cells(self):
+        """The honest and swapped tables agree on everything the cells and totals can see."""
+        honest, swapped = sample.graded(_HONEST), sample.graded(_SWAPPED)
+        assert honest[:2] == swapped[:2]
+        assert honest > swapped
 
     def test_the_program_with_the_table_is_the_one_scored(self):
         """A probe that printed nothing does not displace the program that answered."""
