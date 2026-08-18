@@ -3687,3 +3687,40 @@ class TestAPidAndALayoutThatCannotBeUsed:
         message = str(expired.value)
         assert "could not be established" in message, message
         assert "(it had started the program" not in message, message
+
+
+class TestWhatACallerCanBranchOn:
+    """`signal` carries the outcome, so acting on it needs no match against the message."""
+
+    @pytest.mark.parametrize(
+        ("pid", "kill_exit_code", "expected"),
+        [
+            pytest.param("4242", 0, "sent", id="sent"),
+            pytest.param("4242", 1, "refused", id="a-signal-that-did-not-land"),
+            pytest.param(None, 0, "absent", id="no-pid-after-the-launcher-returned"),
+        ],
+    )
+    def test_the_outcome_reaches_the_caller(self, pid, kill_exit_code, expected):
+        guest = _GuestThatRecordsTheKill([], finish=False, pid=pid, kill_exit_code=kill_exit_code)
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert expired.value.signal == expected
+
+    def test_a_run_that_never_started_says_so(self):
+        """The launcher's own `exec` ran out with nothing recorded: nothing to act on."""
+
+        class _BoundsTheStart(_ScriptedGuest):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                raise TimeoutError
+
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(_BoundsTheStart([], finish=False), HostToolRun(_registry()), timeout=30.0)
+        assert expired.value.signal == "absent"
+
+    def test_the_message_and_the_attribute_cannot_drift(self):
+        """The prose is generated from the same value, so one cannot contradict the other."""
+        guest = _GuestThatRecordsTheKill([], finish=False, kill_exit_code=1)
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert expired.value.signal == "refused"
+        assert host_tools_over_exec._NOT_SIGNALLED in str(expired.value)

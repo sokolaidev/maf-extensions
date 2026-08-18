@@ -220,6 +220,12 @@ def _module_a_program_answers_to(program: str) -> str | None:
     return head if suffix in _LOADER_SUFFIXES else None
 
 
+#: What :class:`SandboxProgramTimeout` reports about the program it was raised for. Public,
+#: because acting on it is a caller's business and matching the message text is not an
+#: interface. :data:`_Fate` is the same vocabulary, kept private only for the internal plumbing.
+SignalOutcome = Literal["sent", "refused", "absent", "unknown"]
+
+
 class SandboxProgramTimeout(TimeoutError):
     """The *run's own* bound expired: the guest program did not finish in the time it was given.
 
@@ -228,20 +234,30 @@ class SandboxProgramTimeout(TimeoutError):
     can mean: **this** one is the run's budget; a bare one is a backend failing for a reason of
     its own and says nothing about the program.
 
-    The transport kills the program on its way out, over the same ``exec`` it runs everything
-    else on, so the usual case is that it is no longer running. When the kill does not land the
-    message says so in as many words — *"could not be stopped, so it may still be running"* —
-    and a caller that means to act on the difference should read that rather than assume
-    either way.
+    ``signal`` is what the transport managed to do about the program, and it is the thing to
+    branch on — the message says the same in prose, but prose is not an interface:
+
+    - ``"sent"`` — a ``SIGKILL`` reached the pid. Not a promise the program is gone: the
+      kernel can discard it, the pid is read from a file the program can rewrite, and children
+      are never signalled.
+    - ``"refused"`` — a pid was recorded and no signal reached it, so something is running.
+    - ``"absent"`` — no pid was recorded. Where the launcher's own ``exec`` never returned that
+      means nothing had started; where it returned cleanly, something did and the pid never
+      appeared, which the message hedges about.
+    - ``"unknown"`` — the host could not find out, which is evidence of neither.
+
+    Anything but ``"sent"`` and ``"absent"`` leaves work behind that only disposing the sandbox
+    removes.
 
     ``output`` is what the program had printed when the run was given up on, already capped —
     empty on the two starting legs, where there is nothing to have read yet. An attribute
     rather than message text, so a caller can surface the program's own stdout alone.
     """
 
-    def __init__(self, message: str, *, output: str = "") -> None:
+    def __init__(self, message: str, *, output: str = "", signal: SignalOutcome = "absent") -> None:
         super().__init__(message)
         self.output = output
+        self.signal = signal
 
 
 #: How long the guest blocks on one call before giving up on the host, and how often it looks.
@@ -900,7 +916,8 @@ async def _supervise(
             fate = await _stop_the_program(sandbox, layout, until=_a_grace_from_now())
         raise SandboxProgramTimeout(
             f"the run's {timeout:g}s were gone while starting the program"
-            f"{_clause_while_starting(fate)}"
+            f"{_clause_while_starting(fate)}",
+            signal=fate,
         ) from spent
     if started.exit_code != 0:
         return ExecResult(
@@ -936,6 +953,7 @@ async def _supervise(
                 f"{_clause_after_the_launcher_started(fate)}. "
                 f"{_output_clause(printed, note)}",
                 output=printed[:2000],
+                signal=fate,
             )
         try:
             finished = await _read_if_present(
@@ -980,6 +998,7 @@ async def _supervise(
                 f"the guest program did not finish within {timeout:g}s — {failure}. "
                 f"{_output_clause(printed, note)}",
                 output=printed[:2000],
+                signal=fate,
             ) from stalled
         # Clamped: an unclamped sleep overruns the deadline by a whole interval, so a 0.1s
         # bound with a 10s interval would wait ten seconds to notice it had passed.
@@ -991,12 +1010,12 @@ async def _supervise(
 #: pid 1 in the guest's own namespace, both make ``kill`` exit 0 while the target lives. So the
 #: strongest of these means *signalled*, and the docs say what that is and is not worth.
 #:
-#: The three that are not ``"signalled"`` are kept apart because one leg reports them
+#: The three that are not ``"sent"`` are kept apart because one leg reports them
 #: differently. ``"absent"`` is *no pid file at all*, so nothing was started; ``"refused"`` is a
 #: pid that exists and could not be used or signalled, so something was; ``"unknown"`` is a host
 #: that could not even look, which is evidence of neither. Collapsing the last two would have a
 #: backend hiccup assert that a program is running.
-_Fate = Literal["signalled", "refused", "absent", "unknown"]
+_Fate = SignalOutcome
 
 #: Said once, where a program is known to have been started and could not be stopped. Silence
 #: when the kill worked, because a stopped program is what a timeout is supposed to mean and a
@@ -1115,7 +1134,7 @@ def _clause_after_the_launcher_started(fate: _Fate) -> str:
     something started, and between a needless disposal and a silent leak this errs towards the
     disposal.
     """
-    return _SIGNALLED if fate == "signalled" else _NOT_SIGNALLED
+    return _SIGNALLED if fate == "sent" else _NOT_SIGNALLED
 
 
 def _clause_while_starting(fate: _Fate) -> str:
@@ -1126,7 +1145,7 @@ def _clause_while_starting(fate: _Fate) -> str:
     """
     if fate == "absent":
         return ""
-    if fate == "signalled":
+    if fate == "sent":
         return f" (it had started the program{_SIGNALLED})"
     if fate == "unknown":
         # The pid could not be looked for, so whether a program was started is exactly what
@@ -1209,11 +1228,11 @@ async def _stop_the_program(sandbox: Sandbox, layout: GuestRunLayout, *, until: 
     **Sending the signal is not seeing it work.** The pid comes from a file the program itself
     can write, and ``kill`` reports success for a signal the kernel accepts and discards, so a
     guest that names another process — or pid 1 in its own namespace — survives a call that
-    returns ``"signalled"``. Children are not reached either. What a caller may conclude is
+    returns ``"sent"``. Children are not reached either. What a caller may conclude is
     that the signal was sent; #437 is what would make it more.
 
     Returns:
-        ``"signalled"``, ``"refused"`` when a pid was found and the kill did not land, or
+        ``"sent"``, ``"refused"`` when a pid was found and the kill did not land, or
         ``"absent"`` when no pid was there to use. The last two are kept apart because one leg
         reports them differently: a pid is the only evidence this transport has that a program
         was ever started at all.
@@ -1272,7 +1291,7 @@ async def _stop_the_program(sandbox: Sandbox, layout: GuestRunLayout, *, until: 
     except Exception as refused:  # noqa: BLE001 — a failed kill is a leak, not a fault
         logger.warning("host tools: could not stop the guest program: %s", error_detail(refused))
         return "refused"
-    return "signalled" if killed.exit_code == 0 else "refused"
+    return "sent" if killed.exit_code == 0 else "refused"
 
 
 async def _marker_if_present(
