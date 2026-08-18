@@ -206,6 +206,26 @@ def _assess_the_cap_was_budgeted(output: str) -> list[str]:
             "used. Neither arithmetic is a ceiling — the model writes the program — so a cap "
             "in this range truncates a later run rather than this one"
         )
+
+    # Everything above grades the cap against the workload. This grades it against the run.
+    # The cap bounds one `HostToolRun` and CodeAct builds a fresh one per `execute_code`, so
+    # the route's ledger holds at most `cap` calls from each program that dispatched — not
+    # `cap` in total. Above that is a ledger no run could have filled: the call past a
+    # program's budget is refused before the tool body that records it runs.
+    counted = {route: int(count) for route, count, _ in _TRIPS.findall(output)}
+    # A missing or doubled line belongs to the assessment that owns it, not to this one.
+    seen = _DISPATCHING.findall(output)
+    dispatching = int(seen[0]) if len(seen) == 1 else None
+    if _DISPATCH in counted and dispatching is not None and dispatching > 0:
+        allowed = cap * dispatching
+        if counted[_DISPATCH] > allowed:
+            failures.append(
+                f"the dispatched route recorded {counted[_DISPATCH]} lookup(s) across "
+                f"{dispatching} program(s) that dispatched, where a cap of {cap} a program "
+                f"allows at most {allowed}. The cap is per `execute_code` run and a refused "
+                "call never reaches the tool body that records it, so this ledger is longer "
+                "than the run could have made it"
+            )
     return failures
 
 

@@ -463,6 +463,44 @@ class TestAMissingMeasurementIsNotAMeasurement:
         )
 
 
+class TestTheCapBoundsEachProgram:
+    """The cap is per `execute_code` run, so the route's total is bounded by cap × programs.
+
+    The rest of the cap ladder grades the number against the workload's arithmetic. This is the
+    one place it meets what the run recorded.
+    """
+
+    _REASON = "longer than the run could have made it"
+
+    def test_more_lookups_than_the_cap_allows_fails(self):
+        """A cap of 32 over the 2 programs that dispatched allows 64, and this claims 65."""
+        assert any(
+            self._REASON in r
+            for r in check.assess(
+                _swap(
+                    "[measured] dispatch route: 25 lookup(s) over 2 tool-calling round(s)",
+                    "[measured] dispatch route: 65 lookup(s) over 2 tool-calling round(s)",
+                )
+            )
+        )
+
+    def test_spending_the_whole_budget_twice_over_is_allowed(self):
+        """Exactly 64, because a program may spend its cap and the next one starts fresh.
+
+        The bound is the product and not the cap: reading it as a route budget rejects a legal
+        run, which is the opposite mistake and the more expensive one.
+        """
+        assert not any(
+            self._REASON in r
+            for r in check.assess(
+                _swap(
+                    "[measured] dispatch route: 25 lookup(s) over 2 tool-calling round(s)",
+                    "[measured] dispatch route: 64 lookup(s) over 2 tool-calling round(s)",
+                )
+            )
+        )
+
+
 class TestTheWholeWalkHappened:
     """A count and a shape do not say the fourth stage ran."""
 

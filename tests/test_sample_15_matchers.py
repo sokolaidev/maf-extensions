@@ -19,15 +19,37 @@ _AGENT = Path(__file__).resolve().parent.parent / "samples/15_acas_codeact_host_
 _spec = importlib.util.spec_from_file_location("sample_15", _AGENT)
 assert _spec is not None and _spec.loader is not None
 sample = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(sample)
 
-# Thirteen samples carry a module named `_scaffold` and `sys.modules` holds one, so leaving
-# this sample's cached would answer the next sample's import with a copy that is not theirs.
-# `test_sample_modules_import.py` fails when that happens; evicting here is what keeps it green.
-for _name, _loaded in list(sys.modules.items()):
-    _origin = getattr(_loaded, "__file__", None)
-    if _origin and Path(_origin).parent == _AGENT.parent:
-        del sys.modules[_name]
+# Importing the sample *runs* it, and it leaves two marks on the process. It puts its own
+# directory first on `sys.path`, the way `sys.path[0]` works when a sample is run as a script,
+# and loading it caches what that resolved. Both are global and every sample carries a module
+# named `_scaffold`, so a test module that keeps either answers a later sample's import with a
+# copy that is not theirs — by name out of the cache, or by path off the front of `sys.path`.
+# `test_sample_modules_import.py` restores both for this reason and fails when the cache is
+# kept; nothing fails when the path is, which is why it is spelled out here.
+_PATH_BEFORE = list(sys.path)
+try:
+    _spec.loader.exec_module(sample)
+finally:
+    sys.path[:] = _PATH_BEFORE
+    for _name, _loaded in list(sys.modules.items()):
+        _origin = getattr(_loaded, "__file__", None)
+        if _origin and Path(_origin).parent == _AGENT.parent:
+            del sys.modules[_name]
+
+
+def test_importing_the_sample_left_nothing_behind():
+    """Neither mark the import makes on the process outlives this module's import.
+
+    Asserted rather than inferred from a later sample passing: the shadowing is silent, and the
+    test that would notice runs the samples in a fixed order this one does not control.
+    """
+    assert str(_AGENT.parent) not in sys.path
+    assert [
+        name
+        for name, loaded in list(sys.modules.items())
+        if (origin := getattr(loaded, "__file__", None)) and Path(origin).parent == _AGENT.parent
+    ] == []
 
 
 def _table(cells: dict[str, dict[str, float]], separator: str = "\t") -> str:
