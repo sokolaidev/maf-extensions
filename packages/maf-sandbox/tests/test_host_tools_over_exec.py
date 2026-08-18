@@ -3241,7 +3241,9 @@ class TestTheCommandsKeepTheGuestsAnswer:
         then executed: nothing is alive at this pid, so a zero status means the transport would
         call a program stopped that it never touched.
         """
-        gone = 2**22 - 1  # unused, from the top of the range
+        # Above every possible `pid_max` — the kernel's ceiling is 2**22, so this cannot name
+        # a process and `kill` fails without signalling anything on the machine running tests.
+        gone = 2**31 - 1
         guest = _GuestThatRecordsTheKill([], finish=False, pid=str(gone))
         with pytest.raises(SandboxProgramTimeout):
             _run(guest, HostToolRun(_registry()), timeout=0.2)
@@ -3398,8 +3400,8 @@ class TestWhatTheTransportWillNotDelete:
         assert posixpath.dirname(_LAYOUT.shim) in guest.removals[0]
 
 
-class TestWhatTheSecondReviewFound:
-    """Each of these pins a fix that survived its own mutation until it was written."""
+class TestWhatEveryExitPathOwesTheRun:
+    """Stopping and reclaiming are owed on paths that are easy to reach and easy to forget."""
 
     def test_a_slow_pid_read_does_not_cost_the_program_its_signal(self):
         """The read and the signal are separately bounded.
@@ -3525,7 +3527,7 @@ class TestWhatTheSecondReviewFound:
         assert guest.removals == [], f"the model's directory was removed: {guest.commands}"
 
 
-class TestWhatTheFourthReviewFound:
+class TestAPidAndALayoutThatCannotBeUsed:
     def test_a_pid_too_large_to_read_hedges_rather_than_going_quiet(self):
         """`absent` means no pid file; an oversized one is a file that exists and cannot be used.
 
@@ -3587,3 +3589,25 @@ class TestWhatTheFourthReviewFound:
             )
         )
         assert len(guest.removals) == 1, guest.commands
+
+    def test_a_run_whose_files_sit_outside_it_is_not_reported_reclaimed(self):
+        """`reclaim_run` answers for the run, so the run has to be inside what it removes.
+
+        A layout placing `work` elsewhere would have the removal succeed and the answer come
+        back `True`, while the model's files stayed readable — and `True` is what tells a
+        caller there is nothing to escalate.
+        """
+        elsewhere = GuestRunLayout(
+            directory="/maf-sandbox/work/run-1",
+            work="/maf-sandbox/work/somewhere-else",
+            program="/maf-sandbox/work/run-1/host_tools/program.py",
+            shim=f"/maf-sandbox/work/run-1/host_tools/{SHIM_MODULE}",
+            launcher="/maf-sandbox/work/run-1/host_tools/run_program.sh",
+            calls=f"/maf-sandbox/work/run-1/host_tools/{CALLS_DIRECTORY}",
+            output="/maf-sandbox/work/run-1/host_tools/program_output.txt",
+            exit_code="/maf-sandbox/work/run-1/host_tools/program_exit_code",
+            pid="/maf-sandbox/work/run-1/host_tools/program_pid",
+        )
+        guest = _GuestThatRecordsRemovals([], finish=True)
+        assert asyncio.run(reclaim_run(guest, elsewhere, timeout=5.0)) is False
+        assert guest.removals == [], f"a run with files outside it was removed: {guest.commands}"

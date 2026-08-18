@@ -743,9 +743,11 @@ async def dispatch_over_exec(
         poll_interval: How often to look for the next request or the exit marker.
         interpreter: The guest's Python.
 
-    Removes the transport's own directory before returning, on every exit path, so nothing
-    it wrote survives the call. :attr:`GuestRunLayout.work` is left for the caller, which
-    collects artifacts from it after this returns and reclaims it with :func:`reclaim_run`.
+    Attempts to remove the transport's own directory before returning, on every exit path.
+    A removal the guest refuses is logged and nothing else — the call still returns what it
+    was going to — so those files stay readable by later runs in the same sandbox.
+    :attr:`GuestRunLayout.work` is left for the caller, which collects artifacts from it after
+    this returns and reclaims it with :func:`reclaim_run`.
 
     Returns:
         The program's own :class:`~maf_sandbox.ExecResult` — its redirected output as
@@ -1070,6 +1072,30 @@ async def reclaim_run(sandbox: Sandbox, layout: GuestRunLayout, *, timeout: floa
         is left stays readable by every later run in this sandbox — and the caller is expected
         to escalate, which means disposing the sandbox.
     """
+    strays = [
+        path
+        for path in (
+            layout.work,
+            layout.program,
+            layout.shim,
+            layout.launcher,
+            layout.calls,
+            layout.output,
+            layout.exit_code,
+            layout.pid,
+        )
+        if guest_path_relative_to(path, layout.directory) is None
+    ]
+    if strays:
+        # Removing the run directory reclaims a run only if the run is inside it. A layout that
+        # puts `work` elsewhere would have this delete something and answer ``True``, while the
+        # model's files stayed readable and the caller was told there was nothing to escalate.
+        logger.warning(
+            "host tools: refusing to reclaim %r — this layout puts %s outside it",
+            layout.directory,
+            ", ".join(sorted(strays)),
+        )
+        return False
     return await _remove_tree(sandbox, layout.directory, until=time.monotonic() + timeout)
 
 
@@ -1155,7 +1181,7 @@ def _a_grace_from_now() -> float:
 
 
 async def _stop_the_program(sandbox: Sandbox, layout: GuestRunLayout, *, until: float) -> _Fate:
-    """Kill the guest program, and say whether it was stopped — never a raise.
+    """Send the guest program a ``SIGKILL``, and say whether it went — never a raise.
 
     **Only call this once the exit marker is absent.** That ordering narrows the window in
     which the pid has already been recycled — it does not close it: the program can exit, be
