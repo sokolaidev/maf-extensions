@@ -656,13 +656,9 @@ def _step_outputs(tmp_path: Path) -> tuple[str, str]:
 
 
 class TestTheBreakingDetectorIsInformational:
-    """The changelog flag is context for the run, not the dispatch decision.
+    """The changelog flag is reported as context but does not control live-check dispatch.
 
-    A breaking core release used to skip the live check on the changelog's say-so, and 0.14.0
-    showed why that was wrong: the rename broke host applications, not the dependents, which all
-    imported clean — so the live check would have meant something and did not run (#337). The
-    detector still runs and still reports "breaking" into the summary, but it no longer gates and
-    no longer claims a skip; the work check decides the dispatch in the same job.
+    The work check owns the dispatch decision; this detector must remain non-gating.
     """
 
     _STEP = "Check whether this release is breaking"
