@@ -17,6 +17,7 @@ import ast
 import asyncio
 import importlib.util
 import json
+import logging
 import os
 import pathlib
 import posixpath
@@ -51,6 +52,7 @@ from maf_sandbox import (
     guest_run_layout,
     host_tool_shim,
     launcher_script,
+    reclaim_run,
     sandbox_tool,
 )
 from maf_sandbox import _host_tools_over_exec as host_tools_over_exec
@@ -62,6 +64,15 @@ _FAST = 0.001
 
 _RUN = "/maf-sandbox/work/run-1"
 _LAYOUT = guest_run_layout(_RUN)
+
+#: Read through `getattr` for the reason `_SIGKILL` is: this file is type-checked on Windows,
+#: where `os` has no `geteuid`.
+_RUNNING_AS_ROOT = getattr(os, "geteuid", lambda: 1)() == 0
+
+#: The signal the transport sends, for the tests that send it themselves. Read through
+#: `getattr` because this file is type-checked on Windows, where `signal` has no `SIGKILL` —
+#: the tests that use it are skipped there, but pyright reads them anyway.
+_SIGKILL = getattr(signal, "SIGKILL", 9)
 
 #: Scripted in place of a name: the caller took this number and could not publish under it.
 _ABANDONED = "<abandoned>"
@@ -368,7 +379,11 @@ class TestTheSupervisorsOwnBounds:
 
         class _SlowToStart(_ScriptedGuest):
             async def exec(self, command, *, working_directory: str, timeout: float):
-                await asyncio.sleep(0.15)
+                # The launcher only. The kill and the cleanup are `exec`s too, and they run
+                # after the deadline by design — slowing those would measure the price of
+                # reclaiming the run rather than the thing this test is named for.
+                if not str(command).startswith(("kill", "rm ")):
+                    await asyncio.sleep(0.15)
                 return await super().exec(
                     command, working_directory=working_directory, timeout=timeout
                 )
@@ -653,6 +668,7 @@ class TestTheLauncherAgainstARealShell:
             calls=f"{served}/{CALLS_DIRECTORY}",
             output=f"{served}/program_output.txt",
             exit_code=f"{served}/program_exit_code",
+            pid=f"{served}/program_pid",
         )
         pathlib.Path(layout.launcher).write_text(
             launcher_script(layout, sys.executable), encoding="utf-8"
@@ -776,6 +792,7 @@ class TestTheLauncherAgainstARealShell:
             calls=f"{served}/{CALLS_DIRECTORY}",
             output=f"{served}/program_output.txt",
             exit_code=f"{served}/program_exit_code",
+            pid=f"{served}/program_pid",
         )
         pathlib.Path(layout.launcher).write_text(
             launcher_script(layout, sys.executable), encoding="utf-8"
@@ -847,6 +864,7 @@ class TestTheLauncherAgainstARealShell:
             calls=f"{served}/{CALLS_DIRECTORY}",
             output=f"{served}/program_output.txt",
             exit_code=f"{served}/program_exit_code",
+            pid=f"{served}/program_pid",
         )
         pathlib.Path(layout.program).write_text("open('escaped', 'w').close()\n", encoding="utf-8")
         pathlib.Path(layout.launcher).write_text(
@@ -947,6 +965,7 @@ class TestTheLauncherAgainstARealShell:
             calls=f"{served}/{CALLS_DIRECTORY}",
             output=f"{served}/program_output.txt",
             exit_code=f"{served}/program_exit_code",
+            pid=f"{served}/program_pid",
         )
         pathlib.Path(served).mkdir(parents=True, exist_ok=True)
         stop = tmp_path / "stop"
@@ -1014,6 +1033,7 @@ class TestTheLauncherAgainstARealShell:
             calls=f"{served}/{CALLS_DIRECTORY}",
             output=f"{served}/program_output.txt",
             exit_code=f"{served}/program_exit_code",
+            pid=f"{served}/program_pid",
         )
         pathlib.Path(layout.program).write_text(
             "import sys\n"
@@ -1350,17 +1370,25 @@ class TestWhatTheDeadlineCovers:
     """The bound is on the run, and sandbox I/O is part of the run."""
 
     def test_a_stalled_backend_call_does_not_hold_the_supervisor(self):
-        """A hung `stat_file` is what this bound is for: no guest, no exit marker, no end."""
+        """A hung `stat_file` is what this bound is for: no guest, no exit marker, no end.
+
+        The ceiling is the run's own bound plus the two graces a guest this slow can spend in
+        full — the last look for the marker, and the one stopping the program gets to itself —
+        with room for a loaded machine. What it rules out is the 3600s sleep below, and it is
+        derived rather than tuned so that a third grace appearing has to be argued for here.
+        """
 
         class _Stalled(_ScriptedGuest):
             async def stat_file(self, path: str, *, working_directory: str):
                 await asyncio.sleep(3600)
                 raise AssertionError("unreachable")
 
+        run_bound = 0.2
+        ceiling = run_bound + 2 * host_tools_over_exec._FINAL_READ_GRACE + 2.0
         began = time.monotonic()
         with pytest.raises(TimeoutError):
-            _run(_Stalled([]), HostToolRun(_registry()), timeout=0.2)
-        assert time.monotonic() - began < 4.0, "a stalled transport call outlasted the bound"
+            _run(_Stalled([]), HostToolRun(_registry()), timeout=run_bound)
+        assert time.monotonic() - began < ceiling, "a stalled transport call outlasted the bound"
 
     def test_an_empty_exit_marker_is_not_a_finished_run(self):
         """A redirection creates the marker empty; reading that as an exit loses the run."""
@@ -1529,6 +1557,22 @@ class TestWhatSurvivesTheDeadline:
         written = guest.files.get(posixpath.join(_LAYOUT.calls, "0001.response.json"))
         assert written is not None, "the answer to a tool that had already acted was discarded"
         assert json.loads(written)["value"] == "late"
+
+    def test_the_documented_overhead_is_what_the_constants_add_up_to(self):
+        """The README quotes a total, and prose cannot notice a constant moving under it.
+
+        Five graces stack on the worst path: the response write above, the shared last look at
+        the marker and the output, the pid lookup, the signal, and the reclaim. A host sizes an
+        outer deadline from that number, and one set too tight loses the
+        `SandboxProgramTimeout` and cancels whatever dispatch is in flight — so a constant
+        changed without the sentence is a caller's bug, not a stale document.
+        """
+        worst = (
+            host_tools_over_exec._RESPONSE_WRITE_GRACE
+            + 3 * host_tools_over_exec._FINAL_READ_GRACE
+            + host_tools_over_exec._RECLAIM_GRACE
+        )
+        assert worst == 18.0, "the README's `timeout + 18s` no longer matches the constants"
 
 
 class TestTheLayoutsOwnPromise:
@@ -2205,7 +2249,10 @@ class TestWhoseTimeoutItWas:
         with pytest.raises(SandboxProgramTimeout) as spent:
             _run(_BoundsTheStartSilently([], finish=False), HostToolRun(_registry()), timeout=30.0)
 
-        assert str(spent.value) == "the run's 30s were gone while starting the program"
+        assert str(spent.value) == (
+            "the run's 30s were gone while starting the program"
+            " (whether it got as far as starting one could not be established)"
+        )
         assert not str(spent.value).endswith("—"), "the message trails off into nothing"
 
     def test_the_hosts_note_is_not_passed_off_as_the_programs_own_words(self):
@@ -2566,3 +2613,1249 @@ class TestTheShimsSequenceAllocation:
 
         assert len(answers) == 32
         assert len(set(answers)) == 32, f"two callers shared an identifier: {sorted(answers)}"
+
+
+# ---------------------------------------------------------------------------------------------
+# Stopping a run that overran (#375)
+# ---------------------------------------------------------------------------------------------
+
+
+async def _spend(timeout: float, command: str) -> None:
+    """Refuse a command the transport gave no time to run, as a real backend would.
+
+    Every backend bounds its own call with the `timeout` it was handed — docker with
+    `asyncio.wait_for`, acas the same — so a zero or negative budget is a `TimeoutError`
+    before anything reaches the guest. A fake that ignores the argument reports success for
+    work that could never have happened.
+    """
+    if timeout <= 0:
+        raise TimeoutError(f"no time left to run {command!r}")
+    await asyncio.sleep(0)
+
+
+class _GuestThatRecordsTheKill(_ScriptedGuest):
+    """A guest whose launcher writes a pid, and which remembers every command exec'd at it.
+
+    The pid lands on `exec` rather than in the constructor, because that is when the real
+    launcher writes it: a pid present before the program started would let a test pass against
+    a transport that killed something it had no business killing.
+    """
+
+    def __init__(
+        self, *args: Any, pid: str | None = "4242", kill_exit_code: int = 0, **kwargs: Any
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.commands: list[str] = []
+        self._pid = pid
+        self._kill_exit_code = kill_exit_code
+
+    async def exec(
+        self, command: str | Any, *, working_directory: str, timeout: float
+    ) -> ExecResult:
+        if "kill" in str(command):
+            # Recorded *after* the yield and the budget check, so a command the transport
+            # issued with no time to spend does not count as one the guest ran. A fake that
+            # records on entry cannot tell "sent" from "attempted", and every assertion in
+            # this file about what the guest was made to do rests on that distinction.
+            await _spend(timeout, str(command))
+            self.commands.append(str(command))
+            return ExecResult(stdout="", exit_code=self._kill_exit_code)
+        self.commands.append(str(command))
+        started = await super().exec(command, working_directory=working_directory, timeout=timeout)
+        if self._pid is not None:
+            self.files[_LAYOUT.pid] = self._pid.encode("utf-8")
+        return started
+
+    @property
+    def kills(self) -> list[str]:
+        return [command for command in self.commands if "kill" in command]
+
+
+class TestStoppingARunThatOverran:
+    """A dispatched program that overruns is signalled, and no more than signalled (#375).
+
+    What these establish is that a `SIGKILL` was aimed at the pid the launcher wrote — the
+    most this transport can prove, for the reasons `_stop_the_program` sets out. The program
+    starts detached, so the timeout fires in the supervisor rather than inside an `exec` a
+    backend could tear down with its container; the pid and that same `exec` are what stopping
+    has to work with, which is why it needs no protocol method and no capability past the
+    `EXEC` and `FILES_OUT` the dispatch path already requires.
+    """
+
+    def test_the_program_is_killed_by_the_pid_the_launcher_wrote(self):
+        guest = _GuestThatRecordsTheKill([], finish=False, pid="4242")
+        with pytest.raises(SandboxProgramTimeout):
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert len(guest.kills) == 1, guest.commands
+        assert "4242" in guest.kills[0]
+        assert "-KILL" in guest.kills[0], "a runaway that already overran is not owed a TERM"
+
+    def test_a_landed_kill_is_not_narrated(self):
+        """A stopped program is what a timeout should mean; saying so every time is noise."""
+        guest = _GuestThatRecordsTheKill([], finish=False, kill_exit_code=0)
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert "may still be running" not in str(expired.value)
+
+    def test_a_kill_that_did_not_land_says_the_program_may_still_be_running(self):
+        """The one case that costs somebody something, so the one that gets the words."""
+        guest = _GuestThatRecordsTheKill([], finish=False, kill_exit_code=1)
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert "may still be running" in str(expired.value)
+
+    def test_no_pid_hedges_rather_than_going_quiet(self):
+        """The launcher returned 0, so something started; a missing pid does not say otherwise.
+
+        The hedge errs towards a needless disposal rather than a silent leak: a caller told
+        that nothing is running has no way back, while one told to check does.
+        """
+        guest = _GuestThatRecordsTheKill([], finish=False, pid=None)
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert guest.kills == [], "a kill was issued with no pid to aim it at"
+        assert "may still be running" in str(expired.value)
+
+    def test_a_pid_that_is_not_a_number_is_never_spliced_into_a_kill(self):
+        guest = _GuestThatRecordsTheKill([], finish=False, pid="; rm -rf /")
+        with pytest.raises(SandboxProgramTimeout):
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert guest.kills == [], f"a non-numeric pid reached a command: {guest.commands}"
+
+    def test_the_exit_marker_is_read_before_anything_is_killed(self):
+        """A finished run must not be killed by pid: the guest may have reused the number.
+
+        The marker landing is what proves the process is gone, and a pid whose process is gone
+        can belong to something else by the time this looks.
+        """
+        guest = _GuestThatRecordsTheKill([], finish=True)
+        result = _run(guest, HostToolRun(_registry()), timeout=5.0)
+        assert result.exit_code == 0
+        assert guest.kills == [], "a finished run was killed by pid"
+
+    def test_a_backend_that_refuses_the_kill_does_not_replace_the_runs_own_reason(self):
+        """The kill is a remedy on the way out, and a remedy must never win over the report."""
+
+        class _RefusesToKill(_GuestThatRecordsTheKill):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                if "kill" in str(command):
+                    raise PermissionError("the daemon said no")
+                return await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+
+        with pytest.raises(SandboxProgramTimeout, match="did not finish within"):
+            _run(_RefusesToKill([], finish=False), HostToolRun(_registry()), timeout=0.2)
+
+    def test_an_unreadable_pid_does_not_replace_the_runs_own_reason(self):
+        class _DiesOnThePidRead(_GuestThatRecordsTheKill):
+            async def read_file(self, path: str, *, working_directory: str, max_bytes: int):
+                if path == _LAYOUT.pid:
+                    raise PermissionError("the daemon said no")
+                return await super().read_file(
+                    path, working_directory=working_directory, max_bytes=max_bytes
+                )
+
+        with pytest.raises(SandboxProgramTimeout, match="did not finish within"):
+            _run(_DiesOnThePidRead([], finish=False), HostToolRun(_registry()), timeout=0.2)
+
+
+class TestTheLegWhereTheLauncherItselfRanOut:
+    """`exec` bounding the launcher cannot say whether a program was started, so the pid does."""
+
+    def test_a_pid_left_behind_is_killed_and_reported(self):
+        class _BoundsTheStartAfterLaunching(_GuestThatRecordsTheKill):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                self.commands.append(str(command))
+                if "kill" in str(command):
+                    return ExecResult(stdout="", exit_code=0)
+                # Started, and then the call itself ran out — the case the docstring calls out.
+                self.files[_LAYOUT.pid] = b"4242"
+                raise TimeoutError
+
+        guest = _BoundsTheStartAfterLaunching([], finish=False)
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=30.0)
+        assert "4242" in "".join(guest.kills)
+        assert "it had started the program and was sent SIGKILL" in str(expired.value)
+
+    def test_no_pid_leaves_the_message_exactly_as_it_was(self):
+        """A missing pid claims nothing either way — pinned on the whole sentence."""
+
+        class _BoundsTheStartSilently(_ScriptedGuest):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                raise TimeoutError
+
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(_BoundsTheStartSilently([], finish=False), HostToolRun(_registry()), timeout=30.0)
+        assert str(expired.value) == (
+            "the run's 30s were gone while starting the program"
+            " (whether it got as far as starting one could not be established)"
+        )
+
+
+class TestThePidFileIsTheLayoutsOwn:
+    def test_a_program_cannot_be_named_for_it(self):
+        for name in ("program_pid", "program_pid.part"):
+            with pytest.raises(ValueError, match="name this layout already uses"):
+                guest_run_layout("/runs/one", program=name)
+
+    def test_it_sits_beside_the_exit_marker_where_a_model_cannot_name_into(self):
+        layout = guest_run_layout("/runs/one")
+        assert layout.pid == posixpath.join(posixpath.dirname(layout.exit_code), "program_pid")
+        assert not layout.pid.startswith(layout.work + "/")
+
+
+class TestThePidAgainstARealShell:
+    """What the launcher writes down, asked of a shell rather than of a reading of one.
+
+    Gated on a real POSIX platform rather than only on `sh` being present: Git Bash answers
+    `which sh` on Windows, and the pid it reports is not the one `os.kill` takes there. These
+    run on Linux — in CI, and in a container locally.
+    """
+
+    @staticmethod
+    def _laid_out(tmp_path: Path) -> GuestRunLayout:
+        directory = tmp_path.as_posix()
+        served = f"{directory}/host_tools"
+        pathlib.Path(served).mkdir(parents=True, exist_ok=True)
+        pathlib.Path(f"{directory}/work").mkdir(parents=True, exist_ok=True)
+        return GuestRunLayout(
+            directory=directory,
+            work=f"{directory}/work",
+            program=f"{served}/program.py",
+            shim=f"{served}/{SHIM_MODULE}",
+            launcher=f"{served}/run_program.sh",
+            calls=f"{served}/{CALLS_DIRECTORY}",
+            output=f"{served}/program_output.txt",
+            exit_code=f"{served}/program_exit_code",
+            pid=f"{served}/program_pid",
+        )
+
+    @staticmethod
+    def _appears(path: str, *, within: float = 30.0) -> str:
+        deadline = time.monotonic() + within
+        while time.monotonic() < deadline:
+            found = pathlib.Path(path)
+            if found.exists():
+                text = found.read_text(encoding="utf-8").strip()
+                if text:
+                    return text
+            time.sleep(0.05)
+        raise AssertionError(f"{path} never appeared")
+
+    @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+    @pytest.mark.skipif(os.pathsep != ":", reason="pids here are not the ones os.kill takes")
+    def test_the_pid_written_down_is_the_programs_own(self, tmp_path: Path):
+        """Not the wrapper shell's, which is what a naive `$!` on the `nohup` would record.
+
+        The distinction is the whole fix: killing the wrapper leaves the interpreter orphaned
+        and running, which is indistinguishable from not having killed anything at all. So the
+        program reports its own pid and the two are compared.
+        """
+        layout = self._laid_out(tmp_path)
+        pathlib.Path(layout.program).write_text("import os\nprint(os.getpid())\n", encoding="utf-8")
+        pathlib.Path(layout.launcher).write_text(
+            launcher_script(layout, sys.executable), encoding="utf-8"
+        )
+
+        subprocess.run(
+            ["sh", layout.launcher], cwd=layout.directory, capture_output=True, timeout=60
+        )
+        self._appears(layout.exit_code)
+
+        recorded = self._appears(layout.pid)
+        printed = pathlib.Path(layout.output).read_text(encoding="utf-8").strip()
+        assert recorded == printed, (
+            f"the launcher recorded {recorded} but the program is {printed} — the pid is the "
+            "wrapper's, and killing it would leave the program running"
+        )
+
+    @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+    @pytest.mark.skipif(os.pathsep != ":", reason="pids here are not the ones os.kill takes")
+    def test_killing_the_recorded_pid_stops_a_program_that_would_not_stop(self, tmp_path: Path):
+        """The end-to-end claim, minus the backend: this pid, this signal, that program gone."""
+        layout = self._laid_out(tmp_path)
+        pathlib.Path(layout.program).write_text(
+            "import time\nwhile True:\n    time.sleep(0.05)\n", encoding="utf-8"
+        )
+        pathlib.Path(layout.launcher).write_text(
+            launcher_script(layout, sys.executable), encoding="utf-8"
+        )
+
+        subprocess.run(
+            ["sh", layout.launcher], cwd=layout.directory, capture_output=True, timeout=60
+        )
+        running = int(self._appears(layout.pid))
+
+        # Alive first, or "gone after the kill" would pass against a program that never started.
+        os.kill(running, 0)
+        os.kill(running, _SIGKILL)
+
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline:
+            try:
+                os.kill(running, 0)
+            except ProcessLookupError:
+                return
+            time.sleep(0.05)
+        # Deliberately not signalled again. By now the number may belong to something else —
+        # the wait above is exactly long enough for the guest to have recycled it — and a
+        # second SIGKILL would land on a stranger on the machine running the tests. A pid
+        # that outlived a SIGKILL is a failure worth reporting, not one worth chasing.
+        raise AssertionError(
+            f"{running} survived SIGKILL, so the recorded pid is not the program; it may "
+            f"still be running on this machine"
+        )
+
+    @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+    @pytest.mark.skipif(os.pathsep != ":", reason="the launcher's path handling is POSIX")
+    def test_the_exit_code_still_means_the_programs_own_status(self, tmp_path: Path):
+        """`wait $!` is what keeps that true now the interpreter runs in the background.
+
+        Without it `$?` would be the `printf` that recorded the pid — zero, whatever the
+        program did, which would report every failing program as a success.
+        """
+        layout = self._laid_out(tmp_path)
+        pathlib.Path(layout.program).write_text("raise SystemExit(3)\n", encoding="utf-8")
+        pathlib.Path(layout.launcher).write_text(
+            launcher_script(layout, sys.executable), encoding="utf-8"
+        )
+
+        subprocess.run(
+            ["sh", layout.launcher], cwd=layout.directory, capture_output=True, timeout=60
+        )
+        assert self._appears(layout.exit_code) == "3"
+
+
+class TestTheLaunchersPidMarker:
+    def test_the_pid_lands_by_rename(self):
+        """The same discipline the exit marker gets, and for the same reason.
+
+        Written straight to its name, the supervisor can read the empty file a redirection
+        leaves for a moment; an empty pid is discarded, so the run it could have stopped is
+        left going instead. Rare, and silent, which is the pair worth a rename.
+        """
+        layout = guest_run_layout("/maf-sandbox/work/run-1")
+        inner = shlex.split(launcher_script(layout).splitlines()[-1].removesuffix(" &"))[3]
+        assert f"{layout.pid}.part" in inner, "the pid is written straight to its name"
+        assert f"mv '{layout.pid}.part' '{layout.pid}'" in inner
+
+
+class TestStoppingOnTheOtherTwoLegs:
+    """Leg A is the deadline seen at the top of the loop; these are the other two."""
+
+    def test_a_deadline_that_expires_inside_an_iteration_still_kills(self):
+        """The `_DeadlineExpired` path, which reports the call that ran out rather than the loop.
+
+        A separate leg with a separate message, so a kill wired into one and not the other is
+        invisible to a test that only drives the loop's own deadline.
+        """
+        ahead = {"seconds": 0.0}
+
+        class _RunsOutMidIteration(_GuestThatRecordsTheKill):
+            expired = False
+
+            async def stat_file(self, path: str, *, working_directory: str):
+                if not self.expired and path == _LAYOUT.exit_code:
+                    # Jump the clock past the deadline while a transport call is in flight, so
+                    # the expiry surfaces as `_DeadlineExpired` rather than at the top of the
+                    # loop. `_Shifted` is what the module reads the time through.
+                    self.expired = True
+                    ahead["seconds"] += 600.0
+                return await super().stat_file(path, working_directory=working_directory)
+
+        guest = _RunsOutMidIteration([], finish=False)
+        with pytest.MonkeyPatch.context() as patched:
+            patched.setattr(host_tools_over_exec, "time", _Shifted(time.monotonic, ahead))
+            with pytest.raises(SandboxProgramTimeout) as expired:
+                _run(guest, HostToolRun(_registry()), timeout=5.0)
+
+        assert "4242" in "".join(guest.kills), f"nothing was killed: {guest.commands}"
+        assert "may still be running" not in str(expired.value)
+
+    def test_a_pid_that_cannot_be_used_still_hedges(self):
+        """`absent` is reserved for no pid at all; anything unusable is reported as running.
+
+        A pid file holding something that is not a number is no handle on a process — but the
+        guest can put it there, so treating it as "nothing was started" would be a one-line
+        opt-out from being killed *and* from being mentioned. The signal is still not sent.
+        """
+
+        class _BoundsTheStartOverGarbage(_GuestThatRecordsTheKill):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                self.commands.append(str(command))
+                if "kill" in str(command):
+                    return ExecResult(stdout="", exit_code=0)
+                self.files[_LAYOUT.pid] = b"not-a-pid"
+                raise TimeoutError
+
+        guest = _BoundsTheStartOverGarbage([], finish=False)
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=30.0)
+
+        assert guest.kills == [], f"a non-numeric pid reached a command: {guest.commands}"
+        assert "may still be running" in str(expired.value)
+
+    def test_a_pid_that_was_never_written_says_nothing_new(self):
+        """No pid, and no kill to attempt — but the sentence still may not say nothing ran."""
+
+        class _BoundsTheStartWithNothingWritten(_GuestThatRecordsTheKill):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                self.commands.append(str(command))
+                if "kill" in str(command):
+                    return ExecResult(stdout="", exit_code=0)
+                raise TimeoutError
+
+        guest = _BoundsTheStartWithNothingWritten([], finish=False, pid=None)
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=30.0)
+
+        assert guest.kills == []
+        assert str(expired.value) == (
+            "the run's 30s were gone while starting the program"
+            " (whether it got as far as starting one could not be established)"
+        )
+
+    def test_a_pid_the_host_cannot_read_hedges_rather_than_going_quiet(self):
+        """A backend failure is not evidence that nothing was started."""
+
+        class _PidUnreadable(_GuestThatRecordsTheKill):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                self.commands.append(str(command))
+                if "kill" in str(command):
+                    return ExecResult(stdout="", exit_code=0)
+                self.files[_LAYOUT.pid] = b"4242"
+                raise TimeoutError
+
+            async def read_file(self, path: str, *, working_directory: str, max_bytes: int):
+                if path == _LAYOUT.pid:
+                    raise PermissionError("the daemon said no")
+                return await super().read_file(
+                    path, working_directory=working_directory, max_bytes=max_bytes
+                )
+
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(_PidUnreadable([], finish=False), HostToolRun(_registry()), timeout=30.0)
+
+        assert "may still be running" in str(expired.value)
+
+
+class _GuestThatRecordsRemovals(_GuestThatRecordsTheKill):
+    """Records `rm` as well as `kill`, and can refuse either."""
+
+    def __init__(self, *args: Any, remove_exit_code: int = 0, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._remove_exit_code = remove_exit_code
+
+    async def exec(
+        self, command: str | Any, *, working_directory: str, timeout: float
+    ) -> ExecResult:
+        if str(command).startswith("rm "):
+            # After the budget check, for the reason the kill is: a removal the transport had
+            # no time to run is not a removal, and recording it on entry hid exactly that.
+            await _spend(timeout, str(command))
+            self.commands.append(str(command))
+            return ExecResult(stdout="", exit_code=self._remove_exit_code)
+        return await super().exec(command, working_directory=working_directory, timeout=timeout)
+
+    @property
+    def removals(self) -> list[str]:
+        return [command for command in self.commands if command.startswith("rm ")]
+
+
+class TestTheTransportReclaimsItsOwnFiles:
+    """Nothing in the protocol deletes, so the transport reaches for the `exec` it already has.
+
+    The files it writes carry a run's host-tool traffic — every argument a program passed to a
+    host tool and every value it got back — plus the program a model wrote. Left behind, they
+    are readable by the next run in the same sandbox, because `acquire` is get-or-create.
+    """
+
+    def test_a_successful_run_does_not_leave_its_files_behind(self):
+        """The common path, and the one a cleanup wired only into failure would miss."""
+        guest = _GuestThatRecordsRemovals([], finish=True)
+        result = _run(guest, HostToolRun(_registry()), timeout=5.0)
+        assert result.exit_code == 0
+        assert len(guest.removals) == 1, guest.commands
+        assert posixpath.dirname(_LAYOUT.shim) in guest.removals[0]
+
+    def test_a_run_that_timed_out_does_not_leave_its_files_behind(self):
+        guest = _GuestThatRecordsRemovals([], finish=False)
+        with pytest.raises(SandboxProgramTimeout):
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert len(guest.removals) == 1, guest.commands
+
+    def test_a_launcher_that_never_started_the_program_still_reclaims(self):
+        guest = _GuestThatRecordsRemovals([], finish=False, launcher_exit_code=1)
+        result = _run(guest, HostToolRun(_registry()), timeout=5.0)
+        assert result.exit_code != 0
+        assert len(guest.removals) == 1, guest.commands
+
+    def test_a_backend_failing_mid_run_still_reclaims(self):
+        """`finally`, not a happy-path call: whatever a backend raises, the files still go."""
+
+        class _DiesMidRun(_GuestThatRecordsRemovals):
+            async def stat_file(self, path: str, *, working_directory: str):
+                if path == _LAYOUT.exit_code:
+                    raise PermissionError("the daemon said no")
+                return await super().stat_file(path, working_directory=working_directory)
+
+        guest = _DiesMidRun([], finish=False)
+        with pytest.raises(PermissionError):
+            _run(guest, HostToolRun(_registry()), timeout=5.0)
+        assert len(guest.removals) == 1, guest.commands
+
+    def test_the_work_directory_is_left_for_the_kind_to_collect_from(self):
+        """The split that makes this safe on the success path.
+
+        Artifacts live in `work` and a kind collects them *after* this returns, so a transport
+        that removed the run would delete the outputs of every successful run. It removes its
+        own sibling and nothing else.
+        """
+        guest = _GuestThatRecordsRemovals([], finish=True)
+        _run(guest, HostToolRun(_registry()), timeout=5.0)
+        removed = guest.removals[0]
+        assert posixpath.dirname(_LAYOUT.shim) in removed
+        assert _LAYOUT.work not in removed
+        assert f"rm -rf '{_LAYOUT.directory}'" not in removed
+
+    def test_a_refused_removal_says_what_is_left_readable(self, caplog):
+        guest = _GuestThatRecordsRemovals([], finish=True, remove_exit_code=1)
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox"):
+            _run(guest, HostToolRun(_registry()), timeout=5.0)
+        assert "readable by the next run" in caplog.text, caplog.text
+
+    def test_a_backend_that_refuses_the_removal_does_not_fail_the_run(self):
+        """A run that worked must not be reported as failed because its cleanup did not."""
+
+        class _RefusesToRemove(_GuestThatRecordsRemovals):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                if str(command).startswith("rm "):
+                    raise PermissionError("the daemon said no")
+                return await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+
+        result = _run(_RefusesToRemove([], finish=True), HostToolRun(_registry()), timeout=5.0)
+        assert result.exit_code == 0
+
+
+class TestReclaimingTheWholeRun:
+    """`reclaim_run` is the kind's half — the work directory, and everything a model wrote."""
+
+    def test_it_removes_the_run_directory(self):
+        guest = _GuestThatRecordsRemovals([], finish=True)
+        assert asyncio.run(reclaim_run(guest, _LAYOUT, timeout=5.0)) is True
+        assert guest.removals == [f"rm -rf '{_LAYOUT.directory}'"]
+
+    def test_a_refusal_is_reported_rather_than_raised(self):
+        guest = _GuestThatRecordsRemovals([], finish=True, remove_exit_code=1)
+        assert asyncio.run(reclaim_run(guest, _LAYOUT, timeout=5.0)) is False
+
+    def test_a_backend_failure_is_reported_rather_than_raised(self):
+        class _Refuses(_GuestThatRecordsRemovals):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                raise PermissionError("the daemon said no")
+
+        assert asyncio.run(reclaim_run(_Refuses([], finish=True), _LAYOUT, timeout=5.0)) is False
+
+
+class TestWhatIsTooBroadToDelete:
+    """`rm -rf` is irreversible, so the path gets a guard that does not depend on the factory."""
+
+    @pytest.mark.parametrize(
+        "directory",
+        [
+            "/",
+            "/tmp",
+            "relative/run",
+            "",
+            "/runs/../..",
+            # Two components as written, one as meant. `rm` happens to refuse a `.` operand,
+            # but the guard must answer for the directory rather than its spelling.
+            "/tmp/.",
+            "/etc/./",
+        ],
+    )
+    def test_a_path_that_is_not_a_run_directory_is_refused(self, directory: str):
+        from maf_sandbox._host_tools_over_exec import _removable
+
+        assert not _removable(directory)
+
+    def test_a_real_run_directory_passes(self):
+        from maf_sandbox._host_tools_over_exec import _removable
+
+        assert _removable("/maf-sandbox/work/run-1")
+
+    def test_nothing_is_exec_d_for_a_path_it_refuses(self):
+        broken = GuestRunLayout(
+            directory="/",
+            work="/work",
+            program="/program.py",
+            shim="/maf_host_tools.py",
+            launcher="/run_program.sh",
+            calls="/host_tool_calls",
+            output="/program_output.txt",
+            exit_code="/program_exit_code",
+            pid="/program_pid",
+        )
+        guest = _GuestThatRecordsRemovals([], finish=True)
+        assert asyncio.run(reclaim_run(guest, broken, timeout=5.0)) is False
+        assert guest.removals == [], f"a refused path still reached a command: {guest.commands}"
+
+
+class TestRemovalAgainstARealShell:
+    """A fake proves a command was issued; only a filesystem proves it removed anything."""
+
+    @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+    @pytest.mark.skipif(os.pathsep != ":", reason="the guest paths here are POSIX")
+    def test_the_command_the_transport_sends_removes_the_tree(self, tmp_path: Path):
+        """The command is taken from a dispatch, not hand-built, so the two cannot diverge."""
+        directory = (tmp_path / "run-1").as_posix()
+        served = f"{directory}/host_tools"
+        pathlib.Path(served).mkdir(parents=True, exist_ok=True)
+        pathlib.Path(served, "program_output.txt").write_text("secret output", encoding="utf-8")
+        pathlib.Path(served, "host_tool_calls").mkdir()
+        pathlib.Path(served, "host_tool_calls", "0001.request.json").write_text(
+            '{"arguments": {"account": "sensitive"}}', encoding="utf-8"
+        )
+
+        layout = guest_run_layout(directory)
+        guest = _GuestThatRecordsRemovals([], finish=True)
+        asyncio.run(
+            host_tools_over_exec._reclaim_the_transports_own(
+                guest, layout, until=time.monotonic() + 5.0
+            )
+        )
+        (command,) = guest.removals
+
+        done = subprocess.run(
+            ["sh", "-c", command], cwd=tmp_path.as_posix(), capture_output=True, timeout=60
+        )
+
+        assert done.returncode == 0, done.stderr
+        assert not pathlib.Path(served).exists(), "the transport's files survived the removal"
+        assert pathlib.Path(directory).exists(), "the run directory went with them"
+
+    @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+    @pytest.mark.skipif(os.pathsep != ":", reason="the guest paths here are POSIX")
+    def test_a_run_directory_holding_shell_metacharacters_removes_only_itself(self, tmp_path: Path):
+        """Quoting, asked of a shell: an unquoted `*` would take the sibling with it."""
+        from maf_sandbox._host_tools_over_exec import _quote
+
+        awkward = (tmp_path / "run *; touch pwned").as_posix()
+        pathlib.Path(awkward).mkdir(parents=True)
+        pathlib.Path(awkward, "inside").write_text("x", encoding="utf-8")
+        keep = tmp_path / "run-2"
+        keep.mkdir()
+        (keep / "survivor").write_text("x", encoding="utf-8")
+
+        done = subprocess.run(
+            ["sh", "-c", f"rm -rf {_quote(awkward)}"],
+            cwd=tmp_path.as_posix(),
+            capture_output=True,
+            timeout=60,
+        )
+
+        assert done.returncode == 0, done.stderr
+        assert not pathlib.Path(awkward).exists()
+        assert (keep / "survivor").exists(), "the removal reached a directory it did not name"
+        assert not (tmp_path / "pwned").exists(), "the name was evaluated as a command"
+
+
+class TestTheCommandsKeepTheGuestsAnswer:
+    """A fake returns the exit code it was told to; only a shell returns the real one.
+
+    Which command status reaches the caller is a property of the shell, so it is asked of one.
+    """
+
+    @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+    @pytest.mark.skipif(os.pathsep != ":", reason="pids and kill semantics here are POSIX")
+    def test_a_kill_that_fails_reports_a_failure(self, tmp_path: Path):
+        """The command the transport actually sent, run by a shell.
+
+        Asserting POSIX semantics alone would prove nothing about this code, and asserting the
+        string alone would prove nothing about the shell. So the string is taken from a run and
+        then executed: nothing is alive at this pid, so a zero status means the transport would
+        call a program stopped that it never touched.
+        """
+        # Above every possible `pid_max` — the kernel's ceiling is 2**22, so this cannot name
+        # a process and `kill` fails without signalling anything on the machine running tests.
+        gone = 2**31 - 1
+        guest = _GuestThatRecordsTheKill([], finish=False, pid=str(gone))
+        with pytest.raises(SandboxProgramTimeout):
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        (command,) = guest.kills
+
+        done = subprocess.run(
+            ["sh", "-c", command], cwd=tmp_path.as_posix(), capture_output=True, timeout=60
+        )
+        assert done.returncode != 0, (
+            f"{command!r} reported success against a pid that is not there, so a program that "
+            "could not be stopped would be reported as stopped"
+        )
+
+    @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+    @pytest.mark.skipif(os.pathsep != ":", reason="the guest paths here are POSIX")
+    def test_removing_a_directory_that_was_never_there_succeeds(self, tmp_path: Path):
+        """`-f` is what covers the already-gone case, which is why no `exit 0` is needed."""
+        from maf_sandbox._host_tools_over_exec import _quote
+
+        missing = (tmp_path / "never-existed").as_posix()
+        done = subprocess.run(
+            ["sh", "-c", f"rm -rf {_quote(missing)}"],
+            cwd=tmp_path.as_posix(),
+            capture_output=True,
+            timeout=60,
+        )
+        assert done.returncode == 0, done.stderr
+
+    @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
+    @pytest.mark.skipif(os.pathsep != ":", reason="the guest paths here are POSIX")
+    @pytest.mark.skipif(_RUNNING_AS_ROOT, reason="root is refused nothing")
+    def test_a_removal_the_guest_refuses_reports_a_failure(self, tmp_path: Path):
+        from maf_sandbox._host_tools_over_exec import _quote
+
+        parent = tmp_path / "locked"
+        parent.mkdir()
+        (parent / "run-1").mkdir()
+        (parent / "run-1" / "kept").write_text("x", encoding="utf-8")
+        parent.chmod(0o500)  # readable and traversable, not writable: the unlink is refused
+        try:
+            done = subprocess.run(
+                ["sh", "-c", f"rm -rf {_quote((parent / 'run-1').as_posix())}"],
+                cwd=tmp_path.as_posix(),
+                capture_output=True,
+                timeout=60,
+            )
+            assert done.returncode != 0, (
+                "a refused removal reported success, so a run's files would be left behind "
+                "with nothing said about it"
+            )
+        finally:
+            parent.chmod(0o700)
+
+
+class TestWhatIsNotAPidWorthSignalling:
+    """`$!` is always a positive ASCII integer, and everything else is refused before a kill."""
+
+    @pytest.mark.parametrize(
+        "recorded",
+        [
+            pytest.param("0", id="zero-signals-the-whole-process-group"),
+            pytest.param("-1", id="negative-signals-a-group-too"),
+            pytest.param("٤٢", id="arabic-indic-digits-int-normalises"),
+            pytest.param("²", id="superscript-is-a-digit-to-str-isdigit"),
+            pytest.param(" 42 ; rm -rf /", id="a-command-dressed-as-a-pid"),
+            pytest.param("", id="empty"),
+        ],
+    )
+    def test_it_never_reaches_a_command(self, recorded: str):
+        guest = _GuestThatRecordsTheKill([], finish=False, pid=recorded)
+        with pytest.raises(SandboxProgramTimeout):
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert guest.kills == [], f"{recorded!r} reached a kill: {guest.commands}"
+
+    def test_a_real_pid_still_does(self):
+        """The negative cases above are worthless if the positive one stopped working."""
+        guest = _GuestThatRecordsTheKill([], finish=False, pid="42")
+        with pytest.raises(SandboxProgramTimeout):
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert len(guest.kills) == 1 and " 42 " in f" {guest.kills[0]} "
+
+
+class TestStoppingGetsItsOwnBudget:
+    """The diagnostics on the way out must not be able to spend the kill's time."""
+
+    def test_a_slow_final_read_does_not_cost_the_program_its_kill(self):
+        """The last look and the output read share a grace; stopping gets a fresh one.
+
+        Sharing it means a backend slow enough to exhaust that grace leaves the kill with a
+        deadline already past — it gives up before sending anything, and the runaway survives
+        with the message saying only that it may have.
+        """
+        ahead = {"seconds": 0.0}
+
+        class _SlowFinalRead(_GuestThatRecordsTheKill):
+            async def read_file(self, path: str, *, working_directory: str, max_bytes: int):
+                if path == _LAYOUT.output:
+                    # Spend the whole grace inside the diagnostic read.
+                    ahead["seconds"] += host_tools_over_exec._FINAL_READ_GRACE + 1.0
+                return await super().read_file(
+                    path, working_directory=working_directory, max_bytes=max_bytes
+                )
+
+        guest = _SlowFinalRead([], finish=False)
+        guest.files[_LAYOUT.output] = b"printed something"
+        with pytest.MonkeyPatch.context() as patched:
+            patched.setattr(host_tools_over_exec, "time", _Shifted(time.monotonic, ahead))
+            with pytest.raises(SandboxProgramTimeout):
+                _run(guest, HostToolRun(_registry()), timeout=0.2)
+
+        assert guest.kills != [], (
+            "the diagnostics spent the grace and the kill was skipped, so the program is "
+            f"still running: {guest.commands}"
+        )
+
+
+class TestWhatTheTransportWillNotDelete:
+    """The run directory bounds what the transport's own cleanup may remove."""
+
+    def test_a_transport_directory_outside_the_run_is_refused(self):
+        """A hand-built layout is a supported API, and `rm -rf` is irreversible.
+
+        The target is derived from `layout.shim`, so a layout whose shim sits somewhere else
+        would otherwise point a recursive delete at a directory that has nothing to do with
+        the run — `/etc/ssh` passes the component-count guard perfectly well.
+        """
+        stray = GuestRunLayout(
+            directory="/maf-sandbox/work/run-1",
+            work="/maf-sandbox/work/run-1/work",
+            program="/etc/ssh/program.py",
+            shim=f"/etc/ssh/{SHIM_MODULE}",
+            launcher="/etc/ssh/run_program.sh",
+            calls=f"/etc/ssh/{CALLS_DIRECTORY}",
+            output="/etc/ssh/program_output.txt",
+            exit_code="/etc/ssh/program_exit_code",
+            pid="/etc/ssh/program_pid",
+        )
+        guest = _GuestThatRecordsRemovals([], finish=True)
+        asyncio.run(
+            host_tools_over_exec._reclaim_the_transports_own(
+                guest, stray, until=time.monotonic() + 5.0
+            )
+        )
+        assert guest.removals == [], f"a directory outside the run was removed: {guest.commands}"
+
+    @pytest.mark.parametrize(
+        "spelling",
+        ["/maf-sandbox/work/run-1/", "/maf-sandbox/work/run-1//", "/maf-sandbox/work/run-1/."],
+        ids=["trailing-slash", "doubled-separator", "dot-component"],
+    )
+    def test_the_run_directory_is_refused_however_it_is_spelled(self, spelling):
+        """One directory has several spellings, and `GuestRunLayout` refuses none of them.
+
+        This layout puts the transport's files directly in the run, so the directory derived
+        from the shim *is* the run — the case the guard exists for. Its `work` sits outside,
+        which is what leaves the run-directory comparison as the only thing standing between a
+        caller's spelling and a recursive delete of the whole run.
+        """
+        directly_in_the_run = GuestRunLayout(
+            directory=spelling,
+            work="/maf-sandbox/elsewhere/work",
+            program="/maf-sandbox/work/run-1/program.py",
+            shim=f"/maf-sandbox/work/run-1/{SHIM_MODULE}",
+            launcher="/maf-sandbox/work/run-1/run_program.sh",
+            calls=f"/maf-sandbox/work/run-1/{CALLS_DIRECTORY}",
+            output="/maf-sandbox/work/run-1/program_output.txt",
+            exit_code="/maf-sandbox/work/run-1/program_exit_code",
+            pid="/maf-sandbox/work/run-1/program_pid",
+        )
+        guest = _GuestThatRecordsRemovals([], finish=True)
+        asyncio.run(
+            host_tools_over_exec._reclaim_the_transports_own(
+                guest, directly_in_the_run, until=time.monotonic() + 5.0
+            )
+        )
+        assert guest.removals == [], f"the run itself was removed: {guest.commands}"
+
+    def test_the_run_s_own_transport_directory_is_not(self):
+        guest = _GuestThatRecordsRemovals([], finish=True)
+        asyncio.run(
+            host_tools_over_exec._reclaim_the_transports_own(
+                guest, _LAYOUT, until=time.monotonic() + 5.0
+            )
+        )
+        assert len(guest.removals) == 1, guest.commands
+        assert posixpath.dirname(_LAYOUT.shim) in guest.removals[0]
+
+
+class TestWhatEveryExitPathOwesTheRun:
+    """Stopping and reclaiming are owed on paths that are easy to reach and easy to forget."""
+
+    def test_a_slow_pid_read_does_not_cost_the_program_its_signal(self):
+        """The read and the signal are separately bounded.
+
+        Sharing one budget means a backend slow enough to spend it on the read leaves nothing
+        for the `exec` that carries the kill, so the runaway survives a code path that looks
+        like it stopped it.
+        """
+        ahead = {"seconds": 0.0}
+
+        class _SlowPidRead(_GuestThatRecordsTheKill):
+            async def read_file(self, path: str, *, working_directory: str, max_bytes: int):
+                if path == _LAYOUT.pid:
+                    ahead["seconds"] += host_tools_over_exec._FINAL_READ_GRACE + 1.0
+                return await super().read_file(
+                    path, working_directory=working_directory, max_bytes=max_bytes
+                )
+
+        guest = _SlowPidRead([], finish=False)
+        with pytest.MonkeyPatch.context() as patched:
+            patched.setattr(host_tools_over_exec, "time", _Shifted(time.monotonic, ahead))
+            with pytest.raises(SandboxProgramTimeout):
+                _run(guest, HostToolRun(_registry()), timeout=0.2)
+
+        assert guest.kills != [], f"the read spent the kill's budget: {guest.commands}"
+
+    def test_the_starting_leg_returns_a_run_that_finished(self):
+        """A lost `exec` reply is not a lost run, and a finished pid may belong to a stranger.
+
+        Reachable when the launcher had time to run to completion but its `exec` reply did not
+        arrive. The marker settles it: the program is done, so its exit code is the answer and
+        signalling by a pid that may already have been reused would reach something else.
+        """
+
+        class _FinishedButTheExecRanOut(_GuestThatRecordsTheKill):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                self.commands.append(str(command))
+                if "kill" in str(command):
+                    return ExecResult(stdout="", exit_code=0)
+                # The program ran and left both facts behind; only the reply was lost.
+                self.files[_LAYOUT.pid] = b"4242"
+                self.files[_LAYOUT.exit_code] = b"0"
+                raise TimeoutError
+
+        guest = _FinishedButTheExecRanOut([], finish=False)
+        finished = _run(guest, HostToolRun(_registry()), timeout=30.0)
+
+        assert finished.exit_code == 0, "a run that finished was reported as a timeout"
+        assert guest.kills == [], f"a finished run was killed by pid: {guest.commands}"
+
+    def test_a_run_that_failed_for_another_reason_is_still_stopped(self):
+        """The kill belongs to every exit, not only to the ones the transport itself reports.
+
+        A backend failing mid-run leaves a detached program nobody has stopped — and the
+        cleanup is about to remove the pid, output and exit marker that would have identified
+        it, so nothing later can find it either.
+        """
+
+        class _DiesMidRun(_GuestThatRecordsTheKill):
+            async def stat_file(self, path: str, *, working_directory: str):
+                if path == _LAYOUT.exit_code:
+                    raise PermissionError("the daemon said no")
+                return await super().stat_file(path, working_directory=working_directory)
+
+        guest = _DiesMidRun([], finish=False)
+        with pytest.raises(PermissionError):
+            _run(guest, HostToolRun(_registry()), timeout=5.0)
+
+        assert guest.kills != [], f"a failed run left its program running: {guest.commands}"
+
+    def test_a_backends_own_program_timeout_is_not_this_runs_own(self):
+        """`SandboxProgramTimeout` is public, so a backend may raise one for a bound of its own.
+
+        Deciding on the type alone reads that as this supervisor's timeout — already stopped
+        and reported — so the emergency stop is skipped and the reclaim then removes the pid
+        that was the only handle on a program still going. Provenance has to decide it, not
+        `isinstance`.
+        """
+
+        class _RaisesTheSharedType(_GuestThatRecordsTheKill):
+            async def stat_file(self, path: str, *, working_directory: str):
+                if path == _LAYOUT.exit_code:
+                    raise SandboxProgramTimeout("a bound of the backend's own")
+                return await super().stat_file(path, working_directory=working_directory)
+
+        guest = _RaisesTheSharedType([], finish=False)
+        with pytest.raises(SandboxProgramTimeout) as raised:
+            _run(guest, HostToolRun(_registry()), timeout=5.0)
+
+        assert "a bound of the backend's own" in str(raised.value), "the run's reason was lost"
+        assert guest.kills != [], f"a backend's timeout skipped the stop: {guest.commands}"
+
+    def test_the_transport_will_not_remove_a_work_directory_beneath_it(self):
+        """The other direction: `work` under the transport's own directory goes with it.
+
+        One-directional confinement passes this layout — the transport directory is not inside
+        `work` — and `rm -rf` on it takes the model's files and every artifact anyway.
+        """
+        run = "/maf-sandbox/work/run-1"
+        served = f"{run}/host_tools"
+        nested = GuestRunLayout(
+            directory=run,
+            work=f"{served}/work",
+            program=f"{served}/program.py",
+            shim=f"{served}/{SHIM_MODULE}",
+            launcher=f"{served}/run_program.sh",
+            calls=f"{served}/{CALLS_DIRECTORY}",
+            output=f"{served}/program_output.txt",
+            exit_code=f"{served}/program_exit_code",
+            pid=f"{served}/program_pid",
+        )
+        guest = _GuestThatRecordsRemovals([], finish=True)
+        asyncio.run(
+            host_tools_over_exec._reclaim_the_transports_own(
+                guest, nested, until=time.monotonic() + 5.0
+            )
+        )
+        assert guest.removals == [], f"the model's directory went with it: {guest.commands}"
+
+    def test_the_transport_will_not_remove_the_model_s_own_directory(self):
+        """Confinement to the run is not enough, because `work` is inside the run.
+
+        A layout whose shim sits in `work` makes the transport's cleanup delete the files a
+        kind shared in and every artifact it is about to collect — on the success path, where
+        nothing else would look wrong.
+        """
+        run = "/maf-sandbox/work/run-1"
+        collapsed = GuestRunLayout(
+            directory=run,
+            work=f"{run}/work",
+            program=f"{run}/work/program.py",
+            shim=f"{run}/work/{SHIM_MODULE}",
+            launcher=f"{run}/work/run_program.sh",
+            calls=f"{run}/work/{CALLS_DIRECTORY}",
+            output=f"{run}/work/program_output.txt",
+            exit_code=f"{run}/work/program_exit_code",
+            pid=f"{run}/work/program_pid",
+        )
+        guest = _GuestThatRecordsRemovals([], finish=True)
+        asyncio.run(
+            host_tools_over_exec._reclaim_the_transports_own(
+                guest, collapsed, until=time.monotonic() + 5.0
+            )
+        )
+        assert guest.removals == [], f"the model's directory was removed: {guest.commands}"
+
+
+class TestAPidAndALayoutThatCannotBeUsed:
+    def test_a_pid_too_large_to_read_hedges_rather_than_going_quiet(self):
+        """`absent` means no pid file; an oversized one is a file that exists and cannot be used.
+
+        The read returns a sentinel rather than a string for anything over the cap. Collapsing
+        that into `absent` would let a guest padding the file past 32 bytes opt out of both the
+        signal and the mention of it, so it reports as a pid that cannot be used.
+        """
+
+        class _OversizedPid(_GuestThatRecordsTheKill):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                self.commands.append(str(command))
+                if "kill" in str(command):
+                    return ExecResult(stdout="", exit_code=0)
+                self.files[_LAYOUT.pid] = b"4" * 4096
+                raise TimeoutError
+
+        guest = _OversizedPid([], finish=False)
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=30.0)
+
+        assert guest.kills == []
+        assert "may still be running" in str(expired.value), str(expired.value)
+
+    def test_a_layout_that_scatters_the_transports_files_is_refused(self):
+        """The directory to delete is inferred from `shim`, so the rest must agree with it.
+
+        A layout that puts the exit marker elsewhere would have this remove a directory holding
+        only some of what it owns, and leave the rest behind — wrong in both directions at once.
+        """
+        run = "/maf-sandbox/work/run-1"
+        served = f"{run}/host_tools"
+        scattered = GuestRunLayout(
+            directory=run,
+            work=f"{run}/work",
+            program=f"{served}/program.py",
+            shim=f"{served}/{SHIM_MODULE}",
+            launcher=f"{served}/run_program.sh",
+            calls=f"{served}/{CALLS_DIRECTORY}",
+            output=f"{served}/program_output.txt",
+            # Somewhere else entirely: the transport owns it and would not remove it.
+            exit_code=f"{run}/elsewhere/program_exit_code",
+            pid=f"{served}/program_pid",
+        )
+        guest = _GuestThatRecordsRemovals([], finish=True)
+        asyncio.run(
+            host_tools_over_exec._reclaim_the_transports_own(
+                guest, scattered, until=time.monotonic() + 5.0
+            )
+        )
+        assert guest.removals == [], f"a scattered layout was still removed: {guest.commands}"
+
+    def test_a_layout_the_factory_built_is_not_refused(self):
+        """The guard above must not reject the shape every kind actually uses."""
+        guest = _GuestThatRecordsRemovals([], finish=True)
+        asyncio.run(
+            host_tools_over_exec._reclaim_the_transports_own(
+                guest, _LAYOUT, until=time.monotonic() + 5.0
+            )
+        )
+        assert len(guest.removals) == 1, guest.commands
+
+    def test_a_run_whose_files_sit_outside_it_is_not_reported_reclaimed(self):
+        """`reclaim_run` answers for the run, so the run has to be inside what it removes.
+
+        A layout placing `work` elsewhere would have the removal succeed and the answer come
+        back `True`, while the model's files stayed readable — and `True` is what tells a
+        caller there is nothing to escalate.
+        """
+        elsewhere = GuestRunLayout(
+            directory="/maf-sandbox/work/run-1",
+            work="/maf-sandbox/work/somewhere-else",
+            program="/maf-sandbox/work/run-1/host_tools/program.py",
+            shim=f"/maf-sandbox/work/run-1/host_tools/{SHIM_MODULE}",
+            launcher="/maf-sandbox/work/run-1/host_tools/run_program.sh",
+            calls=f"/maf-sandbox/work/run-1/host_tools/{CALLS_DIRECTORY}",
+            output="/maf-sandbox/work/run-1/host_tools/program_output.txt",
+            exit_code="/maf-sandbox/work/run-1/host_tools/program_exit_code",
+            pid="/maf-sandbox/work/run-1/host_tools/program_pid",
+        )
+        guest = _GuestThatRecordsRemovals([], finish=True)
+        assert asyncio.run(reclaim_run(guest, elsewhere, timeout=5.0)) is False
+        assert guest.removals == [], f"a run with files outside it was removed: {guest.commands}"
+
+    def test_an_empty_pid_file_hedges_rather_than_going_quiet(self):
+        """A zero-length entry is a pid that was recorded and cannot be used.
+
+        The read answers `None` for a missing entry, an empty one and a directory alike, so
+        reading its answer alone would let a guest truncate the file and opt out of the signal
+        and — on the launcher-`exec` leg — of being mentioned at all.
+        """
+
+        class _EmptyPidFile(_GuestThatRecordsTheKill):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                self.commands.append(str(command))
+                if "kill" in str(command):
+                    return ExecResult(stdout="", exit_code=0)
+                self.files[_LAYOUT.pid] = b""
+                raise TimeoutError
+
+        guest = _EmptyPidFile([], finish=False)
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=30.0)
+
+        assert guest.kills == []
+        assert "may still be running" in str(expired.value), str(expired.value)
+
+    @pytest.mark.parametrize("bad", [0.0, -1.0, float("inf"), float("nan")])
+    def test_reclaim_run_refuses_a_timeout_that_would_not_bound_it(self, bad: float):
+        """An infinite bound reaches the backend's own `exec`, where it means never returning.
+
+        The other public entry points in this module validate the same way, and this one is a
+        `finally`-path call — a caller that hangs here loses the run's own result too.
+        """
+        guest = _GuestThatRecordsRemovals([], finish=True)
+        with pytest.raises(ValueError, match="finite positive number"):
+            asyncio.run(reclaim_run(guest, _LAYOUT, timeout=bad))
+        assert guest.removals == []
+
+    @pytest.mark.parametrize("bad", [0.0, -1.0, float("inf"), float("nan")])
+    def test_reclaim_run_checks_its_timeout_before_the_layout(self, bad: float):
+        """Validation of an argument may not depend on whether a different one is any good.
+
+        A layout with files outside the run is *answered* `False`, and that is a retention
+        failure a caller escalates. Judged first, it would have a bad `timeout` come back as
+        one of those rather than as the programming error it is — and the escalation a caller
+        then performs is a sandbox disposal earned by nothing.
+        """
+        elsewhere = GuestRunLayout(
+            directory="/maf-sandbox/work/run-1",
+            work="/maf-sandbox/work/somewhere-else",
+            program="/maf-sandbox/work/run-1/host_tools/program.py",
+            shim=f"/maf-sandbox/work/run-1/host_tools/{SHIM_MODULE}",
+            launcher="/maf-sandbox/work/run-1/host_tools/run_program.sh",
+            calls=f"/maf-sandbox/work/run-1/host_tools/{CALLS_DIRECTORY}",
+            output="/maf-sandbox/work/run-1/host_tools/program_output.txt",
+            exit_code="/maf-sandbox/work/run-1/host_tools/program_exit_code",
+            pid="/maf-sandbox/work/run-1/host_tools/program_pid",
+        )
+        guest = _GuestThatRecordsRemovals([], finish=True)
+        with pytest.raises(ValueError, match="finite positive number"):
+            asyncio.run(reclaim_run(guest, elsewhere, timeout=bad))
+        assert guest.removals == []
+
+    def test_a_pid_the_host_could_not_look_for_claims_nothing_about_a_program(self):
+        """A failed stat is evidence of neither a started program nor an absent one.
+
+        The launcher-`exec` leg reports each state differently, so collapsing "could not look"
+        into "a pid was there and could not be signalled" would have a backend hiccup assert
+        that a program is running.
+        """
+
+        class _CannotStatThePid(_GuestThatRecordsTheKill):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                self.commands.append(str(command))
+                if "kill" in str(command):
+                    return ExecResult(stdout="", exit_code=0)
+                raise TimeoutError
+
+            async def stat_file(self, path: str, *, working_directory: str):
+                if path == _LAYOUT.pid:
+                    raise PermissionError("the daemon said no")
+                return await super().stat_file(path, working_directory=working_directory)
+
+        guest = _CannotStatThePid([], finish=False)
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=30.0)
+
+        message = str(expired.value)
+        assert "could not be established" in message, message
+        assert "(it had started the program" not in message, message
+
+
+class TestWhatACallerCanBranchOn:
+    """`signal` carries the outcome, so acting on it needs no match against the message."""
+
+    @pytest.mark.parametrize(
+        ("pid", "kill_exit_code", "expected"),
+        [
+            pytest.param("4242", 0, "sent", id="sent"),
+            pytest.param("4242", 1, "refused", id="a-signal-that-did-not-land"),
+            pytest.param(None, 0, "unrecorded", id="no-pid-after-the-launcher-returned"),
+        ],
+    )
+    def test_the_outcome_reaches_the_caller(self, pid, kill_exit_code, expected):
+        guest = _GuestThatRecordsTheKill([], finish=False, pid=pid, kill_exit_code=kill_exit_code)
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert expired.value.signal == expected
+
+    def test_a_launcher_that_ran_out_may_still_have_started_something(self):
+        """A missing pid on this leg is not evidence that nothing is running.
+
+        The launcher backgrounds the interpreter and publishes the pid on the line after, so an
+        `exec` that expires between the two leaves a program running and nothing to point at.
+        Reported as `absent` — the one outcome documented as needing nothing further — a caller
+        would be told to walk away from a sandbox that is still executing.
+        """
+
+        class _BoundsTheStart(_ScriptedGuest):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                raise TimeoutError
+
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(_BoundsTheStart([], finish=False), HostToolRun(_registry()), timeout=30.0)
+        assert expired.value.signal == "unknown"
+
+    def test_only_the_leg_that_never_reached_a_launcher_says_nothing_started(self):
+        """`absent` has to stay reachable, or the one safe-to-ignore outcome describes nothing.
+
+        Here the run's budget goes on the upload, so no launcher ever ran and nothing can have
+        started. This is the only leg entitled to say so.
+        """
+
+        class _StallsOnTheUpload(_ScriptedGuest):
+            async def write_file(self, path: str, content: str | bytes) -> None:
+                await asyncio.sleep(3600)
+
+        with pytest.raises(SandboxProgramTimeout) as gone:
+            _run(_StallsOnTheUpload([], finish=False), HostToolRun(_registry()), timeout=0.1)
+        assert gone.value.signal == "absent"
+
+    def test_an_exception_raised_by_anything_else_claims_nothing(self):
+        """The default answers for callers who never passed a fate, so it must assert none.
+
+        This type is public and a `TimeoutError` subclass, so a kind or a host raising it for a
+        transport of its own passes a message and stops there. A default of `absent` would have
+        every one of those tell a handler that no program was started and no disposal is owed —
+        the one conclusion in this vocabulary that ends the matter, made by omission.
+        """
+        assert SandboxProgramTimeout("a run of someone else's").signal == "unknown"
+
+    def test_the_message_and_the_attribute_cannot_drift(self):
+        """The prose is generated from the same value, so one cannot contradict the other."""
+        guest = _GuestThatRecordsTheKill([], finish=False, kill_exit_code=1)
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert expired.value.signal == "refused"
+        assert host_tools_over_exec._NOT_SIGNALLED in str(expired.value)

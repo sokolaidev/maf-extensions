@@ -31,10 +31,16 @@ Three costs, named here rather than discovered later:
   calls concurrently has the second answered only after the first. Concurrent means threads
   *and* processes: the shim claims each number with an exclusive create, so a program that
   forks or spawns cannot have two workers writing one request path.
-- **The files outlive the call.** Nothing in the protocol deletes, so requests and responses
-  sit in the guest filesystem until the sandbox is disposed of. A fresh per-run directory is
-  what keeps one run's traffic out of the next one's; it is the caller's to provide, and
-  :func:`guest_run_layout` names the paths inside it.
+- **Cleanup is this transport's own doing, because the protocol offers none.** Nothing in the
+  vocabulary deletes, so the files a run leaves would sit in the guest until the sandbox was
+  disposed of — readable by every later run in it, since ``acquire`` is get-or-create. What
+  removes them is ``rm`` over the ``exec`` the dispatch path already requires, which works
+  here and is not a general answer: a guest without a POSIX shell has no cleanup at all
+  (#438). :func:`dispatch_over_exec` reclaims the directory it owns on every exit path;
+  :attr:`GuestRunLayout.work` is the caller's, because artifacts are collected after this
+  returns, and :func:`reclaim_run` is what a kind calls for it. A fresh per-run directory is
+  still required — it is what keeps one run's traffic out of the next one's while both are
+  live, and it is the caller's to provide.
 """
 
 from __future__ import annotations
@@ -49,12 +55,12 @@ import symtable
 import time
 import unicodedata
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from ._error_detail import error_detail
 from ._outputs import SandboxTransferCapExceeded
 from ._protocol import EntryKind, ExecResult
-from .paths import confine_guest_path
+from .paths import confine_guest_path, guest_path_relative_to
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Mapping
@@ -78,6 +84,12 @@ EXIT_FILE = "program_exit_code"
 #: which is the only kind the refusal guards.
 _STAGED_EXIT_FILE = f"{EXIT_FILE}.part"
 
+#: Where the launcher records the program's process id, so a run that overruns can be stopped
+#: rather than left going. Staged and renamed like the exit marker and for the same reason: a
+#: reader must never see the empty file a redirection leaves for a moment.
+PID_FILE = "program_pid"
+_STAGED_PID_FILE = f"{PID_FILE}.part"
+
 #: The module a guest program imports to reach the host. Written beside the program.
 SHIM_MODULE = "maf_host_tools.py"
 
@@ -95,7 +107,16 @@ _TRANSPORT_DIRECTORY = "host_tools"
 #: directories are what make a guest-supplied name harmless, and that is what replaced the
 #: list of names a kind used to have to refuse.
 _TRANSPORT_FILENAMES = frozenset(
-    {SHIM_MODULE, _LAUNCHER, OUTPUT_FILE, EXIT_FILE, _STAGED_EXIT_FILE, CALLS_DIRECTORY}
+    {
+        SHIM_MODULE,
+        _LAUNCHER,
+        OUTPUT_FILE,
+        EXIT_FILE,
+        _STAGED_EXIT_FILE,
+        PID_FILE,
+        _STAGED_PID_FILE,
+        CALLS_DIRECTORY,
+    }
 )
 
 #: Module names a ``program`` may not be called, and why they are matched by **stem**.
@@ -199,22 +220,75 @@ def _module_a_program_answers_to(program: str) -> str | None:
     return head if suffix in _LOADER_SUFFIXES else None
 
 
+#: What :class:`SandboxProgramTimeout` reports about the program it was raised for. Public,
+#: because acting on it is a caller's business and matching the message text is not an
+#: interface. :data:`_Fate` is the same vocabulary, kept private only for the internal plumbing.
+SignalOutcome = Literal["sent", "refused", "absent", "unrecorded", "unknown"]
+
+
 class SandboxProgramTimeout(TimeoutError):
     """The *run's own* bound expired: the guest program did not finish in the time it was given.
 
     A :class:`TimeoutError` subclass, so a caller that only wants "it timed out" is unaffected.
     Catch it specifically to distinguish the two things a ``TimeoutError`` from this transport
-    can mean: **this** one is the run's budget, and the program may still be running; a bare
-    one is a backend failing for a reason of its own and says nothing about the program.
+    can mean: **this** one is the run's budget; a bare one is a backend failing for a reason of
+    its own and says nothing about the program.
+
+    ``signal`` is what the transport managed to do about the program, and it is the thing to
+    branch on — the message says the same in prose, but prose is not an interface:
+
+    - ``"sent"`` — a ``SIGKILL`` reached the pid. Not a promise the program is gone: the
+      kernel can discard it, the pid is read from a file the program can rewrite, and children
+      are never signalled.
+    - ``"refused"`` — a pid was recorded and the signal did not land. Not evidence that a
+      program is running: the same value covers a pid too malformed to aim at, a pid the host
+      could not read, and a ``kill`` that reported no such process because the program had
+      already exited. What it says is that this transport did not stop anything.
+    - ``"absent"`` — the run ended before any launcher ran, so no program was started and
+      none is running. It says nothing about *files*: a kind writes the program, the shim and
+      the model's shared-in files into the run directory before dispatching, so
+      :func:`reclaim_run` is owed here exactly as it is on every other outcome.
+    - ``"unrecorded"`` — the launcher returned and no pid ever appeared. The launcher may have
+      failed before publishing one, so this is not evidence of a running program either — it
+      is the absence of any handle on whether there is one.
+    - ``"unknown"`` — the host could not establish which of those it was: the pid could not be
+      read, or the launcher's own call expired between starting the program and publishing its
+      pid. Evidence of neither, and the only honest answer for that window.
+
+    Only ``"absent"`` says a program was never started. **None of the others confirms one was
+    stopped, and none confirms one is running** — not even ``"sent"``, for the reasons above.
+    They are degrees of not knowing, so a host that needs termination rather than a best
+    effort applies its own policy on top, and disposing the sandbox is what that policy has to
+    reach for.
+
+    ``signal`` defaults to ``"unknown"``, and deliberately: the exception is public, so code
+    raising it for a transport of its own passes a message and no fate at all. The default
+    answers for those, and ``"absent"`` — the one value a host may act on by walking away — is
+    not a claim anything should make by omission.
 
     ``output`` is what the program had printed when the run was given up on, already capped —
     empty on the two starting legs, where there is nothing to have read yet. An attribute
     rather than message text, so a caller can surface the program's own stdout alone.
     """
 
-    def __init__(self, message: str, *, output: str = "") -> None:
+    def __init__(
+        self, message: str, *, output: str = "", signal: SignalOutcome = "unknown"
+    ) -> None:
         super().__init__(message)
         self.output = output
+        self.signal = signal
+
+
+class _TheRunsOwnTimeout(SandboxProgramTimeout):
+    """The timeout this supervisor raised, told apart from one it merely caught.
+
+    :class:`SandboxProgramTimeout` is public and documented as constructible elsewhere, so a
+    :class:`~maf_sandbox.Sandbox` implementation may raise one from a call of its own. Deciding
+    on the type alone would read that as this run's own bound — already stopped and reported —
+    and the cleanup would skip the signal, then remove the pid that was the only handle on a
+    program still going. Callers catch the public type and are never handed this name; it
+    exists so the cleanup can tell whose timeout it is holding.
+    """
 
 
 #: How long the guest blocks on one call before giving up on the host, and how often it looks.
@@ -230,6 +304,13 @@ _GUEST_POLL_SECONDS = 0.05
 #: quotes, a finished run's output, and the last look for an exit marker. Shrinking it narrows
 #: a *returned* result's window, not only a diagnostic's.
 _FINAL_READ_GRACE = 2.0
+
+#: What the cleanup gets, on top of a run's own budget. Its own grace for the reason the final
+#: read has one: by the time it runs the remainder is zero on every path that matters, and a
+#: cleanup given no time is no cleanup — which here means a run's files stay readable by the
+#: next run in the same sandbox. Longer than the final read because a recursive delete of a
+#: run that wrote a lot is slower than one stat.
+_RECLAIM_GRACE = 10.0
 
 #: What writing one answer may spend when the run's own bound has already passed. Small, and
 #: not the run's remainder: a dispatch may finish after the deadline by design, and the answer
@@ -278,6 +359,7 @@ class GuestRunLayout:
     calls: str
     output: str
     exit_code: str
+    pid: str
 
 
 def guest_run_layout(run_directory: str, *, program: str = "program.py") -> GuestRunLayout:
@@ -374,6 +456,7 @@ def guest_run_layout(run_directory: str, *, program: str = "program.py") -> Gues
         calls=posixpath.join(served, CALLS_DIRECTORY),
         output=posixpath.join(served, OUTPUT_FILE),
         exit_code=posixpath.join(served, EXIT_FILE),
+        pid=posixpath.join(served, PID_FILE),
     )
 
 
@@ -581,8 +664,9 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
 
     Detached is the whole point — ``exec`` blocks until its command returns, so a program that
     waits for the host would deadlock against a supervisor that has not started. The launcher
-    returns immediately and leaves two facts behind: the program's output, and its exit code in
-    a file whose appearance is what tells the supervisor the run is over.
+    returns immediately and leaves three facts behind: the program's output, its exit code in
+    a file whose appearance is what tells the supervisor the run is over, and its pid, which is
+    what a run that overruns is stopped by.
 
     POSIX shell, and a guest that has ``nohup``. A Windows guest or a distroless image needs a
     different launcher; that is a backend's business, and this one is a helper rather than a
@@ -600,6 +684,9 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
     #     cheapest way to know the rename stays inside one filesystem and so stays atomic.
     #   * `nohup … &`, because `exec` returns when its command does and the program must
     #     outlive it — see this function's docstring.
+    #   * The interpreter runs in the background so `$!` is the program's own pid and not the
+    #     wrapper shell's; `wait $!` restores it to the foreground, which is what keeps `$?`
+    #     the program's status. The pid lands by rename for the reason the exit code does.
     #   * `mkdir -p` because a run whose kind shared no files has nothing else to create the
     #     work directory, guarded because `sh` does not stop on a failed command: an unguarded
     #     `cd` leaves the program running wherever the launcher was exec'd, writing artifacts
@@ -621,6 +708,7 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
     #     caught; `PYTHONHOME` pointed here breaks the guest outright rather than substituting
     #     anything, so it is left alone. The README's upgrade note has what this costs an image.
     staged = f"{layout.exit_code}.part"
+    staged_pid = f"{layout.pid}.part"
     # The shim's own directory, which is the one an import has to reach; `program` is beside
     # it by construction, and reading it from the shim keeps the two from being separated.
     importable = posixpath.dirname(layout.shim)
@@ -630,7 +718,9 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
     enclosing = _quote(layout.directory.rstrip("/"))
     inner = (
         f"PYTHONUNBUFFERED=1 PYTHONNOUSERSITE=1 {_quote(interpreter)} {_quote(layout.program)} "
-        f"> {_quote(layout.output)} 2>&1; "
+        f"> {_quote(layout.output)} 2>&1 & "
+        f"printf %s $! > {_quote(staged_pid)}; mv {_quote(staged_pid)} {_quote(layout.pid)}; "
+        f"wait $!; "
         f"printf %s $? > {_quote(staged)}; mv {_quote(staged)} {_quote(layout.exit_code)}"
     )
     return (
@@ -700,17 +790,29 @@ async def dispatch_over_exec(
         poll_interval: How often to look for the next request or the exit marker.
         interpreter: The guest's Python.
 
+    Attempts to remove the transport's own directory before returning, on every exit path.
+    A removal the guest refuses is logged and nothing else — the call still returns what it
+    was going to — so those files stay readable by later runs in the same sandbox.
+    :attr:`GuestRunLayout.work` is left for the caller, which collects artifacts from it after
+    this returns and reclaims it with :func:`reclaim_run`.
+
     Returns:
         The program's own :class:`~maf_sandbox.ExecResult` — its redirected output as
         ``stdout`` and the exit code it recorded.
 
     Raises:
         SandboxProgramTimeout: The run's own bound expired. Where the program had started,
-            its output up to that point is in the message and on ``output``, and the process
-            may still be running — disposing of the sandbox is what stops it. On the two
-            starting legs, the launcher upload and the ``exec`` that runs it, ``output`` is
-            empty instead: the output file does not exist yet, and on a backend that
-            began the command before its own call returned there may be output nobody read.
+            its output up to that point is in the message and on ``output``, and the program
+            has been *sent* a ``SIGKILL`` where one could be sent — by pid, over ``exec``,
+            which is why no capability beyond the ones this transport already needs is
+            involved. Neither half is a guarantee the program is gone: the signal may not have
+            been sent at all (no pid was recorded, or the ``exec`` carrying it failed), and a
+            sent one may be discarded by the kernel, aimed at a pid the program rewrote, or
+            leave children running. The message says which of the two happened, and disposing
+            of the sandbox is what stops what remains. On the two starting legs, the launcher upload and the ``exec`` that
+            runs it, ``output`` is empty instead: the output file does not exist yet, and on a
+            backend that began the command before its own call returned there may be output
+            nobody read — so the kill is attempted on the second of those legs too.
             Distinct from a bare ``TimeoutError`` below, which is a backend failing for a
             reason of its own and says nothing about whether the program is still going.
         Exception: Whatever the backend raises from a stat or a read that is not a file
@@ -761,6 +863,52 @@ async def dispatch_over_exec(
         )
     # Before `exec`, not after: the bound is on the whole program, and a launcher that takes
     # most of it would otherwise hand supervision a second full timeout to spend.
+    # Validated before the wrapper, so a bad argument raises plainly. The run directory is
+    # then left alone, which is the right way round: the caller has already written the
+    # program and the shim into it and has not yet been told the call is going nowhere.
+    handled = False
+    try:
+        result = await _supervise(
+            sandbox,
+            run,
+            layout,
+            timeout=timeout,
+            poll_interval=poll_interval,
+            interpreter=interpreter,
+        )
+        handled = True
+        return result
+    except _TheRunsOwnTimeout:
+        # This run's own bound, which `_supervise` has already stopped the program for and
+        # reported. Deliberately not the public type: a backend raising one of those is a
+        # program nobody stopped, and it belongs on the path below with every other failure.
+        handled = True
+        raise
+    finally:
+        # Every exit path: the value returned, the timeout raised, and whatever a backend
+        # raised for reasons of its own. A successful run leaves exactly as much behind as
+        # a failed one, and it is the common case.
+        #
+        if not handled:
+            # `_supervise` reports its own timeouts and stops the program itself. Anything else
+            # leaving this function — a backend failing mid-run — leaves a detached program
+            # nobody has stopped, and the reclaim below is about to remove the files that would
+            # have identified it.
+            if await _marker_if_present(sandbox, layout, _a_grace_from_now()) is None:
+                await _stop_the_program(sandbox, layout, until=_a_grace_from_now())
+        await _reclaim_the_transports_own(sandbox, layout, until=time.monotonic() + _RECLAIM_GRACE)
+
+
+async def _supervise(
+    sandbox: Sandbox,
+    run: HostToolRun,
+    layout: GuestRunLayout,
+    *,
+    timeout: float,
+    poll_interval: float,
+    interpreter: str,
+) -> ExecResult:
+    """The body of :func:`dispatch_over_exec`, minus the cleanup that wraps it."""
     deadline = time.monotonic() + timeout
     try:
         await _within(
@@ -771,8 +919,12 @@ async def dispatch_over_exec(
     except _DeadlineExpired as gone:
         # The one `_within` outside the supervisor loop, so nothing else converts what it
         # raises, and a module-private type would otherwise cross the public boundary.
-        raise SandboxProgramTimeout(
-            f"the run's {timeout:g}s were gone before the program was started — {gone}"
+        raise _TheRunsOwnTimeout(
+            f"the run's {timeout:g}s were gone before the program was started — {gone}",
+            # Explicit, though it is also what a bare construction would say least of: this is
+            # the one leg that never ran a launcher, so it is the only one entitled to claim
+            # that nothing was started.
+            signal="absent",
         ) from gone
     try:
         started = await sandbox.exec(
@@ -788,11 +940,36 @@ async def dispatch_over_exec(
         # `TimeoutError` from it, without re-reading a clock that may be a resolution behind
         # the timer that fired. The backend's own text stays in the log for the same reason it
         # does in `_completed`: this message reaches a model through whichever kind is running.
+        # The launcher backgrounds the program and returns, so an `exec` that ran out may
+        # still have started one, and this leg is reachable only once the launcher had time to
+        # run — so the marker is read before anything is concluded, which is also the order
+        # `_stop_the_program` requires.
+        landed = await _marker_if_present(sandbox, layout, _a_grace_from_now())
+        if landed is not None:
+            # The marker is proof the program finished, so what ran out was the reply and not
+            # the run. Raising here would discard an exit code already in hand; the supervisor
+            # loop makes the same recovery when a call runs out on top of a landed marker.
+            logger.warning(
+                "host tools: the run finished, but the call that started it had already run "
+                "out: %s",
+                error_detail(spent),
+            )
+            return await _completed(sandbox, run, layout, landed, deadline)
+        # `exec` was handed this run's remainder, so its expiry is this run's — every
+        # `TimeoutError` from it, without re-reading a clock that may be a resolution behind
+        # the timer that fired. The backend's own text stays in the log for the same reason it
+        # does in `_completed`: this message reaches a model through whichever kind is running.
         logger.warning(
             "host tools: the run ran out while starting the program: %s", error_detail(spent)
         )
-        raise SandboxProgramTimeout(
+        # A grace of its own, measured after the marker read rather than shared with it.
+        fate = _nothing_is_proven(
+            await _stop_the_program(sandbox, layout, until=_a_grace_from_now())
+        )
+        raise _TheRunsOwnTimeout(
             f"the run's {timeout:g}s were gone while starting the program"
+            f"{_clause_while_starting(fate)}",
+            signal=fate,
         ) from spent
     if started.exit_code != 0:
         return ExecResult(
@@ -819,10 +996,18 @@ async def dispatch_over_exec(
             if landed is not None:
                 return await _completed(sandbox, run, layout, landed, deadline)
             printed, note = await _final_output(sandbox, run, layout, giving_up)
-            raise SandboxProgramTimeout(
-                f"the guest program did not finish within {timeout:g}s. "
+            # Output first, so the program's own words are off the guest before it dies — but
+            # on a fresh grace, because the reads above can spend `giving_up` entirely and a
+            # kill with nothing left to spend is the runaway this path exists to stop.
+            fate = _started_something(
+                await _stop_the_program(sandbox, layout, until=_a_grace_from_now())
+            )
+            raise _TheRunsOwnTimeout(
+                f"the guest program did not finish within {timeout:g}s"
+                f"{_clause_after_the_launcher_started(fate)}. "
                 f"{_output_clause(printed, note)}",
                 output=printed[:2000],
+                signal=fate,
             )
         try:
             finished = await _read_if_present(
@@ -861,14 +1046,341 @@ async def dispatch_over_exec(
             # out while still leading with the failure the caller asked about. A backend's own
             # `TimeoutError` is deliberately not caught here — see `_within`.
             printed, note = await _final_output(sandbox, run, layout, giving_up)
-            raise SandboxProgramTimeout(
-                f"the guest program did not finish within {timeout:g}s — {stalled}. "
+            fate = _started_something(
+                await _stop_the_program(sandbox, layout, until=_a_grace_from_now())
+            )
+            failure = f"{stalled}{_clause_after_the_launcher_started(fate)}"
+            raise _TheRunsOwnTimeout(
+                f"the guest program did not finish within {timeout:g}s — {failure}. "
                 f"{_output_clause(printed, note)}",
                 output=printed[:2000],
+                signal=fate,
             ) from stalled
         # Clamped: an unclamped sleep overruns the deadline by a whole interval, so a 0.1s
         # bound with a 10s interval would wait ten seconds to notice it had passed.
         await asyncio.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
+
+
+#: What :func:`_stop_the_program` did — not what became of the program, which this host cannot
+#: see. ``SIGKILL`` is accepted for a process that then survives it: a pid the guest chose, or
+#: pid 1 in the guest's own namespace, both make ``kill`` exit 0 while the target lives. So the
+#: strongest of these means *signalled*, and the docs say what that is and is not worth.
+#:
+#: The three that are not ``"sent"`` are kept apart because one leg reports them
+#: differently. ``"absent"`` is *no pid file at all*, so nothing was started; ``"refused"`` is a
+#: pid that exists and could not be used or signalled, so something was; ``"unknown"`` is a host
+#: that could not even look, which is evidence of neither. Collapsing the last two would have a
+#: backend hiccup assert that a program is running.
+_Fate = SignalOutcome
+
+#: Said once, where a program is known to have been started and could not be stopped. Silence
+#: when the kill worked, because a stopped program is what a timeout is supposed to mean and a
+#: caller reading "and was stopped" on every expiry learns nothing from it.
+_SIGNALLED = " and was sent SIGKILL"
+_NOT_SIGNALLED = " and could not be signalled, so it may still be running"
+
+
+def _removable(directory: str) -> bool:
+    """Is ``directory`` specific enough to hand to ``rm -rf``?
+
+    The paths here come from :func:`guest_run_layout`, which already refuses a relative one —
+    so this is not the primary defence, it is the one that still holds if a caller builds a
+    layout by hand. An irreversible recursive delete gets a guard that does not depend on
+    something else having run.
+
+    Two components at minimum, because ``/`` and ``/tmp`` are the shapes that turn a cleanup
+    into an outage, and no run directory this transport is given looks like either.
+    """
+    if not posixpath.isabs(directory) or ".." in directory.split("/"):
+        return False
+    # Counted on the normalised path: `/tmp/.` is two components as written and one as meant,
+    # and the guard has to answer for what the directory *is*.
+    return len([part for part in posixpath.normpath(directory).split("/") if part]) >= 2
+
+
+async def _remove_tree(
+    sandbox: Sandbox, directory: str, *, until: float, inside: str | None = None
+) -> bool:
+    """Delete ``directory`` and everything under it — never a raise.
+
+    There is no delete in the protocol and this needs none: on a POSIX guest the ``EXEC`` the
+    dispatch path already requires is one.
+
+    ``-f`` is what makes an already-gone directory a success; the status is otherwise the
+    guest's own, because a refused removal has to reach the caller as one.
+    """
+    if inside is not None and guest_path_relative_to(directory, inside) is None:
+        logger.warning("host tools: refusing to remove %r — it is not inside %r", directory, inside)
+        return False
+    if not _removable(directory):
+        logger.warning("host tools: refusing to remove %r — it is not a run directory", directory)
+        return False
+    try:
+        removed = await _within(
+            until,
+            "the cleanup",
+            sandbox.exec(
+                f"rm -rf {_quote(directory)}",
+                working_directory=posixpath.dirname(directory) or "/",
+                timeout=max(0.0, until - time.monotonic()),
+            ),
+        )
+    except Exception as refused:  # noqa: BLE001 — an unreclaimed run is a leak, not a fault
+        logger.warning("host tools: could not remove %s: %s", directory, error_detail(refused))
+        return False
+    if removed.exit_code != 0:
+        logger.warning(
+            "host tools: the guest refused to remove %s: exit %d", directory, removed.exit_code
+        )
+        return False
+    return True
+
+
+async def reclaim_run(sandbox: Sandbox, layout: GuestRunLayout, *, timeout: float = 30.0) -> bool:
+    """Remove a whole run — the transport's files and the model's alike.
+
+    **A kind's to call in a ``finally``, after collecting anything it means to keep.** The
+    ordering is the trap: artifacts live in :attr:`GuestRunLayout.work`, so a caller that
+    reclaims before collecting loses them, and :func:`dispatch_over_exec` cannot do this itself
+    for the same reason.
+
+    Raises:
+        ValueError: when ``timeout`` is not a finite positive number of seconds. An infinite one
+            reaches the backend's own ``exec`` bound, where it means this never returns. Checked
+            before the layout, so a bad argument is never answered as a refusal instead.
+
+    Returns:
+        Whether the ``rm`` succeeded — the guest's own status for one command, not a promise
+        the directory stays gone. A program's children are never signalled, so one that
+        outlived the run can write a path back into existence after the removal returns.
+        ``False`` is the load-bearing answer: a data-retention failure rather than a tidiness
+        one — nothing in the protocol deletes and ``acquire`` is get-or-create, so what is left
+        stays readable by every later run in this sandbox — and the caller is expected to
+        escalate, which means disposing the sandbox. ``True`` narrows the window rather than
+        closing it, and a caller that needs the data provably gone disposes either way.
+    """
+    # Before the layout, because this one is the caller's own mistake and the check below
+    # answers `False` — which a caller is told to escalate as a data-retention failure. Reached
+    # in the other order, a bad `timeout` reports as one of those instead of as itself.
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError(f"timeout must be a finite positive number of seconds, not {timeout}")
+    strays = [
+        path
+        for path in (
+            layout.work,
+            layout.program,
+            layout.shim,
+            layout.launcher,
+            layout.calls,
+            layout.output,
+            layout.exit_code,
+            layout.pid,
+        )
+        if guest_path_relative_to(path, layout.directory) is None
+    ]
+    if strays:
+        # Removing the run directory reclaims a run only if the run is inside it. A layout that
+        # puts `work` elsewhere would have this delete something and answer ``True``, while the
+        # model's files stayed readable and the caller was told there was nothing to escalate.
+        logger.warning(
+            "host tools: refusing to reclaim %r — this layout puts %s outside it",
+            layout.directory,
+            ", ".join(sorted(strays)),
+        )
+        return False
+    return await _remove_tree(sandbox, layout.directory, until=time.monotonic() + timeout)
+
+
+def _nothing_is_proven(fate: _Fate) -> _Fate:
+    """`absent` on the leg where the launcher's own ``exec`` ran out proves nothing.
+
+    The launcher backgrounds the interpreter and publishes the pid on the line after, so a call
+    that expires between the two leaves a program running and no pid to show for it. Only the
+    upload leg — which never ran a launcher at all — may say nothing was started.
+    """
+    return "unknown" if fate == "absent" else fate
+
+
+def _started_something(fate: _Fate) -> _Fate:
+    """`absent` on a leg where the launcher returned 0 means the pid never appeared.
+
+    `_stop_the_program` sees a missing pid file and cannot know which of those it is; the two
+    legs inside the supervisor loop can, because reaching them at all means the launcher exited
+    cleanly. Reported as one value, a caller could neither ignore it safely nor escalate on it
+    safely.
+    """
+    return "unrecorded" if fate == "absent" else fate
+
+
+def _clause_after_the_launcher_started(fate: _Fate) -> str:
+    """For the two legs inside the supervisor loop, where the launcher returned 0.
+
+    Anything short of a signal hedges rather than staying quiet: the launcher returned 0, so
+    something started, and between a needless disposal and a silent leak this errs towards the
+    disposal.
+    """
+    return _SIGNALLED if fate == "sent" else _NOT_SIGNALLED
+
+
+def _clause_while_starting(fate: _Fate) -> str:
+    """For the leg where the launcher's own ``exec`` ran out.
+
+    The launcher backgrounds the interpreter and writes the pid down on the line after, so a
+    call that expires between the two leaves a program running and no pid to point at. A
+    missing pid is therefore not evidence of a missing program, and neither is a pid the host
+    failed to read: both hedge rather than claim. ``"absent"`` cannot reach here — the caller
+    maps it through :func:`_nothing_is_proven` — and would earn the same hedge if it did.
+    """
+    if fate == "sent":
+        return f" (it had started the program{_SIGNALLED})"
+    if fate in ("absent", "unknown"):
+        return " (whether it got as far as starting one could not be established)"
+    return f" (it had started the program{_NOT_SIGNALLED})"
+
+
+async def _reclaim_the_transports_own(
+    sandbox: Sandbox, layout: GuestRunLayout, *, until: float
+) -> None:
+    """Remove the sibling directory this transport owns — never a raise.
+
+    Not the run — see :func:`reclaim_run` for the other half. What goes is this side of the
+    split, including every request and response the run exchanged with the host.
+    """
+    # Normalised, because every comparison below decides what a recursive delete gets and
+    # `GuestRunLayout` validates nothing: `/runs/one` and `/runs/one/` are one directory, and
+    # a check that reads them as two answers for the spelling rather than the target.
+    served = posixpath.normpath(posixpath.dirname(layout.shim))
+    scattered = [
+        path
+        for path in (
+            layout.program,
+            layout.launcher,
+            layout.calls,
+            layout.output,
+            layout.exit_code,
+            layout.pid,
+        )
+        if posixpath.normpath(posixpath.dirname(path)) != served
+    ]
+    if scattered:
+        # The directory to delete is inferred from one field, so the others have to agree with
+        # it. A layout that spreads them keeps files this owns while removing a directory that
+        # holds something else — both halves wrong, and silently.
+        logger.warning(
+            "host tools: refusing to remove %r — this layout puts %s outside it",
+            served,
+            ", ".join(sorted(scattered)),
+        )
+        return
+    overlaps = (
+        guest_path_relative_to(served, layout.work) is not None
+        or guest_path_relative_to(layout.work, served) is not None
+    )
+    if overlaps or guest_path_relative_to(served, layout.directory) == "":
+        # Confining to the run is not enough on its own, and neither is one direction: `work`
+        # inside the transport directory is deleted with it just as surely as the other way
+        # round. Either overlap would have this remove the model's files and every artifact a
+        # kind is about to collect — on success, where nothing else would look wrong. The run
+        # itself is caught through the helper rather than by `==`, which answers "not the run"
+        # to every path that spells it differently.
+        logger.warning(
+            "host tools: refusing to remove %r — it is the run itself or holds the model's "
+            "files, so this layout does not separate the two directories",
+            served,
+        )
+        return
+    if not await _remove_tree(sandbox, served, until=until, inside=layout.directory):
+        logger.warning(
+            "host tools: run %s kept its transport files, which hold this run's host-tool "
+            "traffic; they are readable by the next run in this sandbox until it is disposed",
+            layout.directory,
+        )
+
+
+def _a_grace_from_now() -> float:
+    """A deadline for stopping a run, independent of what the diagnostics have spent."""
+    return time.monotonic() + _FINAL_READ_GRACE
+
+
+async def _stop_the_program(sandbox: Sandbox, layout: GuestRunLayout, *, until: float) -> _Fate:
+    """Send the guest program a ``SIGKILL``, and say whether it went — never a raise.
+
+    **Only call this once the exit marker is absent.** That ordering narrows the window in
+    which the pid has already been recycled — it does not close it: the program can exit, be
+    reaped and have its number reissued between that read and this signal. Closing it needs an
+    identity that stays valid through the signal, which is #437; until then a caller may
+    conclude that a signal was sent to that number, not that it reached the run.
+
+    ``SIGKILL`` rather than ``SIGTERM`` — the program has already overrun its only bound, and
+    its output is unbuffered, so there is no flush to wait for.
+
+    **Sending the signal is not seeing it work.** The pid comes from a file the program itself
+    can write, and ``kill`` reports success for a signal the kernel accepts and discards, so a
+    guest that names another process — or pid 1 in its own namespace — survives a call that
+    returns ``"sent"``. Children are not reached either. What a caller may conclude is
+    that the signal was sent; #437 is what would make it more.
+
+    Returns:
+        ``"sent"``, ``"refused"`` when a pid was found and the kill did not land, or
+        ``"absent"`` when no pid was there to use. The last two are kept apart because one leg
+        reports them differently: a pid is the only evidence this transport has that a program
+        was ever started at all.
+    """
+    try:
+        # Stat first, because `_read_if_present` answers `None` for a missing entry, an empty
+        # one and a directory alike — and only the first of those means no program was
+        # recorded. A guest can make the other two, so collapsing them would be an opt-out
+        # from the signal and, on one leg, from being mentioned at all.
+        recorded = await _within(
+            until,
+            "stat the pid",
+            sandbox.stat_file(layout.pid, working_directory=layout.directory),
+        )
+    except Exception as unstattable:  # noqa: BLE001 — a kill must not replace the timeout
+        logger.warning(
+            "host tools: could not look for the program's pid: %s", error_detail(unstattable)
+        )
+        return "unknown"
+    if recorded is None:
+        return "absent"
+    try:
+        running = await _read_if_present(sandbox, layout, layout.pid, cap=32, deadline=until)
+    except Exception as unreadable:  # noqa: BLE001 — a kill must not replace the timeout
+        # The same rule `_marker_if_present` follows, and for the same reason: this runs only
+        # once the run is already being reported as expired, so a backend failing here means
+        # the program could not be stopped, never that the caller loses the run's own reason.
+        logger.warning("host tools: could not read the program's pid: %s", error_detail(unreadable))
+        # Not `absent`: the pid could not be *read*, which is no evidence that none was written.
+        # One leg reports `absent` by saying nothing at all, and silence is the wrong answer to
+        # a program whose fate is unknown.
+        return "refused"
+    pid = running.strip() if isinstance(running, str) else ""
+    # ASCII digits and positive, both load-bearing. `str.isdigit` admits other numeral systems
+    # that `int` then normalises, and `kill -KILL 0` signals the whole process group rather
+    # than one program — and the file is guest-writable, so its contents are not this host's
+    # to trust. A real `$!` is always a positive ASCII integer. An oversized read arrives here
+    # as a sentinel rather than a string, and is unusable in the same way.
+    if not (pid.isascii() and pid.isdigit()) or int(pid) <= 0:
+        return "refused"
+    # Its own deadline, not what is left of the read's: a slow pid read would otherwise leave
+    # the signal no time to be sent, which is the runaway this exists to stop.
+    sending = _a_grace_from_now()
+    try:
+        killed = await _within(
+            sending,
+            "the kill",
+            sandbox.exec(
+                # Only stderr is discarded. `kill` failing — a pid already gone, a signal
+                # refused — has to reach the caller, which reports it as still running.
+                f"kill -KILL {pid} 2>/dev/null",
+                working_directory=layout.directory,
+                timeout=max(0.0, sending - time.monotonic()),
+            ),
+        )
+    except Exception as refused:  # noqa: BLE001 — a failed kill is a leak, not a fault
+        logger.warning("host tools: could not stop the guest program: %s", error_detail(refused))
+        return "refused"
+    return "sent" if killed.exit_code == 0 else "refused"
 
 
 async def _marker_if_present(
@@ -879,6 +1391,14 @@ async def _marker_if_present(
     Called once, on the way to reporting a run as unfinished, so it answers a question rather
     than adding a failure: whatever a backend raises here means the same as nothing being
     there, and the run's own reason is the one worth keeping.
+
+    ``None`` is therefore "no marker was seen", never "no marker exists", and the callers that
+    go on to :func:`_stop_the_program` are meant to act on it as it stands. A look that failed
+    is evidence about the transport rather than about the guest, and withholding the signal
+    for it would trade a kill that may be needless for a program nothing can find again — the
+    reclaim removes the pid file on the way out. Absence actually observed is worth little
+    more, for the reason :func:`_stop_the_program` gives: the pid is stat'd, read and only
+    then signalled, so what the kill acts on is a stale answer either way.
     """
     try:
         marker = await _read_if_present(sandbox, layout, layout.exit_code, cap=32, deadline=until)

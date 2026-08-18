@@ -77,10 +77,12 @@ from ._host_tools_over_exec import (
     WORK_DIRECTORY,
     GuestRunLayout,
     SandboxProgramTimeout,
+    SignalOutcome,
     dispatch_over_exec,
     guest_run_layout,
     host_tool_shim,
     launcher_script,
+    reclaim_run,
 )
 from ._outputs import (
     MAX_ARTIFACT_NAME_BYTES,
@@ -200,6 +202,7 @@ __all__ = [
     "SandboxOutputSizeUnknown",
     "SandboxOutputUnreachable",
     "SandboxProgramTimeout",
+    "SignalOutcome",
     "SandboxPurger",
     "SandboxRouter",
     "SandboxSpec",
@@ -221,6 +224,7 @@ __all__ = [
     "meets_floor",
     "missing_sink_refusal",
     "portable_name",
+    "reclaim_run",
     "sandbox_tool",
     "spec_lands_artifacts",
     "validate_artifact_name",
