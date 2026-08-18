@@ -1,7 +1,7 @@
 """Refuse to publish a maf-sandbox the already-published dependents can no longer import.
 
     python scripts/check_published_dependents_work.py <version> <core-wheel> \
-        [--emit-snapshot <path> | --since-snapshot <path>]
+        [--emit-snapshot <path> | --since-snapshot <path>] [--dispatch]
 
 The admit check (`check_published_dependents_admit.py`) asks only whether each dependent's
 ceiling permits the version going out; it never runs the dependent, so a core that removed a name
@@ -28,10 +28,14 @@ admitting dependent was tested and every one imported, and ``live_check=skip`` w
 candidate yet — the window where a live run would go red for the ordering of the release train
 rather than for the code ([#273]). The build run's verdict is provisional — early validation that
 refuses the release on a break before a human is asked to approve. The dispatch decision is the
-upload-time re-check's verdict, because the ``pypi`` environment can hold for as long as a reviewer
-takes and the index moves under a verdict reached before the wait: a dependent can upload or unyank
-in that window, so a ``skip`` frozen at build can be stale by upload. A break exits 1 and refuses
-the release before the dispatch is decided, so there is no verdict line for it.
+*post-upload* re-check's verdict (``--dispatch``): the upload itself is a window during which a
+dependent can admit, so a verdict reached before it can be stale by the time the core is public,
+and measuring it after the upload closes that window ([#443]). The pre-upload re-check
+(``--since-snapshot`` without ``--dispatch``) stays as the release guard — a break exits 1 and
+refuses the upload before the dispatch is decided, so there is no verdict line for it. With
+``--dispatch`` a break does not refuse: the upload is immutable, so it prints ``live_check=run``
+(an admitting dependent exists, so the live check is dispatched) and the break to stderr, and
+exits 0 — the break is surfaced as red rather than the release refused.
 """
 
 from __future__ import annotations
@@ -273,7 +277,8 @@ def newly_admitting(
 
 def _usage(prog: str) -> int:
     print(
-        f"usage: {prog} <version> <core-wheel> [--emit-snapshot <path> | --since-snapshot <path>]",
+        f"usage: {prog} <version> <core-wheel> "
+        "[--emit-snapshot <path> | --since-snapshot <path>] [--dispatch]",
         file=sys.stderr,
     )
     return 2
@@ -285,6 +290,7 @@ def main(argv: list[str]) -> int:
     positionals: list[str] = []
     emit_snapshot: Path | None = None
     since_snapshot: Path | None = None
+    dispatch = False
     i = 0
     while i < len(args):
         arg = args[i]
@@ -298,10 +304,18 @@ def main(argv: list[str]) -> int:
             if i >= len(args):
                 return _usage(argv[0])
             since_snapshot = Path(args[i])
+        elif arg == "--dispatch":
+            dispatch = True
         else:
             positionals.append(arg)
         i += 1
-    if len(positionals) != 2 or (emit_snapshot is not None and since_snapshot is not None):
+    if (
+        len(positionals) != 2
+        or (emit_snapshot is not None and since_snapshot is not None)
+        # `--dispatch` derives the verdict after the upload; `--emit-snapshot` records what the
+        # build run tested. The two belong to different runs, so combining them is a misuse.
+        or (dispatch and emit_snapshot is not None)
+    ):
         return _usage(argv[0])
     released = version(positionals[0])
     core_wheel = Path(positionals[1])
@@ -368,6 +382,20 @@ def main(argv: list[str]) -> int:
         return 0
     for failure in failures:
         print(failure, file=sys.stderr)
+    if dispatch:
+        # The post-upload dispatch check: the upload already happened and is immutable, so a
+        # newly-admitting dependent that breaks cannot be refused. Dispatch the live check
+        # (an admitting dependent exists) and surface the break as red rather than silently
+        # shipping — the tradeoff #443 accepts over refusing before the upload (#443 option 2
+        # would serialize publishes instead). The caller reads stderr for the annotation.
+        print(
+            f"\nA dependent that admits maf-sandbox {positionals[0]} breaks at import time. "
+            "The upload is immutable, so the live check is dispatched (live_check=run) and the "
+            "break is surfaced rather than the release refused. See #443.",
+            file=sys.stderr,
+        )
+        print("live_check=run")
+        return 0
     print(
         f"\nPublishing maf-sandbox {positionals[0]} breaks the dependents above at import time. "
         "Release a core that keeps them importing, or widen and re-release the dependents first: "
