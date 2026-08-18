@@ -626,6 +626,8 @@ class TestMain:
         captured = capsys.readouterr()
         assert "maf-sandbox-docker==0.2.0: ImportError" in captured.err
         assert "Release order" in captured.err
+        # A break refuses the release before the dispatch is decided, so it prints no verdict.
+        assert "live_check=" not in captured.out
 
     def test_all_versions_all_clean_names_every_admitting_version(
         self,
@@ -647,6 +649,7 @@ class TestMain:
         out = capsys.readouterr().out
         assert "imports against it" in out
         assert "maf-sandbox-docker==0.2.0" in out
+        assert "live_check=run" in out
 
     def test_every_version_excluded_leaves_nothing_to_verify(
         self,
@@ -662,12 +665,15 @@ class TestMain:
         )
         monkeypatch.setattr(check, "install_and_import", _ok)
         assert check.main([_ARGV0, "0.11.0", str(self._wheel(tmp_path))]) == 0
-        assert "nothing to verify" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "nothing to verify" in out
+        assert "live_check=skip" in out
 
     def test_emit_snapshot_records_the_admitting_versions_build_tested(
         self,
         monkeypatch: pytest.MonkeyPatch,
         tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
     ):
         monkeypatch.setattr(check, "fetch_version_requirements", _fake_fetch_with_docker_020)
         monkeypatch.setattr(check, "install_and_import", _ok)
@@ -687,6 +693,9 @@ class TestMain:
         # The snapshot is the full admitting set build tested, as sorted (distribution, version)
         # pairs: every dependent's 0.6.0 plus docker's old 0.2.0.
         assert json.loads(snap.read_text()) == [[d, v] for d, v in _ADMITTING_AT_BUILD]
+        # The build job's dispatch verdict is read off this same invocation, so it is emitted
+        # here alongside the snapshot: every admitting dependent imported, so the live check runs.
+        assert "live_check=run" in capsys.readouterr().out
 
     def test_emit_snapshot_is_written_even_when_a_break_refuses(
         self,
@@ -746,7 +755,11 @@ class TestMain:
             == 0
         )
         assert calls == []
-        assert "nothing to re-verify" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "nothing to re-verify" in out
+        # The verdict is the thorough run's to emit, not the re-check's: the build job already
+        # decided the dispatch, and this invocation only re-tests what is newly admitting.
+        assert "live_check=" not in out
 
     def test_since_snapshot_retests_a_newly_admitting_version(
         self,
@@ -784,6 +797,7 @@ class TestMain:
         out = capsys.readouterr().out
         assert "maf-sandbox-docker==0.7.0" in out
         assert "0.2.0" not in out
+        assert "live_check=" not in out
 
     def test_since_snapshot_refuses_when_a_newly_admitting_version_breaks(
         self,

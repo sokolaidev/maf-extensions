@@ -22,6 +22,13 @@ new appeared, installs nothing. A dependent whose ceiling excludes the version i
 check's concern and is skipped here, and one not yet on PyPI is skipped too. A network failure is
 fatal rather than skipped: passing because PyPI could not be reached is the one outcome that would
 make this check worthless — the same stance as the admit check.
+
+The build job reads its dispatch verdict off a ``live_check=`` line on stdout, printed only on the
+thorough (``--emit-snapshot`` / no-snapshot) run, never on the ``--since-snapshot`` re-check:
+``live_check=run`` when at least one admitting dependent was tested and every one imported, and
+``live_check=skip`` when none admits the candidate yet — the window where a live run would go red
+for the ordering of the release train rather than for the code ([#273]). A break exits 1 and
+refuses the release before the dispatch is decided, so there is no verdict line for it.
 """
 
 from __future__ import annotations
@@ -325,6 +332,7 @@ def main(argv: list[str]) -> int:
         to_test = candidates
         if not to_test:
             print(f"no published dependent admits maf-sandbox {positionals[0]}; nothing to verify")
+            print("live_check=skip")
             return 0
 
     failures = breaks(core_wheel, to_test, install_and_import)
@@ -340,6 +348,7 @@ def main(argv: list[str]) -> int:
                 f"every published dependent that admits maf-sandbox {positionals[0]} "
                 f"imports against it ({names})"
             )
+            print("live_check=run")
         return 0
     for failure in failures:
         print(failure, file=sys.stderr)

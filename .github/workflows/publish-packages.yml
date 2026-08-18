@@ -62,7 +62,11 @@ jobs:
       package: ${{ steps.resolve.outputs.package }}
       version: ${{ steps.resolve.outputs.version }}
       target: ${{ steps.resolve.outputs.target }}
+      # Context only — a breaking release whose dependents still import runs the live check
+      # all the same. The dispatch decision is `live_check` below, read off the work check that
+      # runs in this same job. See #337 for why the changelog flag is not the gate.
       breaking: ${{ steps.breaking.outputs.breaking }}
+      live_check: ${{ steps.work_check.outputs.live_check }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
@@ -100,16 +104,19 @@ jobs:
           echo "target=${target}" >> "$GITHUB_OUTPUT"
           echo "publishing ${package} ${version} to ${target}"
 
-      # Whether `verify` below is worth dispatching at all. A breaking core release strands the
-      # published dependents until each of them ships again, and `main`'s samples already speak
-      # the new vocabulary — so the run in that window can only go red, for a reason nobody
-      # needs it to report. The changelog is the signal because the number cannot be:
-      # `bump-minor-pre-major` makes a breaking change a minor like any `feat:`. (#273.)
+      # Context for the run, not the dispatch decision. A breaking core release used to skip the
+      # live check on the changelog's say-so, and 0.14.0 showed why that was wrong: the rename
+      # broke host applications, not the dependents — every one imported clean against the
+      # candidate — so a live run would have meant something and did not happen. The work check
+      # in this job answers whether the dependents are stranded; this step only reports that the
+      # release declares breaking changes, for a reviewer reading the run. The changelog is where
+      # "breaking" survives, because the number cannot say it: `bump-minor-pre-major` makes a
+      # breaking change a minor like any `feat:`. See #337.
       #
       # Core releases only — a dependent's own publish strands nothing above it — and only for
-      # the real index, matching `verify`'s own gate. A verdict this step never reaches leaves
-      # the output empty, which reads as "not breaking" and dispatches: that is the status quo,
-      # and holding a run back on a guess is worse than paying for one.
+      # the real index, matching the work check's own gate. A detector that cannot answer writes
+      # `breaking=false` and a warning rather than failing the release: the dispatch is not this
+      # step's to make, and a guess is not worth refusing an upload over.
       - name: Check whether this release is breaking
         id: breaking
         if: >-
@@ -126,14 +133,14 @@ jobs:
               verdict=true
             fi
           else
-            echo "::warning::could not read whether ${PACKAGE} ${VERSION} declares breaking changes; the live check will run anyway"
+            echo "::warning::could not read whether ${PACKAGE} ${VERSION} declares breaking changes; the dispatch is unaffected"
           fi
           echo "breaking=${verdict}" >> "$GITHUB_OUTPUT"
           if [ "$verdict" = true ]; then
             {
-              echo "### The live check is being skipped"
+              echo "### This release declares breaking changes"
               echo
-              echo "\`${PACKAGE}\` ${VERSION} declares breaking changes, so the published dependents cannot work against it until each of them releases again. Those releases dispatch the live check themselves, which is when its answer starts meaning something. See [#273](https://github.com/sokolaidev/maf-extensions/issues/273)."
+              echo "\`${PACKAGE}\` ${VERSION} declares breaking changes in its changelog. Whether that strands the published dependents is a separate question the work check in this job answers; if they still import, the live check runs all the same. See [#337](https://github.com/sokolaidev/maf-extensions/issues/337)."
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
@@ -219,15 +226,35 @@ jobs:
       # for the core on the real index: a dependent's own release is what fixes such a break, and a
       # TestPyPI rehearsal stays frictionless.
       - name: Verify the published dependents import against this core
+        id: work_check
         if: >-
           steps.resolve.outputs.package == 'maf-sandbox'
           && steps.resolve.outputs.target == 'pypi'
         env:
           VERSION: ${{ steps.resolve.outputs.version }}
         run: |
-          python3 scripts/check_published_dependents_work.py "$VERSION" \
+          set -euo pipefail
+          output="$(python3 scripts/check_published_dependents_work.py "$VERSION" \
             dist/maf_sandbox-${VERSION}-py3-none-any.whl \
-            --emit-snapshot admitting-snapshot.json
+            --emit-snapshot admitting-snapshot.json)"
+          echo "$output"
+          # The script prints `live_check=run` when it tested at least one admitting dependent
+          # and every one imported, or `live_check=skip` when none admits the candidate yet — the
+          # #273 window, where a red would be about the ordering of the release train rather than
+          # the code. A break exits 1 and fails this step before the dispatch is decided.
+          verdict="$(printf '%s\n' "$output" | grep -m1 '^live_check=' || true)"
+          case "$verdict" in
+            live_check=run|live_check=skip) ;;
+            *) echo "::error::work check printed no live_check verdict" >&2; exit 1 ;;
+          esac
+          echo "$verdict" >> "$GITHUB_OUTPUT"
+          if [ "$verdict" = "live_check=skip" ]; then
+            {
+              echo "### The live check is being skipped"
+              echo
+              echo "No published dependent admits \`maf-sandbox\` ${VERSION} yet, so a live run now would go red for the ordering of the release train rather than for the code. The dependents' own publishes dispatch it, which is when its answer starts meaning something. See [#273](https://github.com/sokolaidev/maf-extensions/issues/273)."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       # The snapshot of (distribution, version) pairs this build tested, for the upload job to
       # diff against. Only the core on the real index emits one, matching the gated check above.
@@ -458,7 +485,7 @@ jobs:
     needs: [build, publish]
     if: >-
       needs.build.outputs.target == 'pypi'
-      && needs.build.outputs.breaking != 'true'
+      && needs.build.outputs.live_check != 'skip'
       && contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-bicep", "maf-sandbox-codeact", "maf-sandbox-docker"]'), needs.build.outputs.package)
     runs-on: ubuntu-latest
     steps:
@@ -491,15 +518,18 @@ jobs:
   # both docker jobs (neither creates a billable sandbox) and not the ACAS ones. A batch release
   # calls this once per package; per-package concurrency keeps those calls independent (#325).
   #
-  # `breaking != 'true'` is the one case where a release deliberately gets no live check: the
-  # published dependents cannot work against a breaking core until they ship again, and their
-  # own publishes dispatch this then. The build job's summary says so when it happens.
+  # `live_check != 'skip'` is the dispatch decision, read off the work check the build job runs:
+  # a release dispatches the live check unless no published dependent admits the core yet, which
+  # is the one window where a red would be about the ordering of the train rather than the code.
+  # A breaking release whose dependents still import runs all the same — the work check proved
+  # they are not stranded — which is the case the changelog flag used to skip and #337 reopened.
+  # A dependent's own publish leaves the output empty, and empty means "go".
   verify:
     name: Verify against a live sandbox
     needs: [build, publish, wait-for-propagation]
     if: >-
       needs.build.outputs.target == 'pypi'
-      && needs.build.outputs.breaking != 'true'
+      && needs.build.outputs.live_check != 'skip'
       && contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-bicep", "maf-sandbox-codeact", "maf-sandbox-docker"]'), needs.build.outputs.package)
     uses: ./.github/workflows/verify-live.yml
     with:
