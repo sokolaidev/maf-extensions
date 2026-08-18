@@ -3611,3 +3611,26 @@ class TestAPidAndALayoutThatCannotBeUsed:
         guest = _GuestThatRecordsRemovals([], finish=True)
         assert asyncio.run(reclaim_run(guest, elsewhere, timeout=5.0)) is False
         assert guest.removals == [], f"a run with files outside it was removed: {guest.commands}"
+
+    def test_an_empty_pid_file_hedges_rather_than_going_quiet(self):
+        """A zero-length entry is a pid that was recorded and cannot be used.
+
+        The read answers `None` for a missing entry, an empty one and a directory alike, so
+        reading its answer alone would let a guest truncate the file and opt out of the signal
+        and — on the launcher-`exec` leg — of being mentioned at all.
+        """
+
+        class _EmptyPidFile(_GuestThatRecordsTheKill):
+            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+                self.commands.append(str(command))
+                if "kill" in str(command):
+                    return ExecResult(stdout="", exit_code=0)
+                self.files[_LAYOUT.pid] = b""
+                raise TimeoutError
+
+        guest = _EmptyPidFile([], finish=False)
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=30.0)
+
+        assert guest.kills == []
+        assert "may still be running" in str(expired.value), str(expired.value)

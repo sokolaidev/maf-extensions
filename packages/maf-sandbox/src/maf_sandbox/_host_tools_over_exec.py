@@ -756,12 +756,13 @@ async def dispatch_over_exec(
     Raises:
         SandboxProgramTimeout: The run's own bound expired. Where the program had started,
             its output up to that point is in the message and on ``output``, and the program
-            has been sent ``SIGKILL`` before this is raised — by pid, over ``exec``, which is
-            why no capability beyond the ones this transport already needs is involved. That is
-            not the same as the program being gone: ``kill`` reports success for a signal the
-            kernel discards, the pid is read from a file the program can rewrite, and children
-            are not signalled at all. Where the signal could not be sent the message says so,
-            and disposing of the sandbox is then what stops it. On the two starting legs, the launcher upload and the ``exec`` that
+            has been *sent* a ``SIGKILL`` where one could be sent — by pid, over ``exec``,
+            which is why no capability beyond the ones this transport already needs is
+            involved. Neither half is a guarantee the program is gone: the signal may not have
+            been sent at all (no pid was recorded, or the ``exec`` carrying it failed), and a
+            sent one may be discarded by the kernel, aimed at a pid the program rewrote, or
+            leave children running. The message says which of the two happened, and disposing
+            of the sandbox is what stops what remains. On the two starting legs, the launcher upload and the ``exec`` that
             runs it, ``output`` is empty instead: the output file does not exist yet, and on a
             backend that began the command before its own call returned there may be output
             nobody read — so the kill is attempted on the second of those legs too.
@@ -1205,6 +1206,23 @@ async def _stop_the_program(sandbox: Sandbox, layout: GuestRunLayout, *, until: 
         was ever started at all.
     """
     try:
+        # Stat first, because `_read_if_present` answers `None` for a missing entry, an empty
+        # one and a directory alike — and only the first of those means no program was
+        # recorded. A guest can make the other two, so collapsing them would be an opt-out
+        # from the signal and, on one leg, from being mentioned at all.
+        recorded = await _within(
+            until,
+            "stat the pid",
+            sandbox.stat_file(layout.pid, working_directory=layout.directory),
+        )
+    except Exception as unstattable:  # noqa: BLE001 — a kill must not replace the timeout
+        logger.warning(
+            "host tools: could not look for the program's pid: %s", error_detail(unstattable)
+        )
+        return "refused"
+    if recorded is None:
+        return "absent"
+    try:
         running = await _read_if_present(sandbox, layout, layout.pid, cap=32, deadline=until)
     except Exception as unreadable:  # noqa: BLE001 — a kill must not replace the timeout
         # The same rule `_marker_if_present` follows, and for the same reason: this runs only
@@ -1215,10 +1233,6 @@ async def _stop_the_program(sandbox: Sandbox, layout: GuestRunLayout, *, until: 
         # One leg reports `absent` by saying nothing at all, and silence is the wrong answer to
         # a program whose fate is unknown.
         return "refused"
-    if running is None:
-        # The only state that means no program was recorded. Everything below is a file that
-        # exists and cannot be used, which is a different answer and one leg reports it as one.
-        return "absent"
     pid = running.strip() if isinstance(running, str) else ""
     # ASCII digits and positive, both load-bearing. `str.isdigit` admits other numeral systems
     # that `int` then normalises, and `kill -KILL 0` signals the whole process group rather
