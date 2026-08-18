@@ -1211,7 +1211,10 @@ async def _reclaim_the_transports_own(
     Not the run — see :func:`reclaim_run` for the other half. What goes is this side of the
     split, including every request and response the run exchanged with the host.
     """
-    served = posixpath.dirname(layout.shim)
+    # Normalised, because every comparison below decides what a recursive delete gets and
+    # `GuestRunLayout` validates nothing: `/runs/one` and `/runs/one/` are one directory, and
+    # a check that reads them as two answers for the spelling rather than the target.
+    served = posixpath.normpath(posixpath.dirname(layout.shim))
     scattered = [
         path
         for path in (
@@ -1222,7 +1225,7 @@ async def _reclaim_the_transports_own(
             layout.exit_code,
             layout.pid,
         )
-        if posixpath.dirname(path) != served
+        if posixpath.normpath(posixpath.dirname(path)) != served
     ]
     if scattered:
         # The directory to delete is inferred from one field, so the others have to agree with
@@ -1238,11 +1241,13 @@ async def _reclaim_the_transports_own(
         guest_path_relative_to(served, layout.work) is not None
         or guest_path_relative_to(layout.work, served) is not None
     )
-    if overlaps or served == layout.directory:
+    if overlaps or guest_path_relative_to(served, layout.directory) == "":
         # Confining to the run is not enough on its own, and neither is one direction: `work`
         # inside the transport directory is deleted with it just as surely as the other way
         # round. Either overlap would have this remove the model's files and every artifact a
-        # kind is about to collect — on success, where nothing else would look wrong.
+        # kind is about to collect — on success, where nothing else would look wrong. The run
+        # itself is caught through the helper rather than by `==`, which answers "not the run"
+        # to every path that spells it differently.
         logger.warning(
             "host tools: refusing to remove %r — it is the run itself or holds the model's "
             "files, so this layout does not separate the two directories",

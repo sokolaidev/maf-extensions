@@ -3411,6 +3411,38 @@ class TestWhatTheTransportWillNotDelete:
         )
         assert guest.removals == [], f"a directory outside the run was removed: {guest.commands}"
 
+    @pytest.mark.parametrize(
+        "spelling",
+        ["/maf-sandbox/work/run-1/", "/maf-sandbox/work/run-1//", "/maf-sandbox/work/run-1/."],
+        ids=["trailing-slash", "doubled-separator", "dot-component"],
+    )
+    def test_the_run_directory_is_refused_however_it_is_spelled(self, spelling):
+        """One directory has several spellings, and `GuestRunLayout` refuses none of them.
+
+        This layout puts the transport's files directly in the run, so the directory derived
+        from the shim *is* the run — the case the guard exists for. Its `work` sits outside,
+        which is what leaves the run-directory comparison as the only thing standing between a
+        caller's spelling and a recursive delete of the whole run.
+        """
+        directly_in_the_run = GuestRunLayout(
+            directory=spelling,
+            work="/maf-sandbox/elsewhere/work",
+            program="/maf-sandbox/work/run-1/program.py",
+            shim=f"/maf-sandbox/work/run-1/{SHIM_MODULE}",
+            launcher="/maf-sandbox/work/run-1/run_program.sh",
+            calls=f"/maf-sandbox/work/run-1/{CALLS_DIRECTORY}",
+            output="/maf-sandbox/work/run-1/program_output.txt",
+            exit_code="/maf-sandbox/work/run-1/program_exit_code",
+            pid="/maf-sandbox/work/run-1/program_pid",
+        )
+        guest = _GuestThatRecordsRemovals([], finish=True)
+        asyncio.run(
+            host_tools_over_exec._reclaim_the_transports_own(
+                guest, directly_in_the_run, until=time.monotonic() + 5.0
+            )
+        )
+        assert guest.removals == [], f"the run itself was removed: {guest.commands}"
+
     def test_the_run_s_own_transport_directory_is_not(self):
         guest = _GuestThatRecordsRemovals([], finish=True)
         asyncio.run(
