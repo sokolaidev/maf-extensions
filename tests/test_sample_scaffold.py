@@ -50,7 +50,8 @@ def test_every_copy_is_byte_identical():
     """Byte-identical, not merely equivalent.
 
     A difference that looks cosmetic is still a difference a reader has to explain, and the
-    only honest answer for a file that exists eight times is that there is nothing to explain.
+    only honest answer for a file that exists once per sample is that there is nothing to
+    explain.
     """
     copies = {sample.name: (sample / _SCAFFOLD).read_bytes() for sample in _SAMPLE_DIRS}
     canonical_name, canonical = next(iter(copies.items()))

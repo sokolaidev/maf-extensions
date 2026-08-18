@@ -13,8 +13,8 @@ application, where printing to stderr and exiting is exactly wrong.
 
 `tool_results` and `evidence` are here for a different reason: what they print is read by
 `scripts/check_live_*.py`, so the *format* is a contract between two files that live in
-different directories and run at different times. Seven samples emit it. One copy is what keeps
-a checker from having to accept seven dialects of the same block (#314).
+different directories and run at different times. One copy is what keeps a checker from having
+to accept a dialect of that block per sample that emits it (#314).
 """
 
 from __future__ import annotations

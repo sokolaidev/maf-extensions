@@ -80,8 +80,10 @@ class TestFiguresIn:
         """`1150.35 + 640.80` prints as `1791.1499999999999`, and that is the right answer."""
         assert sample.figures_in("Oregon\tGasket\t1791.1499999999999", [1791.15]) == 1
 
-    def test_a_thousands_separator_matches(self):
-        assert sample.figures_in("| Washington | Widget | 1,896.25 |", [1896.25]) == 1
+    @pytest.mark.parametrize("grouped", ["1,896.25", "1_896.25", "1896.25"])
+    def test_either_grouping_matches(self, grouped: str):
+        """Python writes a grouped number two ways and `f"{x:_}"` is the second of them."""
+        assert sample.figures_in(f"| Washington | Widget | {grouped} |", [1896.25]) == 1
 
     def test_a_negated_value_does_not_match(self):
         """A table of correct magnitudes, every one negated, is not the answer.
@@ -102,6 +104,14 @@ class TestFiguresIn:
     def test_an_exponent_spells_the_value_it_is(self, printed: str):
         """How the output is formatted is the model's to choose, and this is one of the ways."""
         assert sample.figures_in(f"Oregon\tGasket\t{printed}", [1791.15]) == 1
+
+    def test_a_separator_python_itself_would_reject_is_still_read(self):
+        """The pattern is a reader, not a parser, and it accepts spellings `float()` refuses.
+
+        `float("1__791.15")` raises. Dropping the separators before the parse is what keeps a
+        stray underscore in a model's output from ending the run instead of being scored.
+        """
+        assert sample.figures_in("Oregon	Gasket	1__791.15", [1791.15]) == 1
 
     def test_a_run_id_is_not_a_number(self):
         """`1e3f4a2b9c0d` starts with something an exponent rule would read as a thousand."""
@@ -184,6 +194,17 @@ class TestAmountsTheModelWrote:
         written is a run failed for carrying nothing.
         """
         assert sample.amounts_the_model_wrote(_Response(_Message('{"x": ' + longer + "}"))) == 0
+
+    @pytest.mark.parametrize("spelling", ["1240.50", "1_240.50", "1_240.5"])
+    def test_a_python_separator_is_the_figure_it_separates(self, spelling: str):
+        """`code` carries Python, and `1_240.50` is a literal a model may reasonably write."""
+        written = _Response(_Message('{"code": "x = [' + spelling + ']"}'))
+        assert sample.amounts_the_model_wrote(written) == 1
+
+    def test_a_literal_python_itself_would_reject_is_still_read(self):
+        """`float("1_240_.50")` raises, and a model writing it has still written the figure."""
+        written = _Response(_Message('{"code": "x = [1_240_.50]"}'))
+        assert sample.amounts_the_model_wrote(written) == 1
 
     def test_a_number_that_is_only_the_front_of_a_token_is_not_a_figure(self):
         """`980abc` is not the model writing 980 down, and the exponent rule must not make it one."""

@@ -409,12 +409,18 @@ def calls_per_message(response: object) -> list[int]:
     return grouped
 
 
-#: A number as a tool call's arguments carry one. Those are JSON, so no thousands separators,
-#: and no requirement of a decimal point either: `980`, `980.0`, `980.00` and `9.8e2` are one
-#: figure written down four ways, and the last is as valid a literal as the rest. The two
-#: guards keep the digits of an identifier — `PRD-1`, `STO-202` — and of anything a number is
-#: only the front of from reading as a value the model chose.
-_WRITTEN_NUMBER = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?(?!\w)")
+#: What a separator is worth: nothing. Both spellings of one are dropped before the parse,
+#: which is also why one function serves two patterns that allow different ones.
+def _as_number(found: str) -> float:
+    return float(found.replace(",", "").replace("_", ""))
+
+
+#: A number as a tool call's arguments carry one. The envelope is JSON but `code` holds Python,
+#: so the underscore separator is in scope and the comma is not: `980`, `980.0`, `980.00`,
+#: `9.8e2` and `1_240.50` are all figures written down as a model writes them. No decimal point
+#: is required either. The two guards keep the digits of an identifier — `PRD-1`, `STO-202` —
+#: and of anything a number is only the front of from reading as a value the model chose.
+_WRITTEN_NUMBER = re.compile(r"(?<![\w.])-?\d[\d_]*(?:\.\d[\d_]*)?(?:[eE][+-]?\d+)?(?!\w)")
 
 
 def amounts_the_model_wrote(response: object) -> int:
@@ -437,18 +443,19 @@ def amounts_the_model_wrote(response: object) -> int:
     for message in getattr(response, "messages", []):
         for content in getattr(message, "contents", []) or []:
             body = str(getattr(content, "arguments", "") or "")
-            numbers = [float(found) for found in _WRITTEN_NUMBER.findall(body)]
+            numbers = [_as_number(found) for found in _WRITTEN_NUMBER.findall(body)]
             written |= {want for want in AMOUNTS if any(abs(got - want) < 0.005 for got in numbers)}
     return len(written)
 
 
-#: A decimal number as a program prints one: thousands separators, an exponent, and the sign,
-#: without which a table of correct magnitudes all negated reads as the right answer. How the
-#: output is formatted is the model's to choose, and `1.79115e+03` is a cell worth 1791.15. The
-#: lookbehind keeps a hyphen that belongs to a label — `WA-1896.25` — from making one negative.
-#: The decimal point stays required, unlike the one a tool call carries: it is what keeps a run
-#: id like `1e3f4a…` from reading as a thousand now that an exponent is allowed.
-_PRINTED_NUMBER = re.compile(r"(?<![\w.])-?\d[\d,]*\.\d+(?:[eE][+-]?\d+)?")
+#: A decimal number as a program prints one: grouping, an exponent, and the sign, without
+#: which a table of correct magnitudes all negated reads as the right answer. How the output is
+#: formatted is the model's to choose, and Python offers it two groupings — `f"{1791.15:,}"` is
+#: `1,791.15` and `f"{1791.15:_}"` is `1_791.15` — either of which is that cell. The lookbehind
+#: keeps a hyphen that belongs to a label — `WA-1896.25` — from making one negative. The decimal
+#: point stays required, unlike the one a tool call carries: it is what keeps a run id like
+#: `1e3f4a…` from reading as a thousand now that an exponent is allowed.
+_PRINTED_NUMBER = re.compile(r"(?<![\w.])-?\d[\d,_]*\.\d+(?:[eE][+-]?\d+)?")
 
 #: What the CodeAct kind names a run directory: `uuid4().hex[:12]`.
 _RUN_ID = re.compile(r"[0-9a-f]{12}")
@@ -460,7 +467,7 @@ def figures_in(text: str, expected: Iterable[float]) -> int:
     Numerically rather than as text: a program summing floats prints `1791.1499999999999` for a
     cell worth `1791.15`, and how it formats its output is the model's to choose.
     """
-    printed = [float(found.replace(",", "")) for found in _PRINTED_NUMBER.findall(text)]
+    printed = [_as_number(found) for found in _PRINTED_NUMBER.findall(text)]
     return sum(1 for want in expected if any(abs(got - want) < 0.005 for got in printed))
 
 
