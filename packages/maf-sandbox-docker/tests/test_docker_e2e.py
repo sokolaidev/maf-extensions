@@ -510,9 +510,15 @@ class TestWhatOnlyARealRunawayCanSettle:
         async def scenario() -> None:
             sandbox = await backend.acquire(_key(scope), _spec())
             try:
-                # A shell program, for the reason the probe above gives: whether the transport
-                # stops a run is not a question about the guest's interpreter.
-                await sandbox.write_file(layout.program, "while true; do :; done\n")
+                # The program records its own pid in `work`, which the transport does not
+                # reclaim, so the check below needs nothing beyond the `kill` this transport
+                # already requires. `pgrep` would be wrong twice over: absent on a minimal
+                # image it takes the `|| echo gone` branch and passes without checking
+                # anything, and `-f` matches the probe's own command line.
+                await sandbox.write_file(
+                    layout.program,
+                    f"echo $$ > {layout.work}/program.pid\nwhile true; do :; done\n",
+                )
                 await sandbox.write_file(layout.shim, "")
 
                 with pytest.raises(SandboxProgramTimeout) as expired:
@@ -528,16 +534,28 @@ class TestWhatOnlyARealRunawayCanSettle:
                 # 1. It says it stopped the program — silence is what that looks like.
                 assert "may still be running" not in str(expired.value), expired.value
 
-                # 2. And it is true. `pgrep -f` over the program's own path: the pid is gone
-                #    from the container, not merely un-signalled.
+                # 2. And it is true of the process itself. Read the pid the program wrote,
+                #    then ask the kernel — a missing file or an unreadable pid fails here
+                #    rather than reading as success.
+                recorded = await sandbox.exec(
+                    f"cat {layout.work}/program.pid",
+                    working_directory=_WORK,
+                    timeout=60,
+                )
+                assert recorded.exit_code == 0, (
+                    f"the program never recorded its pid, so this proves nothing: "
+                    f"{recorded.stderr!r}"
+                )
+                pid = recorded.stdout.strip()
+                assert pid.isdigit(), f"not a pid: {pid!r}"
+
                 alive = await sandbox.exec(
-                    f"pgrep -f {layout.program} >/dev/null && echo alive || echo gone",
+                    f"kill -0 {pid} 2>/dev/null && echo alive || echo gone",
                     working_directory=_WORK,
                     timeout=60,
                 )
                 assert alive.stdout.strip() == "gone", (
-                    "the program survived a timeout the transport reported as stopped: "
-                    f"{alive.stdout!r}"
+                    f"pid {pid} survived a timeout the transport reported as signalled"
                 )
 
                 # 3. The transport's own files are gone from the filesystem, not just from a

@@ -840,9 +840,8 @@ async def dispatch_over_exec(
             # leaving this function — a backend failing mid-run — leaves a detached program
             # nobody has stopped, and the reclaim below is about to remove the files that would
             # have identified it.
-            giving_up = _a_grace_from_now()
-            if await _marker_if_present(sandbox, layout, giving_up) is None:
-                await _stop_the_program(sandbox, layout, until=giving_up)
+            if await _marker_if_present(sandbox, layout, _a_grace_from_now()) is None:
+                await _stop_the_program(sandbox, layout, until=_a_grace_from_now())
         await _reclaim_the_transports_own(sandbox, layout, until=time.monotonic() + _RECLAIM_GRACE)
 
 
@@ -887,13 +886,13 @@ async def _supervise(
             "host tools: the run ran out while starting the program: %s", error_detail(spent)
         )
         # The launcher backgrounds the program and returns, so an `exec` that ran out may
-        # still have started one — the same case that leaves output nobody read. A grace of
-        # The marker first, as `_stop_the_program` requires: this leg is reachable when the
-        # launcher had time to run to completion, so the program has most likely finished.
-        giving_up = _a_grace_from_now()
+        # still have started one — the same case that leaves output nobody read. The marker is
+        # read first, as `_stop_the_program` requires: this leg is reachable when the launcher
+        # had time to run to completion, so the program has most likely finished.
         fate: _Fate = "absent"
-        if await _marker_if_present(sandbox, layout, giving_up) is None:
-            fate = await _stop_the_program(sandbox, layout, until=giving_up)
+        if await _marker_if_present(sandbox, layout, _a_grace_from_now()) is None:
+            # A grace of its own, measured after the marker read rather than shared with it.
+            fate = await _stop_the_program(sandbox, layout, until=_a_grace_from_now())
         raise SandboxProgramTimeout(
             f"the run's {timeout:g}s were gone while starting the program"
             f"{_clause_while_starting(fate)}"
