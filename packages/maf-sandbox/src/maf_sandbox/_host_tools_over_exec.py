@@ -259,12 +259,19 @@ class SandboxProgramTimeout(TimeoutError):
     effort applies its own policy on top, and disposing the sandbox is what that policy has to
     reach for.
 
+    ``signal`` defaults to ``"unknown"``, and deliberately: the exception is public, so code
+    raising it for a transport of its own passes a message and no fate at all. The default
+    answers for those, and ``"absent"`` — the one value a host may act on by walking away — is
+    not a claim anything should make by omission.
+
     ``output`` is what the program had printed when the run was given up on, already capped —
     empty on the two starting legs, where there is nothing to have read yet. An attribute
     rather than message text, so a caller can surface the program's own stdout alone.
     """
 
-    def __init__(self, message: str, *, output: str = "", signal: SignalOutcome = "absent") -> None:
+    def __init__(
+        self, message: str, *, output: str = "", signal: SignalOutcome = "unknown"
+    ) -> None:
         super().__init__(message)
         self.output = output
         self.signal = signal
@@ -897,7 +904,11 @@ async def _supervise(
         # The one `_within` outside the supervisor loop, so nothing else converts what it
         # raises, and a module-private type would otherwise cross the public boundary.
         raise SandboxProgramTimeout(
-            f"the run's {timeout:g}s were gone before the program was started — {gone}"
+            f"the run's {timeout:g}s were gone before the program was started — {gone}",
+            # Explicit, though it is also what a bare construction would say least of: this is
+            # the one leg that never ran a launcher, so it is the only one entitled to claim
+            # that nothing was started.
+            signal="absent",
         ) from gone
     try:
         started = await sandbox.exec(

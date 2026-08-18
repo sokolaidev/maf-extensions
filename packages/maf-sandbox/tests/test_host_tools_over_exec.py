@@ -3778,6 +3778,16 @@ class TestWhatACallerCanBranchOn:
             _run(_StallsOnTheUpload([], finish=False), HostToolRun(_registry()), timeout=0.1)
         assert gone.value.signal == "absent"
 
+    def test_an_exception_raised_by_anything_else_claims_nothing(self):
+        """The default answers for callers who never passed a fate, so it must assert none.
+
+        This type is public and a `TimeoutError` subclass, so a kind or a host raising it for a
+        transport of its own passes a message and stops there. A default of `absent` would have
+        every one of those tell a handler that no program was started and no disposal is owed —
+        the one conclusion in this vocabulary that ends the matter, made by omission.
+        """
+        assert SandboxProgramTimeout("a run of someone else's").signal == "unknown"
+
     def test_the_message_and_the_attribute_cannot_drift(self):
         """The prose is generated from the same value, so one cannot contradict the other."""
         guest = _GuestThatRecordsTheKill([], finish=False, kill_exit_code=1)
