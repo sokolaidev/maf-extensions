@@ -189,16 +189,17 @@ jobs:
     # flipped now: the jobs run concurrently, so for the few minutes the ACAS samples are live
     # their sandboxes are up at once, in exchange for the run taking one sample's time instead
     # of all of them in turn. A failure still names which sample broke.
-    # Three per run since sample-14 joined — 01, 03 and 14 — and three per run is not three
+    # Four per run since sample-15 joined — 01, 03, 14 and 15 — and four per run is not four
     # overall: the workflow-level `concurrency` block above is keyed per package, so a release
     # train verifying several packages has several runs in flight and each holds its own. What
     # each package costs is the number of billable jobs its `if` admits: `maf-sandbox` and
-    # `maf-sandbox-acas` four (01, 03, 14 and `acas-e2e`), `maf-sandbox-codeact` two (03 and 14),
+    # `maf-sandbox-acas` five (01, 03, 14, 15 and `acas-e2e`), `maf-sandbox-codeact` three (03,
+    # 14 and 15),
     # `maf-sandbox-bicep` one (01), everything else none. Count sandboxes rather than jobs, since
     # `acas-e2e` uses two — one shared by its probes, one the lifecycle test disposes as the thing
-    # under test. So a train releasing all four peaks at thirteen concurrent billable sandboxes
-    # for the twenty minutes the timeout allows, where it was nine before the live suite and six
-    # before sample 14. Total spend is unchanged by the concurrency; only the peak moved. (#325.)
+    # under test. So a train releasing all four peaks at sixteen concurrent billable sandboxes
+    # for the twenty minutes the timeout allows, where it was thirteen before sample 15, nine
+    # before the live suite and six before sample 14. Total spend is unchanged by the concurrency; only the peak moved. (#325.)
     # Empty input (verify-everything) or a package sample-03 actually exercises: the router
     # (maf-sandbox) and the backend it runs on (maf-sandbox-acas) both affect it, and so does
     # its own package (maf-sandbox-codeact); a maf-sandbox-bicep or maf-sandbox-wslc release
@@ -995,7 +996,7 @@ jobs:
     # **The third billable job in this workflow**, and the reason to accept a third: the two that
     # existed run a command and read stdout, so no ACAS run has ever pulled a file. It runs on
     # the same schedule as the rest — on demand, and once after a release that could change what
-    # it exercises — and the peak note on sample-03 applies here too, since these three jobs can
+    # it exercises — and the peak note on sample-03 applies here too, since these jobs can all
     # be in flight at once for the packages below.
     #
     # Runs for the router (maf-sandbox), the backend (maf-sandbox-acas) and the kind supplying
@@ -1085,6 +1086,103 @@ jobs:
           python3 "$HARNESS"/scripts/check_live_codeact_files_sample.py \
             /tmp/sample14-out.txt samples/14_acas_codeact_files/out/summary.md
 
+  sample-15:
+    name: samples/15_acas_codeact_host_tools against a live sandbox
+    # The only live dispatch in the set (#302), and the only place `Capability.HOST_TOOLS` is
+    # exercised as traffic rather than as configuration. Sample 10 is its pair and needs nothing
+    # at all — it decides everything at attach — so a red here while 10 is green is a statement
+    # about the transport and the backend, never about the contract.
+    #
+    # It belongs on ACAS rather than Docker for a reason a local backend cannot supply: this
+    # backend's `exec` is blocking and timeout-bounded, and the guest shim blocks on a response
+    # file the host can only write while the program is still running. A dispatch that is
+    # answered at all therefore proves the launcher detached and the supervisor took over, which
+    # is exactly what declaring the capability claims here (#365).
+    #
+    # **The fourth billable job in this workflow.** One sandbox, deleted by the sample and
+    # checked by the assertion — a dispatched program that hangs is #375, where nothing can
+    # dispose the sandbox holding it, so the footer count is the thing that would notice.
+    #
+    # Runs for the router (maf-sandbox), the backend (maf-sandbox-acas) and the kind that owns
+    # the dispatch wiring (maf-sandbox-codeact) — the same three as samples 03 and 14.
+    if: >-
+      inputs.package == ''
+      || contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-codeact"]'), inputs.package)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Half of the federated-credential subject Azure checks, and where the non-secret sandbox
+    # and model configuration lives.
+    environment: live-verify
+    permissions:
+      # Mints the OIDC token azure/login exchanges. No secret is involved.
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # Only when `HARNESS` points at it — see the `env` block above for why the checks come
+      # from somewhere other than the samples. Sparse, because `scripts/` is all that is read.
+      - name: Check out the checks from the default branch
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch || 'main' }}
+          path: .harness
+          sparse-checkout: scripts
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      # Sample 14's nine, unchanged: this sample boots the same disk image and reads the same
+      # six variables, so a group already serving 14 needs nothing new imported.
+      - name: Check the live configuration is present
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          ACAS_SANDBOX_ENDPOINT: ${{ vars.ACAS_SANDBOX_ENDPOINT }}
+          ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ vars.ACAS_SANDBOX_SUBSCRIPTION_ID }}
+          ACAS_SANDBOX_RESOURCE_GROUP: ${{ vars.ACAS_SANDBOX_RESOURCE_GROUP }}
+          ACAS_SANDBOX_GROUP: ${{ vars.ACAS_SANDBOX_GROUP }}
+          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
+            ACAS_SANDBOX_ENDPOINT ACAS_SANDBOX_SUBSCRIPTION_ID ACAS_SANDBOX_RESOURCE_GROUP \
+            ACAS_SANDBOX_GROUP AZURE_OPENAI_ENDPOINT AZURE_OPENAI_CHAT_MODEL; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::the live-verify environment is missing variables: ${missing[*]}. See docs/maintainers.md."
+            exit 1
+          fi
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Run sample 15 and assert a program really called back out
+        env:
+          ACAS_SANDBOX_ENDPOINT: ${{ vars.ACAS_SANDBOX_ENDPOINT }}
+          ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ vars.ACAS_SANDBOX_SUBSCRIPTION_ID }}
+          ACAS_SANDBOX_RESOURCE_GROUP: ${{ vars.ACAS_SANDBOX_RESOURCE_GROUP }}
+          ACAS_SANDBOX_GROUP: ${{ vars.ACAS_SANDBOX_GROUP }}
+          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+        run: |
+          set -euo pipefail
+          uv run --no-project samples/15_acas_codeact_host_tools/agent.py | tee /tmp/sample15-out.txt
+          # The dispatched total has to be exact — a program computed it from prices the host
+          # supplied. What the model made of the same prices unaided is recorded and not
+          # required; the check's success line says which way it went. stdlib-only, so the
+          # runner's own python3 runs it.
+          python3 "$HARNESS"/scripts/check_live_host_tools_dispatch_sample.py /tmp/sample15-out.txt
+
   acas-e2e:
     name: maf-sandbox-acas conformance against a live sandbox group
     # **The one job here that is not a sample**, and the one that does not install published
@@ -1102,7 +1200,7 @@ jobs:
     # what the difference costs. The suite asserts nothing skipped rather than trusting a green
     # summary, since a skipped listing probe reports exactly like a passing one.
     #
-    # **The fourth billable job**, and the cheapest of them per assertion: two sandboxes for
+    # **The fifth billable job**, and the cheapest of them per assertion: two sandboxes for
     # nine tests, no model, no tokens. It needs no model configuration and so reads neither
     # AZURE_OPENAI variable — the rule stated on the header applies, a job reads what it uses.
     #
