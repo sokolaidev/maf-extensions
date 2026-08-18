@@ -42,7 +42,12 @@ from maf_sandbox.paths import (
 )
 
 from ._config import AcasSandboxConfig
-from ._images import qualify_image_reference, resolve_disk_image_id
+from ._images import (
+    names_a_prebuilt_image,
+    qualify_image_reference,
+    resolve_disk_image_id,
+    resolve_prebuilt_image_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -624,11 +629,23 @@ class AcasSandboxBackend:
                 )
             self._registry.pop(registry_key, None)
 
-        # The spec carries repository:tag; this backend knows which registry holds it.
-        image = qualify_image_reference(self._config.registry, spec.image or "")
-        disk_id = await resolve_disk_image_id(gc, spec.image_id, image or None)
+        # Two namespaces, and `image` says which by whether it carries a tag: a bare name is
+        # one the service prebuilt, anything else is repository:tag for an image this
+        # deployment imported, which the configured registry qualifies. `image_id` still
+        # skips both, exactly as the field promises — pinning an id means resolution is not
+        # wanted, and that is as true of the catalogue as of the imported list.
+        if spec.image_id is None and names_a_prebuilt_image(spec.image or ""):
+            booted_from = await resolve_prebuilt_image_name(gc, spec.image or "")
+            # `disk` and `disk_id` are the two keywords the SDK reads the namespace from, and
+            # it refuses them together — so the source is one key, chosen here, not two
+            # arguments one of which is None.
+            source: dict[str, str] = {"disk": booted_from}
+        else:
+            image = qualify_image_reference(self._config.registry, spec.image or "")
+            booted_from = await resolve_disk_image_id(gc, spec.image_id, image or None)
+            source = {"disk_id": booted_from}
         poller = await gc.begin_create_sandbox(
-            disk_id=disk_id,
+            **source,
             labels=_sandbox_labels(key, spec),
             egress_policy=self._egress_policy(spec),
         )
@@ -637,7 +654,7 @@ class AcasSandboxBackend:
             "sandbox created: id=%s kind=%s disk_image=%s thread=%s agent=%s",
             sc.sandbox_id,
             spec.kind,
-            disk_id,
+            booted_from,
             key.thread_id,
             key.agent_dir,
         )

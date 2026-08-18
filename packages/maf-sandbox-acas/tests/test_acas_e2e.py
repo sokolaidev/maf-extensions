@@ -1,7 +1,10 @@
 """Live tests against a real ACA sandbox group and a real sandbox image.
 
-Skipped unless ``ACAS_SANDBOX_ENDPOINT`` and ``MAF_SANDBOX_ACAS_E2E_IMAGE`` are both set, so it
-is inert for anyone without a sandbox group. Unlike ``test_docker_e2e.py`` this cannot run on
+Skipped without ``ACAS_SANDBOX_ENDPOINT``, so it is inert for anyone without a sandbox group.
+``MAF_SANDBOX_ACAS_E2E_IMAGE`` gates only the probes that need an image this deployment
+*imported*: the prebuilt-image probes name something the service already provides, and a group
+that has imported nothing is exactly the deployment they exist for. Unlike ``test_docker_e2e.py``
+this cannot run on
 every pull request: every sandbox here is a billable Azure resource, so it is wired to the
 ``acas-e2e`` job in ``verify-live.yml`` and runs on demand and after a release that could change
 what it exercises.
@@ -68,11 +71,8 @@ _ENDPOINT = os.environ.get("ACAS_SANDBOX_ENDPOINT")
 _IMAGE = os.environ.get("MAF_SANDBOX_ACAS_E2E_IMAGE")
 
 pytestmark = pytest.mark.skipif(
-    not _ENDPOINT or not _IMAGE,
-    reason=(
-        "needs ACAS_SANDBOX_ENDPOINT and MAF_SANDBOX_ACAS_E2E_IMAGE, and an Azure identity the "
-        "sandbox group accepts"
-    ),
+    not _ENDPOINT,
+    reason="needs ACAS_SANDBOX_ENDPOINT and an Azure identity the sandbox group accepts",
 )
 
 _WORK = "/maf-sandbox/work"
@@ -95,6 +95,16 @@ def _config(**overrides: Any) -> AcasSandboxConfig:
 
 
 def _spec(**overrides: Any) -> SandboxSpec:
+    """The shared spec, and the one place the imported image is required.
+
+    The skip lives here rather than in the module's marker so that a sandbox group which has
+    imported nothing still runs the prebuilt-image probes — the deployment those exist for is
+    precisely the one with no import to name.
+    """
+    if not _IMAGE:
+        pytest.skip(
+            "needs MAF_SANDBOX_ACAS_E2E_IMAGE — a repository:tag imported into the sandbox group"
+        )
     return SandboxSpec(kind="e2e", image=_IMAGE, work_dir=_WORK, **overrides)
 
 
@@ -511,3 +521,89 @@ class TestWhetherThisBackendCouldServeHostTools:
             assert output.decode().strip() == "the program finished", output
 
         live.run(scenario())
+
+
+# ---------------------------------------------------------------------------
+# The other image namespace — what the service prebuilt, which nobody imports
+# ---------------------------------------------------------------------------
+
+#: A name the service provides to every sandbox group, no import and no registry involved.
+#: Overridable so a group that has lost this one can still run the suite, but the default is
+#: deliberately the image the CodeAct kind wants: if Microsoft retires it, that is worth a red
+#: run rather than a silent fallback to something without an interpreter.
+_PREBUILT = os.environ.get("MAF_SANDBOX_ACAS_E2E_PREBUILT", "python-3.13")
+
+
+class TestBootingAnImageTheServiceProvides:
+    """A bare name reaches the catalogue, and the sandbox it boots is usable (#412).
+
+    Everything else about this namespace can be checked against the SDK — which keyword carries
+    which source, that the two are mutually exclusive, what the wire body looks like. What only
+    the service can say is that a name with no registry and no tag boots at all, and that is the
+    whole claim the feature rests on, so it is measured here rather than reasoned about.
+
+    This costs **one more billable sandbox per live run** than the suite used to. That is the
+    price of the claim being evidence: the alternative is a unit test asserting that the backend
+    passes `disk=`, which would keep passing if the service stopped accepting it.
+    """
+
+    @pytest.fixture(scope="class")
+    def prebuilt(self, loop):
+        backend = AcasSandboxBackend(_config())
+        scope = f"e2e-prebuilt-{uuid.uuid4()}"
+        key = _key(scope)
+        try:
+            # Inside the guard for the reason the shared fixture gives: a create that returns
+            # and then fails leaves a running microVM whose id this process never learned, and
+            # dispose_scope is what finds it by label.
+            sandbox = loop.run_until_complete(
+                backend.acquire(key, SandboxSpec(kind="e2e-prebuilt", image=_PREBUILT))
+            )
+            yield _Live(loop, backend, key, sandbox)
+        finally:
+            loop.run_until_complete(backend.dispose_scope(scope, "thread-1"))
+            loop.run_until_complete(backend.aclose())
+
+    def test_the_catalogue_holds_the_name_this_suite_asks_for(self, loop):
+        """A control-plane listing, so it costs nothing and separates two failures.
+
+        If this passes and the boot below fails, the name was right and the create was wrong.
+        If this fails, the catalogue moved and no amount of backend code would have helped.
+        """
+        from maf_sandbox_acas._images import resolve_prebuilt_image_name
+
+        backend = AcasSandboxBackend(_config())
+
+        async def scenario():
+            # Inside the coroutine: the group client is cached per *running* loop, because an
+            # azure-core async client binds its transport to the loop that built it. Asking for
+            # one from synchronous code raises rather than quietly building a second.
+            return await resolve_prebuilt_image_name(backend._group_client(), _PREBUILT)
+
+        try:
+            resolved = loop.run_until_complete(scenario())
+        finally:
+            loop.run_until_complete(backend.aclose())
+        assert resolved == _PREBUILT
+
+    def test_a_bare_name_boots_a_sandbox_that_runs_commands(self, prebuilt: _Live):
+        """The claim itself: no import, no registry, and a live guest at the end of it."""
+        result = prebuilt.run(
+            prebuilt.sandbox.exec("echo booted", working_directory="/", timeout=_EXEC_TIMEOUT)
+        )
+        assert result.exit_code == 0, result.stderr
+        assert result.stdout.strip() == "booted"
+
+    def test_the_python_image_carries_the_interpreter_codeact_names(self, prebuilt: _Live):
+        """Why this namespace is worth reaching: it retires #302's import prerequisite.
+
+        Skipped rather than failed when the suite is pointed at some other prebuilt name — the
+        interpreter is a property of `python-3.13`, not of the namespace.
+        """
+        if not _PREBUILT.startswith("python-"):
+            pytest.skip(f"{_PREBUILT} is not one of the Python images")
+        result = prebuilt.run(
+            prebuilt.sandbox.exec("python3 --version", working_directory="/", timeout=_EXEC_TIMEOUT)
+        )
+        assert result.exit_code == 0, result.stderr
+        assert result.stdout.strip().startswith("Python 3."), result.stdout
