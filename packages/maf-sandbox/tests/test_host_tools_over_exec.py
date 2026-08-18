@@ -1558,6 +1558,22 @@ class TestWhatSurvivesTheDeadline:
         assert written is not None, "the answer to a tool that had already acted was discarded"
         assert json.loads(written)["value"] == "late"
 
+    def test_the_documented_overhead_is_what_the_constants_add_up_to(self):
+        """The README quotes a total, and prose cannot notice a constant moving under it.
+
+        Five graces stack on the worst path: the response write above, the shared last look at
+        the marker and the output, the pid lookup, the signal, and the reclaim. A host sizes an
+        outer deadline from that number, and one set too tight loses the
+        `SandboxProgramTimeout` and cancels whatever dispatch is in flight — so a constant
+        changed without the sentence is a caller's bug, not a stale document.
+        """
+        worst = (
+            host_tools_over_exec._RESPONSE_WRITE_GRACE
+            + 3 * host_tools_over_exec._FINAL_READ_GRACE
+            + host_tools_over_exec._RECLAIM_GRACE
+        )
+        assert worst == 18.0, "the README's `timeout + 18s` no longer matches the constants"
+
 
 class TestTheLayoutsOwnPromise:
     @pytest.mark.parametrize("directory", ["work/run-1", "", "run-1"])
@@ -2656,13 +2672,14 @@ class _GuestThatRecordsTheKill(_ScriptedGuest):
 
 
 class TestStoppingARunThatOverran:
-    """A dispatched program that times out is killed rather than left going (#375).
+    """A dispatched program that overruns is signalled, and no more than signalled (#375).
 
-    The transport starts the program detached, so the timeout fires in the supervisor and not
-    inside an `exec` a backend could tear down with its container. What it has instead is the
-    pid the launcher wrote and the `exec` every other leg of this transport already runs on —
-    no protocol method, and no capability past the `EXEC` and `FILES_OUT` the dispatch path
-    requires anyway.
+    What these establish is that a `SIGKILL` was aimed at the pid the launcher wrote — the
+    most this transport can prove, for the reasons `_stop_the_program` sets out. The program
+    starts detached, so the timeout fires in the supervisor rather than inside an `exec` a
+    backend could tear down with its container; the pid and that same `exec` are what stopping
+    has to work with, which is why it needs no protocol method and no capability past the
+    `EXEC` and `FILES_OUT` the dispatch path already requires.
     """
 
     def test_the_program_is_killed_by_the_pid_the_launcher_wrote(self):
