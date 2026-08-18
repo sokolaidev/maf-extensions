@@ -82,8 +82,19 @@ from maf_sandbox_codeact import codeact_sandbox_spec, make_codeact_tools
 
 # Keyed by (scope, thread_id, agent_dir); constants here since this program serves one request.
 SCOPE = "samples"
-THREAD_ID = "15-acas-codeact-host-tools"
 AGENT_DIR = "analyst"
+
+#: A sandbox each, and the reason is act 5. Nothing deletes a run's transport files, so the
+#: dispatched route's responses — every state id, store list, sales row and product name —
+#: stay readable on the guest filesystem for anything that runs there afterwards. Sharing one
+#: sandbox would give the direct route's program a second road to the same data that this
+#: sample never measures, and the comparison rests on there being only one.
+#:
+#: Not fixable by cleaning up between the two: there is no way to delete a guest file (#438),
+#: which is the same gap act 5 reports. Two keys is what isolation looks like when deletion is
+#: not on the table.
+DISPATCH_THREAD = "15-acas-codeact-host-tools-dispatch"
+DIRECT_THREAD = "15-acas-codeact-host-tools-direct"
 
 #: Sample 14's image, available to the sandbox group as a disk image. The transport's launcher
 #: is POSIX shell and its shim is Python, so the guest needs `sh`, `nohup`, `mkdir`, `mv`,
@@ -421,9 +432,9 @@ def act_one_what_the_host_wired(ledger: Ledger) -> HostToolRegistry:
     return registry
 
 
-def codeact_for(router: SandboxRouter, registry: HostToolRegistry | None) -> list[Any]:
-    """`execute_code`, with or without the outward channel. The one argument that differs."""
-    context = make_caller_context(list_all_files, lambda: SCOPE, lambda: THREAD_ID)
+def codeact_for(router: SandboxRouter, registry: HostToolRegistry | None, thread: str) -> list[Any]:
+    """`execute_code`, with or without the outward channel, keyed to one route's sandbox."""
+    context = make_caller_context(list_all_files, lambda: SCOPE, lambda: thread)
     tools = make_codeact_tools(
         router,
         AGENT_DIR,
@@ -505,7 +516,7 @@ async def act_five_what_the_runs_left_behind(
     """
     print("== 5. What the runs left in the guest ==\n")
     spec = codeact_sandbox_spec(image=CODEACT_IMAGE, host_tools=registry)
-    sandbox = await router.acquire(SandboxKey(SCOPE, THREAD_ID, AGENT_DIR), spec)
+    sandbox = await router.acquire(SandboxKey(SCOPE, DISPATCH_THREAD, AGENT_DIR), spec)
     runs = await sandbox.list_dir(".", working_directory=spec.work_dir)
     directories = sorted(entry.path.rstrip("/").split("/")[-1] for entry in runs)
 
@@ -570,7 +581,7 @@ async def run() -> int:
             DISPATCH_ROUTE,
             env,
             credential,
-            codeact_for(router, registry),
+            codeact_for(router, registry, DISPATCH_THREAD),
             FROM_INSIDE,
             dispatch_ledger,
         )
@@ -579,7 +590,7 @@ async def run() -> int:
             DIRECT_ROUTE,
             env,
             credential,
-            [*codeact_for(router, None), *ordinary(direct_ledger)],
+            [*codeact_for(router, None, DIRECT_THREAD), *ordinary(direct_ledger)],
             FROM_THE_TOOL_LIST,
             direct_ledger,
         )
@@ -589,7 +600,12 @@ async def run() -> int:
         # Deletes rather than relying on the lifecycle timers — see sample 01's README. It is
         # also the only thing that removes the files act 5 counted, and the only thing that
         # stops a program a supervisor gave up on (#375).
-        deleted = await router.dispose_scope(SCOPE, THREAD_ID)
+        deleted = sum(
+            [
+                await router.dispose_scope(SCOPE, DISPATCH_THREAD),
+                await router.dispose_scope(SCOPE, DIRECT_THREAD),
+            ]
+        )
         print(f"{MEASURED}Disposed {deleted} sandbox(es).")
         # The backend holds pooled clients of its own, so disposing the sandbox is not the
         # whole teardown — samples 01, 03 and 14 close it the same way.

@@ -69,11 +69,11 @@ Oregon	TOTAL	3514.35
 
 == 5. What the runs left in the guest ==
 
-  [measured] run directories in the guest: 4
-  [measured] of those, runs that dispatched: 3
+  [measured] run directories in the guest: 2
+  [measured] of those, runs that dispatched: 2
   [measured] transport files left behind: 63, of which answered calls: 21
 
-  [measured] Disposed 1 sandbox(es).
+  [measured] Disposed 2 sandbox(es).
 """
 
 
@@ -214,6 +214,57 @@ class TestTheCapIsJudgedAgainstTheWorkload:
         assert any("cannot finish" in r for r in reasons)
 
 
+class TestTheDenominatorIsNotTheRunsToChoose:
+    """A self-consistent output agrees with itself; the dataset is what settles it."""
+
+    def test_zero_of_zero_on_every_line_fails(self):
+        """Direct has carried == expected, dispatch has zero, and act 4 agrees with both."""
+        zeroed = _HEALTHY
+        for old, new in (
+            (
+                "dispatch route: sales figures the model wrote into code: 0 of 12",
+                "dispatch route: sales figures the model wrote into code: 0 of 0",
+            ),
+            (
+                "direct route: sales figures the model wrote into code: 12 of 12",
+                "direct route: sales figures the model wrote into code: 0 of 0",
+            ),
+            (
+                "sales figures the model handled, dispatched: 0 of 12",
+                "sales figures the model handled, dispatched: 0 of 0",
+            ),
+            (
+                "sales figures the model handled, direct:     12 of 12",
+                "sales figures the model handled, direct:     0 of 0",
+            ),
+        ):
+            zeroed = zeroed.replace(old, new)
+        reasons = check.assess(zeroed)
+        # Two branches police the denominator — the route's own line and act 4's restatement of
+        # it — and both say "the dataset has 12". Asserting the shared phrase lets either one
+        # cover for the other, so each is named by the wording only it produces.
+        assert any("scored itself out of 0 sales figures" in r for r in reasons)
+        assert any("act 4 scores the" in r for r in reasons)
+
+    def test_a_smaller_but_consistent_dataset_fails(self):
+        """`7 of 7` is internally sound and describes a dataset this sample does not have."""
+        shrunk = _HEALTHY
+        for old, new in (
+            (
+                "direct route: sales figures the model wrote into code: 12 of 12",
+                "direct route: sales figures the model wrote into code: 7 of 7",
+            ),
+            (
+                "sales figures the model handled, direct:     12 of 12",
+                "sales figures the model handled, direct:     7 of 7",
+            ),
+        ):
+            shrunk = shrunk.replace(old, new)
+        reasons = check.assess(shrunk)
+        assert any("scored itself out of 7 sales figures" in r for r in reasons)
+        assert any("act 4 scores the" in r for r in reasons)
+
+
 class TestAMissingMeasurementIsNotAMeasurement:
     def test_a_token_count_of_none_fails(self):
         """Usage reporting disappearing is a run that measured nothing, not a passing one."""
@@ -299,7 +350,7 @@ class TestTheRunsLeftTheirTrafficBehind:
             "no transport traffic" in r
             for r in check.assess(
                 _swap(
-                    "[measured] of those, runs that dispatched: 3",
+                    "[measured] of those, runs that dispatched: 2",
                     "[measured] of those, runs that dispatched: 0",
                 )
             )
@@ -333,7 +384,7 @@ class TestTheRunsLeftTheirTrafficBehind:
             "not arithmetic" in r
             for r in check.assess(
                 _swap(
-                    "[measured] of those, runs that dispatched: 3",
+                    "[measured] of those, runs that dispatched: 2",
                     "[measured] of those, runs that dispatched: 9",
                 )
             )
@@ -473,9 +524,9 @@ class TestAModelCannotAnswerForTheHost:
         assert any("figures written" in r for r in check.assess(forged))
 
     def test_a_second_copy_of_a_line_is_refused_rather_than_resolved(self):
-        doubled = _HEALTHY.replace(
-            "  [measured] Disposed 1 sandbox(es).",
-            "  [measured] Disposed 4 sandbox(es).\n  [measured] Disposed 1 sandbox(es).",
+        doubled = _swap(
+            "  [measured] Disposed 2 sandbox(es).",
+            "  [measured] Disposed 4 sandbox(es).\n  [measured] Disposed 2 sandbox(es).",
         )
         assert any("none of them can be trusted" in r for r in check.assess(doubled))
 
@@ -485,7 +536,7 @@ class TestTheBillableSandboxWentAway:
         assert any(
             "bills until" in r
             for r in check.assess(
-                _swap("[measured] Disposed 1 sandbox(es).", "[measured] Disposed 0 sandbox(es).")
+                _swap("[measured] Disposed 2 sandbox(es).", "[measured] Disposed 1 sandbox(es).")
             )
         )
 

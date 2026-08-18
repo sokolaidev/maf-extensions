@@ -197,9 +197,10 @@ jobs:
     # 14 and 15),
     # `maf-sandbox-bicep` one (01), everything else none. Count sandboxes rather than jobs, since
     # `acas-e2e` uses two — one shared by its probes, one the lifecycle test disposes as the thing
-    # under test. So a train releasing all four peaks at sixteen concurrent billable sandboxes
-    # for the twenty minutes the timeout allows, where it was thirteen before sample 15, nine
-    # before the live suite and six before sample 14. Total spend is unchanged by the concurrency; only the peak moved. (#325.)
+    # under test — and so does sample-15, a sandbox per route. So a train releasing all four
+    # peaks at nineteen concurrent billable sandboxes for the twenty minutes the timeout
+    # allows, where it was thirteen before sample 15, nine before the live suite and six
+    # before sample 14. Total spend is unchanged by the concurrency; only the peak moved. (#325.)
     # Empty input (verify-everything) or a package sample-03 actually exercises: the router
     # (maf-sandbox) and the backend it runs on (maf-sandbox-acas) both affect it, and so does
     # its own package (maf-sandbox-codeact); a maf-sandbox-bicep or maf-sandbox-wslc release
@@ -1099,9 +1100,12 @@ jobs:
     # answered at all therefore proves the launcher detached and the supervisor took over, which
     # is exactly what declaring the capability claims here (#365).
     #
-    # **The fourth billable job in this workflow.** One sandbox, deleted by the sample and
-    # checked by the assertion — a dispatched program that hangs is #375, where nothing can
-    # dispose the sandbox holding it, so the footer count is the thing that would notice.
+    # **The fourth billable job in this workflow**, and it creates two sandboxes rather than
+    # one: a route each, because nothing deletes a run's transport files and a shared sandbox
+    # would let the direct route's program read the dispatched route's responses off the guest
+    # filesystem (#438). Both are deleted by the sample and checked by the assertion — a
+    # dispatched program that hangs is #375, where nothing can dispose the sandbox holding it,
+    # so the footer count is the thing that would notice.
     #
     # Runs for the router (maf-sandbox), the backend (maf-sandbox-acas) and the kind that owns
     # the dispatch wiring (maf-sandbox-codeact) — the same three as samples 03 and 14.

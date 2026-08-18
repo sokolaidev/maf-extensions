@@ -56,6 +56,15 @@ _STATES = 2
 #: so a run where the shape collapsed is a run that measured something else.
 _STAGES = 4
 
+#: Distinct sales figures in the dataset. Held here rather than taken from the sample's own
+#: denominator: `0 of 0` is self-consistent on every line and would otherwise pass, as would
+#: `7 of 7`. A check that reads its expectations off the output it is checking agrees with
+#: whatever it is given.
+_FIGURES = 12
+
+#: One sandbox per route, so the routes cannot read each other's leftovers.
+_SANDBOXES = 2
+
 _F = re.MULTILINE
 
 
@@ -200,6 +209,14 @@ def _assess_who_carried_the_figures(output: str) -> list[str]:
     found, failures = _per_route(output, _WROTE, "figures written")
     wrote = {route: (int(match[1]), int(match[2])) for route, match in found.items()}
 
+    for route, (_, expected) in wrote.items():
+        if expected != _FIGURES:
+            failures.append(
+                f"{route} scored itself out of {expected} sales figures where the dataset has "
+                f"{_FIGURES} — a denominator the run chose is one the run can satisfy, and "
+                "`0 of 0` agrees with itself on every line in this act"
+            )
+
     if wrote.get(_DISPATCH, (0, 0))[0] != 0:
         failures.append(
             f"the dispatched route wrote {wrote[_DISPATCH][0]} sales figure(s) into a tool "
@@ -227,6 +244,11 @@ def _assess_who_carried_the_figures(output: str) -> list[str]:
             [m for m in _HANDLED.findall(output) if m[0] == short], f"act 4 {short} restatement"
         )
         failures.extend(problems)
+        if match is not None and int(match[2]) != _FIGURES:
+            failures.append(
+                f"act 4 scores the {route} out of {match[2]} sales figures where the dataset "
+                f"has {_FIGURES}"
+            )
         if match is not None and route in wrote and (int(match[1]), int(match[2])) != wrote[route]:
             failures.append(
                 f"act 4 says the model handled {match[1]} of {match[2]} figure(s) on the "
@@ -314,9 +336,10 @@ def _assess_the_sandbox_went_away(output: str) -> list[str]:
     match, failures = _once(_DISPOSED.findall(output), "Disposed")
     if match is None:
         return failures
-    if int(match) != 1:
+    if int(match) != _SANDBOXES:
         failures.append(
-            f"{match} sandbox(es) disposed where the sample acquires one — a sandbox this "
+            f"{match} sandbox(es) disposed where the sample acquires {_SANDBOXES}, one per "
+            "route so neither can read the other's leftovers — a sandbox this "
             "sample leaves behind bills until the lifecycle timers reach it, and it is also "
             "the only thing that removes the files act 5 counted"
         )

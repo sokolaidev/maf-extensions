@@ -101,7 +101,9 @@ Wall clock, tokens and lookup counts are **recorded and never bounded**, and wha
 - `mcr.microsoft.com/devcontainers/python:3.13-bookworm` available to that group — sample 14's image, so a group set up for that one already has it. The launcher is POSIX shell and the shim is Python, so the guest needs **`sh`, `nohup`, `mkdir`, `mv`, `printf` and `python3`** — the launcher creates the working directory, redirects output and renames the exit marker into place. A distroless or Windows image cannot serve this whatever it declares.
 - An Azure OpenAI deployment. No key: `az login` is enough.
 
-**This creates a billable sandbox.** One, serving both acts and act 5's enumeration, disposed at the end rather than left to the lifecycle timers — the check fails the run if it was not.
+**This creates two billable sandboxes**, one per route, both disposed at the end rather than left to the lifecycle timers — the check fails the run if they were not.
+
+Two rather than one because nothing deletes a run's transport files. Sharing a sandbox would leave the dispatched route's responses — every id, store list and sales row — readable on the guest filesystem for the direct route's program, which is a second road to the same data that this sample never measures and the comparison assumes does not exist. Cleaning up between them is not available: there is no way to delete a guest file, which is the same gap ([#438](https://github.com/sokolaidev/maf-extensions/issues/438)) act 5 reports.
 
 ## Environment
 
