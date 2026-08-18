@@ -64,15 +64,15 @@ def _tagged(pattern: str) -> re.Pattern[str]:
     return re.compile(rf"^\s*{re.escape(_TAG)}\s+{pattern}", _F)
 
 
-_CAP = _tagged(r"dispatch cap for the run:\s+(\d+)\s+\(the walk needs\s+(\d+)")
+_CAP = _tagged(r"dispatch cap for the run:\s+(\d+)\s+\(the walk needs\s+(\d+)[^,]*,\s+(\d+)")
 _TRIPS = _tagged(rf"({_ANY_ROUTE}):\s+(\d+)\s+lookup\(s\) over\s+(\d+)\s+model round trip\(s\)")
 _SHAPE = _tagged(rf"({_ANY_ROUTE}):\s+tool calls per model round trip:\s+\[([^\]]*)\]")
-_COST = _tagged(rf"({_ANY_ROUTE}):\s+([\d.]+)s,\s+(\d+|None)\s+tokens")
+_COST = _tagged(rf"({_ANY_ROUTE}):\s+([\d.]+)s,\s+(\d+)\s+tokens")
 _TOTALS = _tagged(rf"({_ANY_ROUTE}):\s+state totals the program printed:\s+(\d+)\s+of\s+(\d+)")
 _WROTE = _tagged(
     rf"({_ANY_ROUTE}):\s+sales figures the model wrote into code:\s+(\d+)\s+of\s+(\d+)"
 )
-_HANDLED = _tagged(r"sales figures the model handled,\s+(dispatched|direct):\s+(\d+)\s+of\s+\d+")
+_HANDLED = _tagged(r"sales figures the model handled,\s+(dispatched|direct):\s+(\d+)\s+of\s+(\d+)")
 _ROUND_TRIP = _tagged(
     rf"({_ANY_ROUTE}):\s+round trip:\s+(\d+)\s+gap\(s\),\s+min\s+([\d.]+)s,\s+"
     r"median\s+([\d.]+)s,\s+max\s+([\d.]+)s"
@@ -121,11 +121,21 @@ def _assess_the_cap_was_budgeted(output: str) -> list[str]:
     match, failures = _once(_CAP.findall(output), "dispatch cap")
     if match is None:
         return failures
-    cap, minimum = int(match[0]), int(match[1])
+    cap, minimum, naive = int(match[0]), int(match[1]), int(match[2])
     if cap < minimum:
         failures.append(
             f"the run allowed {cap} dispatches where the walk needs at least {minimum} — the "
             "program cannot finish, and the sample would be measuring a truncated one"
+        )
+    elif cap <= naive:
+        # Against the naive figure rather than the theoretical best, and rather than against
+        # the registry's own default: a cap that only clears the efficient path passes on the
+        # runs where the model happens to cache its lookups and truncates the ones where it
+        # does not, which is the failure this act exists to have already met.
+        failures.append(
+            f"the run allowed {cap} dispatches against {naive} for the same walk written "
+            "without caching. A budget that only fits the efficient program is decided by how "
+            "the model felt, and this sample is here because the default does not fit at all"
         )
     return failures
 
@@ -164,6 +174,16 @@ def _assess_direct_pays_per_stage(output: str) -> list[str]:
         if int(match[1]) == 0:
             failures.append(f"{route} made no lookups at all, so it answered from somewhere else")
 
+    for route, shape in shapes.items():
+        groups = [g for g in shape[1].split(",") if g.strip()]
+        # Both numbers are the same list counted two ways, so a disagreement is not a finding
+        # about the run — it is one of the two lines not describing it.
+        if route in found and len(groups) != int(found[route][2]):
+            failures.append(
+                f"{route} reports {found[route][2]} model round trip(s) and a shape with "
+                f"{len(groups)} entr(y/ies); the sample derives both from one list, so these "
+                "cannot both be from this run"
+            )
     if _DIRECT in shapes:
         groups = [g for g in shapes[_DIRECT][1].split(",") if g.strip()]
         if len(groups) < _STAGES:
@@ -207,11 +227,11 @@ def _assess_who_carried_the_figures(output: str) -> list[str]:
             [m for m in _HANDLED.findall(output) if m[0] == short], f"act 4 {short} restatement"
         )
         failures.extend(problems)
-        if match is not None and route in wrote and int(match[1]) != wrote[route][0]:
+        if match is not None and route in wrote and (int(match[1]), int(match[2])) != wrote[route]:
             failures.append(
-                f"act 4 says the model handled {match[1]} figure(s) on the {route} where the "
-                f"route itself reported {wrote[route][0]} — the two lines describe one run "
-                "and disagree"
+                f"act 4 says the model handled {match[1]} of {match[2]} figure(s) on the "
+                f"{route} where the route itself reported {wrote[route][0]} of "
+                f"{wrote[route][1]} — the two lines describe one run and disagree"
             )
     return failures
 

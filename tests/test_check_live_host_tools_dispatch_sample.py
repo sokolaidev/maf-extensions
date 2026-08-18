@@ -148,9 +148,83 @@ class TestDirectPaysPerStage:
                 _swap(
                     "[measured] dispatch route: 21 lookup(s) over 3 model round trip(s)",
                     "[measured] dispatch route: 29 lookup(s) over 4 model round trip(s)",
-                ).replace("round trip: 20 gap(s)", "round trip: 28 gap(s)")
+                )
+                .replace("round trip: 20 gap(s)", "round trip: 28 gap(s)")
+                .replace(
+                    "dispatch route: tool calls per model round trip: [1, 1, 1]",
+                    "dispatch route: tool calls per model round trip: [1, 1, 1, 1]",
+                )
             )
             == []
+        )
+
+
+class TestTwoViewsOfOneListHaveToAgree:
+    """The trip count and the shape are the same list counted twice."""
+
+    @pytest.mark.parametrize(
+        ("route", "shape"),
+        [("dispatch route", "[1, 1, 1]"), ("direct route", "[2, 2, 5, 3, 1]")],
+    )
+    def test_a_shape_shorter_than_the_trip_count_fails(self, route: str, shape: str):
+        trimmed = ", ".join(shape.strip("[]").split(", ")[:-1])
+        assert any(
+            "cannot both be from this run" in r
+            for r in check.assess(
+                _swap(
+                    f"[measured] {route}: tool calls per model round trip: {shape}",
+                    f"[measured] {route}: tool calls per model round trip: [{trimmed}]",
+                )
+            )
+        )
+
+
+class TestTheCapIsJudgedAgainstTheWorkload:
+    """The default fits the efficient program and truncates the careless one."""
+
+    def test_the_registry_default_fails(self):
+        assert any(
+            "only fits the efficient program" in r
+            for r in check.assess(
+                _swap(
+                    "[measured] dispatch cap for the run: 32 (the walk needs 12",
+                    "[measured] dispatch cap for the run: 16 (the walk needs 12",
+                )
+            )
+        )
+
+    def test_a_cap_at_the_naive_figure_fails(self):
+        assert any(
+            "only fits the efficient program" in r
+            for r in check.assess(
+                _swap(
+                    "[measured] dispatch cap for the run: 32 (the walk needs 12",
+                    "[measured] dispatch cap for the run: 21 (the walk needs 12",
+                )
+            )
+        )
+
+    def test_a_cap_below_the_minimum_still_reports_the_truncation(self):
+        reasons = check.assess(
+            _swap(
+                "[measured] dispatch cap for the run: 32 (the walk needs 12",
+                "[measured] dispatch cap for the run: 8 (the walk needs 12",
+            )
+        )
+        assert any("cannot finish" in r for r in reasons)
+
+
+class TestAMissingMeasurementIsNotAMeasurement:
+    def test_a_token_count_of_none_fails(self):
+        """Usage reporting disappearing is a run that measured nothing, not a passing one."""
+        assert (
+            check.assess(
+                _swap(
+                    "[measured] dispatch route: 48.07s, 6270 tokens",
+                    "[measured] dispatch route: 48.07s, None tokens",
+                )
+            )
+            != []
         )
 
 
@@ -174,6 +248,18 @@ class TestWhoCarriedTheFigures:
             "[measured] sales figures the model handled, direct:     0 of 12",
         )
         assert any("not the comparison this sample makes" in r for r in check.assess(broken))
+
+    def test_act_four_has_to_agree_on_the_denominator_too(self):
+        """`12 of 7` against `12 of 12` agrees on the numerator and describes another dataset."""
+        assert any(
+            "disagree" in r
+            for r in check.assess(
+                _swap(
+                    "[measured] sales figures the model handled, direct:     12 of 12",
+                    "[measured] sales figures the model handled, direct:     12 of 7",
+                )
+            )
+        )
 
     def test_act_four_has_to_agree(self):
         assert any(
@@ -265,8 +351,12 @@ class TestTheRunsLeftTheirTrafficBehind:
         assert check.assess(_without(line)) != []
 
 
-class TestTheCasesTheReviewNamed:
-    """Three holes a length check or a positive-count check would leave open."""
+class TestACountIsNotAMatch:
+    """Holes a length check or a positive-count check leaves open.
+
+    Each of these passes a naive implementation: the totals agree, the counts are non-zero and
+    the number of lines is right, while the thing being counted is the wrong thing.
+    """
 
     def test_a_partial_direct_count_fails(self):
         """1-11 of 12 is not "the model carried the data", it is an unmeasured road."""
