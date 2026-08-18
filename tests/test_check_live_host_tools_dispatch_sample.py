@@ -3,7 +3,7 @@
 `_HEALTHY` is a real run of `samples/15_acas_codeact_host_tools` against a live ACAS sandbox
 and a live model, verbatim apart from the two tables the model produced.
 
-The suite is organised around what the check is *allowed* to fail a release for. Sixteen live
+The suite is organised around what the check is *allowed* to fail a release for. Seventeen live
 runs went into choosing that: the figures below moved between them — 18 to 29 lookups, 35s to
 87s, two to four dispatched tool-calling rounds — and what did not move is what is asserted.
 
@@ -223,6 +223,27 @@ class TestDirectPaysPerStage:
                 _swap(
                     "[measured] direct route: tool calls per round: [2, 2, 5, 3, 1]",
                     "[measured] direct route: tool calls per round: [3, 3, 3, 3, 1]",
+                )
+            )
+        )
+
+    def test_a_dispatched_batch_of_more_than_one_fails(self):
+        """One message asking for two programs runs them at once, and one ledger times both.
+
+        The round-trip summary drops one gap per program boundary, which is only the largest
+        gaps while the programs are serial. Interleaved, a gap can span two programs and the
+        summary stops describing round trips. Self-consistent otherwise — one round, one entry,
+        two programs, and act 5 still holds two that dispatched.
+        """
+        assert any(
+            "run concurrently" in r
+            for r in check.assess(
+                _swap(
+                    "[measured] dispatch route: tool calls per round: [1, 1]",
+                    "[measured] dispatch route: tool calls per round: [2]",
+                ).replace(
+                    "[measured] dispatch route: 25 lookup(s) over 2 tool-calling round(s)",
+                    "[measured] dispatch route: 25 lookup(s) over 1 tool-calling round(s)",
                 )
             )
         )

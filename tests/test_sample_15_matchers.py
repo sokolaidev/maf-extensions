@@ -10,6 +10,7 @@ table makes every assertion above it agree with a run that did not happen.
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
@@ -129,6 +130,69 @@ class TestRowsIn:
             for line in (state, *(f"  {name} {value}" for name, value in products.items()))
         )
         assert sample.rows_in(grouped) == len(sample.PRODUCT_CELLS)
+
+
+class _Content:
+    def __init__(self, arguments: str) -> None:
+        self.arguments = arguments
+
+
+class _Message:
+    def __init__(self, *arguments: str) -> None:
+        self.contents = [_Content(one) for one in arguments]
+
+
+class _Response:
+    def __init__(self, *messages: _Message) -> None:
+        self.messages = list(messages)
+
+
+class TestAmountsTheModelWrote:
+    """A figure the model carried is a value it wrote down, not a string that appears."""
+
+    def test_a_whole_amount_written_as_an_integer_counts(self):
+        """`980.00` is the figure; `980` is the model writing it into its program."""
+        assert sample.amounts_the_model_wrote(_Response(_Message('{"code": "x = [980]"}'))) == 1
+
+    @pytest.mark.parametrize("spelling", ["980", "980.0", "980.00", "980.000"])
+    def test_every_spelling_of_one_amount_is_one_figure(self, spelling: str):
+        written = _Response(_Message('{"code": "x = [' + spelling + ']"}'))
+        assert sample.amounts_the_model_wrote(written) == 1
+
+    @pytest.mark.parametrize("longer", ["1980.0", "1088.1", "112.05"])
+    def test_a_number_that_merely_contains_one_is_not_that_figure(self, longer: str):
+        """`1980.0` holds the characters of `980.0` and is a different number.
+
+        The dispatched route asserts this count is zero, so a figure found where none was
+        written is a run failed for carrying nothing.
+        """
+        assert sample.amounts_the_model_wrote(_Response(_Message('{"x": ' + longer + "}"))) == 0
+
+    def test_an_identifier_is_not_a_figure(self):
+        """The digits of `PRD-1` and `STO-202` are names, and no amount is worth 202."""
+        arguments = "{\"code\": \"store_sales('STO-202'); product_name('PRD-1')\"}"
+        assert sample.amounts_the_model_wrote(_Response(_Message(arguments))) == 0
+
+    def test_the_count_is_distinct_figures_across_every_call(self):
+        first, second = _Message('{"x": 12.05}'), _Message('{"x": 12.05}', '{"y": 47.9}')
+        assert sample.amounts_the_model_wrote(_Response(first, second)) == 2
+
+    def test_a_response_with_no_tool_calls_carried_nothing(self):
+        assert sample.amounts_the_model_wrote(_Response()) == 0
+
+
+class TestTheConversationIds:
+    """One conversation per route and per run: `dispose_scope` deletes by label, not by owner."""
+
+    def test_each_route_and_each_run_gets_its_own(self):
+        assert sample.DISPATCH_THREAD != sample.DIRECT_THREAD
+        expected = os.environ.get("GITHUB_RUN_ID") or f"local-{os.getpid()}"
+        assert expected in sample.DISPATCH_THREAD
+        assert expected in sample.DIRECT_THREAD
+
+    def test_both_fit_the_label_the_backend_writes(self):
+        """Over `_LABEL_VALUE_MAX` (63) an ACAS label becomes a digest, which is unreadable."""
+        assert max(len(sample.DISPATCH_THREAD), len(sample.DIRECT_THREAD)) <= 63
 
 
 class TestTheProgramThatAnswered:

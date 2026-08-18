@@ -57,6 +57,7 @@ the routes cannot share one.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import sys
 import time
@@ -98,8 +99,21 @@ AGENT_DIR = "analyst"
 #: Not fixable by cleaning up between the two: there is no way to delete a guest file (#438),
 #: which is the same gap act 5 reports. Two keys is what isolation looks like when deletion is
 #: not on the table.
-DISPATCH_THREAD = "15-acas-codeact-host-tools-dispatch"
-DIRECT_THREAD = "15-acas-codeact-host-tools-direct"
+#: And a run in the id, not only a route. `dispose_scope` selects on the labels the backend
+#: stamped and asks the *service* for them, not this process, so two runs sharing a thread id
+#: share a delete. `verify-live` keys its concurrency by package (#325) and this job runs for
+#: three of them, so a release train has three of these in flight against one sandbox group:
+#: with a fixed id the first to finish deletes the other two's running sandboxes and counts
+#: them as its own. Every GitHub job has `GITHUB_RUN_ID` and `GITHUB_RUN_ATTEMPT`; a local run
+#: has neither and takes the process id, which is as unique as one machine needs.
+#:
+#: The cost is that an id nothing reuses is an id nothing tidies: a run killed before act 6
+#: leaves a sandbox no later run will purge, and it bills until the group's lifecycle timers
+#: reach it. That is the same #375 exposure the footer count exists to make visible.
+_RUN = os.environ.get("GITHUB_RUN_ID") or f"local-{os.getpid()}"
+_ATTEMPT = os.environ.get("GITHUB_RUN_ATTEMPT", "1")
+DISPATCH_THREAD = f"15-host-tools-{_RUN}-{_ATTEMPT}-dispatch"
+DIRECT_THREAD = f"15-host-tools-{_RUN}-{_ATTEMPT}-direct"
 
 #: Sample 14's image, available to the sandbox group as a disk image. The transport's launcher
 #: is POSIX shell and its shim is Python, so the guest needs `sh`, `nohup`, `mkdir`, `mv`,
@@ -147,13 +161,10 @@ _RESPONSE_SUFFIX = ".response.json"
 DISPATCH_ROUTE = "dispatch route"
 DIRECT_ROUTE = "direct route"
 
-#: Every sales figure, in both spellings a float renders as, and the distinct set behind them.
-#: Act 4 reports how many the model had to write down against how many there are, so a run
-#: that carried some but not all is visible rather than rounded to "some".
-AMOUNTS = {f"{amount:.2f}" for rows in SALES.values() for _, amount in rows} | {
-    str(amount) for rows in SALES.values() for _, amount in rows
-}
-AMOUNTS_EXPECTED = {f"{amount:.2f}" for rows in SALES.values() for _, amount in rows}
+#: Every sales figure, as a number. Act 4 reports how many the model had to write down
+#: against how many there are, so a run that carried some but not all is visible rather than
+#: rounded to "some".
+AMOUNTS = {amount for rows in SALES.values() for _, amount in rows}
 
 
 def truth() -> dict[str, dict[str, float]]:
@@ -270,9 +281,12 @@ class Ledger:
         separate programs against the same ledger, and the gap between the last call of one and
         the first call of the next contains a model turn and a launcher, not a file round trip.
 
-        There are exactly `programs - 1` such boundaries and they are the largest gaps in the
-        set — a model turn is seconds where the transport is about one — so dropping the
-        largest that many times removes them. The assumption is stated rather than hidden: if a
+        There are exactly `programs - 1` such boundaries **while the programs run one after
+        another**, and they are the largest gaps in the set — a model turn is seconds where the
+        transport is about one — so dropping the largest that many times removes them. Calls in
+        one assistant message run concurrently, so a route batching two `execute_code` calls
+        would interleave two programs in this one ledger and none of that holds; the live check
+        refuses such a run rather than this code guessing which gap belongs to whom. The assumption is stated rather than hidden: if a
         genuinely slow transport gap ever exceeded a boundary, this drops that instead and the
         boundary shows up in the maximum, which is visible rather than silent.
         """
@@ -395,6 +409,13 @@ def calls_per_message(response: object) -> list[int]:
     return grouped
 
 
+#: A number as a tool call's arguments carry one. Those are JSON, so no thousands separators,
+#: and no requirement of a decimal point either: `980`, `980.0` and `980.00` are one figure
+#: written down three ways. The lookbehind keeps the digits of an identifier — `PRD-1`,
+#: `STO-202` — from reading as a value the model chose.
+_WRITTEN_NUMBER = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?")
+
+
 def amounts_the_model_wrote(response: object) -> int:
     """How many distinct sales figures the model itself put into a tool call.
 
@@ -406,13 +427,18 @@ def amounts_the_model_wrote(response: object) -> int:
 
     A dispatched program may still *print* a figure, and then it is in the transcript by that
     program's choice rather than by the transport's design. Different claim, different line.
+
+    By value, for the reason `figures_in` is: `980.00` written as `980` is the same figure
+    carried, and `1980.0` is not that figure at all. Both directions matter here, because both
+    routes assert against this count — the dispatched one that it is zero.
     """
-    seen: set[str] = set()
+    written: set[float] = set()
     for message in getattr(response, "messages", []):
         for content in getattr(message, "contents", []) or []:
             body = str(getattr(content, "arguments", "") or "")
-            seen |= {amount for amount in AMOUNTS if amount in body}
-    return len({amount.rstrip("0").rstrip(".") for amount in seen})
+            numbers = [float(found) for found in _WRITTEN_NUMBER.findall(body)]
+            written |= {want for want in AMOUNTS if any(abs(got - want) < 0.005 for got in numbers)}
+    return len(written)
 
 
 #: A decimal number as a program prints one: thousands separators, and the sign, without
@@ -518,8 +544,7 @@ def report(
     print(f"{MEASURED}{route}: table rows the program printed: {rows} of {len(PRODUCT_CELLS)}")
     carried = amounts_the_model_wrote(response)
     print(
-        f"{MEASURED}{route}: sales figures the model wrote into code: "
-        f"{carried} of {len(AMOUNTS_EXPECTED)}"
+        f"{MEASURED}{route}: sales figures the model wrote into code: {carried} of {len(AMOUNTS)}"
     )
     return carried
 
@@ -601,7 +626,7 @@ async def one_route(
 def act_four_what_the_round_trips_bought(dispatched: int, direct: int) -> None:
     """The comparison, once correctness has stopped being the variable."""
     print("== 4. What the round trips bought ==\n")
-    total = len(AMOUNTS_EXPECTED)
+    total = len(AMOUNTS)
     # "wrote into code", not "handled": the dispatched program's printed table goes back to
     # the model as a tool result, and it carries figures. What never happens on that route is
     # the model putting one into a call of its own, which is the narrower thing measured here.

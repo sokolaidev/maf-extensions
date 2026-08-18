@@ -521,6 +521,18 @@ def _assess_the_round_trips(output: str) -> list[str]:
     # both routes at once; here it only means the programs cannot be summed.
     if groups and all(entry.isdigit() for entry in groups) and dispatching is not None:
         programs = sum(int(g) for g in groups)
+        # Dropping one gap per boundary assumes the programs ran one after another. The router's
+        # own contract says they do not have to: "the function calls in a single assistant
+        # message are executed concurrently" — so a message asking for two `execute_code` calls
+        # runs two programs at once, and their dispatches interleave in the one ledger that
+        # times them. The gaps then span two programs and the largest are no longer boundaries.
+        if any(int(g) > 1 for g in groups):
+            failures.append(
+                f"the dispatched route asked for {max(int(g) for g in groups)} tool call(s) in "
+                "one message, and on this route those are all `execute_code`. Calls in one "
+                "message run concurrently, so those programs interleave in the ledger that "
+                "times the gaps and the round-trip summary above is not measuring round trips"
+            )
         if programs != dispatching:
             failures.append(
                 f"the dispatched route ran {programs} program(s) and the guest holds "
