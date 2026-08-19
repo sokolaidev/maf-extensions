@@ -17,7 +17,7 @@ import posixpath
 import shlex
 from collections.abc import Mapping, Sequence
 from hashlib import sha256
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from maf_sandbox import (
     Capability,
@@ -25,6 +25,8 @@ from maf_sandbox import (
     EntryKind,
     ExecResult,
     Isolation,
+    Sandbox,
+    SandboxBackend,
     SandboxEntry,
     SandboxKey,
     SandboxLimits,
@@ -332,6 +334,48 @@ class _AcasSandbox:
         guest, relative = _confined(path, working_directory)
         await self._refuse_symlinked_parents(guest, working_directory=working_directory)
         return await self._stat_guest(guest, relative)
+
+    async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
+        """Delete ``path`` through the data plane's own ``delete_file`` — no shell, no ``rm``.
+
+        **A link is refused rather than removed**, which the protocol does not allow — so this
+        backend does not declare :data:`~maf_sandbox.Capability.FILES_DELETE`. :meth:`read_file`
+        records that the service follows a link in the final component as much as in the
+        parents, and an HTTP ``DELETE`` promises nothing else, so removing one could delete
+        what the guest pointed at. The mechanism is here and unadvertised until the live suite
+        measures that behaviour; a capability is a promise, and this one cannot be kept yet.
+        """
+        from azure.core.exceptions import ResourceNotFoundError
+
+        guest = confine_guest_path(path, working_directory)
+        await self._refuse_symlinked_parents(guest, working_directory=working_directory)
+        if posixpath.normpath(guest) == posixpath.normpath(working_directory):
+            raise ValueError(
+                f"refusing to remove the working directory itself: {working_directory}"
+            )
+        planted = await self._stat_guest(guest, posixpath.normpath(path))
+        if planted is not None and planted.kind is EntryKind.SYMLINK:
+            raise ValueError(
+                f"refusing to remove {path!r}: it is a link, and whether this service unlinks "
+                "one or follows it on a delete is unverified — it follows one on a read"
+            )
+        try:
+            # Bounded like every other call on this data plane: this one runs from a `finally`,
+            # where a wedged service would otherwise hold the caller's turn open with the run's
+            # own failure still unreported.
+            await asyncio.wait_for(
+                self._sc.delete_file(guest, recursive=recursive),
+                timeout=self._read_timeout,
+            )
+        except ResourceNotFoundError:
+            return
+        except TimeoutError:
+            raise
+        except Exception as refused:
+            # `azure.core` raises its own hierarchy, and `HttpResponseError` is no `OSError`.
+            # Chained rather than interpolated: `error_detail` enriches with the response body,
+            # and this one is raised at a caller rather than logged.
+            raise OSError(f"could not remove {path}: {type(refused).__name__}") from refused
 
     async def _stat_guest(self, guest: str, relative: str) -> SandboxEntry | None:
         """Stat an absolute guest path, with no confinement check of its own.
@@ -806,3 +850,13 @@ class AcasSandboxBackend:
                 error_detail(exc),
             )
         return ids
+
+
+# The package's strict pyright pass type-checks this assignment. ``runtime_checkable`` tests
+# member *presence* only, so a narrowed signature or a missing method passes `isinstance` and
+# fails here instead — in the package where the divergence would be introduced.
+if TYPE_CHECKING:
+    _: tuple[SandboxBackend, type[Sandbox]] = (
+        AcasSandboxBackend(AcasSandboxConfig(endpoint="https://sandbox.invalid")),
+        _AcasSandbox,
+    )

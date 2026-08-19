@@ -434,6 +434,138 @@ class TestInProcessSandboxListDir:
         assert asyncio.run(sandbox.list_dir(".", working_directory="/maf-sandbox/work")) == ()
 
 
+class TestInProcessSandboxRemove:
+    """The in-process reading of :meth:`Sandbox.remove`. Shared probes are #450."""
+
+    def test_a_path_that_is_not_there_is_success(self):
+        sandbox = InProcessSandbox()
+        asyncio.run(sandbox.remove("gone.txt", working_directory="/maf-sandbox/work"))
+
+    def test_a_file_is_removed(self):
+        sandbox = InProcessSandbox()
+        asyncio.run(sandbox.write_file("/maf-sandbox/work/a.txt", "1"))
+        asyncio.run(sandbox.remove("a.txt", working_directory="/maf-sandbox/work"))
+        assert (
+            asyncio.run(sandbox.stat_file("a.txt", working_directory="/maf-sandbox/work")) is None
+        )
+
+    def test_a_link_is_removed_and_not_followed(self):
+        """The link goes; whatever it names does not.
+
+        A removal that resolved the final component would unlink a target the guest chose,
+        and unlike a read, nothing has to come back for the damage to be done.
+        """
+        sandbox = InProcessSandbox(
+            seed_files={
+                "/maf-sandbox/work/link": EntryKind.SYMLINK,
+                "/maf-sandbox/work/target.txt": "kept",
+            }
+        )
+        asyncio.run(sandbox.remove("link", working_directory="/maf-sandbox/work"))
+        assert "/maf-sandbox/work/link" not in sandbox.symlinks
+        assert "/maf-sandbox/work/target.txt" in sandbox.contents, "the link's target was removed"
+
+    def test_a_path_through_a_linked_parent_is_refused(self):
+        sandbox = InProcessSandbox(
+            seed_files={
+                "/maf-sandbox/work/out": EntryKind.SYMLINK,
+                "/maf-sandbox/work/out/passwd": "root:x:0:0",
+            }
+        )
+        with pytest.raises(ValueError):
+            asyncio.run(sandbox.remove("out/passwd", working_directory="/maf-sandbox/work"))
+        assert "/maf-sandbox/work/out/passwd" in sandbox.contents
+
+    def test_a_path_outside_the_working_directory_is_refused(self):
+        sandbox = InProcessSandbox(seed_files={"/etc/passwd": "root:x:0:0"})
+        with pytest.raises(ValueError):
+            asyncio.run(sandbox.remove("../../etc/passwd", working_directory="/maf-sandbox/work"))
+        assert "/etc/passwd" in sandbox.contents
+
+    def test_the_working_directory_itself_is_refused(self):
+        """It is the confinement root, and removing it takes the next run's ground with it."""
+        sandbox = InProcessSandbox()
+        asyncio.run(sandbox.write_file("/maf-sandbox/work/a.txt", "1"))
+        with pytest.raises(ValueError):
+            asyncio.run(sandbox.remove(".", working_directory="/maf-sandbox/work"))
+        assert "/maf-sandbox/work/a.txt" in sandbox.contents
+
+    def test_a_directory_is_refused_without_recursive(self):
+        """Named rather than implied: the alternative reads like a single-file delete."""
+        sandbox = InProcessSandbox()
+        asyncio.run(sandbox.write_file("/maf-sandbox/work/sub/a.txt", "1"))
+        with pytest.raises(OSError):
+            asyncio.run(sandbox.remove("sub", working_directory="/maf-sandbox/work"))
+        assert "/maf-sandbox/work/sub/a.txt" in sandbox.contents
+
+    def test_a_declared_empty_directory_is_refused_without_recursive(self):
+        """An empty directory has no children to infer it from, and is still a directory."""
+        sandbox = InProcessSandbox(seed_files={"/maf-sandbox/work/empty": EntryKind.DIRECTORY})
+        with pytest.raises(OSError):
+            asyncio.run(sandbox.remove("empty", working_directory="/maf-sandbox/work"))
+        assert "/maf-sandbox/work/empty" in sandbox.directories
+
+    def test_a_declared_empty_directory_goes_with_recursive(self):
+        sandbox = InProcessSandbox(seed_files={"/maf-sandbox/work/empty": EntryKind.DIRECTORY})
+        asyncio.run(sandbox.remove("empty", working_directory="/maf-sandbox/work", recursive=True))
+        assert sandbox.directories == set()
+
+    def test_a_seeded_directory_reaches_every_consumer_not_only_remove(self):
+        """A store the constructor knows and the traversals do not is a hole in three places.
+
+        A declared directory has to list as a child, read as a directory rather than as
+        missing, and go with a recursive removal of its parent.
+        """
+        sandbox = InProcessSandbox(seed_files={"/maf-sandbox/work/tree/empty": EntryKind.DIRECTORY})
+        entries = asyncio.run(sandbox.list_dir("tree", working_directory="/maf-sandbox/work"))
+        assert entries == (
+            SandboxEntry(path="tree/empty", kind=EntryKind.DIRECTORY, size_bytes=None),
+        )
+        with pytest.raises(IsADirectoryError):
+            asyncio.run(
+                sandbox.read_file("tree/empty", working_directory="/maf-sandbox/work", max_bytes=99)
+            )
+        asyncio.run(sandbox.remove("tree", working_directory="/maf-sandbox/work", recursive=True))
+        assert sandbox.directories == set(), "a seeded directory survived its parent's removal"
+
+    def test_recursive_removes_the_tree_and_nothing_beside_it(self):
+        sandbox = InProcessSandbox()
+        asyncio.run(sandbox.write_file("/maf-sandbox/work/sub/a.txt", "1"))
+        asyncio.run(sandbox.write_file("/maf-sandbox/work/sub/nested/b.txt", "2"))
+        asyncio.run(sandbox.write_file("/maf-sandbox/work/sibling.txt", "3"))
+        asyncio.run(sandbox.remove("sub", working_directory="/maf-sandbox/work", recursive=True))
+        assert "/maf-sandbox/work/sub/a.txt" not in sandbox.contents
+        assert "/maf-sandbox/work/sub/nested/b.txt" not in sandbox.contents
+        assert "/maf-sandbox/work/sibling.txt" in sandbox.contents
+
+    def test_recursive_on_a_link_takes_the_link_and_nothing_under_it(self):
+        """`recursive` widens what a *directory* removal reaches, never what a link resolves to.
+
+        A fake that treated the entries stored beneath a seeded link as that link's children
+        would model exactly the following the protocol forbids — in the implementation every
+        backend is read against.
+        """
+        sandbox = InProcessSandbox(
+            seed_files={
+                "/maf-sandbox/work/out": EntryKind.SYMLINK,
+                "/maf-sandbox/work/out/passwd": "root:x:0:0",
+            }
+        )
+        asyncio.run(sandbox.remove("out", working_directory="/maf-sandbox/work", recursive=True))
+        assert "/maf-sandbox/work/out" not in sandbox.symlinks, "the link itself survived"
+        assert "/maf-sandbox/work/out/passwd" in sandbox.contents, (
+            "a recursive removal followed a link"
+        )
+
+    def test_a_sibling_sharing_a_prefix_survives_a_recursive_removal(self):
+        """`sub` and `sub-2` are two directories, and a prefix comparison reads them as one."""
+        sandbox = InProcessSandbox()
+        asyncio.run(sandbox.write_file("/maf-sandbox/work/sub/a.txt", "1"))
+        asyncio.run(sandbox.write_file("/maf-sandbox/work/sub-2/b.txt", "2"))
+        asyncio.run(sandbox.remove("sub", working_directory="/maf-sandbox/work", recursive=True))
+        assert "/maf-sandbox/work/sub-2/b.txt" in sandbox.contents, "a sibling was removed"
+
+
 class TestInProcessSandboxConfinement:
     """`stat_file`, `read_file` and `list_dir` share one resolver — exercised through
     `stat_file`, since a refusal raises before any kind-specific behaviour diverges."""

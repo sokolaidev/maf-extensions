@@ -182,6 +182,15 @@ class NoIsolationSandbox:
             "NoIsolationSandbox does not implement the pull surface (stat_file/read_file/list_dir)"
         )
 
+    async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
+        """Not supported, and for a sharper reason than :meth:`stat_file`: the boundary here is
+        the host filesystem, so a removal that escaped would delete the host's own files.
+        """
+        raise NotImplementedError(
+            "NoIsolationSandbox does not implement remove: it has no pull surface to confine a "
+            "removal with, and the paths it would delete are the host's own."
+        )
+
 
 class NoIsolationBackend:
     """A :class:`~maf_sandbox.SandboxBackend` that runs workloads on the host with no boundary.

@@ -159,6 +159,24 @@ class _Leaky:
             raise FileNotFoundError(f"no such file: {path!r}")
         return self.contents[resolved]
 
+    async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
+        """Removes whatever the link *pointed at*, which is the escape a delete probe hunts.
+
+        The leak that matters for a removal is not reading a byte from outside — it is
+        unlinking something outside, where nothing has to come back for the damage to be done.
+        """
+        guest = self._confined(path, working_directory)
+        self._walk(guest, working_directory, include_self=False)
+        resolved = self._follow_parents(guest)
+        resolved = self.links.get(resolved, resolved)
+        prefix = resolved.rstrip("/") + "/"
+        under = [p for p in (*self.contents, *self.links) if p.startswith(prefix)]
+        if under and not recursive:
+            raise OSError(f"refusing to remove a non-empty directory without recursive: {path}")
+        for stored in (*under, resolved):
+            self.contents.pop(stored, None)
+            self.links.pop(stored, None)
+
     async def list_dir(self, path: str, *, working_directory: str) -> tuple[SandboxEntry, ...]:
         guest = self._confined(path, working_directory)
         self._walk(guest, working_directory, include_self=True)

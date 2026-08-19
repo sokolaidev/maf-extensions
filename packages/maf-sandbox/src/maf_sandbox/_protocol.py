@@ -150,6 +150,12 @@ class Capability(StrEnum):
     #: Enumerate a directory. Split from :data:`FILES_OUT` because Docker has no engine-level
     #: primitive for it, which is also why a declared output is a literal path and not a glob.
     FILES_LIST = "files_list"
+    #: Delete what a workload put there. Split from :data:`FILES_IN` because writing and
+    #: removing are different powers to grant, and a backend can honestly offer one without
+    #: the other. Absent from :data:`DEFAULT_CAPABILITIES`, so a spec asks for it: nothing in
+    #: the protocol deleted before this, and a workload that never cleans up is not broken by
+    #: a capability it does not require.
+    FILES_DELETE = "files_delete"
     #: Any egress at all — how precisely it is confined stays in :class:`Egress`.
     NETWORK = "network"
     #: Snapshot and restore a sandbox for reuse.
@@ -474,6 +480,12 @@ class Sandbox(Protocol):
     :data:`Capability.FILES_OUT`, and the router's capability match refuses a backend that
     cannot serve it — so no kind has to feature-detect here.
 
+    :meth:`remove` is gated by :data:`Capability.FILES_DELETE` and is **not** covered by that
+    last sentence: no spec field implies a removal, so a kind that cleans up must put the
+    capability in ``requires`` itself.  Omit it and the router may hand back a backend whose
+    ``remove`` raises :class:`NotImplementedError` — from a ``finally``, over whatever the run
+    was already reporting.
+
     ``working_directory`` is a parameter on those three exactly as it is on :meth:`exec`,
     because no sandbox object knows the spec's ``work_dir``: it arrives per call or not at all,
     and a pull surface without it would assign the confinement duty to a layer with no way to
@@ -554,6 +566,24 @@ class Sandbox(Protocol):
         backend that can stop early does — the stat-ed size clamped by what the collection has
         left — and a backend whose SDK buffers the whole response before returning it can only
         refuse after the fact, which is why the caller re-counts what actually arrived.
+        """
+        ...
+
+    async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
+        """Delete ``path``, and everything under it when ``recursive``.
+
+        Three rules a caller depends on. A path that is not there is **success** — cleanup runs
+        in a ``finally`` and must not report a second failure over the first. A link is
+        **removed, never followed**, since resolving one would unlink a target outside the
+        boundary. A *directory* is refused without ``recursive``, empty or not: a backend with
+        no enumeration primitive cannot tell an empty one from a full one.
+
+        Raises:
+            ValueError: A path outside ``working_directory``, one reached through a link, or
+                the working directory itself — the confinement refusal the pull surface makes.
+            OSError: A directory without ``recursive``, or a removal the guest refused.
+            NotImplementedError: The backend does not declare
+                :data:`Capability.FILES_DELETE`. Require it rather than catching this.
         """
         ...
 

@@ -30,7 +30,7 @@ import weakref
 from collections.abc import Sequence
 from dataclasses import dataclass
 from hashlib import sha256
-from typing import Protocol, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 from maf_sandbox import (
     Capability,
@@ -38,6 +38,8 @@ from maf_sandbox import (
     EntryKind,
     ExecResult,
     Isolation,
+    Sandbox,
+    SandboxBackend,
     SandboxEntry,
     SandboxKey,
     SandboxLimits,
@@ -327,6 +329,30 @@ class _DockerSandbox:
         await self._refuse_symlinked_parents(guest, working_directory=working_directory)
         return await self._stat_guest(guest, posixpath.normpath(path))
 
+    async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
+        """Delete ``path`` through ``rm``, since the engine has no delete primitive.
+
+        ``rm``'s exit codes are the contract rather than a re-implementation of it: ``-f``
+        makes a missing path succeed and refuses a directory without ``-r``. The image
+        dependency is the one :attr:`capabilities` already names for ``EXEC``.
+        """
+        guest = confine_guest_path(path, working_directory)
+        await self._refuse_symlinked_parents(guest, working_directory=working_directory)
+        if posixpath.normpath(guest) == posixpath.normpath(working_directory):
+            raise ValueError(
+                f"refusing to remove the working directory itself: {working_directory}"
+            )
+        removed = await self.exec(
+            ["rm", "-rf" if recursive else "-f", "--", guest],
+            working_directory=working_directory,
+            timeout=self._command_timeout,
+        )
+        if removed.exit_code != 0:
+            raise OSError(
+                f"could not remove {path}: rm exited {removed.exit_code}"
+                f"{f' — {removed.stderr.strip()}' if removed.stderr else ''}"
+            )
+
     async def _stat_guest(self, guest: str, rel: str) -> SandboxEntry | None:
         """Stat an absolute guest path, with no confinement check of its own.
 
@@ -472,6 +498,7 @@ class DockerSandboxBackend:
                 Capability.EXEC,
                 Capability.FILES_IN,
                 Capability.FILES_OUT,
+                Capability.FILES_DELETE,
                 Capability.HOST_TOOLS,
             }
         )
@@ -1009,3 +1036,13 @@ class DockerSandboxBackend:
                 "docker backend: failed to remove network %s: %s", net, result.stderr.strip()
             )
         return False
+
+
+# The package's strict pyright pass type-checks this assignment. ``runtime_checkable`` tests
+# member *presence* only, so a narrowed signature or a missing method passes `isinstance` and
+# fails here instead — in the package where the divergence would be introduced.
+if TYPE_CHECKING:
+    _: tuple[SandboxBackend, type[Sandbox]] = (
+        DockerSandboxBackend(DockerSandboxConfig()),
+        _DockerSandbox,
+    )

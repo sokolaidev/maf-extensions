@@ -151,6 +151,16 @@ class TestBackendIdentity:
             }
         )
 
+    def test_does_not_declare_files_delete_it_cannot_honour(self):
+        """`remove` is implemented and the capability is withheld, which is not an oversight.
+
+        The protocol has a removal take the link and leave its target; this service follows a
+        final link on a read and gives no promise about a delete, so `remove` refuses one
+        instead. A backend advertising a capability it satisfies only in part is worse than one
+        that waits — the router would route cleanup here and the cleanup would not happen.
+        """
+        assert Capability.FILES_DELETE not in AcasSandboxBackend(_config()).capabilities
+
     def test_is_the_only_backend_that_can_declare_files_list(self):
         """Native enumeration is the split's own test — name the backend that lacks it."""
         assert Capability.FILES_LIST in AcasSandboxBackend(_config()).capabilities
@@ -1356,6 +1366,13 @@ class _FakeDataPlaneClient:
         self._contents = dict(contents if contents is not None else _GUEST_CONTENTS)
         self.gets: list[tuple[str, dict]] = []
         self.reads: list[str] = []
+        self.deletes: list[tuple[str, bool]] = []
+        self.delete_raises: Exception | None = None
+
+    async def delete_file(self, path, *, recursive: bool = False) -> None:
+        self.deletes.append((path, recursive))
+        if self.delete_raises is not None:
+            raise self.delete_raises
 
     async def _dp_get(self, path, *, params=None):
         from azure.core.exceptions import ResourceNotFoundError
@@ -2228,3 +2245,53 @@ class TestOnlyDeclaredDependencies:
             f"the package itself, and pyproject.toml's declared dependencies: {offenders}. "
             "Either the import is a mistake, or the dependency belongs in pyproject.toml."
         )
+
+
+class TestRemove:
+    """The data-plane delete: what it sends, what it swallows, and what it refuses."""
+
+    def test_a_recursive_removal_reaches_delete_file_with_the_confined_path(self):
+        client = _FakeDataPlaneClient()
+        sandbox = _sandbox(client)
+        asyncio.run(sandbox.remove("sub", working_directory=_WORK_DIR, recursive=True))
+        assert client.deletes == [(f"{_WORK_DIR}/sub", True)]
+
+    def test_recursive_defaults_off(self):
+        client = _FakeDataPlaneClient()
+        sandbox = _sandbox(client)
+        asyncio.run(sandbox.remove("real.txt", working_directory=_WORK_DIR))
+        assert client.deletes == [(f"{_WORK_DIR}/real.txt", False)]
+
+    def test_a_link_is_refused_before_the_call_is_made(self):
+        """This service follows a final link on a read; a delete that did would take the target."""
+        client = _FakeDataPlaneClient()
+        sandbox = _sandbox(client)
+        with pytest.raises(ValueError):
+            asyncio.run(sandbox.remove("link-out.txt", working_directory=_WORK_DIR))
+        assert client.deletes == [], "a link reached the data plane"
+
+    def test_the_working_directory_itself_is_refused(self):
+        client = _FakeDataPlaneClient()
+        sandbox = _sandbox(client)
+        with pytest.raises(ValueError):
+            asyncio.run(sandbox.remove(".", working_directory=_WORK_DIR, recursive=True))
+        assert client.deletes == []
+
+    def test_a_path_that_is_not_there_is_success(self):
+        """Cleanup runs in a `finally`; a missing path must not become a second failure."""
+        from azure.core.exceptions import ResourceNotFoundError
+
+        client = _FakeDataPlaneClient()
+        client.delete_raises = ResourceNotFoundError(message="no such path")
+        sandbox = _sandbox(client)
+        asyncio.run(sandbox.remove("real.txt", working_directory=_WORK_DIR))
+
+    def test_a_service_failure_arrives_as_the_oserror_the_protocol_documents(self):
+        """`azure.core` raises its own hierarchy, and `HttpResponseError` is no `OSError` —
+        a caller writing the documented `except OSError` would otherwise have it escape a
+        `finally` over the failure already being reported."""
+        client = _FakeDataPlaneClient()
+        client.delete_raises = _HttpError()
+        sandbox = _sandbox(client)
+        with pytest.raises(OSError):
+            asyncio.run(sandbox.remove("real.txt", working_directory=_WORK_DIR))

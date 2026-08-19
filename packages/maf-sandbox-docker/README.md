@@ -69,7 +69,7 @@ Whether that is actually enforced is not this package's own claim either. `maf_s
 | `dispose_scope(scope, thread)` | delete every container for a conversation — **by label, read back from docker**, not from process memory |
 | `isolation` | `container`, unconditionally |
 | `egress` | `closed`, or `allowlist` when `egress_proxy_image` is set |
-| `capabilities` | `{EXEC, FILES_IN, FILES_OUT}` |
+| `capabilities` | `{EXEC, FILES_IN, FILES_OUT, FILES_DELETE, HOST_TOOLS}` |
 | `limits` | the transfer ceilings a spec may not exceed, per direction |
 
 Container names are derived from the key and kind rather than remembered, so `acquire` and `dispose` agree on one without a registry to keep in sync. Labels are the durable record `dispose_scope` selects on, and their values are digested when they are long or carry a separator — the same mapping on both sides, because transforming one and not the other makes a purge quietly select nothing.
