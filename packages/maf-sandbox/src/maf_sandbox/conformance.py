@@ -30,6 +30,14 @@ run in CI is the image the workflow names.
 that is the documented recovery, not a defect.  A caller sharing one sandbox across suites runs
 EXEC last, and a caller that wants what comes after acquires a second sandbox.
 
+**The EXEC suite plants its own working directory.**  ``working_directory`` does not exist
+after ``acquire`` — no backend creates ``spec.work_dir`` and the protocol does not promise it —
+so the suite writes a marker file first, whose parent creation is the caller-side rule the
+repo's ``dispatch_over_exec`` launcher already made deliberate.  A subject whose sandbox has
+no ``write_file`` cannot run the suite; a backend that starts guaranteeing the directory
+should say so in its own docs, and the open question of whether ``acquire`` owes it is filed
+alongside this suite.
+
 Nothing here imports a test framework: this module ships in the wheel.  A failure raises
 :class:`ConformanceFailure` naming every probe that failed rather than the first.
 """
@@ -73,9 +81,12 @@ _READ_CAP = 1 << 20
 _SECRET = b"the guest must not reach this\n"
 _INSIDE = b"a legitimate output\n"
 
-#: High bytes and no trailing newline, so a write that translates anything — CRLF, a decoder,
-#: a truncation at the first NUL — changes the length and fails the fidelity probe.
-_BINARY = bytes(range(0, 256))
+#: High codepoints and no NUL: a payload every UTF-8 decoder agrees on, so the probe asserts
+#: what the protocol states (``stdout: str``) and nothing further. The bytes that *cannot*
+#: survive a decode — the ones a ``errors="replace"`` transport turns into U+FFFD — are a
+#: contract the protocol does not state yet; the issue filed alongside this suite carries the
+#: proposal to state it, and the probe narrows rather than guesses.
+_BINARY = "ünïcödé→payload".encode() + bytes(range(1, 128))
 
 
 class ConformanceSubject(Protocol):
@@ -614,11 +625,13 @@ async def _probe_bytes_survive_the_round_trip(
     back = await subject.sandbox.exec(
         ["cat", "binary.bin"], working_directory=subject.working_directory, timeout=60
     )
-    # `cat` answers text; the length is the fidelity assertion, since every translation a
-    # transport can commit — CRLF, a decode/encode pair, a NUL truncation — changes it. The
-    # byte content is asserted through the surrogateescape round trip, which is lossless for
-    # arbitrary bytes the way a real stdout pipe is.
-    decoded = _BINARY.decode("utf-8", errors="surrogateescape")
+    # What is asserted is the protocol's own promise — `stdout: str` — over a payload every
+    # UTF-8 decoder agrees on: multi-byte sequences and control bytes that a text-shaped hop
+    # in the transport (CRLF translation, a decode/encode pair, a truncation) would alter.
+    # Non-UTF-8 bytes are deliberately out of scope: whether exec must carry them losslessly
+    # (surrogateescape) is a contract the protocol does not state, backends disagree on today,
+    # and the issue filed with this suite proposes to state.
+    decoded = _BINARY.decode("utf-8")
     if back.stdout != decoded:
         raise AssertionError(
             f"{len(_BINARY)} bytes went in and came back altered — a text-shaped hop in the "
@@ -669,7 +682,10 @@ FILES_IN_PROBES: tuple[Probe, ...] = (
         why=(
             "FILES_IN carries bytes — an in-door with a PNG or a spreadsheet — and any "
             "text-shaped hop in the transport corrupts them in ways a caller cannot detect: "
-            "half a PNG returned as success is indistinguishable from a whole one."
+            "half a PNG returned as success is indistinguishable from a whole one. Asserted "
+            "over UTF-8-representable bytes, which is the protocol's stated `stdout: str`; "
+            "whether exec must carry non-UTF-8 bytes losslessly is an unstated contract, "
+            "proposed separately rather than guessed here."
         ),
         requires=frozenset({Capability.FILES_IN}),
         run=_probe_bytes_survive_the_round_trip,
@@ -872,8 +888,24 @@ EXEC_PROBES: tuple[Probe, ...] = (
 
 
 async def _plant_nothing(subject: ConformanceSubject) -> ConformancePaths:
-    """EXEC's probes plant through exec itself; there is nothing to pre-plant."""
-    return ConformancePaths.under(subject.working_directory)
+    """EXEC's probes run commands; the one thing to plant is the directory they run in.
+
+    ``working_directory`` does not exist after ``acquire`` — no backend creates ``spec.work_dir``,
+    and the protocol does not promise it does. The caller creates it, which is the arrangement
+    the repo's own ``dispatch_over_exec`` launcher already made deliberate: its ``mkdir -p``
+    carries the reason ("a run whose kind shared no files has nothing else to create the work
+    directory"). This suite is that caller, so it plants the directory the same way — through
+    ``write_file``, whose parent creation is the FILES_IN probe's own subject — rather than
+    leaving a fresh-sandbox exec to fail on a missing cwd and reporting five failures for one
+    fact. The marker stays: no EXEC probe enumerates the directory, and removing it would need
+    ``remove``, a capability one of the backends this suite runs against refuses outright.
+
+    Whether ``acquire`` should instead promise the directory is an open question, filed with
+    the suite rather than settled by a silent ``mkdir``.
+    """
+    paths = ConformancePaths.under(subject.working_directory)
+    await subject.sandbox.write_file(f"{paths.work}/.probe-cwd", b"")
+    return paths
 
 
 async def run_exec_probes(subject: ConformanceSubject) -> tuple[ProbeResult, ...]:

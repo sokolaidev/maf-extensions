@@ -603,7 +603,10 @@ class TestFilesInConformance:
         class _Translating(_SimulatedGuest):
             async def write_file(self, path: str, content: str | bytes) -> None:
                 if isinstance(content, bytes):
-                    content = content.replace(b"\r\n", b"\n").replace(b"\x00", b"")
+                    # LF → CRLF: the text-mode translation a transport commits when nobody
+                    # told it the payload is bytes. The probe's payload carries LF (in its
+                    # ASCII run and its text head), so the mangling is one it can see.
+                    content = content.replace(b"\n", b"\r\n")
                 await super().write_file(path, content)
 
         failures = _sim_results(
