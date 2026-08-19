@@ -335,12 +335,6 @@ class _DockerSandbox:
         ``rm``'s exit codes are the contract rather than a re-implementation of it: ``-f``
         makes a missing path succeed and refuses a directory without ``-r``. The image
         dependency is the one :attr:`capabilities` already names for ``EXEC``.
-
-        The parent walk and the ``rm`` are separate calls with no no-follow form between them,
-        so a component swapped for a link in the gap is followed — the residual this package's
-        README records for reads, with a recursive delete behind it instead. It widens nothing a guest
-        holding ``EXEC`` could not already do to its own container, which is why the capability
-        is declared; #456 is where closing it lives.
         """
         guest = confine_guest_path(path, working_directory)
         await self._refuse_symlinked_parents(guest, working_directory=working_directory)
@@ -495,7 +489,8 @@ class DockerSandboxBackend:
         # witness. `test_docker_e2e.py` measures it rather than assuming it.
         #
         # It is *not* a claim about the image. The shipped launcher wants `sh`, `nohup`,
-        # `printf` and `mv`, and a kind wants whatever interpreter it names — codeact wants
+        # `printf`, `mv`, `mkdir`, `rm` and `kill` — and `setsid` where the image has it — and a
+        # kind wants whatever interpreter it names — codeact wants
         # `python3` — none of which this backend chooses, since `spec.image` does. That gap is
         # #111's axis, and it is the same gap `EXEC` already has: a kind execing `python3`
         # against a distroless image fails inside the sandbox today.
