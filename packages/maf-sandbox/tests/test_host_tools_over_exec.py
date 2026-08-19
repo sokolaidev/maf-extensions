@@ -519,13 +519,29 @@ class TestTheSupervisorsOwnBounds:
             assert "x" * 2001 not in str(expired.value), "the message quotes more than the cap"
 
 
+def _branch(script: str, *, setsid: bool) -> str:
+    """The launcher starts the program twice, once per guest.
+
+    The `setsid` branch is what a guest that has it runs; the other is the fallback. Both
+    are `nohup sh -c …`, so a test about the command reads whichever it means rather than
+    the last line of the file (#437).
+    """
+    lines = [line.strip() for line in script.splitlines()]
+    started = [line for line in lines if line.endswith(" &") and "sh -c" in line]
+    assert len(started) == 2, f"expected two branches, got {len(started)}"
+    with_setsid, without = started
+    assert with_setsid.startswith("setsid nohup ")
+    assert without.startswith("nohup ")
+    return with_setsid.removeprefix("setsid ") if setsid else without
+
+
 class TestTheLauncher:
     """What the guest is actually asked to run, and whether a shell can read it."""
 
     def test_it_passes_one_argument_to_sh_however_the_path_reads(self):
         """Quoting fragments inside an already quoted `sh -c '…'` ends the outer argument."""
         layout = guest_run_layout("/maf-sandbox/work/run 1")
-        command = launcher_script(layout).splitlines()[-1]
+        command = _branch(launcher_script(layout), setsid=True)
         tokens = shlex.split(command.removesuffix(" &"))
         assert tokens[:3] == ["nohup", "sh", "-c"]
         assert layout.program in tokens[3], "the inner command did not survive as one argument"
@@ -577,7 +593,7 @@ class TestTheLauncher:
         number here means adding one breaks a test that has nothing to say about it.
         """
         layout = guest_run_layout("/maf-sandbox/work/run-1")
-        command = launcher_script(layout, "/opt/py 3.12/bin/python3").splitlines()[-1]
+        command = _branch(launcher_script(layout, "/opt/py 3.12/bin/python3"), setsid=False)
         inner = shlex.split(command.removesuffix(" &"))[3]
 
         words = shlex.split(inner)
@@ -599,7 +615,7 @@ class TestTheLauncher:
         image can point into the run tree — from carrying a `sitecustomize` the guest wrote.
         """
         layout = guest_run_layout("/maf-sandbox/work/run-1")
-        command = launcher_script(layout).splitlines()[-1]
+        command = _branch(launcher_script(layout), setsid=False)
         inner = shlex.split(command.removesuffix(" &"))[3]
 
         words = shlex.split(inner)
@@ -1407,7 +1423,7 @@ class TestTheLaunchersExitMarker:
     def test_the_exit_code_lands_by_rename(self):
         """The same reason the shim stages requests: a poll must not see a half-written file."""
         layout = guest_run_layout("/maf-sandbox/work/run-1")
-        inner = shlex.split(launcher_script(layout).splitlines()[-1].removesuffix(" &"))[3]
+        inner = shlex.split(_branch(launcher_script(layout), setsid=True).removesuffix(" &"))[3]
         assert f"{layout.exit_code}.part" in inner, "the exit code is written straight to its name"
         assert inner.rstrip().endswith(f"mv '{layout.exit_code}.part' '{layout.exit_code}'")
 
@@ -2646,11 +2662,17 @@ class _GuestThatRecordsTheKill(_ScriptedGuest):
     """
 
     def __init__(
-        self, *args: Any, pid: str | None = "4242", kill_exit_code: int = 0, **kwargs: Any
+        self,
+        *args: Any,
+        pid: str | None = "4242",
+        session: str | None = None,
+        kill_exit_code: int = 0,
+        **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
         self.commands: list[str] = []
         self._pid = pid
+        self._session = session
         self._kill_exit_code = kill_exit_code
 
     async def exec(
@@ -2668,11 +2690,82 @@ class _GuestThatRecordsTheKill(_ScriptedGuest):
         started = await super().exec(command, working_directory=working_directory, timeout=timeout)
         if self._pid is not None:
             self.files[_LAYOUT.pid] = self._pid.encode("utf-8")
+        if self._session is not None:
+            self.files[_LAYOUT.session] = self._session.encode("utf-8")
         return started
 
     @property
     def kills(self) -> list[str]:
         return [command for command in self.commands if "kill" in command]
+
+
+class TestStoppingTakesTheChildrenWhereItCan:
+    """A killed program's children used to survive it (#437).
+
+    `kill` reaches one process, so a program that spawned anything left it running in a
+    sandbox the next call warm-reuses. Where the guest has `setsid` the launcher puts the
+    program in its own session and the signal goes to that group instead.
+    """
+
+    def test_a_recorded_session_is_signalled_as_a_group(self):
+        guest = _GuestThatRecordsTheKill([], finish=False, pid="4242", session="4200")
+        with pytest.raises(SandboxProgramTimeout):
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert len(guest.kills) == 1, guest.commands
+        assert "-KILL -4200" in guest.kills[0], f"the group was not signalled: {guest.kills}"
+
+    def test_without_a_session_the_lone_pid_is_signalled(self):
+        """A guest without `setsid` shares the launcher's session, where a group signal
+        would reach the whole container."""
+        guest = _GuestThatRecordsTheKill([], finish=False, pid="4242", session=None)
+        with pytest.raises(SandboxProgramTimeout):
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert "-KILL 4242" in guest.kills[0], guest.kills
+
+    @pytest.mark.parametrize("session", ["0", "1", "-4200", "4200; rm -rf /", "", "  "])
+    def test_a_session_that_would_reach_past_the_run_is_not_used(self, session: str):
+        """`kill -KILL -1` signals every process the caller may reach.
+
+        The file is the guest's to write, and the argument is negated before it is used, so
+        `1` here is the supervisor's own `exec` and every other run in the sandbox. Anything
+        that is not a plain number above 1 falls back to the pid, which is still stopped.
+        """
+        guest = _GuestThatRecordsTheKill([], finish=False, pid="4242", session=session)
+        with pytest.raises(SandboxProgramTimeout):
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert guest.kills == ["kill -KILL 4242 2>/dev/null"], guest.kills
+
+    def test_the_message_says_the_session_went(self):
+        guest = _GuestThatRecordsTheKill([], finish=False, pid="4242", session="4200")
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert "whole session" in str(expired.value)
+
+    def test_the_message_says_a_lone_kill_leaves_children(self):
+        """The claim varies by image, so it is reported rather than hidden."""
+        guest = _GuestThatRecordsTheKill([], finish=False, pid="4242", session=None)
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert "still running" in str(expired.value)
+        assert "whole session" not in str(expired.value)
+
+    def test_the_launcher_records_the_session_from_inside_it(self):
+        """`$$` and not `$!`, and from the shell `setsid` runs.
+
+        `setsid` execs in place when its caller is not a process-group leader and forks when
+        it is, so the outer `$!` is the session leader on some backends and a spent
+        intermediary on others. The process it ends up exec'ing leads the session either
+        way, so the shell that writes this is the right one.
+        """
+        layout = guest_run_layout("/maf-sandbox/work/run-1")
+        script = launcher_script(layout)
+        inner = shlex.split(_branch(script, setsid=True).removesuffix(" &"))[3]
+
+        assert inner.startswith(f"printf %s $$ > '{layout.session}.part'"), inner[:120]
+        assert f"mv '{layout.session}.part' '{layout.session}'" in inner
+        assert "$$" not in _branch(script, setsid=False), (
+            "the fallback records a session it did not make"
+        )
 
 
 class TestStoppingARunThatOverran:
@@ -2941,7 +3034,7 @@ class TestTheLaunchersPidMarker:
         left going instead. Rare, and silent, which is the pair worth a rename.
         """
         layout = guest_run_layout("/maf-sandbox/work/run-1")
-        inner = shlex.split(launcher_script(layout).splitlines()[-1].removesuffix(" &"))[3]
+        inner = shlex.split(_branch(launcher_script(layout), setsid=True).removesuffix(" &"))[3]
         assert f"{layout.pid}.part" in inner, "the pid is written straight to its name"
         assert f"mv '{layout.pid}.part' '{layout.pid}'" in inner
 

@@ -90,6 +90,14 @@ _STAGED_EXIT_FILE = f"{EXIT_FILE}.part"
 PID_FILE = "program_pid"
 _STAGED_PID_FILE = f"{PID_FILE}.part"
 
+#: Where the launcher records the id of the session it made for the program, when the guest
+#: has ``setsid``. Its own file rather than a flag on the pid, because the two answer different
+#: questions — which process to signal, and whether signalling its group is a thing this run
+#: may do at all. Absent means the program shares the launcher's session, where a group signal
+#: would reach far more than the run.
+SESSION_FILE = "program_session"
+_STAGED_SESSION_FILE = f"{SESSION_FILE}.part"
+
 #: The module a guest program imports to reach the host. Written beside the program.
 SHIM_MODULE = "maf_host_tools.py"
 
@@ -360,6 +368,7 @@ class GuestRunLayout:
     output: str
     exit_code: str
     pid: str
+    session: str = ""
 
 
 def guest_run_layout(run_directory: str, *, program: str = "program.py") -> GuestRunLayout:
@@ -457,6 +466,7 @@ def guest_run_layout(run_directory: str, *, program: str = "program.py") -> Gues
         output=posixpath.join(served, OUTPUT_FILE),
         exit_code=posixpath.join(served, EXIT_FILE),
         pid=posixpath.join(served, PID_FILE),
+        session=posixpath.join(served, SESSION_FILE),
     )
 
 
@@ -664,13 +674,14 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
 
     Detached is the whole point — ``exec`` blocks until its command returns, so a program that
     waits for the host would deadlock against a supervisor that has not started. The launcher
-    returns immediately and leaves three facts behind: the program's output, its exit code in
-    a file whose appearance is what tells the supervisor the run is over, and its pid, which is
-    what a run that overruns is stopped by.
+    returns immediately and leaves the program's output, its exit code in a file whose
+    appearance tells the supervisor the run is over, its pid, and — where the guest has
+    ``setsid`` — the id of the session it put the program in, which is what lets a run that
+    overruns take the program's children with it.
 
-    POSIX shell, and a guest that has ``nohup``. A Windows guest or a distroless image needs a
-    different launcher; that is a backend's business, and this one is a helper rather than a
-    protocol.
+    POSIX shell, and a guest that has ``nohup``. ``setsid`` is used when present and done
+    without when not. A Windows guest or a distroless image needs a different launcher; that
+    is a backend's business, and this one is a helper rather than a protocol.
     """
     # The command is built whole so `_quote` applies to finished strings rather than to
     # fragments nested inside an already quoted `sh -c '…'`. What it has to preserve:
@@ -709,6 +720,7 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
     #     anything, so it is left alone. The README's upgrade note has what this costs an image.
     staged = f"{layout.exit_code}.part"
     staged_pid = f"{layout.pid}.part"
+    staged_session = f"{layout.session}.part"
     # The shim's own directory, which is the one an import has to reach; `program` is beside
     # it by construction, and reading it from the shim keeps the two from being separated.
     importable = posixpath.dirname(layout.shim)
@@ -716,6 +728,16 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
     # itself; stripping the separator keeps the two patterns below from becoming `//*`, and
     # collapses a run directory of `/` to `''|/*`, dropping every absolute entry.
     enclosing = _quote(layout.directory.rstrip("/"))
+    # `$$` and not `$!`, and from *inside* the shell `setsid` runs. `setsid` execs in place
+    # when its caller is not a process-group leader and forks when it is, so the outer `$!` is
+    # the session leader on some backends and a spent intermediary on others, with nothing in
+    # the value to say which. The process it ends up exec'ing is the session leader either way,
+    # so the shell that writes this is the one whose group the host wants. Measured both ways
+    # rather than reasoned about.
+    record_session = (
+        f"printf %s $$ > {_quote(staged_session)}; "
+        f"mv {_quote(staged_session)} {_quote(layout.session)}; "
+    )
     inner = (
         f"PYTHONUNBUFFERED=1 PYTHONNOUSERSITE=1 {_quote(interpreter)} {_quote(layout.program)} "
         f"> {_quote(layout.output)} 2>&1 & "
@@ -752,7 +774,17 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
         # one, and an exported name stays exported — the guest would read the launcher's
         # leftovers where its own value belongs.
         "unset maf_kept maf_entry\n"
-        f"nohup sh -c {_quote(inner)} >/dev/null 2>&1 &\n"
+        # Two paths, because the better one needs a utility not every image has. With
+        # `setsid` the program leads its own session and the host can stop its children with
+        # it; without, it shares the launcher's, where a group signal would reach the whole
+        # container. The session file is written only on the first path, and its absence is
+        # what tells the host which one ran — a claim that varies by image, reported rather
+        # than hidden (#437).
+        "if command -v setsid >/dev/null 2>&1; then\n"
+        f"  setsid nohup sh -c {_quote(record_session + inner)} >/dev/null 2>&1 &\n"
+        "else\n"
+        f"  nohup sh -c {_quote(inner)} >/dev/null 2>&1 &\n"
+        "fi\n"
     )
 
 
@@ -963,12 +995,11 @@ async def _supervise(
             "host tools: the run ran out while starting the program: %s", error_detail(spent)
         )
         # A grace of its own, measured after the marker read rather than shared with it.
-        fate = _nothing_is_proven(
-            await _stop_the_program(sandbox, layout, until=_a_grace_from_now())
-        )
+        fate, reach = await _stop_the_program(sandbox, layout, until=_a_grace_from_now())
+        fate = _nothing_is_proven(fate)
         raise _TheRunsOwnTimeout(
             f"the run's {timeout:g}s were gone while starting the program"
-            f"{_clause_while_starting(fate)}",
+            f"{_clause_while_starting(fate, reach)}",
             signal=fate,
         ) from spent
     if started.exit_code != 0:
@@ -999,12 +1030,11 @@ async def _supervise(
             # Output first, so the program's own words are off the guest before it dies — but
             # on a fresh grace, because the reads above can spend `giving_up` entirely and a
             # kill with nothing left to spend is the runaway this path exists to stop.
-            fate = _started_something(
-                await _stop_the_program(sandbox, layout, until=_a_grace_from_now())
-            )
+            fate, reach = await _stop_the_program(sandbox, layout, until=_a_grace_from_now())
+            fate = _started_something(fate)
             raise _TheRunsOwnTimeout(
                 f"the guest program did not finish within {timeout:g}s"
-                f"{_clause_after_the_launcher_started(fate)}. "
+                f"{_clause_after_the_launcher_started(fate, reach)}. "
                 f"{_output_clause(printed, note)}",
                 output=printed[:2000],
                 signal=fate,
@@ -1046,10 +1076,9 @@ async def _supervise(
             # out while still leading with the failure the caller asked about. A backend's own
             # `TimeoutError` is deliberately not caught here — see `_within`.
             printed, note = await _final_output(sandbox, run, layout, giving_up)
-            fate = _started_something(
-                await _stop_the_program(sandbox, layout, until=_a_grace_from_now())
-            )
-            failure = f"{stalled}{_clause_after_the_launcher_started(fate)}"
+            fate, reach = await _stop_the_program(sandbox, layout, until=_a_grace_from_now())
+            fate = _started_something(fate)
+            failure = f"{stalled}{_clause_after_the_launcher_started(fate, reach)}"
             raise _TheRunsOwnTimeout(
                 f"the guest program did not finish within {timeout:g}s — {failure}. "
                 f"{_output_clause(printed, note)}",
@@ -1073,11 +1102,26 @@ async def _supervise(
 #: backend hiccup assert that a program is running.
 _Fate = SignalOutcome
 
+#: What a signal reached. Internal: the public vocabulary is :data:`SignalOutcome`, and
+#: this only decides which sentence the timeout carries.
+_Reach = Literal["session", "program", "nothing"]
+
 #: Said once, where a program is known to have been started and could not be stopped. Silence
 #: when the kill worked, because a stopped program is what a timeout is supposed to mean and a
 #: caller reading "and was stopped" on every expiry learns nothing from it.
-_SIGNALLED = " and was sent SIGKILL"
+#: Three, because the honest claim differs. A session takes what the program spawned with
+#: it; a lone pid leaves those running, which is the case #437 was raised for and is still
+#: the one a guest without `setsid` gets.
+_SIGNALLED_SESSION = " and its whole session was sent SIGKILL"
+_SIGNALLED_ALONE = (
+    " and was sent SIGKILL, which reaches it alone — anything it spawned is still running"
+)
 _NOT_SIGNALLED = " and could not be signalled, so it may still be running"
+
+
+def _sent_clause(reach: _Reach) -> str:
+    """What a sent signal actually reached."""
+    return _SIGNALLED_SESSION if reach == "session" else _SIGNALLED_ALONE
 
 
 def _removable(directory: str) -> bool:
@@ -1212,17 +1256,17 @@ def _started_something(fate: _Fate) -> _Fate:
     return "unrecorded" if fate == "absent" else fate
 
 
-def _clause_after_the_launcher_started(fate: _Fate) -> str:
+def _clause_after_the_launcher_started(fate: _Fate, reach: _Reach) -> str:
     """For the two legs inside the supervisor loop, where the launcher returned 0.
 
     Anything short of a signal hedges rather than staying quiet: the launcher returned 0, so
     something started, and between a needless disposal and a silent leak this errs towards the
     disposal.
     """
-    return _SIGNALLED if fate == "sent" else _NOT_SIGNALLED
+    return _sent_clause(reach) if fate == "sent" else _NOT_SIGNALLED
 
 
-def _clause_while_starting(fate: _Fate) -> str:
+def _clause_while_starting(fate: _Fate, reach: _Reach) -> str:
     """For the leg where the launcher's own ``exec`` ran out.
 
     The launcher backgrounds the interpreter and writes the pid down on the line after, so a
@@ -1232,7 +1276,7 @@ def _clause_while_starting(fate: _Fate) -> str:
     maps it through :func:`_nothing_is_proven` — and would earn the same hedge if it did.
     """
     if fate == "sent":
-        return f" (it had started the program{_SIGNALLED})"
+        return f" (it had started the program{_sent_clause(reach)})"
     if fate in ("absent", "unknown"):
         return " (whether it got as far as starting one could not be established)"
     return f" (it had started the program{_NOT_SIGNALLED})"
@@ -1259,6 +1303,7 @@ async def _reclaim_the_transports_own(
             layout.output,
             layout.exit_code,
             layout.pid,
+            *([layout.session] if layout.session else []),
         )
         if posixpath.normpath(posixpath.dirname(path)) != served
     ]
@@ -1302,29 +1347,26 @@ def _a_grace_from_now() -> float:
     return time.monotonic() + _FINAL_READ_GRACE
 
 
-async def _stop_the_program(sandbox: Sandbox, layout: GuestRunLayout, *, until: float) -> _Fate:
-    """Send the guest program a ``SIGKILL``, and say whether it went — never a raise.
+async def _stop_the_program(
+    sandbox: Sandbox, layout: GuestRunLayout, *, until: float
+) -> tuple[_Fate, _Reach]:
+    """``SIGKILL`` the program — its whole session where there is one — and say what went.
 
     **Only call this once the exit marker is absent.** That ordering narrows the window in
-    which the pid has already been recycled — it does not close it: the program can exit, be
-    reaped and have its number reissued between that read and this signal. Closing it needs an
-    identity that stays valid through the signal, which is #437; until then a caller may
-    conclude that a signal was sent to that number, not that it reached the run.
+    which the pid has already been recycled; it does not close it.
 
-    ``SIGKILL`` rather than ``SIGTERM`` — the program has already overrun its only bound, and
-    its output is unbuffered, so there is no flush to wait for.
+    Where the launcher had ``setsid`` it recorded a session and the signal goes to that whole
+    process group, so what the program spawned dies with it. Where it did not, the program
+    shares the launcher's session and only its own pid can be signalled — a group signal there
+    would reach the whole container. The two are reported differently rather than alike.
 
-    **Sending the signal is not seeing it work.** The pid comes from a file the program itself
-    can write, and ``kill`` reports success for a signal the kernel accepts and discards, so a
-    guest that names another process — or pid 1 in its own namespace — survives a call that
-    returns ``"sent"``. Children are not reached either. What a caller may conclude is
-    that the signal was sent; #437 is what would make it more.
+    **Sending the signal is not seeing it work.** Both numbers come from files the program can
+    write, and ``kill`` reports success for a signal the kernel accepts and discards, so a
+    guest naming another process survives a call that returns ``"sent"``.
 
     Returns:
-        ``"sent"``, ``"refused"`` when a pid was found and the kill did not land, or
-        ``"absent"`` when no pid was there to use. The last two are kept apart because one leg
-        reports them differently: a pid is the only evidence this transport has that a program
-        was ever started at all.
+        The outcome, and what it reached: ``"session"`` for a whole process group,
+        ``"program"`` for a lone pid, ``"nothing"`` otherwise.
     """
     try:
         # Stat first, because `_read_if_present` answers `None` for a missing entry, an empty
@@ -1340,9 +1382,9 @@ async def _stop_the_program(sandbox: Sandbox, layout: GuestRunLayout, *, until: 
         logger.warning(
             "host tools: could not look for the program's pid: %s", error_detail(unstattable)
         )
-        return "unknown"
+        return "unknown", "nothing"
     if recorded is None:
-        return "absent"
+        return "absent", "nothing"
     try:
         running = await _read_if_present(sandbox, layout, layout.pid, cap=32, deadline=until)
     except Exception as unreadable:  # noqa: BLE001 — a kill must not replace the timeout
@@ -1353,7 +1395,7 @@ async def _stop_the_program(sandbox: Sandbox, layout: GuestRunLayout, *, until: 
         # Not `absent`: the pid could not be *read*, which is no evidence that none was written.
         # One leg reports `absent` by saying nothing at all, and silence is the wrong answer to
         # a program whose fate is unknown.
-        return "refused"
+        return "refused", "nothing"
     pid = running.strip() if isinstance(running, str) else ""
     # ASCII digits and positive, both load-bearing. `str.isdigit` admits other numeral systems
     # that `int` then normalises, and `kill -KILL 0` signals the whole process group rather
@@ -1361,7 +1403,15 @@ async def _stop_the_program(sandbox: Sandbox, layout: GuestRunLayout, *, until: 
     # to trust. A real `$!` is always a positive ASCII integer. An oversized read arrives here
     # as a sentinel rather than a string, and is unusable in the same way.
     if not (pid.isascii() and pid.isdigit()) or int(pid) <= 0:
-        return "refused"
+        return "refused", "nothing"
+    target, reach = pid, "program"
+    session = await _session_if_recorded(sandbox, layout, until=until)
+    if session is not None:
+        # Negative is `kill`'s own spelling for a process group. `> 1` and not `> 0`
+        # because this argument is negated: `kill -KILL -1` signals every process the
+        # caller may reach, which in a shared sandbox is the supervisor's own `exec` and
+        # every other run in it. The pid form has no such neighbour and keeps its `> 0`.
+        target, reach = f"-{session}", "session"
     # Its own deadline, not what is left of the read's: a slow pid read would otherwise leave
     # the signal no time to be sent, which is the runaway this exists to stop.
     sending = _a_grace_from_now()
@@ -1372,15 +1422,41 @@ async def _stop_the_program(sandbox: Sandbox, layout: GuestRunLayout, *, until: 
             sandbox.exec(
                 # Only stderr is discarded. `kill` failing — a pid already gone, a signal
                 # refused — has to reach the caller, which reports it as still running.
-                f"kill -KILL {pid} 2>/dev/null",
+                f"kill -KILL {target} 2>/dev/null",
                 working_directory=layout.directory,
                 timeout=max(0.0, sending - time.monotonic()),
             ),
         )
     except Exception as refused:  # noqa: BLE001 — a failed kill is a leak, not a fault
         logger.warning("host tools: could not stop the guest program: %s", error_detail(refused))
-        return "refused"
-    return "sent" if killed.exit_code == 0 else "refused"
+        return "refused", "nothing"
+    if killed.exit_code != 0:
+        return "refused", "nothing"
+    return "sent", reach
+
+
+async def _session_if_recorded(
+    sandbox: Sandbox, layout: GuestRunLayout, *, until: float
+) -> str | None:
+    """The session the launcher made, or None where none may be assumed.
+
+    Absent is the ordinary answer on a guest without `setsid`, so a failure to read it is
+    treated the same way: the lone pid is still signalled, and a group signal is never
+    sent on a guess.
+    """
+    if not layout.session:
+        return None
+    try:
+        recorded = await _read_if_present(sandbox, layout, layout.session, cap=32, deadline=until)
+    except Exception as unreadable:  # noqa: BLE001 — a kill must not replace the timeout
+        logger.warning(
+            "host tools: could not read the program's session: %s", error_detail(unreadable)
+        )
+        return None
+    session = recorded.strip() if isinstance(recorded, str) else ""
+    if not (session.isascii() and session.isdigit()) or int(session) <= 1:
+        return None
+    return session
 
 
 async def _marker_if_present(
