@@ -106,7 +106,7 @@ Wall clock, tokens and lookup counts are **recorded and never bounded**, and wha
 ## Prerequisites
 
 - An Azure subscription with the [Container Apps Sandboxes](https://learn.microsoft.com/azure/container-apps/sandboxes) preview enabled, and a sandbox group.
-- `mcr.microsoft.com/devcontainers/python:3.13-bookworm` available to that group — sample 14's image, so a group set up for that one already has it. The launcher is POSIX shell and the shim is Python, so the guest needs **`sh`, `nohup`, `mkdir`, `mv`, `printf` and `python3`** — the launcher creates the working directory, redirects output and renames the exit marker into place. A distroless or Windows image cannot serve this whatever it declares.
+- `mcr.microsoft.com/devcontainers/python:3.13-bookworm` available to that group — sample 14's image, so a group set up for that one already has it. The launcher is POSIX shell and the shim is Python, so the guest needs **`sh`, `nohup`, `mkdir`, `mv`, `printf`, `rm`, `kill` and `python3`**, and uses `setsid` where it is present — the launcher creates the working directory, redirects output and renames the exit marker into place. A distroless or Windows image cannot serve this whatever it declares.
 - An Azure OpenAI deployment. No key: `az login` is enough.
 
 **This creates two billable sandboxes**, one per route, both disposed at the end rather than left to the lifecycle timers — the check fails the run if they were not.

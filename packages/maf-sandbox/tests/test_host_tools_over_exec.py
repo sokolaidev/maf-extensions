@@ -56,6 +56,7 @@ from maf_sandbox import (
     sandbox_tool,
 )
 from maf_sandbox import _host_tools_over_exec as host_tools_over_exec
+from maf_sandbox._host_tools_over_exec import SESSION_MADE
 from maf_sandbox.paths import confine_guest_path
 
 #: Fast enough for a suite, and still an interval — the API refuses zero, because
@@ -519,13 +520,29 @@ class TestTheSupervisorsOwnBounds:
             assert "x" * 2001 not in str(expired.value), "the message quotes more than the cap"
 
 
+def _branch(script: str, *, setsid: bool) -> str:
+    """The launcher starts the program twice, once per guest.
+
+    The `setsid` branch is what a guest that has it runs; the other is the fallback. Both
+    are `nohup sh -c …`, so a test about the command reads whichever it means rather than
+    the last line of the file.
+    """
+    lines = [line.strip() for line in script.splitlines()]
+    started = [line for line in lines if line.endswith(" &") and "sh -c" in line]
+    assert len(started) == 2, f"expected two branches, got {len(started)}"
+    with_setsid, without = started
+    assert with_setsid.startswith("setsid nohup ")
+    assert without.startswith("nohup ")
+    return with_setsid.removeprefix("setsid ") if setsid else without
+
+
 class TestTheLauncher:
     """What the guest is actually asked to run, and whether a shell can read it."""
 
     def test_it_passes_one_argument_to_sh_however_the_path_reads(self):
         """Quoting fragments inside an already quoted `sh -c '…'` ends the outer argument."""
         layout = guest_run_layout("/maf-sandbox/work/run 1")
-        command = launcher_script(layout).splitlines()[-1]
+        command = _branch(launcher_script(layout), setsid=True)
         tokens = shlex.split(command.removesuffix(" &"))
         assert tokens[:3] == ["nohup", "sh", "-c"]
         assert layout.program in tokens[3], "the inner command did not survive as one argument"
@@ -577,7 +594,7 @@ class TestTheLauncher:
         number here means adding one breaks a test that has nothing to say about it.
         """
         layout = guest_run_layout("/maf-sandbox/work/run-1")
-        command = launcher_script(layout, "/opt/py 3.12/bin/python3").splitlines()[-1]
+        command = _branch(launcher_script(layout, "/opt/py 3.12/bin/python3"), setsid=False)
         inner = shlex.split(command.removesuffix(" &"))[3]
 
         words = shlex.split(inner)
@@ -599,7 +616,7 @@ class TestTheLauncher:
         image can point into the run tree — from carrying a `sitecustomize` the guest wrote.
         """
         layout = guest_run_layout("/maf-sandbox/work/run-1")
-        command = launcher_script(layout).splitlines()[-1]
+        command = _branch(launcher_script(layout), setsid=False)
         inner = shlex.split(command.removesuffix(" &"))[3]
 
         words = shlex.split(inner)
@@ -1407,7 +1424,7 @@ class TestTheLaunchersExitMarker:
     def test_the_exit_code_lands_by_rename(self):
         """The same reason the shim stages requests: a poll must not see a half-written file."""
         layout = guest_run_layout("/maf-sandbox/work/run-1")
-        inner = shlex.split(launcher_script(layout).splitlines()[-1].removesuffix(" &"))[3]
+        inner = shlex.split(_branch(launcher_script(layout), setsid=True).removesuffix(" &"))[3]
         assert f"{layout.exit_code}.part" in inner, "the exit code is written straight to its name"
         assert inner.rstrip().endswith(f"mv '{layout.exit_code}.part' '{layout.exit_code}'")
 
@@ -2646,11 +2663,22 @@ class _GuestThatRecordsTheKill(_ScriptedGuest):
     """
 
     def __init__(
-        self, *args: Any, pid: str | None = "4242", kill_exit_code: int = 0, **kwargs: Any
+        self,
+        *args: Any,
+        pid: str | None = "4242",
+        session: str | None = None,
+        announces_session: bool | None = None,
+        kill_exit_code: int = 0,
+        **kwargs: Any,
     ) -> None:
         super().__init__(*args, **kwargs)
         self.commands: list[str] = []
         self._pid = pid
+        self._session = session
+        # What the launcher printed. Defaults to agreeing with the file, so a test that
+        # only cares about the group form says one thing; set it apart to model a guest
+        # whose program planted a session file the launcher never made.
+        self._announces = session is not None if announces_session is None else announces_session
         self._kill_exit_code = kill_exit_code
 
     async def exec(
@@ -2666,13 +2694,128 @@ class _GuestThatRecordsTheKill(_ScriptedGuest):
             return ExecResult(stdout="", exit_code=self._kill_exit_code)
         self.commands.append(str(command))
         started = await super().exec(command, working_directory=working_directory, timeout=timeout)
+        if self._announces:
+            started = ExecResult(
+                stdout=f"{started.stdout}{SESSION_MADE}\n",
+                stderr=started.stderr,
+                exit_code=started.exit_code,
+            )
         if self._pid is not None:
             self.files[_LAYOUT.pid] = self._pid.encode("utf-8")
+        if self._session is not None:
+            self.files[_LAYOUT.session] = self._session.encode("utf-8")
         return started
 
     @property
     def kills(self) -> list[str]:
         return [command for command in self.commands if "kill" in command]
+
+
+class TestStoppingTakesTheChildrenWhereItCan:
+    """A stopped program takes its children with it where the guest can.
+
+    `kill` reaches one process, so a program that spawned anything left it running in a
+    sandbox the next call warm-reuses. Where the guest has `setsid` the launcher puts the
+    program in its own session and the signal goes to that group instead.
+    """
+
+    def test_a_recorded_session_is_signalled_as_a_group(self):
+        guest = _GuestThatRecordsTheKill([], finish=False, pid="4242", session="4200")
+        with pytest.raises(SandboxProgramTimeout):
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert len(guest.kills) == 1, guest.commands
+        assert "-KILL -4200" in guest.kills[0], f"the group was not signalled: {guest.kills}"
+
+    def test_without_a_session_the_lone_pid_is_signalled(self):
+        """A guest without `setsid` shares the launcher's session, where a group signal
+        would reach the whole container."""
+        guest = _GuestThatRecordsTheKill([], finish=False, pid="4242", session=None)
+        with pytest.raises(SandboxProgramTimeout):
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert "-KILL 4242" in guest.kills[0], guest.kills
+
+    @pytest.mark.parametrize("session", ["0", "1", "-4200", "4200; rm -rf /", "", "  "])
+    def test_a_session_that_would_reach_past_the_run_is_not_used(self, session: str):
+        """`kill -KILL -1` signals every process the caller may reach.
+
+        The file is the guest's to write, and the argument is negated before it is used, so
+        `1` here is the supervisor's own `exec` and every other run in the sandbox. Anything
+        that is not a plain number above 1 falls back to the pid, which is still stopped.
+        """
+        guest = _GuestThatRecordsTheKill([], finish=False, pid="4242", session=session)
+        with pytest.raises(SandboxProgramTimeout):
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert guest.kills == ["kill -KILL 4242 2>/dev/null"], guest.kills
+
+    def test_the_reach_attribute_carries_the_group(self):
+        """The machine-readable half. A host deciding whether it still has to dispose
+        the sandbox reads this, not the sentence.
+        """
+        guest = _GuestThatRecordsTheKill([], finish=False, pid="4242", session="4200")
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert expired.value.reach == "group"
+
+    def test_the_reach_attribute_carries_a_lone_pid(self):
+        guest = _GuestThatRecordsTheKill([], finish=False, pid="4242", session=None)
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert expired.value.reach == "program"
+
+    def test_reach_is_nothing_when_no_signal_was_sent(self):
+        """The default, and what an unsignalled program is owed: no claim at all."""
+        guest = _GuestThatRecordsTheKill([], finish=False, pid=None)
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert expired.value.reach == "nothing"
+
+    def test_the_message_says_the_group_went(self):
+        guest = _GuestThatRecordsTheKill([], finish=False, pid="4242", session="4200")
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert "process group" in str(expired.value)
+
+    def test_a_session_file_the_launcher_never_announced_is_refused(self):
+        """The file is inside the run, so a program can write one whether or not
+        a session exists.
+
+        On a guest without `setsid` the group it names is the launcher's own — the whole
+        container, including the supervisor's `exec` and every other run in the sandbox.
+        The branch is taken from what the launcher printed, so a planted file buys nothing.
+        """
+        guest = _GuestThatRecordsTheKill(
+            [], finish=False, pid="4242", session="7", announces_session=False
+        )
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert guest.kills == ["kill -KILL 4242 2>/dev/null"], guest.kills
+        assert "process group" not in str(expired.value)
+
+    def test_the_message_says_a_lone_kill_leaves_children(self):
+        """The claim varies by image, so it is reported rather than hidden."""
+        guest = _GuestThatRecordsTheKill([], finish=False, pid="4242", session=None)
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert "still running" in str(expired.value)
+        assert "process group" not in str(expired.value)
+
+    def test_the_launcher_records_the_session_from_inside_it(self):
+        """`$$` and not `$!`, and from the shell `setsid` runs.
+
+        `setsid` execs in place when its caller is not a process-group leader and forks when
+        it is, so the outer `$!` is the session leader on some backends and a spent
+        intermediary on others. The process it ends up exec'ing leads the session either
+        way, so the shell that writes this is the right one.
+        """
+        layout = guest_run_layout("/maf-sandbox/work/run-1")
+        script = launcher_script(layout)
+        inner = shlex.split(_branch(script, setsid=True).removesuffix(" &"))[3]
+
+        assert inner.startswith(f"printf %s $$ > '{layout.session}.part'"), inner[:120]
+        assert f"mv '{layout.session}.part' '{layout.session}'" in inner
+        assert "$$" not in _branch(script, setsid=False), (
+            "the fallback records a session it did not make"
+        )
 
 
 class TestStoppingARunThatOverran:
@@ -2834,6 +2977,7 @@ class TestThePidAgainstARealShell:
             output=f"{served}/program_output.txt",
             exit_code=f"{served}/program_exit_code",
             pid=f"{served}/program_pid",
+            session=f"{served}/program_session",
         )
 
     @staticmethod
@@ -2873,6 +3017,101 @@ class TestThePidAgainstARealShell:
         assert recorded == printed, (
             f"the launcher recorded {recorded} but the program is {printed} — the pid is the "
             "wrapper's, and killing it would leave the program running"
+        )
+
+    @pytest.mark.skipif(shutil.which("setsid") is None, reason="needs setsid")
+    @pytest.mark.skipif(not os.path.isdir("/proc"), reason="reads process state from /proc")
+    def test_the_group_kill_stops_the_program_and_its_child(self, tmp_path: Path):
+        """The whole point of the session, end to end against a real shell.
+
+        Everything else about the group form is asserted against a double that reads the
+        command string, so a launcher that put the interpreter in a process group of its own
+        would keep those green while the signal reached the wrapper shell alone.
+        """
+        layout = self._laid_out(tmp_path)
+        kid = f"{tmp_path}/kid"
+        pathlib.Path(layout.program).write_text(
+            "import subprocess, pathlib, time"
+            + chr(10)
+            + 'child = subprocess.Popen(["sh", "-c", "while :; do sleep 1; done"])'
+            + chr(10)
+            + f'pathlib.Path("{kid}").write_text(str(child.pid))'
+            + chr(10)
+            + "while True:"
+            + chr(10)
+            + "    time.sleep(0.05)"
+            + chr(10),
+            encoding="utf-8",
+        )
+        pathlib.Path(layout.launcher).write_text(
+            launcher_script(layout, sys.executable), encoding="utf-8"
+        )
+
+        def state(pid: str) -> str:
+            """`Z` or gone is dead; nothing here reaps an orphan.
+
+            Read without asking first: the entry can go between an `exists()` and the read,
+            and the poll below is waiting for exactly that, so a vanished one is the answer
+            rather than an error on the way to it.
+            """
+            try:
+                return pathlib.Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()[2]
+            except OSError:
+                return "gone"
+
+        subprocess.run(
+            ["sh", layout.launcher], cwd=layout.directory, capture_output=True, timeout=60
+        )
+        session = self._appears(layout.session)
+        child = self._appears(kid)
+
+        assert state(child) not in ("Z", "gone"), "the child never ran"
+        pgid = pathlib.Path(f"/proc/{child}/stat").read_text(encoding="utf-8").split()[4]
+        assert pgid == session, (
+            f"the child is in group {pgid} and the recorded session is {session}, so the "
+            "signal would miss it"
+        )
+
+        # Through `sh`, because `kill` is a builtin on images that ship no such binary —
+        # and because that is the shape the transport sends over `exec`.
+        subprocess.run(["sh", "-c", f"kill -KILL -{session}"], capture_output=True, timeout=30)
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            if state(child) in ("Z", "gone"):
+                break
+            time.sleep(0.1)
+        assert state(child) in ("Z", "gone"), (
+            "the spawned child outlived the group kill, which is what #437 was about"
+        )
+
+    @pytest.mark.skipif(shutil.which("setsid") is None, reason="needs setsid")
+    def test_a_real_shell_records_the_session_the_program_is_in(self, tmp_path: Path):
+        """The launcher's claim about the session, checked against the kernel.
+
+        `setsid` execs in place or forks depending on its caller, so the recorded value
+        only means something if it is the session the program actually ended up in.
+        """
+        layout = self._laid_out(tmp_path)
+        pathlib.Path(layout.program).write_text(
+            "import os\nprint(os.getsid(0))\n", encoding="utf-8"
+        )
+        pathlib.Path(layout.launcher).write_text(
+            launcher_script(layout, sys.executable), encoding="utf-8"
+        )
+
+        started = subprocess.run(
+            ["sh", layout.launcher], cwd=layout.directory, capture_output=True, timeout=60
+        )
+        self._appears(layout.exit_code)
+
+        assert (
+            self._appears(layout.session)
+            == pathlib.Path(layout.output).read_text(encoding="utf-8").strip()
+        ), (
+            "the recorded session is not the one the program is in, so killing that group reaches nothing"
+        )
+        assert SESSION_MADE in started.stdout.decode(), (
+            "a session was made and the launcher did not say so, so the host will not use it"
         )
 
     @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
@@ -2941,7 +3180,7 @@ class TestTheLaunchersPidMarker:
         left going instead. Rare, and silent, which is the pair worth a rename.
         """
         layout = guest_run_layout("/maf-sandbox/work/run-1")
-        inner = shlex.split(launcher_script(layout).splitlines()[-1].removesuffix(" &"))[3]
+        inner = shlex.split(_branch(launcher_script(layout), setsid=True).removesuffix(" &"))[3]
         assert f"{layout.pid}.part" in inner, "the pid is written straight to its name"
         assert f"mv '{layout.pid}.part' '{layout.pid}'" in inner
 
@@ -3207,6 +3446,28 @@ class TestWhatIsTooBroadToDelete:
         guest = _GuestThatRecordsRemovals([], finish=True)
         assert asyncio.run(reclaim_run(guest, broken, timeout=5.0)) is False
         assert guest.removals == [], f"a refused path still reached a command: {guest.commands}"
+
+    def test_a_session_outside_the_run_is_refused_like_every_other_stray(self):
+        """The newest path in the layout gets the check the older ones have.
+
+        Missing it, a hand-built layout could put the session file outside the run and this
+        would delete the run, answer `True`, and leave that file behind.
+        """
+        astray = GuestRunLayout(
+            directory="/maf-sandbox/work/run-1",
+            work="/maf-sandbox/work/run-1/work",
+            program="/maf-sandbox/work/run-1/host_tools/program.py",
+            shim="/maf-sandbox/work/run-1/host_tools/maf_host_tools.py",
+            launcher="/maf-sandbox/work/run-1/host_tools/run_program.sh",
+            calls="/maf-sandbox/work/run-1/host_tools/host_tool_calls",
+            output="/maf-sandbox/work/run-1/host_tools/program_output.txt",
+            exit_code="/maf-sandbox/work/run-1/host_tools/program_exit_code",
+            pid="/maf-sandbox/work/run-1/host_tools/program_pid",
+            session="/elsewhere/program_session",
+        )
+        guest = _GuestThatRecordsRemovals([], finish=True)
+        assert asyncio.run(reclaim_run(guest, astray, timeout=5.0)) is False
+        assert guest.removals == [], f"a stray session still reached a command: {guest.commands}"
 
 
 class TestRemovalAgainstARealShell:
@@ -3546,6 +3807,27 @@ class TestWhatEveryExitPathOwesTheRun:
             _run(guest, HostToolRun(_registry()), timeout=5.0)
 
         assert guest.kills != [], f"a failed run left its program running: {guest.commands}"
+
+    def test_a_failed_run_still_stops_the_group_the_launcher_made(self):
+        """The emergency stop is the one path with no launcher result of its own.
+
+        It runs after the supervisor, so it needs the launcher's verdict carried out to it;
+        the reclaim on the next line removes the files that would identify the children.
+        """
+
+        class _DiesMidRun(_GuestThatRecordsTheKill):
+            async def stat_file(self, path: str, *, working_directory: str):
+                if path == _LAYOUT.exit_code:
+                    raise PermissionError("the daemon said no")
+                return await super().stat_file(path, working_directory=working_directory)
+
+        guest = _DiesMidRun([], finish=False, pid="4242", session="4200")
+        with pytest.raises(PermissionError):
+            _run(guest, HostToolRun(_registry()), timeout=5.0)
+
+        assert guest.kills == ["kill -KILL -4200 2>/dev/null"], (
+            f"the cleanup fell back to one pid on a guest that had a group: {guest.kills}"
+        )
 
     def test_a_backends_own_program_timeout_is_not_this_runs_own(self):
         """`SandboxProgramTimeout` is public, so a backend may raise one for a bound of its own.
