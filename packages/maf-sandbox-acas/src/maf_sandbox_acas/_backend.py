@@ -346,6 +346,9 @@ class _AcasSandbox:
         promise, and this one cannot be kept while the service's behaviour on a link is
         unmeasured. :func:`~maf_sandbox.conformance.measure_files_delete_probes` exists for
         exactly that decision — see #438 and #450 for where its verdict lands.
+
+        A directory is refused without ``recursive`` whatever it holds: the rule is on the
+        entry's kind, because a backend that cannot enumerate cannot tell empty from full.
         """
         from azure.core.exceptions import ResourceNotFoundError
 
@@ -361,6 +364,10 @@ class _AcasSandbox:
                 f"refusing to remove {path!r}: it is a link, and whether this service unlinks "
                 "one or follows it on a delete is unverified — it follows one on a read"
             )
+        # After the link refusal, never before: a link is one entry whatever it points at, so
+        # `recursive` must not carry one past the guard above.
+        if planted is not None and planted.kind is EntryKind.DIRECTORY and not recursive:
+            raise OSError(f"refusing to remove a directory without recursive: {path}")
         try:
             # Bounded like every other call on this data plane: this one runs from a `finally`,
             # where a wedged service would otherwise hold the caller's turn open with the run's

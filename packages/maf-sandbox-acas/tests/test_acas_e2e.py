@@ -397,10 +397,7 @@ class TestFilesDeleteAgainstTheRealService:
         Every probe is classified by this test into expected-pass or expected-fail — a result
         in neither column fails the run, so an unclassified finding cannot sit green in a
         scheduled job with no visible artefact. When a probe's column legitimately changes,
-        move it here and name the change in the PR that moves it, citing this run: the
-        interior-link probe in particular is the answer to whether this service can ever
-        unlink-on-delete (#452's open question), and half of the transient-or-structural
-        reading below.
+        move it here and name the change in the PR that moves it, citing that run.
         """
         results = files_delete_measurement
         failed = {r.probe.name: r.failure for r in results if r.failure is not None}
@@ -414,11 +411,7 @@ class TestFilesDeleteAgainstTheRealService:
         )
         assert "ValueError" in failed["a-link-is-removed-never-followed"]
 
-        # The expected columns for everything else. The interior-link probe is deliberately
-        # *not* pre-classified: it is the genuinely unknown one — this backend's stat-based
-        # refusal cannot see inside a recursive tree — so it lands in the unclassified set
-        # below and fails this run, loudly, with its result in the message, rather than being
-        # assumed either way. The first live run classifies it; that is the measurement.
+        # The expected columns for everything else.
         expected_pass = {
             "a-removal-removes",
             "a-missing-path-is-success",
@@ -428,6 +421,7 @@ class TestFilesDeleteAgainstTheRealService:
             "a-path-through-a-linked-parent-is-refused",
             "a-directory-needs-recursive",
             "an-empty-directory-needs-recursive",
+            "a-link-inside-a-recursive-removal-is-unlinked-not-followed",
         }
         unclassified = (passed | set(failed)) - expected_pass - {"a-link-is-removed-never-followed"}
         missing_pass = expected_pass - passed
