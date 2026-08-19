@@ -30,7 +30,7 @@ not.  Read it, along with the prerequisites and the environment variables, first
 #     "azure-identity",
 #     "maf-sandbox-codeact",
 #     "maf-sandbox-docker",
-#     "maf-sandbox>=0.16",
+#     "maf-sandbox>=0.17",
 # ]
 # ///
 
