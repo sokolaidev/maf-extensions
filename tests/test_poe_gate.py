@@ -33,6 +33,18 @@ class TestTheGate:
         assert _TASKS["format"] == "ruff format --check ."
         assert _TASKS["types"] == "pyright"
 
+    def test_the_enumerated_pass_is_wired_to_the_helper_it_is_pinned_against(self):
+        """The task below pins what the helper *finds*; nothing pinned that poe calls it.
+
+        `types-packages` is the one gate member that runs a script rather than a command, so
+        its wiring is two values a test can check and neither was checked: a `script` pointing
+        elsewhere, or a lost `PYTHONPATH`, leaves `uv run poe gate` no longer checking any
+        package while every test here stays green.
+        """
+        task = _TASKS["types-packages"]
+        assert task["script"] == "gate_tasks:pyright_packages", task
+        assert task["env"]["PYTHONPATH"] == "scripts", task
+
     def test_the_enumerated_pass_finds_every_package(self):
         """The same discovery the workflow's loop performs, so the two cannot drift apart.
 

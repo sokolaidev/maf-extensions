@@ -430,15 +430,20 @@ class TestFilesDeleteAgainstTheRealService:
             "an-empty-directory-needs-recursive",
         }
         unclassified = (passed | set(failed)) - expected_pass - {"a-link-is-removed-never-followed"}
-        assert not unclassified, (
-            f"unclassified delete-probe results: {sorted(n for n in unclassified)} "
-            f"(outcome: {sorted((n, failed.get(n, 'passed')) for n in unclassified)}). "
+        missing_pass = expected_pass - passed
+        # Both in one assertion, because the unclassified set is meant to be non-empty on the
+        # first live run: anything asserted after it would never run on the one run this exists
+        # to produce evidence from, and a probe that should pass and did not would be missing
+        # from the only artifact.
+        assert not unclassified and not missing_pass, (
+            f"unclassified delete-probe results: {sorted(unclassified)} "
+            f"(outcome: {sorted((n, failed.get(n, 'passed')) for n in unclassified)}); "
+            f"probes that should pass and failed: "
+            f"{sorted((n, failed.get(n, 'no result')) for n in missing_pass)}. "
             "This measurement exists to produce evidence for #435/#438 — classify each result "
             "in this test (expected pass, expected fail with its reason) or the scheduled run "
             "reports nothing a decision can cite."
         )
-        missing_pass = expected_pass - passed
-        assert not missing_pass, f"probes that should pass failed: {sorted(missing_pass)}"
 
 
 class TestWhatOnlyTheServiceCanSay:
