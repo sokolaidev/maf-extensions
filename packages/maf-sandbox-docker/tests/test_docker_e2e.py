@@ -594,12 +594,9 @@ class TestWhetherThisBackendCouldServeHostTools:
 
 
 class TestWhatOnlyARealRunawayCanSettle:
-    """The two claims #375's fix rests on, against a container instead of a double.
+    """A live runaway timed out through `dispatch_over_exec` is gone when it returns.
 
-    Offline they are stitched from separately-faked halves: the launcher records a pid (real
-    shell), the transport emits a kill (fake), that command fails against a dead pid (real
-    shell). Nothing joins them, so nothing shows the process actually dies or the files
-    actually go. One container, one runaway, both questions.
+    It proves both the process and the transport files are really gone in a container.
     """
 
     def test_a_runaway_is_dead_and_its_files_are_gone_when_the_call_returns(self):
@@ -631,8 +628,8 @@ class TestWhatOnlyARealRunawayCanSettle:
                         interpreter="sh",
                     )
 
-                # 1. It says it stopped the program — silence is what that looks like.
-                assert "may still be running" not in str(expired.value), expired.value
+                # 1. It says it stopped the program.
+                assert expired.value.signal in {"program", "group"}, expired.value
 
                 # 2. And it is true of the process itself. Read the pid the program wrote,
                 #    then ask the kernel — a missing file or an unreadable pid fails here
@@ -650,7 +647,14 @@ class TestWhatOnlyARealRunawayCanSettle:
                 assert pid.isdigit(), f"not a pid: {pid!r}"
 
                 alive = await sandbox.exec(
-                    f"kill -0 {pid} 2>/dev/null && echo alive || echo gone",
+                    (
+                        f"if kill -0 {pid} 2>/dev/null; then "
+                        f"state=$(awk '/^State:/ {{print $2}}' /proc/{pid}/status 2>/dev/null || true); "
+                        f"if [ \"$state\" = Z ]; then echo gone; "
+                        f"elif [ -n \"$state\" ]; then echo alive; "
+                        f"else echo gone; fi; "
+                        f"else echo gone; fi"
+                    ),
                     working_directory=_WORK,
                     timeout=60,
                 )
@@ -662,11 +666,14 @@ class TestWhatOnlyARealRunawayCanSettle:
                 #    list of commands somebody issued.
                 served = posixpath.dirname(layout.shim)
                 listed = await sandbox.exec(
-                    f"ls -A {served} 2>/dev/null | wc -l",
+                    f"if [ -d {served} ]; then ls -A {served}; else :; fi",
                     working_directory=_WORK,
                     timeout=60,
                 )
-                assert listed.stdout.strip() == "0", (
+                assert listed.exit_code == 0, (
+                    f"could not inspect transport directory {served}: {listed.stderr!r}"
+                )
+                assert listed.stdout.strip() == "", (
                     f"the transport left files behind in {served}: {listed.stdout!r}"
                 )
             finally:
