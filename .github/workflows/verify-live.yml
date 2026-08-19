@@ -975,13 +975,38 @@ jobs:
           AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
         run: |
           set -euo pipefail
-          uv run --no-project samples/13_bicep_fix_loop/agent.py | tee /tmp/sample13-out.txt
           # Three claims, and the check needs all of them: turn 1 wrote a file with a real fault
           # in it, one container served all four acquires, and the compiler agrees the file
           # turn 2 left is repaired. Any one alone passes on a broken sample — perfect reuse of
           # a sandbox that fixed nothing, or a fix that quietly booted a second container to
           # make it. stdlib-only, so the runner's own python3 runs it.
-          python3 "$HARNESS"/scripts/check_live_fix_loop_sample.py /tmp/sample13-out.txt
+          #
+          # Retry only exit 3, which marks model-only non-convergence; deterministic failures exit.
+          # Annotate retries and summarize attempts so intermittent failures remain visible.
+          attempts=0
+          status=0
+          while [ "$attempts" -lt 2 ]; do
+            attempts=$((attempts + 1))
+            # Captured rather than left to `set -e`: a sample that dies here would otherwise
+            # take the whole step with it, before the attempt count is written. It is also not
+            # the model's half — nothing was measured — so it breaks without a second loop.
+            status=0
+            uv run --no-project samples/13_bicep_fix_loop/agent.py | tee /tmp/sample13-out.txt || status=$?
+            if [ "$status" -ne 0 ]; then
+              echo "::error title=sample 13 did not run::the sample exited $status, so the check saw nothing"
+              break
+            fi
+            python3 "$HARNESS"/scripts/check_live_fix_loop_sample.py /tmp/sample13-out.txt || status=$?
+            [ "$status" -eq 3 ] || break
+            if [ "$attempts" -lt 2 ]; then
+              note="the model's half did not converge on attempt $attempts and every other"
+              note="$note measurement passed, so the two-turn loop runs once more (#421)"
+              echo "::warning title=sample 13 retried::$note"
+            fi
+          done
+          said="samples/13_bicep_fix_loop: exit $status after $attempts attempt(s), 2 allowed."
+          echo "$said" | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "$status"
 
   sample-14:
     name: samples/14_acas_codeact_files against a live sandbox

@@ -707,6 +707,66 @@ class TestASwapWithinOneRuleIsNotARepair:
         ), reasons
 
 
+class TestWhichHalfFailedIsInTheExitStatus:
+    """Verify exit statuses distinguish model-only failures from deterministic failures."""
+
+    def _status(self, tmp_path, output: str) -> int:
+        out = tmp_path / "out.txt"
+        out.write_text(output, encoding="utf-8")
+        return check.main(["check", str(out)])
+
+    def test_a_healthy_run_exits_zero(self, tmp_path):
+        assert self._status(tmp_path, _HEALTHY) == 0
+
+    def test_a_repair_that_did_not_converge_asks_for_another_attempt(self, tmp_path):
+        assert self._status(tmp_path, _SWAPPED) == check.MODEL_DID_NOT_CONVERGE
+
+    def test_turn_1_counts_as_the_model_s_half_as_much_as_turn_2(self, tmp_path):
+        """Both turns are one model doing open-ended work, so both earn the second loop.
+
+        Turn 2 repaired the file here; turn 1's own prose left a diagnostic out. Nothing
+        that speaks about status 3 may name the fix turn alone.
+        """
+        quiet = _HEALTHY.replace("1. `no-unused-params` — error — line 3", "1. an error on line 3")
+        assert quiet != _HEALTHY
+        assert self._status(tmp_path, quiet) == check.MODEL_DID_NOT_CONVERGE
+
+    def test_the_exit_line_does_not_blame_one_turn(self, tmp_path, capsys):
+        """The same claim the workflow makes, made here first — and it is read by people."""
+        self._status(tmp_path, _SWAPPED)
+        said = capsys.readouterr().err
+        assert "Exiting 3" in said, said
+        assert "fix turn's own" not in said, said
+
+    def test_a_measurement_this_suite_owns_does_not(self, tmp_path):
+        """Two containers is a broken sandbox, and a second model attempt cannot mend it."""
+        broken = _HEALTHY.replace(
+            "containers after turn 2: 1 (a1b2c3d4e5f6)",
+            "containers after turn 2: 2 (a1b2c3d4e5f6, 0badc0ffee00)",
+        )
+        assert broken != _HEALTHY
+        assert self._status(tmp_path, broken) == 1
+
+    def test_one_hard_failure_among_the_model_s_is_enough_to_forbid_a_retry(self, tmp_path):
+        both = _SWAPPED.replace(
+            "  [measured] Disposed 1 sandbox(es)", "  [measured] Disposed 0 sandbox(es)"
+        )
+        assert both != _SWAPPED
+        assert self._status(tmp_path, both) == 1
+
+    def test_the_class_travels_with_the_message_rather_than_being_matched_from_it(self):
+        """A reworded failure must keep its class, so nothing downstream parses prose."""
+        assert all(isinstance(r, check._TheModelsHalf) for r in check.assess(_SWAPPED))
+        containers = check.assess(
+            _HEALTHY.replace("containers after the check: 1", "containers after the check: 2")
+        )
+        assert containers and not any(isinstance(r, check._TheModelsHalf) for r in containers)
+
+    def test_a_run_that_never_finished_is_not_the_model_s_fault(self, tmp_path):
+        """No footer is a sample that died, not a repair that missed."""
+        assert self._status(tmp_path, _HEALTHY.split("== The work product ==")[0]) == 1
+
+
 class TestTurnOneReportedRealDiagnostics:
     """Scoped to turn 1's prose, because the rule ids appear again in the sample's own tally."""
 
