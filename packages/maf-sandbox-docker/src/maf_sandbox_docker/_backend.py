@@ -327,6 +327,40 @@ class _DockerSandbox:
         await self._refuse_symlinked_parents(guest, working_directory=working_directory)
         return await self._stat_guest(guest, posixpath.normpath(path))
 
+    async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
+        """Delete ``path``, and everything under it when ``recursive``.
+
+        Through ``rm`` in the image, because the engine has no delete primitive — the same
+        shape as :meth:`list_dir`'s absence, answered the other way round: enumeration has no
+        substitute, a removal does.  ``docker exec`` takes argv, so the path goes through as
+        one element with no shell and nothing to quote, and ``--`` keeps a path that opens with
+        a dash from being read as a flag.
+
+        ``rm``'s own exit codes are the contract rather than a re-implementation of it: ``-f``
+        makes a path that is not there a success, and refuses a directory without ``-r`` —
+        which is exactly what the protocol asks for, empty directories included.
+
+        The dependency this adds is the one :attr:`capabilities` already names for ``EXEC``:
+        a distroless image without ``rm`` fails here, as it already fails a kind execing
+        ``python3``.  Declaring :data:`~maf_sandbox.Capability.FILES_DELETE` is honest for the
+        images this backend is used with and dishonest for an image with no userland — #111's
+        axis, unchanged by this method.
+        """
+        guest = confine_guest_path(path, working_directory)
+        await self._refuse_symlinked_parents(guest, working_directory=working_directory)
+        if posixpath.normpath(guest) == posixpath.normpath(working_directory):
+            raise OSError(f"refusing to remove the working directory itself: {working_directory}")
+        removed = await self.exec(
+            ["rm", "-rf" if recursive else "-f", "--", guest],
+            working_directory=working_directory,
+            timeout=self._command_timeout,
+        )
+        if removed.exit_code != 0:
+            raise OSError(
+                f"could not remove {path}: rm exited {removed.exit_code}"
+                f"{f' — {removed.stderr.strip()}' if removed.stderr else ''}"
+            )
+
     async def _stat_guest(self, guest: str, rel: str) -> SandboxEntry | None:
         """Stat an absolute guest path, with no confinement check of its own.
 
@@ -472,6 +506,7 @@ class DockerSandboxBackend:
                 Capability.EXEC,
                 Capability.FILES_IN,
                 Capability.FILES_OUT,
+                Capability.FILES_DELETE,
                 Capability.HOST_TOOLS,
             }
         )

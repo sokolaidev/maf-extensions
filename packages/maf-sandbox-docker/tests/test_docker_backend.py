@@ -235,6 +235,7 @@ class TestBackendIdentity:
                 Capability.EXEC,
                 Capability.FILES_IN,
                 Capability.FILES_OUT,
+                Capability.FILES_DELETE,
                 Capability.HOST_TOOLS,
             }
         )

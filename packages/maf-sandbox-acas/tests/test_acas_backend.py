@@ -147,9 +147,19 @@ class TestBackendIdentity:
                 Capability.FILES_IN,
                 Capability.FILES_OUT,
                 Capability.FILES_LIST,
+                Capability.FILES_DELETE,
                 Capability.HOST_TOOLS,
             }
         )
+
+    def test_deletes_without_a_shell(self):
+        """The data plane has `delete_file`, so cleanup here does not go through the image.
+
+        The point of splitting the capability out: on every other backend a removal is `rm`
+        over `exec`, which is a promise about what `spec.image` carries rather than about what
+        the backend can do. This one can answer for it.
+        """
+        assert Capability.FILES_DELETE in AcasSandboxBackend(_config()).capabilities
 
     def test_is_the_only_backend_that_can_declare_files_list(self):
         """Native enumeration is the split's own test — name the backend that lacks it."""

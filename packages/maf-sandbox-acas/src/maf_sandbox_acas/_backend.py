@@ -333,6 +333,34 @@ class _AcasSandbox:
         await self._refuse_symlinked_parents(guest, working_directory=working_directory)
         return await self._stat_guest(guest, relative)
 
+    async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
+        """Delete ``path``, and everything under it when ``recursive``.
+
+        The data plane has its own ``delete_file``, so this is the one backend where cleanup
+        costs no shell — no ``rm``, and no dependency on what ``spec.image`` happens to carry.
+        That is why :data:`~maf_sandbox.Capability.FILES_DELETE` is worth declaring rather than
+        leaving every kind to reach for ``exec``.
+
+        Confinement is the pull surface's, unchanged: the path is confined, then its *parents*
+        are walked, because this service resolves a symlinked component on a delete as readily
+        as on a read — and an unlinked target outside the boundary is damage no byte had to
+        cross for.  The final component is deliberately not walked: a link named here is the
+        thing being removed.
+
+        A path that is not there is success.  The service answers ``ResourceNotFoundError`` and
+        this swallows it, because cleanup runs after whatever went wrong already went wrong.
+        """
+        from azure.core.exceptions import ResourceNotFoundError
+
+        guest = confine_guest_path(path, working_directory)
+        await self._refuse_symlinked_parents(guest, working_directory=working_directory)
+        if posixpath.normpath(guest) == posixpath.normpath(working_directory):
+            raise OSError(f"refusing to remove the working directory itself: {working_directory}")
+        try:
+            await self._sc.delete_file(guest, recursive=recursive)
+        except ResourceNotFoundError:
+            return
+
     async def _stat_guest(self, guest: str, relative: str) -> SandboxEntry | None:
         """Stat an absolute guest path, with no confinement check of its own.
 
@@ -519,6 +547,7 @@ class AcasSandboxBackend:
                 Capability.FILES_IN,
                 Capability.FILES_OUT,
                 Capability.FILES_LIST,
+                Capability.FILES_DELETE,
                 Capability.HOST_TOOLS,
             }
         )
