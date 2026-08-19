@@ -5,7 +5,7 @@ in the **host process**, with the host's authority, driven by model-written code
 call bypasses whatever middleware the host runs — the boundary sees only ``execute_code``'s
 aggregate result.  The layered rationale lives in ``docs/design/two-axis-sandbox-policy.md``.
 
-Three things a caller must know:
+Four things a caller must know:
 
 - :class:`HostToolRegistry` is the **one door**.  Nothing is dispatchable until it is
   registered, and :meth:`HostToolRegistry.resolve` is the only path in — which is what makes
@@ -15,6 +15,10 @@ Three things a caller must know:
 - Everything a guest can see is a sanitized sentence, in the failure-ladder style of
   :mod:`maf_sandbox.maf`: a refusal ends the call, not the program, and provider detail goes
   to the host's log rather than into a transcript.
+- **A host may watch its own dispatches, and only that.**  The registry's ``dispatch_observer``
+  receives each dispatch's run and name, so a host can attribute a call to the program that made
+  it.  It is off by default, it sees nothing the dispatch does not already know, and it changes
+  nothing a guest can see.
 
 Declarations are carried claims; enforcement is the host's middleware.  A host without
 ``agent_framework.security`` still gets the registry, the warning, the gate and the denials —
@@ -23,11 +27,13 @@ and classifications ready the day it turns enforcement on.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import inspect
 import json
 import logging
 import warnings
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass
 from typing import Any, TypeVar, cast
 
@@ -289,6 +295,14 @@ class HostToolRegistry:
         response_limits: The per-response and per-run byte ceilings, reusing
             :class:`~maf_sandbox.TransferLimits` — its per-file leg caps one response, its
             total leg the run, its count leg the delivered responses.
+        dispatch_observer: A host's callback that sees each dispatch and the run that made
+            it, so the host can attribute the call to the program. Takes the run and the
+            name and returns a context manager the dispatch enters and exits
+            structurally — a refused dispatch included, since it starts at the cap check.
+            Synchronous and fast: it runs on the dispatching task, and must not block it.
+            Its ``__exit__`` return value is ignored, so no observer can swallow a dispatch
+            outcome. The name is as given: a string for every dispatch that resolves, and
+            only the refusal that rejects it sees a non-string.
     """
 
     def __init__(
@@ -297,6 +311,9 @@ class HostToolRegistry:
         require_declared: bool = False,
         max_dispatches_per_run: int = DEFAULT_MAX_DISPATCHES_PER_RUN,
         response_limits: TransferLimits = DEFAULT_TRANSFER_LIMITS,
+        dispatch_observer: (
+            Callable[[HostToolRun, object], contextlib.AbstractContextManager[object]] | None
+        ) = None,
     ) -> None:
         _refuse_non_integer("max_dispatches_per_run", max_dispatches_per_run)
         if max_dispatches_per_run < 1:
@@ -326,9 +343,28 @@ class HostToolRegistry:
                     f"response_limits.{leg} is {bound!r}, so no response could ever be "
                     "delivered — a host that wants none wants an empty registry"
                 )
+        if dispatch_observer is not None:
+            # Reject invalid observer configurations at construction rather than discovering
+            # and logging them on every dispatch.
+            given_observer = cast(object, dispatch_observer)
+            if not callable(given_observer):
+                raise TypeError(
+                    f"dispatch_observer must be callable, not {type(dispatch_observer).__name__}"
+                )
+            # An instance with an async ``__call__`` is equally an observer no one awaits,
+            # and only its ``__call__`` is the coroutine function ``inspect`` can see.
+            if inspect.iscoroutinefunction(given_observer) or inspect.iscoroutinefunction(
+                getattr(given_observer, "__call__", None)
+            ):
+                raise TypeError(
+                    "dispatch_observer must be synchronous, not a coroutine function: it is "
+                    "called on the dispatching task and must return a context manager to "
+                    "enter, not a coroutine to await"
+                )
         self._require_declared = require_declared
         self._max_dispatches_per_run = max_dispatches_per_run
         self._response_limits = response_limits
+        self._dispatch_observer = dispatch_observer
         self._tools: dict[str, Callable[..., Any]] = {}
         # Captured at registration, never re-read from the function: see `declaration_for`.
         self._declarations: dict[str, HostToolDeclaration | None] = {}
@@ -348,6 +384,14 @@ class HostToolRegistry:
     def response_limits(self) -> TransferLimits:
         """The byte and count ceilings a run's responses live under."""
         return self._response_limits
+
+    @property
+    def dispatch_observer(
+        self,
+    ) -> Callable[[HostToolRun, object], contextlib.AbstractContextManager[object]] | None:
+        """The host's observer, or ``None`` when the host registered none — the off-by-default
+        half of the contract, where a host can confirm it is watching nothing."""
+        return self._dispatch_observer
 
     def __len__(self) -> int:
         return len(self._tools)
@@ -520,6 +564,76 @@ def _bounded(text: str) -> str:
     return text if len(text) <= _MAX_ECHOED_CHARS else f"{text[:_MAX_ECHOED_CHARS]} (truncated)"
 
 
+@contextlib.contextmanager
+def _observe(
+    observer: Callable[[HostToolRun, object], contextlib.AbstractContextManager[object]] | None,
+    run: HostToolRun,
+    name: object,
+    logger: logging.Logger,
+) -> Generator[None]:
+    """The dispatch's observer, entered and exited structurally — or nothing, when absent.
+
+    The guard is the point: a dispatch is the guest's call and the observer is the host's
+    code, so none of the three observer failures — the factory, ``__enter__``, ``__exit__`` —
+    may reach the dispatch or the guest. Each logs and continues, in the shape
+    :func:`_reclaim_the_transports_own` already uses. The catch is narrow on purpose: an
+    observer's own ``Exception``, a ``CancelledError`` it raises, and a ``GeneratorExit``
+    from its own generator are contained, but ``SystemExit`` and ``KeyboardInterrupt`` are
+    the host's control flow, not an observer failure, so they escape. The dispatch's own
+    exception is
+    forwarded into ``__exit__`` but its return value is ignored: an observer returning
+    ``True`` is one that would swallow a dispatch outcome, and the pairing the ledger relies
+    on — every enter has exactly one exit — is the ``try``, which a return value cannot
+    un-pair. ``__exit__`` runs on ``BaseException`` too, so a cancelled dispatch still exits
+    its observer, because the exit is structural rather than a check on the outcome.
+    """
+    if observer is None:
+        yield
+        return
+    try:
+        context = observer(run, name)
+    # Contain the observer's own failures: its Exceptions, a CancelledError from a host's
+    # shutdown bug, a GeneratorExit from its own generator. SystemExit and
+    # KeyboardInterrupt are the host's control flow, so they deliberately escape.
+    except (Exception, asyncio.CancelledError, GeneratorExit) as exc:  # noqa: BLE001 - a dispatch is not the observer's to fail
+        logger.warning(
+            "host tools: the dispatch observer failed to observe %r: %s", name, error_detail(exc)
+        )
+        yield
+        return
+    try:
+        context.__enter__()
+    except (Exception, asyncio.CancelledError, GeneratorExit) as exc:  # noqa: BLE001 - never entered, so never exited, and the dispatch runs on
+        logger.warning(
+            "host tools: the dispatch observer failed to observe %r: %s", name, error_detail(exc)
+        )
+        yield
+        return
+    try:
+        yield
+    except BaseException as exc:
+        # The dispatch raised (or was cancelled): forward it, but an observer's ``__exit__``
+        # raising may not mask it, and its return value may not swallow it.
+        try:
+            context.__exit__(type(exc), exc, exc.__traceback__)
+        except (Exception, asyncio.CancelledError, GeneratorExit) as exit_exc:  # noqa: BLE001 - the observer's failure is its own warning
+            logger.warning(
+                "host tools: the dispatch observer failed to exit for %r: %s",
+                name,
+                error_detail(exit_exc),
+            )
+        raise
+    else:
+        try:
+            context.__exit__(None, None, None)
+        except (Exception, asyncio.CancelledError, GeneratorExit) as exit_exc:  # noqa: BLE001 - a success must not become a failure over the exit
+            logger.warning(
+                "host tools: the dispatch observer failed to exit for %r: %s",
+                name,
+                error_detail(exit_exc),
+            )
+
+
 class HostToolRun:
     """One ``execute_code`` run's dispatch context: the cap, the ledger, and the one door.
 
@@ -577,6 +691,23 @@ class HostToolRun:
         if framing_bytes < 0:
             # A negative overhead would widen every ceiling below it by that much.
             raise ValueError(f"framing_bytes must not be negative, got {framing_bytes}")
+        # The framing checks above raise before the observation begins: a transport's
+        # programming error is not a dispatch, so the observer sees no enter for it.
+        with _observe(self._registry.dispatch_observer, self, name, self._logger):
+            return await self._run_dispatch(name, arguments, framing_bytes=framing_bytes)
+
+    async def _run_dispatch(
+        self, name: str, arguments: Mapping[str, Any] | None = None, *, framing_bytes: int = 0
+    ) -> DispatchResult:
+        """The guest-answerable half of :meth:`dispatch`, split so an observer can wrap it
+        whole — from the first count, refusals included, to the slot's return — without
+        re-indenting the body.
+
+        Args:
+            name: The tool to call, as given; a string on every dispatch that resolves.
+            arguments: Its keyword arguments, as the guest's JSON parsed.
+            framing_bytes: What the transport wraps around ``value_json`` before it crosses.
+        """
         self._dispatched += 1
         cap = self._registry.max_dispatches_per_run
         if self._dispatched > cap:

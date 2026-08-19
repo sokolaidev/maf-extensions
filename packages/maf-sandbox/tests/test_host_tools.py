@@ -11,10 +11,13 @@ beside the rest of the router's policy.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import inspect
 import json
 import logging
+import time
+from collections.abc import Generator
 
 import pytest
 
@@ -970,3 +973,482 @@ class TestResponseCaps:
         run = HostToolRun(self._registry(max_files=1, max_total_bytes=10_000))
         assert not _dispatch(run, "payload", {"size": 100}).ok
         assert _dispatch(run, "payload", {"size": 1}).ok
+
+
+class TestTheRegistryObservesEveryDispatch:
+    """Verify dispatch attribution and observer lifecycle behavior."""
+
+    @staticmethod
+    def _recording(events: list[tuple[str, object, HostToolRun, object]]):
+        def factory(run: HostToolRun, name: object):
+            # A token unique to this context: a run is not one, and the pairing must hold
+            # against a regression that opens the same dispatch's context twice.
+            token = object()
+
+            @contextlib.contextmanager
+            def cm():
+                # Recorded when ``__enter__`` runs, not when the factory was called: a
+                # factory whose context is never entered is not observation.
+                events.append(("enter", token, run, name))
+                try:
+                    yield
+                finally:
+                    # `finally`, because on a failing or cancelled dispatch the exit is a
+                    # throw into the yield, and a line after it would never run.
+                    events.append(("exit", token, run, name))
+
+            return cm()
+
+        return factory
+
+    def _pairing(self, events: list[tuple[str, object, HostToolRun, object]]) -> None:
+        """Each context enters and exits exactly once — no LIFO, because two contexts of
+        different runs may legally overlap."""
+        states: dict[object, str] = {}
+        for kind, token, run, _ in events:
+            state = states.get(token)
+            if kind == "enter":
+                assert state is None, "an enter for a context already entered"
+                states[token] = "open"
+            else:
+                assert state == "open", f"an exit before the enter, or twice: {run!r}"
+                states[token] = "closed"
+        assert all(state == "closed" for state in states.values()), (
+            "an enter the dispatch never closed"
+        )
+
+    def test_the_observer_is_absent_by_default(self):
+        """No host, no observer: the property is ``None`` and a dispatch is exactly today's."""
+        registry = HostToolRegistry()
+        assert registry.dispatch_observer is None
+        registry.register(_stamped_pure())
+        result = _dispatch(HostToolRun(registry), "doubled", {"x": 21})
+        assert result.ok
+
+    def test_one_run_per_program_and_the_name_of_the_call(self):
+        """Two programs on one host: the run object is what a ledger attributes a call by."""
+        events: list[tuple[str, object, HostToolRun, object]] = []
+        registry = HostToolRegistry(dispatch_observer=self._recording(events))
+        registry.register(_stamped_pure())
+        run_a = HostToolRun(registry)
+        run_b = HostToolRun(registry)
+        assert _dispatch(run_a, "doubled", {"x": 1}).ok
+        assert _dispatch(run_b, "doubled", {"x": 2}).ok
+        assert [(kind, run is run_a, name) for kind, _, run, name in events] == [
+            ("enter", True, "doubled"),
+            ("exit", True, "doubled"),
+            ("enter", False, "doubled"),
+            ("exit", False, "doubled"),
+        ]
+        self._pairing(events)
+
+    def test_a_refused_dispatch_is_observed_too(self):
+        """A refusal is a call the host still ran, so it is observed: a cap refusal returns
+        before any body runs, and without the enter/exit pair nothing else names the run."""
+        events: list[tuple[str, object, HostToolRun, object]] = []
+        registry = HostToolRegistry(
+            max_dispatches_per_run=1,
+            dispatch_observer=self._recording(events),
+        )
+        registry.register(_stamped_pure())
+        run = HostToolRun(registry)
+        assert _dispatch(run, "doubled", {"x": 1}).ok
+        assert not _dispatch(run, "doubled", {"x": 2}).ok
+        self._pairing(events)
+        assert [kind for kind, *_ in events] == ["enter", "exit", "enter", "exit"]
+        assert all(event_run is run for _, _, event_run, _ in events)
+
+    def test_the_observer_sees_an_unresolved_name(self):
+        """A name that never resolves is observed too, and the unhashable refusal is reachable."""
+        events: list[tuple[str, object, HostToolRun, object]] = []
+        registry = HostToolRegistry(dispatch_observer=self._recording(events))
+        run = HostToolRun(registry)
+        unknown = _dispatch(run, "never_registered")
+        assert not unknown.ok
+        assert unknown.refusal is not None and "not a registered host tool" in unknown.refusal
+        self._pairing(events)
+        assert [kind for kind, *_ in events] == ["enter", "exit"]
+        assert events[0][3] == "never_registered"
+
+    def test_an_unstring_name_is_seen_as_given(self):
+        """The name is handed over as given: a non-string appears only on the refusal that ends it."""
+        events: list[tuple[str, object, HostToolRun, object]] = []
+        registry = HostToolRegistry(dispatch_observer=self._recording(events))
+        run = HostToolRun(registry)
+        not_a_name = ["doubled"]
+        refused = _dispatch(run, not_a_name)  # type: ignore[arg-type]
+        assert not refused.ok
+        self._pairing(events)
+        assert events[0][2:] == (run, not_a_name)
+
+    def test_a_byte_budget_refusal_is_observed_and_never_reaches_the_body(self):
+        """A byte-budget refusal is decided before the body runs, so the observer is the only
+        thing that saw it — and the body spy is the check that it really never ran."""
+        events: list[tuple[str, object, HostToolRun, object]] = []
+        body_calls: list[int] = []
+        # The budget is spent by the framing alone, so a one-byte value does not even matter.
+        registry = HostToolRegistry(
+            response_limits=TransferLimits(max_bytes_per_file=64, max_total_bytes=5, max_files=8),
+            dispatch_observer=self._recording(events),
+        )
+
+        @sandbox_tool(source=None, sink=None, identity=None)
+        def payload(size: int) -> str:
+            body_calls.append(size)
+            return "x" * size
+
+        registry.register(payload)
+        run = HostToolRun(registry)
+        refused = asyncio.run(run.dispatch("payload", {"size": 1}, framing_bytes=5))
+        assert not refused.ok
+        assert refused.refusal is not None and "byte budget" in refused.refusal
+        assert body_calls == []
+        self._pairing(events)
+        assert [kind for kind, *_ in events] == ["enter", "exit"]
+        assert events[0][3] == "payload"
+
+    def test_two_in_flight_dispatches_pair_their_observers(self):
+        """Concurrency correctness is the ``with``, not a primitive: each dispatch enters its
+        own observer, so an interleaving is legal but never crosses."""
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        @sandbox_tool(source=None, sink="file_store", identity=None)
+        async def slow(x: int) -> int:
+            entered.set()
+            await release.wait()
+            return x
+
+        events: list[tuple[str, object, HostToolRun, object]] = []
+        registry = HostToolRegistry(
+            response_limits=dataclasses.replace(DEFAULT_TRANSFER_LIMITS, max_files=1),
+            dispatch_observer=self._recording(events),
+        )
+        registry.register(slow)
+        run = HostToolRun(registry)
+
+        async def scenario() -> None:
+            first = asyncio.create_task(run.dispatch("slow", {"x": 1}))
+            await entered.wait()  # inside its body, observer still entered
+            second = asyncio.create_task(run.dispatch("slow", {"x": 2}))
+            # Pin the second observer's enter, not the dispatch's outcome: a second that is
+            # no longer observed never enters, and the wait must fail the suite instead of
+            # hanging. Release only once it is in — the interleave the test exists to pin.
+            deadline = time.monotonic() + 5
+            while sum(kind == "enter" for kind, *_ in events) < 2:
+                if time.monotonic() > deadline:
+                    pytest.fail("the second dispatch never entered its observer")
+                await asyncio.sleep(0)
+            release.set()
+            await asyncio.gather(first, second)
+
+        asyncio.run(scenario())
+        self._pairing(events)
+        assert sum(kind == "enter" for kind, *_ in events) == 2
+
+    def test_a_cancelled_dispatch_still_exits_its_observer(self):
+        """Cancellation is a ``BaseException`` with no outcome — the exit is structural, so it
+        still happens, and the slot the body was holding goes back with it."""
+        entered = asyncio.Event()
+
+        @sandbox_tool(source=None, sink="file_store", identity=None)
+        async def never() -> int:
+            entered.set()
+            await asyncio.Event().wait()
+            return 1
+
+        events: list[tuple[str, object, HostToolRun, object]] = []
+        registry = HostToolRegistry(
+            response_limits=dataclasses.replace(DEFAULT_TRANSFER_LIMITS, max_files=1),
+            dispatch_observer=self._recording(events),
+        )
+        registry.register(never)
+        run = HostToolRun(registry)
+
+        async def scenario() -> None:
+            abandoned = asyncio.create_task(run.dispatch("never"))
+            await entered.wait()
+            abandoned.cancel()
+            await asyncio.wait([abandoned])
+            assert abandoned.cancelled(), "the premise: the call was abandoned mid-body"
+
+        asyncio.run(scenario())
+        self._pairing(events)
+        assert [kind for kind, *_ in events] == ["enter", "exit"]
+
+    def test_a_context_the_dispatch_never_enters_records_nothing(self):
+        """The ``enter`` event is the ``__enter__`` itself: a context the dispatch never
+        enters records no event at all, not an enter that no exit will ever pair."""
+        events: list[tuple[str, object, HostToolRun, object]] = []
+        observer = self._recording(events)
+        observer(HostToolRun(HostToolRegistry()), "doubled")
+        assert events == []
+
+    def test_observation_begins_before_the_body_and_ends_after(self):
+        """The body's position in the stream is the pin: a dispatch that entered its
+        observer after the body ran — or exited it before — breaks the shape."""
+        order: list[str] = []
+
+        @contextlib.contextmanager
+        def cm():
+            order.append("enter")
+            try:
+                yield
+            finally:
+                order.append("exit")
+
+        def factory(run: HostToolRun, name: object) -> contextlib.AbstractContextManager[object]:
+            return cm()
+
+        @sandbox_tool(source=None, sink=None, identity=None)
+        def marks_body() -> None:
+            order.append("body")
+
+        registry = HostToolRegistry(dispatch_observer=factory)
+        registry.register(marks_body)
+        assert _dispatch(HostToolRun(registry), "marks_body").ok
+        assert order == ["enter", "body", "exit"]
+
+    def test_a_framing_rejection_happens_before_the_observation(self):
+        """The door's own checks, so no enter exists for an exit to pair: a dispatch that
+        raised on framing has spent nothing, and the host saw nothing to attribute."""
+        events: list[tuple[str, object, HostToolRun, object]] = []
+        registry = HostToolRegistry(dispatch_observer=self._recording(events))
+        registry.register(_stamped_pure())
+        run = HostToolRun(registry)
+        with pytest.raises(ValueError, match="framing_bytes"):
+            asyncio.run(run.dispatch("doubled", {"x": 1}, framing_bytes=-1))
+        assert events == []
+
+    def _observer_that_raises(self, where: str):
+        """An observer whose ``factory`` / ``__enter__`` / ``__exit__`` raises, per ``where``."""
+
+        @contextlib.contextmanager
+        def cm():
+            if where == "enter":
+                raise RuntimeError("the observer's __enter__")
+            yield
+            if where == "exit":
+                raise RuntimeError("the observer's __exit__")
+
+        def factory(run: HostToolRun, name: object):
+            if where == "factory":
+                raise RuntimeError("the observer's factory")
+            return cm()
+
+        return factory
+
+    def _observer_that_cancels(self, where: str):
+        """An observer whose ``factory`` / ``__enter__`` / ``__exit__`` raises
+        ``asyncio.CancelledError`` — a ``BaseException``, so the guard must take it too."""
+
+        @contextlib.contextmanager
+        def cm():
+            if where == "enter":
+                raise asyncio.CancelledError()
+            yield
+            if where == "exit":
+                raise asyncio.CancelledError()
+
+        def factory(run: HostToolRun, name: object):
+            if where == "factory":
+                raise asyncio.CancelledError()
+            return cm()
+
+        return factory
+
+    def test_a_failing_observer_costs_the_host_a_log_line_not_the_dispatch(self, caplog):
+        caplog.at_level(logging.WARNING)
+        for where in ("factory", "enter", "exit"):
+            caplog.clear()
+            registry = HostToolRegistry(dispatch_observer=self._observer_that_raises(where))
+            registry.register(_stamped_pure())
+            with caplog.at_level(logging.WARNING):
+                result = _dispatch(HostToolRun(registry), "doubled", {"x": 21})
+            assert result.ok, where
+            assert "observer" in caplog.text, where
+
+    def test_an_observer_that_cancels_costs_the_host_a_log_line_not_the_dispatch(self, caplog):
+        """``CancelledError`` is a ``BaseException``, and the dispatch is not the observer's to
+        cancel: each guard must take it and log, the way it takes any other observer failure."""
+        caplog.at_level(logging.WARNING)
+        for where in ("factory", "enter", "exit"):
+            caplog.clear()
+            registry = HostToolRegistry(dispatch_observer=self._observer_that_cancels(where))
+            registry.register(_stamped_pure())
+            with caplog.at_level(logging.WARNING):
+                result = _dispatch(HostToolRun(registry), "doubled", {"x": 21})
+            assert result.ok, where
+            assert "observer" in caplog.text, where
+
+    def test_an_observer_that_exits_the_process_still_does(self, caplog):
+        """``SystemExit`` is the host's control flow, not an observer failure: contained for
+        ``Exception`` and ``CancelledError`` alike, it escapes the guards rather than being
+        logged and the dispatch carried on past a process that is on its way out."""
+        for where in ("factory", "enter", "exit"):
+            caplog.clear()
+            registry = HostToolRegistry(dispatch_observer=self._observer_that_exits(where))
+            registry.register(_stamped_pure())
+            with pytest.raises(SystemExit):
+                _dispatch(HostToolRun(registry), "doubled", {"x": 21})
+            assert "observer" not in caplog.text, where
+
+    @staticmethod
+    def _observer_that_exits(where: str):
+        """An observer whose ``factory`` / ``__enter__`` / ``__exit__`` raises ``SystemExit``."""
+
+        @contextlib.contextmanager
+        def cm():
+            if where == "enter":
+                raise SystemExit(3)
+            yield
+            if where == "exit":
+                raise SystemExit(3)
+
+        def factory(run: HostToolRun, name: object):
+            if where == "factory":
+                raise SystemExit(3)
+            return cm()
+
+        return factory
+
+    def test_an_observer_that_closes_its_own_generator_is_contained(self, caplog):
+        """``GeneratorExit`` from the observer's own generator is an observer failure — the
+        dispatch is not made to fail, or to stop, over it, the way an ``Exception`` or a
+        ``CancelledError`` is not."""
+        caplog.at_level(logging.WARNING)
+        for where in ("factory", "enter", "exit"):
+            caplog.clear()
+            registry = HostToolRegistry(dispatch_observer=self._observer_that_closes(where))
+            registry.register(_stamped_pure())
+            with caplog.at_level(logging.WARNING):
+                result = _dispatch(HostToolRun(registry), "doubled", {"x": 21})
+            assert result.ok, where
+            assert "observer" in caplog.text, where
+
+    @staticmethod
+    def _observer_that_closes(where: str):
+        """An observer whose ``factory`` / ``__enter__`` / ``__exit__`` raises ``GeneratorExit``
+        from its own generator — the shape a context manager in cleanup has."""
+
+        @contextlib.contextmanager
+        def cm():
+            if where == "enter":
+                raise GeneratorExit()
+            yield
+            if where == "exit":
+                raise GeneratorExit()
+
+        def factory(run: HostToolRun, name: object):
+            if where == "factory":
+                raise GeneratorExit()
+            return cm()
+
+        return factory
+
+    def test_an_exit_that_returns_true_does_not_swallow_a_failure(self):
+        """A body that fails becomes a refusal for the guest; the observer's ``__exit__`` —
+        even one returning ``True``, the form that swallows an exception in a ``with`` —
+        cannot change that refusal."""
+
+        @sandbox_tool(source=None, sink=None, identity=None)
+        def broken() -> None:
+            raise RuntimeError("boom")
+
+        registry = HostToolRegistry(dispatch_observer=self._observer_that_returns_true())
+        registry.register(broken)
+        result = _dispatch(HostToolRun(registry), "broken")
+        assert not result.ok
+        assert result.refusal is not None and "failed" in result.refusal
+
+    def test_an_exit_that_returns_true_does_not_swallow_a_cancellation(self):
+        """The only exception a dispatch can propagate is a cancellation; an ``__exit__`` that
+        returns ``True`` is exactly the form that would swallow it — and does not."""
+        entered = asyncio.Event()
+
+        @sandbox_tool(source=None, sink="file_store", identity=None)
+        async def never() -> int:
+            entered.set()
+            await asyncio.Event().wait()
+            return 1
+
+        registry = HostToolRegistry(
+            response_limits=dataclasses.replace(DEFAULT_TRANSFER_LIMITS, max_files=1),
+            dispatch_observer=self._observer_that_returns_true(),
+        )
+        registry.register(never)
+        run = HostToolRun(registry)
+
+        async def scenario() -> None:
+            abandoned = asyncio.create_task(run.dispatch("never"))
+            await entered.wait()
+            abandoned.cancel()
+            await asyncio.wait([abandoned])
+            assert abandoned.cancelled(), "an __exit__ returning True swallowed the cancellation"
+
+        asyncio.run(scenario())
+
+    @staticmethod
+    def _observer_that_returns_true():
+        """An observer whose ``__exit__`` returns ``True`` — the form that swallows an
+        exception handed to a ``with`` block.  It is a class, because a
+        ``@contextlib.contextmanager`` generator's return value never reaches ``__exit__``."""
+
+        class _swallowing:
+            def __enter__(self) -> None:
+                return None
+
+            def __exit__(self, *exc_info: object) -> bool:
+                return True
+
+        def factory(run: HostToolRun, name: object):
+            return _swallowing()
+
+        return factory
+
+    def test_a_non_callable_observer_is_refused_at_construction(self):
+        with pytest.raises(TypeError, match="must be callable"):
+            HostToolRegistry(dispatch_observer=3)  # type: ignore[arg-type]
+
+    def test_a_coroutine_function_observer_is_refused_at_construction(self):
+        """A coroutine ``factory`` would be a context manager no one awaits — an observer that
+        never fires, which is the one failure mode a host could not notice from the outside."""
+
+        async def factory(run: HostToolRun, name: object):
+            return contextlib.nullcontext()
+
+        with pytest.raises(TypeError, match="must be synchronous"):
+            HostToolRegistry(dispatch_observer=factory)  # type: ignore[arg-type]
+
+    def test_an_async_callable_instance_observer_is_refused_at_construction(self):
+        """The same observer no one awaits, as an instance: only its ``__call__`` is the
+        coroutine function a bare ``iscoroutinefunction`` sees."""
+
+        class _async_call:
+            async def __call__(
+                self, run: HostToolRun, name: object
+            ) -> contextlib.AbstractContextManager[object]:
+                return contextlib.nullcontext()
+
+        with pytest.raises(TypeError, match="must be synchronous"):
+            HostToolRegistry(dispatch_observer=_async_call())  # type: ignore[arg-type]
+
+    def test_the_property_reflects_what_the_host_registered(self):
+        observer = lambda run, name: contextlib.nullcontext()  # noqa: E731
+        registry = HostToolRegistry(dispatch_observer=observer)
+        assert registry.dispatch_observer is observer
+
+    def test_an_observer_whose_enter_returns_a_span_is_admitted(self):
+        """Tracing and span context managers return their span from ``__enter__``: the
+        dispatch discards that value, so the public type must not refuse to name it."""
+
+        @contextlib.contextmanager
+        def span() -> Generator[object]:
+            yield "span"
+
+        def factory(run: HostToolRun, name: object) -> contextlib.AbstractContextManager[object]:
+            return span()
+
+        registry = HostToolRegistry(dispatch_observer=factory)
+        registry.register(_stamped_pure())
+        assert _dispatch(HostToolRun(registry), "doubled", {"x": 1}).ok
