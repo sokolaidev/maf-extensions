@@ -127,6 +127,7 @@ _BOUNDARIES = _tagged(
 )
 _STAGES_RUN = _tagged(rf"({_ANY_ROUTE}):\s+lookup stages exercised:\s+(\d+)\s+of\s+(\d+)")
 _NAMED = _tagged(rf"({_ANY_ROUTE}):\s+product names in the table:\s+(\d+)\s+of\s+(\d+)")
+_CLEANUP = _tagged(r"transport cleanup:\s+(reclaimed by the transport|left for the sandbox)")
 _RUN_DIRS = _tagged(r"run directories across both sandboxes:\s+(\d+)")
 _DISPATCHING = _tagged(r"of those, runs that dispatched:\s+(\d+)")
 _LEFT = _tagged(r"transport files left behind:\s+(\d+), of which answered calls:\s+(\d+)")
@@ -509,8 +510,7 @@ def _assess_the_round_trips(output: str) -> list[str]:
     shaped = dict(_SHAPE.findall(output))
     groups = [g.strip() for g in shaped.get(_DISPATCH, "").split(",") if g.strip()]
     # A missing or doubled line is `_assess_what_the_runs_left`'s to report, not this one's.
-    seen = _DISPATCHING.findall(output)
-    dispatching = int(seen[0]) if len(seen) == 1 else None
+    dispatching = _programs_that_dispatched(output, groups)
 
     if _DISPATCH in counted and dispatching is not None:
         lookups = counted[_DISPATCH]
@@ -537,7 +537,10 @@ def _assess_the_round_trips(output: str) -> list[str]:
                 "message run concurrently, so those programs interleave in the ledger that "
                 "times the gaps and the round-trip summary above is not measuring round trips"
             )
-        if programs != dispatching:
+        # Only where the guest is the other source. Under a reclaiming transport `dispatching`
+        # *is* this sum, and an assertion comparing a number with itself reads like corroboration
+        # while proving nothing — which is the failure this file has already had to fix twice.
+        if _reclaims(output) is False and programs != dispatching:
             failures.append(
                 f"the dispatched route ran {programs} program(s) and the guest holds "
                 f"{dispatching} that dispatched. One gap is dropped per program the route ran, "
@@ -586,16 +589,90 @@ def _assess_the_round_trips(output: str) -> list[str]:
     return failures
 
 
+def _reclaims(output: str) -> bool | None:
+    """Whether this run's transport takes its own files back, or None if it did not say.
+
+    #434 gave `dispatch_over_exec` a cleanup, and a sample runs against whatever `maf-sandbox`
+    is published, so both behaviours are correct and the run has to declare which it measured.
+    A missing line is `_assess_what_the_runs_left`'s to report; every other reader treats it as
+    a run whose act 5 cannot be graded and leaves the assertions that depend on it alone.
+    """
+    said = _CLEANUP.findall(output)
+    return said[0].startswith("reclaimed") if len(said) == 1 else None
+
+
+def _programs_that_dispatched(output: str, groups: list[str]) -> int | None:
+    """How many programs called out, from the guest where the guest still knows.
+
+    The transport used to leave its files, so act 5 could count the runs holding them and
+    settle this on the filesystem — a number the model had no hand in, which is what made the
+    three assertions below a cross-check. Where the transport reclaims them there is nothing
+    left to count, and the only source is the shape: the host's record of what it was asked
+    for. The gap arithmetic still binds, because the gaps come from the ledger's own clock,
+    but `programs == dispatching` stops being a comparison of two sources and is dropped
+    rather than left to look like one.
+    """
+    reclaims = _reclaims(output)
+    if reclaims is False:
+        seen = _DISPATCHING.findall(output)
+        return int(seen[0]) if len(seen) == 1 else None
+    if reclaims and groups and all(entry.isdigit() for entry in groups):
+        return sum(int(entry) for entry in groups)
+    return None
+
+
 def _assess_what_the_runs_left(output: str) -> list[str]:
-    """#302's per-run subdirectory, and the cleanup that #438 says nobody can do."""
+    """#302's per-run subdirectory, and what became of the traffic in it.
+
+    Two transports and two right answers. Before #434 nothing in the guest could delete, so the
+    files were the run's traffic and the count of runs holding them was a second source for how
+    many programs called out. After it the transport removes the directory it owns on the way
+    out, so zero is the cleanup working and the corroboration is gone. The run says which it
+    measured and this grades the one it says.
+    """
     failures: list[str] = []
+    said = _CLEANUP.findall(output)
+    _, problems = _once(said, "transport cleanup")
+    failures.extend(problems)
     dirs, problems = _once(_RUN_DIRS.findall(output), "run directories")
     failures.extend(problems)
     dispatching, problems = _once(_DISPATCHING.findall(output), "runs that dispatched")
     failures.extend(problems)
     left, problems = _once(_LEFT.findall(output), "files left behind")
     failures.extend(problems)
-    if None in (dirs, dispatching, left):
+    if None in (dirs, dispatching, left) or len(said) != 1:
+        return failures
+    total, answers = int(left[0]), int(left[1])  # type: ignore[index]
+
+    if _reclaims(output):
+        # Nothing is a measurement here, so it has to be exactly nothing: this transport removes
+        # the whole directory it owns, and a run that left some of it behind either did not
+        # reclaim or reclaimed part. The runs themselves are the kind's and stay — they are what
+        # still says the programs ran, and there has to be one more of them than dispatched,
+        # because the direct route's program is in the other sandbox.
+        shaped = dict(_SHAPE.findall(output))
+        groups = [g.strip() for g in shaped.get(_DISPATCH, "").split(",") if g.strip()]
+        programs = sum(int(g) for g in groups) if groups and all(g.isdigit() for g in groups) else 0
+        if int(dispatching) != 0:  # type: ignore[arg-type]
+            failures.append(
+                f"{dispatching} run(s) still hold a transport directory, and this transport "
+                "removes the one it owns on every exit path. Either the cleanup did not run or "
+                "the enumeration is counting something the transport does not write"
+            )
+        if (total, answers) != (0, 0):
+            failures.append(
+                f"{total} transport file(s) and {answers} answered call(s) survived a transport "
+                "that reclaims them. The requests and responses go with the directory holding "
+                "them, so anything left is the cleanup having half worked, which is worse than "
+                "not running: the next run in this sandbox can read it"
+            )
+        if programs and int(dirs) <= programs:  # type: ignore[arg-type]
+            failures.append(
+                f"{dirs} run director(y/ies) in the guest against {programs} dispatched "
+                "program(s), and the direct route's program leaves one more in the other "
+                "sandbox. The traffic is reclaimed now, so these directories are the only "
+                "thing left saying the programs ran at all"
+            )
         return failures
 
     if int(dispatching) < 1:  # type: ignore[arg-type]
@@ -615,7 +692,6 @@ def _assess_what_the_runs_left(output: str) -> list[str]:
             "transport in it, and its table above says it ran — so this count is one sandbox "
             "short of what it claims to cover"
         )
-    total, answers = int(left[0]), int(left[1])  # type: ignore[index]
     if total < 1:
         failures.append(
             "no transport files were found in the guest. Nothing deletes them — the protocol "

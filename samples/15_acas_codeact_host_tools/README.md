@@ -82,7 +82,9 @@ So a dispatch that is answered at all proves the launcher detached and the super
 
 Act 5 enumerates the work root with `list_dir`, which needs `Capability.FILES_LIST` — ACAS declares it and Docker does not, so this act is one more reason the sample belongs on this backend.
 
-A fresh directory per run is real, and on a warm sandbox it is not hypothetical: every run of both acts is still there when act 5 looks. What is *not* there is any cleanup. The transport says so itself — *"Nothing in the protocol deletes"* — and [#438](https://github.com/sokolaidev/maf-extensions/issues/438) is the general case: no kind is obliged to clean up, and the protocol gives it nothing to clean up with.
+A fresh directory per run is real, and on a warm sandbox it is not hypothetical: every run of both acts is still there when act 5 looks.
+
+Whether the *traffic* is still there depends on the transport, so act 5 names which one it measured before it counts anything. Where nothing can delete — the protocol offers no way, which is [#438](https://github.com/sokolaidev/maf-extensions/issues/438) — the files are the run's requests and responses, and the number of runs holding them is a second source for how many programs called out, one the model had no hand in. Where the transport reclaims what it owns ([#434](https://github.com/sokolaidev/maf-extensions/issues/434)), zero is the cleanup working, the run directories survive because those belong to the kind, and that second source is gone: the program count then comes from the host's own record alone. Both are measured; the check grades the one the run declares.
 
 Sixty-three transport files survived one run of this sample. That is **three per served call** — the id the caller claimed with an exclusive create, the request, and the answer — so the sample reports the answered subset alongside the total, because a bare file count reads as three times the traffic there was.
 
@@ -109,7 +111,9 @@ Wall clock, tokens and lookup counts are **recorded and never bounded**, and wha
 
 **This creates two billable sandboxes**, one per route, both disposed at the end rather than left to the lifecycle timers — the check fails the run if they were not.
 
-Two rather than one because nothing deletes a run's transport files. Sharing a sandbox would leave the dispatched route's responses — every id, store list and sales row — readable on the guest filesystem for the direct route's program, which is a second road to the same data that this sample never measures and the comparison assumes does not exist. Cleaning up between them is not available: there is no way to delete a guest file, which is the same gap ([#438](https://github.com/sokolaidev/maf-extensions/issues/438)) act 5 reports.
+Two rather than one because on the published transport nothing deletes a run's files. Sharing a sandbox would leave the dispatched route's responses — every id, store list and sales row — readable on the guest filesystem for the direct route's program, which is a second road to the same data that this sample never measures and the comparison assumes does not exist.
+
+[#434](https://github.com/sokolaidev/maf-extensions/issues/434) closes that leak on the cores that have it, since the transport now removes the directory holding those responses when the run ends. It stays two sandboxes anyway: one would be right on the new transport and wrong on the old one, and a sample has to be right on whichever is installed.
 
 ## Environment
 

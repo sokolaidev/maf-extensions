@@ -78,6 +78,7 @@ Oregon	TOTAL	3514.35
 
 == 5. What the runs left in the guest ==
 
+  [measured] transport cleanup: left for the sandbox (#438)
   [measured] run directories across both sandboxes: 3
   [measured] of those, runs that dispatched: 2
   [measured] transport files left behind: 75, of which answered calls: 25
@@ -90,6 +91,27 @@ def _without(line: str) -> str:
     kept = [row for row in _HEALTHY.splitlines() if line not in row]
     assert len(kept) < len(_HEALTHY.splitlines()), f"nothing to remove for {line!r}"
     return "\n".join(kept)
+
+
+#: The same healthy run against the transport #434 gave a cleanup. Derived from `_HEALTHY`
+#: rather than written out, so the two cannot drift into describing different runs — every
+#: line above act 5 is identical, which is the point: what moved is what the guest kept.
+_RECLAIMED = (
+    _HEALTHY.replace(
+        "transport cleanup: left for the sandbox (#438)",
+        "transport cleanup: reclaimed by the transport",
+    )
+    .replace("of those, runs that dispatched: 2", "of those, runs that dispatched: 0")
+    .replace(
+        "transport files left behind: 75, of which answered calls: 25",
+        "transport files left behind: 0, of which answered calls: 0",
+    )
+)
+
+
+def _reclaimed(old: str, new: str) -> str:
+    assert old in _RECLAIMED, f"{old!r} is not in the reclaimed fixture"
+    return _RECLAIMED.replace(old, new)
 
 
 def _swap(old: str, new: str) -> str:
@@ -696,6 +718,68 @@ class TestWhoCarriedTheFigures:
         assert any(
             "act 4 dispatched restatement" in r
             for r in check.assess(_without("sales figures the model wrote into code, dispatched"))
+        )
+
+
+class TestATransportThatReclaimsItsOwn:
+    """#434 gave `dispatch_over_exec` a cleanup, and a sample runs against what is published.
+
+    Both behaviours are correct, so the run declares which it measured and act 5 is graded on
+    that. Zero is the answer here, and it has to be exactly zero: a transport that removed part
+    of what it owns is worse than one that removed none, because the next run in the sandbox
+    can read the rest.
+    """
+
+    def test_a_reclaimed_run_passes(self):
+        assert check.assess(_RECLAIMED) == []
+
+    def test_an_unreported_transport_fails(self):
+        """Which transport ran decides what the counts below it mean, so it is not optional."""
+        assert any(
+            "transport cleanup" in r
+            for r in check.assess(
+                _HEALTHY.replace(
+                    "  [measured] transport cleanup: left for the sandbox (#438)\n", ""
+                )
+            )
+        )
+
+    def test_traffic_surviving_a_reclaiming_transport_fails(self):
+        assert any(
+            "the cleanup having half worked" in r
+            for r in check.assess(
+                _reclaimed(
+                    "transport files left behind: 0, of which answered calls: 0",
+                    "transport files left behind: 3, of which answered calls: 1",
+                )
+            )
+        )
+
+    def test_a_run_still_holding_its_transport_directory_fails(self):
+        assert any(
+            "removes the one it owns on every exit path" in r
+            for r in check.assess(
+                _reclaimed("of those, runs that dispatched: 0", "of those, runs that dispatched: 2")
+            )
+        )
+
+    def test_fewer_directories_than_programs_fails(self):
+        """The runs are the kind's and survive, and the direct route's is one more."""
+        assert any(
+            "the only thing left saying the programs ran" in r
+            for r in check.assess(
+                _reclaimed(
+                    "run directories across both sandboxes: 3",
+                    "run directories across both sandboxes: 2",
+                )
+            )
+        )
+
+    def test_the_gap_arithmetic_still_binds_without_the_guest(self):
+        """The program count comes from the shape now; the ledger's own clock still checks it."""
+        assert any(
+            "a different set of calls" in r
+            for r in check.assess(_reclaimed("round trip: 23 gap(s)", "round trip: 20 gap(s)"))
         )
 
 
