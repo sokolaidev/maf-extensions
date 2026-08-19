@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import posixpath
 import shutil
 import subprocess
 import uuid
@@ -29,13 +30,17 @@ import pytest
 from maf_sandbox import (
     Capability,
     EntryKind,
+    HostToolRegistry,
+    HostToolRun,
     Isolation,
     SandboxKey,
+    SandboxProgramTimeout,
     SandboxRouter,
     SandboxSpec,
     SandboxTransferCapExceeded,
     TransferLimits,
     collect_outputs,
+    dispatch_over_exec,
     guest_run_layout,
     launcher_script,
 )
@@ -582,6 +587,97 @@ class TestWhetherThisBackendCouldServeHostTools:
                     layout.output, working_directory=_WORK, max_bytes=1 << 16
                 )
                 assert output.decode().strip() == "the program finished", output
+            finally:
+                await backend.dispose(_key(scope))
+
+        asyncio.run(scenario())
+
+
+class TestWhatOnlyARealRunawayCanSettle:
+    """A live runaway timed out through `dispatch_over_exec` is gone when it returns.
+
+    It proves both the process and the transport files are really gone in a container.
+    """
+
+    def test_a_runaway_is_dead_and_its_files_are_gone_when_the_call_returns(self):
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+        layout = guest_run_layout(f"{_WORK}/{uuid.uuid4().hex[:12]}")
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(_key(scope), _spec())
+            try:
+                # The program records its own pid in `work`, which the transport does not
+                # reclaim, so the check below needs nothing beyond the `kill` this transport
+                # already requires. `pgrep` would be wrong twice over: absent on a minimal
+                # image it takes the `|| echo gone` branch and passes without checking
+                # anything, and `-f` matches the probe's own command line.
+                await sandbox.write_file(
+                    layout.program,
+                    f"echo $$ > {layout.work}/program.pid\nwhile true; do :; done\n",
+                )
+                await sandbox.write_file(layout.shim, "")
+
+                with pytest.raises(SandboxProgramTimeout) as expired:
+                    await dispatch_over_exec(
+                        sandbox,
+                        HostToolRun(HostToolRegistry()),
+                        layout,
+                        timeout=5.0,
+                        poll_interval=0.5,
+                        interpreter="sh",
+                    )
+
+                # 1. It says it stopped the program: `signal` is whether the kill landed,
+                #    `reach` how wide it went. "nothing" would mean nothing was stopped.
+                assert expired.value.signal == "sent", expired.value
+                assert expired.value.reach in {"group", "program"}, expired.value
+
+                # 2. And it is true of the process itself. Read the pid the program wrote,
+                #    then ask the kernel — a missing file or an unreadable pid fails here
+                #    rather than reading as success.
+                recorded = await sandbox.exec(
+                    f"cat {layout.work}/program.pid",
+                    working_directory=_WORK,
+                    timeout=60,
+                )
+                assert recorded.exit_code == 0, (
+                    f"the program never recorded its pid, so this proves nothing: "
+                    f"{recorded.stderr!r}"
+                )
+                pid = recorded.stdout.strip()
+                assert pid.isdigit(), f"not a pid: {pid!r}"
+
+                alive = await sandbox.exec(
+                    (
+                        f"if kill -0 {pid} 2>/dev/null; then "
+                        f"state=$(awk '/^State:/ {{print $2}}' /proc/{pid}/status 2>/dev/null || true); "
+                        f'if [ "$state" = Z ]; then echo gone; '
+                        f'elif [ -n "$state" ]; then echo alive; '
+                        f"else echo gone; fi; "
+                        f"else echo gone; fi"
+                    ),
+                    working_directory=_WORK,
+                    timeout=60,
+                )
+                assert alive.stdout.strip() == "gone", (
+                    f"pid {pid} survived a timeout the transport reported as signalled"
+                )
+
+                # 3. The transport's own files are gone from the filesystem, not just from a
+                #    list of commands somebody issued.
+                served = posixpath.dirname(layout.shim)
+                listed = await sandbox.exec(
+                    f"if [ -d {served} ]; then ls -A {served}; else :; fi",
+                    working_directory=_WORK,
+                    timeout=60,
+                )
+                assert listed.exit_code == 0, (
+                    f"could not inspect transport directory {served}: {listed.stderr!r}"
+                )
+                assert listed.stdout.strip() == "", (
+                    f"the transport left files behind in {served}: {listed.stdout!r}"
+                )
             finally:
                 await backend.dispose(_key(scope))
 
