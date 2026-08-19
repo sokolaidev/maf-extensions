@@ -123,10 +123,16 @@ class InProcessSandbox:
         self.contents: dict[str, bytes] = {}
         self.symlinks: set[str] = set()
         self.non_regular: set[str] = set()
+        self.directories: set[str] = set()
         for path, value in (seed_files or {}).items():
             # EntryKind is itself a str subclass, so this must be checked before isinstance(str).
             if value is EntryKind.SYMLINK:
                 self.symlinks.add(path)
+            elif value is EntryKind.DIRECTORY:
+                # Kept apart from `non_regular`: a declared directory is the one entry a
+                # removal has to refuse without `recursive`, and an empty one has no children
+                # to infer it from.
+                self.directories.add(path)
             elif isinstance(value, EntryKind):
                 self.non_regular.add(path)
             elif isinstance(value, str):
@@ -183,7 +189,7 @@ class InProcessSandbox:
             return EntryKind.SYMLINK, None
         if full_path in self.non_regular:
             return EntryKind.OTHER, None
-        if self._has_children(full_path):
+        if full_path in self.directories or self._has_children(full_path):
             return EntryKind.DIRECTORY, None
         return None
 
@@ -247,12 +253,13 @@ class InProcessSandbox:
                 if guest_path_relative_to(stored, full_path) not in (None, "")
             ]
         )
-        if children and not recursive:
+        if (children or full_path in self.directories) and not recursive:
             raise OSError(f"refusing to remove a directory without recursive: {path}")
         for stored in (*children, full_path):
             self.contents.pop(stored, None)
             self.symlinks.discard(stored)
             self.non_regular.discard(stored)
+            self.directories.discard(stored)
 
     async def list_dir(self, path: str, *, working_directory: str) -> tuple[SandboxEntry, ...]:
         full_path = confine_guest_path(path, working_directory)

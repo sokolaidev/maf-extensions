@@ -117,7 +117,6 @@ def _smoke_maf_sandbox_acas() -> str:
             Capability.FILES_IN,
             Capability.FILES_OUT,
             Capability.FILES_LIST,
-            Capability.FILES_DELETE,
             Capability.HOST_TOOLS,
         }
     ):

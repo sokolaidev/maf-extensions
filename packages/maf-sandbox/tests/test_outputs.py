@@ -149,6 +149,10 @@ class _StubSandbox:
         self.budgets.append(max_bytes)
         return self.contents[path]
 
+    async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
+        """Not what this double is for; the protocol needs it present, not useful."""
+        raise NotImplementedError
+
 
 class _RaisingSandbox:
     """A backend that answers the pull surface in its own vocabulary, as a real one does."""
@@ -164,6 +168,10 @@ class _RaisingSandbox:
 
     async def read_file(self, path, *, working_directory, max_bytes):
         raise self._error
+
+    async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
+        """Not what this double is for; the protocol needs it present, not useful."""
+        raise NotImplementedError
 
 
 class TestArtifactShapes:

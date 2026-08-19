@@ -338,10 +338,12 @@ class _AcasSandbox:
     async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
         """Delete ``path`` through the data plane's own ``delete_file`` — no shell, no ``rm``.
 
-        **A link is refused rather than removed**, which is stricter than the protocol asks:
-        :meth:`read_file` records that this service follows a link in the final component as
-        much as in the parents, and an HTTP ``DELETE`` promises nothing else. Revisit when the
-        live suite measures it.
+        **A link is refused rather than removed**, which the protocol does not allow — so this
+        backend does not declare :data:`~maf_sandbox.Capability.FILES_DELETE`. :meth:`read_file`
+        records that the service follows a link in the final component as much as in the
+        parents, and an HTTP ``DELETE`` promises nothing else, so removing one could delete
+        what the guest pointed at. The mechanism is here and unadvertised until the live suite
+        measures that behaviour; a capability is a promise, and this one cannot be kept yet.
         """
         from azure.core.exceptions import ResourceNotFoundError
 
@@ -565,7 +567,6 @@ class AcasSandboxBackend:
                 Capability.FILES_IN,
                 Capability.FILES_OUT,
                 Capability.FILES_LIST,
-                Capability.FILES_DELETE,
                 Capability.HOST_TOOLS,
             }
         )

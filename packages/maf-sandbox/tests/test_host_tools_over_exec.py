@@ -174,6 +174,10 @@ class _ScriptedGuest:
             raise AssertionError("the supervisor read past its own cap")
         return content
 
+    async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
+        """Not what this double is for; the protocol needs it present, not useful."""
+        raise NotImplementedError
+
     async def list_dir(self, path: str, *, working_directory: str) -> tuple[SandboxEntry, ...]:
         raise NotImplementedError("this transport must not need FILES_LIST")
 

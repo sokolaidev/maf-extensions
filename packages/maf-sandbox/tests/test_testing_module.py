@@ -435,14 +435,9 @@ class TestInProcessSandboxListDir:
 
 
 class TestInProcessSandboxRemove:
-    """The reference reading of :meth:`Sandbox.remove`, which every backend is held to."""
+    """The in-process reading of :meth:`Sandbox.remove`. Shared probes are #450."""
 
     def test_a_path_that_is_not_there_is_success(self):
-        """Cleanup runs in a `finally`, after whatever went wrong already went wrong.
-
-        Raising here would report a second failure over the first, and would do it on the
-        common path: a run that failed before writing anything still reclaims.
-        """
         sandbox = InProcessSandbox()
         asyncio.run(sandbox.remove("gone.txt", working_directory="/maf-sandbox/work"))
 
@@ -502,6 +497,18 @@ class TestInProcessSandboxRemove:
         with pytest.raises(OSError):
             asyncio.run(sandbox.remove("sub", working_directory="/maf-sandbox/work"))
         assert "/maf-sandbox/work/sub/a.txt" in sandbox.contents
+
+    def test_a_declared_empty_directory_is_refused_without_recursive(self):
+        """An empty directory has no children to infer it from, and is still a directory."""
+        sandbox = InProcessSandbox(seed_files={"/maf-sandbox/work/empty": EntryKind.DIRECTORY})
+        with pytest.raises(OSError):
+            asyncio.run(sandbox.remove("empty", working_directory="/maf-sandbox/work"))
+        assert "/maf-sandbox/work/empty" in sandbox.directories
+
+    def test_a_declared_empty_directory_goes_with_recursive(self):
+        sandbox = InProcessSandbox(seed_files={"/maf-sandbox/work/empty": EntryKind.DIRECTORY})
+        asyncio.run(sandbox.remove("empty", working_directory="/maf-sandbox/work", recursive=True))
+        assert sandbox.directories == set()
 
     def test_recursive_removes_the_tree_and_nothing_beside_it(self):
         sandbox = InProcessSandbox()
