@@ -357,7 +357,9 @@ class _AcasSandbox:
         guest = confine_guest_path(path, working_directory)
         await self._refuse_symlinked_parents(guest, working_directory=working_directory)
         if posixpath.normpath(guest) == posixpath.normpath(working_directory):
-            raise OSError(f"refusing to remove the working directory itself: {working_directory}")
+            raise ValueError(
+                f"refusing to remove the working directory itself: {working_directory}"
+            )
         try:
             await self._sc.delete_file(guest, recursive=recursive)
         except ResourceNotFoundError:

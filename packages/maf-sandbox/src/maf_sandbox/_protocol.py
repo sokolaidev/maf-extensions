@@ -586,10 +586,13 @@ class Sandbox(Protocol):
         run's ground with it.
 
         Raises:
-            OSError: A path outside ``working_directory``, one reached through a link, the
-                working directory itself, or a non-empty directory without ``recursive``.
-                Refusals raise where a missing path returns, because each of these is a
-                caller's mistake rather than a state cleanup should tolerate.
+            ValueError: A path outside ``working_directory``, one reached through a link, or
+                the working directory itself.  The same type the rest of the pull surface
+                raises for a confinement judgement, and deliberately not an ``OSError``: these
+                are the caller's own path, not the guest's state.
+            OSError: A directory without ``recursive``, or a removal the guest refused.
+                Refusals raise where a missing path returns, because a cleanup that tolerated
+                them would be one that quietly did nothing.
         """
         ...
 

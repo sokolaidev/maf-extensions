@@ -233,7 +233,9 @@ class InProcessSandbox:
         )
         base = posixpath.normpath(working_directory)
         if posixpath.normpath(full_path) == base:
-            raise OSError(f"refusing to remove the working directory itself: {working_directory}")
+            raise ValueError(
+                f"refusing to remove the working directory itself: {working_directory}"
+            )
         children = [
             stored
             for stored in (*self.contents, *self.symlinks, *self.non_regular)

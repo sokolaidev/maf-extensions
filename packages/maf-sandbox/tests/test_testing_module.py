@@ -434,6 +434,98 @@ class TestInProcessSandboxListDir:
         assert asyncio.run(sandbox.list_dir(".", working_directory="/maf-sandbox/work")) == ()
 
 
+class TestInProcessSandboxRemove:
+    """The reference reading of :meth:`Sandbox.remove`, which every backend is held to.
+
+    `rm -rf` is irreversible and three packages now implement this, so the rules are pinned
+    where the protocol states them rather than once per backend.
+    """
+
+    def test_a_path_that_is_not_there_is_success(self):
+        """Cleanup runs in a `finally`, after whatever went wrong already went wrong.
+
+        Raising here would report a second failure over the first, and would do it on the
+        common path: a run that failed before writing anything still reclaims.
+        """
+        sandbox = InProcessSandbox()
+        asyncio.run(sandbox.remove("gone.txt", working_directory="/maf-sandbox/work"))
+
+    def test_a_file_is_removed(self):
+        sandbox = InProcessSandbox()
+        asyncio.run(sandbox.write_file("/maf-sandbox/work/a.txt", "1"))
+        asyncio.run(sandbox.remove("a.txt", working_directory="/maf-sandbox/work"))
+        assert (
+            asyncio.run(sandbox.stat_file("a.txt", working_directory="/maf-sandbox/work")) is None
+        )
+
+    def test_a_link_is_removed_and_not_followed(self):
+        """The link goes; whatever it names does not.
+
+        A removal that resolved the final component would unlink a target the guest chose,
+        and unlike a read, nothing has to come back for the damage to be done.
+        """
+        sandbox = InProcessSandbox(
+            seed_files={
+                "/maf-sandbox/work/link": EntryKind.SYMLINK,
+                "/maf-sandbox/work/target.txt": "kept",
+            }
+        )
+        asyncio.run(sandbox.remove("link", working_directory="/maf-sandbox/work"))
+        assert "/maf-sandbox/work/link" not in sandbox.symlinks
+        assert "/maf-sandbox/work/target.txt" in sandbox.contents, "the link's target was removed"
+
+    def test_a_path_through_a_linked_parent_is_refused(self):
+        sandbox = InProcessSandbox(
+            seed_files={
+                "/maf-sandbox/work/out": EntryKind.SYMLINK,
+                "/maf-sandbox/work/out/passwd": "root:x:0:0",
+            }
+        )
+        with pytest.raises(ValueError):
+            asyncio.run(sandbox.remove("out/passwd", working_directory="/maf-sandbox/work"))
+        assert "/maf-sandbox/work/out/passwd" in sandbox.contents
+
+    def test_a_path_outside_the_working_directory_is_refused(self):
+        sandbox = InProcessSandbox(seed_files={"/etc/passwd": "root:x:0:0"})
+        with pytest.raises(ValueError):
+            asyncio.run(sandbox.remove("../../etc/passwd", working_directory="/maf-sandbox/work"))
+        assert "/etc/passwd" in sandbox.contents
+
+    def test_the_working_directory_itself_is_refused(self):
+        """It is the confinement root, and removing it takes the next run's ground with it."""
+        sandbox = InProcessSandbox()
+        asyncio.run(sandbox.write_file("/maf-sandbox/work/a.txt", "1"))
+        with pytest.raises(ValueError):
+            asyncio.run(sandbox.remove(".", working_directory="/maf-sandbox/work"))
+        assert "/maf-sandbox/work/a.txt" in sandbox.contents
+
+    def test_a_directory_is_refused_without_recursive(self):
+        """Named rather than implied: the alternative reads like a single-file delete."""
+        sandbox = InProcessSandbox()
+        asyncio.run(sandbox.write_file("/maf-sandbox/work/sub/a.txt", "1"))
+        with pytest.raises(OSError):
+            asyncio.run(sandbox.remove("sub", working_directory="/maf-sandbox/work"))
+        assert "/maf-sandbox/work/sub/a.txt" in sandbox.contents
+
+    def test_recursive_removes_the_tree_and_nothing_beside_it(self):
+        sandbox = InProcessSandbox()
+        asyncio.run(sandbox.write_file("/maf-sandbox/work/sub/a.txt", "1"))
+        asyncio.run(sandbox.write_file("/maf-sandbox/work/sub/nested/b.txt", "2"))
+        asyncio.run(sandbox.write_file("/maf-sandbox/work/sibling.txt", "3"))
+        asyncio.run(sandbox.remove("sub", working_directory="/maf-sandbox/work", recursive=True))
+        assert "/maf-sandbox/work/sub/a.txt" not in sandbox.contents
+        assert "/maf-sandbox/work/sub/nested/b.txt" not in sandbox.contents
+        assert "/maf-sandbox/work/sibling.txt" in sandbox.contents
+
+    def test_a_sibling_sharing_a_prefix_survives_a_recursive_removal(self):
+        """`sub` and `sub-2` are two directories, and a prefix comparison reads them as one."""
+        sandbox = InProcessSandbox()
+        asyncio.run(sandbox.write_file("/maf-sandbox/work/sub/a.txt", "1"))
+        asyncio.run(sandbox.write_file("/maf-sandbox/work/sub-2/b.txt", "2"))
+        asyncio.run(sandbox.remove("sub", working_directory="/maf-sandbox/work", recursive=True))
+        assert "/maf-sandbox/work/sub-2/b.txt" in sandbox.contents, "a sibling was removed"
+
+
 class TestInProcessSandboxConfinement:
     """`stat_file`, `read_file` and `list_dir` share one resolver — exercised through
     `stat_file`, since a refusal raises before any kind-specific behaviour diverges."""
