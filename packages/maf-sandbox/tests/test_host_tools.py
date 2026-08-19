@@ -978,14 +978,16 @@ class TestTheRegistryObservesEveryDispatch:
 
     @staticmethod
     def _recording(events: list[tuple[str, object, HostToolRun, object]]):
-        def factory(run: HostToolRun, name: str):
+        def factory(run: HostToolRun, name: object):
             # A token unique to this context: a run is not one, and the pairing must hold
             # against a regression that opens the same dispatch's context twice.
             token = object()
-            events.append(("enter", token, run, name))
 
             @contextlib.contextmanager
             def cm():
+                # Recorded when ``__enter__`` runs, not when the factory was called: a
+                # factory whose context is never entered is not observation.
+                events.append(("enter", token, run, name))
                 try:
                     yield
                 finally:
@@ -1173,6 +1175,50 @@ class TestTheRegistryObservesEveryDispatch:
         self._pairing(events)
         assert [kind for kind, *_ in events] == ["enter", "exit"]
 
+    def test_a_context_the_dispatch_never_enters_records_nothing(self):
+        """The ``enter`` event is the ``__enter__`` itself: a context the dispatch never
+        enters records no event at all, not an enter that no exit will ever pair."""
+        events: list[tuple[str, object, HostToolRun, object]] = []
+        observer = self._recording(events)
+        observer(HostToolRun(HostToolRegistry()), "doubled")
+        assert events == []
+
+    def test_observation_begins_before_the_body_and_ends_after(self):
+        """The body's position in the stream is the pin: a dispatch that entered its
+        observer after the body ran — or exited it before — breaks the shape."""
+        order: list[str] = []
+
+        @contextlib.contextmanager
+        def cm():
+            order.append("enter")
+            try:
+                yield
+            finally:
+                order.append("exit")
+
+        def factory(run: HostToolRun, name: object) -> contextlib.AbstractContextManager[None]:
+            return cm()
+
+        @sandbox_tool(source=None, sink=None, identity=None)
+        def marks_body() -> None:
+            order.append("body")
+
+        registry = HostToolRegistry(dispatch_observer=factory)
+        registry.register(marks_body)
+        assert _dispatch(HostToolRun(registry), "marks_body").ok
+        assert order == ["enter", "body", "exit"]
+
+    def test_a_framing_rejection_happens_before_the_observation(self):
+        """The door's own checks, so no enter exists for an exit to pair: a dispatch that
+        raised on framing has spent nothing, and the host saw nothing to attribute."""
+        events: list[tuple[str, object, HostToolRun, object]] = []
+        registry = HostToolRegistry(dispatch_observer=self._recording(events))
+        registry.register(_stamped_pure())
+        run = HostToolRun(registry)
+        with pytest.raises(ValueError, match="framing_bytes"):
+            asyncio.run(run.dispatch("doubled", {"x": 1}, framing_bytes=-1))
+        assert events == []
+
     def _observer_that_raises(self, where: str):
         """An observer whose ``factory`` / ``__enter__`` / ``__exit__`` raises, per ``where``."""
 
@@ -1184,7 +1230,7 @@ class TestTheRegistryObservesEveryDispatch:
             if where == "exit":
                 raise RuntimeError("the observer's __exit__")
 
-        def factory(run: HostToolRun, name: str):
+        def factory(run: HostToolRun, name: object):
             if where == "factory":
                 raise RuntimeError("the observer's factory")
             return cm()
@@ -1257,7 +1303,7 @@ class TestTheRegistryObservesEveryDispatch:
             def __exit__(self, *exc_info: object) -> bool:
                 return True
 
-        def factory(run: HostToolRun, name: str):
+        def factory(run: HostToolRun, name: object):
             return _swallowing()
 
         return factory
@@ -1270,11 +1316,24 @@ class TestTheRegistryObservesEveryDispatch:
         """A coroutine ``factory`` would be a context manager no one awaits — an observer that
         never fires, which is the one failure mode a host could not notice from the outside."""
 
-        async def factory(run: HostToolRun, name: str):
+        async def factory(run: HostToolRun, name: object):
             return contextlib.nullcontext()
 
         with pytest.raises(TypeError, match="must be synchronous"):
             HostToolRegistry(dispatch_observer=factory)  # type: ignore[arg-type]
+
+    def test_an_async_callable_instance_observer_is_refused_at_construction(self):
+        """The same observer no one awaits, as an instance: only its ``__call__`` is the
+        coroutine function a bare ``iscoroutinefunction`` sees."""
+
+        class _async_call:
+            async def __call__(
+                self, run: HostToolRun, name: object
+            ) -> contextlib.AbstractContextManager[None]:
+                return contextlib.nullcontext()
+
+        with pytest.raises(TypeError, match="must be synchronous"):
+            HostToolRegistry(dispatch_observer=_async_call())  # type: ignore[arg-type]
 
     def test_the_property_reflects_what_the_host_registered(self):
         observer = lambda run, name: contextlib.nullcontext()  # noqa: E731

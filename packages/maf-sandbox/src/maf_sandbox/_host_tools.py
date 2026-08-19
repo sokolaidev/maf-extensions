@@ -311,7 +311,7 @@ class HostToolRegistry:
         max_dispatches_per_run: int = DEFAULT_MAX_DISPATCHES_PER_RUN,
         response_limits: TransferLimits = DEFAULT_TRANSFER_LIMITS,
         dispatch_observer: (
-            Callable[[HostToolRun, str], contextlib.AbstractContextManager[None]] | None
+            Callable[[HostToolRun, object], contextlib.AbstractContextManager[None]] | None
         ) = None,
     ) -> None:
         _refuse_non_integer("max_dispatches_per_run", max_dispatches_per_run)
@@ -350,7 +350,11 @@ class HostToolRegistry:
                 raise TypeError(
                     f"dispatch_observer must be callable, not {type(dispatch_observer).__name__}"
                 )
-            if inspect.iscoroutinefunction(given_observer):
+            # An instance with an async ``__call__`` is equally an observer no one awaits,
+            # and only its ``__call__`` is the coroutine function ``inspect`` can see.
+            if inspect.iscoroutinefunction(given_observer) or inspect.iscoroutinefunction(
+                getattr(given_observer, "__call__", None)
+            ):
                 raise TypeError(
                     "dispatch_observer must be synchronous, not a coroutine function: it is "
                     "called on the dispatching task and must return a context manager to "
@@ -383,7 +387,7 @@ class HostToolRegistry:
     @property
     def dispatch_observer(
         self,
-    ) -> Callable[[HostToolRun, str], contextlib.AbstractContextManager[None]] | None:
+    ) -> Callable[[HostToolRun, object], contextlib.AbstractContextManager[None]] | None:
         """The host's observer, or ``None`` when the host registered none — the off-by-default
         half of the contract, where a host can confirm it is watching nothing."""
         return self._dispatch_observer
@@ -561,9 +565,9 @@ def _bounded(text: str) -> str:
 
 @contextlib.contextmanager
 def _observe(
-    observer: Callable[[HostToolRun, str], contextlib.AbstractContextManager[None]] | None,
+    observer: Callable[[HostToolRun, object], contextlib.AbstractContextManager[None]] | None,
     run: HostToolRun,
-    name: str,
+    name: object,
     logger: logging.Logger,
 ) -> Generator[None]:
     """The dispatch's observer, entered and exited structurally — or nothing, when absent.
@@ -679,11 +683,8 @@ class HostToolRun:
         if framing_bytes < 0:
             # A negative overhead would widen every ceiling below it by that much.
             raise ValueError(f"framing_bytes must not be negative, got {framing_bytes}")
-        # A host-side observer wraps the guest-answerable region below, refusals included,
-        # and the split into `_run_dispatch` is what keeps that wrap from re-indenting the
-        # body: with or without an observer the guest gets the same sentences, caps and
-        # ledger. The framing checks above raise before any dispatch has happened, so they
-        # are the door's own and stay out of the observation.
+        # The observer is the guest's problem from the first count down; the framing checks
+        # above raise before any dispatch has happened, so they stay out of the observation.
         with _observe(self._registry.dispatch_observer, self, name, self._logger):
             return await self._run_dispatch(name, arguments, framing_bytes=framing_bytes)
 
