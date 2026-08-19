@@ -977,9 +977,12 @@ class TestTheRegistryObservesEveryDispatch:
     """Verify dispatch attribution and observer lifecycle behavior."""
 
     @staticmethod
-    def _recording(events: list[tuple[str, HostToolRun, object]]):
+    def _recording(events: list[tuple[str, object, HostToolRun, object]]):
         def factory(run: HostToolRun, name: str):
-            events.append(("enter", run, name))
+            # A token unique to this context: a run is not one, and the pairing must hold
+            # against a regression that opens the same dispatch's context twice.
+            token = object()
+            events.append(("enter", token, run, name))
 
             @contextlib.contextmanager
             def cm():
@@ -988,22 +991,27 @@ class TestTheRegistryObservesEveryDispatch:
                 finally:
                     # `finally`, because on a failing or cancelled dispatch the exit is a
                     # throw into the yield, and a line after it would never run.
-                    events.append(("exit", run, name))
+                    events.append(("exit", token, run, name))
 
             return cm()
 
         return factory
 
-    def _pairing(self, events: list[tuple[str, HostToolRun, object]]) -> None:
-        """Every enter closes with exactly one exit, in a legal (possibly interleaved) order."""
-        open_runs: list[HostToolRun] = []
-        for kind, run, _ in events:
+    def _pairing(self, events: list[tuple[str, object, HostToolRun, object]]) -> None:
+        """Each context enters and exits exactly once — no LIFO, because two contexts of
+        different runs may legally overlap."""
+        states: dict[object, str] = {}
+        for kind, token, run, _ in events:
+            state = states.get(token)
             if kind == "enter":
-                open_runs.append(run)
+                assert state is None, "an enter for a context already entered"
+                states[token] = "open"
             else:
-                assert open_runs, "an exit with no matching enter"
-                assert open_runs.pop() is run, "an exit that closed another dispatch's enter"
-        assert not open_runs, "an enter the dispatch never closed"
+                assert state == "open", f"an exit before the enter, or twice: {run!r}"
+                states[token] = "closed"
+        assert all(state == "closed" for state in states.values()), (
+            "an enter the dispatch never closed"
+        )
 
     def test_the_observer_is_absent_by_default(self):
         """No host, no observer: the property is ``None`` and a dispatch is exactly today's."""
@@ -1015,14 +1023,14 @@ class TestTheRegistryObservesEveryDispatch:
 
     def test_one_run_per_program_and_the_name_of_the_call(self):
         """Two programs on one host: the run object is what a ledger attributes a call by."""
-        events: list[tuple[str, HostToolRun, object]] = []
+        events: list[tuple[str, object, HostToolRun, object]] = []
         registry = HostToolRegistry(dispatch_observer=self._recording(events))
         registry.register(_stamped_pure())
         run_a = HostToolRun(registry)
         run_b = HostToolRun(registry)
         assert _dispatch(run_a, "doubled", {"x": 1}).ok
         assert _dispatch(run_b, "doubled", {"x": 2}).ok
-        assert [(kind, run is run_a, name) for kind, run, name in events] == [
+        assert [(kind, run is run_a, name) for kind, _, run, name in events] == [
             ("enter", True, "doubled"),
             ("exit", True, "doubled"),
             ("enter", False, "doubled"),
@@ -1035,7 +1043,7 @@ class TestTheRegistryObservesEveryDispatch:
 
         The dispatch cap is the one sample 15's ledger could not partition, because every
         refusal returns before any body runs and nothing else names the run."""
-        events: list[tuple[str, HostToolRun, object]] = []
+        events: list[tuple[str, object, HostToolRun, object]] = []
         registry = HostToolRegistry(
             max_dispatches_per_run=1,
             dispatch_observer=self._recording(events),
@@ -1045,36 +1053,36 @@ class TestTheRegistryObservesEveryDispatch:
         assert _dispatch(run, "doubled", {"x": 1}).ok
         assert not _dispatch(run, "doubled", {"x": 2}).ok
         self._pairing(events)
-        assert [kind for kind, _, _ in events] == ["enter", "exit", "enter", "exit"]
-        assert all(event_run is run for _, event_run, _ in events)
+        assert [kind for kind, *_ in events] == ["enter", "exit", "enter", "exit"]
+        assert all(event_run is run for _, _, event_run, _ in events)
 
     def test_the_observer_sees_an_unresolved_name(self):
         """A name that never resolves is observed too, and the unhashable refusal is reachable."""
-        events: list[tuple[str, HostToolRun, object]] = []
+        events: list[tuple[str, object, HostToolRun, object]] = []
         registry = HostToolRegistry(dispatch_observer=self._recording(events))
         run = HostToolRun(registry)
         unknown = _dispatch(run, "never_registered")
         assert not unknown.ok
         assert unknown.refusal is not None and "not a registered host tool" in unknown.refusal
         self._pairing(events)
-        assert [kind for kind, _, _ in events] == ["enter", "exit"]
-        assert events[0][2] == "never_registered"
+        assert [kind for kind, *_ in events] == ["enter", "exit"]
+        assert events[0][3] == "never_registered"
 
     def test_an_unstring_name_is_seen_as_given(self):
         """The name is handed over as given: a non-string appears only on the refusal that ends it."""
-        events: list[tuple[str, HostToolRun, object]] = []
+        events: list[tuple[str, object, HostToolRun, object]] = []
         registry = HostToolRegistry(dispatch_observer=self._recording(events))
         run = HostToolRun(registry)
         not_a_name = ["doubled"]
         refused = _dispatch(run, not_a_name)  # type: ignore[arg-type]
         assert not refused.ok
         self._pairing(events)
-        assert events[0] == ("enter", run, not_a_name)
+        assert events[0][2:] == (run, not_a_name)
 
     def test_a_byte_budget_refusal_is_observed_and_never_reaches_the_body(self):
         """A byte-budget refusal is decided before the body runs, so the observer is the only
         thing that saw it — and the body spy is the check that it really never ran."""
-        events: list[tuple[str, HostToolRun, object]] = []
+        events: list[tuple[str, object, HostToolRun, object]] = []
         body_calls: list[int] = []
         # The budget is spent by the framing alone, so a one-byte value does not even matter.
         registry = HostToolRegistry(
@@ -1094,8 +1102,8 @@ class TestTheRegistryObservesEveryDispatch:
         assert refused.refusal is not None and "byte budget" in refused.refusal
         assert body_calls == []
         self._pairing(events)
-        assert [kind for kind, _, _ in events] == ["enter", "exit"]
-        assert events[0][2] == "payload"
+        assert [kind for kind, *_ in events] == ["enter", "exit"]
+        assert events[0][3] == "payload"
 
     def test_two_in_flight_dispatches_pair_their_observers(self):
         """Concurrency correctness is the ``with``, not a primitive: each dispatch enters its
@@ -1109,7 +1117,7 @@ class TestTheRegistryObservesEveryDispatch:
             await release.wait()
             return x
 
-        events: list[tuple[str, HostToolRun, object]] = []
+        events: list[tuple[str, object, HostToolRun, object]] = []
         registry = HostToolRegistry(
             response_limits=dataclasses.replace(DEFAULT_TRANSFER_LIMITS, max_files=1),
             dispatch_observer=self._recording(events),
@@ -1121,14 +1129,19 @@ class TestTheRegistryObservesEveryDispatch:
             first = asyncio.create_task(run.dispatch("slow", {"x": 1}))
             await entered.wait()  # inside its body, observer still entered
             second = asyncio.create_task(run.dispatch("slow", {"x": 2}))
-            await asyncio.wait([second], timeout=5)
+            # The second dispatch is refused by the ledger and completes on the first pass
+            # through the loop, so pin the entered second observer — not the outcome, which
+            # would deadlock if the refusal regressed — and release once it is in. Without
+            # this the test could run fully sequential, and the interleaving it exists to
+            # pin would never be exercised.
+            while sum(kind == "enter" for kind, *_ in events) < 2:
+                await asyncio.sleep(0)
             release.set()
-            await first
-            await second
+            await asyncio.gather(first, second)
 
         asyncio.run(scenario())
         self._pairing(events)
-        assert sum(kind == "enter" for kind, _, _ in events) == 2
+        assert sum(kind == "enter" for kind, *_ in events) == 2
 
     def test_a_cancelled_dispatch_still_exits_its_observer(self):
         """Cancellation is a ``BaseException`` with no outcome — the exit is structural, so it
@@ -1141,7 +1154,7 @@ class TestTheRegistryObservesEveryDispatch:
             await asyncio.Event().wait()
             return 1
 
-        events: list[tuple[str, HostToolRun, object]] = []
+        events: list[tuple[str, object, HostToolRun, object]] = []
         registry = HostToolRegistry(
             response_limits=dataclasses.replace(DEFAULT_TRANSFER_LIMITS, max_files=1),
             dispatch_observer=self._recording(events),
@@ -1158,7 +1171,7 @@ class TestTheRegistryObservesEveryDispatch:
 
         asyncio.run(scenario())
         self._pairing(events)
-        assert [kind for kind, _, _ in events] == ["enter", "exit"]
+        assert [kind for kind, *_ in events] == ["enter", "exit"]
 
     def _observer_that_raises(self, where: str):
         """An observer whose ``factory`` / ``__enter__`` / ``__exit__`` raises, per ``where``."""
@@ -1181,6 +1194,7 @@ class TestTheRegistryObservesEveryDispatch:
     def test_a_failing_observer_costs_the_host_a_log_line_not_the_dispatch(self, caplog):
         caplog.at_level(logging.WARNING)
         for where in ("factory", "enter", "exit"):
+            caplog.clear()
             registry = HostToolRegistry(dispatch_observer=self._observer_that_raises(where))
             registry.register(_stamped_pure())
             with caplog.at_level(logging.WARNING):
@@ -1188,9 +1202,10 @@ class TestTheRegistryObservesEveryDispatch:
             assert result.ok, where
             assert "observer" in caplog.text, where
 
-    def test_an_exit_that_returns_true_does_not_swallow_a_failure(self, caplog):
-        """A body that fails becomes a refusal for the guest; the observer's ``__exit__`` — even
-        one returning ``True``, the form that swallows an exception — changes the outcome."""
+    def test_an_exit_that_returns_true_does_not_swallow_a_failure(self):
+        """A body that fails becomes a refusal for the guest; the observer's ``__exit__`` —
+        even one returning ``True``, the form that swallows an exception in a ``with`` —
+        cannot change that refusal."""
 
         @sandbox_tool(source=None, sink=None, identity=None)
         def broken() -> None:
@@ -1198,8 +1213,7 @@ class TestTheRegistryObservesEveryDispatch:
 
         registry = HostToolRegistry(dispatch_observer=self._observer_that_returns_true())
         registry.register(broken)
-        with caplog.at_level(logging.WARNING):
-            result = _dispatch(HostToolRun(registry), "broken")
+        result = _dispatch(HostToolRun(registry), "broken")
         assert not result.ok
         assert result.refusal is not None and "failed" in result.refusal
 
