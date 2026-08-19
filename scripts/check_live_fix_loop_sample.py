@@ -154,17 +154,7 @@ def _tracked(compiled: str) -> set[str]:
 
 
 class _TheModelsHalf(str):
-    """A failure the fix turn owns rather than this suite.
-
-    Everything around the repair is deterministic — one sandbox served all four acquires, both
-    turns reached it, the file was authored and then changed, nothing was suppressed, no
-    container was left behind — so a failure there is a defect to read, not a coin flip to
-    re-toss. The repair itself is the coin flip: a live model doing open-ended work.
-
-    A `str` subclass so the class travels with the message and nothing downstream has to match
-    prose to recover it. `assess` still returns `list[str]`, and every comparison against one
-    still works.
-    """
+    """Mark model-owned failures while retaining string behavior for existing callers."""
 
 
 #: What `main` exits when every failure was the fix turn's own. `verify-live.yml` runs the

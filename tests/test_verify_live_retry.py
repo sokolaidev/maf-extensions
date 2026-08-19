@@ -1,15 +1,6 @@
-"""Sample 13's live job runs the two-turn loop twice, and only for the model's half (#421).
+"""Exercise sample 13's bounded, model-only retry by running the workflow's real shell block.
 
-The fix turn is a live model doing open-ended work, so it sometimes does not converge — and
-this job runs after a publish, where a red run on a release that succeeded costs someone a full
-investigation. A retry buys that back and spends something: a check that failed half the time
-would start reading green. So the retry is narrow (one status, one extra attempt) and loud (an
-annotation, and the attempt count in the summary), and both halves are pinned here.
-
-The shell block is **executed**, not pattern-matched. `uv` and `python3` are stubbed on `PATH`,
-so each case below drives the real loop with a scripted sequence of check results. Reading the
-YAML for a `while` and calling that a retry would pass over a loop that retries the wrong
-status, or never announces itself.
+`uv` and `python3` are stubbed so tests can script check results without matching YAML syntax.
 """
 
 from __future__ import annotations

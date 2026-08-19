@@ -708,16 +708,7 @@ class TestASwapWithinOneRuleIsNotARepair:
 
 
 class TestWhichHalfFailedIsInTheExitStatus:
-    """#421: `verify-live.yml` retries the two-turn loop, and only for the model's half.
-
-    The measurements around the repair are deterministic — one sandbox served all four
-    acquires, both turns reached it, the file was written and changed, nothing was left behind.
-    A failure there is a defect to read, and spending a second live container on it burns a
-    container to re-confirm a bug. The repair itself is a live model doing open-ended work, and
-    that is the one worth another attempt.
-
-    The status carries the difference because the workflow cannot read prose.
-    """
+    """Verify exit statuses distinguish model-only failures from deterministic failures."""
 
     def _status(self, tmp_path, output: str) -> int:
         out = tmp_path / "out.txt"
