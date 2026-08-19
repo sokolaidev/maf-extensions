@@ -577,9 +577,10 @@ def _observe(
     code, so none of the three observer failures — the factory, ``__enter__``, ``__exit__`` —
     may reach the dispatch or the guest. Each logs and continues, in the shape
     :func:`_reclaim_the_transports_own` already uses. The catch is narrow on purpose: an
-    observer's own ``Exception`` and a ``CancelledError`` it raises are contained, but
-    ``SystemExit`` and ``KeyboardInterrupt`` are the host's control flow, not an observer
-    failure, so they escape. The dispatch's own exception is
+    observer's own ``Exception``, a ``CancelledError`` it raises, and a ``GeneratorExit``
+    from its own generator are contained, but ``SystemExit`` and ``KeyboardInterrupt`` are
+    the host's control flow, not an observer failure, so they escape. The dispatch's own
+    exception is
     forwarded into ``__exit__`` but its return value is ignored: an observer returning
     ``True`` is one that would swallow a dispatch outcome, and the pairing the ledger relies
     on — every enter has exactly one exit — is the ``try``, which a return value cannot
@@ -591,10 +592,10 @@ def _observe(
         return
     try:
         context = observer(run, name)
-    # Contain the observer's own failures, including a CancelledError from a host's
-    # shutdown bug; SystemExit and KeyboardInterrupt are the host's control flow, not
-    # the observer's failure, so they deliberately escape these guards.
-    except (Exception, asyncio.CancelledError) as exc:  # noqa: BLE001 - a dispatch is not the observer's to fail
+    # Contain the observer's own failures: its Exceptions, a CancelledError from a host's
+    # shutdown bug, a GeneratorExit from its own generator. SystemExit and
+    # KeyboardInterrupt are the host's control flow, so they deliberately escape.
+    except (Exception, asyncio.CancelledError, GeneratorExit) as exc:  # noqa: BLE001 - a dispatch is not the observer's to fail
         logger.warning(
             "host tools: the dispatch observer failed to observe %r: %s", name, error_detail(exc)
         )
@@ -602,7 +603,7 @@ def _observe(
         return
     try:
         context.__enter__()
-    except (Exception, asyncio.CancelledError) as exc:  # noqa: BLE001 - never entered, so never exited, and the dispatch runs on
+    except (Exception, asyncio.CancelledError, GeneratorExit) as exc:  # noqa: BLE001 - never entered, so never exited, and the dispatch runs on
         logger.warning(
             "host tools: the dispatch observer failed to observe %r: %s", name, error_detail(exc)
         )
@@ -615,7 +616,7 @@ def _observe(
         # raising may not mask it, and its return value may not swallow it.
         try:
             context.__exit__(type(exc), exc, exc.__traceback__)
-        except (Exception, asyncio.CancelledError) as exit_exc:  # noqa: BLE001 - the observer's failure is its own warning
+        except (Exception, asyncio.CancelledError, GeneratorExit) as exit_exc:  # noqa: BLE001 - the observer's failure is its own warning
             logger.warning(
                 "host tools: the dispatch observer failed to exit for %r: %s",
                 name,
@@ -625,7 +626,7 @@ def _observe(
     else:
         try:
             context.__exit__(None, None, None)
-        except (Exception, asyncio.CancelledError) as exit_exc:  # noqa: BLE001 - a success must not become a failure over the exit
+        except (Exception, asyncio.CancelledError, GeneratorExit) as exit_exc:  # noqa: BLE001 - a success must not become a failure over the exit
             logger.warning(
                 "host tools: the dispatch observer failed to exit for %r: %s",
                 name,

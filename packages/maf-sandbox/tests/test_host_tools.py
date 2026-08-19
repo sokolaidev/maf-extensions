@@ -1312,6 +1312,40 @@ class TestTheRegistryObservesEveryDispatch:
 
         return factory
 
+    def test_an_observer_that_closes_its_own_generator_is_contained(self, caplog):
+        """``GeneratorExit`` from the observer's own generator is an observer failure — the
+        dispatch is not made to fail, or to stop, over it, the way an ``Exception`` or a
+        ``CancelledError`` is not."""
+        caplog.at_level(logging.WARNING)
+        for where in ("factory", "enter", "exit"):
+            caplog.clear()
+            registry = HostToolRegistry(dispatch_observer=self._observer_that_closes(where))
+            registry.register(_stamped_pure())
+            with caplog.at_level(logging.WARNING):
+                result = _dispatch(HostToolRun(registry), "doubled", {"x": 21})
+            assert result.ok, where
+            assert "observer" in caplog.text, where
+
+    @staticmethod
+    def _observer_that_closes(where: str):
+        """An observer whose ``factory`` / ``__enter__`` / ``__exit__`` raises ``GeneratorExit``
+        from its own generator — the shape a context manager in cleanup has."""
+
+        @contextlib.contextmanager
+        def cm():
+            if where == "enter":
+                raise GeneratorExit()
+            yield
+            if where == "exit":
+                raise GeneratorExit()
+
+        def factory(run: HostToolRun, name: object):
+            if where == "factory":
+                raise GeneratorExit()
+            return cm()
+
+        return factory
+
     def test_an_exit_that_returns_true_does_not_swallow_a_failure(self):
         """A body that fails becomes a refusal for the guest; the observer's ``__exit__`` —
         even one returning ``True``, the form that swallows an exception in a ``with`` —
