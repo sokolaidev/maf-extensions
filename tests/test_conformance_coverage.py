@@ -194,14 +194,20 @@ def _carries_the_binding(src: Path, backend_class: str | None = None) -> str | N
 
 
 def _names_backend(value: ast.expr | None, backend_class: str) -> bool:
-    """Whether a binding's value constructs or names ``backend_class``.
+    """Whether a binding's value names ``backend_class`` in the backend slot — exactly.
 
-    The shipped shapes are a call — ``Backend(Config())`` — or a bare name; anything else is
-    not judged, and counts as bound only if the class name appears in it.
+    The binding's value is the tuple ``(Backend(Config()), Sandbox)``; the backend slot is its
+    first element, a call whose *callee* is the class. The callee is compared by name,
+    exactly: a substring test would let a single ``BackendV2`` binding satisfy both
+    ``Backend`` and ``BackendV2``, so the shorter class rides in unbound behind the longer
+    one's annotation.
     """
-    if value is None:
+    if isinstance(value, ast.Tuple) and value.elts:
+        value = value.elts[0]
+    if not isinstance(value, ast.Call):
         return False
-    return backend_class in _binding_text(value)
+    callee = value.func
+    return isinstance(callee, ast.Name) and callee.id == backend_class
 
 
 def _backends(src: Path, module_filter: str | None = None) -> list[str]:
@@ -256,9 +262,31 @@ def _requires(package: Path) -> frozenset[str]:
 
 PACKAGE_DIRS = sorted(path.parent for path in PACKAGES.glob("*/pyproject.toml"))
 BACKEND_PACKAGES = [path for path in PACKAGE_DIRS if path.name != CORE]
-#: Discovered structurally rather than listed: `acquire(SandboxKey, SandboxSpec)` plus a
-#: dispose. A seventh backend is a backend on the commit that adds it (#450).
-SANDBOX_BACKEND_PACKAGES = [path for path in BACKEND_PACKAGES if _backends(path / "src")]
+
+
+def _imports_sandbox_backend(src: Path) -> bool:
+    """Whether anything under ``src`` imports ``SandboxBackend`` from core.
+
+    The independent marker: a package declaring itself a backend by what it imports, checked
+    with nothing but an AST read. Structural discovery decides *which classes*; this decides
+    *which packages are candidates at all*, from a source the discovery heuristic cannot gate.
+    """
+    for module in _iter_modules(src):
+        tree = ast.parse(module.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "maf_sandbox":
+                if any(alias.name == "SandboxBackend" for alias in node.names):
+                    return True
+    return False
+
+
+#: Candidate backend packages, by import: any non-core package importing ``SandboxBackend``.
+#: Structural discovery then has to find a backend class in every candidate — a package that
+#: imports the protocol but defeats the class heuristic (inherited dispose, aliased
+#: annotations) fails that check loudly rather than receiving no checks at all (#450).
+CANDIDATE_BACKEND_PACKAGES = [
+    path for path in BACKEND_PACKAGES if _imports_sandbox_backend(path / "src")
+]
 
 
 @pytest.mark.parametrize("package", BACKEND_PACKAGES, ids=lambda path: path.name)
@@ -276,7 +304,7 @@ def test_a_backend_that_serves_the_pull_surface_answers_the_suite(package: Path)
     )
 
 
-@pytest.mark.parametrize("package", SANDBOX_BACKEND_PACKAGES, ids=lambda path: path.name)
+@pytest.mark.parametrize("package", CANDIDATE_BACKEND_PACKAGES, ids=lambda path: path.name)
 def test_every_backend_answers_the_suites_it_cannot_opt_out_of(package: Path):
     """FILES_IN, EXEC and FILES_DELETE: the capabilities every sandbox backend declares or refuses.
 
@@ -300,7 +328,7 @@ def test_every_backend_answers_the_suites_it_cannot_opt_out_of(package: Path):
         )
 
 
-@pytest.mark.parametrize("package", SANDBOX_BACKEND_PACKAGES, ids=lambda path: path.name)
+@pytest.mark.parametrize("package", CANDIDATE_BACKEND_PACKAGES, ids=lambda path: path.name)
 def test_a_backend_carries_the_static_protocol_binding(package: Path):
     """The `tuple[SandboxBackend, type[Sandbox]]` annotation, present rather than remembered.
 
@@ -346,6 +374,34 @@ def test_the_guard_still_finds_the_backends_that_exist():
         f"{sorted(structural)}. The binding rule and the no-opt-out rule key off this "
         "discovery, so a miss here makes both vacuous while still green."
     )
+
+
+def test_every_candidate_is_discovered_structurally():
+    """The import marker names the candidates; the heuristic has to answer for each one.
+
+    Without this, a backend the class heuristic misses — an inherited `dispose`, an aliased
+    annotation — is not a candidate the structural rule silently skips: it is a candidate that
+    fails here, loudly, because a package importing `SandboxBackend` is declaring itself a
+    backend and the discovery has to see it (#450).
+    """
+    for package in CANDIDATE_BACKEND_PACKAGES:
+        found = _backends(package / "src")
+        assert found, (
+            f"{package.name} imports SandboxBackend but the structural discovery finds no "
+            "backend class in its src — acquire/dispose shapes the heuristic misses (an "
+            "inherited dispose, an alias) leave this package outside every backend rule while "
+            "it goes on being one. Teach the heuristic or say so here."
+        )
+
+
+def test_a_longer_class_name_cannot_satisfy_a_shorter_one():
+    """The binding match is exact: one `BackendV2` binding must not bound `Backend` too."""
+    binding = ast.parse(
+        "_: tuple[SandboxBackend, type[Sandbox]] = (BackendV2(Config()), Sandbox2)"
+    ).body[0]
+    assert isinstance(binding, ast.AnnAssign)
+    assert _names_backend(binding.value, "BackendV2")
+    assert not _names_backend(binding.value, "Backend")
 
 
 def test_the_package_that_ships_the_suite_answers_it_too():

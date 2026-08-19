@@ -1,21 +1,9 @@
-"""The PR gate enumerates packages; a list is how the last one went unchecked (#450).
+"""Pin that `tests.yml`'s type-check, build and smoke steps enumerate packages rather than
+name them, and that the type-check step runs the shared `gate_tasks` discovery.
 
-`tests.yml`'s type-check, build and smoke steps each named six packages one line each, and a
-seventh would have been invisible until someone remembered to add it — which is exactly how
-`maf-sandbox-wslc` shipped without a conformance check of any kind. These steps now enumerate
-`packages/*/`; this file pins that they keep looping, because a rule that matches nothing
-passes every time.
-
-The type-check step is pinned harder than the other two: it must call
-`scripts/gate_tasks.py` — the same `packages_with_pyright()` the local gate and the poe task
-use — rather than re-parsing the TOML with a grep of its own. Two parsers is a drift waiting
-to happen: valid TOML the grep misses (leading whitespace before `[tool.pyright]`) would pass
-CI and skip the local gate's check, green both ways.
-
-**Scoped to `tests.yml`.** `publish-packages.yml` names packages in its tag patterns and its
-dispatch options, and neither can be enumerated: a tag pattern is a filter GitHub matches
-against, not a list this repository controls the expansion of. Those are declared out of scope
-here rather than silently unmatched.
+Out of scope on purpose: `publish-packages.yml`'s tag patterns and dispatch options name
+packages, and a tag pattern is a filter GitHub matches rather than a list this repository
+expands.
 """
 
 from __future__ import annotations

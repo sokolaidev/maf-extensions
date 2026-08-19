@@ -9,13 +9,8 @@ So there are two specimens here. `InProcessSandbox` is the real fake, which refu
 is written for this file and genuinely resolves through a link, the way a real engine and a
 real data plane do, with each of the two duties on a switch.
 
-For the FILES_IN, EXEC and FILES_DELETE suites there is a third: `_SimulatedGuest`, whose
-`exec` interprets the small command set those probes issue (`test`, `cat`, `printf`, `pwd`,
-`wc`) against the same stores the fake keeps. It is a **simulator, and says so**: what it
-proves is that the probes assert what they claim to — that a discharging implementation passes
-and a defective one fails the right probe. What a guest's real shell does is answered by the
-live suites, on a real engine, the same way the FILES_OUT premise is answered at each backend's
-home.
+For the FILES_IN, EXEC and FILES_DELETE suites there is a third specimen, `_SimulatedGuest` —
+its class docstring carries what it is and what it is not.
 """
 
 from __future__ import annotations

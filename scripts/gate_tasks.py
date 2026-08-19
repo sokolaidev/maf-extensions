@@ -1,11 +1,4 @@
-"""The local gate's package discovery — one implementation, shared with the CI guard.
-
-`poe types-packages` calls `pyright_packages()` from here; CI runs the same module as
-`python scripts/gate_tasks.py pyright-packages`, and `tests/test_pr_gate_enumerates.py`
-imports the same functions to pin that the *workflow* enumerates too. The rule all three
-answer: every `packages/*/` with its own `[tool.pyright]` gets its strict pass, so a new
-package is covered on the commit that adds it (#450).
-"""
+"""The local gate's package discovery: every `packages/*/` with a `[tool.pyright]` section."""
 
 from __future__ import annotations
 

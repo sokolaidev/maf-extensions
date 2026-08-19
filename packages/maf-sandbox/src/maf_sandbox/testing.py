@@ -422,10 +422,9 @@ class InMemoryStore:
         return list(self.files)
 
 
-# The static conformance binding, the same one every backend package carries: this module's
-# backend and sandbox are held to the protocols they implement inside this package's own
-# strict pyright pass. The specimen every kind's tests runs against stops satisfying the
-# protocol in this build rather than in whichever kind's suite notices first.
+# Holds this module's backend and sandbox to the protocols they implement, inside this
+# package's own strict pyright pass — the annotation is what fails the build when a protocol
+# method goes missing or a signature narrows.
 if TYPE_CHECKING:
     _: tuple[SandboxBackend, type[Sandbox]] = (
         InProcessSandboxBackend(),

@@ -19,11 +19,12 @@ The same shape covers the other capabilities, each as its own suite:
 :func:`assert_exec_conformance` (:data:`~maf_sandbox.Capability.EXEC`), and
 :func:`assert_files_delete_conformance`
 (:data:`~maf_sandbox.Capability.FILES_DELETE`).  The FILES_IN, EXEC and FILES_DELETE probes
-verify through :meth:`Sandbox.exec` — ``cat``, ``test``, ``printf``, ``pwd``, ``sleep`` —
-rather than the pull surface, because a backend with no pull surface still owes those
-capabilities, and their command needs are those of ``PosixGuestSubject``'s own ``ln``.  What
-those suites assert is measured against the guest the image ships, which for the suites that
-run in CI is the image the workflow names.
+verify through :meth:`Sandbox.exec` rather than the pull surface, because a backend with no
+pull surface still owes those capabilities.  They need ``cat``, ``test``, ``printf``, ``pwd``,
+``sleep``, ``sh``, ``wc`` and ``mkdir`` — beyond ``PosixGuestSubject``'s own ``ln``, so the
+image has to carry the POSIX core utilities, and what those suites assert is measured against
+the guest the image ships, which for the suites that run in CI is the image the workflow
+names.
 
 **The EXEC suite may not leave the sandbox alive.**  Its last probe asserts the
 ``TimeoutError`` contract, and two backends discard the whole sandbox when a call times out —

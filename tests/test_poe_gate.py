@@ -1,10 +1,4 @@
-"""Pin the poe gate: the tasks exist, and `gate` runs all five checks (#450).
-
-A task renamed or dropped from `gate`'s sequence is the failure mode this catches — a
-contributor running `uv run poe gate` before a PR would get a green gate that silently skipped
-the format check or a pyright pass, which is the local mirror of the hardcoded-CI-list problem
-`test_pr_gate_enumerates.py` guards on the workflow side.
-"""
+"""Pin the poe gate's composition: the tasks exist, and `gate` runs all five checks."""
 
 from __future__ import annotations
 
