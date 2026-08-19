@@ -117,6 +117,12 @@ For the model, [sample 09's](../09_inprocess_bicep/) split unchanged — `AZURE_
 
 This sample asks more of a model than any other here: turn 1 has to write valid Bicep to a brief, and turn 2 has to read diagnostics, work out what each means for the source, and make the edit. A small local model can author and validate fine and still return nothing useful for the fix turn. The output says exactly what the file looks like afterwards either way.
 
+## One retry, announced
+
+The fix turn is a live model doing open-ended work, so it sometimes does not converge — eight of the nine shipped runs before [#421](https://github.com/sokolaidev/maf-extensions/issues/421) passed, and the ninth reddened a publish that had otherwise succeeded. So the live job runs the two-turn loop **twice at most**, and only when the check exits 3: every failure was the repair itself and every deterministic measurement passed. A container that was not reused, a turn that never reached the sandbox, a file that was never written or never changed, a suppressed rule, a sandbox left behind — those exit 1 and fail on the first attempt, because a second live model cannot mend any of them and re-confirming a broken sandbox costs a container to learn nothing.
+
+The retry annotates the run and the attempt count goes into the job summary, pass or fail. A silent retry is how a check that fails half the time starts reading green, which would cost more than the noise it saves.
+
 ## Where this sits
 
 Sample 05 runs this workload once, against a file checked in beside it. Sample 12 shows when a sandbox goes away. This one is the case they leave out — the sandbox that is still there because the conversation is not over, which is what get-or-create was for.

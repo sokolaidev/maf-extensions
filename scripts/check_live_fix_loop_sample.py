@@ -12,7 +12,9 @@ around it. The one thing read out of a reply is turn 1's prose, which has to nam
 compiler found in the file turn 1 wrote — that is the claim being checked, so the model's own
 words are the subject rather than the evidence.
 
-Exits non-zero listing every reason it failed.
+Exits non-zero listing every reason it failed, and says **which half** failed in the
+status: 3 when every failure was the fix turn's own, 1 when anything this suite owns was
+wrong too. `verify-live.yml` runs the loop a second time on 3 and on nothing else (#421).
 """
 
 from __future__ import annotations
@@ -151,6 +153,27 @@ def _tracked(compiled: str) -> set[str]:
     }
 
 
+class _TheModelsHalf(str):
+    """A failure the fix turn owns rather than this suite.
+
+    Everything around the repair is deterministic — one sandbox served all four acquires, both
+    turns reached it, the file was authored and then changed, nothing was suppressed, no
+    container was left behind — so a failure there is a defect to read, not a coin flip to
+    re-toss. The repair itself is the coin flip: a live model doing open-ended work.
+
+    A `str` subclass so the class travels with the message and nothing downstream has to match
+    prose to recover it. `assess` still returns `list[str]`, and every comparison against one
+    still works.
+    """
+
+
+#: What `main` exits when every failure was the fix turn's own. `verify-live.yml` runs the
+#: two-turn loop once more on this and on nothing else (#421); 1 stays what it always was —
+#: something this suite owns is wrong, and another model attempt cannot mend it. A workflow that
+#: predates this sees a non-zero exit and fails, which is what it did before.
+MODEL_DID_NOT_CONVERGE = 3
+
+
 def _one(pattern: re.Pattern[str], output: str) -> str | None:
     match = pattern.search(output)
     return match.group(1) if match else None
@@ -267,9 +290,11 @@ def _authored_faults(output: str) -> tuple[set[str], list[str]]:
 
     if not names and not failures:
         failures.append(
-            "the file turn 1 wrote had no tracked fault in it — the brief asks for an unused "
-            "parameter and no sku, so a clean file means the model did not follow it, and there "
-            "was nothing for the fix turn to repair"
+            _TheModelsHalf(
+                "the file turn 1 wrote had no tracked fault in it — the brief asks for an unused "
+                "parameter and no sku, so a clean file means the model did not follow it, and there "
+                "was nothing for the fix turn to repair"
+            )
         )
     return names, failures
 
@@ -288,9 +313,11 @@ def _assess_first_turn(output: str, authored: set[str]) -> list[str]:
     )
     if missing:
         return [
-            f"turn 1 did not name {', '.join(missing)} — the compiler reported it on the file "
-            "turn 1 wrote, and the fix turn is asked to repair 'the faults those diagnostics "
-            "point at', so a first turn that did not report it leaves the second one short"
+            _TheModelsHalf(
+                f"turn 1 did not name {', '.join(missing)} — the compiler reported it on the file "
+                "turn 1 wrote, and the fix turn is asked to repair 'the faults those diagnostics "
+                "point at', so a first turn that did not report it leaves the second one short"
+            )
         ]
     return []
 
@@ -386,9 +413,11 @@ def _assess_repair(output: str, authored: set[str]) -> list[str]:
         )
     elif intact.lower() != "true":
         failures.append(
-            "the storage account or its output is gone from main.bicep — deleting the template "
-            "satisfies every other signal at once, and a repair that removes the thing being "
-            "repaired is not one"
+            _TheModelsHalf(
+                "the storage account or its output is gone from main.bicep — deleting the template "
+                "satisfies every other signal at once, and a repair that removes the thing being "
+                "repaired is not one"
+            )
         )
 
     silenced = _one(_SUPPRESSED, block)
@@ -434,20 +463,26 @@ def _assess_repair(output: str, authored: set[str]) -> list[str]:
     # missing was told no fault the diagnostics pointed at had been removed (#432).
     if not fixed_names and not introduced_names:
         failures.append(
-            "no fault was fixed — the file may have changed, but every fault the diagnostics "
-            "pointed at is still there, on the same target"
+            _TheModelsHalf(
+                "no fault was fixed — the file may have changed, but every fault the diagnostics "
+                "pointed at is still there, on the same target"
+            )
         )
     elif not fixed_names:
         failures.append(
-            f"no fault was fixed, and the file now reports {', '.join(sorted(introduced_names))} "
-            "as well — turn 2 edited the file into a worse one"
+            _TheModelsHalf(
+                f"no fault was fixed, and the file now reports {', '.join(sorted(introduced_names))} "
+                "as well — turn 2 edited the file into a worse one"
+            )
         )
     elif introduced_names:
         failures.append(
-            f"the repair traded one diagnostic for another: {', '.join(sorted(fixed_names))} "
-            f"went and {', '.join(sorted(introduced_names))} arrived. Turn 2 is asked to leave "
-            "the file reporting nothing it did not report before, and partial progress is still "
-            "a loop that did not converge"
+            _TheModelsHalf(
+                f"the repair traded one diagnostic for another: {', '.join(sorted(fixed_names))} "
+                f"went and {', '.join(sorted(introduced_names))} arrived. Turn 2 is asked to leave "
+                "the file reporting nothing it did not report before, and partial progress is still "
+                "a loop that did not converge"
+            )
         )
 
     # Against what turn 1 actually produced, not a constant. `introduced` is deliberately not in
@@ -556,9 +591,11 @@ def _assess_compiler_agrees(
     )
     if introduced:
         failures.append(
-            f"the compiler reports {', '.join(introduced)}, which the run does not account for — "
-            "the tracked faults may well be gone, but the model broke something else on the way "
-            f"and only {_TOLERATED_RULE} is tolerated here"
+            _TheModelsHalf(
+                f"the compiler reports {', '.join(introduced)}, which the run does not account for — "
+                "the tracked faults may well be gone, but the model broke something else on the way "
+                f"and only {_TOLERATED_RULE} is tolerated here"
+            )
         )
     return failures
 
@@ -601,6 +638,16 @@ def main(argv: list[str]) -> int:
         )
         for reason in failures:
             print(f"  - {reason}", file=sys.stderr)
+        # Which half failed, said out loud rather than left to the exit status. A reader of the
+        # log is the first consumer; `verify-live.yml` is the second (#421).
+        if all(isinstance(reason, _TheModelsHalf) for reason in failures):
+            print(
+                "  every failure above is the fix turn's own — the sandbox was reused, both "
+                "turns reached it, the file was written and changed, and nothing was left "
+                f"behind. Exiting {MODEL_DID_NOT_CONVERGE}: the loop is worth one more attempt.",
+                file=sys.stderr,
+            )
+            return MODEL_DID_NOT_CONVERGE
         return 1
     # "agrees with the repair reported", not "the file is fixed": a run that repaired one of two
     # faults and said so passes, and the compiler still reports an error on it.
