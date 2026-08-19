@@ -117,6 +117,7 @@ def _smoke_maf_sandbox_acas() -> str:
             Capability.FILES_IN,
             Capability.FILES_OUT,
             Capability.FILES_LIST,
+            Capability.FILES_DELETE,
             Capability.HOST_TOOLS,
         }
     ):
@@ -369,7 +370,13 @@ def _smoke_maf_sandbox_docker() -> str:
     if backend.isolation != Isolation.CONTAINER:
         raise SystemExit(f"FAIL: docker backend declares {backend.isolation!r}, expected container")
     if backend.capabilities != frozenset(
-        {Capability.EXEC, Capability.FILES_IN, Capability.FILES_OUT, Capability.HOST_TOOLS}
+        {
+            Capability.EXEC,
+            Capability.FILES_IN,
+            Capability.FILES_OUT,
+            Capability.FILES_DELETE,
+            Capability.HOST_TOOLS,
+        }
     ):
         raise SystemExit(f"FAIL: docker backend declares {sorted(backend.capabilities)!r}")
     allowlisting = DockerSandboxBackend(DockerSandboxConfig(egress_proxy_image="x:1"))
