@@ -171,11 +171,17 @@ class InProcessSandbox:
                 return ExecResult(stdout=output)
         return ExecResult(stdout=self._default_stdout)
 
+    def _stored(self) -> tuple[str, ...]:
+        """Every path this fake holds, whatever kind it is.
+
+        One list because the consumers below each walk all of them, and a store added to the
+        constructor and to only two of the three is a silent hole.
+        """
+        return (*self.contents, *self.symlinks, *self.non_regular, *self.directories)
+
     def _has_children(self, full_path: str) -> bool:
         prefix = full_path + "/"
-        return any(
-            p.startswith(prefix) for p in (*self.contents, *self.symlinks, *self.non_regular)
-        )
+        return any(p.startswith(prefix) for p in self._stored())
 
     def _kind_at(self, full_path: str) -> tuple[EntryKind, int | None] | None:
         """What is stored at an absolute guest path, unconfined and following nothing.
@@ -225,7 +231,7 @@ class InProcessSandbox:
             return content
         if full_path in self.symlinks or full_path in self.non_regular:
             raise OSError(f"{path!r} is not a regular file and is refused")
-        if self._has_children(full_path):
+        if full_path in self.directories or self._has_children(full_path):
             raise IsADirectoryError(f"{path!r} is a directory")
         raise FileNotFoundError(f"no such file: {path!r}")
 
@@ -249,7 +255,7 @@ class InProcessSandbox:
             if full_path in self.symlinks
             else [
                 stored
-                for stored in (*self.contents, *self.symlinks, *self.non_regular)
+                for stored in self._stored()
                 if guest_path_relative_to(stored, full_path) not in (None, "")
             ]
         )
@@ -271,7 +277,7 @@ class InProcessSandbox:
         assert directory_rel is not None  # confine_guest_path already refused anything outside it
 
         names: set[str] = set()
-        for stored_path in (*self.contents, *self.symlinks, *self.non_regular):
+        for stored_path in self._stored():
             child = _child_name(guest_path_relative_to(stored_path, base), directory_rel)
             if child is not None:
                 names.add(child)

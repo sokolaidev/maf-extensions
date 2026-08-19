@@ -356,8 +356,8 @@ class _AcasSandbox:
         planted = await self._stat_guest(guest, posixpath.normpath(path))
         if planted is not None and planted.kind is EntryKind.SYMLINK:
             raise ValueError(
-                f"refusing to remove {path!r}: it is a link, and this service resolves one on "
-                "a delete as readily as on a read, so the target would go instead"
+                f"refusing to remove {path!r}: it is a link, and whether this service unlinks "
+                "one or follows it on a delete is unverified — it follows one on a read"
             )
         try:
             # Bounded like every other call on this data plane: this one runs from a `finally`,

@@ -510,6 +510,24 @@ class TestInProcessSandboxRemove:
         asyncio.run(sandbox.remove("empty", working_directory="/maf-sandbox/work", recursive=True))
         assert sandbox.directories == set()
 
+    def test_a_seeded_directory_reaches_every_consumer_not_only_remove(self):
+        """A store the constructor knows and the traversals do not is a hole in three places.
+
+        A declared directory has to list as a child, read as a directory rather than as
+        missing, and go with a recursive removal of its parent.
+        """
+        sandbox = InProcessSandbox(seed_files={"/maf-sandbox/work/tree/empty": EntryKind.DIRECTORY})
+        entries = asyncio.run(sandbox.list_dir("tree", working_directory="/maf-sandbox/work"))
+        assert entries == (
+            SandboxEntry(path="tree/empty", kind=EntryKind.DIRECTORY, size_bytes=None),
+        )
+        with pytest.raises(IsADirectoryError):
+            asyncio.run(
+                sandbox.read_file("tree/empty", working_directory="/maf-sandbox/work", max_bytes=99)
+            )
+        asyncio.run(sandbox.remove("tree", working_directory="/maf-sandbox/work", recursive=True))
+        assert sandbox.directories == set(), "a seeded directory survived its parent's removal"
+
     def test_recursive_removes_the_tree_and_nothing_beside_it(self):
         sandbox = InProcessSandbox()
         asyncio.run(sandbox.write_file("/maf-sandbox/work/sub/a.txt", "1"))
