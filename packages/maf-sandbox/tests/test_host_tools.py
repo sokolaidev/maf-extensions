@@ -974,14 +974,7 @@ class TestResponseCaps:
 
 
 class TestTheRegistryObservesEveryDispatch:
-    """Issue #446's surface: attribute each dispatch to the run that made it.
-
-    The run object's identity is the whole answer — a run is one ``execute_code`` program,
-    so an observer that records ``(run, name)`` partitions calls into programs without a
-    correlation id, an ambient global, or any change to what a guest can see.  What is pinned
-    here is the pairing: every enter has exactly one exit, refused dispatches included, and an
-    observer that misbehaves costs the host a log line and never a dispatch outcome.
-    """
+    """Verify dispatch attribution and observer lifecycle behavior."""
 
     @staticmethod
     def _recording(events: list[tuple[str, HostToolRun, object]]):
