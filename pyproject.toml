@@ -17,6 +17,10 @@ dev = [
     "pyright>=1.1.411,<1.2",
     # Release checks (metadata validation of built sdists/wheels).
     "twine>=6,<7",
+    # Task runner for the local gate (`uv run poe gate`): poe detects uv.lock and runs every
+    # task through `uv run` itself, so the tasks below name bare commands. Root-only — the
+    # packages stay self-contained and ship no tasks of their own.
+    "poethepoet>=0.34,<1",
     # Every sample that talks to a model imports this, and nothing else here pulls it in.
     # Wide where the tooling bands are narrow, and deliberately: a sample declares it unpinned,
     # so a check held to an older minor would pass against a version no live run uses.
@@ -73,7 +77,7 @@ typeCheckingMode = "standard"
 # stale ones.
 executionEnvironments = [
   { root = "samples", reportUnnecessaryTypeIgnoreComment = "error" },
-  { root = "tests", extraPaths = ["samples/09_inprocess_bicep"], reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
+  { root = "tests", extraPaths = ["samples/09_inprocess_bicep", "scripts"], reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
   { root = "packages/maf-sandbox/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
   { root = "packages/maf-sandbox-acas/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
   { root = "packages/maf-sandbox-bicep/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
@@ -103,3 +107,28 @@ testpaths = [
     "packages/maf-sandbox-wslc/tests",
 ]
 faulthandler_timeout = 90.0
+
+# The local gate, run as `uv run poe gate` — poe detects uv.lock and executes every task
+# through `uv run` itself, so the commands below are bare. CI keeps its own explicit steps
+# (per-step annotations, no indirection); this is the contributor-side one-command form of the
+# same gate, and `scripts/gate_tasks.py` is the one discovery implementation both share —
+# `poe types-packages` calls it, and `tests/test_pr_gate_enumerates.py` pins that CI's loops
+# agree with it (#450).
+[tool.poe.tasks]
+test = "pytest -q"
+lint = "ruff check ."
+format = "ruff format --check ."
+types = "pyright"
+
+[tool.poe.tasks.types-packages]
+help = "Every package's strict pyright pass, enumerated from the workspace"
+script = "gate_tasks:pyright_packages"
+env.PYTHONPATH = "scripts"
+
+[tool.poe.tasks.md-blocks]
+help = "Lint the python blocks in the markdown against the installed packages (report-only in CI)"
+cmd = "python scripts/check_md_code_blocks.py README.md 'packages/*/README.md' 'samples/**/*.md' RELEASING.md"
+
+[tool.poe.tasks.gate]
+help = "The full pre-PR gate: tests, lint, format, both pyright passes"
+sequence = ["test", "lint", "format", "types-packages", "types"]

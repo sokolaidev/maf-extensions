@@ -8,6 +8,14 @@ meant to catch passes everything (#142).
 So there are two specimens here. `InProcessSandbox` is the real fake, which refuses; `_Leaky`
 is written for this file and genuinely resolves through a link, the way a real engine and a
 real data plane do, with each of the two duties on a switch.
+
+For the FILES_IN, EXEC and FILES_DELETE suites there is a third: `_SimulatedGuest`, whose
+`exec` interprets the small command set those probes issue (`test`, `cat`, `printf`, `pwd`,
+`wc`) against the same stores the fake keeps. It is a **simulator, and says so**: what it
+proves is that the probes assert what they claim to — that a discharging implementation passes
+and a defective one fails the right probe. What a guest's real shell does is answered by the
+live suites, on a real engine, the same way the FILES_OUT premise is answered at each backend's
+home.
 """
 
 from __future__ import annotations
@@ -19,17 +27,35 @@ import pytest
 
 from maf_sandbox import Capability, EntryKind, ExecResult, Sandbox, SandboxEntry
 from maf_sandbox.conformance import (
+    EXEC_PROBES,
+    FILES_DELETE_PROBES,
+    FILES_IN_PROBES,
     FILES_OUT_PROBES,
     ConformanceFailure,
     ConformancePaths,
     PosixGuestSubject,
+    assert_exec_conformance,
+    assert_files_delete_conformance,
+    assert_files_in_conformance,
     assert_files_out_conformance,
+    run_exec_probes,
+    run_files_delete_probes,
+    run_files_in_probes,
     run_files_out_probes,
 )
 from maf_sandbox.testing import InProcessSandbox
 
 _WORK = "/maf-sandbox/work"
 _BOTH = frozenset({Capability.FILES_OUT, Capability.FILES_LIST})
+_EVERYTHING = frozenset(
+    {
+        Capability.EXEC,
+        Capability.FILES_IN,
+        Capability.FILES_OUT,
+        Capability.FILES_LIST,
+        Capability.FILES_DELETE,
+    }
+)
 
 
 class _FakeSubject:
@@ -407,3 +433,337 @@ class TestTheLayout:
     def test_the_specimens_really_are_sandboxes(self):
         assert isinstance(_Leaky(), Sandbox)
         assert isinstance(InProcessSandbox(), Sandbox)
+
+
+# ---------------------------------------------------------------------------
+# The FILES_IN, EXEC and FILES_DELETE suites
+# ---------------------------------------------------------------------------
+
+
+class _SimulatedGuest:
+    """A sandbox whose `exec` interprets the probes' commands against real stores.
+
+    **A simulator, not a guest**: `exec` here is a Python reading of `test`, `cat`, `printf`,
+    `pwd` and the one `sh -c` the quoting probe issues. What it proves is the probes' own
+    behaviour — the discharging implementation passes, and each defect below fails exactly its
+    probe — and nothing about any real shell. The live suites answer that, against engines and
+    services; this one answers the suite itself, the same role `_Leaky` plays for FILES_OUT.
+
+    Storage is the fake's shape (`contents`/`symlinks`/`directories`), so `write_file` and
+    `remove` are the real `InProcessSandbox` methods reused via composition — the surface under
+    test for those suites is the sandbox, and the shipped fake discharges it.
+    """
+
+    def __init__(self, *, quoting: bool = True, exit_codes: bool = True) -> None:
+        self.contents: dict[str, bytes] = {}
+        self.symlinks: dict[str, str] = {}
+        self.directories: set[str] = set()
+        self._quoting = quoting
+        self._exit_codes = exit_codes
+
+    async def write_file(self, path: str, content: str | bytes) -> None:
+        self.contents[path] = content.encode("utf-8") if isinstance(content, str) else content
+
+    async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
+        base = posixpath.normpath(working_directory)
+        guest = posixpath.normpath(posixpath.join(base, path))
+        if guest != base and not guest.startswith(base + "/"):
+            raise ValueError(f"path {path!r} resolves outside working directory {base!r}")
+        # The component walk, decided from the reported kind — a link standing in any parent
+        # is the escape a real backend has to refuse.
+        walked = ""
+        for part in (part for part in posixpath.dirname(guest).split("/") if part):
+            walked = f"{walked}/{part}"
+            if walked in self.symlinks:
+                raise ValueError(f"{walked!r} is a link rather than a real directory")
+        if guest in self.symlinks:
+            # A link named here is the thing being removed; removing it never follows it.
+            self.symlinks.pop(guest)
+            return
+        if guest == base:
+            raise ValueError(f"refusing to remove the working directory itself: {path}")
+        prefix = guest.rstrip("/") + "/"
+        under = [stored for stored in (*self.contents, *self.symlinks) if stored.startswith(prefix)]
+        if (under or guest in self.directories) and not recursive:
+            raise OSError(f"refusing to remove a directory without recursive: {path}")
+        self.contents.pop(guest, None)
+        self.directories.discard(guest)
+        for stored in under:
+            self.contents.pop(stored, None)
+            self.symlinks.pop(stored, None)
+            self.directories.discard(stored)
+
+    def _resolve(self, guest: str) -> str:
+        """Where a `cat`/`test` actually lands: the guest's own resolution, links followed.
+
+        `exec` is the guest's move, so it follows links exactly as a shell would — that is the
+        premise the FILES_DELETE link probe hangs on, and refusing here instead would make the
+        simulator disagree with every guest it stands in for.
+        """
+        resolved = guest
+        changed = True
+        while changed:
+            changed = False
+            parts = [part for part in resolved.split("/") if part]
+            walked = ""
+            for index, part in enumerate(parts):
+                walked = f"{walked}/{part}"
+                if walked in self.symlinks and index < len(parts) - 1:
+                    resolved = self.symlinks[walked] + resolved[len(walked) :]
+                    changed = True
+                    break
+        return resolved
+
+    async def exec(self, command, *, working_directory: str, timeout: float) -> ExecResult:
+        argv = [command] if isinstance(command, str) else list(command)
+        # `ln -sfn target path`, which PosixGuestSubject plants links with.
+        if argv[0:1] == ["ln"] and argv[1:2] == ["-sfn"] and len(argv) == 4:
+            self.symlinks[argv[3]] = argv[2]
+            return ExecResult(stdout="")
+        if argv[0:1] == ["sleep"]:
+            # The simulator obeys the protocol's timeout rule the way a guest does not have
+            # to: the point is the *backend's* duty, and this specimen discharges it. It
+            # sleeps only a whisker past the bound so the suite stays fast.
+            await asyncio.sleep(min(float(argv[1]), timeout + 0.05))
+            if float(argv[1]) > timeout:
+                raise TimeoutError
+            return ExecResult(stdout="")
+        # `sh -c 'printf ... | wc -l' probe '<hostile>'`: the quoting probe. A quoting backend
+        # passes the hostile string through as $1; an unquoting one has already run it through
+        # a shell, which this models by splitting on whitespace and evaluating nothing.
+        if argv[0:1] == ["sh"] and argv[1:2] == ["-c"] and len(argv) == 5 and "wc -l" in argv[2]:
+            words = (
+                [argv[4]] if self._quoting else argv[4].replace("$(", " ").replace(")", " ").split()
+            )
+            return ExecResult(stdout=f"{len(words)}\n")
+        if argv[0:1] == ["test"]:
+            operand = self._resolve(posixpath.normpath(posixpath.join(working_directory, argv[-1])))
+            if argv[1:2] == ["-f"]:
+                hits = operand in self.contents
+            else:  # -e
+                hits = (
+                    operand in self.contents
+                    or operand in self.symlinks
+                    or operand in self.directories
+                )
+            return ExecResult(stdout="", exit_code=0 if hits else 1)
+        if argv[0:1] == ["cat"]:
+            operand = self._resolve(posixpath.normpath(posixpath.join(working_directory, argv[-1])))
+            if operand not in self.contents:
+                return ExecResult(stdout="", stderr="no such file", exit_code=1)
+            content = self.contents[operand]
+            return ExecResult(
+                stdout=content.decode("utf-8", errors="surrogateescape"),
+            )
+        if argv[0:1] == ["printf"]:
+            return ExecResult(stdout=argv[1])
+        if argv[0:1] == ["pwd"]:
+            return ExecResult(stdout=posixpath.normpath(working_directory))
+        if isinstance(command, str) and command.startswith("exit "):
+            code = int(command.split()[1])
+            return ExecResult(stdout="", exit_code=code if self._exit_codes else 1)
+        return ExecResult(stdout="", stderr=f"unsupported: {argv[0]!r}", exit_code=127)
+
+
+class _SimSubject(PosixGuestSubject):
+    """`_SimulatedGuest` planted the way a Linux guest is: `write_file` and `ln`."""
+
+
+def _sim_subject(**kwargs) -> _SimSubject:
+    sandbox = _SimulatedGuest(**kwargs)
+    return _SimSubject(
+        sandbox=sandbox, working_directory=_WORK, capabilities=_EVERYTHING, exec_timeout=5
+    )
+
+
+def _sim_results(subject: _SimSubject, run) -> dict[str, str | None]:
+    results = asyncio.run(run(subject))
+    return {r.probe.name: r.failure for r in results if r.skipped is None}
+
+
+class TestFilesInConformance:
+    def test_the_simulator_answers_every_probe(self):
+        assert _sim_results(_sim_subject(), run_files_in_probes) == dict.fromkeys(
+            [p.name for p in FILES_IN_PROBES], None
+        )
+
+    def test_a_write_that_lands_nowhere_fails_the_positive_control(self):
+        class _Vanishing(_SimulatedGuest):
+            async def write_file(self, path: str, content: str | bytes) -> None:
+                del path, content  # the transport that drops every write
+
+        failures = _sim_results(
+            _SimSubject(sandbox=_Vanishing(), working_directory=_WORK, capabilities=_EVERYTHING),
+            run_files_in_probes,
+        )
+        assert set(failures.values()) != {None}
+
+    def test_a_write_that_translates_bytes_fails_the_fidelity_probe(self):
+        class _Translating(_SimulatedGuest):
+            async def write_file(self, path: str, content: str | bytes) -> None:
+                if isinstance(content, bytes):
+                    content = content.replace(b"\r\n", b"\n").replace(b"\x00", b"")
+                await super().write_file(path, content)
+
+        failures = _sim_results(
+            _SimSubject(sandbox=_Translating(), working_directory=_WORK, capabilities=_EVERYTHING),
+            run_files_in_probes,
+        )
+        assert failures["bytes-survive-the-round-trip"] is not None
+
+    def test_a_write_that_appends_fails_the_replacement_probe(self):
+        class _Appending(_SimulatedGuest):
+            async def write_file(self, path: str, content: str | bytes) -> None:
+                blob = content.encode("utf-8") if isinstance(content, str) else content
+                self.contents[path] = self.contents.get(path, b"") + blob
+
+        failures = _sim_results(
+            _SimSubject(sandbox=_Appending(), working_directory=_WORK, capabilities=_EVERYTHING),
+            run_files_in_probes,
+        )
+        assert failures["a-second-write-replaces"] is not None
+        assert failures["a-write-lands-and-reads-back"] is None
+
+    def test_a_subject_without_files_in_is_refused(self):
+        with pytest.raises(ValueError, match="declares no FILES_IN"):
+            asyncio.run(run_files_in_probes(_FakeSubject(InProcessSandbox(), _BOTH)))
+
+
+class TestExecConformance:
+    def test_the_simulator_answers_every_probe(self):
+        assert _sim_results(_sim_subject(), run_exec_probes) == dict.fromkeys(
+            [p.name for p in EXEC_PROBES], None
+        )
+
+    def test_a_backend_that_normalises_exit_codes_fails_the_fidelity_probe(self):
+        failures = _sim_results(_sim_subject(exit_codes=False), run_exec_probes)
+        assert failures["exit-code-fidelity"] is not None
+        assert failures["an-argv-sequence-runs"] is None
+
+    def test_a_backend_that_joins_argv_unquoted_fails_the_quoting_probe(self):
+        failures = _sim_results(_sim_subject(quoting=False), run_exec_probes)
+        assert failures["argv-is-quoted"] is not None
+        assert failures["an-argv-sequence-runs"] is None
+
+    def test_a_timeout_that_returns_fails_the_last_probe(self):
+        class _NeverTimesOut(_SimulatedGuest):
+            async def exec(self, command, *, working_directory: str, timeout: float):
+                if isinstance(command, list) and command[0:1] == ["sleep"]:
+                    return ExecResult(stdout="")  # the overrun that quietly returns
+                return await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+
+        failures = _sim_results(
+            _SimSubject(
+                sandbox=_NeverTimesOut(), working_directory=_WORK, capabilities=_EVERYTHING
+            ),
+            run_exec_probes,
+        )
+        assert failures["a-timeout-raises-timeout-error"] is not None
+
+    def test_the_timeout_probe_is_last(self):
+        """Two backends discard the sandbox on timeout, so nothing may run after this probe."""
+        assert EXEC_PROBES[-1].name == "a-timeout-raises-timeout-error"
+
+    def test_every_probe_says_why_it_is_in_the_suite(self):
+        for probes in (FILES_IN_PROBES, EXEC_PROBES, FILES_DELETE_PROBES):
+            assert all(len(probe.why) > 40 for probe in probes)
+            assert len({probe.name for probe in probes}) == len(probes)
+
+
+class TestFilesDeleteConformance:
+    def test_the_simulator_answers_every_probe(self):
+        assert _sim_results(_sim_subject(), run_files_delete_probes) == dict.fromkeys(
+            [p.name for p in FILES_DELETE_PROBES], None
+        )
+
+    def test_a_removal_that_does_nothing_fails_the_positive_control(self):
+        class _Inert(_SimulatedGuest):
+            async def remove(self, path, *, working_directory, recursive=False):
+                del path, working_directory, recursive
+
+        failures = _sim_results(
+            _SimSubject(sandbox=_Inert(), working_directory=_WORK, capabilities=_EVERYTHING),
+            run_files_delete_probes,
+        )
+        assert failures["a-removal-removes"] is not None
+        assert failures["recursive-removes-the-tree"] is not None
+
+    def test_a_removal_that_follows_links_fails_the_link_probe(self):
+        class _Following(_SimulatedGuest):
+            def _resolve_all(self, guest: str) -> str:
+                """Resolve the final component too — the leak: remove deletes the target."""
+                resolved = self._resolve(guest)
+                return self.symlinks.get(resolved, resolved)
+
+            async def remove(self, path, *, working_directory, recursive=False):
+                base = posixpath.normpath(working_directory)
+                guest = posixpath.normpath(posixpath.join(base, path))
+                if guest not in self.symlinks:
+                    await super().remove(
+                        path, working_directory=working_directory, recursive=recursive
+                    )
+                    return
+                target = self._resolve_all(guest)
+                self.symlinks.pop(guest, None)
+                self.contents.pop(target, None)  # the escape: the target goes instead
+
+        failures = _sim_results(
+            _SimSubject(sandbox=_Following(), working_directory=_WORK, capabilities=_EVERYTHING),
+            run_files_delete_probes,
+        )
+        assert failures["a-link-is-removed-never-followed"] is not None
+
+    def test_a_removal_that_raises_on_missing_fails_the_idempotence_probe(self):
+        class _Strict(_SimulatedGuest):
+            async def remove(self, path, *, working_directory, recursive=False):
+                guest = posixpath.normpath(posixpath.join(working_directory, path))
+                prefix = guest.rstrip("/") + "/"
+                present = (
+                    guest in self.contents
+                    or guest in self.symlinks
+                    or guest in self.directories
+                    or any(stored.startswith(prefix) for stored in (*self.contents, *self.symlinks))
+                )
+                if not present:
+                    raise FileNotFoundError(path)
+                await super().remove(path, working_directory=working_directory, recursive=recursive)
+
+        failures = _sim_results(
+            _SimSubject(sandbox=_Strict(), working_directory=_WORK, capabilities=_EVERYTHING),
+            run_files_delete_probes,
+        )
+        assert failures["a-missing-path-is-success"] is not None
+        assert failures["a-removal-removes"] is None
+
+    def test_a_subject_without_files_delete_is_refused(self):
+        subject = _SimSubject(
+            sandbox=_SimulatedGuest(),
+            working_directory=_WORK,
+            capabilities=_EVERYTHING - {Capability.FILES_DELETE},
+        )
+        with pytest.raises(ValueError, match="declares no FILES_DELETE"):
+            asyncio.run(run_files_delete_probes(subject))
+
+    def test_the_shipped_fake_answers_the_delete_probes_too(self):
+        """The fake every kind's tests run against discharges the delete contract as well."""
+        subject = _FakeSubject(
+            InProcessSandbox(),
+            frozenset({Capability.FILES_OUT, Capability.FILES_LIST, Capability.FILES_DELETE}),
+        )
+        # The fake's `exec` is scripted, so only the remove-driven probes can run against it;
+        # the exec-verified ones need a guest. Those it cannot answer, it must not pretend to.
+        with pytest.raises(ConformanceFailure):
+            asyncio.run(assert_files_delete_conformance(subject))
+
+
+def test_the_assert_functions_return_the_results():
+    for run, assert_, probes in (
+        (run_files_in_probes, assert_files_in_conformance, FILES_IN_PROBES),
+        (run_exec_probes, assert_exec_conformance, EXEC_PROBES),
+        (run_files_delete_probes, assert_files_delete_conformance, FILES_DELETE_PROBES),
+    ):
+        results = asyncio.run(assert_(_sim_subject()))
+        assert [r.probe.name for r in results] == [p.name for p in probes]
+        assert all(r.passed for r in results)

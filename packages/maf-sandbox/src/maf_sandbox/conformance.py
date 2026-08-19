@@ -14,6 +14,22 @@ backend's own public surface, at its unconfined stat or its raw payload, and onl
 can, so each keeps that test at home.  And it grades nothing — a backend that cannot recognise
 a link still refuses every path here and fails the two probes about *naming* what it refused.
 
+The same shape covers the other capabilities, each as its own suite:
+:func:`assert_files_in_conformance` (:data:`~maf_sandbox.Capability.FILES_IN`),
+:func:`assert_exec_conformance` (:data:`~maf_sandbox.Capability.EXEC`), and
+:func:`assert_files_delete_conformance`
+(:data:`~maf_sandbox.Capability.FILES_DELETE`).  The FILES_IN, EXEC and FILES_DELETE probes
+verify through :meth:`Sandbox.exec` — ``cat``, ``test``, ``printf``, ``pwd``, ``sleep`` —
+rather than the pull surface, because a backend with no pull surface still owes those
+capabilities, and their command needs are those of ``PosixGuestSubject``'s own ``ln``.  What
+those suites assert is measured against the guest the image ships, which for the suites that
+run in CI is the image the workflow names.
+
+**The EXEC suite may not leave the sandbox alive.**  Its last probe asserts the
+``TimeoutError`` contract, and two backends discard the whole sandbox when a call times out —
+that is the documented recovery, not a defect.  A caller sharing one sandbox across suites runs
+EXEC last, and a caller that wants what comes after acquires a second sandbox.
+
 Nothing here imports a test framework: this module ships in the wheel.  A failure raises
 :class:`ConformanceFailure` naming every probe that failed rather than the first.
 """
@@ -28,6 +44,9 @@ from typing import Any, Protocol
 from ._protocol import Capability, EntryKind, Sandbox
 
 __all__ = [
+    "EXEC_PROBES",
+    "FILES_DELETE_PROBES",
+    "FILES_IN_PROBES",
     "FILES_OUT_PROBES",
     "ConformanceFailure",
     "ConformancePaths",
@@ -35,8 +54,14 @@ __all__ = [
     "PosixGuestSubject",
     "Probe",
     "ProbeResult",
+    "assert_exec_conformance",
+    "assert_files_delete_conformance",
+    "assert_files_in_conformance",
     "assert_files_out_conformance",
     "plant_layout",
+    "run_exec_probes",
+    "run_files_delete_probes",
+    "run_files_in_probes",
     "run_files_out_probes",
 ]
 
@@ -46,6 +71,10 @@ _READ_CAP = 1 << 20
 
 _SECRET = b"the guest must not reach this\n"
 _INSIDE = b"a legitimate output\n"
+
+#: High bytes and no trailing newline, so a write that translates anything — CRLF, a decoder,
+#: a truncation at the first NUL — changes the length and fails the fidelity probe.
+_BINARY = bytes(range(0, 256))
 
 
 class ConformanceSubject(Protocol):
@@ -199,16 +228,16 @@ class ProbeResult:
 
 
 class ConformanceFailure(AssertionError):
-    """Raised by :func:`assert_files_out_conformance`, naming every probe that failed.
+    """Raised by the ``assert_*_conformance`` functions, naming every probe that failed.
 
     An :class:`AssertionError` so a test framework reports it as a failed assertion rather than
     an error, without this module importing one.
     """
 
-    def __init__(self, results: tuple[ProbeResult, ...]) -> None:
+    def __init__(self, results: tuple[ProbeResult, ...], suite: str = "FILES_OUT") -> None:
         self.results = results
         self.failures = tuple(r for r in results if r.failure is not None)
-        lines = [f"{len(self.failures)} of {len(results)} FILES_OUT conformance probes failed:"]
+        lines = [f"{len(self.failures)} of {len(results)} {suite} conformance probes failed:"]
         for result in self.failures:
             lines.append(f"  - {result.probe.name}: {result.failure}")
             lines.append(f"    why it is in the suite: {result.probe.why}")
@@ -544,16 +573,540 @@ async def run_files_out_probes(subject: ConformanceSubject) -> tuple[ProbeResult
     the case it exists for — but skipping *everything* and returning success is a green run
     that attacked nothing, which is worse than no run at all.
     """
+    return await _run_suite(subject, Capability.FILES_OUT, plant_layout, FILES_OUT_PROBES)
+
+
+async def assert_files_out_conformance(subject: ConformanceSubject) -> tuple[ProbeResult, ...]:
+    """Run the probes and raise :class:`ConformanceFailure` if any failed.
+
+    Returns the results on success so a caller can assert on what was *skipped*: a backend that
+    silently stopped declaring ``FILES_LIST`` would otherwise go green on three fewer probes.
+    """
+    return _assert_conformance(await run_files_out_probes(subject), "FILES_OUT")
+
+
+# ---------------------------------------------------------------------------
+# FILES_IN — what a declared write owes
+# ---------------------------------------------------------------------------
+
+
+async def _probe_a_write_lands_and_reads_back(
+    subject: ConformanceSubject, paths: ConformancePaths
+) -> None:
+    # `printf` rather than `cat` alone: the working directory is where a backend that ignored
+    # it would land the file, and the probe distinguishes the two locations.
+    result = await subject.sandbox.exec(
+        ["test", "-f", "real/written.txt"], working_directory=subject.working_directory, timeout=60
+    )
+    if result.exit_code != 0:
+        raise AssertionError("the written file is not visible at its guest path")
+    back = await subject.sandbox.exec(
+        ["cat", "real/written.txt"], working_directory=subject.working_directory, timeout=60
+    )
+    if back.stdout != "written":
+        raise AssertionError(f"the written file reads back as {back.stdout!r}, not 'written'")
+
+
+async def _probe_bytes_survive_the_round_trip(
+    subject: ConformanceSubject, paths: ConformancePaths
+) -> None:
+    back = await subject.sandbox.exec(
+        ["cat", "binary.bin"], working_directory=subject.working_directory, timeout=60
+    )
+    # `cat` answers text; the length is the fidelity assertion, since every translation a
+    # transport can commit — CRLF, a decode/encode pair, a NUL truncation — changes it. The
+    # byte content is asserted through the surrogateescape round trip, which is lossless for
+    # arbitrary bytes the way a real stdout pipe is.
+    decoded = _BINARY.decode("utf-8", errors="surrogateescape")
+    if back.stdout != decoded:
+        raise AssertionError(
+            f"{len(_BINARY)} bytes went in and came back altered — a text-shaped hop in the "
+            "transport translated or truncated them"
+        )
+
+
+async def _probe_str_content_is_utf8(subject: ConformanceSubject, paths: ConformancePaths) -> None:
+    back = await subject.sandbox.exec(
+        ["cat", "text.txt"], working_directory=subject.working_directory, timeout=60
+    )
+    if back.stdout != "naïve":
+        raise AssertionError(f"'naïve' went in as str and {back.stdout!r} came back")
+
+
+async def _probe_a_second_write_replaces(
+    subject: ConformanceSubject, paths: ConformancePaths
+) -> None:
+    back = await subject.sandbox.exec(
+        ["cat", "overwritten.txt"], working_directory=subject.working_directory, timeout=60
+    )
+    if back.stdout != "second":
+        raise AssertionError(f"an overwritten file reads back as {back.stdout!r}, not 'second'")
+
+
+async def _probe_parents_are_created(subject: ConformanceSubject, paths: ConformancePaths) -> None:
+    result = await subject.sandbox.exec(
+        ["test", "-f", "deep/er/est/leaf.txt"],
+        working_directory=subject.working_directory,
+        timeout=60,
+    )
+    if result.exit_code != 0:
+        raise AssertionError("a write under unannounced parents did not create them")
+
+
+FILES_IN_PROBES: tuple[Probe, ...] = (
+    Probe(
+        name="a-write-lands-and-reads-back",
+        why=(
+            "every other FILES_IN probe reads a file back out, so one that never landed would "
+            "fail all of them for the wrong reason. This names the landing itself."
+        ),
+        requires=frozenset({Capability.FILES_IN}),
+        run=_probe_a_write_lands_and_reads_back,
+    ),
+    Probe(
+        name="bytes-survive-the-round-trip",
+        why=(
+            "FILES_IN carries bytes — an in-door with a PNG or a spreadsheet — and any "
+            "text-shaped hop in the transport corrupts them in ways a caller cannot detect: "
+            "half a PNG returned as success is indistinguishable from a whole one."
+        ),
+        requires=frozenset({Capability.FILES_IN}),
+        run=_probe_bytes_survive_the_round_trip,
+    ),
+    Probe(
+        name="str-content-is-utf8",
+        why=(
+            "the protocol promises UTF-8 for str whatever the host's locale says; a backend "
+            "encoding with the host's default answers every non-ASCII write with mojibake on a "
+            "machine whose locale is not UTF-8."
+        ),
+        requires=frozenset({Capability.FILES_IN}),
+        run=_probe_str_content_is_utf8,
+    ),
+    Probe(
+        name="a-second-write-replaces",
+        why=(
+            "append is a choice a caller makes, not a default a transport imposes: a fix-loop "
+            "writes the same path twice and the second answer must be the file's whole content."
+        ),
+        requires=frozenset({Capability.FILES_IN}),
+        run=_probe_a_second_write_replaces,
+    ),
+    Probe(
+        name="parents-are-created",
+        why=(
+            "a declared output's path names directories the workload never made, and a write "
+            "that refuses them pushes directory creation onto every kind, which the protocol "
+            "gives them no way to do."
+        ),
+        requires=frozenset({Capability.FILES_IN}),
+        run=_probe_parents_are_created,
+    ),
+)
+
+
+async def _plant_files_in_layout(subject: ConformanceSubject) -> ConformancePaths:
+    """Write the layout through the surface under test — that surface is the point here."""
+    paths = ConformancePaths.under(subject.working_directory)
+    await subject.sandbox.write_file(f"{paths.work}/real/written.txt", "written")
+    await subject.sandbox.write_file(f"{paths.work}/binary.bin", _BINARY)
+    await subject.sandbox.write_file(f"{paths.work}/text.txt", "naïve")
+    await subject.sandbox.write_file(f"{paths.work}/overwritten.txt", "first")
+    await subject.sandbox.write_file(f"{paths.work}/overwritten.txt", "second")
+    await subject.sandbox.write_file(f"{paths.work}/deep/er/est/leaf.txt", "deep")
+    return paths
+
+
+async def run_files_in_probes(subject: ConformanceSubject) -> tuple[ProbeResult, ...]:
+    """Run the FILES_IN probes. Same contract as :func:`run_files_out_probes`."""
+    return await _run_suite(subject, Capability.FILES_IN, _plant_files_in_layout, FILES_IN_PROBES)
+
+
+async def assert_files_in_conformance(
+    subject: ConformanceSubject,
+) -> tuple[ProbeResult, ...]:
+    """Run the FILES_IN probes and raise :class:`ConformanceFailure` if any failed."""
+    return _assert_conformance(await run_files_in_probes(subject), "FILES_IN")
+
+
+# ---------------------------------------------------------------------------
+# EXEC — what a declared exec owes
+# ---------------------------------------------------------------------------
+
+
+async def _probe_an_argv_sequence_runs(
+    subject: ConformanceSubject, paths: ConformancePaths
+) -> None:
+    result = await subject.sandbox.exec(
+        ["printf", "ok-ran"], working_directory=subject.working_directory, timeout=60
+    )
+    if result.exit_code != 0:
+        raise AssertionError(
+            f"a plain argv sequence exited {result.exit_code}: {result.stderr.strip()}"
+        )
+    if result.stdout != "ok-ran":
+        raise AssertionError(f"stdout came back as {result.stdout!r}, not 'ok-ran'")
+
+
+async def _probe_exit_code_fidelity(subject: ConformanceSubject, paths: ConformancePaths) -> None:
+    # A string command, because `exit` is a shell builtin: the string form is the protocol's
+    # own shell-command shape, and this doubles as the positive control for it.
+    result = await subject.sandbox.exec(
+        "exit 7", working_directory=subject.working_directory, timeout=60
+    )
+    if result.exit_code != 7:
+        raise AssertionError(f"'exit 7' came back as exit code {result.exit_code}")
+
+
+async def _probe_argv_is_quoted(subject: ConformanceSubject, paths: ConformancePaths) -> None:
+    hostile = "a b$(echo injected)c"
+    # `printf '%s\n'` over the argument, then `wc -l`: the count is 1 only if the argument
+    # arrived as one word. A backend joining argv unquoted runs the substitution and the
+    # split, and the count — or the injected marker — gives the failure two ways to show.
+    result = await subject.sandbox.exec(
+        ["sh", "-c", "printf '%s\\n' \"$1\" | wc -l", "probe", hostile],
+        working_directory=subject.working_directory,
+        timeout=60,
+    )
+    if result.exit_code != 0:
+        raise AssertionError(f"the quoting probe exited {result.exit_code}")
+    count = result.stdout.strip()
+    if count != "1":
+        raise AssertionError(
+            f"the argument containing spaces and a $( ) arrived as {count} words — it was "
+            "joined into the command line unquoted, which is the injection the sequence form "
+            "exists to prevent"
+        )
+    if "injected" in result.stdout:
+        raise AssertionError("the $( ) in the argument was evaluated: the argv was injected")
+
+
+async def _probe_working_directory_is_honoured(
+    subject: ConformanceSubject, paths: ConformancePaths
+) -> None:
+    result = await subject.sandbox.exec(
+        ["pwd"], working_directory=subject.working_directory, timeout=60
+    )
+    # `pwd -P` is not asked for: the contract is the directory the call named, and a logical
+    # `pwd` answering it through a shell variable is as conformant as a physical one.
+    if result.stdout.strip() != posixpath.normpath(subject.working_directory):
+        raise AssertionError(
+            f"pwd answered {result.stdout.strip()!r} against a working directory of "
+            f"{subject.working_directory!r}"
+        )
+
+
+async def _probe_a_timeout_raises_timeout_error(
+    subject: ConformanceSubject, paths: ConformancePaths
+) -> None:
+    # Last in EXEC_PROBES by design: the protocol lets a backend discard the whole sandbox to
+    # stop a hung command, and two shipped ones do, so the sandbox this probe returns from may
+    # be gone by the time the caller sees the result.
+    try:
+        await subject.sandbox.exec(
+            ["sleep", "30"], working_directory=subject.working_directory, timeout=1
+        )
+    except TimeoutError:
+        return
+    except Exception as wrong:
+        raise AssertionError(
+            f"a call that overran its timeout raised {type(wrong).__name__} ({wrong}), not "
+            "TimeoutError — the protocol reserves that exception for the bound expiring and "
+            "nothing else"
+        ) from wrong
+    raise AssertionError("a call over its timeout returned instead of raising TimeoutError")
+
+
+EXEC_PROBES: tuple[Probe, ...] = (
+    Probe(
+        name="an-argv-sequence-runs",
+        why=(
+            "the positive control: everything else here asserts a refusal or a fidelity, and a "
+            "backend that ran nothing would pass all of them."
+        ),
+        requires=frozenset({Capability.EXEC}),
+        run=_probe_an_argv_sequence_runs,
+    ),
+    Probe(
+        name="exit-code-fidelity",
+        why=(
+            "a kind's whole diagnostic is the exit code — the fix-loop reads it to decide "
+            "whether to try again — and a backend normalising every failure to 1 turns a "
+            "compiler's '7 errors' into 'something went wrong'."
+        ),
+        requires=frozenset({Capability.EXEC}),
+        run=_probe_exit_code_fidelity,
+    ),
+    Probe(
+        name="argv-is-quoted",
+        why=(
+            "the sequence form is the safe default precisely because the backend quotes it; a "
+            "backend that joins argv into a command line unquoted hands every argument to the "
+            "shell, and an argument with spaces or $() is an injection."
+        ),
+        requires=frozenset({Capability.EXEC}),
+        run=_probe_argv_is_quoted,
+    ),
+    Probe(
+        name="working-directory-is-honoured",
+        why=(
+            "paths a kind passes are relative to the work dir it declared, so an exec ignoring "
+            "working_directory reads and writes somewhere the caller cannot predict."
+        ),
+        requires=frozenset({Capability.EXEC}),
+        run=_probe_working_directory_is_honoured,
+    ),
+    Probe(
+        name="a-timeout-raises-timeout-error",
+        why=(
+            "the protocol states it in bold: TimeoutError from exec means the bound expired "
+            "and nothing else. A caller reads it as its own budget running out; a backend "
+            "borrowing the exception for another limit, or returning from an overrun, makes "
+            "that reading false."
+        ),
+        requires=frozenset({Capability.EXEC}),
+        run=_probe_a_timeout_raises_timeout_error,
+    ),
+)
+
+
+async def _plant_nothing(subject: ConformanceSubject) -> ConformancePaths:
+    """EXEC's probes plant through exec itself; there is nothing to pre-plant."""
+    return ConformancePaths.under(subject.working_directory)
+
+
+async def run_exec_probes(subject: ConformanceSubject) -> tuple[ProbeResult, ...]:
+    """Run the EXEC probes. Same contract as :func:`run_files_out_probes`.
+
+    The subject's sandbox may not survive this suite — see the module docstring.
+    """
+    return await _run_suite(subject, Capability.EXEC, _plant_nothing, EXEC_PROBES)
+
+
+async def assert_exec_conformance(subject: ConformanceSubject) -> tuple[ProbeResult, ...]:
+    """Run the EXEC probes and raise :class:`ConformanceFailure` if any failed."""
+    return _assert_conformance(await run_exec_probes(subject), "EXEC")
+
+
+# ---------------------------------------------------------------------------
+# FILES_DELETE — what a declared remove owes
+# ---------------------------------------------------------------------------
+
+
+async def _probe_a_removal_removes(subject: ConformanceSubject, paths: ConformancePaths) -> None:
+    result = await subject.sandbox.exec(
+        ["test", "-e", "doomed.txt"], working_directory=subject.working_directory, timeout=60
+    )
+    if result.exit_code == 0:
+        raise AssertionError("the removed file is still there")
+
+
+async def _probe_a_missing_path_is_success(
+    subject: ConformanceSubject, paths: ConformancePaths
+) -> None:
+    result = await subject.sandbox.exec(
+        ["test", "-e", "never-was.txt"], working_directory=subject.working_directory, timeout=60
+    )
+    if result.exit_code == 0:
+        raise AssertionError("the layout landed a file the probes never planted")
+    # The probe's own subject: remove the same path twice, the second time from nothing.
+    await subject.sandbox.remove("never-was.txt", working_directory=subject.working_directory)
+
+
+async def _probe_a_link_is_removed_never_followed(
+    subject: ConformanceSubject, paths: ConformancePaths
+) -> None:
+    link = await subject.sandbox.exec(
+        ["test", "-e", "link-out"], working_directory=subject.working_directory, timeout=60
+    )
+    target = await subject.sandbox.exec(
+        ["test", "-f", "../work-outside/target.txt"],
+        working_directory=subject.working_directory,
+        timeout=60,
+    )
+    if link.exit_code == 0:
+        raise AssertionError("the removed link is still there")
+    if target.exit_code != 0:
+        raise AssertionError("the link's target went with it: the removal followed the link")
+
+
+async def _probe_a_path_through_a_linked_parent_is_refused(
+    subject: ConformanceSubject, paths: ConformancePaths
+) -> None:
+    await _refused_with(
+        ValueError,
+        "removing through a linked parent",
+        subject.sandbox.remove("link-dir/target.txt", working_directory=subject.working_directory),
+    )
+
+
+async def _probe_a_directory_needs_recursive(
+    subject: ConformanceSubject, paths: ConformancePaths
+) -> None:
+    await _refused_with(
+        OSError,
+        "removing a directory without recursive",
+        subject.sandbox.remove("dir", working_directory=subject.working_directory),
+    )
+
+
+async def _probe_recursive_removes_the_tree(
+    subject: ConformanceSubject, paths: ConformancePaths
+) -> None:
+    for path in ("tree", "tree/leaf.txt"):
+        result = await subject.sandbox.exec(
+            ["test", "-e", path], working_directory=subject.working_directory, timeout=60
+        )
+        if result.exit_code == 0:
+            raise AssertionError(f"{path!r} survived a recursive removal of the tree")
+
+
+async def _probe_the_working_directory_is_refused(
+    subject: ConformanceSubject, paths: ConformancePaths
+) -> None:
+    await _refused_with(
+        ValueError,
+        "removing the working directory itself",
+        subject.sandbox.remove(".", working_directory=subject.working_directory),
+    )
+
+
+async def _probe_a_path_outside_is_refused(
+    subject: ConformanceSubject, paths: ConformancePaths
+) -> None:
+    await _refused_with(
+        ValueError,
+        "removing a path outside the working directory",
+        subject.sandbox.remove(
+            "../work-outside/target.txt", working_directory=subject.working_directory
+        ),
+    )
+
+
+FILES_DELETE_PROBES: tuple[Probe, ...] = (
+    Probe(
+        name="a-removal-removes",
+        why="the positive control: a backend that removed nothing would pass every refusal "
+        "probe here.",
+        requires=frozenset({Capability.FILES_DELETE}),
+        run=_probe_a_removal_removes,
+    ),
+    Probe(
+        name="a-missing-path-is-success",
+        why=(
+            "cleanup runs in a finally, after whatever went wrong already went wrong — a "
+            "missing path raising a second failure over the first buries the real error and "
+            "breaks every finally-based cleanup."
+        ),
+        requires=frozenset({Capability.FILES_DELETE}),
+        run=_probe_a_missing_path_is_success,
+    ),
+    Probe(
+        name="a-link-is-removed-never-followed",
+        why=(
+            "a removal that resolved a link would delete a target the guest chose, from "
+            "outside the working directory, and no byte has to come back for the damage to be "
+            "done — unlinking outside is the escape when nothing is read."
+        ),
+        requires=frozenset({Capability.FILES_DELETE}),
+        run=_probe_a_link_is_removed_never_followed,
+    ),
+    Probe(
+        name="a-path-through-a-linked-parent-is-refused",
+        why="the same walk the pull surface keeps: a path whose parent is a link satisfies "
+        "every lexical test and still reaches outside the working directory.",
+        requires=frozenset({Capability.FILES_DELETE}),
+        run=_probe_a_path_through_a_linked_parent_is_refused,
+    ),
+    Probe(
+        name="a-directory-needs-recursive",
+        why=(
+            "recursive is a word the caller has to say, because the alternative is an "
+            "irreversible operation that reads like a single-file delete at the call site — "
+            "and empty is not carved out, since a backend without enumeration cannot tell."
+        ),
+        requires=frozenset({Capability.FILES_DELETE}),
+        run=_probe_a_directory_needs_recursive,
+    ),
+    Probe(
+        name="recursive-removes-the-tree",
+        why="the capability's other half: recursive that refused anyway would be FILES_DELETE "
+        "in name only.",
+        requires=frozenset({Capability.FILES_DELETE}),
+        run=_probe_recursive_removes_the_tree,
+    ),
+    Probe(
+        name="the-working-directory-is-refused",
+        why=(
+            "the working directory is the confinement root; a workload that removes it takes "
+            "the next run's ground with it."
+        ),
+        requires=frozenset({Capability.FILES_DELETE}),
+        run=_probe_the_working_directory_is_refused,
+    ),
+    Probe(
+        name="a-path-outside-is-refused",
+        why="the boundary itself: a removal that reached outside needs no link to do its damage.",
+        requires=frozenset({Capability.FILES_DELETE}),
+        run=_probe_a_path_outside_is_refused,
+    ),
+)
+
+
+async def _plant_files_delete_layout(subject: ConformanceSubject) -> ConformancePaths:
+    """Build the layout the delete probes attack, then delete what the probes name."""
+    paths = ConformancePaths.under(subject.working_directory)
+    await subject.plant_file(f"{paths.work}/doomed.txt", b"to be removed\n")
+    await subject.plant_file(f"{paths.outside}/target.txt", b"outside\n")
+    await subject.plant_file(f"{paths.work}/dir/keeps.txt", b"a directory\n")
+    await subject.plant_file(f"{paths.work}/tree/leaf.txt", b"in the tree\n")
+    await subject.plant_symlink(f"{paths.work}/link-out", f"{paths.outside}/target.txt")
+    await subject.plant_symlink(paths.linked_directory, paths.outside)
+    # The removals the probes verify: one file, one link, one tree. Refusal probes attack what
+    # is left.
+    await subject.sandbox.remove("doomed.txt", working_directory=subject.working_directory)
+    await subject.sandbox.remove("link-out", working_directory=subject.working_directory)
+    await subject.sandbox.remove(
+        "tree", working_directory=subject.working_directory, recursive=True
+    )
+    return paths
+
+
+async def run_files_delete_probes(subject: ConformanceSubject) -> tuple[ProbeResult, ...]:
+    """Run the FILES_DELETE probes. Same contract as :func:`run_files_out_probes`."""
+    return await _run_suite(
+        subject, Capability.FILES_DELETE, _plant_files_delete_layout, FILES_DELETE_PROBES
+    )
+
+
+async def assert_files_delete_conformance(
+    subject: ConformanceSubject,
+) -> tuple[ProbeResult, ...]:
+    """Run the FILES_DELETE probes and raise :class:`ConformanceFailure` if any failed."""
+    return _assert_conformance(await run_files_delete_probes(subject), "FILES_DELETE")
+
+
+# ---------------------------------------------------------------------------
+# the runner all four suites share
+# ---------------------------------------------------------------------------
+
+
+async def _run_suite(
+    subject: ConformanceSubject,
+    gate: Capability,
+    plant: Callable[[ConformanceSubject], Awaitable[ConformancePaths]],
+    probes: tuple[Probe, ...],
+) -> tuple[ProbeResult, ...]:
     declared = subject.capabilities
-    if Capability.FILES_OUT not in declared:
+    if gate not in declared:
         raise ValueError(
-            "this subject declares no FILES_OUT, so every probe would be skipped and the run "
-            "would report success having attacked nothing. Pass the backend's own "
+            f"this subject declares no {str(gate).upper()}, so every probe would be skipped "
+            "and the run would report success having attacked nothing. Pass the backend's own "
             "`capabilities` — the frozenset the router reads — rather than a narrower set."
         )
-    paths = await plant_layout(subject)
+    paths = await plant(subject)
     results: list[ProbeResult] = []
-    for probe in FILES_OUT_PROBES:
+    for probe in probes:
         missing = probe.requires - declared
         if missing:
             names = ", ".join(sorted(str(capability) for capability in missing))
@@ -572,13 +1125,7 @@ async def run_files_out_probes(subject: ConformanceSubject) -> tuple[ProbeResult
     return tuple(results)
 
 
-async def assert_files_out_conformance(subject: ConformanceSubject) -> tuple[ProbeResult, ...]:
-    """Run the probes and raise :class:`ConformanceFailure` if any failed.
-
-    Returns the results on success so a caller can assert on what was *skipped*: a backend that
-    silently stopped declaring ``FILES_LIST`` would otherwise go green on three fewer probes.
-    """
-    results = await run_files_out_probes(subject)
+def _assert_conformance(results: tuple[ProbeResult, ...], suite: str) -> tuple[ProbeResult, ...]:
     if any(result.failure is not None for result in results):
-        raise ConformanceFailure(results)
+        raise ConformanceFailure(results, suite)
     return results

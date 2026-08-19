@@ -21,6 +21,7 @@ import posixpath
 import shlex
 from collections.abc import Mapping, Sequence
 from types import MappingProxyType
+from typing import TYPE_CHECKING
 
 from ._outputs import SandboxTransferCapExceeded
 from ._protocol import (
@@ -31,6 +32,8 @@ from ._protocol import (
     EntryKind,
     ExecResult,
     Isolation,
+    Sandbox,
+    SandboxBackend,
     SandboxEntry,
     SandboxKey,
     SandboxLimits,
@@ -417,3 +420,14 @@ class InMemoryStore:
 
     async def list(self) -> list[str]:
         return list(self.files)
+
+
+# The static conformance binding, the same one every backend package carries: this module's
+# backend and sandbox are held to the protocols they implement inside this package's own
+# strict pyright pass. The specimen every kind's tests runs against stops satisfying the
+# protocol in this build rather than in whichever kind's suite notices first.
+if TYPE_CHECKING:
+    _: tuple[SandboxBackend, type[Sandbox]] = (
+        InProcessSandboxBackend(),
+        InProcessSandbox,
+    )

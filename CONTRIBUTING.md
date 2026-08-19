@@ -14,13 +14,12 @@ uv run pytest -q   # the whole suite, about half a minute
 ## Before opening a PR
 
 ```bash
-uv run pytest -q
-uv run ruff check . && uv run ruff format --check .
-uv run pyright -p packages/maf-sandbox        # and -acas, -bicep, -codeact, -docker, -wslc
-uv run pyright                                # scripts/, tests/ and samples/
-uv run python scripts/check_md_code_blocks.py \
-    README.md 'packages/*/README.md' 'samples/**/*.md' RELEASING.md
+uv sync            # one workspace, one lock, every package editable
+uv run poe gate    # pytest -q, ruff check, ruff format --check, both pyright passes
+uv run poe md-blocks   # optional: lint the markdown's python blocks (report-only in CI too)
 ```
+
+`poe` runs each task through `uv run` itself — it detects the workspace's `uv.lock`. `poe types-packages` enumerates every `packages/*/` carrying its own `[tool.pyright]`, so a new package is covered on the commit that adds it; `poe types` is the bare pass over `scripts/`, `tests/` and `samples/`.
 
 The last line lints the ```python blocks embedded in the markdown against the installed `maf_sandbox*` packages — a renamed export or a removed enum member in a README quickstart fails it. Wiring-only snippets that import none of the packages are skipped, so undefined `router`/`context` and top-level `await` are tolerated. It is report-only in CI for now (`continue-on-error`); the gate flips on once it has stayed green across a release or two ([#289](https://github.com/sokolaidev/maf-extensions/issues/289)).
 
@@ -35,7 +34,8 @@ Some tests exist to stop a specific mistake, and their failure messages say whic
 - **`TestOnlyDeclaredDependencies`** — every module imports only the standard library, its own package, or something its `pyproject.toml` declares. An undeclared import works fine here and breaks the first person to `pip install` the package alone.
 - **`TestZeroDependencies`** (`maf-sandbox`) — the protocol modules import nothing but the standard library. That layer exists to keep backends and workloads apart; a dependency there defeats it.
 - **`TestNoDirectAzureImport`** (`maf-sandbox-bicep`, `maf-sandbox-codeact`) — a workload reaches a sandbox through the protocol, never through a backend, which is what lets the same tool run on Azure, on Docker, or on the in-process fake.
-- **`test_conformance_coverage.py`** — a package that implements the pull surface (`stat_file` and `read_file`, with a body rather than a `raise`) has to call `maf_sandbox.conformance`'s suite from its own tests. Two backends written against the prose alone shipped the same confinement escape, twice each ([#142](https://github.com/sokolaidev/maf-extensions/issues/142)); the probes are what that cost bought, and this keeps a third backend from being held to prose again. It is a wiring check and says so: it proves the call is written, not that it ran, so disabling a conformance test is caught in review rather than here.
+- **`test_conformance_coverage.py`** — a package that implements the pull surface (`stat_file` and `read_file`, with a body rather than a `raise`) has to call `maf_sandbox.conformance`'s FILES_OUT suite from its own tests. Two backends written against the prose alone shipped the same confinement escape, twice each ([#142](https://github.com/sokolaidev/maf-extensions/issues/142)); the probes are what that cost bought, and this keeps a third backend from being held to prose again. It is a wiring check and says so: it proves the call is written, not that it ran, so disabling a conformance test is caught in review rather than here. Every sandbox backend is also held to the FILES_IN, EXEC and FILES_DELETE suites (a withholding backend asserts the skip rather than failing), and has to carry the static `tuple[SandboxBackend, type[Sandbox]]` binding under `TYPE_CHECKING` — the annotation is what catches a narrowed signature or a missing protocol method, which `isinstance` cannot ([#450](https://github.com/sokolaidev/maf-extensions/issues/450) is the near-miss that made both rules).
+- **`test_pr_gate_enumerates.py`** — the CI steps that type-check, build and smoke every package loop over `packages/*/` rather than naming them. A hardcoded list of six is how a seventh package shipped unchecked until someone remembered a line, and the omission looked exactly like success ([#450](https://github.com/sokolaidev/maf-extensions/issues/450)). `publish-packages.yml`'s tag patterns stay listed, and stay out of scope: a tag pattern is a filter GitHub matches, not a list this repository expands.
 
 If a change genuinely needs to cross one of those lines, say so in the PR — the boundary may be wrong, but it should move deliberately.
 

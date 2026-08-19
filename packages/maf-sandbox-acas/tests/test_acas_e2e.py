@@ -59,6 +59,9 @@ from maf_sandbox import (
 from maf_sandbox.conformance import (
     FILES_OUT_PROBES,
     PosixGuestSubject,
+    assert_exec_conformance,
+    assert_files_delete_conformance,
+    assert_files_in_conformance,
     assert_files_out_conformance,
 )
 
@@ -251,6 +254,24 @@ def probe_results(live):
     return live.run(assert_files_out_conformance(_subject(live)))
 
 
+@pytest.fixture(scope="module")
+def files_in_results(live):
+    """One FILES_IN run, shared with the write-fidelity assertions below."""
+    return live.run(assert_files_in_conformance(_subject(live)))
+
+
+@pytest.fixture(scope="module")
+def files_delete_results(live):
+    """One FILES_DELETE run — every probe skipped, because this backend declares neither half.
+
+    The call is the wiring the coverage test looks for; the skip is the honest answer. The
+    capability is withheld until the live suite measures the service's behaviour on a link
+    (#438), and a suite that failed here instead of skipping would be asserting a contract
+    this backend never claimed.
+    """
+    return live.run(assert_files_delete_conformance(_subject(live)))
+
+
 class TestFilesOutAgainstTheRealService:
     """The shared probes, against the service rather than a fake that agrees with this package."""
 
@@ -331,6 +352,35 @@ class TestFilesOutAgainstTheRealService:
                 )
 
         live.run(scenario())
+
+
+class TestFilesInAgainstTheRealService:
+    """The write surface's fidelity probes — bytes, UTF-8, replacement, implicit parents."""
+
+    def test_the_files_in_probes_come_back_clean(self, files_in_results):
+        results = files_in_results
+        assert results, "the FILES_IN conformance run returned no results"
+        skipped = {result.probe.name: result.skipped for result in results if result.skipped}
+        assert not skipped, f"probes skipped against a backend that declares FILES_IN: {skipped}"
+
+
+class TestFilesDeleteAgainstTheRealService:
+    """The removal suite, called and skipped — the capability this backend withholds.
+
+    `_ConformanceSubject`-shaped honesty, in reverse: the call is written because a backend
+    that gains the capability should inherit the probes the moment it declares it, and the
+    skip is asserted because a run that silently *stopped* skipping would mean the capability
+    arrived without the probes being run against the service first.
+    """
+
+    def test_every_delete_probe_reports_its_skip(self, files_delete_results):
+        results = files_delete_results
+        assert results, "the FILES_DELETE conformance run returned no results"
+        assert all(result.skipped is not None for result in results), (
+            "a delete probe ran against a backend that declares no FILES_DELETE — either the "
+            "capability arrived (run the suite for real, here) or the gate is wrong"
+        )
+        assert all("files_delete" in (result.skipped or "") for result in results)
 
 
 class TestWhatOnlyTheServiceCanSay:
@@ -607,3 +657,21 @@ class TestBootingAnImageTheServiceProvides:
         )
         assert result.exit_code == 0, result.stderr
         assert result.stdout.strip().startswith("Python 3."), result.stdout
+
+
+class TestExecAgainstTheRealService:
+    """The run surface's probes — quoting, exit codes, the working directory, the timeout bound.
+
+    **Last class in the module, on the shared sandbox.** This backend survives the timeout
+    probe (`asyncio.wait_for` bounds the host-side call; the guest keeps sleeping), so unlike
+    docker's the sandbox need not be a fresh one — but the sleeping guest is still in there
+    when the suite returns, and nothing that measures guest state should follow it. Cost
+    discipline stays as it was: one more probe set on the one sandbox the module already pays
+    for, disposed by the `live` fixture's teardown as before.
+    """
+
+    def test_the_exec_probes_come_back_clean(self, live):
+        results = live.run(assert_exec_conformance(_subject(live)))
+        assert results, "the EXEC conformance run returned no results"
+        skipped = {result.probe.name: result.skipped for result in results if result.skipped}
+        assert not skipped, f"probes skipped against a backend that declares EXEC: {skipped}"

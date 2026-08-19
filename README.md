@@ -32,11 +32,10 @@ app  ->  maf_sandbox (router)  ->  a backend (maf_sandbox_acas, testing, ...)  -
 
 ```bash
 uv sync                # one workspace, one lock; agent-framework-core comes from PyPI at the released range
-uv run pytest          # all packages' tests
-uv run ruff check .
-uv run pyright -p packages/maf-sandbox && uv run pyright -p packages/maf-sandbox-acas && uv run pyright -p packages/maf-sandbox-bicep && uv run pyright -p packages/maf-sandbox-codeact && uv run pyright -p packages/maf-sandbox-docker && uv run pyright -p packages/maf-sandbox-wslc
-uv run pyright         # scripts/, tests/ and samples/ — the tree no package covers
+uv run poe gate        # the pre-PR gate: pytest, ruff check, ruff format, both pyright passes
 ```
+
+`poe` is [Poe the Poet](https://poethepoet.natn.io/), pinned in the dev group: it detects the workspace's `uv.lock` and runs each task through `uv run` itself. The five tasks it composes are the same checks CI runs — `poe types-packages` enumerates every `packages/*/` with its own strict pyright config rather than naming them, so a new package is type-checked on the commit that adds it. CI runs the checks directly, per step, for the annotations; `poe gate` is the one-command local form of the same gate.
 
 Each package is deliberately self-contained — building, testing and publishing need nothing from this root beyond the shared lock. New extensions arrive as sibling directories under `packages/`.
 

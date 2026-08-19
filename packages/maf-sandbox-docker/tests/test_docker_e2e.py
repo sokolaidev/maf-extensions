@@ -39,7 +39,13 @@ from maf_sandbox import (
     guest_run_layout,
     launcher_script,
 )
-from maf_sandbox.conformance import PosixGuestSubject, assert_files_out_conformance
+from maf_sandbox.conformance import (
+    PosixGuestSubject,
+    assert_exec_conformance,
+    assert_files_delete_conformance,
+    assert_files_in_conformance,
+    assert_files_out_conformance,
+)
 
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
 
@@ -266,10 +272,104 @@ class TestFilesOutAgainstARealEngine:
         finally:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
-    def test_collect_outputs_lands_a_declared_output_through_the_router(self):
-        """The whole pull surface, end to end: a kind declares an output and it lands.
 
-        Exercises `collect_outputs` — the glue over `stat_file`/`read_file` — against a real
+class TestFilesInAgainstARealEngine:
+    """`maf_sandbox.conformance`'s FILES_IN suite — the write surface, held to the shared probes."""
+
+    def test_it_answers_the_files_in_probes(self):
+        """`maf_sandbox.conformance`'s FILES_IN suite, against a real engine.
+
+        The write surface this backend ships — tar in, `cp -` out — is what every kind's first
+        act exercises, and the fidelity probes assert bytes, not shapes: a text-shaped hop in
+        that transport corrupts a binary in-door in ways a caller cannot detect.
+        """
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(_key(scope), _spec())
+            results = await assert_files_in_conformance(
+                PosixGuestSubject(
+                    sandbox=sandbox,
+                    working_directory=_WORK,
+                    capabilities=backend.capabilities,
+                )
+            )
+            assert not [r for r in results if r.skipped]
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+
+class TestExecAgainstARealEngine:
+    """`maf_sandbox.conformance`'s EXEC suite — the run surface, held to the shared probes."""
+
+    def test_it_answers_the_exec_probes_on_its_own_sandbox(self):
+        """`maf_sandbox.conformance`'s EXEC suite, against a real engine.
+
+        **On its own sandbox, acquired here**: the suite's last probe asserts the
+        `TimeoutError` contract, and this backend discards the whole container to stop a hung
+        command — the documented recovery, and the reason the sandbox cannot be shared with
+        anything that runs after it. `dispose_scope` afterwards has to stay clean over a
+        container the timeout already removed, which is half of what this test is for.
+        """
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(_key(scope), _spec())
+            results = await assert_exec_conformance(
+                PosixGuestSubject(
+                    sandbox=sandbox,
+                    working_directory=_WORK,
+                    capabilities=backend.capabilities,
+                )
+            )
+            assert not [r for r in results if r.skipped]
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+
+class TestFilesDeleteAgainstARealEngine:
+    """`maf_sandbox.conformance`'s FILES_DELETE suite — the removal rules, held to `rm` itself."""
+
+    def test_it_answers_the_files_delete_probes(self):
+        """`maf_sandbox.conformance`'s FILES_DELETE suite, against a real engine.
+
+        This backend is the one that declared the capability, so the removal rules — a link
+        removed never followed, a directory needing `recursive`, the working directory refused
+        — are held to `rm`'s real behaviour rather than to this package's reading of it.
+        """
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(_key(scope), _spec())
+            results = await assert_files_delete_conformance(
+                PosixGuestSubject(
+                    sandbox=sandbox,
+                    working_directory=_WORK,
+                    capabilities=backend.capabilities,
+                )
+            )
+            assert not [r for r in results if r.skipped]
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+
+class TestCollectOutputsAgainstARealEngine:
+    """The whole pull surface, end to end: a kind declares an output and it lands."""
+
+    def test_collect_outputs_lands_a_declared_output_through_the_router(self):
+        """Exercises `collect_outputs` — the glue over `stat_file`/`read_file` — against a real
         engine, which is the shape a diagram-style kind uses.
         """
         scope = f"e2e-{uuid.uuid4()}"

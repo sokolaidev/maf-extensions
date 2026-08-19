@@ -1,0 +1,107 @@
+name: Conformance (live)
+
+# The daily leg of issue #450: "a conformance suite nobody triggers is documentation."
+# `tests.yml` holds docker's conformance to a real engine on every pull request; this workflow
+# holds maf-sandbox-acas's to the real service on a schedule, so a drift between the backend
+# and the service is found in days rather than at the next manual dispatch.
+#
+# It is a workflow of its own rather than a schedule on verify-live.yml because that file's
+# shape is pinned by three root test files (test_verify_live_harness.py,
+# test_verify_live_concurrency.py, test_sample_metadata.py), and because its other jobs are
+# sample runs over *published* wheels — a different question, gated on releases, that a
+# schedule would answer identically every day. This one job runs the workspace suite from the
+# default branch, exactly as verify-live's acas-e2e job does after a release.
+#
+# Cost: two billable sandboxes per run (the suite's own count — one shared by its probes, one
+# the lifecycle test disposes as the thing under test), no model, no tokens beyond the OIDC
+# login. Scheduled runs execute on the default branch, which the live-verify environment's
+# no-deployment-branch-restriction policy already allows.
+on:
+  schedule:
+    # 03:20 UTC: off the top of the hour, off the release-please and publish windows, and
+    # before a European working day starts so a red lands where someone sees it.
+    - cron: "20 3 * * *"
+  workflow_dispatch:
+
+# Read-only contents: this workflow writes nothing to the repository.
+permissions:
+  contents: read
+
+# Its own group, and never cancelled mid-run: teardown reaches the service by label and a
+# cancelled run would leave its two billable sandboxes to the auto-delete timer (#325's rule,
+# restated). A scheduled run may overlap a post-release verify-live run in the same sandbox
+# group; scopes are per-run (`e2e-<uuid>`), and dispose_scope selects on `(scope, thread)`
+# labels, so neither run can sweep the other's sandboxes.
+concurrency:
+  group: conformance-live
+  cancel-in-progress: false
+
+jobs:
+  acas-conformance:
+    name: maf-sandbox-acas conformance against a live sandbox group
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: live-verify
+    permissions:
+      # Mints the OIDC token azure/login exchanges. No secret is involved.
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      # The five the suite reads plus the three azure/login consumes. No model variables: this
+      # job calls no model. BICEP_SANDBOX_IMAGE supplies the guest — any Linux image in the
+      # registry with sh, ln, cat and mkfifo would do, and this is the one already known to
+      # pull. The same list verify-live's acas-e2e job carries; the two jobs answer the same
+      # question at different times.
+      - name: Check the live configuration is present
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          ACAS_SANDBOX_ENDPOINT: ${{ vars.ACAS_SANDBOX_ENDPOINT }}
+          ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ vars.ACAS_SANDBOX_SUBSCRIPTION_ID }}
+          ACAS_SANDBOX_RESOURCE_GROUP: ${{ vars.ACAS_SANDBOX_RESOURCE_GROUP }}
+          ACAS_SANDBOX_GROUP: ${{ vars.ACAS_SANDBOX_GROUP }}
+          ACAS_SANDBOX_REGISTRY: ${{ vars.ACAS_SANDBOX_REGISTRY }}
+          BICEP_SANDBOX_IMAGE: ${{ vars.BICEP_SANDBOX_IMAGE }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
+            ACAS_SANDBOX_ENDPOINT ACAS_SANDBOX_SUBSCRIPTION_ID ACAS_SANDBOX_RESOURCE_GROUP \
+            ACAS_SANDBOX_GROUP ACAS_SANDBOX_REGISTRY BICEP_SANDBOX_IMAGE; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::the live-verify environment is missing variables: ${missing[*]}. See docs/maintainers.md."
+            exit 1
+          fi
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sync workspace
+        run: uv sync --locked
+
+      # `-ra` because this suite skips itself when either variable it gates on is empty, and
+      # the check above has already made that impossible: a skip here is a bug rather than a
+      # configuration gap, and without the summary it reads identically to a pass.
+      - name: Run the ACAS live suite
+        env:
+          ACAS_SANDBOX_ENDPOINT: ${{ vars.ACAS_SANDBOX_ENDPOINT }}
+          ACAS_SANDBOX_SUBSCRIPTION_ID: ${{ vars.ACAS_SANDBOX_SUBSCRIPTION_ID }}
+          ACAS_SANDBOX_RESOURCE_GROUP: ${{ vars.ACAS_SANDBOX_RESOURCE_GROUP }}
+          ACAS_SANDBOX_GROUP: ${{ vars.ACAS_SANDBOX_GROUP }}
+          ACAS_SANDBOX_REGISTRY: ${{ vars.ACAS_SANDBOX_REGISTRY }}
+          MAF_SANDBOX_ACAS_E2E_IMAGE: ${{ vars.BICEP_SANDBOX_IMAGE }}
+        run: |
+          set -euo pipefail
+          uv run pytest packages/maf-sandbox-acas/tests/test_acas_e2e.py -q -ra
