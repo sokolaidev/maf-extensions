@@ -3048,9 +3048,16 @@ class TestThePidAgainstARealShell:
         )
 
         def state(pid: str) -> str:
-            """`Z` or gone is dead; nothing here reaps an orphan."""
-            stat = pathlib.Path(f"/proc/{pid}/stat")
-            return stat.read_text(encoding="utf-8").split()[2] if stat.exists() else "gone"
+            """`Z` or gone is dead; nothing here reaps an orphan.
+
+            Read without asking first: the entry can go between an `exists()` and the read,
+            and the poll below is waiting for exactly that, so a vanished one is the answer
+            rather than an error on the way to it.
+            """
+            try:
+                return pathlib.Path(f"/proc/{pid}/stat").read_text(encoding="utf-8").split()[2]
+            except OSError:
+                return "gone"
 
         subprocess.run(
             ["sh", layout.launcher], cwd=layout.directory, capture_output=True, timeout=60
