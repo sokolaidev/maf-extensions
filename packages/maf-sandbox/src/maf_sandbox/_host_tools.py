@@ -343,11 +343,8 @@ class HostToolRegistry:
                     "delivered — a host that wants none wants an empty registry"
                 )
         if dispatch_observer is not None:
-            # Validated where the host configures, not where a dispatch runs: the two
-            # failures that matter are both silent at run time — a coroutine function that
-            # returns a context manager no one awaits, and a value that is not callable —
-            # each of which would be an observer that never fires and never raises, the one
-            # defect with no symptom.
+            # Reject invalid observer configurations at construction rather than discovering
+            # and logging them on every dispatch.
             given_observer = cast(object, dispatch_observer)
             if not callable(given_observer):
                 raise TypeError(
