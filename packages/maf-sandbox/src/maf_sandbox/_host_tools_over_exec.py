@@ -246,7 +246,11 @@ SignalOutcome = Literal["sent", "refused", "absent", "unrecorded", "unknown"]
 #: taking the program's children with it on some guests and not others: a host deciding
 #: whether it still has to dispose the sandbox needs the difference, and matching the
 #: message text is not an interface.
-SignalReach = Literal["session", "program", "nothing"]
+#:
+#: ``"group"`` and not ``"session"``: ``kill`` signals the process group whose id is the
+#: session leader's, which is where the program and what it spawns start out. A descendant
+#: that calls ``setpgid`` leaves that group, stays in the session, and survives.
+SignalReach = Literal["group", "program", "nothing"]
 
 
 class SandboxProgramTimeout(TimeoutError):
@@ -869,8 +873,10 @@ async def dispatch_over_exec(
             which is why no capability beyond the ones this transport already needs is
             involved. Neither half is a guarantee the program is gone: the signal may not have
             been sent at all (no pid was recorded, or the ``exec`` carrying it failed), and a
-            sent one may be discarded by the kernel, aimed at a pid the program rewrote, or
-            leave children running. The message says which of the two happened, and disposing
+            sent one may be discarded by the kernel or aimed at a number the program
+            rewrote, and ``reach`` says how wide it went: ``"group"`` took the program's
+            process group with it, ``"program"`` reached one pid and left anything it
+            spawned running. The message says which of the two happened, and disposing
             of the sandbox is what stops what remains. On the two starting legs, the launcher upload and the ``exec`` that
             runs it, ``output`` is empty instead: the output file does not exist yet, and on a
             backend that began the command before its own call returned there may be output
@@ -929,6 +935,7 @@ async def dispatch_over_exec(
     # then left alone, which is the right way round: the caller has already written the
     # program and the shim into it and has not yet been told the call is going nowhere.
     handled = False
+    launcher = _WhatTheLauncherSaid()
     try:
         result = await _supervise(
             sandbox,
@@ -937,6 +944,7 @@ async def dispatch_over_exec(
             timeout=timeout,
             poll_interval=poll_interval,
             interpreter=interpreter,
+            launcher=launcher,
         )
         handled = True
         return result
@@ -957,8 +965,26 @@ async def dispatch_over_exec(
             # nobody has stopped, and the reclaim below is about to remove the files that would
             # have identified it.
             if await _marker_if_present(sandbox, layout, _a_grace_from_now()) is None:
-                await _stop_the_program(sandbox, layout, until=_a_grace_from_now())
+                await _stop_the_program(
+                    sandbox,
+                    layout,
+                    until=_a_grace_from_now(),
+                    made_a_session=launcher.made_a_session,
+                )
         await _reclaim_the_transports_own(sandbox, layout, until=time.monotonic() + _RECLAIM_GRACE)
+
+
+@dataclass
+class _WhatTheLauncherSaid:
+    """Filled in once the launcher has run, read by the cleanup that outlives it.
+
+    `dispatch_over_exec` stops the program itself when anything other than a timeout leaves
+    the supervisor, and that path has no launcher result of its own — so without this it
+    signalled one pid on a guest where the whole group was available, and then reclaimed the
+    files that would have identified the rest.
+    """
+
+    made_a_session: bool = False
 
 
 async def _supervise(
@@ -969,6 +995,7 @@ async def _supervise(
     timeout: float,
     poll_interval: float,
     interpreter: str,
+    launcher: _WhatTheLauncherSaid,
 ) -> ExecResult:
     """The body of :func:`dispatch_over_exec`, minus the cleanup that wraps it."""
     deadline = time.monotonic() + timeout
@@ -1044,6 +1071,7 @@ async def _supervise(
     # the session file whether or not a session was made, and on a guest without `setsid` the
     # group it would then name is the launcher's own — the whole container.
     made_a_session = SESSION_MADE in started.stdout
+    launcher.made_a_session = made_a_session
 
     served = 0
     allowance = _serving_bound(run)
@@ -1156,7 +1184,7 @@ _Reach = SignalReach
 #: it, a lone pid leaves those running, and a signal that could not be sent leaves
 #: everything. A kill that worked is no longer silent — which of the first two it was is
 #: the thing a caller has to know.
-_SIGNALLED_SESSION = " and its whole session was sent SIGKILL"
+_SIGNALLED_GROUP = " and its process group was sent SIGKILL"
 _SIGNALLED_ALONE = (
     " and was sent SIGKILL, which reaches it alone — anything it spawned is still running"
 )
@@ -1165,7 +1193,7 @@ _NOT_SIGNALLED = " and could not be signalled, so it may still be running"
 
 def _sent_clause(reach: _Reach) -> str:
     """What a sent signal actually reached."""
-    return _SIGNALLED_SESSION if reach == "session" else _SIGNALLED_ALONE
+    return _SIGNALLED_GROUP if reach == "group" else _SIGNALLED_ALONE
 
 
 def _removable(directory: str) -> bool:
@@ -1411,7 +1439,7 @@ async def _stop_the_program(
     guest naming another process survives a call that returns ``"sent"``.
 
     Returns:
-        The outcome, and what it reached: ``"session"`` for a whole process group,
+        The outcome, and what it reached: ``"group"`` for the program's process group,
         ``"program"`` for a lone pid, ``"nothing"`` otherwise.
     """
     try:
@@ -1459,7 +1487,7 @@ async def _stop_the_program(
         # because this argument is negated: `kill -KILL -1` signals every process the
         # caller may reach, which in a shared sandbox is the supervisor's own `exec` and
         # every other run in it. The pid form has no such neighbour and keeps its `> 0`.
-        target, reach = f"-{session}", "session"
+        target, reach = f"-{session}", "group"
     # Its own deadline, not what is left of the read's: a slow pid read would otherwise leave
     # the signal no time to be sent, which is the runaway this exists to stop.
     sending = _a_grace_from_now()

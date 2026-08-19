@@ -2747,11 +2747,11 @@ class TestStoppingTakesTheChildrenWhereItCan:
             _run(guest, HostToolRun(_registry()), timeout=0.2)
         assert guest.kills == ["kill -KILL 4242 2>/dev/null"], guest.kills
 
-    def test_the_message_says_the_session_went(self):
+    def test_the_message_says_the_group_went(self):
         guest = _GuestThatRecordsTheKill([], finish=False, pid="4242", session="4200")
         with pytest.raises(SandboxProgramTimeout) as expired:
             _run(guest, HostToolRun(_registry()), timeout=0.2)
-        assert "whole session" in str(expired.value)
+        assert "process group" in str(expired.value)
 
     def test_a_session_file_the_launcher_never_announced_is_refused(self):
         """The file is inside the run, so a program can write one whether or not
@@ -2767,7 +2767,7 @@ class TestStoppingTakesTheChildrenWhereItCan:
         with pytest.raises(SandboxProgramTimeout) as expired:
             _run(guest, HostToolRun(_registry()), timeout=0.2)
         assert guest.kills == ["kill -KILL 4242 2>/dev/null"], guest.kills
-        assert "whole session" not in str(expired.value)
+        assert "process group" not in str(expired.value)
 
     def test_the_message_says_a_lone_kill_leaves_children(self):
         """The claim varies by image, so it is reported rather than hidden."""
@@ -2775,7 +2775,7 @@ class TestStoppingTakesTheChildrenWhereItCan:
         with pytest.raises(SandboxProgramTimeout) as expired:
             _run(guest, HostToolRun(_registry()), timeout=0.2)
         assert "still running" in str(expired.value)
-        assert "whole session" not in str(expired.value)
+        assert "process group" not in str(expired.value)
 
     def test_the_launcher_records_the_session_from_inside_it(self):
         """`$$` and not `$!`, and from the shell `setsid` runs.
@@ -3698,6 +3698,29 @@ class TestWhatEveryExitPathOwesTheRun:
             _run(guest, HostToolRun(_registry()), timeout=5.0)
 
         assert guest.kills != [], f"a failed run left its program running: {guest.commands}"
+
+    def test_a_failed_run_still_stops_the_group_the_launcher_made(self):
+        """The emergency stop is the one path with no launcher result of its own.
+
+        Reading the branch from the launcher's stdout put that knowledge inside the
+        supervisor, and this path runs after it. Left there, a backend failing mid-run on a
+        guest with `setsid` signalled one pid and then reclaimed the files that would have
+        identified the children.
+        """
+
+        class _DiesMidRun(_GuestThatRecordsTheKill):
+            async def stat_file(self, path: str, *, working_directory: str):
+                if path == _LAYOUT.exit_code:
+                    raise PermissionError("the daemon said no")
+                return await super().stat_file(path, working_directory=working_directory)
+
+        guest = _DiesMidRun([], finish=False, pid="4242", session="4200")
+        with pytest.raises(PermissionError):
+            _run(guest, HostToolRun(_registry()), timeout=5.0)
+
+        assert guest.kills == ["kill -KILL -4200 2>/dev/null"], (
+            f"the cleanup fell back to one pid on a guest that had a group: {guest.kills}"
+        )
 
     def test_a_backends_own_program_timeout_is_not_this_runs_own(self):
         """`SandboxProgramTimeout` is public, so a backend may raise one for a bound of its own.
