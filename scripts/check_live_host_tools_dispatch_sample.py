@@ -3,41 +3,23 @@
 The live workflow installs the *published* wheels, runs the sample and pipes its output here.
 
     python samples/15_acas_codeact_host_tools/agent.py | tee out.txt
-    python scripts/check_live_host_tools_dispatch_sample.py out.txt   # or: ... | python …
+    python scripts/check_live_host_tools_dispatch_sample.py out.txt   # or: ... | python -
 
 **What is asserted is chosen so a model's mood cannot decide a release.** Both routes run
-Python in the sandbox and both walk the same four stages, so what is enforced is either an
+Python in the sandbox and walk the same four stages, so what is enforced is either an
 interpreter's output or a structural property of the two roads:
 
-- **Both programs printed the whole table.** Both state totals *and* all six per-state,
-  per-product cells, read from the framework's record of what `execute_code` returned, so an
-  interpreter produced them. The totals alone would not do: a total is a sum, and a sum
-  survives the loss of a row underneath it.
-- **Direct needed more tool-calling rounds than dispatch.** Direct batches within a stage and
-  never across one, so it pays per stage; dispatch resolves the whole walk inside one program.
-- **Who carried the sales figures.** None on the dispatched route — the program is written
-  before any dispatch can answer, so a figure cannot be in it — and all of them on the direct
-  route, where the values arrive as tool results and the only road into the program is for the
-  model to write them into its source.
-- **The runs left their transport files behind.** #302 asks for the per-run subdirectory and
-  its cleanup; the directory is real and the cleanup does not exist (#438), so the count going
-  *up* is the honest thing to assert. A served call leaves three files — the claimed id, the
-  request and the answer — which is one floor, and every recorded lookup leaves an answer,
-  which is the other. Between them a broken enumeration cannot pass as traffic.
-- **The gaps behind the round-trip summary were the ones the transport made.** *n* calls give
-  *n - 1* intervals between consecutive calls, and *p* programs put *p - 1* boundaries among
-  them, so what is left of the transport is *n - p*. Only a program that dispatched can hold a
-  boundary, and the guest is what says how many did: the transport creates a run's call
-  directory on its first dispatch and not before, so act 5's count of runs that dispatched is
-  *p*, measured rather than inferred from the model's messages.
+- Both programs printed the whole table — both state totals and all six cells.
+- Direct needed more tool-calling rounds than dispatch.
+- The dispatched route's model carried no sales figure into code; the direct route's carried
+  all twelve.
+- The runs left what the installed transport leaves, which #434 changed and act 5 declares.
+- The gaps behind the round-trip summary were the ones the transport made: *n* calls over *p*
+  programs leave *n - p*.
 
-Wall clock, tokens and lookup counts are recorded and never bounded. They are what the sample
-exists to publish, and a threshold would turn a measurement into a pass mark on somebody
-else's control plane. What a model *said*, in prose, is never read.
-
-Every line read must carry the `[measured]` tag at the left margin (#314). The sample's
-`quoted()` prefixes any tagged line inside a model's reply with `> `, so prose that tries to
-answer for the host is visibly not the host answering.
+Wall clock, tokens and lookup counts are recorded and never bounded — a threshold would turn a
+measurement into a pass mark on somebody else's control plane. What a model *said* is never
+read, and every line must carry the `[measured]` tag at the left margin (#314).
 
 Exits non-zero listing every reason it failed.
 """
@@ -137,9 +119,8 @@ _DISPOSED = _tagged(r"Disposed\s+(\d+)\s+sandbox\(es\)\.")
 def _once[M](matches: list[M], what: str) -> tuple[M | None, list[str]]:
     """Exactly one, or refuse.
 
-    A second line of the same shape is not resolved in favour of either. Whichever the sample
-    printed, the other came from somewhere else, and a check that picked one would be choosing
-    which of two disagreeing sources to believe.
+    Two lines of the same shape are not resolved in favour of either: one came from somewhere
+    else, and picking would be choosing which of two disagreeing sources to believe.
     """
     if not matches:
         return None, [f"no tagged '{what}' line — the sample did not report it"]
@@ -237,10 +218,8 @@ def _assess_the_cap_was_budgeted(output: str) -> list[str]:
 def _assess_the_whole_walk_happened(output: str) -> list[str]:
     """All four stages, and the by-product table the last one exists for.
 
-    Lookup *count* is not enough. A program can take the first three stages — state ids, store
-    lists, sales rows — skip `product_name`, print both state totals from the amounts alone and
-    satisfy a count-and-shape check, while never producing the table the task asks for and
-    never touching the stage the comparison is about.
+    A count is not enough: a program can take three stages, skip `product_name` and print both
+    totals from the amounts alone, never touching the stage the comparison is about.
     """
     failures: list[str] = []
     stages, problems = _per_route(output, _STAGES_RUN, "lookup stages")
@@ -592,10 +571,8 @@ def _assess_the_round_trips(output: str) -> list[str]:
 def _reclaims(output: str) -> bool | None:
     """Whether this run's transport takes its own files back, or None if it did not say.
 
-    #434 gave `dispatch_over_exec` a cleanup, and a sample runs against whatever `maf-sandbox`
-    is published, so both behaviours are correct and the run has to declare which it measured.
-    A missing line is `_assess_what_the_runs_left`'s to report; every other reader treats it as
-    a run whose act 5 cannot be graded and leaves the assertions that depend on it alone.
+    #434 gave `dispatch_over_exec` a cleanup and a sample runs against whatever is published, so
+    both behaviours are correct and the run declares which it measured.
     """
     said = _CLEANUP.findall(output)
     return said[0].startswith("reclaimed") if len(said) == 1 else None
@@ -604,13 +581,10 @@ def _reclaims(output: str) -> bool | None:
 def _programs_that_dispatched(output: str, groups: list[str]) -> int | None:
     """How many programs called out, from the guest where the guest still knows.
 
-    The transport used to leave its files, so act 5 could count the runs holding them and
-    settle this on the filesystem — a number the model had no hand in, which is what made the
-    three assertions below a cross-check. Where the transport reclaims them there is nothing
-    left to count, and the only source is the shape: the host's record of what it was asked
-    for. The gap arithmetic still binds, because the gaps come from the ledger's own clock,
-    but `programs == dispatching` stops being a comparison of two sources and is dropped
-    rather than left to look like one.
+    Where the transport keeps its files, act 5 counts the runs holding them — a number the model
+    had no hand in. Where it reclaims them the only source is the shape, so `programs ==
+    dispatching` stops being a comparison of two sources and is dropped rather than left to look
+    like one.
     """
     reclaims = _reclaims(output)
     if reclaims is False:
@@ -624,11 +598,8 @@ def _programs_that_dispatched(output: str, groups: list[str]) -> int | None:
 def _assess_what_the_runs_left(output: str) -> list[str]:
     """#302's per-run subdirectory, and what became of the traffic in it.
 
-    Two transports and two right answers. Before #434 nothing in the guest could delete, so the
-    files were the run's traffic and the count of runs holding them was a second source for how
-    many programs called out. After it the transport removes the directory it owns on the way
-    out, so zero is the cleanup working and the corroboration is gone. The run says which it
-    measured and this grades the one it says.
+    Two transports and two right answers: files kept are the run's traffic, files reclaimed mean
+    zero is the cleanup working. The run says which it measured and this grades that one.
     """
     failures: list[str] = []
     said = _CLEANUP.findall(output)
@@ -742,11 +713,9 @@ def _assess_the_sandbox_went_away(output: str) -> list[str]:
 def _assess_the_cost_was_measured(output: str) -> list[str]:
     """Each route publishes a cost, and the token half of it is a real figure.
 
-    Wall clock is recorded and never bounded *above* — a slow control plane is a finding, and a
-    threshold would make this a pass mark on somebody else's. Zero is the exception at both
-    ends: every route here invokes a model over the network and runs a program in a microVM, so
-    nought seconds and nought tokens are both a measurement having gone missing rather than a
-    run that was free or instant. They are the `None` case wearing a number.
+    Wall clock is never bounded above — a threshold would make this a pass mark on somebody
+    else's control plane. Zero is the exception at both ends: a model call over the network and a
+    program in a microVM cannot take no time and no tokens.
     """
     found, failures = _per_route(output, _COST, "cost")
     for route, match in found.items():

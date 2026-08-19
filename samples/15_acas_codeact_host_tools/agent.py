@@ -1,48 +1,25 @@
 """A program inside a sandbox calling back into the host, and what the round trips buy.
 
-Every other sample sends things *in* to a sandbox and takes results *out*.  This one opens the
-other direction::
+Every other sample sends things *in* and takes results *out*.  This one opens the other
+direction::
 
     app  ->  maf_sandbox (router)  ->  maf_sandbox_acas  ->  the sandbox
                   ^ maf_sandbox_codeact calls the router        |
                   +------ a host function, dispatched ----------+
 
-Sample 10 is the configuration half: what a host declares before any of this may happen,
-answered at attach with no sandbox and no model.  This is the traffic half (#302).  Read 10
-first; the acts below use its vocabulary and do not re-teach it.
+Sample 10 is the configuration half and this is the traffic half (#302); read 10 first, since
+the acts below use its vocabulary.  #133 asks for the trade-off to be measured rather than
+assumed, so the workload is deliberately call-heavy and deep: three tables and a question that
+cannot be answered without walking them in order.
 
-#133 says the trade-off is what the feature lives or dies on and should be measured rather
-than assumed::
+Acts 2 and 3 answer it twice and **both run Python in the sandbox** — only the place of the
+lookups differs, which is what keeps this a measurement of dispatch rather than of CodeAct.
+Act 4 compares them, act 5 reads the guest filesystem, act 6 takes the sandboxes down.
 
-    Each dispatch is at minimum one round trip — on a remote backend, an HTTP call — so a
-    call-heavy program can cost more round trips than the direct tool calling this pattern
-    exists to replace.
-
-So the workload is deliberately call-heavy *and* deep.  Three tables — states, stores, sales —
-and a question that cannot be answered without walking them in order::
-
-    state name -> state id -> store ids -> sales rows -> product names
-
-Four stages, a dozen lookups.  Acts 2 and 3 answer it twice, and **both run Python in the
-sandbox**: the only thing that differs is where the lookups happen.  Holding the interpreter
-constant is what keeps this a measurement of dispatch rather than of CodeAct, which samples 03
-and 06 already cover.
-
-What that isolates is the thing the capability decides, and act 4 names it: direct tool calling
-batches *within* a stage but never across one, so it pays a tool-calling round per stage
-and every value it fetched crosses the conversation.  Dispatch pays a transport round trip
-per call — serially, always (#439) — and the model writes none of the data into code:
-what comes back to it is the program's finished table.
-
-Act 5 is what the runs left in the guest, which #302 asks for and which is only half
-answerable, and the half that is moved: a fresh directory per run is real, and whether the
-traffic in it survives the run depends on which transport is installed — #434 gave the
-transport a cleanup for its own files, where before nothing in the protocol could delete
-anything (#438). Act 5 asks which it is running against and grades that one.
+The README has the prerequisites, the environment variables and the reasoning behind each act.
 
 Running this needs a real Azure subscription and **creates two billable sandboxes**, one per
-route — see this directory's README for the prerequisites, the environment variables, and why
-the routes cannot share one.
+route, which the README explains and act 6 disposes of.
 """
 
 # /// script
@@ -176,11 +153,7 @@ AMOUNTS = {amount for rows in SALES.values() for _, amount in rows}
 
 
 def truth() -> dict[str, dict[str, float]]:
-    """The answer, computed host-side from the same three tables both routes reach.
-
-    Neither route had a hand in this, which is what makes it a check rather than a comparison
-    of two guesses.
-    """
+    """The answer, computed host-side rather than by either route, so it can check them."""
     summary: dict[str, dict[str, float]] = {}
     for state, state_id in STATES.items():
         per_product: dict[str, float] = {}
@@ -254,9 +227,7 @@ FROM_THE_TOOL_LIST = (
 class Ledger:
     """What the host was asked, and when.
 
-    A timestamp on both sides of the body rather than one: the interval that means something
-    runs from *answering* one call to the *next arriving*, which is a full trip out through the
-    response file, the guest, the next request file and back.
+    Timed on both sides of the body, so a gap is a whole trip out and back rather than half of one.
     """
 
     def __init__(self) -> None:
@@ -273,33 +244,22 @@ class Ledger:
 
     @property
     def stages(self) -> set[str]:
-        """Which of the four lookups were actually reached.
+        """Which of the four lookups were reached.
 
-        A count alone does not say the walk happened: the per-state totals are sums of the
-        sales amounts, so a program can skip `product_name` entirely, print both totals and
-        look complete while never producing the by-product table the task asks for — and never
-        touching the fourth stage the comparison is about.
+        A count is not enough: the totals are sums, so a program can skip `product_name`, print both
+        and look complete while never touching the stage the comparison is about.
         """
         return {asked.split("(", 1)[0] for asked in self.asked}
 
     def round_trips(self, programs: int) -> tuple[list[float], list[float]]:
         """The gaps between consecutive calls, split into transport ones and program boundaries.
 
-        One entry per consecutive pair, so *n* calls yield *n - 1*. A route runs `programs`
-        separate programs against the same ledger, and the gap between the last call of one and
-        the first call of the next holds a model turn and a launcher rather than a file round
-        trip. There are exactly `programs - 1` of those while the programs run one after
-        another, which is what the live check enforces: calls in one assistant message run
-        concurrently, and two programs interleaved in one ledger have no boundary to find.
+        *n* calls give *n - 1* gaps, and the `programs - 1` largest are the boundaries — each holds a
+        model turn rather than a file round trip.
 
-        **Which gaps they are is inferred from size, not recorded.** Nothing here is told what
-        program a call belongs to, so this takes the largest `programs - 1` and calls them the
-        boundaries. Both halves are returned rather than one, because that inference is only
-        sound while the two are far apart — a model turn is seconds where a file written and
-        read back is about one — and the run publishes the margin so the check can hold them
-        apart instead of trusting the sort. Attributing a call to its program would take the
-        transport saying which run it served, which is a library surface this sample does not
-        have (#446).
+        **Which ones they are is inferred from size, not recorded.** Both halves come back so the run
+        can publish the margin and the check can hold them apart instead of trusting the sort.
+        Attributing a call to its program needs the transport to say which run it served (#446).
         """
         gaps = sorted(
             self._arrived[index + 1] - self._answered[index]
@@ -312,14 +272,9 @@ class Ledger:
 def build(stamp: Any, ledger: Ledger) -> list[Any]:
     """The four lookups, stamped for dispatch or wrapped as ordinary MAF tools.
 
-    One body per lookup, shared by both routes, so a difference between the acts is never a
-    difference in what the function did. `HostToolRegistry.register` keys on `__name__`, so
-    these have to be named as the guest calls them — a factory renaming them would register a
-    surface the program cannot reach.
-
-    The declarations are the same on both: `TRUSTED` because the answers are the host's own
-    tables, `sink=None` because a lookup carries an id out and nothing else, and `APP` because
-    this is the application's own authority. Sample 10's README is the long version.
+    One body per lookup, so a difference between the acts is never a difference in the function.
+    `register` keys on `__name__`, so these keep the names the guest calls. Sample 10's README
+    covers the declarations.
     """
 
     @stamp
@@ -369,11 +324,9 @@ def dispatchable(ledger: Ledger) -> list[Any]:
 
 
 def ordinary(ledger: Ledger) -> list[Any]:
-    """No `@sandbox_tool` stamp, and the asymmetry is act 3's subject rather than an oversight.
+    """No `@sandbox_tool` stamp, which is act 3's subject rather than an oversight.
 
-    Those declarations describe an information flow that leaves the host and comes back. A tool
-    the model calls itself never crosses a sandbox boundary — it crosses the conversation
-    instead, which is what act 4 counts.
+    A tool the model calls itself crosses the conversation, not a sandbox boundary.
     """
     return build(tool, ledger)
 
@@ -397,16 +350,9 @@ def agent_for(
 def calls_per_message(response: object) -> list[int]:
     """Tool calls grouped by the assistant message that asked for them.
 
-    **This is the structural measurement.** Every entry is one *tool-calling round*: the turn
-    stops there, the framework runs whatever was asked for, and the model is invoked again. A
-    route batching five lookups into one entry paid one round for five; one needing five
-    entries paid five.
-
-    Rounds, not model invocations. A message with no tool call is not an entry, and the last
-    message always is one — the model writes the answer after the final tool result — so each
-    route is invoked once more than this counts. Both pay that extra invocation exactly once,
-    which is why the *difference* between the routes is the same either way and the absolute
-    figure is not.
+    Every entry is one tool-calling round: the turn stops, the framework runs what was asked, the
+    model is invoked again. A message with no tool call is not an entry, so each route is invoked
+    once more than this counts — both equally, which is why the difference between them holds.
     """
     grouped = []
     for message in getattr(response, "messages", []):
@@ -437,18 +383,9 @@ _WRITTEN_NUMBER = re.compile(r"(?<![\w.])-?\d[\d_]*(?:\.\d[\d_]*)?(?:[eE][+-]?\d
 def amounts_the_model_wrote(response: object) -> int:
     """How many distinct sales figures the model itself put into a tool call.
 
-    Tool-call *arguments* only, not the whole transcript, and the narrowness is the point: what
-    it answers is whether the model had to carry a value from one place to another. On the
-    direct route that is forced — the figures arrive as tool results and the only way into the
-    program is for the model to write them into its source. On the dispatched route it is
-    impossible, because the program is written before any dispatch can answer.
-
-    A dispatched program may still *print* a figure, and then it is in the transcript by that
-    program's choice rather than by the transport's design. Different claim, different line.
-
-    By value, for the reason `figures_in` is: `980.00` written as `980` is the same figure
-    carried, and `1980.0` is not that figure at all. Both directions matter here, because both
-    routes assert against this count — the dispatched one that it is zero.
+    Arguments only: the question is whether the model had to carry a value from one place to
+    another. Forced on the direct route, impossible on the dispatched one. Matched by value, so
+    `980` is `980.00` written down and `1980.0` is neither.
     """
     written: set[float] = set()
     for message in getattr(response, "messages", []):
@@ -475,8 +412,7 @@ _RUN_ID = re.compile(r"[0-9a-f]{12}")
 def figures_in(text: str, expected: Iterable[float]) -> int:
     """How many of `expected` the guest program printed, matched to the cent.
 
-    Numerically rather than as text: a program summing floats prints `1791.1499999999999` for a
-    cell worth `1791.15`, and how it formats its output is the model's to choose.
+    By value, not as text: a program summing floats prints `1791.1499999999999` for `1791.15`.
     """
     printed = [_as_number(found) for found in _PRINTED_NUMBER.findall(text)]
     return sum(1 for want in expected if any(abs(got - want) < 0.005 for got in printed))
@@ -485,11 +421,8 @@ def figures_in(text: str, expected: Iterable[float]) -> int:
 def rows_in(text: str) -> int:
     """How many of the six cells the program printed *as rows*, state and product attached.
 
-    The values alone are a multiset: swapping the two states' figures leaves the same six
-    numbers and the same two totals. A row is matched on its product name and amount together,
-    with the state read off the line itself or, for a table that groups by state, off the last
-    state named above it — and on naming *one* product, without which a line carrying all three
-    of a state's pairs answers for three rows at once.
+    The values alone are a multiset — swapping the two states leaves them and both totals intact.
+    A row names one product and carries its amount, with the state on the line or above it.
     """
     current, state_of = None, []
     lines = text.splitlines()
@@ -511,16 +444,9 @@ def rows_in(text: str) -> int:
 def graded(printed: str) -> tuple[int, int, int, int]:
     """What one program's output is worth: cells, totals, rows, names, in that order.
 
-    One function because it is two things that must not disagree — the figures a route reports
-    and the key that picks the program they are reported for.
-
-    Ordered by what is asked of *both* routes rather than by how specific it is. Every route
-    has to print the six cells and the two state totals; only the dispatched one has to label
-    them, because only there does a label prove the walk happened. Lead on the labels and a
-    direct-route program that printed the whole answer unlabelled loses to one that labelled a
-    single row, which is a complete answer thrown away. Cells and totals cannot separate a
-    table from the same six values against the wrong states, so the rows break that tie
-    underneath them, which is the job they were added for.
+    One function, because the figures a route reports and the key that picks the program they are
+    reported for must not disagree. Ordered by what both routes owe: only the dispatched one has
+    to label its table, so leading on labels throws away an unlabelled direct-route answer.
     """
     return (
         figures_in(printed, PRODUCT_CELLS),
@@ -533,10 +459,8 @@ def graded(printed: str) -> tuple[int, int, int, int]:
 def the_program_that_answered(results: list[str]) -> str:
     """The one `execute_code` result the table was in, of however many the route ran.
 
-    Joining them would let two programs satisfy the checks between them — one printing
-    Washington, the other Oregon — where the task asks for one table and this route's
-    instruction asks for one program that owns the whole walk. Ranked on what the route is
-    graded on, so the order the programs ran in cannot decide which one answers for the route.
+    Not joined, because the task asks for one program that owns the whole walk. Ranked on what
+    the route is graded on, so the order the programs ran in cannot decide it.
     """
     return max(results, key=graded, default="")
 
@@ -689,8 +613,7 @@ async def _what_one_sandbox_holds(
 ) -> tuple[int, int, int, int]:
     """Run directories, how many dispatched, and the files those left, for one route's sandbox.
 
-    Acquiring returns the *same warm sandbox* the route used — same key, same spec — which is
-    the point of the act: the runs are still in it.
+    Acquiring returns the same warm sandbox the route used, which is the point: the runs are in it.
     """
     spec = codeact_sandbox_spec(image=CODEACT_IMAGE, host_tools=registry)
     sandbox = await router.acquire(SandboxKey(SCOPE, thread, AGENT_DIR), spec)
@@ -729,20 +652,14 @@ async def _what_one_sandbox_holds(
 async def act_five_what_the_runs_left_behind(
     router: SandboxRouter, registry: HostToolRegistry
 ) -> None:
-    """The guest filesystem after both acts, which #302 asks for and the answer to which moved.
+    """The guest filesystem after both acts, which #302 asks for.
 
-    Read with `list_dir`, which needs `Capability.FILES_LIST` — ACAS declares it and Docker does
-    not, so this act is one of the reasons the sample belongs on this backend.
+    Both sandboxes, and `list_dir` needs `Capability.FILES_LIST` — ACAS declares it, Docker does
+    not, which is one reason this sample belongs on this backend.
 
-    **Both** sandboxes, because there are two: reporting only the dispatched one would leave the
-    direct route's runs out of a count the act claims is what the whole sample left behind.
-
-    What the counts mean depends on the transport, so the transport is named first. Where it
-    keeps its files, they are the run's traffic and the guest can be asked how many programs
-    dispatched. Where it reclaims them, zero is the cleanup working and the question has no
-    answer here — the run directories still say programs ran, and nothing in the guest says
-    which of them called out. That is a real loss of corroboration and the check says so in
-    the one place it now takes the model's word for the program count.
+    What the counts mean depends on the transport, so it is named first. Where it keeps its files
+    they are the run's traffic; where it reclaims them, zero is the cleanup working and the guest
+    no longer corroborates how many programs called out.
     """
     print("== 5. What the runs left in the guest ==\n")
     routes = ((DISPATCH_THREAD, registry), (DIRECT_THREAD, None))

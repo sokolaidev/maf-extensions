@@ -1,15 +1,8 @@
 """What `scripts/check_live_host_tools_dispatch_sample.py` will and will not let through.
 
-`_HEALTHY` is a real run of `samples/15_acas_codeact_host_tools` against a live ACAS sandbox
-and a live model, verbatim apart from the two tables the model produced.
-
-The suite is organised around what the check is *allowed* to fail a release for. Twenty live
-runs went into choosing that: the figures below moved between them — 18 to 29 lookups, 35s to
-87s, two to four dispatched tool-calling rounds — and what did not move is what is asserted.
-
-What each test pins is the property, not the run that produced it: an assertion keyed on a
-model's prose, a totals matcher blind to a thousands separator, or an enumeration reading the
-wrong guest directory would each pass a happy-path suite and fail a real one.
+`_HEALTHY` is a real run against a live ACAS sandbox and a live model, verbatim apart from the
+two tables the model produced. Twenty live runs went into choosing what is asserted: 18 to 29
+lookups, 35s to 87s, two to four dispatched rounds — and what did not move is what is pinned.
 """
 
 from __future__ import annotations
@@ -141,12 +134,7 @@ class TestBothProgramsHadToAnswer:
 
     @pytest.mark.parametrize("route", ["dispatch route", "direct route"])
     def test_a_table_missing_a_row_fails(self, route: str):
-        """Both state totals can be right while a row underneath one of them is gone.
-
-        The totals are sums. A program that dropped Oregon's Gasket row and printed a total
-        computed before it — or after it, from the same sales rows — satisfies `2 of 2` and
-        answers a different question from the one asked.
-        """
+        """Both state totals can be right while a row underneath one of them is gone."""
         broken = _swap(
             f"[measured] {route}: product totals the program printed: 6 of 6",
             f"[measured] {route}: product totals the program printed: 5 of 6",
@@ -166,11 +154,7 @@ class TestBothProgramsHadToAnswer:
         assert check.assess(_without(f"{route}: product totals")) != []
 
     def test_a_dispatched_table_with_the_rows_wrong_fails(self):
-        """Every value present and attached to the wrong state is the same six numbers.
-
-        Swapping Washington's and Oregon's figures leaves the cells at 6 of 6 and the totals at
-        2 of 2, because both are multisets. Only the rows can tell.
-        """
+        """Every value present and attached to the wrong state is the same six numbers."""
         broken = _swap(
             "[measured] dispatch route: table rows the program printed: 6 of 6",
             "[measured] dispatch route: table rows the program printed: 0 of 6",
@@ -178,12 +162,7 @@ class TestBothProgramsHadToAnswer:
         assert any("the labels are what say" in r for r in check.assess(broken))
 
     def test_the_direct_table_rows_are_recorded_not_required(self):
-        """That program prints figures its model labels, so it prints no rows at all.
-
-        The healthy run is the evidence: `0 of 6` there, measured, alongside `0 of 3` product
-        names. Requiring rows on that route would fail a correct run for doing the labelling
-        where the route naturally does it. Both ends are accepted.
-        """
+        """That program prints figures its model labels, so `0 of 6` there is a healthy run."""
         assert check.assess(_HEALTHY) == []
         assert (
             check.assess(
@@ -222,12 +201,7 @@ class TestDirectPaysPerStage:
 
     @pytest.mark.parametrize("shape", ["[1, 1, 1, 1, 1]", "[4, 3, 2, 2, 1]"])
     def test_a_direct_shape_too_small_to_hold_its_lookups_fails(self, shape: str):
-        """Five tool calls cannot be twelve lookups, and neither can twelve.
-
-        On this route every lookup is a tool call in the model's own loop and the program that
-        printed the table is one more, so the entries have to sum *past* the lookup count. Both
-        shapes are five entries long, which is why the length alone cannot say this.
-        """
+        """Five tool calls cannot be twelve lookups, and neither can twelve."""
         assert any(
             "is short by" in r
             for r in check.assess(
@@ -251,13 +225,7 @@ class TestDirectPaysPerStage:
         )
 
     def test_a_dispatched_batch_of_more_than_one_fails(self):
-        """One message asking for two programs runs them at once, and one ledger times both.
-
-        The round-trip summary drops one gap per program boundary, which is only the largest
-        gaps while the programs are serial. Interleaved, a gap can span two programs and the
-        summary stops describing round trips. Self-consistent otherwise — one round, one entry,
-        two programs, and act 5 still holds two that dispatched.
-        """
+        """One message asking for two programs runs them at once, and one ledger times both."""
         assert any(
             "run concurrently" in r
             for r in check.assess(
@@ -291,13 +259,7 @@ class TestDirectPaysPerStage:
 
     @pytest.mark.parametrize(("route", "count"), [("dispatch route", 25), ("direct route", 12)])
     def test_a_route_below_the_minimum_walk_fails(self, route: str, count: int):
-        """Zero is not the only count that cannot have produced the table.
-
-        The walk is fixed at twelve lookups — two state ids, two store lists, five stores'
-        sales and three product names — so eleven is a run that fetched less than the answer is
-        made of. The direct route sits *on* that floor in a healthy run, which is what makes it
-        a floor rather than a margin.
-        """
+        """The walk is fixed at twelve lookups, so eleven fetched less than the answer is made of."""
         broken = _swap(
             f"[measured] {route}: {count} lookup(s) over",
             f"[measured] {route}: 11 lookup(s) over",
@@ -305,13 +267,7 @@ class TestDirectPaysPerStage:
         assert any("cannot have produced the table" in r for r in check.assess(broken))
 
     def test_more_dispatched_round_trips_than_measured_is_fine(self):
-        """Two to four was the live range; the check bounds the comparison, not the value.
-
-        Every line a third program would move has to move with it — the shape, the gap count,
-        the boundaries dropped, the run directories, and the traffic those runs left. A variant
-        that raises the lookups alone is not a slower healthy run, it is a run that cannot have
-        happened.
-        """
+        """Every line a third program would move has to move with it, or the run cannot have happened."""
         assert (
             check.assess(
                 _swap(
@@ -347,11 +303,7 @@ class TestTwoViewsOfOneListHaveToAgree:
         ],
     )
     def test_a_shape_that_is_not_counts_fails(self, route: str, shape: str, words: str):
-        """A shape of words has a length and nothing else, and the length is read as a count.
-
-        Both routes: either shape's length is that route's round count, and the dispatched
-        one's entries are summed for the programs behind the round-trip summary.
-        """
+        """A shape of words has a length and nothing else, and the length is read as a count."""
         assert any(
             "not a list of positive counts" in r
             for r in check.assess(
@@ -367,12 +319,7 @@ class TestTwoViewsOfOneListHaveToAgree:
         [("dispatch route", "[1, 1]", 2), ("direct route", "[2, 2, 5, 3, 1]", 5)],
     )
     def test_an_empty_shape_fails(self, route: str, shape: str, rounds: int):
-        """Every rule about the entries holds of no entries, so the emptiness is its own rule.
-
-        With the round count moved to zero to match, an empty shape agrees with itself and with
-        every count derived from it, and a route whose table came from an `execute_code` call
-        is reported as having asked the model for nothing.
-        """
+        """Every rule about the entries holds of no entries, so the emptiness is its own rule."""
         assert any(
             "reports no tool calls at all" in r
             for r in check.assess(
@@ -453,11 +400,7 @@ class TestTheCapIsJudgedAgainstTheWorkload:
         )
 
     def test_a_cap_above_the_naive_figure_but_below_a_real_run_fails(self):
-        """22 clears both arithmetics and would still truncate the run that used 29.
-
-        The worst failure shape this check has: such a cap passes on the run that chose it and
-        truncates the next one, which comes back with half a table and no error.
-        """
+        """22 clears both arithmetics and would still truncate the run that used 29."""
         assert any(
             "truncates a later run" in r
             for r in check.assess(
@@ -568,11 +511,7 @@ class TestAMissingMeasurementIsNotAMeasurement:
 
 
 class TestTheCapBoundsEachProgram:
-    """The cap is per `execute_code` run, so the route's total is bounded by cap × programs.
-
-    The rest of the cap ladder grades the number against the workload's arithmetic. This is the
-    one place it meets what the run recorded.
-    """
+    """The cap is per `execute_code` run, so the route's total is bounded by cap × programs."""
 
     _REASON = "longer than the run could have made it"
 
@@ -589,11 +528,7 @@ class TestTheCapBoundsEachProgram:
         )
 
     def test_spending_the_whole_budget_twice_over_is_allowed(self):
-        """Exactly 64, because a program may spend its cap and the next one starts fresh.
-
-        The bound is the product and not the cap: reading it as a route budget rejects a legal
-        run, which is the opposite mistake and the more expensive one.
-        """
+        """A program may spend its whole cap and the next one starts fresh, so the bound is the product."""
         assert not any(
             self._REASON in r
             for r in check.assess(
@@ -722,12 +657,10 @@ class TestWhoCarriedTheFigures:
 
 
 class TestATransportThatReclaimsItsOwn:
-    """#434 gave `dispatch_over_exec` a cleanup, and a sample runs against what is published.
+    """#434 gave the transport a cleanup, and a sample runs against what is published.
 
-    Both behaviours are correct, so the run declares which it measured and act 5 is graded on
-    that. Zero is the answer here, and it has to be exactly zero: a transport that removed part
-    of what it owns is worse than one that removed none, because the next run in the sandbox
-    can read the rest.
+    Zero has to be exactly zero: a transport that removed part of what it owns is worse than one
+    that removed none, because the next run in the sandbox can read the rest.
     """
 
     def test_a_reclaimed_run_passes(self):
@@ -810,11 +743,7 @@ class TestTheRunsLeftTheirTrafficBehind:
         )
 
     def test_every_directory_dispatching_fails(self):
-        """The direct route's program leaves a run directory with no transport in it.
-
-        `3` and `2` in a healthy run: two dispatched, one is the direct route's. Equal counts
-        mean the enumeration read one sandbox and reported both.
-        """
+        """The direct route's program leaves a run directory with no transport in it."""
         assert any(
             "one sandbox short" in r
             for r in check.assess(
@@ -896,11 +825,7 @@ class TestTheRunsLeftTheirTrafficBehind:
 
 
 class TestACountIsNotAMatch:
-    """Holes a length check or a positive-count check leaves open.
-
-    Each of these passes a naive implementation: the totals agree, the counts are non-zero and
-    the number of lines is right, while the thing being counted is the wrong thing.
-    """
+    """Holes a length check or a positive-count check leaves open."""
 
     def test_a_partial_direct_count_fails(self):
         """1-11 of 12 is not "the model carried the data", it is an unmeasured road."""
@@ -961,13 +886,7 @@ class TestTheRoundTripLine:
         )
 
     def test_a_program_that_dispatched_nothing_fails(self):
-        """A probe program has no boundary, so dropping a gap for it drops a real round trip.
-
-        Three `execute_code` calls where the guest holds two run directories that dispatched:
-        the emitter drops two gaps for two boundaries that are not both there, and the largest
-        genuine transport gap goes with them. Nothing in the summary looks wrong afterwards,
-        which is why the guest has to be asked.
-        """
+        """A probe program has no boundary, so dropping a gap for it drops a real round trip."""
         probed = _swap(
             "[measured] dispatch route: 25 lookup(s) over 2 tool-calling round(s)",
             "[measured] dispatch route: 25 lookup(s) over 3 tool-calling round(s)",
@@ -999,10 +918,8 @@ class TestTheRoundTripLine:
 class TestTheBoundariesTheSummaryRestsOn:
     """Which gaps are boundaries is inferred from size, so both halves have to be published.
 
-    Nothing in the numbers can say the inference was right — a boundary and a slow transport
-    call are two durations. What the check can say is that the two lines describe one sorted
-    set of gaps and one boundary per program after the first, and that the margin is on the
-    page for a reader to judge.
+    Nothing in the numbers can say the inference was right. What the check can say is that the two
+    lines describe one sorted set of gaps, and that the margin is on the page.
     """
 
     _LINE = (
