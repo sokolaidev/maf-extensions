@@ -1267,12 +1267,9 @@ async def reclaim_run(sandbox: Sandbox, layout: GuestRunLayout, *, timeout: floa
 
     Returns:
         Whether the ``rm`` succeeded — the guest's own status for one command, not a promise
-        the directory stays gone. A stop reaches the program's process group at most, so one
-        thing that survived it — a descendant that left the group, or a program on a guest
-        without `setsid` — can write a path back into existence after the removal returns.
-        Formerly stated as children never being signalled, which the group stop changed.
-        A survivor that
-        outlived the run can write a path back into existence after the removal returns.
+        the directory stays gone. A stop reaches the program's process group at most — a
+        descendant that left it, or any program on a guest without `setsid`, outlives one and
+        can write a path back into existence after the removal returns.
         ``False`` is the load-bearing answer: a data-retention failure rather than a tidiness
         one — nothing in the protocol deletes and ``acquire`` is get-or-create, so what is left
         stays readable by every later run in this sandbox — and the caller is expected to
@@ -1434,10 +1431,10 @@ async def _stop_the_program(
     session, so a recycled one takes out a later run's whole process group rather than one
     stranger process. What a caller may conclude is that a signal was sent to that number.
 
-    Where the launcher had ``setsid`` it recorded a session and the signal goes to that whole
-    process group, so what the program spawned dies with it. Where it did not, the program
-    shares the launcher's session and only its own pid can be signalled — a group signal there
-    would reach the whole container. The two are reported differently rather than alike.
+    Where the launcher had ``setsid`` it recorded a session, and the signal goes to the process
+    group the program starts in — so what it spawned goes too, unless a descendant left that
+    group. Where it did not, only the program's own pid can be signalled: it shares the
+    launcher's session, where a group signal would reach the whole container.
 
     **Sending the signal is not seeing it work.** Both numbers come from files the program can
     write, and ``kill`` reports success for a signal the kernel accepts and discards, so a
