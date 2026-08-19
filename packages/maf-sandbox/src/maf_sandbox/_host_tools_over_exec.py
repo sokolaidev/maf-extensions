@@ -98,11 +98,17 @@ _STAGED_PID_FILE = f"{PID_FILE}.part"
 SESSION_FILE = "program_session"
 _STAGED_SESSION_FILE = f"{SESSION_FILE}.part"
 
-#: What the launcher prints when it made a session, on its own stdout. The host reads this
-#: from the ``exec`` that ran the launcher, before the program can have written anything,
-#: which is what makes it a fact about the guest rather than a claim by the program: the
-#: session *file* is inside the run and writable, so on an image with no ``setsid`` a
-#: program could otherwise plant one and have the host signal a group it never made.
+#: What the launcher prints when it made a session, on its own stdout, which the ``exec``
+#: that ran the launcher returns to the host.
+#:
+#: **Not ordering — redirection.** The session shell is backgrounded before this line runs,
+#: so the program may already be going when the marker is printed; what keeps the two apart
+#: is that the backgrounded command's stdout and stderr go to ``/dev/null`` and the
+#: program's own output goes to its file, so nothing the guest writes can reach the stream
+#: this arrives on. That is what makes it a fact about the guest rather than a claim by the
+#: program: the session *file* is inside the run and writable, so on an image with no
+#: ``setsid`` a program could otherwise plant one and have the host signal a group it never
+#: made.
 SESSION_MADE = "maf-host-tools: session"
 
 #: The module a guest program imports to reach the host. Written beside the program.
@@ -807,15 +813,15 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
         # leftovers where its own value belongs.
         "unset maf_kept maf_entry\n"
         # Two paths, because the better one needs a utility not every image has. With
-        # `setsid` the program leads its own session and the host can stop its children with
-        # it; without, it shares the launcher's, where a group signal would reach the whole
-        # container. The session file is written only on the first path, and its absence is
+        # `setsid` the shell it runs leads a session of its own, and the program starts
+        # inside that one, so the host can stop it and its children together; without, the
+        # program shares the launcher's session, where a group signal reaches the container. The session file is written only on the first path, and its absence is
         # what tells the host which one ran — a claim that varies by image, reported rather
         # than hidden.
         "if command -v setsid >/dev/null 2>&1; then\n"
         f"  setsid nohup sh -c {_quote(record_session + inner)} >/dev/null 2>&1 &\n"
-        # On this branch only, and on the launcher's own stdout, which the host has
-        # already read by the time the program could write anything.
+        # On this branch only, and on the launcher's own stdout — which the guest cannot
+        # reach, because the command above sends its own to `/dev/null`.
         f"  printf '%s\\n' {_quote(SESSION_MADE)}\n"
         "else\n"
         f"  nohup sh -c {_quote(inner)} >/dev/null 2>&1 &\n"
@@ -1526,7 +1532,7 @@ async def _session_if_recorded(
     # did. On a guest without `setsid` the program shares the launcher's session, and a
     # planted file would have the host signal *that* group — the whole container, which is
     # the thing the fallback exists to avoid. So the branch is taken from what the launcher
-    # printed on its own stdout, which the host read before the program could write at all.
+    # printed on its own stdout, a stream the guest's own output is redirected away from.
     if not (made_a_session and layout.session):
         return None
     try:
