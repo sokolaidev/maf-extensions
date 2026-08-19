@@ -56,10 +56,15 @@ def conversation_id(name: str) -> str:
     """Return a run-scoped conversation id for samples that purge by label.
 
     Uses the CI run and attempt when present, otherwise falls back to this process. If a run
-    exits before disposal, its sandboxes are left for lifecycle cleanup.
+    exits before disposal, its sandboxes are left for lifecycle cleanup. Only samples on a
+    hosted backend need this; a container on the job's own runner has nothing to collide with.
     """
+    # `or` on both rather than a default on either: `os.environ.get(name, default)` answers
+    # `""` for a variable that is set and empty, and the default only fires when the key is
+    # absent. An empty run id is every run's id, and an empty attempt is a trailing hyphen.
     run = os.environ.get("GITHUB_RUN_ID") or f"local-{os.getpid()}"
-    return f"{name}-{run}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}"
+    attempt = os.environ.get("GITHUB_RUN_ATTEMPT") or "1"
+    return f"{name}-{run}-{attempt}"
 
 
 def quoted(text: str) -> str:

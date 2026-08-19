@@ -18,6 +18,7 @@ else would ever look at it.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import os
 from pathlib import Path
@@ -67,6 +68,92 @@ def test_every_copy_is_byte_identical():
 #: was written out eight times before ([#209](https://github.com/sokolaidev/maf-extensions/issues/209));
 #: `quoted` and the tag were written out once more in sample 13 before #314 moved them here.
 _HELPERS = ("require_env_vars", "quoted", "tool_results", "evidence", "conversation_id")
+
+
+def _parsed(sample: Path) -> ast.Module:
+    """`agent.py` as a tree.
+
+    Parsed and not searched. Source is not code: a comment, a docstring or a string literal all
+    match a pattern looking for one, so `THREAD_ID = "fixed"  # conversation_id("fixed")`
+    satisfies a textual check twice over while shipping a fixed id. Parsed rather than
+    imported, because a sample reads its environment on the way in and has none here.
+    """
+    return ast.parse((sample / "agent.py").read_text(encoding="utf-8"))
+
+
+def _imports(sample: Path) -> set[str]:
+    """Every module this sample imports, by name."""
+    found: set[str] = set()
+    for node in ast.walk(_parsed(sample)):
+        if isinstance(node, ast.Import):
+            found.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            found.add(node.module)
+    return {module.split(".")[0] for module in found}
+
+
+def _conversations(sample: Path) -> tuple[list[str], list[str]]:
+    """What this sample names its conversations, split into run-scoped and not.
+
+    A conversation is a module constant whose name carries `THREAD`, which is how every sample
+    writes one. Run-scoped means the value is a `conversation_id(...)` call on a string literal
+    — the literal comes back, so the length rule below measures what a sample really asks for
+    rather than something shaped like it.
+    """
+    scoped: list[str] = []
+    fixed: list[str] = []
+    for node in ast.walk(_parsed(sample)):
+        if isinstance(node, ast.AnnAssign):
+            targets, call = [node.target], node.value
+        elif isinstance(node, ast.Assign):
+            targets, call = node.targets, node.value
+        else:
+            continue
+        named = [
+            t.id for t in targets if isinstance(t, ast.Name) and "THREAD" in t.id and t.id.isupper()
+        ]
+        if not named:
+            continue
+        if (
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id == "conversation_id"
+            and call.args
+            and isinstance(call.args[0], ast.Constant)
+            and isinstance(call.args[0].value, str)
+        ):
+            scoped.append(call.args[0].value)
+        else:
+            fixed.extend(named)
+    return scoped, fixed
+
+
+#: A sample whose sandboxes live on a service shared with every other run. Docker, WSL and
+#: in-process samples put theirs on the job's own runner, where there is nothing to collide
+#: with, so `conversation_id` is theirs to skip.
+_HOSTED = tuple(sample for sample in _SAMPLE_DIRS if "maf_sandbox_acas" in _imports(sample))
+
+
+def test_the_hosted_samples_were_found():
+    """The list is derived, so an empty one would make every assertion below vacuous."""
+    assert [sample.name for sample in _HOSTED] == [
+        "01_acas_bicep",
+        "03_acas_codeact",
+        "14_acas_codeact_files",
+        "15_acas_codeact_host_tools",
+    ]
+
+
+@pytest.mark.parametrize("sample", _HOSTED, ids=lambda path: path.name)
+def test_a_hosted_sample_names_its_conversation_for_the_run(sample: Path):
+    """Every conversation a hosted sample opens is named for the run that opened it."""
+    scoped, fixed = _conversations(sample)
+    assert not fixed, (
+        f"{sample.name} names a conversation without the run in it: {', '.join(fixed)}. "
+        "`dispose_scope` deletes by label and asks the service, so two runs sharing this "
+        "string share a delete. Pass it through `conversation_id` from the scaffold."
+    )
+    assert scoped, f"{sample.name} is on a hosted backend and opens no conversation"
 
 
 @pytest.mark.parametrize("helper", _HELPERS)
@@ -144,18 +231,30 @@ class TestConversationIdKeepsOneRunSPurgeToItself:
         monkeypatch.delenv("GITHUB_RUN_ATTEMPT", raising=False)
         assert scaffold.conversation_id("01-acas-bicep") == f"01-acas-bicep-local-{os.getpid()}-1"
 
-    @pytest.mark.parametrize("sample", _SAMPLE_DIRS, ids=lambda path: path.name)
-    def test_every_id_fits_the_label_a_backend_writes(
+    def test_an_empty_attempt_is_not_an_attempt(self, monkeypatch: pytest.MonkeyPatch):
+        """The same hazard as the run id one line up, and the same answer."""
+        monkeypatch.setenv("GITHUB_RUN_ID", "9876543210")
+        monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "")
+        assert scaffold.conversation_id("01-acas-bicep") == "01-acas-bicep-9876543210-1"
+
+    @pytest.mark.parametrize("sample", _HOSTED, ids=lambda path: path.name)
+    def test_every_id_a_sample_asks_for_fits_the_label(
         self, sample: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        """Past 63 characters a backend substitutes a digest, which is unique and unreadable.
+        """Past 63 characters a backend labels by digest: still unique, no longer readable.
 
-        The longest real input is the sample's own directory name, and GitHub run ids are
-        eleven digits today. Held against the widest plausible one rather than today's.
+        Measured on the strings the samples ask for, under a run id twice the width of the
+        eleven digits GitHub issues now.
         """
         monkeypatch.setenv("GITHUB_RUN_ID", "9" * 20)
         monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "10")
-        assert len(scaffold.conversation_id(sample.name)) <= 63
+        scoped, _ = _conversations(sample)
+        too_long = {
+            name: len(scaffold.conversation_id(name))
+            for name in scoped
+            if len(scaffold.conversation_id(name)) > 63
+        }
+        assert not too_long, f"{sample.name} would be labelled by digest: {too_long}"
 
 
 class TestQuotedIsWhatMakesTheTagABarrier:
