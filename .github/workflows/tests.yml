@@ -83,13 +83,11 @@ jobs:
         run: uv run ruff format --check .
 
       - name: Types (per-package strict configs)
-        run: |
-          uv run pyright -p packages/maf-sandbox
-          uv run pyright -p packages/maf-sandbox-acas
-          uv run pyright -p packages/maf-sandbox-bicep
-          uv run pyright -p packages/maf-sandbox-codeact
-          uv run pyright -p packages/maf-sandbox-docker
-          uv run pyright -p packages/maf-sandbox-wslc
+        # One discovery implementation: the same `packages_with_pyright()` the local gate and
+        # `tests/test_pr_gate_enumerates.py` use, run as a CLI so CI never re-parses the TOML
+        # with a grep of its own. Enumerated rather than listed so a seventh package is
+        # type-checked on the commit that adds it (#450).
+        run: uv run python scripts/gate_tasks.py pyright-packages
 
       - name: Types (scripts, tests & samples)
         # scripts/, the test trees and samples/ belong to no package, so the per-package strict
@@ -115,13 +113,13 @@ jobs:
             README.md 'packages/*/README.md' 'samples/**/*.md' RELEASING.md
 
       - name: Build + metadata check
+        # Enumerated: the directory basename is the distribution name — an invariant
+        # test_release_config.py pins — so a new package builds on the commit that adds it.
         run: |
-          uv build --package maf-sandbox
-          uv build --package maf-sandbox-acas
-          uv build --package maf-sandbox-bicep
-          uv build --package maf-sandbox-codeact
-          uv build --package maf-sandbox-docker
-          uv build --package maf-sandbox-wslc
+          set -euo pipefail
+          for package in packages/*/; do
+            uv build --package "$(basename "$package")"
+          done
           uv run twine check dist/*
 
       # `--find-links dist/` resolves intra-family deps against the wheels just built, not
@@ -129,7 +127,8 @@ jobs:
       - name: Install + use each wheel in a clean environment
         run: |
           set -euo pipefail
-          for package in maf-sandbox maf-sandbox-acas maf-sandbox-bicep maf-sandbox-codeact maf-sandbox-docker maf-sandbox-wslc; do
+          for package_dir in packages/*/; do
+            package="$(basename "$package_dir")"
             module="${package//-/_}"
             venv="/tmp/smoke-${package}"
             uv venv "$venv"

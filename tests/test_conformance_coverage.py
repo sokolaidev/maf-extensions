@@ -23,8 +23,18 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 PACKAGES = REPO_ROOT / "packages"
 SAMPLES = REPO_ROOT / "samples"
 
-#: The function a package's tests have to call, and where it comes from.
-SUITE = "assert_files_out_conformance"
+#: The suites a package's tests have to call, and where they come from. FILES_OUT is gated on
+#: implementing the pull surface (`_serving` below); the other three every backend owes — a
+#: backend declaring none of them is not a backend.
+SUITES = (
+    "assert_files_out_conformance",
+    "assert_files_in_conformance",
+    "assert_exec_conformance",
+    "assert_files_delete_conformance",
+)
+#: The measurement entry point that stands in for the FILES_DELETE assert when a backend
+#: withholds the capability: same probes, no gate, no verdict — findings rather than promises.
+MEASURE = "measure_files_delete_probes"
 SUITE_MODULE = "maf_sandbox.conformance"
 
 #: What serving `FILES_OUT` takes. `list_dir` belongs to `FILES_LIST` and is not required here —
@@ -99,8 +109,8 @@ def _callee_key(callee: ast.expr) -> str | None:
     return ".".join(reversed(parts))
 
 
-def _suite_keys(tree: ast.Module) -> frozenset[str]:
-    """Every way this module can name the suite, from its own imports — function-local included.
+def _suite_keys(tree: ast.Module, suite: str) -> frozenset[str]:
+    """Every way this module can name one suite, from its own imports — function-local included.
 
     Requiring the import is what separates the shared suite from a local function that happens
     to share its name.
@@ -109,32 +119,127 @@ def _suite_keys(tree: ast.Module) -> frozenset[str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom):
             if node.module == SUITE_MODULE:
-                keys |= {alias.asname or alias.name for alias in node.names if alias.name == SUITE}
+                keys |= {alias.asname or alias.name for alias in node.names if alias.name == suite}
             elif node.module == "maf_sandbox":
                 keys |= {
-                    f"{alias.asname or alias.name}.{SUITE}"
+                    f"{alias.asname or alias.name}.{suite}"
                     for alias in node.names
                     if alias.name == "conformance"
                 }
         elif isinstance(node, ast.Import):
             keys |= {
-                f"{alias.asname or alias.name}.{SUITE}"
+                f"{alias.asname or alias.name}.{suite}"
                 for alias in node.names
                 if alias.name == SUITE_MODULE
             }
     return frozenset(keys)
 
 
-def _calls_the_suite(tests: Path) -> bool:
-    """Whether a test module under ``tests`` imports the suite and calls it."""
+def _calls_the_suite(tests: Path, suite: str) -> bool:
+    """Whether a test module under ``tests`` imports one suite and calls it."""
     for module in tests.rglob("test_*.py"):
         tree = ast.parse(module.read_text(encoding="utf-8"))
-        keys = _suite_keys(tree)
+        keys = _suite_keys(tree, suite)
         if keys and any(
             _callee_key(node.func) in keys for node in ast.walk(tree) if isinstance(node, ast.Call)
         ):
             return True
     return False
+
+
+def _binding_text(annotation: ast.expr) -> str:
+    """The annotation as source text, so `tuple[SandboxBackend, type[Sandbox]]` matches however it is spaced."""
+    return ast.unparse(annotation)
+
+
+def _iter_modules(src: Path, module_filter: str | None = None):
+    """Every .py under ``src`` — filtered to one file when ``module_filter`` names it."""
+    for module in sorted(src.rglob("*.py")):
+        if ".venv" in module.parts:
+            continue
+        if module_filter is None or module.name == module_filter:
+            yield module
+
+
+def _carries_the_binding(src: Path, backend_class: str | None = None) -> str | None:
+    """The file under ``src`` holding the static protocol binding, or ``None``.
+
+    The binding is an ``AnnAssign`` annotated ``tuple[SandboxBackend, type[Sandbox]]`` under an
+    ``if TYPE_CHECKING:`` — the annotation is the load-bearing part, and the name (``_``) is
+    not, so the name is deliberately not matched. ``isinstance`` assertions do not count:
+    ``runtime_checkable`` checks member presence only, and a narrowed signature or a missing
+    method passes one while failing the build the binding fails.
+
+    ``backend_class``, when given, additionally requires the assignment's value to construct
+    or name that class — so a package with two backends is held to a binding for each, not to
+    whichever single one happens to carry the annotation.
+    """
+    target = "tuple[SandboxBackend, type[Sandbox]]"
+    for module in _iter_modules(src):
+        tree = ast.parse(module.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.If) and isinstance(node.test, ast.Name)):
+                continue
+            if node.test.id != "TYPE_CHECKING":
+                continue
+            for statement in node.body:
+                if (
+                    isinstance(statement, ast.AnnAssign)
+                    and statement.annotation is not None
+                    and _binding_text(statement.annotation) == target
+                    and (backend_class is None or _names_backend(statement.value, backend_class))
+                ):
+                    return module.relative_to(REPO_ROOT).as_posix()
+    return None
+
+
+def _names_backend(value: ast.expr | None, backend_class: str) -> bool:
+    """Whether a binding's value names ``backend_class`` in the backend slot — exactly.
+
+    The binding's value is the tuple ``(Backend(Config()), Sandbox)``; the backend slot is its
+    first element, a call whose *callee* is the class. The callee is compared by name,
+    exactly: a substring test would let a single ``BackendV2`` binding satisfy both
+    ``Backend`` and ``BackendV2``, so the shorter class rides in unbound behind the longer
+    one's annotation.
+    """
+    if isinstance(value, ast.Tuple) and value.elts:
+        value = value.elts[0]
+    if not isinstance(value, ast.Call):
+        return False
+    callee = value.func
+    return isinstance(callee, ast.Name) and callee.id == backend_class
+
+
+def _backends(src: Path, module_filter: str | None = None) -> list[str]:
+    """Classes under ``src`` that look like a ``SandboxBackend``: ``acquire`` plus a dispose.
+
+    A structural read rather than an import — this file may not import the packages it audits,
+    because a backend that fails to import is exactly the one it must still name. ``acquire``
+    taking a ``SandboxKey`` and a ``SandboxSpec`` is the signature no other shape in these
+    packages happens to share.
+    """
+    found: list[str] = []
+    for module in _iter_modules(src, module_filter):
+        tree = ast.parse(module.read_text(encoding="utf-8"))
+        for klass in ast.walk(tree):
+            if not isinstance(klass, ast.ClassDef):
+                continue
+            methods = {
+                node.name: node
+                for node in klass.body
+                if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+            }
+            acquire = methods.get("acquire")
+            if acquire is None or len(acquire.args.args) < 3:
+                continue
+            acquire_names = {
+                ast.unparse(arg.annotation) for arg in acquire.args.args[1:] if arg.annotation
+            }
+            if not {"SandboxKey", "SandboxSpec"} <= acquire_names:
+                continue
+            if any(name in methods for name in ("dispose", "dispose_scope")):
+                found.append(klass.name)
+    return found
 
 
 def _canonical(distribution: str) -> str:
@@ -159,19 +264,128 @@ PACKAGE_DIRS = sorted(path.parent for path in PACKAGES.glob("*/pyproject.toml"))
 BACKEND_PACKAGES = [path for path in PACKAGE_DIRS if path.name != CORE]
 
 
+def _imports_sandbox_backend(src: Path) -> bool:
+    """Whether anything under ``src`` imports ``SandboxBackend`` from core.
+
+    The independent marker: a package declaring itself a backend by what it imports, checked
+    with nothing but an AST read. Structural discovery decides *which classes*; this decides
+    *which packages are candidates at all*, from a source the discovery heuristic cannot gate.
+    """
+    for module in _iter_modules(src):
+        tree = ast.parse(module.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "maf_sandbox":
+                if any(alias.name == "SandboxBackend" for alias in node.names):
+                    return True
+    return False
+
+
+#: Candidate backend packages: any non-core package that either imports ``SandboxBackend`` or
+#: has a class structural discovery reads as one. The union, not the import alone — the
+#: protocol is structural, so a package can implement ``acquire``/``dispose`` and never name
+#: the type, and gating candidacy on the import would let it escape the very checks this
+#: guard exists to require. Each side covers the other's blind spot: a package that imports
+#: the protocol but defeats the class heuristic (inherited dispose, aliased annotations)
+#: fails loudly rather than receiving no checks at all (#450).
+CANDIDATE_BACKEND_PACKAGES = [
+    path
+    for path in BACKEND_PACKAGES
+    if _imports_sandbox_backend(path / "src") or _backends(path / "src")
+]
+
+#: The non-core packages that are deliberately not backends — kinds, which build a tool on top
+#: of whatever backend the router picked. Written down rather than inferred, because both
+#: predicates above are heuristics a package can defeat: one by not naming the type it
+#: implements structurally, the other by an aliased annotation or an inherited ``dispose``. A
+#: package matching neither and absent from this set fails ``test_every_package_is_classified``
+#: rather than quietly receiving no checks — which is the detector gating itself (#450).
+NOT_BACKENDS = frozenset({"maf-sandbox-bicep", "maf-sandbox-codeact"})
+
+
+def test_every_package_is_classified():
+    """A package is a candidate backend or a declared non-backend. Silence is neither.
+
+    Both candidate predicates are heuristics, so a new backend can be missed by both — and
+    being missed is indistinguishable from being checked, since the parameterized suites
+    simply do not run for it. This is what makes the omission loud.
+    """
+    unclassified = (
+        {path.name for path in BACKEND_PACKAGES}
+        - {path.name for path in CANDIDATE_BACKEND_PACKAGES}
+        - NOT_BACKENDS
+    )
+    assert not unclassified, (
+        f"{sorted(unclassified)} matched neither candidate predicate and is not a declared "
+        "non-backend. If it is a backend, say so where the detector can see it — import "
+        "SandboxBackend, or give it a class structural discovery reads. If it is not, add it "
+        "to NOT_BACKENDS with the reason. Doing neither leaves it with no conformance checks "
+        "at all, which is the gap #450 exists to close."
+    )
+
+
 @pytest.mark.parametrize("package", BACKEND_PACKAGES, ids=lambda path: path.name)
 def test_a_backend_that_serves_the_pull_surface_answers_the_suite(package: Path):
     serving = _serving(package / "src")
     if not serving:
         pytest.skip(f"{package.name} implements no pull surface")
     where = "; ".join(f"{method} in {', '.join(sorted(set(at)))}" for method, at in serving.items())
-    assert _calls_the_suite(package / "tests"), (
+    assert _calls_the_suite(package / "tests", SUITES[0]), (
         f"{package.name} implements the pull surface — {where} — and nothing in its "
-        f"tests imports {SUITE} from {SUITE_MODULE} and calls it. Two backends written against "
+        f"tests imports {SUITES[0]} from {SUITE_MODULE} and calls it. Two backends written against "
         "the prose alone shipped the same confinement escape (#142); the probes are what that "
         "cost bought. Fill in a `ConformanceSubject` — `PosixGuestSubject` if the guest is Linux "
         "and has `ln` — and await the suite against a real instance."
     )
+
+
+@pytest.mark.parametrize("package", CANDIDATE_BACKEND_PACKAGES, ids=lambda path: path.name)
+def test_every_backend_answers_the_suites_it_cannot_opt_out_of(package: Path):
+    """FILES_IN, EXEC and FILES_DELETE: the capabilities every sandbox backend declares or refuses.
+
+    FILES_OUT is gated on serving the pull surface; these three are not, because a backend that
+    declares none of them is not a backend. FILES_DELETE admits two answers: the assert for a
+    backend that declares the capability, and `measure_files_delete_probes` for one that
+    withholds it — the measurement is how a withheld capability can ever be evidenced into or
+    out of declaration (#450: a gate nothing can run against an undeclared mechanism is a gate
+    that never opens). The wiring check proves a call is written either way, which is all it
+    can prove; what the call found is each suite's own business.
+    """
+    for suite in SUITES[1:]:
+        assert _calls_the_suite(package / "tests", suite) or (
+            suite == SUITES[3] and _calls_the_suite(package / "tests", MEASURE)
+        ), (
+            f"nothing in {package.name}'s tests imports {suite} from {SUITE_MODULE} and calls "
+            "it. A backend declaring none of the capabilities a suite probes is not a backend, "
+            "and one that withholds one answers it with an asserted skip or a measurement — "
+            "but neither is checkable from a call that was never written. #450 is what this "
+            "silence cost."
+        )
+
+
+@pytest.mark.parametrize("package", CANDIDATE_BACKEND_PACKAGES, ids=lambda path: path.name)
+def test_a_backend_carries_the_static_protocol_binding(package: Path):
+    """The `tuple[SandboxBackend, type[Sandbox]]` annotation, present rather than remembered.
+
+    `runtime_checkable` tests member presence, so an `isinstance` assertion passes while a
+    signature narrows or a method goes missing — the annotation is what fails the build
+    instead. The binding is a convention, and a convention held by copy-paste is one a new
+    package omits for free — which is why this asserts it rather than trusting it.
+
+    Every discovered backend class, not one per package: a package holding two backends is
+    bound when each of them is named in a binding, so the second one cannot ride in unbound.
+    """
+    backends = _backends(package / "src")
+    assert backends, f"{package.name} was discovered as a backend package but has no backends"
+    for backend_class in backends:
+        where = _carries_the_binding(package / "src", backend_class)
+        assert where is not None, (
+            f"no module under {package.name}/src carries the static conformance binding for "
+            f"{backend_class} — an `AnnAssign` of `tuple[SandboxBackend, type[Sandbox]]` under "
+            "`if TYPE_CHECKING:` naming that backend and its sandbox. Without it, adding a "
+            "method to the protocol leaves this package silently non-conforming with a fully "
+            "green build. Paste the binding wslc's `_backend.py` carries, naming this "
+            "package's own backend and sandbox classes."
+        )
 
 
 def test_the_guard_still_finds_the_backends_that_exist():
@@ -183,11 +397,75 @@ def test_the_guard_still_finds_the_backends_that_exist():
         "discovery stopped seeing it, which would make every other test in this file vacuous "
         "while still green."
     )
+    structural = {
+        package.name: _backends(package / "src")
+        for package in BACKEND_PACKAGES
+        if _backends(package / "src")
+    }
+    assert {"maf-sandbox-acas", "maf-sandbox-docker", "maf-sandbox-wslc"} <= set(structural), (
+        f"expected the three backend packages to be discovered structurally; found "
+        f"{sorted(structural)}. The binding rule and the no-opt-out rule key off this "
+        "discovery, so a miss here makes both vacuous while still green."
+    )
+
+
+def test_every_candidate_is_discovered_structurally():
+    """The import marker names the candidates; the heuristic has to answer for each one.
+
+    Without this, a backend the class heuristic misses — an inherited `dispose`, an aliased
+    annotation — is not a candidate the structural rule silently skips: it is a candidate that
+    fails here, loudly, because a package importing `SandboxBackend` is declaring itself a
+    backend and the discovery has to see it (#450).
+    """
+    for package in CANDIDATE_BACKEND_PACKAGES:
+        found = _backends(package / "src")
+        assert found, (
+            f"{package.name} imports SandboxBackend but the structural discovery finds no "
+            "backend class in its src — acquire/dispose shapes the heuristic misses (an "
+            "inherited dispose, an alias) leave this package outside every backend rule while "
+            "it goes on being one. Teach the heuristic or say so here."
+        )
+
+
+def test_a_longer_class_name_cannot_satisfy_a_shorter_one():
+    """The binding match is exact: one `BackendV2` binding must not bound `Backend` too."""
+    binding = ast.parse(
+        "_: tuple[SandboxBackend, type[Sandbox]] = (BackendV2(Config()), Sandbox2)"
+    ).body[0]
+    assert isinstance(binding, ast.AnnAssign)
+    assert _names_backend(binding.value, "BackendV2")
+    assert not _names_backend(binding.value, "Backend")
 
 
 def test_the_package_that_ships_the_suite_answers_it_too():
     """The fake is the specimen every kind's tests run against, so it answers the probes too."""
-    assert _calls_the_suite(PACKAGES / CORE / "tests")
+    for suite in SUITES:
+        assert _calls_the_suite(PACKAGES / CORE / "tests", suite) or (
+            suite == SUITES[3] and _calls_the_suite(PACKAGES / CORE / "tests", MEASURE)
+        ), (
+            f"nothing in maf-sandbox's own tests calls {suite}. The package that ships the "
+            "suite is the specimen every kind's tests run against — removing its call to one "
+            "of them leaves that suite unexercised by the only tests that always run."
+        )
+
+
+def test_the_core_package_carries_the_binding_too():
+    """`maf_sandbox.testing` implements the protocol; the binding holds it to its own package.
+
+    It is the specimen every kind's tests run against, so a protocol method it stops satisfying
+    is a defect every kind's suite reports as a fake problem rather than a core one. Discovery
+    is scoped to the module: core also holds `SandboxRouter`, which structurally resembles a
+    backend (`acquire` plus a dispose) but is the caller of them, not one.
+    """
+    src = PACKAGES / CORE / "src"
+    backends = _backends(src, module_filter="testing.py")
+    assert backends, "core's testing backend is no longer discovered as a backend"
+    for backend_class in backends:
+        assert _carries_the_binding(src, backend_class) is not None, (
+            f"no module under maf-sandbox/src carries the static conformance binding for "
+            f"{backend_class}. `maf_sandbox.testing`'s backend and sandbox should hold it, the "
+            "same annotation every backend package carries."
+        )
 
 
 def test_no_package_builds_on_a_sibling_that_serves_the_pull_surface():

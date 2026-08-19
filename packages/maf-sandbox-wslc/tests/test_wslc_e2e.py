@@ -18,11 +18,19 @@ import uuid
 
 import pytest
 from maf_sandbox import SandboxKey, SandboxSpec
+from maf_sandbox.conformance import (
+    PosixGuestSubject,
+    assert_exec_conformance,
+    assert_files_delete_conformance,
+    assert_files_in_conformance,
+)
 
 from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
 
 _IMAGE = os.environ.get("MAF_SANDBOX_WSLC_E2E_IMAGE")
 _PROXY_IMAGE = os.environ.get("MAF_SANDBOX_WSLC_E2E_PROXY_IMAGE")
+
+_WORK = "/maf-sandbox/work"
 
 pytestmark = pytest.mark.skipif(
     shutil.which("wslc") is None or not _IMAGE,
@@ -172,3 +180,91 @@ class TestAllowlistEgress:
         assert purged == 1
         assert _names_on_the_machine(sandbox.container_name) == []
         assert not _network_present(net)
+
+
+class TestTheSharedConformanceSuites:
+    """`maf_sandbox.conformance`'s FILES_IN, EXEC and FILES_DELETE suites, against a real guest.
+
+    This is the backend the FILES_IN and EXEC suites exist for: it declares exactly those two
+    and no pull surface, so before them nothing held it to anything (#450). The suites verify
+    through `exec`, which this backend has — the probes are why that shape was chosen.
+
+    FILES_DELETE is **called and refused**: the suite gate raises before any probe runs,
+    because this backend declares no such capability — confining a removal needs the component
+    walk its absent pull surface cannot provide (#125 carries the pull surface). The call is
+    the wiring; the refusal is the answer, and there are no results to skip.
+    """
+
+    def test_it_answers_the_files_in_probes(self):
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = WslcSandboxBackend(WslcSandboxConfig())
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(_key(scope), _spec())
+            results = await assert_files_in_conformance(
+                PosixGuestSubject(
+                    sandbox=sandbox,
+                    working_directory=_WORK,
+                    capabilities=backend.capabilities,
+                )
+            )
+            assert not [r for r in results if r.skipped]
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+    def test_it_answers_the_exec_probes_on_its_own_sandbox(self):
+        """On a fresh container: the timeout probe discards it, exactly as on docker.
+
+        `dispose_scope` afterwards has to stay clean over a container the timeout already
+        removed — teardown reaching a name that is already gone is half the assertion.
+        """
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = WslcSandboxBackend(WslcSandboxConfig())
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(_key(scope), _spec())
+            results = await assert_exec_conformance(
+                PosixGuestSubject(
+                    sandbox=sandbox,
+                    working_directory=_WORK,
+                    capabilities=backend.capabilities,
+                )
+            )
+            assert not [r for r in results if r.skipped]
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+    def test_the_delete_suite_refuses_an_undeclared_capability(self):
+        """The gated runner refuses a subject with no FILES_DELETE — and that refusal is the answer.
+
+        The whole-suite gate raises rather than skipping, so a run against this backend cannot
+        report probe results at all; asserting the refusal keeps the call honest (it is what
+        the coverage wiring looks for) without pretending skips that the runner never emits.
+        The capability itself is withheld structurally — `remove` raises NotImplementedError,
+        confining a deletion needs the pull surface #125 carries — so unlike acas there is
+        nothing to measure: no mechanism exists behind the gate.
+        """
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = WslcSandboxBackend(WslcSandboxConfig())
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(_key(scope), _spec())
+            with pytest.raises(ValueError, match="declares no FILES_DELETE"):
+                await assert_files_delete_conformance(
+                    PosixGuestSubject(
+                        sandbox=sandbox,
+                        working_directory=_WORK,
+                        capabilities=backend.capabilities,
+                    )
+                )
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))

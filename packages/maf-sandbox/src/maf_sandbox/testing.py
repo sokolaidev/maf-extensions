@@ -21,6 +21,7 @@ import posixpath
 import shlex
 from collections.abc import Mapping, Sequence
 from types import MappingProxyType
+from typing import TYPE_CHECKING
 
 from ._outputs import SandboxTransferCapExceeded
 from ._protocol import (
@@ -31,6 +32,8 @@ from ._protocol import (
     EntryKind,
     ExecResult,
     Isolation,
+    Sandbox,
+    SandboxBackend,
     SandboxEntry,
     SandboxKey,
     SandboxLimits,
@@ -417,3 +420,13 @@ class InMemoryStore:
 
     async def list(self) -> list[str]:
         return list(self.files)
+
+
+# Holds this module's backend and sandbox to the protocols they implement, inside this
+# package's own strict pyright pass — the annotation is what fails the build when a protocol
+# method goes missing or a signature narrows.
+if TYPE_CHECKING:
+    _: tuple[SandboxBackend, type[Sandbox]] = (
+        InProcessSandboxBackend(),
+        InProcessSandbox,
+    )

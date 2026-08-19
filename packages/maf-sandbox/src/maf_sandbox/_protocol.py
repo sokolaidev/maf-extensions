@@ -506,7 +506,10 @@ class Sandbox(Protocol):
         """Write ``content`` to ``path`` inside the sandbox.
 
         ``str`` means UTF-8 whatever the host's locale says; ``bytes`` is written as given, and
-        is what an in-door carrying a PNG or a spreadsheet needs.
+        is what an in-door carrying a PNG or a spreadsheet needs.  Parent directories are
+        created as needed — every shipped backend already does, and a write that refused them
+        would push directory creation onto every kind, which the protocol gives them no way
+        to do.
         """
         ...
 

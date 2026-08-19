@@ -57,9 +57,13 @@ from maf_sandbox import (
     launcher_script,
 )
 from maf_sandbox.conformance import (
+    FILES_DELETE_PROBES,
     FILES_OUT_PROBES,
     PosixGuestSubject,
+    assert_exec_conformance,
+    assert_files_in_conformance,
     assert_files_out_conformance,
+    measure_files_delete_probes,
 )
 
 from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
@@ -251,6 +255,26 @@ def probe_results(live):
     return live.run(assert_files_out_conformance(_subject(live)))
 
 
+@pytest.fixture(scope="module")
+def files_in_results(live):
+    """One FILES_IN run, shared with the write-fidelity assertions below."""
+    return live.run(assert_files_in_conformance(_subject(live)))
+
+
+@pytest.fixture(scope="module")
+def files_delete_measurement(live):
+    """The FILES_DELETE probes, measured against the mechanism this backend withholds.
+
+    `measure_files_delete_probes` runs every probe with no declaration gate and no verdict:
+    a failure is a finding about the mechanism, not a broken promise. This is what breaks the
+    loop the withholding was stuck in — the capability is undeclared because nothing has
+    measured the service, and nothing could measure it because every gated suite refuses an
+    undeclared subject (#450). The measurement's verdict is the artefact #435 and #438 argue
+    over: read transient-or-structural into its results before choosing a callback layer.
+    """
+    return live.run(measure_files_delete_probes(_subject(live)))
+
+
 class TestFilesOutAgainstTheRealService:
     """The shared probes, against the service rather than a fake that agrees with this package."""
 
@@ -331,6 +355,95 @@ class TestFilesOutAgainstTheRealService:
                 )
 
         live.run(scenario())
+
+
+class TestFilesInAgainstTheRealService:
+    """The write surface's fidelity probes — bytes, UTF-8, replacement, implicit parents."""
+
+    def test_the_files_in_probes_come_back_clean(self, files_in_results):
+        results = files_in_results
+        assert results, "the FILES_IN conformance run returned no results"
+        skipped = {result.probe.name: result.skipped for result in results if result.skipped}
+        assert not skipped, f"probes skipped against a backend that declares FILES_IN: {skipped}"
+
+
+class TestFilesDeleteAgainstTheRealService:
+    """The removal probes, measured — the capability this backend withholds, and why.
+
+    This backend refuses a link where the protocol says a link is removed and never followed,
+    so `a-link-is-removed-never-followed` is *expected to fail* here with the ValueError the
+    offline `TestRemove` pins: the honest measurement, and possibly the permanent answer —
+    under the rule as written, this service may never declare FILES_DELETE. That is a useful
+    outcome rather than a blocked one, and this is where it gets decided on evidence.
+
+    What the other probes say matters just as much, because their verdict is the
+    transient-or-structural question #435 and #438 argue over without data: a service that
+    deletes files and trees cleanly but refuses links is *structural* — a capability gap whose
+    answer is the router refusing the spec up front through `requires` — while one that
+    intermittently fails deletions is *transient*, an exceptional path, where the callback
+    belongs. Read the results below into that argument before choosing a layer.
+    """
+
+    def test_every_delete_probe_reached_a_verdict(self, files_delete_measurement):
+        """No skips and no exceptions in the runner itself: every probe answered, one way or the other."""
+        results = files_delete_measurement
+        assert results, "the FILES_DELETE measurement returned no results"
+        assert all(result.skipped is None for result in results)
+        assert len(results) == len(FILES_DELETE_PROBES)
+
+    def test_the_mechanism_deletes_what_the_capability_promises(self, files_delete_measurement):
+        """The probes that pass are the mechanism working; the ones that fail are the record.
+
+        Every probe is classified by this test into expected-pass or expected-fail — a result
+        in neither column fails the run, so an unclassified finding cannot sit green in a
+        scheduled job with no visible artefact. When a probe's column legitimately changes,
+        move it here and name the change in the PR that moves it, citing this run: the
+        interior-link probe in particular is the answer to whether this service can ever
+        unlink-on-delete (#452's open question), and half of the transient-or-structural
+        reading below.
+        """
+        results = files_delete_measurement
+        failed = {r.probe.name: r.failure for r in results if r.failure is not None}
+        passed = {r.probe.name for r in results if r.failure is None}
+
+        # The refusal the offline TestRemove pins: an expected failure, not a regression.
+        assert "a-link-is-removed-never-followed" in failed, (
+            "this backend refuses a link on remove — the offline TestRemove pins it. A pass "
+            "here means the service unlinked rather than followed, and the capability "
+            "conversation changes: say so, citing this run."
+        )
+        assert "ValueError" in failed["a-link-is-removed-never-followed"]
+
+        # The expected columns for everything else. The interior-link probe is deliberately
+        # *not* pre-classified: it is the genuinely unknown one — this backend's stat-based
+        # refusal cannot see inside a recursive tree — so it lands in the unclassified set
+        # below and fails this run, loudly, with its result in the message, rather than being
+        # assumed either way. The first live run classifies it; that is the measurement.
+        expected_pass = {
+            "a-removal-removes",
+            "a-missing-path-is-success",
+            "recursive-removes-the-tree",
+            "the-working-directory-is-refused",
+            "a-path-outside-is-refused",
+            "a-path-through-a-linked-parent-is-refused",
+            "a-directory-needs-recursive",
+            "an-empty-directory-needs-recursive",
+        }
+        unclassified = (passed | set(failed)) - expected_pass - {"a-link-is-removed-never-followed"}
+        missing_pass = expected_pass - passed
+        # Both in one assertion, because the unclassified set is meant to be non-empty on the
+        # first live run: anything asserted after it would never run on the one run this exists
+        # to produce evidence from, and a probe that should pass and did not would be missing
+        # from the only artifact.
+        assert not unclassified and not missing_pass, (
+            f"unclassified delete-probe results: {sorted(unclassified)} "
+            f"(outcome: {sorted((n, failed.get(n, 'passed')) for n in unclassified)}); "
+            f"probes that should pass and failed: "
+            f"{sorted((n, failed.get(n, 'no result')) for n in missing_pass)}. "
+            "This measurement exists to produce evidence for #435/#438 — classify each result "
+            "in this test (expected pass, expected fail with its reason) or the scheduled run "
+            "reports nothing a decision can cite."
+        )
 
 
 class TestWhatOnlyTheServiceCanSay:
@@ -607,3 +720,21 @@ class TestBootingAnImageTheServiceProvides:
         )
         assert result.exit_code == 0, result.stderr
         assert result.stdout.strip().startswith("Python 3."), result.stdout
+
+
+class TestExecAgainstTheRealService:
+    """The run surface's probes — quoting, exit codes, the working directory, the timeout bound.
+
+    **Last class in the module, on the shared sandbox.** This backend survives the timeout
+    probe (`asyncio.wait_for` bounds the host-side call; the guest keeps sleeping), so unlike
+    docker's the sandbox need not be a fresh one — but the sleeping guest is still in there
+    when the suite returns, and nothing that measures guest state should follow it. Cost
+    discipline stays as it was: one more probe set on the one sandbox the module already pays
+    for, disposed by the `live` fixture's teardown as before.
+    """
+
+    def test_the_exec_probes_come_back_clean(self, live):
+        results = live.run(assert_exec_conformance(_subject(live)))
+        assert results, "the EXEC conformance run returned no results"
+        skipped = {result.probe.name: result.skipped for result in results if result.skipped}
+        assert not skipped, f"probes skipped against a backend that declares EXEC: {skipped}"
