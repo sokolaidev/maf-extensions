@@ -2,6 +2,29 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.17.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.16.0...maf-sandbox-v0.17.0) (2026-08-19)
+
+
+### ⚠ BREAKING CHANGES
+
+* **host-tools:** a stopped program takes its children with it where the guest can ([#455](https://github.com/sokolaidev/maf-extensions/issues/455))
+* **protocol:** `Sandbox` gains `remove(path, *, working_directory, recursive=False)`. An implementation that does not define it no longer satisfies the protocol. Backends that cannot confine a removal should raise `NotImplementedError` and not declare `Capability.FILES_DELETE`, as `maf-sandbox-wslc` does.
+* **host-tools:** a dispatched program that overruns is signalled, and the transport reclaims its own files ([#434](https://github.com/sokolaidev/maf-extensions/issues/434))
+
+### Features
+
+* **host-tools:** a dispatched program that overruns is signalled, and the transport reclaims its own files ([#434](https://github.com/sokolaidev/maf-extensions/issues/434)) ([505f986](https://github.com/sokolaidev/maf-extensions/commit/505f9862594dcca7fe53757a57615932ad6c3d48))
+* **host-tools:** a registry observes each dispatch, with the run that made it ([#464](https://github.com/sokolaidev/maf-extensions/issues/464)) ([d502146](https://github.com/sokolaidev/maf-extensions/commit/d502146bf0479b441d7642007c664081aee0a834))
+* **host-tools:** a stopped program takes its children with it where the guest can ([#455](https://github.com/sokolaidev/maf-extensions/issues/455)) ([c376cfc](https://github.com/sokolaidev/maf-extensions/commit/c376cfcbaae481fbf97e0f6806b42b4ac2d89f68))
+* **protocol:** a sandbox can be asked to delete what a workload put there ([#452](https://github.com/sokolaidev/maf-extensions/issues/452)) ([2453820](https://github.com/sokolaidev/maf-extensions/commit/245382036ba1e2ddc18dea79b8e97d2cfb561935))
+* **sandbox:** probes for every capability a backend claims, and CI that enumerates backends rather than listing them ([#462](https://github.com/sokolaidev/maf-extensions/issues/462)) ([f0915c7](https://github.com/sokolaidev/maf-extensions/commit/f0915c71819c729cd33aa130749fffc8d69fa377))
+
+
+### Documentation
+
+* SandboxSpec.image is backend-resolved, so core stops stating one backend's rule as the rule ([#430](https://github.com/sokolaidev/maf-extensions/issues/430)) ([002591f](https://github.com/sokolaidev/maf-extensions/commit/002591f55bf8f781d96b7b7ccf2960b24e22dd1e))
+* two backends declare HOST_TOOLS, so stop saying none does ([#426](https://github.com/sokolaidev/maf-extensions/issues/426)) ([ca38e5c](https://github.com/sokolaidev/maf-extensions/commit/ca38e5ccfbb6d937fce3663b7aa6be6a3e528c35))
+
 ## [0.16.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.15.0...maf-sandbox-v0.16.0) (2026-08-17)
 
 
