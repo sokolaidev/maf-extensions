@@ -34,7 +34,7 @@ def pyright_packages() -> int:
             failures.append(package.name)
     if failures:
         print(f"pyright failed for: {', '.join(failures)}", file=sys.stderr)
-        return 1
+        raise SystemExit(1)
     return 0
 
 
