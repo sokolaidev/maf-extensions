@@ -16,6 +16,8 @@ import dataclasses
 import inspect
 import json
 import logging
+import time
+from collections.abc import Generator
 
 import pytest
 
@@ -1041,10 +1043,8 @@ class TestTheRegistryObservesEveryDispatch:
         self._pairing(events)
 
     def test_a_refused_dispatch_is_observed_too(self):
-        """A refusal is a call the host still ran — the ledger wants it attributed as well.
-
-        The dispatch cap is the one sample 15's ledger could not partition, because every
-        refusal returns before any body runs and nothing else names the run."""
+        """A refusal is a call the host still ran, so it is observed: a cap refusal returns
+        before any body runs, and without the enter/exit pair nothing else names the run."""
         events: list[tuple[str, object, HostToolRun, object]] = []
         registry = HostToolRegistry(
             max_dispatches_per_run=1,
@@ -1136,7 +1136,13 @@ class TestTheRegistryObservesEveryDispatch:
             # would deadlock if the refusal regressed — and release once it is in. Without
             # this the test could run fully sequential, and the interleaving it exists to
             # pin would never be exercised.
+            # A deadline rather than a bare loop: if the second dispatch is no longer
+            # observed — the exact regression this test exists to catch — no second enter
+            # ever comes, and an unbounded wait would hang the suite instead of failing it.
+            deadline = time.monotonic() + 5
             while sum(kind == "enter" for kind, *_ in events) < 2:
+                if time.monotonic() > deadline:
+                    pytest.fail("the second dispatch never entered its observer")
                 await asyncio.sleep(0)
             release.set()
             await asyncio.gather(first, second)
@@ -1196,7 +1202,7 @@ class TestTheRegistryObservesEveryDispatch:
             finally:
                 order.append("exit")
 
-        def factory(run: HostToolRun, name: object) -> contextlib.AbstractContextManager[None]:
+        def factory(run: HostToolRun, name: object) -> contextlib.AbstractContextManager[object]:
             return cm()
 
         @sandbox_tool(source=None, sink=None, identity=None)
@@ -1329,7 +1335,7 @@ class TestTheRegistryObservesEveryDispatch:
         class _async_call:
             async def __call__(
                 self, run: HostToolRun, name: object
-            ) -> contextlib.AbstractContextManager[None]:
+            ) -> contextlib.AbstractContextManager[object]:
                 return contextlib.nullcontext()
 
         with pytest.raises(TypeError, match="must be synchronous"):
@@ -1339,3 +1345,18 @@ class TestTheRegistryObservesEveryDispatch:
         observer = lambda run, name: contextlib.nullcontext()  # noqa: E731
         registry = HostToolRegistry(dispatch_observer=observer)
         assert registry.dispatch_observer is observer
+
+    def test_an_observer_whose_enter_returns_a_span_is_admitted(self):
+        """Tracing and span context managers return their span from ``__enter__``: the
+        dispatch discards that value, so the public type must not refuse to name it."""
+
+        @contextlib.contextmanager
+        def span() -> Generator[object]:
+            yield "span"
+
+        def factory(run: HostToolRun, name: object) -> contextlib.AbstractContextManager[object]:
+            return span()
+
+        registry = HostToolRegistry(dispatch_observer=factory)
+        registry.register(_stamped_pure())
+        assert _dispatch(HostToolRun(registry), "doubled", {"x": 1}).ok

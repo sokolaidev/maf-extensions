@@ -311,7 +311,7 @@ class HostToolRegistry:
         max_dispatches_per_run: int = DEFAULT_MAX_DISPATCHES_PER_RUN,
         response_limits: TransferLimits = DEFAULT_TRANSFER_LIMITS,
         dispatch_observer: (
-            Callable[[HostToolRun, object], contextlib.AbstractContextManager[None]] | None
+            Callable[[HostToolRun, object], contextlib.AbstractContextManager[object]] | None
         ) = None,
     ) -> None:
         _refuse_non_integer("max_dispatches_per_run", max_dispatches_per_run)
@@ -387,7 +387,7 @@ class HostToolRegistry:
     @property
     def dispatch_observer(
         self,
-    ) -> Callable[[HostToolRun, object], contextlib.AbstractContextManager[None]] | None:
+    ) -> Callable[[HostToolRun, object], contextlib.AbstractContextManager[object]] | None:
         """The host's observer, or ``None`` when the host registered none — the off-by-default
         half of the contract, where a host can confirm it is watching nothing."""
         return self._dispatch_observer
@@ -565,7 +565,7 @@ def _bounded(text: str) -> str:
 
 @contextlib.contextmanager
 def _observe(
-    observer: Callable[[HostToolRun, object], contextlib.AbstractContextManager[None]] | None,
+    observer: Callable[[HostToolRun, object], contextlib.AbstractContextManager[object]] | None,
     run: HostToolRun,
     name: object,
     logger: logging.Logger,
@@ -683,8 +683,8 @@ class HostToolRun:
         if framing_bytes < 0:
             # A negative overhead would widen every ceiling below it by that much.
             raise ValueError(f"framing_bytes must not be negative, got {framing_bytes}")
-        # The observer is the guest's problem from the first count down; the framing checks
-        # above raise before any dispatch has happened, so they stay out of the observation.
+        # The framing checks above raise before the observation begins: a transport's
+        # programming error is not a dispatch, so the observer sees no enter for it.
         with _observe(self._registry.dispatch_observer, self, name, self._logger):
             return await self._run_dispatch(name, arguments, framing_bytes=framing_bytes)
 
