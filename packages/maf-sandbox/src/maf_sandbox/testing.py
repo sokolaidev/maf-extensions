@@ -236,11 +236,18 @@ class InProcessSandbox:
             raise ValueError(
                 f"refusing to remove the working directory itself: {working_directory}"
             )
-        children = [
-            stored
-            for stored in (*self.contents, *self.symlinks, *self.non_regular)
-            if guest_path_relative_to(stored, full_path) not in (None, "")
-        ]
+        # A link's children are the *target's*, so a link never has any here — otherwise
+        # `recursive=True` over a seeded link removes what is stored beneath it, which is the
+        # following the protocol forbids, modelled by the fake that is supposed to forbid it.
+        children = (
+            []
+            if full_path in self.symlinks
+            else [
+                stored
+                for stored in (*self.contents, *self.symlinks, *self.non_regular)
+                if guest_path_relative_to(stored, full_path) not in (None, "")
+            ]
+        )
         if children and not recursive:
             raise OSError(f"refusing to remove a directory without recursive: {path}")
         for stored in (*children, full_path):

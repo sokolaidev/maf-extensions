@@ -517,6 +517,25 @@ class TestInProcessSandboxRemove:
         assert "/maf-sandbox/work/sub/nested/b.txt" not in sandbox.contents
         assert "/maf-sandbox/work/sibling.txt" in sandbox.contents
 
+    def test_recursive_on_a_link_takes_the_link_and_nothing_under_it(self):
+        """`recursive` widens what a *directory* removal reaches, never what a link resolves to.
+
+        A fake that treated the entries stored beneath a seeded link as that link's children
+        would model exactly the following the protocol forbids — in the implementation every
+        backend is read against.
+        """
+        sandbox = InProcessSandbox(
+            seed_files={
+                "/maf-sandbox/work/out": EntryKind.SYMLINK,
+                "/maf-sandbox/work/out/passwd": "root:x:0:0",
+            }
+        )
+        asyncio.run(sandbox.remove("out", working_directory="/maf-sandbox/work", recursive=True))
+        assert "/maf-sandbox/work/out" not in sandbox.symlinks, "the link itself survived"
+        assert "/maf-sandbox/work/out/passwd" in sandbox.contents, (
+            "a recursive removal followed a link"
+        )
+
     def test_a_sibling_sharing_a_prefix_survives_a_recursive_removal(self):
         """`sub` and `sub-2` are two directories, and a prefix comparison reads them as one."""
         sandbox = InProcessSandbox()

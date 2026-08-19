@@ -557,6 +557,62 @@ class TestExecArgv:
         assert (result.stdout, result.stderr, result.exit_code) == ("out\n", "err\n", 7)
 
 
+class TestRemove:
+    """`rm -rf` is irreversible, so the command this builds is pinned rather than trusted."""
+
+    def _sandbox(self):
+        # The walk stats every ancestor, so the fake has to answer for them; anything else
+        # under the work directory is simply not there, which a removal treats as success.
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("cp",): _DockerResult(1, b"", "Error: Could not find the file in container"),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        return asyncio.run(backend.acquire(_KEY, _SPEC)), fake
+
+    def test_a_recursive_removal_is_rm_rf_behind_a_double_dash(self):
+        """`--` is what keeps a path opening with a dash from being read as a flag.
+
+        The path is guest-shaped and a run directory is named by the caller, so the guard is
+        cheap insurance against the one argv position where a name becomes an option.
+        """
+        sandbox, fake = self._sandbox()
+        asyncio.run(sandbox.remove("run-1", working_directory=_WORK, recursive=True))
+        assert fake.only("exec").args == (
+            "exec",
+            "-w",
+            _WORK,
+            _NAME,
+            "rm",
+            "-rf",
+            "--",
+            f"{_WORK}/run-1",
+        )
+
+    def test_without_recursive_the_flag_is_f_alone(self):
+        """`-f` makes a missing path succeed and leaves `rm` to refuse a directory.
+
+        Sending `-rf` here would silently widen every single-file delete into a tree delete —
+        the one mistake in this method that no test above would notice.
+        """
+        sandbox, fake = self._sandbox()
+        asyncio.run(sandbox.remove("a.txt", working_directory=_WORK))
+        args = fake.only("exec").args
+        assert args[4:] == ("rm", "-f", "--", f"{_WORK}/a.txt")
+
+    def test_the_working_directory_itself_is_refused_before_any_command_runs(self):
+        sandbox, fake = self._sandbox()
+        with pytest.raises(ValueError):
+            asyncio.run(sandbox.remove(".", working_directory=_WORK, recursive=True))
+        assert [call for call in fake.calls if call.args[:1] == ("exec",)] == []
+
+    def test_a_path_outside_the_working_directory_is_refused(self):
+        sandbox, fake = self._sandbox()
+        with pytest.raises(ValueError):
+            asyncio.run(sandbox.remove("../../etc", working_directory=_WORK, recursive=True))
+        assert [call for call in fake.calls if call.args[:1] == ("exec",)] == []
+
+
 class TestExecDiscardsATimedOutSandbox:
     def test_a_timed_out_exec_removes_the_container(self):
         def responder(args):

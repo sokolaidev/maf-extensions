@@ -343,11 +343,16 @@ class _AcasSandbox:
         That is why :data:`~maf_sandbox.Capability.FILES_DELETE` is worth declaring rather than
         leaving every kind to reach for ``exec``.
 
-        Confinement is the pull surface's, unchanged: the path is confined, then its *parents*
-        are walked, because this service resolves a symlinked component on a delete as readily
-        as on a read — and an unlinked target outside the boundary is damage no byte had to
-        cross for.  The final component is deliberately not walked: a link named here is the
-        thing being removed.
+        **The final component is stat-ed and a link refused**, which is stricter than the
+        protocol's "a link is removed, never followed".  That rule is POSIX ``unlink``
+        semantics, and they do not transfer: :meth:`read_file` records that this service
+        follows a link *in the final component as much as in the parents*, and an HTTP
+        ``DELETE`` carries no promise it behaves otherwise.  Until the live suite proves the
+        service unlinks rather than resolves, removing a link here could delete whatever the
+        guest pointed it at, so this refuses instead of guessing — a cleanup that skips one
+        link is recoverable, and one that empties ``/etc`` in the guest is not.
+
+        Parents are walked as they are for a read, and for the same reason.
 
         A path that is not there is success.  The service answers ``ResourceNotFoundError`` and
         this swallows it, because cleanup runs after whatever went wrong already went wrong.
@@ -360,10 +365,33 @@ class _AcasSandbox:
             raise ValueError(
                 f"refusing to remove the working directory itself: {working_directory}"
             )
+        planted = await self._stat_guest(guest, posixpath.normpath(path))
+        if planted is not None and planted.kind is EntryKind.SYMLINK:
+            raise ValueError(
+                f"refusing to remove {path!r}: it is a link, and this service resolves one on "
+                "a delete as readily as on a read, so the target would go instead"
+            )
         try:
-            await self._sc.delete_file(guest, recursive=recursive)
+            # Bounded like every other call on this data plane: this one runs from a `finally`,
+            # where a wedged service would otherwise hold the caller's turn open with the run's
+            # own failure still unreported.
+            await asyncio.wait_for(
+                self._sc.delete_file(guest, recursive=recursive),
+                timeout=self._read_timeout,
+            )
         except ResourceNotFoundError:
             return
+        except TimeoutError:
+            raise
+        except Exception as refused:
+            # The protocol documents `OSError` here, and `azure.core` raises its own hierarchy —
+            # `HttpResponseError` is no `OSError`, so a caller writing the documented
+            # `except OSError` around its cleanup would let this escape a `finally` over the
+            # failure it was already reporting. Translated like `read_file` and `list_dir` do.
+            # Chained rather than interpolated: `error_detail` enriches with the response
+            # body, and this message is raised at a caller rather than logged — the boundary
+            # `TestErrorDetailAdoption` exists to hold. The cause carries the detail.
+            raise OSError(f"could not remove {path}: {type(refused).__name__}") from refused
 
     async def _stat_guest(self, guest: str, relative: str) -> SandboxEntry | None:
         """Stat an absolute guest path, with no confinement check of its own.
