@@ -21,7 +21,7 @@ The same shape covers the other capabilities, each as its own suite:
 (:data:`~maf_sandbox.Capability.FILES_DELETE`).  The FILES_IN, EXEC and FILES_DELETE probes
 verify through :meth:`Sandbox.exec` rather than the pull surface, because a backend with no
 pull surface still owes those capabilities.  They need ``cat``, ``test``, ``printf``, ``pwd``,
-``sleep``, ``sh``, ``wc`` and ``mkdir`` — beyond ``PosixGuestSubject``'s own ``ln``, so the
+``sleep``, ``sh`` and ``mkdir`` — beyond ``PosixGuestSubject``'s own ``ln``, so the
 image has to carry the POSIX core utilities, and what those suites assert is measured against
 the guest the image ships, which for the suites that run in CI is the image the workflow
 names.
@@ -171,6 +171,15 @@ class ConformancePaths:
     def under(cls, working_directory: str) -> ConformancePaths:
         work = posixpath.normpath(working_directory)
         return cls(work=work, outside=f"{work}-outside")
+
+    def beyond(self, name: str) -> str:
+        """``name`` under :attr:`outside`, addressed the way a probe addresses it.
+
+        Relative to :attr:`work`, because that is what the probes pass. Spelling it
+        ``../work-outside/...`` is only right when the working directory is named ``work``,
+        and a subject rooted anywhere else would attack a path nobody planted.
+        """
+        return posixpath.relpath(f"{self.outside}/{name}", self.work)
 
     @property
     def secret(self) -> str:
@@ -989,7 +998,7 @@ async def _probe_a_link_is_removed_never_followed(
             ["test", "-e", name], working_directory=subject.working_directory, timeout=60
         )
         target = await subject.sandbox.exec(
-            ["test", "-f", "../work-outside/target.txt"],
+            ["test", "-f", paths.beyond("target.txt")],
             working_directory=subject.working_directory,
             timeout=60,
         )
@@ -1022,7 +1031,7 @@ async def _probe_a_path_through_a_linked_parent_is_refused(
     # the exact damage the probe exists to catch.
     await _assert_present(
         subject.sandbox,
-        "../work-outside/target.txt",
+        paths.beyond("target.txt"),
         subject.working_directory,
         "the target behind a refused linked-parent removal",
     )
@@ -1118,7 +1127,7 @@ async def _probe_a_link_inside_a_recursive_removal_is_unlinked_not_followed(
     if tree.exit_code == 0:
         raise AssertionError("the recursively removed tree is still there")
     target = await subject.sandbox.exec(
-        ["test", "-f", "../work-outside/interior-target.txt"],
+        ["test", "-f", paths.beyond("interior-target.txt")],
         working_directory=subject.working_directory,
         timeout=60,
     )
@@ -1157,14 +1166,14 @@ async def _probe_a_path_outside_is_refused(
             ValueError,
             f"removing a path outside the working directory (recursive={recursive})",
             subject.sandbox.remove(
-                "../work-outside/target.txt",
+                paths.beyond("target.txt"),
                 working_directory=subject.working_directory,
                 recursive=recursive,
             ),
         )
     await _assert_present(
         subject.sandbox,
-        "../work-outside/target.txt",
+        paths.beyond("target.txt"),
         subject.working_directory,
         "the target of a refused outside-the-work-dir removal",
     )

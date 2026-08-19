@@ -189,9 +189,10 @@ class TestTheSharedConformanceSuites:
     and no pull surface, so before them nothing held it to anything (#450). The suites verify
     through `exec`, which this backend has — the probes are why that shape was chosen.
 
-    FILES_DELETE is **called and skipped**: this backend refuses the capability outright,
-    because confining a removal needs the component walk its absent pull surface cannot
-    provide (#125 carries the pull surface). The call is the wiring; the skip is the answer.
+    FILES_DELETE is **called and refused**: the suite gate raises before any probe runs,
+    because this backend declares no such capability — confining a removal needs the component
+    walk its absent pull surface cannot provide (#125 carries the pull surface). The call is
+    the wiring; the refusal is the answer, and there are no results to skip.
     """
 
     def test_it_answers_the_files_in_probes(self):

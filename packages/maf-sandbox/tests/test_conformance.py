@@ -925,6 +925,23 @@ class TestFilesDeleteConformance:
         assert failures["a-link-is-removed-never-followed"] is None
         assert failures["recursive-removes-the-tree"] is None
 
+    def test_the_probes_hold_a_subject_rooted_anywhere(self):
+        """`working_directory` is the subject's to choose, so no probe may spell it.
+
+        `ConformancePaths.outside` is derived from it — `/workspace` plants
+        `/workspace-outside` — and a probe addressing `../work-outside/...` would attack a path
+        nobody planted and fail a conforming backend.
+        """
+        failures = _sim_results(
+            _SimSubject(
+                sandbox=_SimulatedGuest(),
+                working_directory="/workspace",
+                capabilities=_EVERYTHING,
+            ),
+            run_files_delete_probes,
+        )
+        assert not [name for name, failure in failures.items() if failure is not None], failures
+
     def test_a_backend_that_confines_only_the_non_recursive_path_is_caught(self):
         """`recursive` can select a different operation, so both values have to be asked.
 
