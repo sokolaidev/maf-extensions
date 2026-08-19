@@ -1281,6 +1281,37 @@ class TestTheRegistryObservesEveryDispatch:
             assert result.ok, where
             assert "observer" in caplog.text, where
 
+    def test_an_observer_that_exits_the_process_still_does(self, caplog):
+        """``SystemExit`` is the host's control flow, not an observer failure: contained for
+        ``Exception`` and ``CancelledError`` alike, it escapes the guards rather than being
+        logged and the dispatch carried on past a process that is on its way out."""
+        for where in ("factory", "enter", "exit"):
+            caplog.clear()
+            registry = HostToolRegistry(dispatch_observer=self._observer_that_exits(where))
+            registry.register(_stamped_pure())
+            with pytest.raises(SystemExit):
+                _dispatch(HostToolRun(registry), "doubled", {"x": 21})
+            assert "observer" not in caplog.text, where
+
+    @staticmethod
+    def _observer_that_exits(where: str):
+        """An observer whose ``factory`` / ``__enter__`` / ``__exit__`` raises ``SystemExit``."""
+
+        @contextlib.contextmanager
+        def cm():
+            if where == "enter":
+                raise SystemExit(3)
+            yield
+            if where == "exit":
+                raise SystemExit(3)
+
+        def factory(run: HostToolRun, name: object):
+            if where == "factory":
+                raise SystemExit(3)
+            return cm()
+
+        return factory
+
     def test_an_exit_that_returns_true_does_not_swallow_a_failure(self):
         """A body that fails becomes a refusal for the guest; the observer's ``__exit__`` —
         even one returning ``True``, the form that swallows an exception in a ``with`` —
