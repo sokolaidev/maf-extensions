@@ -628,8 +628,10 @@ class TestWhatOnlyARealRunawayCanSettle:
                         interpreter="sh",
                     )
 
-                # 1. It says it stopped the program.
-                assert expired.value.signal in {"program", "group"}, expired.value
+                # 1. It says it stopped the program: `signal` is whether the kill landed,
+                #    `reach` how wide it went. "nothing" would mean nothing was stopped.
+                assert expired.value.signal == "sent", expired.value
+                assert expired.value.reach in {"group", "program"}, expired.value
 
                 # 2. And it is true of the process itself. Read the pid the program wrote,
                 #    then ask the kernel — a missing file or an unreadable pid fails here
@@ -650,8 +652,8 @@ class TestWhatOnlyARealRunawayCanSettle:
                     (
                         f"if kill -0 {pid} 2>/dev/null; then "
                         f"state=$(awk '/^State:/ {{print $2}}' /proc/{pid}/status 2>/dev/null || true); "
-                        f"if [ \"$state\" = Z ]; then echo gone; "
-                        f"elif [ -n \"$state\" ]; then echo alive; "
+                        f'if [ "$state" = Z ]; then echo gone; '
+                        f'elif [ -n "$state" ]; then echo alive; '
                         f"else echo gone; fi; "
                         f"else echo gone; fi"
                     ),
