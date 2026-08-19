@@ -36,7 +36,14 @@ import re
 import sys
 from pathlib import Path
 
-from _scaffold import MEASURED, evidence, quoted, require_env_vars, tool_results
+from _scaffold import (
+    MEASURED,
+    conversation_id,
+    evidence,
+    quoted,
+    require_env_vars,
+    tool_results,
+)
 from agent_framework import Agent, InMemoryAgentFileStore
 from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
@@ -51,7 +58,7 @@ from maf_sandbox_bicep import make_bicep_tools
 # rather than inlined: the whole point of `make_caller_context` below is that
 # they belong to the request, not to the agent.
 SCOPE = "samples"
-THREAD_ID = "01-acas-bicep"
+THREAD_ID = conversation_id("01-acas-bicep")
 AGENT_DIR = "devops-engineer"
 
 BICEP_FILE = "main.bicep"

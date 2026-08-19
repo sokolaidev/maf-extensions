@@ -15,6 +15,9 @@ application, where printing to stderr and exiting is exactly wrong.
 `scripts/check_live_*.py`, so the *format* is a contract between two files that live in
 different directories and run at different times. One copy is what keeps a checker from having
 to accept a dialect of that block per sample that emits it (#314).
+
+`conversation_id` is here because getting it wrong is not visible in the sample that gets it
+wrong — it damages whatever else is running (#445).
 """
 
 from __future__ import annotations
@@ -47,6 +50,32 @@ def require_env_vars(names: tuple[str, ...]) -> dict[str, str] | None:
         print("\nSee this directory's README.md.", file=sys.stderr)
         return None
     return {name: os.environ[name] for name in names}
+
+
+def conversation_id(name: str) -> str:
+    """``name`` with this run in it, for a sample that deletes its sandboxes by label.
+
+    :meth:`SandboxRouter.dispose_scope` deletes every sandbox the **service** reports for a
+    scope and thread, deliberately: the registry only knows what this process created, so
+    labels are what let a delete reach a sandbox some other replica made.  The cost is that an
+    id two runs share is a delete they share, and the runs that verify a release are concurrent
+    against one sandbox group — so a fixed id has the first run to finish delete the others'
+    running sandboxes and count them as its own.
+
+    Only samples on a hosted backend need this.  A Docker container lives on the job's own
+    runner and there is nothing there to collide with.
+
+    ``GITHUB_RUN_ID`` and ``GITHUB_RUN_ATTEMPT`` are set in every GitHub job; a local run has
+    neither and takes the process id, which is as unique as one machine needs.  The result
+    stays well inside the 63 characters a label holds before a backend substitutes a digest for
+    it, which would be unique too and unreadable in the group.
+
+    The trade, since it is one: an id nothing reuses is an id nothing tidies.  A run killed
+    before it disposes leaves a sandbox no later run will purge, and it bills until the group's
+    lifecycle timers reach it.
+    """
+    run = os.environ.get("GITHUB_RUN_ID") or f"local-{os.getpid()}"
+    return f"{name}-{run}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}"
 
 
 def quoted(text: str) -> str:
