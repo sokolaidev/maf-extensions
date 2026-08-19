@@ -2270,6 +2270,24 @@ class TestRemove:
             asyncio.run(sandbox.remove("link-out.txt", working_directory=_WORK_DIR))
         assert client.deletes == [], "a link reached the data plane"
 
+    def test_a_directory_is_refused_without_recursive(self):
+        """The rule is on the kind, not on children: the data plane accepts an empty one."""
+        client = _FakeDataPlaneClient()
+        sandbox = _sandbox(client)
+        with pytest.raises(OSError):
+            asyncio.run(sandbox.remove("sub", working_directory=_WORK_DIR))
+        assert client.deletes == [], "a directory reached the data plane without recursive"
+
+    def test_a_link_to_a_directory_is_refused_as_a_link_not_as_a_directory(self):
+        """The order, pinned: `recursive` must not carry a link past the link guard."""
+        client = _FakeDataPlaneClient(
+            entries={**_GUEST_FILESYSTEM, "/maf-sandbox/work/out": _LIVE_SYMLINK_DIR}
+        )
+        sandbox = _sandbox(client)
+        with pytest.raises(ValueError):
+            asyncio.run(sandbox.remove("out", working_directory=_WORK_DIR, recursive=True))
+        assert client.deletes == [], "a link reached the data plane"
+
     def test_the_working_directory_itself_is_refused(self):
         client = _FakeDataPlaneClient()
         sandbox = _sandbox(client)
