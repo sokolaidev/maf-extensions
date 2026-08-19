@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -67,6 +68,61 @@ def test_every_copy_is_byte_identical():
 #: was written out eight times before ([#209](https://github.com/sokolaidev/maf-extensions/issues/209));
 #: `quoted` and the tag were written out once more in sample 13 before #314 moved them here.
 _HELPERS = ("require_env_vars", "quoted", "tool_results", "evidence", "conversation_id")
+
+
+#: A sample whose sandboxes live on a service shared with every other run. Docker, WSL and
+#: in-process samples put theirs on the job's own runner, where there is nothing to collide
+#: with, so `conversation_id` is theirs to skip.
+_HOSTED = tuple(
+    sample
+    for sample in _SAMPLE_DIRS
+    if "maf_sandbox_acas" in (sample / "agent.py").read_text(encoding="utf-8")
+)
+
+#: Any name a sample gives a conversation, and what it assigns to it. Read out of the source
+#: rather than by importing, because a sample wants its environment before it will import.
+_NAMED_THREAD = re.compile(r"^([A-Z_]*THREAD[A-Z_]*)\s*=\s*(.+)$", re.MULTILINE)
+_PASSED_TO_HELPER = re.compile(r"conversation_id\(\s*\"([^\"]+)\"\s*\)")
+
+
+def _thread_names(sample: Path) -> list[str]:
+    """The strings this sample hands `conversation_id`, in source order."""
+    return _PASSED_TO_HELPER.findall((sample / "agent.py").read_text(encoding="utf-8"))
+
+
+def test_the_hosted_samples_were_found():
+    """The list is derived, so an empty one would make every assertion below vacuous."""
+    assert [sample.name for sample in _HOSTED] == [
+        "01_acas_bicep",
+        "03_acas_codeact",
+        "14_acas_codeact_files",
+        "15_acas_codeact_host_tools",
+    ]
+
+
+@pytest.mark.parametrize("sample", _HOSTED, ids=lambda path: path.name)
+def test_a_hosted_sample_names_its_conversation_for_the_run(sample: Path):
+    """Every conversation on a shared service carries the run, or it purges another one's.
+
+    Neither the helper existing nor the helper's own tests cover this: a sample that writes a
+    literal here passes both, runs green on its own, and fails only as a concurrent
+    release-verification run deleting a sandbox that was not its own (#445) — which is the
+    failure this rule is here to keep out, and the one nothing local would show.
+    """
+    source = (sample / "agent.py").read_text(encoding="utf-8")
+    literal = [
+        f"{name} = {value}"
+        for name, value in _NAMED_THREAD.findall(source)
+        if "conversation_id(" not in value
+    ]
+    assert not literal, (
+        f"{sample.name} names a conversation without the run in it: {'; '.join(literal)}. "
+        "`dispose_scope` deletes by label and asks the service, so two runs sharing this "
+        "string share a delete. Pass it through `conversation_id` from the scaffold."
+    )
+    assert _thread_names(sample), (
+        f"{sample.name} is on a hosted backend and calls `conversation_id` nowhere"
+    )
 
 
 @pytest.mark.parametrize("helper", _HELPERS)
@@ -144,18 +200,30 @@ class TestConversationIdKeepsOneRunSPurgeToItself:
         monkeypatch.delenv("GITHUB_RUN_ATTEMPT", raising=False)
         assert scaffold.conversation_id("01-acas-bicep") == f"01-acas-bicep-local-{os.getpid()}-1"
 
-    @pytest.mark.parametrize("sample", _SAMPLE_DIRS, ids=lambda path: path.name)
-    def test_every_id_fits_the_label_a_backend_writes(
+    def test_an_empty_attempt_is_not_an_attempt(self, monkeypatch: pytest.MonkeyPatch):
+        """The same hazard as the run id one line up, and the same answer."""
+        monkeypatch.setenv("GITHUB_RUN_ID", "9876543210")
+        monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "")
+        assert scaffold.conversation_id("01-acas-bicep") == "01-acas-bicep-9876543210-1"
+
+    @pytest.mark.parametrize("sample", _HOSTED, ids=lambda path: path.name)
+    def test_every_id_a_sample_asks_for_fits_the_label(
         self, sample: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        """Past 63 characters a backend substitutes a digest, which is unique and unreadable.
+        """Past 63 characters a backend substitutes a digest: still unique, no longer readable.
 
-        The longest real input is the sample's own directory name, and GitHub run ids are
-        eleven digits today. Held against the widest plausible one rather than today's.
+        The strings come out of each sample rather than being stood in for by its directory
+        name, which is a different string and only happens to be the longer one today. Held
+        against a run id twice the width of the eleven digits GitHub issues now.
         """
         monkeypatch.setenv("GITHUB_RUN_ID", "9" * 20)
         monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "10")
-        assert len(scaffold.conversation_id(sample.name)) <= 63
+        too_long = {
+            name: len(scaffold.conversation_id(name))
+            for name in _thread_names(sample)
+            if len(scaffold.conversation_id(name)) > 63
+        }
+        assert not too_long, f"{sample.name} would be labelled by digest: {too_long}"
 
 
 class TestQuotedIsWhatMakesTheTagABarrier:
