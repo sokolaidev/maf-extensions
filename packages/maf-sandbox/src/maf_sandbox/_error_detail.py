@@ -23,7 +23,7 @@ from __future__ import annotations
 __all__ = ["error_detail"]
 
 
-def error_detail(exc: Exception) -> str:
+def error_detail(exc: BaseException) -> str:
     """As much of a failure as the log can usefully carry.
 
     ``str()`` on an azure-core ``HttpResponseError`` is just

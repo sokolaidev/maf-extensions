@@ -587,7 +587,9 @@ def _observe(
         return
     try:
         context = observer(run, name)
-    except Exception as exc:  # noqa: BLE001 - a dispatch is not the observer's to fail
+    # asyncio.CancelledError is a BaseException: a host's observer may cancel an
+    # otherwise-healthy dispatch, so the guard must take it too.
+    except BaseException as exc:  # noqa: BLE001 - a dispatch is not the observer's to fail
         logger.warning(
             "host tools: the dispatch observer failed to observe %r: %s", name, error_detail(exc)
         )
@@ -595,7 +597,7 @@ def _observe(
         return
     try:
         context.__enter__()
-    except Exception as exc:  # noqa: BLE001 - never entered, so never exited, and the dispatch runs on
+    except BaseException as exc:  # noqa: BLE001 - never entered, so never exited, and the dispatch runs on
         logger.warning(
             "host tools: the dispatch observer failed to observe %r: %s", name, error_detail(exc)
         )
@@ -608,7 +610,7 @@ def _observe(
         # raising may not mask it, and its return value may not swallow it.
         try:
             context.__exit__(type(exc), exc, exc.__traceback__)
-        except Exception as exit_exc:  # noqa: BLE001 - the observer's failure is its own warning
+        except BaseException as exit_exc:  # noqa: BLE001 - the observer's failure is its own warning
             logger.warning(
                 "host tools: the dispatch observer failed to exit for %r: %s",
                 name,
@@ -618,7 +620,7 @@ def _observe(
     else:
         try:
             context.__exit__(None, None, None)
-        except Exception as exit_exc:  # noqa: BLE001 - a success must not become a failure over the exit
+        except BaseException as exit_exc:  # noqa: BLE001 - a success must not become a failure over the exit
             logger.warning(
                 "host tools: the dispatch observer failed to exit for %r: %s",
                 name,

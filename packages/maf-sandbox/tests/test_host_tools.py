@@ -1131,14 +1131,9 @@ class TestTheRegistryObservesEveryDispatch:
             first = asyncio.create_task(run.dispatch("slow", {"x": 1}))
             await entered.wait()  # inside its body, observer still entered
             second = asyncio.create_task(run.dispatch("slow", {"x": 2}))
-            # The second dispatch is refused by the ledger and completes on the first pass
-            # through the loop, so pin the entered second observer — not the outcome, which
-            # would deadlock if the refusal regressed — and release once it is in. Without
-            # this the test could run fully sequential, and the interleaving it exists to
-            # pin would never be exercised.
-            # A deadline rather than a bare loop: if the second dispatch is no longer
-            # observed — the exact regression this test exists to catch — no second enter
-            # ever comes, and an unbounded wait would hang the suite instead of failing it.
+            # Pin the second observer's enter, not the dispatch's outcome: a second that is
+            # no longer observed never enters, and the wait must fail the suite instead of
+            # hanging. Release only once it is in — the interleave the test exists to pin.
             deadline = time.monotonic() + 5
             while sum(kind == "enter" for kind, *_ in events) < 2:
                 if time.monotonic() > deadline:
@@ -1243,11 +1238,43 @@ class TestTheRegistryObservesEveryDispatch:
 
         return factory
 
+    def _observer_that_cancels(self, where: str):
+        """An observer whose ``factory`` / ``__enter__`` / ``__exit__`` raises
+        ``asyncio.CancelledError`` — a ``BaseException``, so the guard must take it too."""
+
+        @contextlib.contextmanager
+        def cm():
+            if where == "enter":
+                raise asyncio.CancelledError()
+            yield
+            if where == "exit":
+                raise asyncio.CancelledError()
+
+        def factory(run: HostToolRun, name: object):
+            if where == "factory":
+                raise asyncio.CancelledError()
+            return cm()
+
+        return factory
+
     def test_a_failing_observer_costs_the_host_a_log_line_not_the_dispatch(self, caplog):
         caplog.at_level(logging.WARNING)
         for where in ("factory", "enter", "exit"):
             caplog.clear()
             registry = HostToolRegistry(dispatch_observer=self._observer_that_raises(where))
+            registry.register(_stamped_pure())
+            with caplog.at_level(logging.WARNING):
+                result = _dispatch(HostToolRun(registry), "doubled", {"x": 21})
+            assert result.ok, where
+            assert "observer" in caplog.text, where
+
+    def test_an_observer_that_cancels_costs_the_host_a_log_line_not_the_dispatch(self, caplog):
+        """``CancelledError`` is a ``BaseException``, and the dispatch is not the observer's to
+        cancel: each guard must take it and log, the way it takes any other observer failure."""
+        caplog.at_level(logging.WARNING)
+        for where in ("factory", "enter", "exit"):
+            caplog.clear()
+            registry = HostToolRegistry(dispatch_observer=self._observer_that_cancels(where))
             registry.register(_stamped_pure())
             with caplog.at_level(logging.WARNING):
                 result = _dispatch(HostToolRun(registry), "doubled", {"x": 21})
