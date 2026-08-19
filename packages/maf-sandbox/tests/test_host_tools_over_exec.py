@@ -525,7 +525,7 @@ def _branch(script: str, *, setsid: bool) -> str:
 
     The `setsid` branch is what a guest that has it runs; the other is the fallback. Both
     are `nohup sh -c …`, so a test about the command reads whichever it means rather than
-    the last line of the file (#437).
+    the last line of the file.
     """
     lines = [line.strip() for line in script.splitlines()]
     started = [line for line in lines if line.endswith(" &") and "sh -c" in line]
@@ -2712,7 +2712,7 @@ class _GuestThatRecordsTheKill(_ScriptedGuest):
 
 
 class TestStoppingTakesTheChildrenWhereItCan:
-    """A killed program's children used to survive it (#437).
+    """A stopped program takes its children with it where the guest can.
 
     `kill` reaches one process, so a program that spawned anything left it running in a
     sandbox the next call warm-reuses. Where the guest has `setsid` the launcher puts the

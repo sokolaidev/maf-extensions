@@ -806,7 +806,7 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
         # it; without, it shares the launcher's, where a group signal would reach the whole
         # container. The session file is written only on the first path, and its absence is
         # what tells the host which one ran — a claim that varies by image, reported rather
-        # than hidden (#437).
+        # than hidden.
         "if command -v setsid >/dev/null 2>&1; then\n"
         f"  setsid nohup sh -c {_quote(record_session + inner)} >/dev/null 2>&1 &\n"
         # On this branch only, and on the launcher's own stdout, which the host has
