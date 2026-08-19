@@ -56,6 +56,7 @@ from maf_sandbox import (
     sandbox_tool,
 )
 from maf_sandbox import _host_tools_over_exec as host_tools_over_exec
+from maf_sandbox._host_tools_over_exec import SESSION_MADE
 from maf_sandbox.paths import confine_guest_path
 
 #: Fast enough for a suite, and still an interval — the API refuses zero, because
@@ -2666,6 +2667,7 @@ class _GuestThatRecordsTheKill(_ScriptedGuest):
         *args: Any,
         pid: str | None = "4242",
         session: str | None = None,
+        announces_session: bool | None = None,
         kill_exit_code: int = 0,
         **kwargs: Any,
     ) -> None:
@@ -2673,6 +2675,10 @@ class _GuestThatRecordsTheKill(_ScriptedGuest):
         self.commands: list[str] = []
         self._pid = pid
         self._session = session
+        # What the launcher printed. Defaults to agreeing with the file, so a test that
+        # only cares about the group form says one thing; set it apart to model a guest
+        # whose program planted a session file the launcher never made.
+        self._announces = session is not None if announces_session is None else announces_session
         self._kill_exit_code = kill_exit_code
 
     async def exec(
@@ -2688,6 +2694,12 @@ class _GuestThatRecordsTheKill(_ScriptedGuest):
             return ExecResult(stdout="", exit_code=self._kill_exit_code)
         self.commands.append(str(command))
         started = await super().exec(command, working_directory=working_directory, timeout=timeout)
+        if self._announces:
+            started = ExecResult(
+                stdout=f"{started.stdout}{SESSION_MADE}\n",
+                stderr=started.stderr,
+                exit_code=started.exit_code,
+            )
         if self._pid is not None:
             self.files[_LAYOUT.pid] = self._pid.encode("utf-8")
         if self._session is not None:
@@ -2740,6 +2752,22 @@ class TestStoppingTakesTheChildrenWhereItCan:
         with pytest.raises(SandboxProgramTimeout) as expired:
             _run(guest, HostToolRun(_registry()), timeout=0.2)
         assert "whole session" in str(expired.value)
+
+    def test_a_session_file_the_launcher_never_announced_is_refused(self):
+        """The file is inside the run, so a program can write one whether or not
+        a session exists.
+
+        On a guest without `setsid` the group it names is the launcher's own — the whole
+        container, including the supervisor's `exec` and every other run in the sandbox.
+        The branch is taken from what the launcher printed, so a planted file buys nothing.
+        """
+        guest = _GuestThatRecordsTheKill(
+            [], finish=False, pid="4242", session="7", announces_session=False
+        )
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert guest.kills == ["kill -KILL 4242 2>/dev/null"], guest.kills
+        assert "whole session" not in str(expired.value)
 
     def test_the_message_says_a_lone_kill_leaves_children(self):
         """The claim varies by image, so it is reported rather than hidden."""
@@ -2966,6 +2994,36 @@ class TestThePidAgainstARealShell:
         assert recorded == printed, (
             f"the launcher recorded {recorded} but the program is {printed} — the pid is the "
             "wrapper's, and killing it would leave the program running"
+        )
+
+    @pytest.mark.skipif(shutil.which("setsid") is None, reason="needs setsid")
+    def test_a_real_shell_records_the_session_the_program_is_in(self, tmp_path: Path):
+        """The launcher's claim about the session, checked against the kernel.
+
+        `setsid` execs in place or forks depending on its caller, so the recorded value
+        only means something if it is the session the program actually ended up in.
+        """
+        layout = self._laid_out(tmp_path)
+        pathlib.Path(layout.program).write_text(
+            "import os\nprint(os.getsid(0))\n", encoding="utf-8"
+        )
+        pathlib.Path(layout.launcher).write_text(
+            launcher_script(layout, sys.executable), encoding="utf-8"
+        )
+
+        started = subprocess.run(
+            ["sh", layout.launcher], cwd=layout.directory, capture_output=True, timeout=60
+        )
+        self._appears(layout.exit_code)
+
+        assert (
+            self._appears(layout.session)
+            == pathlib.Path(layout.output).read_text(encoding="utf-8").strip()
+        ), (
+            "the recorded session is not the one the program is in, so killing that group reaches nothing"
+        )
+        assert SESSION_MADE in started.stdout.decode(), (
+            "a session was made and the launcher did not say so, so the host will not use it"
         )
 
     @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
