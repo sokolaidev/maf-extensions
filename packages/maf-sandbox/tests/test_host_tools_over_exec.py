@@ -3020,6 +3020,64 @@ class TestThePidAgainstARealShell:
         )
 
     @pytest.mark.skipif(shutil.which("setsid") is None, reason="needs setsid")
+    @pytest.mark.skipif(not os.path.isdir("/proc"), reason="reads process state from /proc")
+    def test_the_group_kill_stops_the_program_and_its_child(self, tmp_path: Path):
+        """The whole point of the session, end to end against a real shell.
+
+        Everything else about the group form is asserted against a double that reads the
+        command string, so a launcher that put the interpreter in a process group of its own
+        would keep those green while the signal reached the wrapper shell alone.
+        """
+        layout = self._laid_out(tmp_path)
+        kid = f"{tmp_path}/kid"
+        pathlib.Path(layout.program).write_text(
+            "import subprocess, pathlib, time"
+            + chr(10)
+            + 'child = subprocess.Popen(["sh", "-c", "while :; do sleep 1; done"])'
+            + chr(10)
+            + f'pathlib.Path("{kid}").write_text(str(child.pid))'
+            + chr(10)
+            + "while True:"
+            + chr(10)
+            + "    time.sleep(0.05)"
+            + chr(10),
+            encoding="utf-8",
+        )
+        pathlib.Path(layout.launcher).write_text(
+            launcher_script(layout, sys.executable), encoding="utf-8"
+        )
+
+        def state(pid: str) -> str:
+            """`Z` or gone is dead; nothing here reaps an orphan."""
+            stat = pathlib.Path(f"/proc/{pid}/stat")
+            return stat.read_text(encoding="utf-8").split()[2] if stat.exists() else "gone"
+
+        subprocess.run(
+            ["sh", layout.launcher], cwd=layout.directory, capture_output=True, timeout=60
+        )
+        session = self._appears(layout.session)
+        child = self._appears(kid)
+
+        assert state(child) not in ("Z", "gone"), "the child never ran"
+        pgid = pathlib.Path(f"/proc/{child}/stat").read_text(encoding="utf-8").split()[4]
+        assert pgid == session, (
+            f"the child is in group {pgid} and the recorded session is {session}, so the "
+            "signal would miss it"
+        )
+
+        # Through `sh`, because `kill` is a builtin on images that ship no such binary —
+        # and because that is the shape the transport sends over `exec`.
+        subprocess.run(["sh", "-c", f"kill -KILL -{session}"], capture_output=True, timeout=30)
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            if state(child) in ("Z", "gone"):
+                break
+            time.sleep(0.1)
+        assert state(child) in ("Z", "gone"), (
+            "the spawned child outlived the group kill, which is what #437 was about"
+        )
+
+    @pytest.mark.skipif(shutil.which("setsid") is None, reason="needs setsid")
     def test_a_real_shell_records_the_session_the_program_is_in(self, tmp_path: Path):
         """The launcher's claim about the session, checked against the kernel.
 
