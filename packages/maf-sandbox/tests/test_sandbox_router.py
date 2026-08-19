@@ -968,6 +968,7 @@ _PROTOCOL_MODULES = frozenset(
         "_outputs",
         "_protocol",
         "_purger",
+        "_reclaim",
         "_router",
         "conformance",
         "paths",

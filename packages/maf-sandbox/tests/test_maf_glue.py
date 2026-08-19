@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import math
 
 import pytest
 
@@ -23,11 +24,13 @@ from maf_sandbox import (
     Capability,
     DeclaredOutput,
     Egress,
+    ExecResult,
     Isolation,
     LandedArtifact,
     NoSandboxBackend,
     OutputDisposition,
     OutputSink,
+    ReclaimFailure,
     SandboxBackendNotPermitted,
     SandboxEgressNotEnforced,
     SandboxKey,
@@ -442,9 +445,12 @@ def _attach(router, *, context=None, spec=_SPEC, **kw):
     )
 
 
+def _fn(tool):
+    return getattr(tool, "func", None) or getattr(tool, "__wrapped__", None) or tool
+
+
 def _call(tool, **kwargs):
-    fn = getattr(tool, "func", None) or getattr(tool, "__wrapped__", None) or tool
-    return asyncio.run(fn(**kwargs))
+    return asyncio.run(_fn(tool)(**kwargs))
 
 
 class TestAttachGate:
@@ -603,6 +609,276 @@ class TestTheIsolationFloorStillApplies:
                 _router(InProcessSandboxBackend()),
                 spec=SandboxSpec(kind="test", min_isolation=Isolation.MICROVM),
             )
+
+
+# ---------------------------------------------------------------------------
+# sandboxed_tool — the call owns a directory, and the `finally` reclaims it
+# ---------------------------------------------------------------------------
+
+
+def _rm_targets(sandbox):
+    """The paths this fake was asked to remove, in order."""
+    return [
+        command.removeprefix("rm -rf ")
+        for command, _, _ in sandbox.commands
+        if command.startswith("rm -rf ")
+    ]
+
+
+class _RefusesToRemove(InProcessSandbox):
+    """A guest whose `rm` fails and whose every other command does not."""
+
+    async def exec(self, command, *, working_directory, timeout):
+        result = await super().exec(command, working_directory=working_directory, timeout=timeout)
+        joined = command if isinstance(command, str) else " ".join(command)
+        if joined.startswith("rm -rf "):
+            return ExecResult(stdout="", stderr="rm: Permission denied", exit_code=1)
+        return result
+
+
+def _reclaiming_body(session: SandboxToolSession):
+    async def widget_run(target: str) -> str:
+        """Do a thing to ``target`` inside a sandbox.
+
+        Args:
+            target: What to do it to.
+        """
+        key = session.key()
+        assert not isinstance(key, str)
+        sandbox = await session.acquire(key)
+        assert not isinstance(sandbox, str)
+        path = session.guest_call_path()
+        await sandbox.write_file(f"{path}/program.py", target)
+        return path
+
+    return widget_run
+
+
+def _attach_with(build, router, **kw):
+    kw.setdefault("logger", logging.getLogger("test_workload"))
+    return sandboxed_tool(
+        build,
+        router=router,
+        context=_context(),
+        agent_dir="agent-1",
+        spec=_SPEC,
+        name="widget_run",
+        **kw,
+    )
+
+
+def _reclaiming(backend, build=_reclaiming_body, **kw):
+    return _attach_with(build, _router(backend), **kw)[0]
+
+
+class TestTheCallOwnsAGuestPath:
+    """A kind takes its place in the guest from the session, so it cannot forget one."""
+
+    def test_it_sits_under_the_specs_work_dir(self):
+        tool = _reclaiming(InProcessSandboxBackend())
+        path = _call(tool, target="x")
+        assert path.startswith("/maf-sandbox/work/")
+        assert path.removeprefix("/maf-sandbox/work/")
+
+    def test_asking_twice_in_one_call_answers_once(self):
+        def build(session):
+            async def widget_run(target: str) -> str:
+                """Ask twice."""
+                key = session.key()
+                assert not isinstance(key, str)
+                assert not isinstance(await session.acquire(key), str)
+                return f"{session.guest_call_path()} {session.guest_call_path()}"
+
+            return widget_run
+
+        first, second = _call(_reclaiming(InProcessSandboxBackend(), build), target="x").split()
+        assert first == second
+
+    def test_two_calls_of_the_same_tool_get_different_paths(self):
+        backend = InProcessSandboxBackend()
+        tool = _reclaiming(backend)
+        assert _call(tool, target="a") != _call(tool, target="b")
+
+    def test_two_concurrent_calls_never_share_one(self):
+        """One session serves every call to its tool, so this cannot live on the session.
+
+        Both calls hold their own path before either returns — the state a shared one
+        corrupts, and the state a second `asyncio.run` would never reach.
+        """
+        backend = InProcessSandboxBackend()
+        barrier = asyncio.Barrier(2)
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                """Hold a path while the other call holds its own."""
+                key = session.key()
+                assert not isinstance(key, str)
+                assert not isinstance(await session.acquire(key), str)
+                path = session.guest_call_path()
+                await barrier.wait()
+                return path
+
+            return widget_run
+
+        fn = _fn(_reclaiming(backend, build))
+
+        async def both():
+            return await asyncio.gather(fn(target="a"), fn(target="b"))
+
+        first, second = asyncio.run(both())
+        assert first != second
+        assert sorted(_rm_targets(backend.sandbox)) == sorted([first, second])
+
+    def test_asking_outside_a_tool_call_raises(self):
+        """A wiring mistake in a kind, not something a model can cause or should be told."""
+        with pytest.raises(RuntimeError, match="outside a tool call"):
+            _session().guest_call_path()
+
+
+class TestTheFinallyReclaims:
+    def test_the_path_goes_when_the_body_returns(self):
+        backend = InProcessSandboxBackend()
+        path = _call(_reclaiming(backend), target="x")
+        assert _rm_targets(backend.sandbox) == [path]
+
+    def test_it_goes_when_the_body_raises_and_the_failure_survives(self):
+        """An exception in the `finally` would replace what the call was already reporting."""
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                """Fail after taking a path."""
+                key = session.key()
+                assert not isinstance(key, str)
+                assert not isinstance(await session.acquire(key), str)
+                session.guest_call_path()
+                raise RuntimeError("the body failed")
+
+            return widget_run
+
+        backend = InProcessSandboxBackend()
+        with pytest.raises(RuntimeError, match="the body failed"):
+            _call(_reclaiming(backend, build), target="x")
+        assert len(_rm_targets(backend.sandbox)) == 1
+
+    def test_it_goes_when_the_body_answers_with_a_refusal(self):
+        """A refusal is an ordinary answer here, and it leaves the same path behind."""
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                """Refuse after taking a path."""
+                key = session.key()
+                assert not isinstance(key, str)
+                assert not isinstance(await session.acquire(key), str)
+                session.guest_call_path()
+                return "Error: no."
+
+            return widget_run
+
+        backend = InProcessSandboxBackend()
+        assert _call(_reclaiming(backend, build), target="x") == "Error: no."
+        assert len(_rm_targets(backend.sandbox)) == 1
+
+    def test_a_body_that_never_asked_spends_no_round_trip(self):
+        backend = InProcessSandboxBackend()
+        _call(_attach(_router(backend))[0], target="x")
+        assert _rm_targets(backend.sandbox) == []
+
+    def test_a_call_that_acquired_nothing_reclaims_nothing(self):
+        """Nothing was written, so there is nothing to remove and nobody to remove it with."""
+
+        def build(session):
+            async def widget_run(target: str) -> str:
+                """Take a path and never acquire."""
+                return session.guest_call_path()
+
+            return widget_run
+
+        backend = InProcessSandboxBackend()
+        assert _call(_reclaiming(backend, build), target="x").startswith("/maf-sandbox/work/")
+        assert backend.sandbox.commands == []
+
+
+class TestAReclaimThatDidNotHappen:
+    """A data-retention failure: `acquire` is get-or-create, so what is left stays readable."""
+
+    def _heard(self, **kw):
+        heard: list[ReclaimFailure] = []
+
+        async def on_failure(failure: ReclaimFailure) -> None:
+            heard.append(failure)
+
+        backend = InProcessSandboxBackend(_RefusesToRemove())
+        tool = _reclaiming(backend, on_reclaim_failure=on_failure, **kw)
+        return heard, tool
+
+    def test_the_host_hears_once_with_the_path_and_the_reason(self):
+        heard, tool = self._heard()
+        path = _call(tool, target="x")
+        assert len(heard) == 1
+        assert heard[0].tool == "widget_run"
+        assert heard[0].key == _KEY
+        assert heard[0].path == path
+        assert "rm exited 1" in heard[0].reason
+        assert "Permission denied" in heard[0].reason
+
+    def test_the_calls_own_answer_is_untouched(self):
+        heard, tool = self._heard()
+        assert _call(tool, target="x") == heard[0].path
+
+    def test_it_reaches_the_log_with_no_callback_wired(self, caplog):
+        """A callback that swallows it would otherwise take the only record with it."""
+        backend = InProcessSandboxBackend(_RefusesToRemove())
+        with caplog.at_level(logging.WARNING, logger="test_workload"):
+            path = _call(_reclaiming(backend), target="x")
+        assert [r.message for r in caplog.records if path in r.message]
+
+    def test_a_callback_that_raises_does_not_fail_the_call(self, caplog):
+        async def on_failure(failure: ReclaimFailure) -> None:
+            raise RuntimeError("the host's callback failed")
+
+        backend = InProcessSandboxBackend(_RefusesToRemove())
+        tool = _reclaiming(backend, on_reclaim_failure=on_failure)
+        with caplog.at_level(logging.WARNING, logger="test_workload"):
+            assert _call(tool, target="x").startswith("/maf-sandbox/work/")
+        assert any("on_reclaim_failure raised" in r.message for r in caplog.records)
+
+    def test_a_removal_the_backend_cannot_even_attempt_is_reported(self):
+        heard: list[ReclaimFailure] = []
+
+        async def on_failure(failure: ReclaimFailure) -> None:
+            heard.append(failure)
+
+        backend = InProcessSandboxBackend(InProcessSandbox(raises=OSError("the guest is gone")))
+        _call(_reclaiming(backend, on_reclaim_failure=on_failure), target="x")
+        assert len(heard) == 1
+        assert "the guest is gone" in heard[0].reason
+
+
+class TestTheReclaimBound:
+    def test_a_bound_that_bounds_nothing_is_refused(self):
+        with pytest.raises(ValueError, match="reclaim_timeout"):
+            _reclaiming(InProcessSandboxBackend(), reclaim_timeout=0)
+
+    def test_an_infinite_one_is_a_call_that_never_returns(self):
+        with pytest.raises(ValueError, match="never returns"):
+            _reclaiming(InProcessSandboxBackend(), reclaim_timeout=math.inf)
+
+    def test_the_attach_gate_still_wins(self):
+        """Refused after the gate, like the three spec refusals: unconfigured still gets ``[]``."""
+        assert _attach_with(_reclaiming_body, None, reclaim_timeout=0) == []
+
+
+class TestTheWrapperIsTransparent:
+    """MAF reads the body through the wrapper, and every failure to do so is silent."""
+
+    def test_the_parameter_schema_is_the_bodys_own(self):
+        tool = _reclaiming(InProcessSandboxBackend())
+        assert tool.input_model is not None
+        assert list(tool.input_model.model_json_schema()["properties"]) == ["target"]
+
+    def test_the_description_survives_the_wrapper(self):
+        tool = _reclaiming(InProcessSandboxBackend())
+        assert tool.description == _reclaiming_body(_session()).__doc__
 
 
 # ---------------------------------------------------------------------------

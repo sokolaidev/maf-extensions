@@ -28,9 +28,14 @@ Five things live here, and each of them had begun to exist twice before it did:
 
 from __future__ import annotations
 
+import functools
 import logging
+import math
 from collections.abc import Awaitable, Callable, Mapping
+from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import Any, Literal
+from uuid import uuid4
 
 from ._error_detail import error_detail
 from ._outputs import OutputSink, landing_outputs, missing_sink_refusal, spec_lands_artifacts
@@ -42,6 +47,7 @@ from ._protocol import (
     SandboxSpec,
 )
 from ._purger import SandboxPurger
+from ._reclaim import ReclaimFailure, reclaim_guest_path
 from ._router import NoSandboxBackend, SandboxRouter
 
 #: Fallback for :func:`sandboxed_tool`'s ``logger`` argument. Named apart from the usual
@@ -71,6 +77,41 @@ __all__ = [
 _SDK_NOT_INSTALLED = "Error: the sandbox backend is not installed — degrading to T0"
 _NO_BACKEND_CONFIGURED = "Error: no sandbox backend is configured — degrading to T0"
 _SANDBOX_UNAVAILABLE = "Error: sandbox unavailable — degrading to T0 (LLM self-check only)"
+
+
+@dataclass
+class _SandboxToolCall:
+    """What one tool call has done that the ``finally`` has to undo.
+
+    The only mutable object in this module, and the only one whose lifetime is a single call —
+    which is the same fact twice. :class:`SandboxToolSession` is immutable because it lives for
+    the process.
+    """
+
+    path: str | None = None
+    sandbox: Sandbox | None = None
+    key: SandboxKey | None = None
+
+
+#: The call a tool body is running inside, or ``None`` outside one.
+#:
+#: A :class:`~contextvars.ContextVar` rather than an attribute on the session, because one
+#: session serves every concurrent call to its tool: two parallel calls would be handed the same
+#: directory, and the first to finish would reclaim one the other is still running out of. Each
+#: task starts from a copy of its parent's context, so a body that spawns children has them read
+#: the right record and nothing a child sets reaches a sibling.
+_CALL: ContextVar[_SandboxToolCall | None] = ContextVar("maf_sandbox_call", default=None)
+
+
+def _prefixed(name: str) -> str:
+    """``name``, safe to bake into a logging format string.
+
+    The tool's name prefixes every record this module writes, and it is baked into the FORMAT
+    rather than passed as an argument so the record is indistinguishable from one the workload
+    wrote by hand — ``record.msg`` included, which is what a structured exporter reads and what
+    a caplog assertion matches. A ``%`` in a name would then read as a format specifier.
+    """
+    return name.replace("%", "%%")
 
 
 def make_caller_context(
@@ -185,6 +226,14 @@ class SandboxToolSession:
     key comes from, which file names may be interpolated into a command, and what a provider
     failure is allowed to tell the model — are answered here once instead of per workload.
 
+    **One per tool, not one per call.** :func:`sandboxed_tool` builds it once, before any key
+    exists, and every call to that tool shares it. So *this object holds host configuration
+    only. Anything derived from a caller — a scope, a thread, a path generated for one call —
+    lives on the call, or nowhere.* :meth:`key`, :meth:`list_files` and :meth:`acquire` already
+    answer per call, by **reading** the host's context each time rather than storing what they
+    read; :meth:`guest_call_path` is the first value that has to be generated and then remembered,
+    which is why it lives in :data:`_CALL` and not here.
+
     All three accessors return **either the value or the string the tool should return**, rather
     than raising.  A MAF tool answers with a ``str`` and a refusal is an ordinary answer, not
     an exception: the model has to learn what happened through the same channel as a
@@ -220,12 +269,7 @@ class SandboxToolSession:
         self._name = name
         self._logger = logger
         self._output_sink = output_sink
-        # The tool's name prefixes every log line this class writes, and it is baked into the
-        # FORMAT string rather than passed as an argument so the emitted record is
-        # indistinguishable from one the workload wrote by hand — `record.msg` included,
-        # which is what a structured exporter reads and what a caplog assertion matches. A
-        # `%` in a name would then read as a format specifier, so it is escaped once, here.
-        self._log_prefix = name.replace("%", "%%")
+        self._log_prefix = _prefixed(name)
 
     @property
     def spec(self) -> SandboxSpec:
@@ -269,6 +313,31 @@ class SandboxToolSession:
             agent_dir=self._agent_dir,
         )
 
+    def guest_call_path(self) -> str:
+        """This call's own place **inside the sandbox**, under the spec's ``work_dir``.
+
+        Allocated once per call and reclaimed with everything under it when the call returns, so
+        a kind that puts its files here cannot leave them behind. Apart from the three accessors
+        above: it raises rather than answering with a message, because reaching it wrongly is a
+        wiring mistake in a kind, not something a model can cause or should be told about.
+
+        Nothing is created — it is a name until a kind writes to it. ``path`` rather than
+        ``directory`` because that is all the protocol promises: a backend serving its store from
+        memory, or with no enumeration primitive under it, addresses one the same way.
+
+        Raises:
+            RuntimeError: Called outside a tool call, where nothing would reclaim what it names.
+        """
+        call = _CALL.get()
+        if call is None:
+            raise RuntimeError(
+                f"{self._name}: guest_call_path() was called outside a tool call, so nothing "
+                "would reclaim what it names. Call it from the tool body."
+            )
+        if call.path is None:
+            call.path = f"{self._spec.work_dir}/{uuid4().hex[:12]}"
+        return call.path
+
     async def list_files(self, store: Any) -> list[str] | str:
         """The paths this caller may act on, or the message to return if they cannot be read.
 
@@ -305,7 +374,7 @@ class SandboxToolSession:
           — and the model gets a fixed sentence saying only that the run degraded.
         """
         try:
-            return await self._router.acquire(key, self._spec)
+            sandbox = await self._router.acquire(key, self._spec)
         except ImportError as exc:
             # The backend's SDK is not installed. Actionable, and carries no account detail.
             self._logger.warning(f"{self._log_prefix}: sandbox SDK unavailable: %s", exc)
@@ -323,6 +392,48 @@ class SandboxToolSession:
             # tenant ids, so it goes to the log and never into the model's context.
             self._logger.warning(f"{self._log_prefix}: sandbox unavailable: %s", error_detail(exc))
             return _SANDBOX_UNAVAILABLE
+        call = _CALL.get()
+        if call is not None:
+            # Recorded on the way through rather than re-derived in the `finally`, where a
+            # second `acquire` could fail on its own and report a reclaim failure for it.
+            call.sandbox = sandbox
+            call.key = key
+        return sandbox
+
+
+async def _reclaim_the_call(
+    call: _SandboxToolCall,
+    *,
+    spec: SandboxSpec,
+    tool: str,
+    logger: logging.Logger,
+    on_failure: Callable[[ReclaimFailure], Awaitable[None]] | None,
+    timeout: float,
+) -> None:
+    """Remove what one tool call owns, and report a removal that did not happen.
+
+    Never raises. It runs in :func:`sandboxed_tool`'s ``finally``, where an exception would
+    replace whatever the call was already reporting with a message about cleanup.
+    """
+    if call.path is None or call.sandbox is None:
+        # Nothing was named, or nothing was acquired to write into it — either way there is
+        # nothing there, and no round trip is worth spending to prove it.
+        return
+    prefix = _prefixed(tool)
+    reason = await reclaim_guest_path(
+        call.sandbox, call.path, working_directory=spec.work_dir, timeout=timeout
+    )
+    if reason is None:
+        return
+    # Logged whether or not a host is listening: what is left stays readable by every later
+    # call in this sandbox, and a callback that swallows it would take the record with it.
+    logger.warning(f"{prefix}: %s was not reclaimed: %s", call.path, reason)
+    if on_failure is None:
+        return
+    try:
+        await on_failure(ReclaimFailure(tool=tool, key=call.key, path=call.path, reason=reason))
+    except Exception as raised:  # noqa: BLE001 — a host's callback must not fail the call
+        logger.warning(f"{prefix}: on_reclaim_failure raised: %s", error_detail(raised))
 
 
 def sandboxed_tool(
@@ -338,6 +449,8 @@ def sandboxed_tool(
     source_integrity: str | None = "trusted",
     outbound_max_confidentiality: str | None = None,
     output_sink: OutputSink | None = None,
+    on_reclaim_failure: Callable[[ReclaimFailure], Awaitable[None]] | None = None,
+    reclaim_timeout: float = 30.0,
     logger: logging.Logger | None = None,
 ) -> list[Any]:
     """Return the one-tool list for a sandbox workload, or ``[]`` when no sandbox is available.
@@ -364,6 +477,12 @@ def sandboxed_tool(
        sink, because such a tool cannot honour its own spec; and a ``spec`` declaring any
        output without requiring :data:`~maf_sandbox.Capability.FILES_OUT` is refused, because
        the capability match is what stands between it and a backend with no pull surface.
+    7. **Reclaim what the call owned.**  A body that took a path from
+       :meth:`SandboxToolSession.guest_call_path` has it removed, with everything under it, when
+       the call returns — after a result, a refusal and an exception alike — so a kind cannot
+       forget a path it never held.
+       A body that never asked for one costs nothing.  See ``on_reclaim_failure`` for the
+       removal that does not happen, which is a data-retention failure rather than a tidy-up.
 
     ``build`` is a callback rather than a decorated function because the session does not
     exist until the attach gate has passed, and the tool body needs it in its closure.  Two
@@ -403,6 +522,13 @@ def sandboxed_tool(
         output_sink: Where this workload's landing artifacts go, threaded into the derivation
             above, carried on the session, and passed on to
             :func:`~maf_sandbox.collect_outputs` by the workload itself.
+        on_reclaim_failure: Called with a :class:`~maf_sandbox.ReclaimFailure` when a call's
+            own guest path could not be removed. Default ``None`` logs it and carries on; a host that
+            needs the data provably gone disposes the sandbox from here, which is the only
+            remedy that closes the window rather than narrowing it. Its own failure is logged
+            and swallowed — it runs in a ``finally``, over a call that may already be failing.
+        reclaim_timeout: Seconds the removal gets. Spent after the body has returned, so it is
+            added to the call's own latency.
         logger: Where the failure ladder writes its detail. Defaults to this module's logger;
             pass the workload's own so its records keep the workload's logger name.
     """
@@ -431,15 +557,22 @@ def sandboxed_tool(
             "router's capability match never asks whether this backend has one — leaving the "
             "failure to happen inside the sandbox, where the reason is hardest to see."
         )
+    if not math.isfinite(reclaim_timeout) or reclaim_timeout <= 0:
+        raise ValueError(
+            f"{name}: reclaim_timeout must be a finite positive number of seconds, not "
+            f"{reclaim_timeout}. It bounds a removal that runs in a `finally`, so an infinite "
+            "one is a tool call that never returns."
+        )
     router.ensure_can_serve(spec)
 
+    records = logger if logger is not None else _DEFAULT_LOGGER
     session = SandboxToolSession(
         router,
         context,
         agent_dir,
         spec,
         name=name,
-        logger=logger if logger is not None else _DEFAULT_LOGGER,
+        logger=records,
         output_sink=output_sink,
     )
     properties = (
@@ -462,7 +595,32 @@ def sandboxed_tool(
         approval_mode=approval_mode,
         additional_properties=properties,
     )
-    return [decorate(build(session))]
+    body = build(session)
+
+    # `functools.wraps` is what keeps MAF reading the *body*: the tool's description is
+    # `__doc__`, its parameter schema is `inspect.signature` plus `get_type_hints`, and its
+    # context injection is the signature again — all of which follow `__wrapped__`. Every one
+    # of those fails silently without it, and towards the model rather than the log: no
+    # description, a schema with no parameters at all, or every parameter degraded to `str`.
+    # Deliberately no docstring here for the same reason — one would become what a model reads.
+    @functools.wraps(body)
+    async def reclaiming(*args: Any, **kwargs: Any) -> Any:
+        call = _SandboxToolCall()
+        token = _CALL.set(call)
+        try:
+            return await body(*args, **kwargs)
+        finally:
+            _CALL.reset(token)
+            await _reclaim_the_call(
+                call,
+                spec=spec,
+                tool=name,
+                logger=records,
+                on_failure=on_reclaim_failure,
+                timeout=reclaim_timeout,
+            )
+
+    return [decorate(reclaiming)]
 
 
 async def list_all_files(store: Any) -> list[str]:
