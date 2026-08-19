@@ -12,9 +12,11 @@ fix(acas): retry the label query when the control plane returns 429
 chore: update exec                                            ← says nothing
 ```
 
-Titles must be [Conventional Commits](https://www.conventionalcommits.org/); CI rejects anything else. `feat:` releases a minor, `fix:`/`perf:`/`revert:`/`docs:` a patch, and `refactor:`/`test:`/`build:`/`ci:`/`chore:` release nothing. Scope is optional and free-form — a change is attributed to a package by the files it touches, not by the scope.
+Titles must be [Conventional Commits](https://www.conventionalcommits.org/); CI rejects anything else. `feat:` releases a minor, `fix:`/`perf:`/`revert:`/`docs:` a patch, and `refactor:`/`test:`/`build:`/`ci:`/`chore:` release nothing. Scope is optional and free-form — a change is attributed to a package by the files it touches, not by the scope. **Every file under `packages/<name>/` attributes to that package**: `src/`, `tests/`, `README.md` and `pyproject.toml` alike, because `release-please-config.json` roots each component at the package directory. A test is not a lesser touch than a source file.
 
-**So a drive-by fix in another package inherits your commit's type.** Correcting a stale comment in `maf-sandbox-bicep` inside a `feat!:` commit about `maf-sandbox` released bicep 0.5.0, with a changelog announcing a breaking change that package never received. Commit a touch outside the package you are working on **separately**, as `chore:`, which releases nothing.
+**So any touch outside the package your title is about inherits your commit's type — not only a drive-by.** Correcting a stale comment in `maf-sandbox-bicep` inside a `feat!:` commit about `maf-sandbox` released bicep 0.5.0, with a changelog announcing a breaking change that package never received. The version that recurs looks nothing like a stray: **a test added to another package's suite, for a feature that lives in core.** A shared conformance suite is written exactly that way, so a `feat(sandbox):` whose only paths in two backends were `tests/` announced that feature under *Features* in both their changelogs, with neither package's `src/` changed. Commit the touch outside **separately**, as `chore:`, which releases nothing — and do it whether the touch is incidental or something your change genuinely needs.
+
+**That split costs a second pull request, not a second release.** The `chore:` half wires other packages to a surface the `feat:` half adds, so it cannot go green until that half is *merged* — but merged is all it needs, unlike the dependency floor below, which needs the first half **released**. Land the core half, then the wiring, back to back.
 
 **And when the touch outside is not a drive-by but something the package you are working on needs, splitting it is not enough — the first half has to be *released* before the second can go green.** A dependency floor may only name a version that exists, and CI installs every built wheel into a clean environment to prove it. The core wheel built from your branch still carries its pre-release version, because release-please bumps versions only in a Release PR, so a dependent declaring `maf-sandbox>=0.16.0` resolves against nothing — not the wheel beside it, not PyPI — however complete the addition to `maf-sandbox` on the same branch is. Land the `maf-sandbox` half on its own, with its own title; adopt it and raise the floor afterwards, as [`RELEASING.md`](RELEASING.md) step 4 describes.
 
@@ -44,6 +46,20 @@ release-please owns all four. Adding a changelog entry or bumping a version by h
 4. State plainly what you did **not** verify. An unverified claim in a PR body is worse than an absent one.
 
 **Stop there.** Do not merge, do not push tags, do not approve the `pypi` deployment environment, and do not run the publish workflow. Releasing is the maintainer's, and every one of those steps is irreversible or nearly so.
+
+## Answering a review
+
+Reviews here come from Copilot, and **it hides findings**. A review body can say "generated no new comments" and still carry several, inside a `<details><summary>Suppressed comments (K)</summary>` block. No comments endpoint returns them, nothing marks them resolved, and they are routinely the sharpest findings on the pull request. Read the body whole — `gh api repos/{owner}/{repo}/pulls/N/reviews/REVIEW_ID -q '.body'` — and read the `(K)` before you read the findings: piping that body through `head` or `tail` silently drops the rest, and nothing downstream will ever tell you.
+
+Verify every finding against the source before acting on it. Accept it because it is right and refuse it because it is wrong, and say which; a reviewer that is wrong once is not wrong generally. Where a finding names a consequence, check *that*, not just the line — several here have been right about the defect and wrong about what it breaks.
+
+**Fixing a review finding is the most dangerous commit you will write**, for three reasons worth checking one at a time:
+
+- **The incident rule breaks here more than anywhere.** You have just read a paragraph explaining a defect, and the tempting docstring is the one that retells it. See *Comments and docstrings* below: state the constraint, put the story in the commit.
+- **A fix in one spot usually has siblings.** Grep for the shape before you push. A literal copied into a loop, a rule applied on one branch of a flag, a survivor check that hardcodes what the layout derives — each of those has shipped here as one fix that left three instances.
+- **Removing the last use of something leaves its declaration behind.** When a fix deletes a call, grep the name: a guest-utility list, a capability table, a README row and a docstring have each gone stale that way.
+
+Reply to each finding separately, on its own thread — never one comment answering several. Say whether it is right, what the consequence was, and for a fix, the commit and what now pins it. For a suppressed finding there is no thread, so post a new review comment on the line it names and label it with the review id, because `K of M` repeats every round.
 
 ## Filing an issue
 
@@ -77,6 +93,6 @@ Keep them short. Agents reliably overshoot here, and the tell is prose that outg
 
 - **A docstring says what the function is for and what a caller must know.** One or two sentences for most. Reserve more for a genuine trap — an argument that must be a callable, an ordering that is load-bearing — and state the trap, not its history.
 - **Write the reason once, at the level it belongs to.** If the module docstring has it, the function does not repeat it; if the function has it, the inline comment does not.
-- **An incident belongs in the issue and the commit message, not in the source.** That covers the bug this code used to have, what an earlier version of it got wrong, and what a review found — `Closes #22` and the commit reach the whole story. State the constraint the code has to hold to; a comment re-telling the defect it replaced ages badly and is read a thousand times more often. The shape to watch for is a comment or docstring that only makes sense to someone who followed the review: "an earlier version of this test…", "this used to search the whole output…", "Copilot caught…".
+- **An incident belongs in the issue and the commit message, not in the source.** That covers the bug this code used to have, what an earlier version of it got wrong, and what a review found — `Closes #22` and the commit reach the whole story. State the constraint the code has to hold to; a comment re-telling the defect it replaced ages badly and is read a thousand times more often. The shape to watch for is a comment or docstring that only makes sense to someone who followed the review: "an earlier version of this test…", "this used to search the whole output…", "Copilot caught…". **Watch for it hardest in the commit that answers a review** — that is where the defect is freshest in your head and the retelling reads most like an explanation.
 - **Do not annotate the obvious.** No comment above an import, a `return`, or a well-named call.
 - **Delete a comment that has become a caption.** If it restates the line beneath it, the line is either clear enough already or should be renamed.
