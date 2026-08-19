@@ -537,6 +537,16 @@ class _SimulatedGuest:
                 [argv[4]] if self._quoting else argv[4].replace("$(", " ").replace(")", " ").split()
             )
             return ExecResult(stdout=f"{len(words)}\n")
+        if argv[0:1] == ["mkdir"]:
+            # `-p` and plain alike: an empty directory is a real entry here, because the
+            # simulator's remove refuses one without recursive only when it is recorded.
+            self.directories.add(posixpath.normpath(posixpath.join(working_directory, argv[-1])))
+            return ExecResult(stdout="")
+        if argv[0:1] == ["rmdir"]:
+            self.directories.discard(
+                posixpath.normpath(posixpath.join(working_directory, argv[-1]))
+            )
+            return ExecResult(stdout="")
         if argv[0:1] == ["test"]:
             operand = self._resolve(posixpath.normpath(posixpath.join(working_directory, argv[-1])))
             if argv[1:2] == ["-f"]:
@@ -693,6 +703,135 @@ class TestFilesDeleteConformance:
         )
         assert failures["a-removal-removes"] is not None
         assert failures["recursive-removes-the-tree"] is not None
+
+    def test_a_destructive_refusal_fails_the_intact_assertions(self):
+        """Delete first, raise after: the shape a bare exception-type check certifies.
+
+        Each refusal probe asserts the survivor still stands, so a backend that did the damage
+        and then raised the documented error fails the probe it would otherwise have passed —
+        the half of every refusal check the review asked for.
+        """
+
+        class _Destructive(_SimulatedGuest):
+            async def remove(self, path, *, working_directory, recursive=False):
+                base = posixpath.normpath(working_directory)
+                guest = posixpath.normpath(posixpath.join(base, path))
+                # Do the damage plainly: everything from the resolved guest down, target
+                # included when a link is on the path.
+                resolved = self._resolve(guest)
+                resolved = self.symlinks.get(resolved, resolved)
+                prefix = resolved.rstrip("/") + "/"
+                for stored in list(self.contents):
+                    if stored == resolved or stored.startswith(prefix):
+                        self.contents.pop(stored, None)
+                for stored in list(self.symlinks):
+                    if stored == resolved or stored.startswith(prefix):
+                        self.symlinks.pop(stored)
+                for stored in list(self.directories):
+                    if stored == resolved or stored.startswith(prefix):
+                        self.directories.discard(stored)
+                # Then raise what the protocol documents, as though nothing happened.
+                if guest == base:
+                    raise ValueError(f"refusing to remove the working directory itself: {path}")
+                if guest != resolved or path.startswith(".."):
+                    raise ValueError(f"path {path!r} resolves outside working directory")
+                raise OSError(f"could not remove {path}")
+
+        failures = _sim_results(
+            _SimSubject(sandbox=_Destructive(), working_directory=_WORK, capabilities=_EVERYTHING),
+            run_files_delete_probes,
+        )
+        assert failures["the-working-directory-is-refused"] is not None
+        assert failures["a-path-outside-is-refused"] is not None
+        assert failures["a-path-through-a-linked-parent-is-refused"] is not None
+        assert failures["a-directory-needs-recursive"] is not None
+        assert failures["an-empty-directory-needs-recursive"] is not None
+
+    def test_an_overbroad_removal_fails_the_sentinel_assertions(self):
+        """rm -rf the working directory whole: the tree probe's own sentinel catches it."""
+
+        class _ScorchedEarth(_SimulatedGuest):
+            async def remove(self, path, *, working_directory, recursive=False):
+                base = posixpath.normpath(working_directory)
+                if recursive:
+                    for stored in (*self.contents, *self.symlinks):
+                        if stored.startswith(base + "/"):
+                            self.contents.pop(stored, None)
+                            self.symlinks.pop(stored, None)
+                    return
+                await super().remove(path, working_directory=working_directory, recursive=recursive)
+
+        failures = _sim_results(
+            _SimSubject(
+                sandbox=_ScorchedEarth(), working_directory=_WORK, capabilities=_EVERYTHING
+            ),
+            run_files_delete_probes,
+        )
+        # The tree probe's bystander check is what catches it — the sentinel lives in the same
+        # probe, so a recursive removal scoped to nothing at all fails it directly.
+        assert failures["recursive-removes-the-tree"] is not None
+        assert "beside the tree" in failures["recursive-removes-the-tree"]
+
+    def test_an_instant_timeout_is_not_the_bound_expiring(self):
+        """A backend raising TimeoutError for its own ceiling passes the type check and fails."""
+
+        class _OwnCeiling(_SimulatedGuest):
+            async def exec(self, command, *, working_directory: str, timeout: float):
+                if isinstance(command, list) and command[0:1] == ["sleep"]:
+                    raise TimeoutError  # immediately, without any wait
+                return await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+
+        failures = _sim_results(
+            _SimSubject(sandbox=_OwnCeiling(), working_directory=_WORK, capabilities=_EVERYTHING),
+            run_exec_probes,
+        )
+        assert failures["a-timeout-raises-timeout-error"] is not None
+        assert "under half the bound" in failures["a-timeout-raises-timeout-error"]
+
+    def test_a_non_idempotent_removal_fails_the_missing_path_probe(self):
+        """Succeeds on never-seen paths, raises on the repeat — the finally-breaker."""
+
+        class _RepeatRaises(_SimulatedGuest):
+            def __init__(self):
+                super().__init__()
+                self._removed: set[str] = set()
+
+            async def remove(self, path, *, working_directory, recursive=False):
+                base = posixpath.normpath(working_directory)
+                guest = posixpath.normpath(posixpath.join(base, path))
+                if guest in self._removed:
+                    raise FileNotFoundError(path)
+                self._removed.add(guest)
+                await super().remove(path, working_directory=working_directory, recursive=recursive)
+
+        failures = _sim_results(
+            _SimSubject(sandbox=_RepeatRaises(), working_directory=_WORK, capabilities=_EVERYTHING),
+            run_files_delete_probes,
+        )
+        assert failures["a-missing-path-is-success"] is not None
+
+    def test_an_empty_directory_carved_out_fails_the_empty_probe(self):
+        """The quiet rmdir: non-empty refused, empty deleted without recursive."""
+
+        class _CarvesOutEmpty(_SimulatedGuest):
+            async def remove(self, path, *, working_directory, recursive=False):
+                base = posixpath.normpath(working_directory)
+                guest = posixpath.normpath(posixpath.join(base, path))
+                if guest in self.directories:
+                    self.directories.discard(guest)
+                    return  # an empty directory goes without the word
+                await super().remove(path, working_directory=working_directory, recursive=recursive)
+
+        failures = _sim_results(
+            _SimSubject(
+                sandbox=_CarvesOutEmpty(), working_directory=_WORK, capabilities=_EVERYTHING
+            ),
+            run_files_delete_probes,
+        )
+        assert failures["an-empty-directory-needs-recursive"] is not None
+        assert failures["a-directory-needs-recursive"] is None
 
     def test_a_removal_that_follows_links_fails_the_link_probe(self):
         class _Following(_SimulatedGuest):
@@ -856,11 +995,24 @@ class TestFilesDeleteConformance:
 
 
 def test_the_assert_functions_return_the_results():
-    for run, assert_, probes in (
-        (run_files_in_probes, assert_files_in_conformance, FILES_IN_PROBES),
-        (run_exec_probes, assert_exec_conformance, EXEC_PROBES),
-        (run_files_delete_probes, assert_files_delete_conformance, FILES_DELETE_PROBES),
+    """Each entry point returns its results so a caller can assert on what was skipped."""
+    for probes, assert_ in (
+        (FILES_IN_PROBES, assert_files_in_conformance),
+        (EXEC_PROBES, assert_exec_conformance),
+        (FILES_DELETE_PROBES, assert_files_delete_conformance),
     ):
         results = asyncio.run(assert_(_sim_subject()))
         assert [r.probe.name for r in results] == [p.name for p in probes]
         assert all(r.passed for r in results)
+
+
+def test_assert_files_in_answers_a_conforming_subject():
+    """Called by name — the coverage test reads this module's AST, and an aliased callee is
+    invisible to it, so the package that ships the assert exercises it spelled out."""
+    results = asyncio.run(assert_files_in_conformance(_sim_subject()))
+    assert all(r.passed for r in results)
+
+
+def test_assert_exec_answers_a_conforming_subject():
+    results = asyncio.run(assert_exec_conformance(_sim_subject()))
+    assert all(r.passed for r in results)

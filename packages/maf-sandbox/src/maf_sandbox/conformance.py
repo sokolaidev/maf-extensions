@@ -32,11 +32,9 @@ EXEC last, and a caller that wants what comes after acquires a second sandbox.
 
 **The EXEC suite plants its own working directory.**  ``working_directory`` does not exist
 after ``acquire`` — no backend creates ``spec.work_dir`` and the protocol does not promise it —
-so the suite writes a marker file first, whose parent creation is the caller-side rule the
-repo's ``dispatch_over_exec`` launcher already made deliberate.  A subject whose sandbox has
-no ``write_file`` cannot run the suite; a backend that starts guaranteeing the directory
-should say so in its own docs, and the open question of whether ``acquire`` owes it is filed
-alongside this suite.
+so the suite writes a marker file first: the caller-creates rule, with the reasoning and the
+open question of whether ``acquire`` should owe it filed as #466.  A subject whose sandbox has
+no ``write_file`` cannot run the suite.
 
 Nothing here imports a test framework: this module ships in the wheel.  A failure raises
 :class:`ConformanceFailure` naming every probe that failed rather than the first.
@@ -45,6 +43,7 @@ Nothing here imports a test framework: this module ships in the wheel.  A failur
 from __future__ import annotations
 
 import posixpath
+import time
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -605,10 +604,11 @@ async def assert_files_out_conformance(subject: ConformanceSubject) -> tuple[Pro
 async def _probe_a_write_lands_and_reads_back(
     subject: ConformanceSubject, paths: ConformancePaths
 ) -> None:
-    # `printf` rather than `cat` alone: the working directory is where a backend that ignored
-    # it would land the file, and the probe distinguishes the two locations.
+    await subject.sandbox.write_file(f"{paths.work}/real/written.txt", "written")
     result = await subject.sandbox.exec(
-        ["test", "-f", "real/written.txt"], working_directory=subject.working_directory, timeout=60
+        ["test", "-f", "real/written.txt"],
+        working_directory=subject.working_directory,
+        timeout=60,
     )
     if result.exit_code != 0:
         raise AssertionError("the written file is not visible at its guest path")
@@ -622,6 +622,7 @@ async def _probe_a_write_lands_and_reads_back(
 async def _probe_bytes_survive_the_round_trip(
     subject: ConformanceSubject, paths: ConformancePaths
 ) -> None:
+    await subject.sandbox.write_file(f"{paths.work}/binary.bin", _BINARY)
     back = await subject.sandbox.exec(
         ["cat", "binary.bin"], working_directory=subject.working_directory, timeout=60
     )
@@ -640,6 +641,7 @@ async def _probe_bytes_survive_the_round_trip(
 
 
 async def _probe_str_content_is_utf8(subject: ConformanceSubject, paths: ConformancePaths) -> None:
+    await subject.sandbox.write_file(f"{paths.work}/text.txt", "naïve")
     back = await subject.sandbox.exec(
         ["cat", "text.txt"], working_directory=subject.working_directory, timeout=60
     )
@@ -650,6 +652,8 @@ async def _probe_str_content_is_utf8(subject: ConformanceSubject, paths: Conform
 async def _probe_a_second_write_replaces(
     subject: ConformanceSubject, paths: ConformancePaths
 ) -> None:
+    await subject.sandbox.write_file(f"{paths.work}/overwritten.txt", "first")
+    await subject.sandbox.write_file(f"{paths.work}/overwritten.txt", "second")
     back = await subject.sandbox.exec(
         ["cat", "overwritten.txt"], working_directory=subject.working_directory, timeout=60
     )
@@ -658,6 +662,7 @@ async def _probe_a_second_write_replaces(
 
 
 async def _probe_parents_are_created(subject: ConformanceSubject, paths: ConformancePaths) -> None:
+    await subject.sandbox.write_file(f"{paths.work}/deep/er/est/leaf.txt", "deep")
     result = await subject.sandbox.exec(
         ["test", "-f", "deep/er/est/leaf.txt"],
         working_directory=subject.working_directory,
@@ -723,15 +728,15 @@ FILES_IN_PROBES: tuple[Probe, ...] = (
 
 
 async def _plant_files_in_layout(subject: ConformanceSubject) -> ConformancePaths:
-    """Write the layout through the surface under test — that surface is the point here."""
-    paths = ConformancePaths.under(subject.working_directory)
-    await subject.sandbox.write_file(f"{paths.work}/real/written.txt", "written")
-    await subject.sandbox.write_file(f"{paths.work}/binary.bin", _BINARY)
-    await subject.sandbox.write_file(f"{paths.work}/text.txt", "naïve")
-    await subject.sandbox.write_file(f"{paths.work}/overwritten.txt", "first")
-    await subject.sandbox.write_file(f"{paths.work}/overwritten.txt", "second")
-    await subject.sandbox.write_file(f"{paths.work}/deep/er/est/leaf.txt", "deep")
-    return paths
+    """Derive the paths the FILES_IN probes share.
+
+    Each probe writes its own fixture through the surface under test — that surface is the
+    point of the suite, and a probe that verified a write made elsewhere would report on state
+    it did not create. It also keeps a write that raises (implicit parents unsupported, a
+    refused path) inside its own probe's handling, so the run reports it as that probe's
+    failure rather than aborting with a raw exception and no results.
+    """
+    return ConformancePaths.under(subject.working_directory)
 
 
 async def run_files_in_probes(subject: ConformanceSubject) -> tuple[ProbeResult, ...]:
@@ -819,11 +824,22 @@ async def _probe_a_timeout_raises_timeout_error(
     # Last in EXEC_PROBES by design: the protocol lets a backend discard the whole sandbox to
     # stop a hung command, and two shipped ones do, so the sandbox this probe returns from may
     # be gone by the time the caller sees the result.
+    started = time.monotonic()
     try:
         await subject.sandbox.exec(
             ["sleep", "30"], working_directory=subject.working_directory, timeout=1
         )
     except TimeoutError:
+        # The bound must actually have elapsed: a backend borrowing the exception for its own
+        # shorter ceiling — or raising it eagerly on any call — would otherwise pass here while
+        # breaking the caller's reading of its own budget running out. The 0.5s allowance is
+        # scheduling tolerance, not precision: the claim is "at least roughly a second passed",
+        # not "exactly one".
+        if time.monotonic() - started < 0.5:
+            raise AssertionError(
+                "TimeoutError arrived in under half the bound — it is the backend's own "
+                "ceiling firing, not the caller's timeout expiring"
+            ) from None
         return
     except Exception as wrong:
         raise AssertionError(
@@ -888,21 +904,7 @@ EXEC_PROBES: tuple[Probe, ...] = (
 
 
 async def _plant_nothing(subject: ConformanceSubject) -> ConformancePaths:
-    """EXEC's probes run commands; the one thing to plant is the directory they run in.
-
-    ``working_directory`` does not exist after ``acquire`` — no backend creates ``spec.work_dir``,
-    and the protocol does not promise it does. The caller creates it, which is the arrangement
-    the repo's own ``dispatch_over_exec`` launcher already made deliberate: its ``mkdir -p``
-    carries the reason ("a run whose kind shared no files has nothing else to create the work
-    directory"). This suite is that caller, so it plants the directory the same way — through
-    ``write_file``, whose parent creation is the FILES_IN probe's own subject — rather than
-    leaving a fresh-sandbox exec to fail on a missing cwd and reporting five failures for one
-    fact. The marker stays: no EXEC probe enumerates the directory, and removing it would need
-    ``remove``, a capability one of the backends this suite runs against refuses outright.
-
-    Whether ``acquire`` should instead promise the directory is an open question, filed with
-    the suite rather than settled by a silent ``mkdir``.
-    """
+    """Plant the working directory the probes exec in — see the module docstring for why."""
     paths = ConformancePaths.under(subject.working_directory)
     await subject.sandbox.write_file(f"{paths.work}/.probe-cwd", b"")
     return paths
@@ -926,26 +928,40 @@ async def assert_exec_conformance(subject: ConformanceSubject) -> tuple[ProbeRes
 # ---------------------------------------------------------------------------
 
 
+async def _assert_present(sandbox: Sandbox, path: str, working_directory: str, what: str) -> None:
+    """``path`` still exists — the half of every refusal probe that a bare ``raises`` omits."""
+    result = await sandbox.exec(
+        ["test", "-e", path], working_directory=working_directory, timeout=60
+    )
+    if result.exit_code != 0:
+        raise AssertionError(f"{what} did not survive: {path!r} is gone")
+
+
 async def _probe_a_removal_removes(subject: ConformanceSubject, paths: ConformancePaths) -> None:
     await subject.sandbox.write_file(f"{paths.work}/doomed.txt", b"to be removed\n")
+    await subject.sandbox.write_file(f"{paths.work}/bystander.txt", b"not the target\n")
     await subject.sandbox.remove("doomed.txt", working_directory=subject.working_directory)
     result = await subject.sandbox.exec(
         ["test", "-e", "doomed.txt"], working_directory=subject.working_directory, timeout=60
     )
     if result.exit_code == 0:
         raise AssertionError("the removed file is still there")
+    # A removal that also took the working directory, or a neighbour, is not a removal of
+    # ``path``: the method promises that path and nothing else.
+    await _assert_present(
+        subject.sandbox, "bystander.txt", subject.working_directory, "a bystander file"
+    )
 
 
 async def _probe_a_missing_path_is_success(
     subject: ConformanceSubject, paths: ConformancePaths
 ) -> None:
-    result = await subject.sandbox.exec(
-        ["test", "-e", "never-was.txt"], working_directory=subject.working_directory, timeout=60
-    )
-    if result.exit_code == 0:
-        raise AssertionError("the layout landed a file the probes never planted")
-    # The probe's own subject: remove the same path twice, the second time from nothing.
-    await subject.sandbox.remove("never-was.txt", working_directory=subject.working_directory)
+    # Idempotence is the two-call shape a finally-based cleanup actually runs: remove the
+    # same path twice, the second call from nothing. A backend that succeeds on never-seen
+    # paths but raises on the repeat breaks exactly the second call.
+    await subject.sandbox.write_file(f"{paths.work}/was-here.txt", b"gone after the first call\n")
+    await subject.sandbox.remove("was-here.txt", working_directory=subject.working_directory)
+    await subject.sandbox.remove("was-here.txt", working_directory=subject.working_directory)
 
 
 async def _probe_a_link_is_removed_never_followed(
@@ -978,6 +994,15 @@ async def _probe_a_path_through_a_linked_parent_is_refused(
         "removing through a linked parent",
         subject.sandbox.remove("link-dir/target.txt", working_directory=subject.working_directory),
     )
+    # The refusal is only worth its exception type if nothing crossed: a backend that followed
+    # the link, deleted the target, and then raised would pass the check above and have done
+    # the exact damage the probe exists to catch.
+    await _assert_present(
+        subject.sandbox,
+        "../work-outside/target.txt",
+        subject.working_directory,
+        "the target behind a refused linked-parent removal",
+    )
 
 
 async def _probe_a_directory_needs_recursive(
@@ -986,8 +1011,37 @@ async def _probe_a_directory_needs_recursive(
     await subject.plant_file(f"{paths.work}/dir/keeps.txt", b"a directory\n")
     await _refused_with(
         OSError,
-        "removing a directory without recursive",
+        "removing a non-empty directory without recursive",
         subject.sandbox.remove("dir", working_directory=subject.working_directory),
+    )
+    await _assert_present(
+        subject.sandbox, "dir/keeps.txt", subject.working_directory, "the refused directory"
+    )
+
+
+async def _probe_an_empty_directory_needs_recursive(
+    subject: ConformanceSubject, paths: ConformancePaths
+) -> None:
+    # The protocol refuses empty directories too — no enumeration primitive to tell them
+    # apart, the rule has to be one every backend can keep — so an empty one is planted
+    # through `exec`, the guest's own move, with a file placed under it and removed again
+    # to leave it genuinely empty rather than never-created.
+    await subject.sandbox.exec(
+        ["mkdir", "-p", "empty"], working_directory=subject.working_directory, timeout=60
+    )
+    await subject.sandbox.exec(
+        ["rmdir", "empty"], working_directory=subject.working_directory, timeout=60
+    )
+    await subject.sandbox.exec(
+        ["mkdir", "empty"], working_directory=subject.working_directory, timeout=60
+    )
+    await _refused_with(
+        OSError,
+        "removing an empty directory without recursive",
+        subject.sandbox.remove("empty", working_directory=subject.working_directory),
+    )
+    await _assert_present(
+        subject.sandbox, "empty", subject.working_directory, "the refused empty directory"
     )
 
 
@@ -995,6 +1049,7 @@ async def _probe_recursive_removes_the_tree(
     subject: ConformanceSubject, paths: ConformancePaths
 ) -> None:
     await subject.plant_file(f"{paths.work}/tree/leaf.txt", b"in the tree\n")
+    await subject.plant_file(f"{paths.work}/next-to-tree.txt", b"not in the tree\n")
     await subject.sandbox.remove(
         "tree", working_directory=subject.working_directory, recursive=True
     )
@@ -1004,6 +1059,11 @@ async def _probe_recursive_removes_the_tree(
         )
         if result.exit_code == 0:
             raise AssertionError(f"{path!r} survived a recursive removal of the tree")
+    # Recursive scopes to the tree: a backend that cleared the working directory whole would
+    # pass the loop above and delete a file nothing asked about.
+    await _assert_present(
+        subject.sandbox, "next-to-tree.txt", subject.working_directory, "a file beside the tree"
+    )
 
 
 async def _probe_a_link_inside_a_recursive_removal_is_unlinked_not_followed(
@@ -1045,10 +1105,16 @@ async def _probe_a_link_inside_a_recursive_removal_is_unlinked_not_followed(
 async def _probe_the_working_directory_is_refused(
     subject: ConformanceSubject, paths: ConformancePaths
 ) -> None:
+    await subject.sandbox.write_file(f"{paths.work}/ground.txt", b"still standing\n")
     await _refused_with(
         ValueError,
         "removing the working directory itself",
         subject.sandbox.remove(".", working_directory=subject.working_directory),
+    )
+    # A backend that removed the working directory and then raised would pass the refusal
+    # check above having taken the next run's ground with it.
+    await _assert_present(
+        subject.sandbox, "ground.txt", subject.working_directory, "a file in the refused work dir"
     )
 
 
@@ -1062,6 +1128,12 @@ async def _probe_a_path_outside_is_refused(
         subject.sandbox.remove(
             "../work-outside/target.txt", working_directory=subject.working_directory
         ),
+    )
+    await _assert_present(
+        subject.sandbox,
+        "../work-outside/target.txt",
+        subject.working_directory,
+        "the target of a refused outside-the-work-dir removal",
     )
 
 
@@ -1109,6 +1181,16 @@ FILES_DELETE_PROBES: tuple[Probe, ...] = (
         ),
         requires=frozenset({Capability.FILES_DELETE}),
         run=_probe_a_directory_needs_recursive,
+    ),
+    Probe(
+        name="an-empty-directory-needs-recursive",
+        why=(
+            "the empty case stated on its own, because it is the one a backend could quietly "
+            "carve out — an implicit rmdir where a refused removal belongs — and no other "
+            "probe plants a directory with nothing in it."
+        ),
+        requires=frozenset({Capability.FILES_DELETE}),
+        run=_probe_an_empty_directory_needs_recursive,
     ),
     Probe(
         name="recursive-removes-the-tree",

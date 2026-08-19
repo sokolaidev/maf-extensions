@@ -239,30 +239,29 @@ class TestTheSharedConformanceSuites:
         finally:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
-    def test_the_delete_probes_are_called_and_report_their_skip(self):
-        """The capability is withheld, so every probe must skip — and must say so.
+    def test_the_delete_suite_refuses_an_undeclared_capability(self):
+        """The gated runner refuses a subject with no FILES_DELETE — and that refusal is the answer.
 
-        A run that *stopped* skipping would mean the capability arrived without these probes
-        being held to a real guest first, which is the exact mistake #450 exists to prevent.
+        The whole-suite gate raises rather than skipping, so a run against this backend cannot
+        report probe results at all; asserting the refusal keeps the call honest (it is what
+        the coverage wiring looks for) without pretending skips that the runner never emits.
+        The capability itself is withheld structurally — `remove` raises NotImplementedError,
+        confining a deletion needs the pull surface #125 carries — so unlike acas there is
+        nothing to measure: no mechanism exists behind the gate.
         """
         scope = f"e2e-{uuid.uuid4()}"
         backend = WslcSandboxBackend(WslcSandboxConfig())
 
         async def scenario() -> None:
             sandbox = await backend.acquire(_key(scope), _spec())
-            results = await assert_files_delete_conformance(
-                PosixGuestSubject(
-                    sandbox=sandbox,
-                    working_directory=_WORK,
-                    capabilities=backend.capabilities,
+            with pytest.raises(ValueError, match="declares no FILES_DELETE"):
+                await assert_files_delete_conformance(
+                    PosixGuestSubject(
+                        sandbox=sandbox,
+                        working_directory=_WORK,
+                        capabilities=backend.capabilities,
+                    )
                 )
-            )
-            assert results, "the FILES_DELETE run returned no results"
-            assert all(r.skipped is not None for r in results), (
-                "a delete probe ran against a backend that declares no FILES_DELETE — either "
-                "the capability arrived (run the suite for real, here) or the gate is wrong"
-            )
-            assert all("files_delete" in (r.skipped or "") for r in results)
 
         try:
             asyncio.run(scenario())

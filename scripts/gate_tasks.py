@@ -1,9 +1,10 @@
 """The local gate's package discovery — one implementation, shared with the CI guard.
 
-`poe types-packages` calls `pyright_packages()` from here; `tests/test_pr_gate_enumerates.py`
-imports the same function to pin that the *workflow* enumerates too. The rule both answer:
-every `packages/*/` with its own `[tool.pyright]` gets its strict pass, so a new package is
-covered on the commit that adds it (#450).
+`poe types-packages` calls `pyright_packages()` from here; CI runs the same module as
+`python scripts/gate_tasks.py pyright-packages`, and `tests/test_pr_gate_enumerates.py`
+imports the same functions to pin that the *workflow* enumerates too. The rule all three
+answer: every `packages/*/` with its own `[tool.pyright]` gets its strict pass, so a new
+package is covered on the commit that adds it (#450).
 """
 
 from __future__ import annotations
@@ -42,3 +43,15 @@ def pyright_packages() -> int:
         print(f"pyright failed for: {', '.join(failures)}", file=sys.stderr)
         return 1
     return 0
+
+
+def main(argv: list[str]) -> int:
+    """The CLI CI calls: one command per gate task, exit code as the verdict."""
+    if argv == ["pyright-packages"]:
+        return pyright_packages()
+    print(f"usage: {Path(sys.argv[0]).name} pyright-packages", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

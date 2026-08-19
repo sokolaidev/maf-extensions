@@ -83,16 +83,11 @@ jobs:
         run: uv run ruff format --check .
 
       - name: Types (per-package strict configs)
-        # Enumerated rather than listed: every packages/*/ with its own [tool.pyright] gets its
-        # strict pass, so a seventh package is type-checked on the commit that adds it. The
-        # hardcode this replaced is how maf-sandbox-wslc shipped unchecked until someone
-        # remembered a line (#450).
-        run: |
-          set -euo pipefail
-          for config in packages/*/pyproject.toml; do
-            grep -q '^\[tool\.pyright\]' "$config" || continue
-            uv run pyright -p "$(dirname "$config")"
-          done
+        # One discovery implementation: the same `packages_with_pyright()` the local gate and
+        # `tests/test_pr_gate_enumerates.py` use, run as a CLI so CI never re-parses the TOML
+        # with a grep of its own. Enumerated rather than listed so a seventh package is
+        # type-checked on the commit that adds it (#450).
+        run: uv run python scripts/gate_tasks.py pyright-packages
 
       - name: Types (scripts, tests & samples)
         # scripts/, the test trees and samples/ belong to no package, so the per-package strict

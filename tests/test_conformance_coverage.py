@@ -152,7 +152,16 @@ def _binding_text(annotation: ast.expr) -> str:
     return ast.unparse(annotation)
 
 
-def _carries_the_binding(src: Path) -> str | None:
+def _iter_modules(src: Path, module_filter: str | None = None):
+    """Every .py under ``src`` — filtered to one file when ``module_filter`` names it."""
+    for module in sorted(src.rglob("*.py")):
+        if ".venv" in module.parts:
+            continue
+        if module_filter is None or module.name == module_filter:
+            yield module
+
+
+def _carries_the_binding(src: Path, backend_class: str | None = None) -> str | None:
     """The file under ``src`` holding the static protocol binding, or ``None``.
 
     The binding is an ``AnnAssign`` annotated ``tuple[SandboxBackend, type[Sandbox]]`` under an
@@ -160,11 +169,13 @@ def _carries_the_binding(src: Path) -> str | None:
     not, so the name is deliberately not matched. ``isinstance`` assertions do not count:
     ``runtime_checkable`` checks member presence only, and a narrowed signature or a missing
     method passes one while failing the build the binding fails.
+
+    ``backend_class``, when given, additionally requires the assignment's value to construct
+    or name that class — so a package with two backends is held to a binding for each, not to
+    whichever single one happens to carry the annotation.
     """
     target = "tuple[SandboxBackend, type[Sandbox]]"
-    for module in sorted(src.rglob("*.py")):
-        if ".venv" in module.parts:
-            continue
+    for module in _iter_modules(src):
         tree = ast.parse(module.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not (isinstance(node, ast.If) and isinstance(node.test, ast.Name)):
@@ -176,12 +187,24 @@ def _carries_the_binding(src: Path) -> str | None:
                     isinstance(statement, ast.AnnAssign)
                     and statement.annotation is not None
                     and _binding_text(statement.annotation) == target
+                    and (backend_class is None or _names_backend(statement.value, backend_class))
                 ):
                     return module.relative_to(REPO_ROOT).as_posix()
     return None
 
 
-def _backends(src: Path) -> list[str]:
+def _names_backend(value: ast.expr | None, backend_class: str) -> bool:
+    """Whether a binding's value constructs or names ``backend_class``.
+
+    The shipped shapes are a call — ``Backend(Config())`` — or a bare name; anything else is
+    not judged, and counts as bound only if the class name appears in it.
+    """
+    if value is None:
+        return False
+    return backend_class in _binding_text(value)
+
+
+def _backends(src: Path, module_filter: str | None = None) -> list[str]:
     """Classes under ``src`` that look like a ``SandboxBackend``: ``acquire`` plus a dispose.
 
     A structural read rather than an import — this file may not import the packages it audits,
@@ -190,9 +213,7 @@ def _backends(src: Path) -> list[str]:
     packages happens to share.
     """
     found: list[str] = []
-    for module in sorted(src.rglob("*.py")):
-        if ".venv" in module.parts:
-            continue
+    for module in _iter_modules(src, module_filter):
         tree = ast.parse(module.read_text(encoding="utf-8"))
         for klass in ast.walk(tree):
             if not isinstance(klass, ast.ClassDef):
@@ -288,15 +309,22 @@ def test_a_backend_carries_the_static_protocol_binding(package: Path):
     instead. wslc carried it alone on main while docker and acas stayed green and
     non-conforming, which is the near-miss #450 records: the binding is a convention nothing
     enforced until this test.
+
+    Every discovered backend class, not one per package: a package holding two backends is
+    bound when each of them is named in a binding, so the second one cannot ride in unbound.
     """
-    where = _carries_the_binding(package / "src")
-    assert where is not None, (
-        f"no module under {package.name}/src carries the static conformance binding — an "
-        "`AnnAssign` of `tuple[SandboxBackend, type[Sandbox]]` under `if TYPE_CHECKING:`. "
-        "Without it, adding a method to the protocol leaves this package silently "
-        "non-conforming with a fully green build. Paste the binding wslc's `_backend.py` "
-        "carries, naming this package's own backend and sandbox classes."
-    )
+    backends = _backends(package / "src")
+    assert backends, f"{package.name} was discovered as a backend package but has no backends"
+    for backend_class in backends:
+        where = _carries_the_binding(package / "src", backend_class)
+        assert where is not None, (
+            f"no module under {package.name}/src carries the static conformance binding for "
+            f"{backend_class} — an `AnnAssign` of `tuple[SandboxBackend, type[Sandbox]]` under "
+            "`if TYPE_CHECKING:` naming that backend and its sandbox. Without it, adding a "
+            "method to the protocol leaves this package silently non-conforming with a fully "
+            "green build. Paste the binding wslc's `_backend.py` carries, naming this "
+            "package's own backend and sandbox classes."
+        )
 
 
 def test_the_guard_still_finds_the_backends_that_exist():
@@ -322,20 +350,33 @@ def test_the_guard_still_finds_the_backends_that_exist():
 
 def test_the_package_that_ships_the_suite_answers_it_too():
     """The fake is the specimen every kind's tests run against, so it answers the probes too."""
-    assert _calls_the_suite(PACKAGES / CORE / "tests", SUITES[0])
+    for suite in SUITES:
+        assert _calls_the_suite(PACKAGES / CORE / "tests", suite) or (
+            suite == SUITES[3] and _calls_the_suite(PACKAGES / CORE / "tests", MEASURE)
+        ), (
+            f"nothing in maf-sandbox's own tests calls {suite}. The package that ships the "
+            "suite is the specimen every kind's tests run against — removing its call to one "
+            "of them leaves that suite unexercised by the only tests that always run."
+        )
 
 
 def test_the_core_package_carries_the_binding_too():
     """`maf_sandbox.testing` implements the protocol; the binding holds it to its own package.
 
     It is the specimen every kind's tests run against, so a protocol method it stops satisfying
-    is a defect every kind's suite reports as a fake problem rather than a core one.
+    is a defect every kind's suite reports as a fake problem rather than a core one. Discovery
+    is scoped to the module: core also holds `SandboxRouter`, which structurally resembles a
+    backend (`acquire` plus a dispose) but is the caller of them, not one.
     """
-    assert _carries_the_binding(PACKAGES / CORE / "src") is not None, (
-        "no module under maf-sandbox/src carries the static conformance binding. "
-        "`maf_sandbox.testing`'s backend and sandbox should hold it, the same annotation "
-        "every backend package carries."
-    )
+    src = PACKAGES / CORE / "src"
+    backends = _backends(src, module_filter="testing.py")
+    assert backends, "core's testing backend is no longer discovered as a backend"
+    for backend_class in backends:
+        assert _carries_the_binding(src, backend_class) is not None, (
+            f"no module under maf-sandbox/src carries the static conformance binding for "
+            f"{backend_class}. `maf_sandbox.testing`'s backend and sandbox should hold it, the "
+            "same annotation every backend package carries."
+        )
 
 
 def test_no_package_builds_on_a_sibling_that_serves_the_pull_surface():

@@ -2,9 +2,15 @@
 
 `tests.yml`'s type-check, build and smoke steps each named six packages one line each, and a
 seventh would have been invisible until someone remembered to add it — which is exactly how
-`maf-sandbox-wslc` shipped without a conformance check of any kind. These steps now loop over
+`maf-sandbox-wslc` shipped without a conformance check of any kind. These steps now enumerate
 `packages/*/`; this file pins that they keep looping, because a rule that matches nothing
 passes every time.
+
+The type-check step is pinned harder than the other two: it must call
+`scripts/gate_tasks.py` — the same `packages_with_pyright()` the local gate and the poe task
+use — rather than re-parsing the TOML with a grep of its own. Two parsers is a drift waiting
+to happen: valid TOML the grep misses (leading whitespace before `[tool.pyright]`) would pass
+CI and skip the local gate's check, green both ways.
 
 **Scoped to `tests.yml`.** `publish-packages.yml` names packages in its tag patterns and its
 dispatch options, and neither can be enumerated: a tag pattern is a filter GitHub matches
@@ -15,15 +21,23 @@ here rather than silently unmatched.
 from __future__ import annotations
 
 import re
+import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+# The gate's discovery helper sits in scripts/, on no package's path; extraPaths in the root
+# pyproject resolves it for the checker and this line for pytest — the same two-step the
+# sample-09 import in test_no_isolation_backend.py takes.
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+
+from gate_tasks import packages_with_pyright  # noqa: E402
+
 TESTS_YML = REPO_ROOT / ".github" / "workflows" / "tests.yml"
 _TEXT = TESTS_YML.read_text(encoding="utf-8")
 
 #: A package name spelled out where a loop variable should be — `maf-sandbox` (the prefix every
 #: package shares) with anything but `*` following, or a bare `packages/maf-sandbox-<name>`
-#: path. The loop forms name no package: `packages/*/`, `$(dirname …)`, `$(basename …)`.
+#: path. The loop forms name no package: `packages/*/`, `$(basename …)`.
 _HARDCODED_PACKAGE = re.compile(
     r"(?<![-\w*/])(?:packages/)?maf-sandbox-(?:acas|bicep|codeact|docker|wslc)(?![\w/-])"
 )
@@ -39,10 +53,39 @@ class TestTheGateEnumerates:
         ):
             assert f"name: {step}" in _TEXT, f"tests.yml lost its {step!r} step"
 
+    def test_the_types_step_uses_the_shared_discovery(self):
+        """One parser, not two: the step calls the module the local gate and this file use.
+
+        A grep of the TOML is a second discovery implementation that drifts green on valid
+        formatting it does not recognise — leading whitespace before `[tool.pyright]` — while
+        `packages_with_pyright()` keeps working.
+        """
+        block = _step_block("per-package strict configs")
+        assert "scripts/gate_tasks.py pyright-packages" in block, (
+            "the per-package types step no longer runs scripts/gate_tasks.py — the shared "
+            "tomllib discovery. A re-parse of its own (a grep, a fresh loop) is how CI and the "
+            "local gate drift apart on what counts as a package (#450)."
+        )
+
+    def test_the_shared_discovery_answers_the_cli(self):
+        """The entry point the workflow calls exists and enumerates every package."""
+        import gate_tasks
+
+        assert hasattr(gate_tasks, "main"), "gate_tasks.py lost its CLI entry point"
+        found = sorted(path.name for path in packages_with_pyright())
+        assert found == [
+            "maf-sandbox",
+            "maf-sandbox-acas",
+            "maf-sandbox-bicep",
+            "maf-sandbox-codeact",
+            "maf-sandbox-docker",
+            "maf-sandbox-wslc",
+        ], found
+
     def test_the_steps_loop_rather_than_list(self):
-        for step in ("per-package strict configs", "Build + metadata check", "clean environment"):
+        for step in ("Build + metadata check", "clean environment"):
             block = _step_block(step)
-            assert "packages/*/" in block or "packages/*/pyproject.toml" in block, (
+            assert "packages/*/" in block, (
                 f"the {step!r} step no longer enumerates packages/*/ — it was a hardcoded list "
                 "of six that let a seventh ship unchecked (#450), and the enumeration is what "
                 "closes that"
@@ -71,10 +114,11 @@ def _step_block(fragment: str) -> str:
         if f"name: {fragment}" in line or (
             fragment in line and line.lstrip().startswith("- name:")
         ):
-            # Walk forward to this step's `run: |` and collect its indented body.
+            # Walk forward to this step's `run:` and collect its body: a single-line `run:`
+            # command, or an indented block after `run: |`.
             for cursor in range(index + 1, len(lines)):
                 if lines[cursor].lstrip().startswith("run:"):
-                    body: list[str] = []
+                    body = [lines[cursor]]
                     for body_line in lines[cursor + 1 :]:
                         if body_line.strip() and not body_line.startswith(" " * 10):
                             break

@@ -394,29 +394,51 @@ class TestFilesDeleteAgainstTheRealService:
     def test_the_mechanism_deletes_what_the_capability_promises(self, files_delete_measurement):
         """The probes that pass are the mechanism working; the ones that fail are the record.
 
-        Expected today, from the offline suite's pins: the final-component link probe fails
-        with this backend's ValueError refusal. The **interior** link probe is the genuinely
-        unknown one — #452 named it as unverifiable from a workstation, this backend's
-        stat-based refusal cannot see inside a recursive tree, and what the service's
-        `delete_file(recursive=True)` does to a link it finds there is what this run measures.
-        Whatever column it lands in, name it in the PR that lands this, citing this run: it is
-        the answer to whether this service can ever unlink-on-delete, and half of the
-        transient-or-structural reading below.
+        Every probe is classified by this test into expected-pass or expected-fail — a result
+        in neither column fails the run, so an unclassified finding cannot sit green in a
+        scheduled job with no visible artefact. When a probe's column legitimately changes,
+        move it here and name the change in the PR that moves it, citing this run: the
+        interior-link probe in particular is the answer to whether this service can ever
+        unlink-on-delete (#452's open question), and half of the transient-or-structural
+        reading below.
         """
         results = files_delete_measurement
         failed = {r.probe.name: r.failure for r in results if r.failure is not None}
         passed = {r.probe.name for r in results if r.failure is None}
+
         # The refusal the offline TestRemove pins: an expected failure, not a regression.
-        assert failed.get("a-link-is-removed-never-followed") is not None, (
+        assert "a-link-is-removed-never-followed" in failed, (
             "this backend refuses a link on remove — the offline TestRemove pins it. A pass "
             "here means the service unlinked rather than followed, and the capability "
             "conversation changes: say so, citing this run."
         )
         assert "ValueError" in failed["a-link-is-removed-never-followed"]
-        # What the mechanism does do, on the service's own word:
-        assert "a-removal-removes" in passed
-        assert "a-missing-path-is-success" in passed
-        assert "recursive-removes-the-tree" in passed
+
+        # The expected columns for everything else. The interior-link probe is deliberately
+        # *not* pre-classified: it is the genuinely unknown one — this backend's stat-based
+        # refusal cannot see inside a recursive tree — so it lands in the unclassified set
+        # below and fails this run, loudly, with its result in the message, rather than being
+        # assumed either way. The first live run classifies it; that is the measurement.
+        expected_pass = {
+            "a-removal-removes",
+            "a-missing-path-is-success",
+            "recursive-removes-the-tree",
+            "the-working-directory-is-refused",
+            "a-path-outside-is-refused",
+            "a-path-through-a-linked-parent-is-refused",
+            "a-directory-needs-recursive",
+            "an-empty-directory-needs-recursive",
+        }
+        unclassified = (passed | set(failed)) - expected_pass - {"a-link-is-removed-never-followed"}
+        assert not unclassified, (
+            f"unclassified delete-probe results: {sorted(n for n in unclassified)} "
+            f"(outcome: {sorted((n, 'failed' if n in failed else 'passed') for n in unclassified)}). "
+            "This measurement exists to produce evidence for #435/#438 — classify each result "
+            "in this test (expected pass, expected fail with its reason) or the scheduled run "
+            "reports nothing a decision can cite."
+        )
+        missing_pass = expected_pass - passed
+        assert not missing_pass, f"probes that should pass failed: {sorted(missing_pass)}"
 
 
 class TestWhatOnlyTheServiceCanSay:
