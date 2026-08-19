@@ -4,6 +4,24 @@ All notable changes to `maf-sandbox-acas` are documented here. The format follow
 
 Releases up to and including `0.2.3` were published as **`maf-sandbox-aca`**, and the entries below name it as it was — their tags and compare links point at real history and are left as they were written. `maf-sandbox-aca` is not maintained past `0.2.3`; PyPI names cannot be reused, so the rename is a new distribution rather than a continuation of that one.
 
+## [0.10.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.9.0...maf-sandbox-acas-v0.10.0) (2026-08-19)
+
+
+### ⚠ BREAKING CHANGES
+
+* **protocol:** `Sandbox` gains `remove(path, *, working_directory, recursive=False)`. An implementation that does not define it no longer satisfies the protocol. Backends that cannot confine a removal should raise `NotImplementedError` and not declare `Capability.FILES_DELETE`, as `maf-sandbox-wslc` does.
+
+### Features
+
+* **acas:** a bare image name boots what the service prebuilt, so a host imports nothing ([#424](https://github.com/sokolaidev/maf-extensions/issues/424)) ([f921132](https://github.com/sokolaidev/maf-extensions/commit/f921132da1beab8a246fa62d23de1c92b73a4a00))
+* **protocol:** a sandbox can be asked to delete what a workload put there ([#452](https://github.com/sokolaidev/maf-extensions/issues/452)) ([2453820](https://github.com/sokolaidev/maf-extensions/commit/245382036ba1e2ddc18dea79b8e97d2cfb561935))
+* **sandbox:** probes for every capability a backend claims, and CI that enumerates backends rather than listing them ([#462](https://github.com/sokolaidev/maf-extensions/issues/462)) ([f0915c7](https://github.com/sokolaidev/maf-extensions/commit/f0915c71819c729cd33aa130749fffc8d69fa377))
+
+
+### Fixes
+
+* require maf-sandbox 0.17.0 in the dependents and 0.17 in the samples, and admit 0.18 ([#472](https://github.com/sokolaidev/maf-extensions/issues/472)) ([dffd936](https://github.com/sokolaidev/maf-extensions/commit/dffd936ed3cb3c6a49d1dce0776ba321ee4d1dda))
+
 ## [0.9.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.8.3...maf-sandbox-acas-v0.9.0) (2026-08-17)
 
 
