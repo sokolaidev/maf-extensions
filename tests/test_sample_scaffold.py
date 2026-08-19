@@ -1,19 +1,12 @@
 """Every sample's `_scaffold.py` is one file, copied. This is what holds the copies together.
 
-The duplication is deliberate and the reasoning is in `_scaffold.py`'s own docstring: a sample
-must run from a downloaded directory against wheels from PyPI, so it cannot import a module
-that only exists in this repository, and publishing one would make it API. That leaves
-copying, and copying without a test is how one file drifts into a behaviour per copy.
+The duplication is deliberate and `_scaffold.py`'s own docstring says why. Copying without a
+test is how one file drifts into a behaviour per copy — same precedent as
+`maf-sandbox-docker`'s proxy: duplicate, then pin.
 
-Same precedent as `maf-sandbox-docker`'s proxy: duplicate, then pin.
-
-The behaviour is tested here too, and only here. `quoted`, `tool_results` and `evidence` are the
-contract between the samples that write the block and the live checks that read it (#314). One copy of the file means one place to test what it emits, and every copy is
-byte-identical by the assertion above, so testing the canonical one tests all of them.
-
-This suite is at the repository root rather than inside a package because `samples/` belongs to
-no package — it is not a uv workspace member and not in any package's `testpaths`, so nothing
-else would ever look at it.
+The behaviour is tested here and only here, on the canonical copy, which the byte-identity
+assertion makes a test of all of them. It sits at the repository root because `samples/`
+belongs to no package and nothing else would look at it.
 """
 
 from __future__ import annotations
@@ -48,12 +41,7 @@ def test_every_sample_carries_the_scaffold(sample: Path):
 
 
 def test_every_copy_is_byte_identical():
-    """Byte-identical, not merely equivalent.
-
-    A difference that looks cosmetic is still a difference a reader has to explain, and the
-    only honest answer for a file that exists once per sample is that there is nothing to
-    explain.
-    """
+    """Byte-identical, not merely equivalent: a cosmetic difference is still one to explain."""
     copies = {sample.name: (sample / _SCAFFOLD).read_bytes() for sample in _SAMPLE_DIRS}
     canonical_name, canonical = next(iter(copies.items()))
     drifted = sorted(name for name, body in copies.items() if body != canonical)
@@ -73,10 +61,9 @@ _HELPERS = ("require_env_vars", "quoted", "tool_results", "evidence", "conversat
 def _parsed(sample: Path) -> ast.Module:
     """`agent.py` as a tree.
 
-    Parsed and not searched. Source is not code: a comment, a docstring or a string literal all
-    match a pattern looking for one, so `THREAD_ID = "fixed"  # conversation_id("fixed")`
-    satisfies a textual check twice over while shipping a fixed id. Parsed rather than
-    imported, because a sample reads its environment on the way in and has none here.
+    Parsed, not searched: a comment matches a pattern looking for code, so
+    `THREAD_ID = "fixed"  # conversation_id("fixed")` satisfies a textual check twice over.
+    Parsed and not imported, because a sample reads its environment on the way in.
     """
     return ast.parse((sample / "agent.py").read_text(encoding="utf-8"))
 
@@ -95,10 +82,9 @@ def _imports(sample: Path) -> set[str]:
 def _conversations(sample: Path) -> tuple[list[str], list[str]]:
     """What this sample names its conversations, split into run-scoped and not.
 
-    A conversation is a module constant whose name carries `THREAD`, which is how every sample
-    writes one. Run-scoped means the value is a `conversation_id(...)` call on a string literal
-    — the literal comes back, so the length rule below measures what a sample really asks for
-    rather than something shaped like it.
+    A conversation is a module constant whose name carries `THREAD`. Run-scoped means a
+    `conversation_id(...)` call on a string literal, and that literal is what comes back, so the
+    length rule measures what a sample really asks for.
     """
     scoped: list[str] = []
     fixed: list[str] = []
@@ -158,11 +144,7 @@ def test_a_hosted_sample_names_its_conversation_for_the_run(sample: Path):
 
 @pytest.mark.parametrize("helper", _HELPERS)
 def test_no_sample_still_defines_the_helper_itself(helper: str):
-    """The point of the scaffold is that `agent.py` stops carrying these.
-
-    A second copy is not a style choice: `quoted` and the `[measured]` tag are what a live check
-    trusts, and two definitions of them are two things to keep in step.
-    """
+    """A second copy of a helper a live check trusts is two things to keep in step."""
     offenders = [
         sample.name
         for sample in _SAMPLE_DIRS
@@ -200,11 +182,7 @@ def _turn(*contents: object):
 
 
 class TestConversationIdKeepsOneRunSPurgeToItself:
-    """`dispose_scope` deletes by label, so an id two runs share is a delete they share.
-
-    The runs that verify a release are concurrent against one sandbox group, which is what
-    makes a fixed id reach out and delete another run's live sandbox (#445).
-    """
+    """`dispose_scope` deletes by label, so an id two runs share is a delete they share."""
 
     def test_the_run_is_in_it(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("GITHUB_RUN_ID", "9876543210")
@@ -241,11 +219,7 @@ class TestConversationIdKeepsOneRunSPurgeToItself:
     def test_every_id_a_sample_asks_for_fits_the_label(
         self, sample: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        """Past 63 characters a backend labels by digest: still unique, no longer readable.
-
-        Measured on the strings the samples ask for, under a run id twice the width of the
-        eleven digits GitHub issues now.
-        """
+        """Past 63 characters a backend labels by digest: still unique, no longer readable."""
         monkeypatch.setenv("GITHUB_RUN_ID", "9" * 20)
         monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "10")
         scoped, _ = _conversations(sample)

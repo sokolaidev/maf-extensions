@@ -1,9 +1,7 @@
 """What `samples/15_acas_codeact_host_tools` will and will not accept as the answer.
 
-The sample reads the framework's record of what `execute_code` returned and decides from it
-whether a program produced the table. Three matchers do that, and none of them can be reached
-by the live check's suite, which only ever sees the counts they printed. They are covered here
-because the counts are what a release is graded on: a matcher that says `6 of 6` about a wrong
+Three matchers decide whether a program produced the table, and the live check's suite cannot
+reach them — it only sees the counts they printed. A matcher that says `6 of 6` about a wrong
 table makes every assertion above it agree with a run that did not happen.
 """
 
@@ -40,11 +38,7 @@ finally:
 
 
 def test_importing_the_sample_left_nothing_behind():
-    """Neither mark the import makes on the process outlives this module's import.
-
-    Asserted rather than inferred from a later sample passing: the shadowing is silent, and the
-    test that would notice runs the samples in a fixed order this one does not control.
-    """
+    """Neither mark the import makes on the process outlives this module's import."""
     assert str(_AGENT.parent) not in sys.path
     assert [
         name
@@ -86,11 +80,7 @@ class TestFiguresIn:
         assert sample.figures_in(f"| Washington | Widget | {grouped} |", [1896.25]) == 1
 
     def test_a_negated_value_does_not_match(self):
-        """A table of correct magnitudes, every one negated, is not the answer.
-
-        The sign is part of the number. Without it the matcher reads the magnitude and reports
-        a program that got every total backwards as having printed the table.
-        """
+        """A table of correct magnitudes, every one negated, is not the answer."""
         assert sample.figures_in("Washington\tWidget\t-1896.25", [1896.25]) == 0
 
     def test_a_hyphen_in_a_label_is_not_a_sign(self):
@@ -106,11 +96,7 @@ class TestFiguresIn:
         assert sample.figures_in(f"Oregon\tGasket\t{printed}", [1791.15]) == 1
 
     def test_a_separator_python_itself_would_reject_is_still_read(self):
-        """The pattern is a reader, not a parser, and it accepts spellings `float()` refuses.
-
-        `float("1__791.15")` raises. Dropping the separators before the parse is what keeps a
-        stray underscore in a model's output from ending the run instead of being scored.
-        """
+        """`float("1__791.15")` raises, and the separators are dropped before the parse."""
         assert sample.figures_in("Oregon	Gasket	1__791.15", [1791.15]) == 1
 
     def test_a_run_id_is_not_a_number(self):
@@ -135,11 +121,7 @@ class TestRowsIn:
         assert sample.rows_in(_table(sample.TRUTH, separator)) == len(sample.PRODUCT_CELLS)
 
     def test_a_line_carrying_a_whole_state_is_not_three_rows(self):
-        """One line per state, each with all three pairs on it, is two rows and not six.
-
-        Every cell scans every line, so without the one-product rule the same line answers for
-        Widget, Gasket and Flange at once and a two-line output scores `6 of 6`.
-        """
+        """One line holding all three of a state's pairs is one row, not three."""
         two_lines = "\n".join(
             state + "".join(f"\t{name}\t{value}" for name, value in products.items())
             for state, products in sample.TRUTH.items()
@@ -188,11 +170,7 @@ class TestAmountsTheModelWrote:
 
     @pytest.mark.parametrize("longer", ["1980.0", "1088.1", "112.05"])
     def test_a_number_that_merely_contains_one_is_not_that_figure(self, longer: str):
-        """`1980.0` holds the characters of `980.0` and is a different number.
-
-        The dispatched route asserts this count is zero, so a figure found where none was
-        written is a run failed for carrying nothing.
-        """
+        """`1980.0` holds the characters of `980.0` and is a different number."""
         assert sample.amounts_the_model_wrote(_Response(_Message('{"x": ' + longer + "}"))) == 0
 
     @pytest.mark.parametrize("spelling", ["1240.50", "1_240.50", "1_240.5"])
@@ -249,22 +227,12 @@ class TestTheProgramThatAnswered:
         )
 
     def test_the_table_wins_against_the_same_values_in_the_wrong_places(self):
-        """Two programs can hold the same six values with only one of them a table.
-
-        `_SWAPPED` and `_HONEST` are that pair, so nothing the cells, the totals or the product
-        names can see separates them. Which one the route is graded on must not come down to
-        the order it happened to run them in.
-        """
+        """Two programs can hold the same six values with only one of them a table."""
         assert sample.the_program_that_answered([_SWAPPED, _HONEST]) == _HONEST
         assert sample.the_program_that_answered([_HONEST, _SWAPPED]) == _HONEST
 
     def test_a_complete_answer_beats_a_labelled_fragment(self):
-        """Both routes must print the table; only the dispatched one must label it.
-
-        So an unlabelled program holding every cell and both totals has answered, and a probe
-        that labelled one row has not. Ranking the labels first reports the fragment and throws
-        away a run that was right.
-        """
+        """Only the dispatched route must label its table, so an unlabelled one has still answered."""
         probe = "Washington\tWidget\t1896.25"
         assert sample.the_program_that_answered([probe, _UNLABELLED]) == _UNLABELLED
         assert sample.the_program_that_answered([_UNLABELLED, probe]) == _UNLABELLED
