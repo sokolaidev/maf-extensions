@@ -2955,6 +2955,7 @@ class TestThePidAgainstARealShell:
             output=f"{served}/program_output.txt",
             exit_code=f"{served}/program_exit_code",
             pid=f"{served}/program_pid",
+            session=f"{served}/program_session",
         )
 
     @staticmethod
