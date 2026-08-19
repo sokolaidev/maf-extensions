@@ -18,9 +18,9 @@ else would ever look at it.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import os
-import re
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -70,24 +70,68 @@ def test_every_copy_is_byte_identical():
 _HELPERS = ("require_env_vars", "quoted", "tool_results", "evidence", "conversation_id")
 
 
+def _parsed(sample: Path) -> ast.Module:
+    """`agent.py` as a tree.
+
+    Parsed and not searched. Source is not code: a comment, a docstring or a string literal all
+    match a pattern looking for one, so `THREAD_ID = "fixed"  # conversation_id("fixed")`
+    satisfies a textual check twice over while shipping a fixed id. Parsed rather than
+    imported, because a sample reads its environment on the way in and has none here.
+    """
+    return ast.parse((sample / "agent.py").read_text(encoding="utf-8"))
+
+
+def _imports(sample: Path) -> set[str]:
+    """Every module this sample imports, by name."""
+    found: set[str] = set()
+    for node in ast.walk(_parsed(sample)):
+        if isinstance(node, ast.Import):
+            found.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            found.add(node.module)
+    return {module.split(".")[0] for module in found}
+
+
+def _conversations(sample: Path) -> tuple[list[str], list[str]]:
+    """What this sample names its conversations, split into run-scoped and not.
+
+    A conversation is a module constant whose name carries `THREAD`, which is how every sample
+    writes one. Run-scoped means the value is a `conversation_id(...)` call on a string literal
+    — the literal comes back, so the length rule below measures what a sample really asks for
+    rather than something shaped like it.
+    """
+    scoped: list[str] = []
+    fixed: list[str] = []
+    for node in ast.walk(_parsed(sample)):
+        if isinstance(node, ast.AnnAssign):
+            targets, call = [node.target], node.value
+        elif isinstance(node, ast.Assign):
+            targets, call = node.targets, node.value
+        else:
+            continue
+        named = [
+            t.id for t in targets if isinstance(t, ast.Name) and "THREAD" in t.id and t.id.isupper()
+        ]
+        if not named:
+            continue
+        if (
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id == "conversation_id"
+            and call.args
+            and isinstance(call.args[0], ast.Constant)
+            and isinstance(call.args[0].value, str)
+        ):
+            scoped.append(call.args[0].value)
+        else:
+            fixed.extend(named)
+    return scoped, fixed
+
+
 #: A sample whose sandboxes live on a service shared with every other run. Docker, WSL and
 #: in-process samples put theirs on the job's own runner, where there is nothing to collide
 #: with, so `conversation_id` is theirs to skip.
-_HOSTED = tuple(
-    sample
-    for sample in _SAMPLE_DIRS
-    if "maf_sandbox_acas" in (sample / "agent.py").read_text(encoding="utf-8")
-)
-
-#: Any name a sample gives a conversation, and what it assigns to it. Read out of the source
-#: rather than by importing, because a sample wants its environment before it will import.
-_NAMED_THREAD = re.compile(r"^([A-Z_]*THREAD[A-Z_]*)\s*=\s*(.+)$", re.MULTILINE)
-_PASSED_TO_HELPER = re.compile(r"conversation_id\(\s*\"([^\"]+)\"\s*\)")
-
-
-def _thread_names(sample: Path) -> list[str]:
-    """The strings this sample hands `conversation_id`, in source order."""
-    return _PASSED_TO_HELPER.findall((sample / "agent.py").read_text(encoding="utf-8"))
+_HOSTED = tuple(sample for sample in _SAMPLE_DIRS if "maf_sandbox_acas" in _imports(sample))
 
 
 def test_the_hosted_samples_were_found():
@@ -102,27 +146,14 @@ def test_the_hosted_samples_were_found():
 
 @pytest.mark.parametrize("sample", _HOSTED, ids=lambda path: path.name)
 def test_a_hosted_sample_names_its_conversation_for_the_run(sample: Path):
-    """Every conversation on a shared service carries the run, or it purges another one's.
-
-    Neither the helper existing nor the helper's own tests cover this: a sample that writes a
-    literal here passes both, runs green on its own, and fails only as a concurrent
-    release-verification run deleting a sandbox that was not its own (#445) — which is the
-    failure this rule is here to keep out, and the one nothing local would show.
-    """
-    source = (sample / "agent.py").read_text(encoding="utf-8")
-    literal = [
-        f"{name} = {value}"
-        for name, value in _NAMED_THREAD.findall(source)
-        if "conversation_id(" not in value
-    ]
-    assert not literal, (
-        f"{sample.name} names a conversation without the run in it: {'; '.join(literal)}. "
+    """Every conversation a hosted sample opens is named for the run that opened it."""
+    scoped, fixed = _conversations(sample)
+    assert not fixed, (
+        f"{sample.name} names a conversation without the run in it: {', '.join(fixed)}. "
         "`dispose_scope` deletes by label and asks the service, so two runs sharing this "
         "string share a delete. Pass it through `conversation_id` from the scaffold."
     )
-    assert _thread_names(sample), (
-        f"{sample.name} is on a hosted backend and calls `conversation_id` nowhere"
-    )
+    assert scoped, f"{sample.name} is on a hosted backend and opens no conversation"
 
 
 @pytest.mark.parametrize("helper", _HELPERS)
@@ -210,17 +241,17 @@ class TestConversationIdKeepsOneRunSPurgeToItself:
     def test_every_id_a_sample_asks_for_fits_the_label(
         self, sample: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        """Past 63 characters a backend substitutes a digest: still unique, no longer readable.
+        """Past 63 characters a backend labels by digest: still unique, no longer readable.
 
-        The strings come out of each sample rather than being stood in for by its directory
-        name, which is a different string and only happens to be the longer one today. Held
-        against a run id twice the width of the eleven digits GitHub issues now.
+        Measured on the strings the samples ask for, under a run id twice the width of the
+        eleven digits GitHub issues now.
         """
         monkeypatch.setenv("GITHUB_RUN_ID", "9" * 20)
         monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "10")
+        scoped, _ = _conversations(sample)
         too_long = {
             name: len(scaffold.conversation_id(name))
-            for name in _thread_names(sample)
+            for name in scoped
             if len(scaffold.conversation_id(name)) > 63
         }
         assert not too_long, f"{sample.name} would be labelled by digest: {too_long}"
