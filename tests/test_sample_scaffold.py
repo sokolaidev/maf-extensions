@@ -19,6 +19,7 @@ else would ever look at it.
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -65,7 +66,7 @@ def test_every_copy_is_byte_identical():
 #: Everything a sample must take from the scaffold rather than write again. `require_env_vars`
 #: was written out eight times before ([#209](https://github.com/sokolaidev/maf-extensions/issues/209));
 #: `quoted` and the tag were written out once more in sample 13 before #314 moved them here.
-_HELPERS = ("require_env_vars", "quoted", "tool_results", "evidence")
+_HELPERS = ("require_env_vars", "quoted", "tool_results", "evidence", "conversation_id")
 
 
 @pytest.mark.parametrize("helper", _HELPERS)
@@ -109,6 +110,52 @@ def _result(call_id: str, result: object):
 def _turn(*contents: object):
     """One reply, every content in a single message — the shape only matters to the reader."""
     return SimpleNamespace(messages=[SimpleNamespace(contents=list(contents))])
+
+
+class TestConversationIdKeepsOneRunSPurgeToItself:
+    """`dispose_scope` deletes by label, so an id two runs share is a delete they share.
+
+    The runs that verify a release are concurrent against one sandbox group, which is what
+    makes a fixed id reach out and delete another run's live sandbox (#445).
+    """
+
+    def test_the_run_is_in_it(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("GITHUB_RUN_ID", "9876543210")
+        monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "2")
+        assert scaffold.conversation_id("03-acas-codeact") == "03-acas-codeact-9876543210-2"
+
+    def test_two_attempts_of_one_run_are_two_conversations(self, monkeypatch: pytest.MonkeyPatch):
+        """A re-run keeps the run id, and its first attempt's sandboxes may still be alive."""
+        monkeypatch.setenv("GITHUB_RUN_ID", "9876543210")
+        monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "1")
+        first = scaffold.conversation_id("03-acas-codeact")
+        monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "2")
+        assert scaffold.conversation_id("03-acas-codeact") != first
+
+    def test_a_local_run_falls_back_to_the_process(self, monkeypatch: pytest.MonkeyPatch):
+        """Neither variable exists off CI, and a fixed id there collides with CI just as well."""
+        monkeypatch.delenv("GITHUB_RUN_ID", raising=False)
+        monkeypatch.delenv("GITHUB_RUN_ATTEMPT", raising=False)
+        assert scaffold.conversation_id("01-acas-bicep") == f"01-acas-bicep-local-{os.getpid()}-1"
+
+    def test_an_empty_run_id_is_not_a_run_id(self, monkeypatch: pytest.MonkeyPatch):
+        """An unset workflow input arrives as an empty string, which is every run's id."""
+        monkeypatch.setenv("GITHUB_RUN_ID", "")
+        monkeypatch.delenv("GITHUB_RUN_ATTEMPT", raising=False)
+        assert scaffold.conversation_id("01-acas-bicep") == f"01-acas-bicep-local-{os.getpid()}-1"
+
+    @pytest.mark.parametrize("sample", _SAMPLE_DIRS, ids=lambda path: path.name)
+    def test_every_id_fits_the_label_a_backend_writes(
+        self, sample: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Past 63 characters a backend substitutes a digest, which is unique and unreadable.
+
+        The longest real input is the sample's own directory name, and GitHub run ids are
+        eleven digits today. Held against the widest plausible one rather than today's.
+        """
+        monkeypatch.setenv("GITHUB_RUN_ID", "9" * 20)
+        monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "10")
+        assert len(scaffold.conversation_id(sample.name)) <= 63
 
 
 class TestQuotedIsWhatMakesTheTagABarrier:

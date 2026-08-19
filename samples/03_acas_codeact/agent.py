@@ -36,7 +36,14 @@ import asyncio
 import re
 import sys
 
-from _scaffold import MEASURED, evidence, quoted, require_env_vars, tool_results
+from _scaffold import (
+    MEASURED,
+    conversation_id,
+    evidence,
+    quoted,
+    require_env_vars,
+    tool_results,
+)
 from agent_framework import Agent
 from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
@@ -47,7 +54,7 @@ from maf_sandbox_codeact import make_codeact_tools
 
 # Keyed by (scope, thread_id, agent_dir); constants here since this program serves one request.
 SCOPE = "samples"
-THREAD_ID = "03-acas-codeact"
+THREAD_ID = conversation_id("03-acas-codeact")
 AGENT_DIR = "data-analyst"
 
 #: A standard MCR devcontainer image at Python 3.13; see this directory's README for why.

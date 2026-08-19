@@ -15,6 +15,9 @@ application, where printing to stderr and exiting is exactly wrong.
 `scripts/check_live_*.py`, so the *format* is a contract between two files that live in
 different directories and run at different times. One copy is what keeps a checker from having
 to accept a dialect of that block per sample that emits it (#314).
+
+`conversation_id` is here because getting it wrong is not visible in the sample that gets it
+wrong — it damages whatever else is running (#445).
 """
 
 from __future__ import annotations
@@ -47,6 +50,16 @@ def require_env_vars(names: tuple[str, ...]) -> dict[str, str] | None:
         print("\nSee this directory's README.md.", file=sys.stderr)
         return None
     return {name: os.environ[name] for name in names}
+
+
+def conversation_id(name: str) -> str:
+    """Return a run-scoped conversation id for samples that purge by label.
+
+    Uses the CI run and attempt when present, otherwise falls back to this process. If a run
+    exits before disposal, its sandboxes are left for lifecycle cleanup.
+    """
+    run = os.environ.get("GITHUB_RUN_ID") or f"local-{os.getpid()}"
+    return f"{name}-{run}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}"
 
 
 def quoted(text: str) -> str:

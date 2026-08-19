@@ -60,7 +60,6 @@ the routes cannot share one.
 from __future__ import annotations
 
 import asyncio
-import os
 import re
 import sys
 import time
@@ -71,7 +70,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from _scaffold import MEASURED, quoted, require_env_vars, tool_results
+from _scaffold import MEASURED, conversation_id, quoted, require_env_vars, tool_results
 from agent_framework import Agent, tool
 from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
@@ -118,19 +117,11 @@ AGENT_DIR = "analyst"
 #: the transport a cleanup for the files it owns, which closes this leak on the cores that have
 #: it — but a sample runs against whatever is published, and one sandbox would be right on the
 #: new transport and wrong on the old one. Two is right on both.
-#: And a run in the id, not only a route. `dispose_scope` selects on the labels the backend
-#: stamped and asks the *service* for them rather than this process, so an id two runs share
-#: is a delete they share — and the runs that verify a release are concurrent against one
-#: sandbox group. Unique per run, then, and short enough to stay a readable label rather than
-#: the digest the backend substitutes past its length limit. #445 is the other samples.
-#:
-#: The cost, since it is a trade rather than a free fix: an id nothing reuses is an id nothing
-#: tidies. A run killed before act 6 leaves a sandbox for the group's lifecycle timers, which
-#: is the #375 exposure the footer count exists to make visible.
-_RUN = os.environ.get("GITHUB_RUN_ID") or f"local-{os.getpid()}"
-_ATTEMPT = os.environ.get("GITHUB_RUN_ATTEMPT", "1")
-DISPATCH_THREAD = f"15-host-tools-{_RUN}-{_ATTEMPT}-dispatch"
-DIRECT_THREAD = f"15-host-tools-{_RUN}-{_ATTEMPT}-direct"
+#: And a run in each, not only a route: `conversation_id` says why, and #445 is the rest of
+#: the samples that needed it. The one thing that is this sample's own is that there are two —
+#: a sandbox apiece, so neither route can read the other's leftovers.
+DISPATCH_THREAD = conversation_id("15-host-tools-dispatch")
+DIRECT_THREAD = conversation_id("15-host-tools-direct")
 
 #: Sample 14's image, available to the sandbox group as a disk image. The transport's launcher
 #: is POSIX shell and its shim is Python, so the guest needs `sh`, `nohup`, `mkdir`, `mv`,

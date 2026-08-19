@@ -47,7 +47,7 @@ import json
 import sys
 from pathlib import Path
 
-from _scaffold import MEASURED, quoted, require_env_vars
+from _scaffold import MEASURED, conversation_id, quoted, require_env_vars
 from agent_framework import Agent, InMemoryAgentFileStore
 from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
@@ -64,7 +64,7 @@ from maf_sandbox_codeact import CodeactOutputs, make_codeact_tools
 
 # Keyed by (scope, thread_id, agent_dir); constants here since this program serves one request.
 SCOPE = "samples"
-THREAD_ID = "14-acas-codeact-files"
+THREAD_ID = conversation_id("14-acas-codeact-files")
 AGENT_DIR = "data-analyst"
 
 #: A standard MCR devcontainer image at Python 3.13 — sample 03's, imported into the sandbox

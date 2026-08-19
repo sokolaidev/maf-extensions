@@ -94,12 +94,17 @@ def _import(path: Path, sample: Path) -> list[str]:
     spec = importlib.util.spec_from_file_location(f"_sample_{sample.name}_{path.stem}", path)
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
+    # Snapshot rather than insert-and-remove: a sample's own `agent.py` puts its directory on
+    # the path too, the way `sys.path[0]` does when it runs as a script, and `remove` takes one
+    # occurrence of two. The leftover then shadows every later import by path even though the
+    # cache below is clean, which is the same defect this eviction exists to prevent.
+    before = list(sys.path)
     sys.path.insert(0, str(sample))
     evicted: list[str] = []
     try:
         spec.loader.exec_module(module)
     finally:
-        sys.path.remove(str(sample))
+        sys.path[:] = before
         for name, loaded in list(sys.modules.items()):
             origin = getattr(loaded, "__file__", None)
             if origin and Path(origin).parent == sample:
