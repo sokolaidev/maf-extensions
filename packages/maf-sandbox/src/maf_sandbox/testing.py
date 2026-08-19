@@ -236,9 +236,8 @@ class InProcessSandbox:
             raise ValueError(
                 f"refusing to remove the working directory itself: {working_directory}"
             )
-        # A link's children are the *target's*, so a link never has any here — otherwise
-        # `recursive=True` over a seeded link removes what is stored beneath it, which is the
-        # following the protocol forbids, modelled by the fake that is supposed to forbid it.
+        # A link's children are the target's, so a link has none here — otherwise `recursive`
+        # would follow one, in the fake that exists to forbid it.
         children = (
             []
             if full_path in self.symlinks

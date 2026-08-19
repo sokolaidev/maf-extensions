@@ -183,10 +183,8 @@ class NoIsolationSandbox:
         )
 
     async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
-        """Not supported: confining a removal needs the component walk this sandbox has none of.
-
-        The same answer :meth:`stat_file` gives, and for a sharper reason — the boundary here
-        is the host filesystem, so a removal that escaped would delete the host's own files.
+        """Not supported, and for a sharper reason than :meth:`stat_file`: the boundary here is
+        the host filesystem, so a removal that escaped would delete the host's own files.
         """
         raise NotImplementedError(
             "NoIsolationSandbox does not implement remove: it has no pull surface to confine a "

@@ -336,26 +336,12 @@ class _AcasSandbox:
         return await self._stat_guest(guest, relative)
 
     async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
-        """Delete ``path``, and everything under it when ``recursive``.
+        """Delete ``path`` through the data plane's own ``delete_file`` — no shell, no ``rm``.
 
-        The data plane has its own ``delete_file``, so this is the one backend where cleanup
-        costs no shell — no ``rm``, and no dependency on what ``spec.image`` happens to carry.
-        That is why :data:`~maf_sandbox.Capability.FILES_DELETE` is worth declaring rather than
-        leaving every kind to reach for ``exec``.
-
-        **The final component is stat-ed and a link refused**, which is stricter than the
-        protocol's "a link is removed, never followed".  That rule is POSIX ``unlink``
-        semantics, and they do not transfer: :meth:`read_file` records that this service
-        follows a link *in the final component as much as in the parents*, and an HTTP
-        ``DELETE`` carries no promise it behaves otherwise.  Until the live suite proves the
-        service unlinks rather than resolves, removing a link here could delete whatever the
-        guest pointed it at, so this refuses instead of guessing — a cleanup that skips one
-        link is recoverable, and one that empties ``/etc`` in the guest is not.
-
-        Parents are walked as they are for a read, and for the same reason.
-
-        A path that is not there is success.  The service answers ``ResourceNotFoundError`` and
-        this swallows it, because cleanup runs after whatever went wrong already went wrong.
+        **A link is refused rather than removed**, which is stricter than the protocol asks:
+        :meth:`read_file` records that this service follows a link in the final component as
+        much as in the parents, and an HTTP ``DELETE`` promises nothing else. Revisit when the
+        live suite measures it.
         """
         from azure.core.exceptions import ResourceNotFoundError
 
@@ -869,12 +855,9 @@ class AcasSandboxBackend:
         return ids
 
 
-# The package's strict pyright pass type-checks this assignment. ``runtime_checkable`` only
-# tests member *presence*, so ``isinstance(..., Sandbox)`` passes while a signature narrows or a
-# method the protocol states goes missing — the annotation is what fails the build instead. It
-# lives in this package rather than in a shared test because this is where a divergence is
-# introduced, and a backend that has stopped satisfying the protocol should fail to build here
-# rather than at a call site somewhere else.
+# The package's strict pyright pass type-checks this assignment. ``runtime_checkable`` tests
+# member *presence* only, so a narrowed signature or a missing method passes `isinstance` and
+# fails here instead — in the package where the divergence would be introduced.
 if TYPE_CHECKING:
     _: tuple[SandboxBackend, type[Sandbox]] = (
         AcasSandboxBackend(AcasSandboxConfig(endpoint="https://sandbox.invalid")),

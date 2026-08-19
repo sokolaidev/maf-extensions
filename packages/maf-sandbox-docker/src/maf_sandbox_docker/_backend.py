@@ -330,23 +330,11 @@ class _DockerSandbox:
         return await self._stat_guest(guest, posixpath.normpath(path))
 
     async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
-        """Delete ``path``, and everything under it when ``recursive``.
+        """Delete ``path`` through ``rm``, since the engine has no delete primitive.
 
-        Through ``rm`` in the image, because the engine has no delete primitive — the same
-        shape as :meth:`list_dir`'s absence, answered the other way round: enumeration has no
-        substitute, a removal does.  ``docker exec`` takes argv, so the path goes through as
-        one element with no shell and nothing to quote, and ``--`` keeps a path that opens with
-        a dash from being read as a flag.
-
-        ``rm``'s own exit codes are the contract rather than a re-implementation of it: ``-f``
-        makes a path that is not there a success, and refuses a directory without ``-r`` —
-        which is exactly what the protocol asks for, empty directories included.
-
-        The dependency this adds is the one :attr:`capabilities` already names for ``EXEC``:
-        a distroless image without ``rm`` fails here, as it already fails a kind execing
-        ``python3``.  Declaring :data:`~maf_sandbox.Capability.FILES_DELETE` is honest for the
-        images this backend is used with and dishonest for an image with no userland — #111's
-        axis, unchanged by this method.
+        ``rm``'s exit codes are the contract rather than a re-implementation of it: ``-f``
+        makes a missing path succeed and refuses a directory without ``-r``. The image
+        dependency is the one :attr:`capabilities` already names for ``EXEC``.
         """
         guest = confine_guest_path(path, working_directory)
         await self._refuse_symlinked_parents(guest, working_directory=working_directory)
@@ -1050,12 +1038,9 @@ class DockerSandboxBackend:
         return False
 
 
-# The package's strict pyright pass type-checks this assignment. ``runtime_checkable`` only
-# tests member *presence*, so ``isinstance(..., Sandbox)`` passes while a signature narrows or a
-# method the protocol states goes missing — the annotation is what fails the build instead. It
-# lives in this package rather than in a shared test because this is where a divergence is
-# introduced, and a backend that has stopped satisfying the protocol should fail to build here
-# rather than at a call site somewhere else.
+# The package's strict pyright pass type-checks this assignment. ``runtime_checkable`` tests
+# member *presence* only, so a narrowed signature or a missing method passes `isinstance` and
+# fails here instead — in the package where the divergence would be introduced.
 if TYPE_CHECKING:
     _: tuple[SandboxBackend, type[Sandbox]] = (
         DockerSandboxBackend(DockerSandboxConfig()),

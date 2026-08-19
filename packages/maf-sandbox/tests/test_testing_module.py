@@ -435,11 +435,7 @@ class TestInProcessSandboxListDir:
 
 
 class TestInProcessSandboxRemove:
-    """The reference reading of :meth:`Sandbox.remove`, which every backend is held to.
-
-    `rm -rf` is irreversible and three packages now implement this, so the rules are pinned
-    where the protocol states them rather than once per backend.
-    """
+    """The reference reading of :meth:`Sandbox.remove`, which every backend is held to."""
 
     def test_a_path_that_is_not_there_is_success(self):
         """Cleanup runs in a `finally`, after whatever went wrong already went wrong.

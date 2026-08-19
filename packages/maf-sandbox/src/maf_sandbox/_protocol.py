@@ -566,33 +566,16 @@ class Sandbox(Protocol):
     async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
         """Delete ``path``, and everything under it when ``recursive``.
 
-        **A path that is not there is success.**  Cleanup runs in a ``finally``, after
-        whatever went wrong already went wrong, so a missing path has to be an ordinary answer
-        rather than a second failure reported over the first.  It is also the honest reading:
-        the caller asked for the path to be gone, and it is.
-
-        **A link is removed, never followed.**  The rule the pull surface already keeps, for a
-        stronger reason here — a removal that resolved a link would delete a target the guest
-        chose, from outside the working directory, and no byte would have to cross for the
-        damage to be done.  Parents are walked as they are for a read, so a path reached
-        *through* a link is refused whole.
-
-        ``recursive`` is a word the caller has to say.  A *directory* is refused without it,
-        empty or not, because the alternative is an irreversible operation that reads like a
-        single-file delete at the call site.  Empty is not carved out: a backend without an
-        enumeration primitive cannot tell an empty directory from a full one, so the rule has
-        to be one every backend can actually keep.  ``working_directory`` itself is refused
-        either way: it is the confinement root, and a workload that removes it takes the next
-        run's ground with it.
+        Three rules a caller depends on. A path that is not there is **success** — cleanup runs
+        in a ``finally`` and must not report a second failure over the first. A link is
+        **removed, never followed**, since resolving one would unlink a target outside the
+        boundary. A *directory* is refused without ``recursive``, empty or not: a backend with
+        no enumeration primitive cannot tell an empty one from a full one.
 
         Raises:
             ValueError: A path outside ``working_directory``, one reached through a link, or
-                the working directory itself.  The same type the rest of the pull surface
-                raises for a confinement judgement, and deliberately not an ``OSError``: these
-                are the caller's own path, not the guest's state.
+                the working directory itself — the confinement refusal the pull surface makes.
             OSError: A directory without ``recursive``, or a removal the guest refused.
-                Refusals raise where a missing path returns, because a cleanup that tolerated
-                them would be one that quietly did nothing.
         """
         ...
 
