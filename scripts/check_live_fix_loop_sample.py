@@ -36,6 +36,18 @@ _F = re.MULTILINE | re.IGNORECASE
 #: Samples 01, 02, 05 and 09 report the same pair from the `main.bicep` they check in.
 _RULE_IDS = ("no-unused-params", "BCP035")
 
+#: Where each tracked rule's diagnostic names what it is *about*. The sample declares the same
+#: pair; it is repeated here so a fault's identity is derived from the compiler's own text
+#: rather than taken from the tally being checked.
+#:
+#: A rule id alone cannot tell two instances apart, and that is not hypothetical: a turn that
+#: added the missing `sku` and left `location` missing reported `BCP035` before and after, so
+#: the tally read 0 fixed and the failure said no fault had been removed (#432).
+_FAULT_TARGETS = {
+    "no-unused-params": re.compile(r'\bparameter\s+("[^"]+")', re.IGNORECASE),
+    "BCP035": re.compile(r"required propert(?:y|ies):\s*([^.]+)", re.IGNORECASE),
+}
+
 #: Turn 1's prose, and only that. The rule ids appear again further down in the sample's own
 #: bookkeeping, which the *sample* prints — searching the whole output would pass on that literal
 #: whatever the model said, so the section is cut out before the ids are looked for.
@@ -72,6 +84,7 @@ _INTACT = re.compile(_M + r"storage account and output intact:\s*(True|False)", 
 _SUPPRESSED = re.compile(_M + r"tracked rules suppressed:\s*(\d+)\s*[-—]\s*([^\n]*)", _F)
 _FIXED = re.compile(_M + r"faults fixed:\s*(\d+)\s*[-—]\s*([^\n]*)", _F)
 _REMAINING = re.compile(_M + r"faults remaining:\s*(\d+)\s*[-—]\s*([^\n]*)", _F)
+_INTRODUCED = re.compile(_M + r"faults introduced:\s*(\d+)\s*[-—]\s*([^\n]*)", _F)
 
 #: How many times each turn reached the sandbox. The container count cannot answer this: a turn
 #: that never validated leaves the previous turn's container standing, so the count still reads
@@ -101,7 +114,7 @@ _COMPILE = (
     re.compile(_M + r"containers after the check", _F),
 )
 _PHASE = re.compile(r"^\s*(build|lint)\([^)]*\):\s*(no diagnostics|\d+ diagnostic)", re.MULTILINE)
-_DIAGNOSTIC = re.compile(r"^\s*\[(\w+)\]\s+(\S+)\s+@", re.MULTILINE)
+_DIAGNOSTIC = re.compile(r"^[ \t]*\[(\w+)\][ \t]+(\S+)[ \t]+@[ \t]*(.*)$", re.MULTILINE)
 
 #: The one rule the file is allowed to still report. `use-recent-api-versions` fires on how old
 #: the API version is, so demanding it be fixed would make this check a calendar and demanding it
@@ -113,6 +126,29 @@ _TOLERATED_RULE = "use-recent-api-versions"
 _FOOTER = re.compile(
     _M + r"Disposed\s+(\d+)\s+sandbox\(es\)[^.]*\.\s*Containers left:\s*(\d+)\.", _F
 )
+
+
+def _named(rule: str, tail: str) -> str:
+    """A fault as ``rule(target)`` — the rule alone where the diagnostic names no target."""
+    pattern = _FAULT_TARGETS.get(rule)
+    found = pattern.search(tail) if pattern else None
+    targets = sorted(set(re.findall(r'"([^"]+)"', found.group(1)))) if found else []
+    return f"{rule}({', '.join(targets)})" if targets else rule
+
+
+def _rule_of(fault: str) -> str:
+    """The rule id a tally entry names, without its target."""
+    return fault.split("(", 1)[0]
+
+
+def _tracked(compiled: str) -> set[str]:
+    """Every tracked fault a compile block reports, by identity."""
+    return {
+        _named(rule, diagnostic.group(3))
+        for diagnostic in _DIAGNOSTIC.finditer(compiled)
+        for rule in _RULE_IDS
+        if diagnostic.group(2).lower() == rule.lower()
+    }
 
 
 def _one(pattern: re.Pattern[str], output: str) -> str | None:
@@ -143,7 +179,7 @@ def _tally(match: re.Match[str], label: str) -> tuple[set[str], list[str]]:
             f"`faults {label}` names {', '.join(duplicated)} more than once — the count is then "
             "larger than the set of rules it describes"
         )
-    unknown = sorted(name for name in names if name not in _RULE_IDS)
+    unknown = sorted(name for name in names if _rule_of(name) not in _RULE_IDS)
     if unknown:
         failures.append(
             f"`faults {label}` names {', '.join(unknown)}, which this sample does not track — "
@@ -221,12 +257,7 @@ def _authored_faults(output: str) -> tuple[set[str], list[str]]:
     # Against the diagnostics printed directly above it, as the final compile is. Without this
     # the baseline is a number with nothing behind it: drop a diagnostic line from the block and
     # every later comparison is measured from a starting point the compiler never reported.
-    reported = {
-        rule
-        for diagnostic in _DIAGNOSTIC.finditer(compiled)
-        for rule in _RULE_IDS
-        if diagnostic.group(2).lower() == rule.lower()
-    }
+    reported = _tracked(compiled)
     if names != reported:
         failures.append(
             f"the baseline names {sorted(names) or 'nothing'} but its own compile reports "
@@ -252,7 +283,9 @@ def _assess_first_turn(output: str, authored: set[str]) -> list[str]:
     reported = _section(output, _TURN_ONE)
     if reported is None:
         return ["no turn 1 section — the sample did not get as far as validating"]
-    missing = sorted(rule for rule in authored if rule.lower() not in reported.lower())
+    missing = sorted(
+        {_rule_of(fault) for fault in authored if _rule_of(fault).lower() not in reported.lower()}
+    )
     if missing:
         return [
             f"turn 1 did not name {', '.join(missing)} — the compiler reported it on the file "
@@ -372,36 +405,59 @@ def _assess_repair(output: str, authored: set[str]) -> list[str]:
             "2 was asked for"
         )
 
-    fixed, remaining = _FIXED.search(block), _REMAINING.search(block)
-    if fixed is None or remaining is None:
+    fixed = _FIXED.search(block)
+    remaining, introduced = _REMAINING.search(block), _INTRODUCED.search(block)
+    if fixed is None or remaining is None or introduced is None:
         failures.append("the run never reported its fault tally")
         return failures
 
     fixed_names, fixed_failures = _tally(fixed, "fixed")
     remaining_names, remaining_failures = _tally(remaining, "remaining")
+    introduced_names, introduced_failures = _tally(introduced, "introduced")
     failures.extend(fixed_failures)
     failures.extend(remaining_failures)
+    failures.extend(introduced_failures)
 
-    both = fixed_names & remaining_names
-    if both:
+    for label, both in (
+        ("fixed and remaining", fixed_names & remaining_names),
+        ("fixed and introduced", fixed_names & introduced_names),
+        ("remaining and introduced", remaining_names & introduced_names),
+    ):
+        if both:
+            failures.append(
+                f"{', '.join(sorted(both))} is listed as both {label} — the three lists divide "
+                "what the two compiles reported, so nothing belongs to two of them"
+            )
+
+    # What turn 2 did, in the three shapes it can take. One sentence used to cover all of them
+    # and was false for the middle one: a run that added the missing `sku` and left `location`
+    # missing was told no fault the diagnostics pointed at had been removed (#432).
+    if not fixed_names and not introduced_names:
         failures.append(
-            f"{', '.join(sorted(both))} is listed as both fixed and remaining — one file cannot "
-            "have a rule in both states"
+            "no fault was fixed — the file may have changed, but every fault the diagnostics "
+            "pointed at is still there, on the same target"
+        )
+    elif not fixed_names:
+        failures.append(
+            f"no fault was fixed, and the file now reports {', '.join(sorted(introduced_names))} "
+            "as well — turn 2 edited the file into a worse one"
+        )
+    elif introduced_names:
+        failures.append(
+            f"the repair traded one diagnostic for another: {', '.join(sorted(fixed_names))} "
+            f"went and {', '.join(sorted(introduced_names))} arrived. Turn 2 is asked to leave "
+            "the file reporting nothing it did not report before, and partial progress is still "
+            "a loop that did not converge"
         )
 
-    if len(fixed_names) < 1:
-        failures.append(
-            "no fault was fixed — the file may have changed, but not in a way that removed any "
-            "fault the diagnostics pointed at"
-        )
-
-    # Against what turn 1 actually produced, not a constant.
+    # Against what turn 1 actually produced, not a constant. `introduced` is deliberately not in
+    # this sum: it describes the file turn 2 left, and this asks about the one turn 1 wrote.
     if authored and fixed_names | remaining_names != authored:
         failures.append(
             f"the tally covers {sorted(fixed_names | remaining_names) or 'nothing'} but the "
             f"authored file had {sorted(authored)} — the two do not describe the same file"
         )
-    failures.extend(_assess_compiler_agrees(output, fixed_names, remaining_names, authored))
+    failures.extend(_assess_compiler_agrees(output, fixed_names, remaining_names, introduced_names))
     return failures
 
 
@@ -428,19 +484,20 @@ def _baseline_warnings(output: str) -> dict[str, int]:
 
 
 def _assess_compiler_agrees(
-    output: str, fixed_names: set[str], remaining_names: set[str], authored: set[str]
+    output: str, fixed_names: set[str], remaining_names: set[str], introduced_names: set[str]
 ) -> list[str]:
     """Read the compiler's own verdict, and refuse anything it reports that is not accounted for.
 
     Two separate jobs. The first is consistency: the sample derives its tally from these
-    diagnostics, so a tally naming a rule the compiler does not, or missing one it does, means
-    the two halves of the output disagree about the same file.
+    diagnostics, so a tally naming a fault the compiler does not, or missing one it does, means
+    the two halves of the output disagree about the same file. Tracked faults are compared by
+    identity, which is what makes a swap within one rule visible here rather than invisible.
 
-    The second is the one a per-rule comparison alone would miss. Checking only the tracked
+    The second is the one a tracked-rule comparison alone would miss. Checking only the two
     rules passes a file whose original faults are gone and which now fails on something else
-    entirely — a new `BCP0xx` names neither tracked rule, so nothing objects, and the run
-    reports a repair that left the file broken. So every diagnostic is swept: a rule is
-    acceptable only if the tally already calls it remaining, or it is the age rule.
+    entirely — a new `BCP0xx` names neither, so nothing objects, and the run reports a repair
+    that left the file broken. So every other diagnostic is swept too: an untracked rule is
+    acceptable only if the authored file already drew it as often, or it is the age rule.
     """
     compiled = _section(output, _COMPILE, last=True)
     if compiled is None:
@@ -456,37 +513,47 @@ def _assess_compiler_agrees(
         ]
 
     failures: list[str] = []
-    reported = {match.group(2) for match in _DIAGNOSTIC.finditer(compiled)}
 
-    for rule in _RULE_IDS:
-        named = any(rule.lower() == seen.lower() for seen in reported)
-        if rule in fixed_names and named:
+    # The tracked faults, by `rule(target)`. What the compiler still reports is exactly what
+    # the tally calls remaining plus what it calls introduced; anything else is a disagreement.
+    reported = _tracked(compiled)
+    for fault in sorted(fixed_names & reported):
+        failures.append(
+            f"the tally counts {fault} as fixed but the compiler still reports it — the two "
+            "halves of the output disagree about the same file"
+        )
+    for label, claimed in (("remaining", remaining_names), ("introduced", introduced_names)):
+        for fault in sorted(claimed - reported):
             failures.append(
-                f"the tally counts {rule} as fixed but the compiler still reports it — the two "
-                "halves of the output disagree about the same file"
-            )
-        elif rule in remaining_names and not named:
-            failures.append(
-                f"the tally counts {rule} as remaining but the compiler does not report it — the "
+                f"the tally counts {fault} as {label} but the compiler does not report it — the "
                 "two halves of the output disagree about the same file"
             )
+    for fault in sorted(reported - remaining_names - introduced_names - fixed_names):
+        failures.append(
+            f"the compiler reports {fault} and the tally counts it neither remaining nor "
+            "introduced — a tracked fault the run does not account for at all"
+        )
 
-    # "Introduced" means the baseline did not report it. Turn 2 is asked to leave the file
-    # reporting nothing it did not report before, so a rule the authored file already had is
-    # not this turn's doing — an ordinary authoring tic like `simplify-interpolation` would
-    # otherwise fail a run the prompt explicitly licensed, blaming the model for it.
-    accounted = {rule.lower() for rule in remaining_names}
-    accounted.add(_TOLERATED_RULE.lower())
-
-    # Warnings the authored file already drew, no more often than it drew them. A rule the
-    # baseline raised once does not license three fresh instances of it.
+    # Everything else the compiler said. Tracked rules are held to the tally above; these have
+    # no target to compare, so the question is whether the authored file already drew them.
+    #
+    # "Introduced" means the baseline did not report it that often. Turn 2 is asked to leave the
+    # file reporting nothing it did not report before, so a rule the authored file already had
+    # is not this turn's doing — an ordinary authoring tic like `simplify-interpolation` would
+    # otherwise fail a run the prompt explicitly licensed, blaming the model for it. Counted
+    # rather than collected, so one baseline warning licenses one instance, not any number.
     baseline = _baseline_warnings(output)
     final: dict[str, int] = {}
     for diagnostic in _DIAGNOSTIC.finditer(compiled):
-        final[diagnostic.group(2)] = final.get(diagnostic.group(2), 0) + 1
-    accounted |= {rule.lower() for rule, seen in final.items() if 0 < seen <= baseline.get(rule, 0)}
+        rule = diagnostic.group(2)
+        if rule.lower() not in {tracked.lower() for tracked in _RULE_IDS}:
+            final[rule] = final.get(rule, 0) + 1
 
-    introduced = sorted(rule for rule in reported if rule.lower() not in accounted)
+    introduced = sorted(
+        rule
+        for rule, seen in final.items()
+        if rule.lower() != _TOLERATED_RULE.lower() and seen > baseline.get(rule, 0)
+    )
     if introduced:
         failures.append(
             f"the compiler reports {', '.join(introduced)}, which the run does not account for — "

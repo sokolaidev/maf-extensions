@@ -88,14 +88,14 @@ Validation complete. Here are the 3 diagnostics, one line each:
 
   build(main.bicep): 3 diagnostic(s)
     [error] no-unused-params @ main.bicep:3: Parameter "environmentName" is never used.
-    [warning] BCP035 @ main.bicep:5: The "resource" declaration is missing "sku".
+    [warning] BCP035 @ main.bicep:5: The specified "resource" declaration is missing the following required properties: "sku".
     [warning] use-recent-api-versions @ main.bicep:5: '2023-01-01' is 1322 days old.
   lint(main.bicep): 3 diagnostic(s)
     [error] no-unused-params @ main.bicep:3: Parameter "environmentName" is never used.
-    [warning] BCP035 @ main.bicep:5: The "resource" declaration is missing "sku".
+    [warning] BCP035 @ main.bicep:5: The specified "resource" declaration is missing the following required properties: "sku".
     [warning] use-recent-api-versions @ main.bicep:5: '2023-01-01' is 1322 days old.
 
-  [measured] tracked faults in the authored file: 2 — no-unused-params; BCP035
+  [measured] tracked faults in the authored file: 2 — no-unused-params(environmentName); BCP035(sku)
   [measured] containers after the baseline compile: 1 (a1b2c3d4e5f6)
 
 == Turn 2: fix, then validate again ==
@@ -122,8 +122,9 @@ Validation is clean — zero diagnostics. What changed:
   [measured] main.bicep changed by turn 2:  True
   [measured] storage account and output intact: True
   [measured] tracked rules suppressed: 0 — none
-  [measured] faults fixed:       2 — no-unused-params; BCP035
+  [measured] faults fixed:       2 — no-unused-params(environmentName); BCP035(sku)
   [measured] faults remaining:   0 — none
+  [measured] faults introduced:  0 — none
 
   [measured] Disposed 1 sandbox(es) after 2 turns and a check. Containers left: 0.
 """
@@ -135,12 +136,53 @@ _PARTIAL = (
     _HEALTHY.replace(
         "  build(main.bicep): no diagnostics\n  lint(main.bicep): no diagnostics",
         "  build(main.bicep): 1 diagnostic(s)\n"
-        "    [error] no-unused-params @ main.bicep:21: Parameter is declared but never used.\n"
+        '    [error] no-unused-params @ main.bicep:21: Parameter "environmentName" is declared but never used.\n'
         "  lint(main.bicep): 1 diagnostic(s)\n"
-        "    [error] no-unused-params @ main.bicep:21: Parameter is declared but never used.",
+        '    [error] no-unused-params @ main.bicep:21: Parameter "environmentName" is declared but never used.',
     )
-    .replace("faults fixed:       2 — no-unused-params; BCP035", "faults fixed:       1 — BCP035")
-    .replace("faults remaining:   0 — none", "faults remaining:   1 — no-unused-params")
+    .replace(
+        "faults fixed:       2 — no-unused-params(environmentName); BCP035(sku)",
+        "faults fixed:       1 — BCP035(sku)",
+    )
+    .replace(
+        "faults remaining:   0 — none", "faults remaining:   1 — no-unused-params(environmentName)"
+    )
+)
+
+
+#: The run that filed #432, trimmed: turn 2 added the missing `sku` and left `location` missing
+#: instead, so one `BCP035` went and another arrived. Counted by rule id this reads as no repair
+#: at all; counted by target it is one fault fixed, one still there, and two new ones.
+_SWAPPED = (
+    _HEALTHY.replace(
+        "  build(main.bicep): no diagnostics\n  lint(main.bicep): no diagnostics",
+        "  build(main.bicep): 3 diagnostic(s)\n"
+        '    [error] no-unused-params @ main.bicep:1: Parameter "location" is declared but '
+        "never used.\n"
+        '    [error] no-unused-params @ main.bicep:3: Parameter "environmentName" is declared '
+        "but never used.\n"
+        '    [warning] BCP035 @ main.bicep:5: The specified "resource" declaration is missing '
+        'the following required properties: "location".\n'
+        "  lint(main.bicep): 3 diagnostic(s)\n"
+        '    [error] no-unused-params @ main.bicep:1: Parameter "location" is declared but '
+        "never used.\n"
+        '    [error] no-unused-params @ main.bicep:3: Parameter "environmentName" is declared '
+        "but never used.\n"
+        '    [warning] BCP035 @ main.bicep:5: The specified "resource" declaration is missing '
+        'the following required properties: "location".',
+    )
+    .replace(
+        "faults fixed:       2 — no-unused-params(environmentName); BCP035(sku)",
+        "faults fixed:       1 — BCP035(sku)",
+    )
+    .replace(
+        "faults remaining:   0 — none",
+        "faults remaining:   1 — no-unused-params(environmentName)",
+    )
+    .replace(
+        "faults introduced:  0 — none",
+        "faults introduced:  2 — no-unused-params(location); BCP035(location)",
+    )
 )
 
 
@@ -304,13 +346,13 @@ class TestTurnOneActuallyAuthoredTheFile:
         for line in (
             '    [error] no-unused-params @ main.bicep:3: Parameter "environmentName" is never '
             "used.\n",
-            '    [warning] BCP035 @ main.bicep:5: The "resource" declaration is missing "sku".\n',
+            '    [warning] BCP035 @ main.bicep:5: The specified "resource" declaration is missing the following required properties: "sku".\n',
         ):
             assert clean.count(line) == 2, f"the fixture moved: {line!r}"
             clean = clean.replace(line, "")
         clean = clean.replace("(main.bicep): 3 diagnostic(s)", "(main.bicep): 1 diagnostic(s)")
         clean = clean.replace(
-            "  [measured] tracked faults in the authored file: 2 — no-unused-params; BCP035",
+            "  [measured] tracked faults in the authored file: 2 — no-unused-params(environmentName); BCP035(sku)",
             "  [measured] tracked faults in the authored file: 0 — none",
         )
         assert clean != _HEALTHY
@@ -359,14 +401,14 @@ class TestTheTallyNamesAgreeWithItsNumbers:
 
     def test_a_count_with_no_names_is_caught(self):
         reasons = _tampered(
-            "  [measured] faults fixed:       2 — no-unused-params; BCP035",
+            "  [measured] faults fixed:       2 — no-unused-params(environmentName); BCP035(sku)",
             "  [measured] faults fixed:       2 — none",
         )
         assert any("says 2 but names 0" in r for r in reasons), reasons
 
     def test_invented_rule_names_are_caught(self):
         reasons = _tampered(
-            "  [measured] faults fixed:       2 — no-unused-params; BCP035",
+            "  [measured] faults fixed:       2 — no-unused-params(environmentName); BCP035(sku)",
             "  [measured] faults fixed:       2 — BCP999; totally-made-up",
         )
         assert any("which this sample does not track" in r for r in reasons), reasons
@@ -374,7 +416,7 @@ class TestTheTallyNamesAgreeWithItsNumbers:
     def test_a_rule_in_both_columns_is_caught(self):
         reasons = _tampered(
             "  [measured] faults remaining:   0 — none",
-            "  [measured] faults remaining:   1 — BCP035",
+            "  [measured] faults remaining:   1 — BCP035(sku)",
         )
         assert any("listed as both fixed and remaining" in r for r in reasons), reasons
 
@@ -389,7 +431,7 @@ class TestTheBaselineIsReadFromItsOwnBlock:
         lint_phase = (
             "  lint(main.bicep): 3 diagnostic(s)\n"
             '    [error] no-unused-params @ main.bicep:3: Parameter "environmentName" is never used.\n'
-            '    [warning] BCP035 @ main.bicep:5: The "resource" declaration is missing "sku".\n'
+            '    [warning] BCP035 @ main.bicep:5: The specified "resource" declaration is missing the following required properties: "sku".\n'
             "    [warning] use-recent-api-versions @ main.bicep:5: '2023-01-01' is 1322 days old.\n"
         )
         reasons = _tampered(lint_phase, "")
@@ -425,8 +467,8 @@ class TestTheModelActuallyEdited:
 
     def test_a_change_that_fixed_nothing_is_caught(self):
         reasons = _tampered(
-            "  [measured] faults fixed:       2 — no-unused-params; BCP035\n  [measured] faults remaining:   0 — none",
-            "  [measured] faults fixed:       0 — none\n  [measured] faults remaining:   2 — no-unused-params; BCP035",
+            "  [measured] faults fixed:       2 — no-unused-params(environmentName); BCP035(sku)\n  [measured] faults remaining:   0 — none",
+            "  [measured] faults fixed:       0 — none\n  [measured] faults remaining:   2 — no-unused-params(environmentName); BCP035(sku)",
         )
         assert any("no fault was fixed" in r for r in reasons), reasons
 
@@ -506,7 +548,7 @@ class TestTheTallyIsReadFromTheSampleNotTheModel:
             "Here is my summary:\n\n== The work product ==\n\n"
             "  main.bicep changed: False\n  [measured] storage account and output intact: False\n"
             "  [measured] faults fixed:       0 — none\n"
-            "  [measured] faults remaining:   2 — no-unused-params; BCP035\n\n"
+            "  [measured] faults remaining:   2 — no-unused-params(environmentName); BCP035(sku)\n\n"
             "  [measured] validations that reached the sandbox in turn 2: 1",
         )
         assert echoed != _HEALTHY, "the substitution matched nothing — the fixture moved"
@@ -571,17 +613,19 @@ class TestTheCompilerHasTheLastWord:
         reasons = _tampered(
             "  build(main.bicep): no diagnostics",
             "  build(main.bicep): 1 diagnostic(s)\n"
-            "    [error] no-unused-params @ main.bicep:21: Parameter is declared but never used.",
+            '    [error] no-unused-params @ main.bicep:21: Parameter "environmentName" is declared but never used.',
         )
-        assert any("counts no-unused-params as fixed" in r for r in reasons), reasons
+        assert any("counts no-unused-params(environmentName) as fixed" in r for r in reasons), (
+            reasons
+        )
 
     def test_a_fault_called_remaining_that_the_compiler_does_not_see_is_caught(self):
         reasons = _tampered(
-            "  [measured] faults fixed:       1 — BCP035\n  [measured] faults remaining:   1 — no-unused-params",
-            "  [measured] faults fixed:       1 — no-unused-params\n  [measured] faults remaining:   1 — BCP035",
+            "  [measured] faults fixed:       1 — BCP035(sku)\n  [measured] faults remaining:   1 — no-unused-params(environmentName)",
+            "  [measured] faults fixed:       1 — no-unused-params(environmentName)\n  [measured] faults remaining:   1 — BCP035(sku)",
             base=_PARTIAL,
         )
-        assert any("counts BCP035 as remaining" in r for r in reasons), reasons
+        assert any("counts BCP035(sku) as remaining" in r for r in reasons), reasons
 
     def test_a_missing_compile_is_caught(self):
         reasons = _tampered("== What the compiler says about the file the model left ==", "== x ==")
@@ -592,6 +636,75 @@ class TestTheCompilerHasTheLastWord:
         # so a run that printed only one has not shown the file is clean.
         reasons = _tampered("  lint(main.bicep): no diagnostics\n", "")
         assert any("expected both build and lint" in r for r in reasons), reasons
+
+
+class TestASwapWithinOneRuleIsNotARepair:
+    """#432: one `BCP035` traded for another used to read as no repair, and say so wrongly.
+
+    The tally counted rule ids, so two different `BCP035` diagnostics were the same element of
+    a set. A turn that added the missing `sku` and left `location` missing scored zero fixed,
+    and the failure told the reader nothing the diagnostics pointed at had been removed — while
+    the compiler's own two blocks showed one had. Both halves are asserted here: the verdict is
+    still a failure, and the sentence behind it is now true.
+    """
+
+    def test_the_run_still_fails(self):
+        assert check.assess(_SWAPPED) != []
+
+    def test_the_fault_that_went_is_not_called_unfixed(self):
+        reasons = check.assess(_SWAPPED)
+        assert not any("no fault was fixed" in reason for reason in reasons), reasons
+
+    def test_the_trade_is_what_the_failure_names(self):
+        reasons = check.assess(_SWAPPED)
+        traded = [reason for reason in reasons if "traded one diagnostic for another" in reason]
+        assert traded, reasons
+        assert "BCP035(sku) went" in traded[0], traded
+        assert "BCP035(location)" in traded[0], traded
+
+    def test_a_run_that_fixed_nothing_and_broke_nothing_says_so(self):
+        """The one case the old sentence was right about, kept and made narrower."""
+        reasons = _tampered(
+            "  [measured] faults fixed:       1 — BCP035(sku)",
+            "  [measured] faults fixed:       0 — none",
+            base=_SWAPPED.replace(
+                "faults introduced:  2 — no-unused-params(location); BCP035(location)",
+                "faults introduced:  0 — none",
+            ).replace(
+                "faults remaining:   1 — no-unused-params(environmentName)",
+                "faults remaining:   2 — no-unused-params(environmentName); BCP035(sku)",
+            ),
+        )
+        assert any(
+            "every fault the diagnostics pointed at is still there" in reason for reason in reasons
+        ), reasons
+
+    def test_an_introduced_fault_the_compiler_does_not_report_is_caught(self):
+        reasons = _tampered(
+            "faults introduced:  2 — no-unused-params(location); BCP035(location)",
+            "faults introduced:  3 — no-unused-params(location); BCP035(location); BCP035(kind)",
+            base=_SWAPPED,
+        )
+        assert any(
+            "counts BCP035(kind) as introduced but the compiler does not report it" in reason
+            for reason in reasons
+        ), reasons
+
+    def test_a_missing_introduced_line_is_a_missing_tally(self):
+        reasons = _tampered("  [measured] faults introduced:  0 — none\n", "", base=_HEALTHY)
+        assert any("never reported its fault tally" in reason for reason in reasons), reasons
+
+    def test_a_tracked_fault_the_tally_accounts_for_nowhere_is_caught(self):
+        reasons = _tampered(
+            "faults introduced:  2 — no-unused-params(location); BCP035(location)",
+            "faults introduced:  1 — BCP035(location)",
+            base=_SWAPPED,
+        )
+        assert any(
+            "the compiler reports no-unused-params(location) and the tally counts it neither"
+            in reason
+            for reason in reasons
+        ), reasons
 
 
 class TestTurnOneReportedRealDiagnostics:
@@ -632,35 +745,39 @@ class TestTurnOneReportedRealDiagnostics:
 _SAMPLE = _ROOT / "samples" / "13_bicep_fix_loop" / "agent.py"
 
 
+#: What `faults_left` is built out of, in the sample. Lifted together, in source order.
+_TALLY_NODES = ("FAULT_TARGETS", "TRACKED_FAULTS", "_DIAGNOSTIC", "named", "faults_left")
+
+
 def _faults_left():
-    """Lift `TRACKED_FAULTS` and `faults_left` out of the sample and run them in isolation.
+    """Lift the sample's fault tally out of its parse tree and run it in isolation.
 
     Importing the sample would be the obvious way and it does not work here: its module level
     pulls in agent-framework and the sandbox packages, and this workspace does not install
     `agent-framework-openai`, so `test_sample_modules_import.py` skips this sample. A skip is
-    the wrong outcome for the one regression below — it is the whole reason the tally reads
-    diagnostics instead of source text, and a test that never runs would not have caught it.
+    the wrong outcome for the regressions below — they are the whole reason the tally reads
+    diagnostics instead of source text, and by target instead of by rule.
 
-    These two nodes depend on nothing but the standard library, so taking them out of the parse
-    tree and executing just those runs everywhere. The assertion below is what keeps it honest:
-    if either is renamed or moved, this fails rather than quietly testing nothing.
+    These nodes depend on nothing but `re`, so executing just them runs everywhere. The
+    assertion is what keeps it honest: if one is renamed or moved, this fails rather than
+    quietly testing nothing.
     """
     tree = ast.parse(_SAMPLE.read_text(encoding="utf-8"))
     wanted: dict[str, ast.stmt] = {}
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(
-            isinstance(target, ast.Name) and target.id == "TRACKED_FAULTS"
-            for target in node.targets
+            isinstance(target, ast.Name) and target.id in _TALLY_NODES for target in node.targets
         ):
-            wanted["TRACKED_FAULTS"] = node
-        elif isinstance(node, ast.FunctionDef) and node.name == "faults_left":
-            wanted["faults_left"] = node
+            wanted[next(t.id for t in node.targets if isinstance(t, ast.Name))] = node
+        elif isinstance(node, ast.FunctionDef) and node.name in _TALLY_NODES:
+            wanted[node.name] = node
 
-    missing = {"TRACKED_FAULTS", "faults_left"} - wanted.keys()
+    missing = set(_TALLY_NODES) - wanted.keys()
     assert not missing, f"samples/13_bicep_fix_loop/agent.py no longer defines {sorted(missing)}"
 
-    namespace: dict = {}
-    module = ast.Module(body=[wanted["TRACKED_FAULTS"], wanted["faults_left"]], type_ignores=[])
+    namespace: dict = {"re": re}
+    ordered = sorted(wanted.values(), key=lambda node: node.lineno)
+    module = ast.Module(body=ordered, type_ignores=[])
     exec(compile(module, "<sample-13>", "exec"), namespace)  # noqa: S102 - this repo's own file
     return namespace["faults_left"]
 
@@ -678,9 +795,9 @@ class TestTheSampleAsksTheCompilerNotTheText:
     def test_a_rule_the_compiler_reports_counts_as_remaining(self):
         diagnostics = (
             "build(main.bicep): 1 diagnostic(s)\n"
-            "  [error] no-unused-params @ main.bicep:21: Parameter is declared but never used."
+            '  [error] no-unused-params @ main.bicep:21: Parameter "environmentName" is declared but never used.'
         )
-        assert _faults_left()(diagnostics) == ["no-unused-params"]
+        assert _faults_left()(diagnostics) == ["no-unused-params(environmentName)"]
 
     def test_a_clean_compile_leaves_nothing_remaining(self):
         assert _faults_left()("build(main.bicep): no diagnostics") == []
@@ -698,6 +815,37 @@ class TestTheSampleAsksTheCompilerNotTheText:
         assert "sku:" not in repaired, "the fixture must not satisfy the old BCP035 clause either"
 
         assert _faults_left()(repaired) == []
+
+    def test_two_instances_of_one_rule_are_two_faults(self):
+        """#432: `BCP035` on a missing `sku` is not `BCP035` on a missing `location`.
+
+        By rule id these are one element of a set, so a turn that traded one for the other
+        subtracted to nothing and the run reported that it had fixed no fault.
+        """
+        missing = (
+            '  [warning] BCP035 @ main.bicep:5: The specified "resource" declaration is '
+            'missing the following required properties: "%s".'
+        )
+        assert _faults_left()(missing % "sku") == ["BCP035(sku)"]
+        assert _faults_left()(missing % "location") == ["BCP035(location)"]
+
+    def test_several_missing_properties_are_one_fault_naming_all_of_them(self):
+        assert _faults_left()(
+            '  [warning] BCP035 @ main.bicep:5: The specified "resource" declaration is '
+            'missing the following required properties: "sku", "location".'
+        ) == ["BCP035(location, sku)"]
+
+    def test_a_diagnostic_naming_no_target_keeps_the_rule_alone(self):
+        """The degradation is deliberate: an unrecognised message counts as it did before."""
+        assert _faults_left()("  [error] no-unused-params @ main.bicep:3: Something else.") == [
+            "no-unused-params"
+        ]
+
+    def test_both_phases_reporting_one_fault_count_it_once(self):
+        one = '  [warning] BCP035 @ main.bicep:5: missing the following required properties: "sku".'
+        assert _faults_left()(
+            f"build(main.bicep): 1 diagnostic(s)\n{one}\nlint(main.bicep): 1 diagnostic(s)\n{one}"
+        ) == ["BCP035(sku)"]
 
     def test_the_age_rule_is_not_tracked(self):
         diagnostics = (
@@ -726,7 +874,7 @@ class TestNarrationNeverSuppliesAMeasurement:
         "main.bicep changed by turn 2:  False",
         "storage account and output intact: False",
         "faults fixed:       0 — none",
-        "faults remaining:   2 — no-unused-params; BCP035",
+        "faults remaining:   2 — no-unused-params(environmentName); BCP035(sku)",
         "tracked faults in the authored file: 0 — none",
         "Disposed 0 sandbox(es) after 2 turns and a check. Containers left: 7.",
     )
@@ -776,11 +924,12 @@ class TestTheBaselineIsTheFloorNotAConstant:
         .replace("build(main.bicep): 3 diagnostic(s)", "build(main.bicep): 2 diagnostic(s)")
         .replace("lint(main.bicep): 3 diagnostic(s)", "lint(main.bicep): 2 diagnostic(s)")
         .replace(
-            "tracked faults in the authored file: 2 — no-unused-params; BCP035",
-            "tracked faults in the authored file: 1 — BCP035",
+            "tracked faults in the authored file: 2 — no-unused-params(environmentName); BCP035(sku)",
+            "tracked faults in the authored file: 1 — BCP035(sku)",
         )
         .replace(
-            "faults fixed:       2 — no-unused-params; BCP035", "faults fixed:       1 — BCP035"
+            "faults fixed:       2 — no-unused-params(environmentName); BCP035(sku)",
+            "faults fixed:       1 — BCP035(sku)",
         )
     )
 
@@ -802,8 +951,8 @@ class TestTheBaselineIsTheFloorNotAConstant:
 
     def test_a_tally_naming_a_fault_the_authored_file_never_had_is_caught(self):
         reasons = _tampered(
-            "faults fixed:       1 — BCP035",
-            "faults fixed:       2 — BCP035; no-unused-params",
+            "faults fixed:       1 — BCP035(sku)",
+            "faults fixed:       2 — BCP035(sku); no-unused-params(environmentName)",
             base=self.ONE_FAULT,
         )
         assert any("do not describe the same file" in r for r in reasons), reasons
@@ -815,7 +964,7 @@ class TestTheBaselineTallyIsValidatedToo:
 
     def test_names_the_sample_does_not_track_are_caught(self):
         reasons = _tampered(
-            "tracked faults in the authored file: 2 — no-unused-params; BCP035",
+            "tracked faults in the authored file: 2 — no-unused-params(environmentName); BCP035(sku)",
             "tracked faults in the authored file: 2 — garbage; nonsense",
         )
         assert any("which this sample does not track" in r for r in reasons), reasons
@@ -841,8 +990,8 @@ class TestTheBaselineTallyIsValidatedToo:
 
     def test_a_count_that_does_not_match_its_names_is_caught(self):
         reasons = _tampered(
-            "tracked faults in the authored file: 2 — no-unused-params; BCP035",
-            "tracked faults in the authored file: 2 — BCP035",
+            "tracked faults in the authored file: 2 — no-unused-params(environmentName); BCP035(sku)",
+            "tracked faults in the authored file: 2 — BCP035(sku)",
         )
         assert any("says 2 but names 1" in r for r in reasons), reasons
 
@@ -850,8 +999,8 @@ class TestTheBaselineTallyIsValidatedToo:
         # The count is checked against the list and the arithmetic against the set, so a repeat
         # would otherwise let the printed number exceed the rules it describes.
         reasons = _tampered(
-            "faults fixed:       2 — no-unused-params; BCP035",
-            "faults fixed:       2 — BCP035; BCP035",
+            "faults fixed:       2 — no-unused-params(environmentName); BCP035(sku)",
+            "faults fixed:       2 — BCP035(sku); BCP035(sku)",
         )
         assert any("more than once" in r for r in reasons), reasons
 
