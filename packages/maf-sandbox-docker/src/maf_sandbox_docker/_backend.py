@@ -30,7 +30,7 @@ import weakref
 from collections.abc import Sequence
 from dataclasses import dataclass
 from hashlib import sha256
-from typing import Protocol, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 from maf_sandbox import (
     Capability,
@@ -38,6 +38,8 @@ from maf_sandbox import (
     EntryKind,
     ExecResult,
     Isolation,
+    Sandbox,
+    SandboxBackend,
     SandboxEntry,
     SandboxKey,
     SandboxLimits,
@@ -1044,3 +1046,16 @@ class DockerSandboxBackend:
                 "docker backend: failed to remove network %s: %s", net, result.stderr.strip()
             )
         return False
+
+
+# The package's strict pyright pass type-checks this assignment. ``runtime_checkable`` only
+# tests member *presence*, so ``isinstance(..., Sandbox)`` passes while a signature narrows or a
+# method the protocol states goes missing — the annotation is what fails the build instead. It
+# lives in this package rather than in a shared test because this is where a divergence is
+# introduced, and a backend that has stopped satisfying the protocol should fail to build here
+# rather than at a call site somewhere else.
+if TYPE_CHECKING:
+    _: tuple[SandboxBackend, type[Sandbox]] = (
+        DockerSandboxBackend(DockerSandboxConfig()),
+        _DockerSandbox,
+    )
