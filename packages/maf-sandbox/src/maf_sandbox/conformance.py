@@ -976,21 +976,31 @@ async def _probe_a_missing_path_is_success(
 async def _probe_a_link_is_removed_never_followed(
     subject: ConformanceSubject, paths: ConformancePaths
 ) -> None:
+    # Both flag values, on a specimen each: `recursive` may select a different operation
+    # entirely — docker moves from `rm -f` to `rm -rf`, a service may move to a tree delete —
+    # so a backend that unlinks safely on one and follows the link on the other would pass a
+    # suite that only asked once.
     await subject.plant_file(f"{paths.outside}/target.txt", b"outside\n")
-    await subject.plant_symlink(f"{paths.work}/link-out", f"{paths.outside}/target.txt")
-    await subject.sandbox.remove("link-out", working_directory=subject.working_directory)
-    link = await subject.sandbox.exec(
-        ["test", "-e", "link-out"], working_directory=subject.working_directory, timeout=60
-    )
-    target = await subject.sandbox.exec(
-        ["test", "-f", "../work-outside/target.txt"],
-        working_directory=subject.working_directory,
-        timeout=60,
-    )
-    if link.exit_code == 0:
-        raise AssertionError("the removed link is still there")
-    if target.exit_code != 0:
-        raise AssertionError("the link's target went with it: the removal followed the link")
+    for name, recursive in (("link-out", False), ("link-out-recursive", True)):
+        await subject.plant_symlink(f"{paths.work}/{name}", f"{paths.outside}/target.txt")
+        await subject.sandbox.remove(
+            name, working_directory=subject.working_directory, recursive=recursive
+        )
+        link = await subject.sandbox.exec(
+            ["test", "-e", name], working_directory=subject.working_directory, timeout=60
+        )
+        target = await subject.sandbox.exec(
+            ["test", "-f", "../work-outside/target.txt"],
+            working_directory=subject.working_directory,
+            timeout=60,
+        )
+        if link.exit_code == 0:
+            raise AssertionError(f"the removed link is still there (recursive={recursive})")
+        if target.exit_code != 0:
+            raise AssertionError(
+                f"the link's target went with it: the removal followed the link "
+                f"(recursive={recursive})"
+            )
 
 
 async def _probe_a_path_through_a_linked_parent_is_refused(
@@ -998,11 +1008,16 @@ async def _probe_a_path_through_a_linked_parent_is_refused(
 ) -> None:
     await subject.plant_file(f"{paths.outside}/target.txt", b"outside\n")
     await subject.plant_symlink(paths.linked_directory, paths.outside)
-    await _refused_with(
-        ValueError,
-        "removing through a linked parent",
-        subject.sandbox.remove("link-dir/target.txt", working_directory=subject.working_directory),
-    )
+    for recursive in (False, True):
+        await _refused_with(
+            ValueError,
+            f"removing through a linked parent (recursive={recursive})",
+            subject.sandbox.remove(
+                "link-dir/target.txt",
+                working_directory=subject.working_directory,
+                recursive=recursive,
+            ),
+        )
     # The refusal is only worth its exception type if nothing crossed: a backend that followed
     # the link, deleted the target, and then raised would pass the check above and have done
     # the exact damage the probe exists to catch.
@@ -1046,6 +1061,16 @@ async def _probe_an_empty_directory_needs_recursive(
     await _assert_present(
         subject.sandbox, "empty", subject.working_directory, "the refused empty directory"
     )
+    # The other half of the rule: `recursive` is what the caller says to get it, so a backend
+    # that refuses an empty directory either way is not conforming, it is just never deleting.
+    await subject.sandbox.remove(
+        "empty", working_directory=subject.working_directory, recursive=True
+    )
+    still = await subject.sandbox.exec(
+        ["test", "-e", "empty"], working_directory=subject.working_directory, timeout=60
+    )
+    if still.exit_code == 0:
+        raise AssertionError("an empty directory survived a recursive removal")
 
 
 async def _probe_recursive_removes_the_tree(
@@ -1109,11 +1134,14 @@ async def _probe_the_working_directory_is_refused(
     subject: ConformanceSubject, paths: ConformancePaths
 ) -> None:
     await subject.sandbox.write_file(f"{paths.work}/ground.txt", b"still standing\n")
-    await _refused_with(
-        ValueError,
-        "removing the working directory itself",
-        subject.sandbox.remove(".", working_directory=subject.working_directory),
-    )
+    for recursive in (False, True):
+        await _refused_with(
+            ValueError,
+            f"removing the working directory itself (recursive={recursive})",
+            subject.sandbox.remove(
+                ".", working_directory=subject.working_directory, recursive=recursive
+            ),
+        )
     # A backend that removed the working directory and then raised would pass the refusal
     # check above having taken the next run's ground with it.
     await _assert_present(
@@ -1125,13 +1153,16 @@ async def _probe_a_path_outside_is_refused(
     subject: ConformanceSubject, paths: ConformancePaths
 ) -> None:
     await subject.plant_file(f"{paths.outside}/target.txt", b"outside\n")
-    await _refused_with(
-        ValueError,
-        "removing a path outside the working directory",
-        subject.sandbox.remove(
-            "../work-outside/target.txt", working_directory=subject.working_directory
-        ),
-    )
+    for recursive in (False, True):
+        await _refused_with(
+            ValueError,
+            f"removing a path outside the working directory (recursive={recursive})",
+            subject.sandbox.remove(
+                "../work-outside/target.txt",
+                working_directory=subject.working_directory,
+                recursive=recursive,
+            ),
+        )
     await _assert_present(
         subject.sandbox,
         "../work-outside/target.txt",

@@ -280,12 +280,17 @@ def _imports_sandbox_backend(src: Path) -> bool:
     return False
 
 
-#: Candidate backend packages, by import: any non-core package importing ``SandboxBackend``.
-#: Structural discovery then has to find a backend class in every candidate — a package that
-#: imports the protocol but defeats the class heuristic (inherited dispose, aliased
-#: annotations) fails that check loudly rather than receiving no checks at all (#450).
+#: Candidate backend packages: any non-core package that either imports ``SandboxBackend`` or
+#: has a class structural discovery reads as one. The union, not the import alone — the
+#: protocol is structural, so a package can implement ``acquire``/``dispose`` and never name
+#: the type, and gating candidacy on the import would let it escape the very checks this
+#: guard exists to require. Each side covers the other's blind spot: a package that imports
+#: the protocol but defeats the class heuristic (inherited dispose, aliased annotations)
+#: fails loudly rather than receiving no checks at all (#450).
 CANDIDATE_BACKEND_PACKAGES = [
-    path for path in BACKEND_PACKAGES if _imports_sandbox_backend(path / "src")
+    path
+    for path in BACKEND_PACKAGES
+    if _imports_sandbox_backend(path / "src") or _backends(path / "src")
 ]
 
 

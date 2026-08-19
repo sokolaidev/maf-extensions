@@ -432,7 +432,7 @@ class TestFilesDeleteAgainstTheRealService:
         unclassified = (passed | set(failed)) - expected_pass - {"a-link-is-removed-never-followed"}
         assert not unclassified, (
             f"unclassified delete-probe results: {sorted(n for n in unclassified)} "
-            f"(outcome: {sorted((n, 'failed' if n in failed else 'passed') for n in unclassified)}). "
+            f"(outcome: {sorted((n, failed.get(n, 'passed')) for n in unclassified)}). "
             "This measurement exists to produce evidence for #435/#438 — classify each result "
             "in this test (expected pass, expected fail with its reason) or the scheduled run "
             "reports nothing a decision can cite."

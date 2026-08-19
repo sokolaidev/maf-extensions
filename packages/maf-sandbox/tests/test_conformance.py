@@ -905,6 +905,12 @@ class TestFilesDeleteConformance:
                     self.symlinks.pop(stored, None)
                     self.directories.discard(stored)
                     self.contents.pop(resolved, None)  # the escape: the target goes too
+                # The named path itself goes, correctly. This specimen's only defect is what a
+                # recursive delete does to links *inside* the tree, so everything else about it
+                # has to conform — including taking a link named directly rather than leaving it.
+                self.contents.pop(guest, None)
+                self.symlinks.pop(guest, None)
+                self.directories.discard(guest)
 
         failures = _sim_results(
             _SimSubject(
@@ -915,6 +921,44 @@ class TestFilesDeleteConformance:
         assert failures["a-link-inside-a-recursive-removal-is-unlinked-not-followed"] is not None
         assert failures["a-link-is-removed-never-followed"] is None
         assert failures["recursive-removes-the-tree"] is None
+
+    def test_a_backend_that_confines_only_the_non_recursive_path_is_caught(self):
+        """`recursive` can select a different operation, so both values have to be asked.
+
+        Docker moves from `rm -f` to `rm -rf`, and a service may move to a tree delete
+        entirely. A backend confining one and escaping the other would pass a suite that asked
+        once — which is what every confinement probe here used to do.
+        """
+
+        class _LeaksOnlyWhenRecursive(_SimulatedGuest):
+            async def remove(self, path, *, working_directory, recursive=False):
+                if not recursive:
+                    await super().remove(
+                        path, working_directory=working_directory, recursive=recursive
+                    )
+                    return
+                # The recursive branch resolves the final component and deletes what it names,
+                # with no confinement walk at all: the shape of a backend whose tree delete is
+                # a different code path from its file delete.
+                guest = posixpath.normpath(posixpath.join(working_directory, path))
+                resolved = guest
+                while resolved in self.symlinks:
+                    resolved = self.symlinks[resolved]
+                self.contents.pop(resolved, None)
+                self.symlinks.pop(guest, None)
+                self.directories.discard(resolved)
+
+        failures = _sim_results(
+            _SimSubject(
+                sandbox=_LeaksOnlyWhenRecursive(),
+                working_directory=_WORK,
+                capabilities=_EVERYTHING,
+            ),
+            run_files_delete_probes,
+        )
+        assert failures["a-link-is-removed-never-followed"] is not None, (
+            "a recursive removal that followed the link went unnoticed"
+        )
 
     def test_a_removal_that_raises_on_missing_fails_the_idempotence_probe(self):
         class _Strict(_SimulatedGuest):

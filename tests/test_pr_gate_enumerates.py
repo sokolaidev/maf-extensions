@@ -28,7 +28,7 @@ _TEXT = TESTS_YML.read_text(encoding="utf-8")
 #: `maf-sandbox-<anything>`, because the regression this guards is *any* hardcoded name — the
 #: next backend's name is exactly the one a five-name list would miss. The loop forms name no
 #: package: `packages/*/`, `$(basename …)`.
-_HARDCODED_PACKAGE = re.compile(r"(?<![-\w*/])(?:packages/)?maf-sandbox(?:-\w+)?(?![\w/-])")
+_HARDCODED_PACKAGE = re.compile(r"(?<![-\w*/])(?:packages/)?maf-sandbox(?:-\w+)*(?![\w/-])")
 
 
 class TestTheGateEnumerates:
