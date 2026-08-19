@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.5.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.5.0...maf-sandbox-codeact-v0.5.1) (2026-08-19)
+
+
+### Fixes
+
+* require maf-sandbox 0.17.0 in the dependents and 0.17 in the samples, and admit 0.18 ([#472](https://github.com/sokolaidev/maf-extensions/issues/472)) ([dffd936](https://github.com/sokolaidev/maf-extensions/commit/dffd936ed3cb3c6a49d1dce0776ba321ee4d1dda))
+
+
+### Documentation
+
+* **samples:** a program in a sandbox calling back into the host, measured ([#433](https://github.com/sokolaidev/maf-extensions/issues/433)) ([23ba28a](https://github.com/sokolaidev/maf-extensions/commit/23ba28a50bfbed95df48bc81d03f0d63c9dfb014))
+* two backends declare HOST_TOOLS, so stop saying none does ([#426](https://github.com/sokolaidev/maf-extensions/issues/426)) ([ca38e5c](https://github.com/sokolaidev/maf-extensions/commit/ca38e5ccfbb6d937fce3663b7aa6be6a3e528c35))
+
 ## [0.5.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.4.3...maf-sandbox-codeact-v0.5.0) (2026-08-17)
 
 
