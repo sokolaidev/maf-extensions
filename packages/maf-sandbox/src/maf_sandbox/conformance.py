@@ -830,15 +830,23 @@ async def _probe_a_timeout_raises_timeout_error(
             ["sleep", "30"], working_directory=subject.working_directory, timeout=1
         )
     except TimeoutError:
-        # The bound must actually have elapsed: a backend borrowing the exception for its own
-        # shorter ceiling — or raising it eagerly on any call — would otherwise pass here while
-        # breaking the caller's reading of its own budget running out. The 0.5s allowance is
-        # scheduling tolerance, not precision: the claim is "at least roughly a second passed",
-        # not "exactly one".
-        if time.monotonic() - started < 0.5:
+        # The bound must actually have elapsed — and only the bound. A backend borrowing the
+        # exception for its own shorter ceiling — or raising it eagerly on any call — passes a
+        # bare type check while breaking the caller's reading of its own budget running out;
+        # one that ignores the argument and raises at a longer ceiling of its own makes the
+        # caller's bound a lie from the other side. The tolerances are scheduling allowance,
+        # not precision: the claim is "roughly between half the bound and four times it".
+        elapsed = time.monotonic() - started
+        if elapsed < 0.5:
             raise AssertionError(
                 "TimeoutError arrived in under half the bound — it is the backend's own "
                 "ceiling firing, not the caller's timeout expiring"
+            ) from None
+        if elapsed > 4.0:
+            raise AssertionError(
+                f"TimeoutError arrived after {elapsed:.1f}s against a 1s bound — the backend "
+                "ignored the caller's timeout and fired its own, so the call was not bounded "
+                "by the argument as exec promises"
             ) from None
         return
     except Exception as wrong:
@@ -1023,17 +1031,11 @@ async def _probe_an_empty_directory_needs_recursive(
     subject: ConformanceSubject, paths: ConformancePaths
 ) -> None:
     # The protocol refuses empty directories too — no enumeration primitive to tell them
-    # apart, the rule has to be one every backend can keep — so an empty one is planted
-    # through `exec`, the guest's own move, with a file placed under it and removed again
-    # to leave it genuinely empty rather than never-created.
+    # apart, so the rule has to be one every backend can keep — and an empty one is planted
+    # through `exec`, the guest's own move, because `plant_file` cannot make an empty
+    # anything: every path it names gains a file.
     await subject.sandbox.exec(
         ["mkdir", "-p", "empty"], working_directory=subject.working_directory, timeout=60
-    )
-    await subject.sandbox.exec(
-        ["rmdir", "empty"], working_directory=subject.working_directory, timeout=60
-    )
-    await subject.sandbox.exec(
-        ["mkdir", "empty"], working_directory=subject.working_directory, timeout=60
     )
     await _refused_with(
         OSError,
@@ -1069,13 +1071,13 @@ async def _probe_recursive_removes_the_tree(
 async def _probe_a_link_inside_a_recursive_removal_is_unlinked_not_followed(
     subject: ConformanceSubject, paths: ConformancePaths
 ) -> None:
-    """The escape one level down from the link-target probe, and the one #452 could not verify.
+    """A link *inside* a recursively removed tree is unlinked, never resolved.
 
-    `recursive-removes-the-tree` proves the tree goes; nothing else proves a link *inside* it
-    was unlinked rather than resolved. A service-side recursive delete that follows interior
-    links deletes targets outside the working directory — the same escape as the final-component
-    one, reachable only through this shape, because the only other link the suite plants is the
-    removal target itself.
+    `recursive-removes-the-tree` proves the tree goes; this proves nothing outside it went
+    with it. A service-side recursive delete that resolves interior links deletes targets
+    outside the working directory — the same escape as the final-component one, reachable
+    only through this shape, because the only other link the suite plants is the removal
+    target itself.
     """
     await subject.plant_file(f"{paths.outside}/interior-target.txt", b"outside the tree\n")
     await subject.plant_file(f"{paths.work}/linked-tree/leaf.txt", b"in the tree\n")

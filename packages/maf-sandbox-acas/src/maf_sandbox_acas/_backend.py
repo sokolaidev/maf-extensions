@@ -342,15 +342,10 @@ class _AcasSandbox:
         backend does not declare :data:`~maf_sandbox.Capability.FILES_DELETE`. :meth:`read_file`
         records that the service follows a link in the final component as much as in the
         parents, and an HTTP ``DELETE`` promises nothing else, so removing one could delete
-        what the guest pointed at. The mechanism is here and unadvertised until the live suite
-        measures that behaviour; a capability is a promise, and this one cannot be kept yet.
-        The measurement exists now —
-        :func:`~maf_sandbox.conformance.measure_files_delete_probes`, run against the real
-        service by ``test_acas_e2e.py`` — so the withholding is a question with an owner
-        rather than a loop: what that run says about links, including inside a recursive
-        tree, is the evidence for whether this backend can ever declare the capability, and
-        for the transient-or-structural reading #435 and #438 need before choosing a layer
-        for the unreclaimable case.
+        what the guest pointed at. The mechanism is here and unadvertised; a capability is a
+        promise, and this one cannot be kept while the service's behaviour on a link is
+        unmeasured. :func:`~maf_sandbox.conformance.measure_files_delete_probes` exists for
+        exactly that decision — see #438 and #450 for where its verdict lands.
         """
         from azure.core.exceptions import ResourceNotFoundError
 

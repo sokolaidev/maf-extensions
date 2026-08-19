@@ -35,12 +35,12 @@ from gate_tasks import packages_with_pyright  # noqa: E402
 TESTS_YML = REPO_ROOT / ".github" / "workflows" / "tests.yml"
 _TEXT = TESTS_YML.read_text(encoding="utf-8")
 
-#: A package name spelled out where a loop variable should be — `maf-sandbox` (the prefix every
-#: package shares) with anything but `*` following, or a bare `packages/maf-sandbox-<name>`
-#: path. The loop forms name no package: `packages/*/`, `$(basename …)`.
-_HARDCODED_PACKAGE = re.compile(
-    r"(?<![-\w*/])(?:packages/)?maf-sandbox-(?:acas|bicep|codeact|docker|wslc)(?![\w/-])"
-)
+#: A package name spelled out where a loop variable should be. Generic rather than an
+#: enumeration of today's five suffixes: it matches the bare `maf-sandbox` and any future
+#: `maf-sandbox-<anything>`, because the regression this guards is *any* hardcoded name — the
+#: next backend's name is exactly the one a five-name list would miss. The loop forms name no
+#: package: `packages/*/`, `$(basename …)`.
+_HARDCODED_PACKAGE = re.compile(r"(?<![-\w*/])(?:packages/)?maf-sandbox(?:-\w+)?(?![\w/-])")
 
 
 class TestTheGateEnumerates:

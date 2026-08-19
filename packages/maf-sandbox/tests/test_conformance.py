@@ -705,11 +705,10 @@ class TestFilesDeleteConformance:
         assert failures["recursive-removes-the-tree"] is not None
 
     def test_a_destructive_refusal_fails_the_intact_assertions(self):
-        """Delete first, raise after: the shape a bare exception-type check certifies.
+        """Delete first, raise after: a refusal that performed its own damage.
 
         Each refusal probe asserts the survivor still stands, so a backend that did the damage
-        and then raised the documented error fails the probe it would otherwise have passed —
-        the half of every refusal check the review asked for.
+        and then raised the documented error fails the probe it would otherwise have passed.
         """
 
         class _Destructive(_SimulatedGuest):
@@ -789,6 +788,27 @@ class TestFilesDeleteConformance:
         )
         assert failures["a-timeout-raises-timeout-error"] is not None
         assert "under half the bound" in failures["a-timeout-raises-timeout-error"]
+
+    def test_a_delayed_timeout_ignoring_the_bound_fails_the_probe(self):
+        """A backend that sleeps its own ceiling before raising passes the lower bound only."""
+
+        class _IgnoresTheBound(_SimulatedGuest):
+            async def exec(self, command, *, working_directory: str, timeout: float):
+                if isinstance(command, list) and command[0:1] == ["sleep"]:
+                    await asyncio.sleep(5)  # well past the 1s the caller allowed
+                    raise TimeoutError
+                return await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+
+        failures = _sim_results(
+            _SimSubject(
+                sandbox=_IgnoresTheBound(), working_directory=_WORK, capabilities=_EVERYTHING
+            ),
+            run_exec_probes,
+        )
+        assert failures["a-timeout-raises-timeout-error"] is not None
+        assert "ignored the caller's timeout" in failures["a-timeout-raises-timeout-error"]
 
     def test_a_non_idempotent_removal_fails_the_missing_path_probe(self):
         """Succeeds on never-seen paths, raises on the repeat — the finally-breaker."""
