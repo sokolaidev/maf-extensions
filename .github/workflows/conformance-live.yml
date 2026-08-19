@@ -52,10 +52,10 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
 
-      # The five the suite reads plus the three azure/login consumes. No model variables: this
-      # job calls no model. BICEP_SANDBOX_IMAGE supplies the guest — any Linux image in the
-      # registry with sh, ln, cat and mkfifo would do, and this is the one already known to
-      # pull. The same list verify-live's acas-e2e job carries; the two jobs answer the same
+      # The six the suite reads plus the three azure/login consumes. No model variables: this
+      # job calls no model. BICEP_SANDBOX_IMAGE supplies the guest — the probes run `sh`, `ln`,
+      # `cat`, `mkfifo`, `mkdir`, `printf`, `pwd`, `sleep` and `test`, so any Linux image
+      # carrying those would do, and this is the one already known to pull. The same list verify-live's acas-e2e job carries; the two jobs answer the same
       # question at different times.
       - name: Check the live configuration is present
         env:

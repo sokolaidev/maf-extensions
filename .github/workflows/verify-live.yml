@@ -1204,7 +1204,7 @@ jobs:
     # summary, since a skipped listing probe reports exactly like a passing one.
     #
     # **The fifth billable job**, and the cheapest of them per assertion: two sandboxes for
-    # nine tests, no model, no tokens. It needs no model configuration and so reads neither
+    # eighteen tests, no model, no tokens. It needs no model configuration and so reads neither
     # AZURE_OPENAI variable — the rule stated on the header applies, a job reads what it uses.
     #
     # maf-sandbox and maf-sandbox-acas only: the conformance probes live in the core and the

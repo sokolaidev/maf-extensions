@@ -783,25 +783,24 @@ async def _probe_exit_code_fidelity(subject: ConformanceSubject, paths: Conforma
 
 async def _probe_argv_is_quoted(subject: ConformanceSubject, paths: ConformancePaths) -> None:
     hostile = "a b$(echo injected)c"
-    # `printf '%s\n'` over the argument, then `wc -l`: the count is 1 only if the argument
-    # arrived as one word. A backend joining argv unquoted runs the substitution and the
-    # split, and the count — or the injected marker — gives the failure two ways to show.
+    # The argument itself comes back, not a count of it. Counting words hides the failure it
+    # is meant to catch: a backend appending argv unquoted leaves the inner shell with
+    # `$1=a`, one word, so the count is 1 and the substitution — run by the outer shell,
+    # never printed — has nowhere to show. Comparing against the literal makes a split
+    # visible as a shorter string and a substitution visible as its output.
     result = await subject.sandbox.exec(
-        ["sh", "-c", "printf '%s\\n' \"$1\" | wc -l", "probe", hostile],
+        ["sh", "-c", "printf '%s' \"$1\"", "probe", hostile],
         working_directory=subject.working_directory,
         timeout=60,
     )
     if result.exit_code != 0:
         raise AssertionError(f"the quoting probe exited {result.exit_code}")
-    count = result.stdout.strip()
-    if count != "1":
+    if result.stdout != hostile:
         raise AssertionError(
-            f"the argument containing spaces and a $( ) arrived as {count} words — it was "
-            "joined into the command line unquoted, which is the injection the sequence form "
-            "exists to prevent"
+            f"the argument containing spaces and a $( ) came back as {result.stdout!r} rather "
+            f"than {hostile!r} — it was joined into the command line unquoted, which is the "
+            "injection the sequence form exists to prevent"
         )
-    if "injected" in result.stdout:
-        raise AssertionError("the $( ) in the argument was evaluated: the argv was injected")
 
 
 async def _probe_working_directory_is_honoured(

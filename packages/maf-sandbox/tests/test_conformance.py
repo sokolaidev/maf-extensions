@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import posixpath
+import re
 
 import pytest
 
@@ -524,14 +525,17 @@ class _SimulatedGuest:
             if float(argv[1]) > timeout:
                 raise TimeoutError
             return ExecResult(stdout="")
-        # `sh -c 'printf ... | wc -l' probe '<hostile>'`: the quoting probe. A quoting backend
-        # passes the hostile string through as $1; an unquoting one has already run it through
-        # a shell, which this models by splitting on whitespace and evaluating nothing.
-        if argv[0:1] == ["sh"] and argv[1:2] == ["-c"] and len(argv) == 5 and "wc -l" in argv[2]:
-            words = (
-                [argv[4]] if self._quoting else argv[4].replace("$(", " ").replace(")", " ").split()
-            )
-            return ExecResult(stdout=f"{len(words)}\n")
+        # `sh -c 'printf %s "$1"' probe '<hostile>'`: the quoting probe, which prints the
+        # argument itself. A quoting backend passes it through as $1. An unquoting one has
+        # already handed the whole thing to a shell, so the substitution ran while the command
+        # line was built and $1 is only the first word of what came back — modelled here by
+        # evaluating `$(echo X)` to X and taking the first word.
+        if argv[0:1] == ["sh"] and argv[1:2] == ["-c"] and len(argv) == 5 and "printf" in argv[2]:
+            if self._quoting:
+                return ExecResult(stdout=argv[4])
+            substituted = re.sub(r"\$\(echo ([^)]*)\)", r"\1", argv[4])
+            first = substituted.split()[0] if substituted.split() else ""
+            return ExecResult(stdout=first)
         if argv[0:1] == ["mkdir"]:
             # `-p` and plain alike: an empty directory is a real entry here, because the
             # simulator's remove refuses one without recursive only when it is recorded.
@@ -876,10 +880,9 @@ class TestFilesDeleteConformance:
     def test_a_recursive_removal_that_follows_interior_links_fails_the_interior_probe(self):
         """The escape one level down: the tree goes, and the target outside goes with it.
 
-        #452 named this as the one thing it could not verify from a workstation — how a
-        service-side recursive delete treats links *inside* the tree — which is exactly why
-        the probe exists: a backend can pass every other delete probe and still do it, because
-        the only link the rest of the suite plants is the removal target itself.
+        The only link the rest of the suite plants is the removal target itself, so a
+        backend that resolves links *under* a tree it is deleting passes every other delete
+        probe.
         """
 
         class _FollowingInteriorLinks(_SimulatedGuest):
@@ -926,8 +929,7 @@ class TestFilesDeleteConformance:
         """`recursive` can select a different operation, so both values have to be asked.
 
         Docker moves from `rm -f` to `rm -rf`, and a service may move to a tree delete
-        entirely. A backend confining one and escaping the other would pass a suite that asked
-        once — which is what every confinement probe here used to do.
+        entirely, so a backend can confine one path and escape the other.
         """
 
         class _LeaksOnlyWhenRecursive(_SimulatedGuest):

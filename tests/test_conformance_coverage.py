@@ -293,6 +293,35 @@ CANDIDATE_BACKEND_PACKAGES = [
     if _imports_sandbox_backend(path / "src") or _backends(path / "src")
 ]
 
+#: The non-core packages that are deliberately not backends — kinds, which build a tool on top
+#: of whatever backend the router picked. Written down rather than inferred, because both
+#: predicates above are heuristics a package can defeat: one by not naming the type it
+#: implements structurally, the other by an aliased annotation or an inherited ``dispose``. A
+#: package matching neither and absent from this set fails ``test_every_package_is_classified``
+#: rather than quietly receiving no checks — which is the detector gating itself (#450).
+NOT_BACKENDS = frozenset({"maf-sandbox-bicep", "maf-sandbox-codeact"})
+
+
+def test_every_package_is_classified():
+    """A package is a candidate backend or a declared non-backend. Silence is neither.
+
+    Both candidate predicates are heuristics, so a new backend can be missed by both — and
+    being missed is indistinguishable from being checked, since the parameterized suites
+    simply do not run for it. This is what makes the omission loud.
+    """
+    unclassified = (
+        {path.name for path in BACKEND_PACKAGES}
+        - {path.name for path in CANDIDATE_BACKEND_PACKAGES}
+        - NOT_BACKENDS
+    )
+    assert not unclassified, (
+        f"{sorted(unclassified)} matched neither candidate predicate and is not a declared "
+        "non-backend. If it is a backend, say so where the detector can see it — import "
+        "SandboxBackend, or give it a class structural discovery reads. If it is not, add it "
+        "to NOT_BACKENDS with the reason. Doing neither leaves it with no conformance checks "
+        "at all, which is the gap #450 exists to close."
+    )
+
 
 @pytest.mark.parametrize("package", BACKEND_PACKAGES, ids=lambda path: path.name)
 def test_a_backend_that_serves_the_pull_surface_answers_the_suite(package: Path):
@@ -339,9 +368,8 @@ def test_a_backend_carries_the_static_protocol_binding(package: Path):
 
     `runtime_checkable` tests member presence, so an `isinstance` assertion passes while a
     signature narrows or a method goes missing — the annotation is what fails the build
-    instead. wslc carried it alone on main while docker and acas stayed green and
-    non-conforming, which is the near-miss #450 records: the binding is a convention nothing
-    enforced until this test.
+    instead. The binding is a convention, and a convention held by copy-paste is one a new
+    package omits for free — which is why this asserts it rather than trusting it.
 
     Every discovered backend class, not one per package: a package holding two backends is
     bound when each of them is named in a binding, so the second one cannot ride in unbound.
