@@ -53,26 +53,10 @@ def require_env_vars(names: tuple[str, ...]) -> dict[str, str] | None:
 
 
 def conversation_id(name: str) -> str:
-    """``name`` with this run in it, for a sample that deletes its sandboxes by label.
+    """Return a run-scoped conversation id for samples that purge by label.
 
-    :meth:`SandboxRouter.dispose_scope` deletes every sandbox the **service** reports for a
-    scope and thread, deliberately: the registry only knows what this process created, so
-    labels are what let a delete reach a sandbox some other replica made.  The cost is that an
-    id two runs share is a delete they share, and the runs that verify a release are concurrent
-    against one sandbox group — so a fixed id has the first run to finish delete the others'
-    running sandboxes and count them as its own.
-
-    Only samples on a hosted backend need this.  A Docker container lives on the job's own
-    runner and there is nothing there to collide with.
-
-    ``GITHUB_RUN_ID`` and ``GITHUB_RUN_ATTEMPT`` are set in every GitHub job; a local run has
-    neither and takes the process id, which is as unique as one machine needs.  The result
-    stays well inside the 63 characters a label holds before a backend substitutes a digest for
-    it, which would be unique too and unreadable in the group.
-
-    The trade, since it is one: an id nothing reuses is an id nothing tidies.  A run killed
-    before it disposes leaves a sandbox no later run will purge, and it bills until the group's
-    lifecycle timers reach it.
+    Uses the CI run and attempt when present, otherwise falls back to this process. If a run
+    exits before disposal, its sandboxes are left for lifecycle cleanup.
     """
     run = os.environ.get("GITHUB_RUN_ID") or f"local-{os.getpid()}"
     return f"{name}-{run}-{os.environ.get('GITHUB_RUN_ATTEMPT', '1')}"
