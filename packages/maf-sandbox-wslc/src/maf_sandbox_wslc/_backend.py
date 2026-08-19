@@ -326,6 +326,23 @@ class _WslcSandbox:
             "does, or require only exec and FILES_IN."
         )
 
+    async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
+        """Not supported: this backend does not declare
+        :data:`~maf_sandbox.Capability.FILES_DELETE`.
+
+        Not for want of a way to delete — ``exec`` reaches ``rm`` here as readily as anywhere.
+        What is missing is the confinement the contract requires: refusing a path reached
+        through a link means walking its parents, and :meth:`stat_file` is the walk.  A backend
+        with no pull surface cannot tell a link from a directory, so a removal it accepted
+        would be one it could not have refused.  Declaring the capability without that is the
+        dishonest half of the pair, and #125 is where the pull surface lands.
+        """
+        raise NotImplementedError(
+            "the wslc backend does not support FILES_DELETE: confining a removal needs the "
+            "component walk that stat_file provides, and this backend has none. Remove through "
+            "exec if the workload already requires it, or declare a backend with a pull surface."
+        )
+
 
 class WslcSandboxBackend:
     """Hands out container-isolated sandboxes from the WSL container CLI (``wslc``)."""

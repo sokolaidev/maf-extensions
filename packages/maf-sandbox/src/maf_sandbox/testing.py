@@ -223,6 +223,29 @@ class InProcessSandbox:
             raise IsADirectoryError(f"{path!r} is a directory")
         raise FileNotFoundError(f"no such file: {path!r}")
 
+    async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
+        full_path = confine_guest_path(path, working_directory)
+        # `include_self=False`: a link named here is the thing being removed, and removing it
+        # is the one operation on the pull surface that must *not* resolve it. Its parents are
+        # walked exactly as a read walks them.
+        await refuse_symlinked_parents(
+            self._stat_unconfined, full_path, working_directory, include_self=False
+        )
+        base = posixpath.normpath(working_directory)
+        if posixpath.normpath(full_path) == base:
+            raise OSError(f"refusing to remove the working directory itself: {working_directory}")
+        children = [
+            stored
+            for stored in (*self.contents, *self.symlinks, *self.non_regular)
+            if guest_path_relative_to(stored, full_path) not in (None, "")
+        ]
+        if children and not recursive:
+            raise OSError(f"refusing to remove a directory without recursive: {path}")
+        for stored in (*children, full_path):
+            self.contents.pop(stored, None)
+            self.symlinks.discard(stored)
+            self.non_regular.discard(stored)
+
     async def list_dir(self, path: str, *, working_directory: str) -> tuple[SandboxEntry, ...]:
         full_path = confine_guest_path(path, working_directory)
         await refuse_symlinked_parents(

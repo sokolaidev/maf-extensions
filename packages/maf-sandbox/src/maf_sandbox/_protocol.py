@@ -150,6 +150,12 @@ class Capability(StrEnum):
     #: Enumerate a directory. Split from :data:`FILES_OUT` because Docker has no engine-level
     #: primitive for it, which is also why a declared output is a literal path and not a glob.
     FILES_LIST = "files_list"
+    #: Delete what a workload put there. Split from :data:`FILES_IN` because writing and
+    #: removing are different powers to grant, and a backend can honestly offer one without
+    #: the other. Absent from :data:`DEFAULT_CAPABILITIES`, so a spec asks for it: nothing in
+    #: the protocol deleted before this, and a workload that never cleans up is not broken by
+    #: a capability it does not require.
+    FILES_DELETE = "files_delete"
     #: Any egress at all — how precisely it is confined stays in :class:`Egress`.
     NETWORK = "network"
     #: Snapshot and restore a sandbox for reuse.
@@ -554,6 +560,36 @@ class Sandbox(Protocol):
         backend that can stop early does — the stat-ed size clamped by what the collection has
         left — and a backend whose SDK buffers the whole response before returning it can only
         refuse after the fact, which is why the caller re-counts what actually arrived.
+        """
+        ...
+
+    async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
+        """Delete ``path``, and everything under it when ``recursive``.
+
+        **A path that is not there is success.**  Cleanup runs in a ``finally``, after
+        whatever went wrong already went wrong, so a missing path has to be an ordinary answer
+        rather than a second failure reported over the first.  It is also the honest reading:
+        the caller asked for the path to be gone, and it is.
+
+        **A link is removed, never followed.**  The rule the pull surface already keeps, for a
+        stronger reason here — a removal that resolved a link would delete a target the guest
+        chose, from outside the working directory, and no byte would have to cross for the
+        damage to be done.  Parents are walked as they are for a read, so a path reached
+        *through* a link is refused whole.
+
+        ``recursive`` is a word the caller has to say.  A *directory* is refused without it,
+        empty or not, because the alternative is an irreversible operation that reads like a
+        single-file delete at the call site.  Empty is not carved out: a backend without an
+        enumeration primitive cannot tell an empty directory from a full one, so the rule has
+        to be one every backend can actually keep.  ``working_directory`` itself is refused
+        either way: it is the confinement root, and a workload that removes it takes the next
+        run's ground with it.
+
+        Raises:
+            OSError: A path outside ``working_directory``, one reached through a link, the
+                working directory itself, or a non-empty directory without ``recursive``.
+                Refusals raise where a missing path returns, because each of these is a
+                caller's mistake rather than a state cleanup should tolerate.
         """
         ...
 
