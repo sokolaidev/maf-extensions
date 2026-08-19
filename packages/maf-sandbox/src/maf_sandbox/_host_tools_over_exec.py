@@ -93,8 +93,9 @@ _STAGED_PID_FILE = f"{PID_FILE}.part"
 #: Where the launcher records the id of the session it made for the program, when the guest
 #: has ``setsid``. Its own file rather than a flag on the pid, because the two answer different
 #: questions — which process to signal, and whether signalling its group is a thing this run
-#: may do at all. Absent means the program shares the launcher's session, where a group signal
-#: would reach far more than the run.
+#: may do at all. Its absence is not what selects the fallback — the marker on the launcher's
+#: stdout is, because this file is inside the run and the guest can write or remove it. A
+#: missing or unreadable one only means the pid gets signalled alone.
 SESSION_FILE = "program_session"
 _STAGED_SESSION_FILE = f"{SESSION_FILE}.part"
 
@@ -815,9 +816,9 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
         # Two paths, because the better one needs a utility not every image has. With
         # `setsid` the shell it runs leads a session of its own, and the program starts
         # inside that one, so the host can stop it and its children together; without, the
-        # program shares the launcher's session, where a group signal reaches the container. The session file is written only on the first path, and its absence is
-        # what tells the host which one ran — a claim that varies by image, reported rather
-        # than hidden.
+        # program shares the launcher's session, where a group signal reaches the container. Which path ran is reported on the launcher's own stdout,
+        # not inferred from the file it writes — a claim that varies by image, reported
+        # rather than hidden.
         "if command -v setsid >/dev/null 2>&1; then\n"
         f"  setsid nohup sh -c {_quote(record_session + inner)} >/dev/null 2>&1 &\n"
         # On this branch only, and on the launcher's own stdout — which the guest cannot
@@ -983,12 +984,10 @@ async def dispatch_over_exec(
 
 @dataclass
 class _WhatTheLauncherSaid:
-    """Filled in once the launcher has run, read by the cleanup that outlives it.
+    """What the launcher reported, for the paths that run after the supervisor has it.
 
     `dispatch_over_exec` stops the program itself when anything other than a timeout leaves
-    the supervisor, and that path has no launcher result of its own — so without this it
-    signalled one pid on a guest where the whole group was available, and then reclaimed the
-    files that would have identified the rest.
+    the supervisor, and that path has no launcher result of its own.
     """
 
     made_a_session: bool = False
@@ -1182,9 +1181,7 @@ _Fate = SignalOutcome
 #: The private spelling of :data:`SignalReach`, for the plumbing that carries it.
 _Reach = SignalReach
 
-#: Said once, where a program is known to have been started and could not be stopped. Silence
-#: when the kill worked, because a stopped program is what a timeout is supposed to mean and a
-#: caller reading "and was stopped" on every expiry learns nothing from it.
+#: Said once, where a program is known to have been started.
 #:
 #: Three, because the honest claim differs: a session takes what the program spawned with
 #: it, a lone pid leaves those running, and a signal that could not be sent leaves

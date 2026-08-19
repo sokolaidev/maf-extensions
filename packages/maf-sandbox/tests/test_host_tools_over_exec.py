@@ -2747,6 +2747,28 @@ class TestStoppingTakesTheChildrenWhereItCan:
             _run(guest, HostToolRun(_registry()), timeout=0.2)
         assert guest.kills == ["kill -KILL 4242 2>/dev/null"], guest.kills
 
+    def test_the_reach_attribute_carries_the_group(self):
+        """The machine-readable half. A host deciding whether it still has to dispose
+        the sandbox reads this, not the sentence.
+        """
+        guest = _GuestThatRecordsTheKill([], finish=False, pid="4242", session="4200")
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert expired.value.reach == "group"
+
+    def test_the_reach_attribute_carries_a_lone_pid(self):
+        guest = _GuestThatRecordsTheKill([], finish=False, pid="4242", session=None)
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert expired.value.reach == "program"
+
+    def test_reach_is_nothing_when_no_signal_was_sent(self):
+        """The default, and what an unsignalled program is owed: no claim at all."""
+        guest = _GuestThatRecordsTheKill([], finish=False, pid=None)
+        with pytest.raises(SandboxProgramTimeout) as expired:
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+        assert expired.value.reach == "nothing"
+
     def test_the_message_says_the_group_went(self):
         guest = _GuestThatRecordsTheKill([], finish=False, pid="4242", session="4200")
         with pytest.raises(SandboxProgramTimeout) as expired:
@@ -3724,10 +3746,8 @@ class TestWhatEveryExitPathOwesTheRun:
     def test_a_failed_run_still_stops_the_group_the_launcher_made(self):
         """The emergency stop is the one path with no launcher result of its own.
 
-        Reading the branch from the launcher's stdout put that knowledge inside the
-        supervisor, and this path runs after it. Left there, a backend failing mid-run on a
-        guest with `setsid` signalled one pid and then reclaimed the files that would have
-        identified the children.
+        It runs after the supervisor, so it needs the launcher's verdict carried out to it;
+        the reclaim on the next line removes the files that would identify the children.
         """
 
         class _DiesMidRun(_GuestThatRecordsTheKill):
