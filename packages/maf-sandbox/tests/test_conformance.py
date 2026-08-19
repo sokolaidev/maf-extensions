@@ -38,6 +38,7 @@ from maf_sandbox.conformance import (
     assert_files_delete_conformance,
     assert_files_in_conformance,
     assert_files_out_conformance,
+    measure_files_delete_probes,
     run_exec_probes,
     run_files_delete_probes,
     run_files_in_probes,
@@ -715,6 +716,49 @@ class TestFilesDeleteConformance:
         )
         assert failures["a-link-is-removed-never-followed"] is not None
 
+    def test_a_recursive_removal_that_follows_interior_links_fails_the_interior_probe(self):
+        """The escape one level down: the tree goes, and the target outside goes with it.
+
+        #452 named this as the one thing it could not verify from a workstation — how a
+        service-side recursive delete treats links *inside* the tree — which is exactly why
+        the probe exists: a backend can pass every other delete probe and still do it, because
+        the only link the rest of the suite plants is the removal target itself.
+        """
+
+        class _FollowingInteriorLinks(_SimulatedGuest):
+            async def remove(self, path, *, working_directory, recursive=False):
+                base = posixpath.normpath(working_directory)
+                guest = posixpath.normpath(posixpath.join(base, path))
+                if not recursive:
+                    await super().remove(
+                        path, working_directory=working_directory, recursive=recursive
+                    )
+                    return
+                # The recursive delete that resolves every link under the tree: the
+                # service-side behaviour the probe hunts, where an interior link's target is
+                # deleted from outside the working directory.
+                prefix = guest.rstrip("/") + "/"
+                for stored in sorted(
+                    s for s in (*self.contents, *self.symlinks) if s.startswith(prefix)
+                ):
+                    resolved = stored
+                    while resolved in self.symlinks:
+                        resolved = self.symlinks[resolved]
+                    self.contents.pop(stored, None)
+                    self.symlinks.pop(stored, None)
+                    self.directories.discard(stored)
+                    self.contents.pop(resolved, None)  # the escape: the target goes too
+
+        failures = _sim_results(
+            _SimSubject(
+                sandbox=_FollowingInteriorLinks(), working_directory=_WORK, capabilities=_EVERYTHING
+            ),
+            run_files_delete_probes,
+        )
+        assert failures["a-link-inside-a-recursive-removal-is-unlinked-not-followed"] is not None
+        assert failures["a-link-is-removed-never-followed"] is None
+        assert failures["recursive-removes-the-tree"] is None
+
     def test_a_removal_that_raises_on_missing_fails_the_idempotence_probe(self):
         class _Strict(_SimulatedGuest):
             async def remove(self, path, *, working_directory, recursive=False):
@@ -745,6 +789,56 @@ class TestFilesDeleteConformance:
         )
         with pytest.raises(ValueError, match="declares no FILES_DELETE"):
             asyncio.run(run_files_delete_probes(subject))
+
+    def test_measurement_runs_the_probes_without_the_gate(self):
+        """The undeclared subject the gated suites refuse is the one measurement exists for.
+
+        A capability may only be declared once its mechanism passes the probes, so the probes
+        have to be runnable against an undeclared mechanism or the gate can never open (#450:
+        the ACAS withholding would otherwise be permanent — nothing could ever measure it).
+        """
+        subject = _SimSubject(
+            sandbox=_SimulatedGuest(),
+            working_directory=_WORK,
+            capabilities=_EVERYTHING - {Capability.FILES_DELETE},
+        )
+        results = asyncio.run(measure_files_delete_probes(subject))
+        assert [r.probe.name for r in results] == [p.name for p in FILES_DELETE_PROBES]
+        assert all(r.skipped is None for r in results)
+        assert all(r.failure is None for r in results)
+
+    def test_measurement_reports_each_findings_name(self):
+        """A failing mechanism is a finding, not a broken promise — and it stays a list.
+
+        The ACAS refusal of a link reads as one failed probe here, with what it raised, which
+        is the artefact #435 and #438 argue over: whether an unreclaimed run is transient
+        (guest refusing a removal — exceptional path, callback) or structural (backend cannot
+        delete — capability gap, router refuses up front).
+        """
+
+        class _RefusesLinks(_SimulatedGuest):
+            async def remove(self, path, *, working_directory, recursive=False):
+                base = posixpath.normpath(working_directory)
+                guest = posixpath.normpath(posixpath.join(base, path))
+                for stored in self.symlinks:
+                    if stored == guest or stored.startswith(guest.rstrip("/") + "/"):
+                        raise ValueError(
+                            f"refusing to remove {path!r}: it is a link, and whether this "
+                            "service unlinks one or follows it on a delete is unverified"
+                        )
+                await super().remove(path, working_directory=working_directory, recursive=recursive)
+
+        subject = _SimSubject(
+            sandbox=_RefusesLinks(),
+            working_directory=_WORK,
+            capabilities=_EVERYTHING - {Capability.FILES_DELETE},
+        )
+        results = asyncio.run(measure_files_delete_probes(subject))
+        by_name = {r.probe.name: r.failure for r in results}
+        assert by_name["a-link-is-removed-never-followed"] is not None
+        assert "ValueError" in by_name["a-link-is-removed-never-followed"]
+        assert by_name["a-removal-removes"] is None
+        assert by_name["recursive-removes-the-tree"] is None
 
     def test_the_shipped_fake_answers_the_delete_probes_too(self):
         """The fake every kind's tests run against discharges the delete contract as well."""

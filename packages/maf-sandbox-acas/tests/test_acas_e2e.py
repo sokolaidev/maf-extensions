@@ -57,12 +57,13 @@ from maf_sandbox import (
     launcher_script,
 )
 from maf_sandbox.conformance import (
+    FILES_DELETE_PROBES,
     FILES_OUT_PROBES,
     PosixGuestSubject,
     assert_exec_conformance,
-    assert_files_delete_conformance,
     assert_files_in_conformance,
     assert_files_out_conformance,
+    measure_files_delete_probes,
 )
 
 from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
@@ -261,15 +262,17 @@ def files_in_results(live):
 
 
 @pytest.fixture(scope="module")
-def files_delete_results(live):
-    """One FILES_DELETE run — every probe skipped, because this backend declares neither half.
+def files_delete_measurement(live):
+    """The FILES_DELETE probes, measured against the mechanism this backend withholds.
 
-    The call is the wiring the coverage test looks for; the skip is the honest answer. The
-    capability is withheld until the live suite measures the service's behaviour on a link
-    (#438), and a suite that failed here instead of skipping would be asserting a contract
-    this backend never claimed.
+    `measure_files_delete_probes` runs every probe with no declaration gate and no verdict:
+    a failure is a finding about the mechanism, not a broken promise. This is what breaks the
+    loop the withholding was stuck in — the capability is undeclared because nothing has
+    measured the service, and nothing could measure it because every gated suite refuses an
+    undeclared subject (#450). The measurement's verdict is the artefact #435 and #438 argue
+    over: read transient-or-structural into its results before choosing a callback layer.
     """
-    return live.run(assert_files_delete_conformance(_subject(live)))
+    return live.run(measure_files_delete_probes(_subject(live)))
 
 
 class TestFilesOutAgainstTheRealService:
@@ -365,22 +368,55 @@ class TestFilesInAgainstTheRealService:
 
 
 class TestFilesDeleteAgainstTheRealService:
-    """The removal suite, called and skipped — the capability this backend withholds.
+    """The removal probes, measured — the capability this backend withholds, and why.
 
-    `_ConformanceSubject`-shaped honesty, in reverse: the call is written because a backend
-    that gains the capability should inherit the probes the moment it declares it, and the
-    skip is asserted because a run that silently *stopped* skipping would mean the capability
-    arrived without the probes being run against the service first.
+    This backend refuses a link where the protocol says a link is removed and never followed,
+    so `a-link-is-removed-never-followed` is *expected to fail* here with the ValueError the
+    offline `TestRemove` pins: the honest measurement, and possibly the permanent answer —
+    under the rule as written, this service may never declare FILES_DELETE. That is a useful
+    outcome rather than a blocked one, and this is where it gets decided on evidence.
+
+    What the other probes say matters just as much, because their verdict is the
+    transient-or-structural question #435 and #438 argue over without data: a service that
+    deletes files and trees cleanly but refuses links is *structural* — a capability gap whose
+    answer is the router refusing the spec up front through `requires` — while one that
+    intermittently fails deletions is *transient*, an exceptional path, where the callback
+    belongs. Read the results below into that argument before choosing a layer.
     """
 
-    def test_every_delete_probe_reports_its_skip(self, files_delete_results):
-        results = files_delete_results
-        assert results, "the FILES_DELETE conformance run returned no results"
-        assert all(result.skipped is not None for result in results), (
-            "a delete probe ran against a backend that declares no FILES_DELETE — either the "
-            "capability arrived (run the suite for real, here) or the gate is wrong"
+    def test_every_delete_probe_reached_a_verdict(self, files_delete_measurement):
+        """No skips and no exceptions in the runner itself: every probe answered, one way or the other."""
+        results = files_delete_measurement
+        assert results, "the FILES_DELETE measurement returned no results"
+        assert all(result.skipped is None for result in results)
+        assert len(results) == len(FILES_DELETE_PROBES)
+
+    def test_the_mechanism_deletes_what_the_capability_promises(self, files_delete_measurement):
+        """The probes that pass are the mechanism working; the ones that fail are the record.
+
+        Expected today, from the offline suite's pins: the final-component link probe fails
+        with this backend's ValueError refusal. The **interior** link probe is the genuinely
+        unknown one — #452 named it as unverifiable from a workstation, this backend's
+        stat-based refusal cannot see inside a recursive tree, and what the service's
+        `delete_file(recursive=True)` does to a link it finds there is what this run measures.
+        Whatever column it lands in, name it in the PR that lands this, citing this run: it is
+        the answer to whether this service can ever unlink-on-delete, and half of the
+        transient-or-structural reading below.
+        """
+        results = files_delete_measurement
+        failed = {r.probe.name: r.failure for r in results if r.failure is not None}
+        passed = {r.probe.name for r in results if r.failure is None}
+        # The refusal the offline TestRemove pins: an expected failure, not a regression.
+        assert failed.get("a-link-is-removed-never-followed") is not None, (
+            "this backend refuses a link on remove — the offline TestRemove pins it. A pass "
+            "here means the service unlinked rather than followed, and the capability "
+            "conversation changes: say so, citing this run."
         )
-        assert all("files_delete" in (result.skipped or "") for result in results)
+        assert "ValueError" in failed["a-link-is-removed-never-followed"]
+        # What the mechanism does do, on the service's own word:
+        assert "a-removal-removes" in passed
+        assert "a-missing-path-is-success" in passed
+        assert "recursive-removes-the-tree" in passed
 
 
 class TestWhatOnlyTheServiceCanSay:

@@ -32,6 +32,9 @@ SUITES = (
     "assert_exec_conformance",
     "assert_files_delete_conformance",
 )
+#: The measurement entry point that stands in for the FILES_DELETE assert when a backend
+#: withholds the capability: same probes, no gate, no verdict — findings rather than promises.
+MEASURE = "measure_files_delete_probes"
 SUITE_MODULE = "maf_sandbox.conformance"
 
 #: What serving `FILES_OUT` takes. `list_dir` belongs to `FILES_LIST` and is not required here —
@@ -257,17 +260,22 @@ def test_every_backend_answers_the_suites_it_cannot_opt_out_of(package: Path):
     """FILES_IN, EXEC and FILES_DELETE: the capabilities every sandbox backend declares or refuses.
 
     FILES_OUT is gated on serving the pull surface; these three are not, because a backend that
-    declares none of them is not a backend. FILES_DELETE is included deliberately: the call
-    asserts the skip for the backends that withhold it, and the wiring check proves the call is
-    written — which is all it can prove, and what a third backend shipping without any call
-    would go green on (#450).
+    declares none of them is not a backend. FILES_DELETE admits two answers: the assert for a
+    backend that declares the capability, and `measure_files_delete_probes` for one that
+    withholds it — the measurement is how a withheld capability can ever be evidenced into or
+    out of declaration (#450: a gate nothing can run against an undeclared mechanism is a gate
+    that never opens). The wiring check proves a call is written either way, which is all it
+    can prove; what the call found is each suite's own business.
     """
     for suite in SUITES[1:]:
-        assert _calls_the_suite(package / "tests", suite), (
+        assert _calls_the_suite(package / "tests", suite) or (
+            suite == SUITES[3] and _calls_the_suite(package / "tests", MEASURE)
+        ), (
             f"nothing in {package.name}'s tests imports {suite} from {SUITE_MODULE} and calls "
             "it. A backend declaring none of the capabilities a suite probes is not a backend, "
-            "and one that withholds one answers it with an asserted skip — but neither is "
-            "checkable from a call that was never written. #450 is what this silence cost."
+            "and one that withholds one answers it with an asserted skip or a measurement — "
+            "but neither is checkable from a call that was never written. #450 is what this "
+            "silence cost."
         )
 
 

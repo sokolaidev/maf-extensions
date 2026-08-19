@@ -58,6 +58,7 @@ __all__ = [
     "assert_files_delete_conformance",
     "assert_files_in_conformance",
     "assert_files_out_conformance",
+    "measure_files_delete_probes",
     "plant_layout",
     "run_exec_probes",
     "run_files_delete_probes",
@@ -894,6 +895,8 @@ async def assert_exec_conformance(subject: ConformanceSubject) -> tuple[ProbeRes
 
 
 async def _probe_a_removal_removes(subject: ConformanceSubject, paths: ConformancePaths) -> None:
+    await subject.sandbox.write_file(f"{paths.work}/doomed.txt", b"to be removed\n")
+    await subject.sandbox.remove("doomed.txt", working_directory=subject.working_directory)
     result = await subject.sandbox.exec(
         ["test", "-e", "doomed.txt"], working_directory=subject.working_directory, timeout=60
     )
@@ -916,6 +919,9 @@ async def _probe_a_missing_path_is_success(
 async def _probe_a_link_is_removed_never_followed(
     subject: ConformanceSubject, paths: ConformancePaths
 ) -> None:
+    await subject.plant_file(f"{paths.outside}/target.txt", b"outside\n")
+    await subject.plant_symlink(f"{paths.work}/link-out", f"{paths.outside}/target.txt")
+    await subject.sandbox.remove("link-out", working_directory=subject.working_directory)
     link = await subject.sandbox.exec(
         ["test", "-e", "link-out"], working_directory=subject.working_directory, timeout=60
     )
@@ -933,6 +939,8 @@ async def _probe_a_link_is_removed_never_followed(
 async def _probe_a_path_through_a_linked_parent_is_refused(
     subject: ConformanceSubject, paths: ConformancePaths
 ) -> None:
+    await subject.plant_file(f"{paths.outside}/target.txt", b"outside\n")
+    await subject.plant_symlink(paths.linked_directory, paths.outside)
     await _refused_with(
         ValueError,
         "removing through a linked parent",
@@ -943,6 +951,7 @@ async def _probe_a_path_through_a_linked_parent_is_refused(
 async def _probe_a_directory_needs_recursive(
     subject: ConformanceSubject, paths: ConformancePaths
 ) -> None:
+    await subject.plant_file(f"{paths.work}/dir/keeps.txt", b"a directory\n")
     await _refused_with(
         OSError,
         "removing a directory without recursive",
@@ -953,12 +962,52 @@ async def _probe_a_directory_needs_recursive(
 async def _probe_recursive_removes_the_tree(
     subject: ConformanceSubject, paths: ConformancePaths
 ) -> None:
+    await subject.plant_file(f"{paths.work}/tree/leaf.txt", b"in the tree\n")
+    await subject.sandbox.remove(
+        "tree", working_directory=subject.working_directory, recursive=True
+    )
     for path in ("tree", "tree/leaf.txt"):
         result = await subject.sandbox.exec(
             ["test", "-e", path], working_directory=subject.working_directory, timeout=60
         )
         if result.exit_code == 0:
             raise AssertionError(f"{path!r} survived a recursive removal of the tree")
+
+
+async def _probe_a_link_inside_a_recursive_removal_is_unlinked_not_followed(
+    subject: ConformanceSubject, paths: ConformancePaths
+) -> None:
+    """The escape one level down from the link-target probe, and the one #452 could not verify.
+
+    `recursive-removes-the-tree` proves the tree goes; nothing else proves a link *inside* it
+    was unlinked rather than resolved. A service-side recursive delete that follows interior
+    links deletes targets outside the working directory — the same escape as the final-component
+    one, reachable only through this shape, because the only other link the suite plants is the
+    removal target itself.
+    """
+    await subject.plant_file(f"{paths.outside}/interior-target.txt", b"outside the tree\n")
+    await subject.plant_file(f"{paths.work}/linked-tree/leaf.txt", b"in the tree\n")
+    await subject.plant_symlink(
+        f"{paths.work}/linked-tree/inside-link", f"{paths.outside}/interior-target.txt"
+    )
+    await subject.sandbox.remove(
+        "linked-tree", working_directory=subject.working_directory, recursive=True
+    )
+    tree = await subject.sandbox.exec(
+        ["test", "-e", "linked-tree"], working_directory=subject.working_directory, timeout=60
+    )
+    if tree.exit_code == 0:
+        raise AssertionError("the recursively removed tree is still there")
+    target = await subject.sandbox.exec(
+        ["test", "-f", "../work-outside/interior-target.txt"],
+        working_directory=subject.working_directory,
+        timeout=60,
+    )
+    if target.exit_code != 0:
+        raise AssertionError(
+            "the target of a link inside the recursively removed tree went with it: the "
+            "removal followed an interior link, deleting a file outside the working directory"
+        )
 
 
 async def _probe_the_working_directory_is_refused(
@@ -974,6 +1023,7 @@ async def _probe_the_working_directory_is_refused(
 async def _probe_a_path_outside_is_refused(
     subject: ConformanceSubject, paths: ConformancePaths
 ) -> None:
+    await subject.plant_file(f"{paths.outside}/target.txt", b"outside\n")
     await _refused_with(
         ValueError,
         "removing a path outside the working directory",
@@ -1036,6 +1086,17 @@ FILES_DELETE_PROBES: tuple[Probe, ...] = (
         run=_probe_recursive_removes_the_tree,
     ),
     Probe(
+        name="a-link-inside-a-recursive-removal-is-unlinked-not-followed",
+        why=(
+            "the escape the tree probe cannot see: a service-side recursive delete that "
+            "resolves an interior link deletes a target outside the working directory, and no "
+            "byte has to come back for the damage to be done. The only link elsewhere in this "
+            "suite is the removal target itself, so this shape is the one that reaches it."
+        ),
+        requires=frozenset({Capability.FILES_DELETE}),
+        run=_probe_a_link_inside_a_recursive_removal_is_unlinked_not_followed,
+    ),
+    Probe(
         name="the-working-directory-is-refused",
         why=(
             "the working directory is the confinement root; a workload that removes it takes "
@@ -1054,22 +1115,14 @@ FILES_DELETE_PROBES: tuple[Probe, ...] = (
 
 
 async def _plant_files_delete_layout(subject: ConformanceSubject) -> ConformancePaths:
-    """Build the layout the delete probes attack, then delete what the probes name."""
-    paths = ConformancePaths.under(subject.working_directory)
-    await subject.plant_file(f"{paths.work}/doomed.txt", b"to be removed\n")
-    await subject.plant_file(f"{paths.outside}/target.txt", b"outside\n")
-    await subject.plant_file(f"{paths.work}/dir/keeps.txt", b"a directory\n")
-    await subject.plant_file(f"{paths.work}/tree/leaf.txt", b"in the tree\n")
-    await subject.plant_symlink(f"{paths.work}/link-out", f"{paths.outside}/target.txt")
-    await subject.plant_symlink(paths.linked_directory, paths.outside)
-    # The removals the probes verify: one file, one link, one tree. Refusal probes attack what
-    # is left.
-    await subject.sandbox.remove("doomed.txt", working_directory=subject.working_directory)
-    await subject.sandbox.remove("link-out", working_directory=subject.working_directory)
-    await subject.sandbox.remove(
-        "tree", working_directory=subject.working_directory, recursive=True
-    )
-    return paths
+    """Derive the paths the delete probes share. Each probe plants and removes its own fixtures.
+
+    Self-contained probes are what make :func:`measure_files_delete_probes` possible: a probe
+    that planted nothing and verified a removal made elsewhere would report on state it did
+    not create, and a measurement run — which may stop at the first refusal — could not run
+    the probes that follow it.
+    """
+    return ConformancePaths.under(subject.working_directory)
 
 
 async def run_files_delete_probes(subject: ConformanceSubject) -> tuple[ProbeResult, ...]:
@@ -1084,6 +1137,37 @@ async def assert_files_delete_conformance(
 ) -> tuple[ProbeResult, ...]:
     """Run the FILES_DELETE probes and raise :class:`ConformanceFailure` if any failed."""
     return _assert_conformance(await run_files_delete_probes(subject), "FILES_DELETE")
+
+
+async def measure_files_delete_probes(subject: ConformanceSubject) -> tuple[ProbeResult, ...]:
+    """Run every FILES_DELETE probe with no declaration gate and no verdict.
+
+    Measurement, not conformance: the entry point for a backend that **implements** ``remove``
+    and does not **declare** :data:`~maf_sandbox.Capability.FILES_DELETE` — where a failure is
+    a finding about the backend's mechanism rather than a broken promise, and the question is
+    *what the probes say*, not *whether they pass*. A declared backend has no business here;
+    ``assert_files_delete_conformance`` is the contract.
+
+    The distinction exists because a capability is how the router refuses a spec up front, and
+    a capability may only be declared once its mechanism passes these probes — so someone has
+    to be able to run the probes against an undeclared mechanism or the gate can never open.
+    The result is the citable artefact: each probe passed, failed (with what it found), or
+    raised (with what the mechanism answered).
+    """
+    paths = ConformancePaths.under(subject.working_directory)
+    results: list[ProbeResult] = []
+    for probe in FILES_DELETE_PROBES:
+        try:
+            await probe.run(subject, paths)
+        except AssertionError as failed:
+            results.append(ProbeResult(probe=probe, failure=str(failed)))
+        except Exception as raised:
+            results.append(
+                ProbeResult(probe=probe, failure=f"raised {type(raised).__name__}: {raised}")
+            )
+        else:
+            results.append(ProbeResult(probe=probe))
+    return tuple(results)
 
 
 # ---------------------------------------------------------------------------
