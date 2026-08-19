@@ -26,7 +26,7 @@ how to import the sandbox image into your sandbox group.
 #     "agent-framework-openai",
 #     "maf-sandbox-acas",
 #     "maf-sandbox-codeact",
-#     "maf-sandbox>=0.16",
+#     "maf-sandbox>=0.17",
 # ]
 # ///
 
