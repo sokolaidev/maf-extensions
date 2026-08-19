@@ -372,13 +372,9 @@ class _AcasSandbox:
         except TimeoutError:
             raise
         except Exception as refused:
-            # The protocol documents `OSError` here, and `azure.core` raises its own hierarchy —
-            # `HttpResponseError` is no `OSError`, so a caller writing the documented
-            # `except OSError` around its cleanup would let this escape a `finally` over the
-            # failure it was already reporting. Translated like `read_file` and `list_dir` do.
-            # Chained rather than interpolated: `error_detail` enriches with the response
-            # body, and this message is raised at a caller rather than logged — the boundary
-            # `TestErrorDetailAdoption` exists to hold. The cause carries the detail.
+            # `azure.core` raises its own hierarchy, and `HttpResponseError` is no `OSError`.
+            # Chained rather than interpolated: `error_detail` enriches with the response body,
+            # and this one is raised at a caller rather than logged.
             raise OSError(f"could not remove {path}: {type(refused).__name__}") from refused
 
     async def _stat_guest(self, guest: str, relative: str) -> SandboxEntry | None:

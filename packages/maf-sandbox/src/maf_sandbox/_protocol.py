@@ -480,6 +480,12 @@ class Sandbox(Protocol):
     :data:`Capability.FILES_OUT`, and the router's capability match refuses a backend that
     cannot serve it — so no kind has to feature-detect here.
 
+    :meth:`remove` is gated by :data:`Capability.FILES_DELETE` and is **not** covered by that
+    last sentence: no spec field implies a removal, so a kind that cleans up must put the
+    capability in ``requires`` itself.  Omit it and the router may hand back a backend whose
+    ``remove`` raises :class:`NotImplementedError` — from a ``finally``, over whatever the run
+    was already reporting.
+
     ``working_directory`` is a parameter on those three exactly as it is on :meth:`exec`,
     because no sandbox object knows the spec's ``work_dir``: it arrives per call or not at all,
     and a pull surface without it would assign the confinement duty to a layer with no way to
@@ -576,6 +582,8 @@ class Sandbox(Protocol):
             ValueError: A path outside ``working_directory``, one reached through a link, or
                 the working directory itself — the confinement refusal the pull surface makes.
             OSError: A directory without ``recursive``, or a removal the guest refused.
+            NotImplementedError: The backend does not declare
+                :data:`Capability.FILES_DELETE`. Require it rather than catching this.
         """
         ...
 
