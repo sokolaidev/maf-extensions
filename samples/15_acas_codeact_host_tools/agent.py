@@ -102,7 +102,7 @@ DIRECT_THREAD = conversation_id("15-host-tools-direct")
 
 #: Sample 14's image, available to the sandbox group as a disk image. The transport's launcher
 #: is POSIX shell and its shim is Python, so the guest needs `sh`, `nohup`, `mkdir`, `mv`,
-#: `printf` and `python3` — a distroless or Windows image cannot serve this whatever it
+#: `printf`, `rm`, `kill` and `python3`, and uses `setsid` where it is there — a distroless or Windows image cannot serve this whatever it
 #: declares.
 CODEACT_IMAGE = "mcr.microsoft.com/devcontainers/python:3.13-bookworm"
 
