@@ -78,12 +78,30 @@ SPEC = (
 #: brief describes that file: the diagnostics stay comparable across all five.
 TRACKED_FAULTS = ("no-unused-params", "BCP035")
 
+#: Where each rule's diagnostic names what it is about. A rule id alone cannot tell two
+#: instances apart, so a turn that added the missing `sku` and left `location` missing reported
+#: `BCP035` before and after and scored as no repair at all (#432).
+#:
+#: Each pattern captures the segment of the message holding the names; the names come out of it
+#: quoted. A message that matches neither leaves the fault as its rule id, which is what this
+#: sample counted before.
+FAULT_TARGETS = {
+    # Parameter "environmentName" is declared but never used.
+    "no-unused-params": re.compile(r'\bparameter\s+("[^"]+")', re.IGNORECASE),
+    # The specified "resource" declaration is missing the following required properties: "sku".
+    "BCP035": re.compile(r"required propert(?:y|ies):\s*([^.]+)", re.IGNORECASE),
+}
+
 #: The tool the model is expected to reach for, and the one this sample counts calls to.
 BICEP_TOOL = "bicep_validate"
 
 #: How `_run_phase` renders a compile: one line per phase, at the start of the line. Both
 #: must be present for a result to be one the sandbox produced.
 _PHASES = re.compile(r"^build\(.*^lint\(", re.MULTILINE | re.DOTALL)
+
+#: One rendered diagnostic — `  [error] no-unused-params @ main.bicep:3: Parameter "x" ...` —
+#: as its rule and everything after the `@`. `[ \t]` and not `\s`, which crosses the newline.
+_DIAGNOSTIC = re.compile(r"^[ \t]*\[\w+\][ \t]+(\S+)[ \t]+@[ \t]*(.*)$", re.MULTILINE)
 
 #: What the brief asks for by name, and the one thing no other signal here protects:
 #: emptying the file changes it, reports no tracked fault, and compiles clean. Patterns rather
@@ -143,19 +161,35 @@ def counted(ids: list[str]) -> str:
     return f"{len(ids)} ({', '.join(ids) or 'none'})"
 
 
+def named(rule: str, message: str) -> str:
+    """A fault as ``rule(target)`` — the rule alone where the message names no target."""
+    pattern = FAULT_TARGETS.get(rule)
+    found = pattern.search(message) if pattern else None
+    targets = sorted(set(re.findall(r'"([^"]+)"', found.group(1)))) if found else []
+    return f"{rule}({', '.join(targets)})" if targets else rule
+
+
 def faults_left(diagnostics: str) -> list[str]:
-    """Which of the two tracked faults the **compiler** still reports in ``diagnostics``.
+    """Which tracked faults the **compiler** still reports in ``diagnostics``, each with target.
 
     Called twice: once on what the compiler told the model about the file it just wrote, and
-    once on the program's own compile of the file turn 2 left. The difference between the two is
-    what was fixed. Read from the diagnostics and not the source, because `no-unused-params` is
+    once on the program's own compile of the file turn 2 left. What is in one and not the other
+    is what changed. Read from the diagnostics and not the source, because `no-unused-params` is
     satisfied by *using* `environmentName` as well as by deleting it.
+
+    By target, not by rule: the two compiles are compared element by element, and one `BCP035`
+    is not another (#432). Both phases report the same diagnostics, hence the dedupe.
 
     `use-recent-api-versions` is deliberately untracked: it fires on the age of the API version,
     so what counts as fixed would move with the calendar. Anything else the compiler reports is
     a fault the model introduced, which `scripts/check_live_fix_loop_sample.py` rejects.
     """
-    return [rule for rule in TRACKED_FAULTS if rule.lower() in diagnostics.lower()]
+    faults: list[str] = []
+    for reported, message in _DIAGNOSTIC.findall(diagnostics):
+        for rule in TRACKED_FAULTS:
+            if reported.lower() == rule.lower() and (fault := named(rule, message)) not in faults:
+                faults.append(fault)
+    return faults
 
 
 def work_missing(source: str) -> list[str]:
@@ -389,11 +423,15 @@ async def run() -> int:
 
         # The work product, and the two questions the compiler cannot answer: did turn 1 write a
         # file at all, and did turn 2 change it. A model that edited nothing still compiles.
-        # `fixed` is the difference between the two compiles, so it counts what *this run* did
-        # rather than assuming the file arrived with both faults in it.
+        #
+        # Three lists, because the compiles are compared element by element: what went, what
+        # stayed, and what turn 2 reported for the first time. Differences, so they count what
+        # *this run* did rather than assuming the file arrived with both faults in it.
         source = await read_or_empty(store, BICEP_FILE)
-        remaining = faults_left(verdict)
-        fixed = [rule for rule in as_authored if rule not in remaining]
+        final = faults_left(verdict)
+        fixed = [fault for fault in as_authored if fault not in final]
+        remaining = [fault for fault in final if fault in as_authored]
+        introduced = [fault for fault in final if fault not in as_authored]
 
         missing = work_missing(source)
         silenced = suppressed(source)
@@ -408,8 +446,9 @@ async def run() -> int:
             f"{MEASURED}tracked rules suppressed: {len(silenced)} — {'; '.join(silenced) or 'none'}"
         )
         print(f"{MEASURED}faults fixed:       {len(fixed)} — {'; '.join(fixed) or 'none'}")
+        print(f"{MEASURED}faults remaining:   {len(remaining)} — {'; '.join(remaining) or 'none'}")
         print(
-            f"{MEASURED}faults remaining:   {len(remaining)} — {'; '.join(remaining) or 'none'}\n"
+            f"{MEASURED}faults introduced:  {len(introduced)} — {'; '.join(introduced) or 'none'}\n"
         )
     finally:
         disposed = await router.dispose_scope(SCOPE, THREAD_ID)
