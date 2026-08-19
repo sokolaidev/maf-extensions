@@ -718,8 +718,25 @@ class TestWhichHalfFailedIsInTheExitStatus:
     def test_a_healthy_run_exits_zero(self, tmp_path):
         assert self._status(tmp_path, _HEALTHY) == 0
 
-    def test_a_fix_turn_that_did_not_converge_asks_for_another_attempt(self, tmp_path):
+    def test_a_repair_that_did_not_converge_asks_for_another_attempt(self, tmp_path):
         assert self._status(tmp_path, _SWAPPED) == check.MODEL_DID_NOT_CONVERGE
+
+    def test_turn_1_counts_as_the_model_s_half_as_much_as_turn_2(self, tmp_path):
+        """Both turns are one model doing open-ended work, so both earn the second loop.
+
+        Turn 2 repaired the file here; turn 1's own prose left a diagnostic out. Nothing
+        that speaks about status 3 may name the fix turn alone.
+        """
+        quiet = _HEALTHY.replace("1. `no-unused-params` — error — line 3", "1. an error on line 3")
+        assert quiet != _HEALTHY
+        assert self._status(tmp_path, quiet) == check.MODEL_DID_NOT_CONVERGE
+
+    def test_the_exit_line_does_not_blame_one_turn(self, tmp_path, capsys):
+        """The same claim the workflow makes, made here first — and it is read by people."""
+        self._status(tmp_path, _SWAPPED)
+        said = capsys.readouterr().err
+        assert "Exiting 3" in said, said
+        assert "fix turn's own" not in said, said
 
     def test_a_measurement_this_suite_owns_does_not(self, tmp_path):
         """Two containers is a broken sandbox, and a second model attempt cannot mend it."""

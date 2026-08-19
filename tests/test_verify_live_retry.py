@@ -56,8 +56,8 @@ def _stub(path: Path, body: str) -> None:
     path.chmod(0o755)
 
 
-def _run(tmp_path: Path, codes: list[int]) -> _Ran:
-    """Drive the real shell block, with the check returning ``codes`` in order."""
+def _run(tmp_path: Path, codes: list[int], *, sample_status: int = 0) -> _Ran:
+    """Drive the real shell block: the check returns ``codes``, the sample ``sample_status``."""
     binaries = tmp_path / "bin"
     binaries.mkdir()
     attempts = tmp_path / "attempts"
@@ -66,7 +66,7 @@ def _run(tmp_path: Path, codes: list[int]) -> _Ran:
     # redirect rather than an error.
     tally = attempts.as_posix()
 
-    _stub(binaries / "uv", f'printf "sample output\n"\nprintf "x" >> {tally}\nexit 0')
+    _stub(binaries / "uv", f'printf "sample output\n"\nprintf "x" >> {tally}\nexit {sample_status}')
     _stub(
         binaries / "python3",
         f"n=$(wc -c < {tally})\n"
@@ -142,6 +142,13 @@ class TestARetryIsNeverSilent:
         assert len(annotations) == 1, finished.stdout
         assert "attempt 1" in annotations[0]
 
+    def test_the_annotation_does_not_blame_one_turn(self, tmp_path: Path):
+        """Status 3 covers turn 1 as well, so naming the fix turn can be a false statement."""
+        finished = _run(tmp_path, [check.MODEL_DID_NOT_CONVERGE, 0])
+        note = next(line for line in finished.stdout.splitlines() if line.startswith("::warning"))
+        assert "fix turn" not in note, note
+        assert "model's half" in note, note
+
     def test_the_attempt_count_reaches_the_step_summary(self, tmp_path: Path):
         finished = _run(tmp_path, [check.MODEL_DID_NOT_CONVERGE, 0])
         assert "2 attempt(s)" in finished.summary, finished.summary
@@ -155,6 +162,35 @@ class TestARetryIsNeverSilent:
     def test_the_summary_is_written_even_when_the_job_fails(self, tmp_path: Path):
         finished = _run(tmp_path, [1])
         assert "exit 1 after 1 attempt(s)" in finished.summary, finished.summary
+
+
+@needs_bash
+class TestASampleThatNeverRanIsNotTheModelsHalf:
+    """A crash before the check measured nothing, so it neither retries nor goes unrecorded.
+
+    `set -euo pipefail` used to end the step at the pipe, taking the attempt count with it, and
+    the harness only ever made the sample succeed — so nothing here noticed.
+    """
+
+    def test_a_crashing_sample_is_not_retried(self, tmp_path: Path):
+        finished = _run(tmp_path, [0], sample_status=7)
+        assert finished.attempts == 1
+        assert finished.status == 7
+
+    def test_the_attempt_count_survives_it(self, tmp_path: Path):
+        finished = _run(tmp_path, [0], sample_status=7)
+        assert "exit 7 after 1 attempt(s)" in finished.summary, finished.summary
+
+    def test_the_run_says_the_sample_never_reached_the_check(self, tmp_path: Path):
+        finished = _run(tmp_path, [0], sample_status=7)
+        errors = [line for line in finished.stdout.splitlines() if line.startswith("::error")]
+        assert len(errors) == 1, finished.stdout
+        assert "exited 7" in errors[0], errors
+
+    def test_a_sample_exiting_the_retryable_status_still_does_not_retry(self, tmp_path: Path):
+        """3 from the *sample* is a crash that shares a number, not a verdict about a repair."""
+        finished = _run(tmp_path, [0], sample_status=check.MODEL_DID_NOT_CONVERGE)
+        assert finished.attempts == 1
 
 
 class TestTheTwoFilesAgreeOnWhatIsRetryable:

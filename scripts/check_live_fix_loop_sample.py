@@ -13,8 +13,9 @@ compiler found in the file turn 1 wrote — that is the claim being checked, so 
 words are the subject rather than the evidence.
 
 Exits non-zero listing every reason it failed, and says **which half** failed in the
-status: 3 when every failure was the fix turn's own, 1 when anything this suite owns was
-wrong too. `verify-live.yml` runs the loop a second time on 3 and on nothing else (#421).
+status: 3 when every failure was the model's own — either turn — and 1 when anything this
+suite owns was wrong too. `verify-live.yml` runs the loop a second time on 3 and on nothing
+else (#421).
 """
 
 from __future__ import annotations
@@ -157,8 +158,8 @@ class _TheModelsHalf(str):
     """Mark model-owned failures while retaining string behavior for existing callers."""
 
 
-#: What `main` exits when every failure was the fix turn's own. `verify-live.yml` runs the
-#: two-turn loop once more on this and on nothing else (#421); 1 stays what it always was —
+#: What `main` exits when every failure was the model's own, in either turn. `verify-live.yml`
+#: runs the loop once more on this and on nothing else (#421); 1 stays what it always was —
 #: something this suite owns is wrong, and another model attempt cannot mend it. A workflow that
 #: predates this sees a non-zero exit and fails, which is what it did before.
 MODEL_DID_NOT_CONVERGE = 3
@@ -632,7 +633,7 @@ def main(argv: list[str]) -> int:
         # log is the first consumer; `verify-live.yml` is the second (#421).
         if all(isinstance(reason, _TheModelsHalf) for reason in failures):
             print(
-                "  every failure above is the fix turn's own — the sandbox was reused, both "
+                "  every failure above is the model's own — the sandbox was reused, both "
                 "turns reached it, the file was written and changed, and nothing was left "
                 f"behind. Exiting {MODEL_DID_NOT_CONVERGE}: the loop is worth one more attempt.",
                 file=sys.stderr,
