@@ -489,8 +489,7 @@ class DockerSandboxBackend:
         # witness. `test_docker_e2e.py` measures it rather than assuming it.
         #
         # It is *not* a claim about the image. The shipped launcher wants `sh`, `nohup`,
-        # `printf`, `mv`, `mkdir`, `rm` and `kill` — and `setsid` where the image has it — and a
-        # kind wants whatever interpreter it names — codeact wants
+        # `printf` and `mv`, and a kind wants whatever interpreter it names — codeact wants
         # `python3` — none of which this backend chooses, since `spec.image` does. That gap is
         # #111's axis, and it is the same gap `EXEC` already has: a kind execing `python3`
         # against a distroless image fails inside the sandbox today.

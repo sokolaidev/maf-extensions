@@ -3360,6 +3360,28 @@ class TestWhatIsTooBroadToDelete:
         assert asyncio.run(reclaim_run(guest, broken, timeout=5.0)) is False
         assert guest.removals == [], f"a refused path still reached a command: {guest.commands}"
 
+    def test_a_session_outside_the_run_is_refused_like_every_other_stray(self):
+        """The newest path in the layout gets the check the older ones have.
+
+        Missing it, a hand-built layout could put the session file outside the run and this
+        would delete the run, answer `True`, and leave that file behind.
+        """
+        astray = GuestRunLayout(
+            directory="/maf-sandbox/work/run-1",
+            work="/maf-sandbox/work/run-1/work",
+            program="/maf-sandbox/work/run-1/host_tools/program.py",
+            shim="/maf-sandbox/work/run-1/host_tools/maf_host_tools.py",
+            launcher="/maf-sandbox/work/run-1/host_tools/run_program.sh",
+            calls="/maf-sandbox/work/run-1/host_tools/host_tool_calls",
+            output="/maf-sandbox/work/run-1/host_tools/program_output.txt",
+            exit_code="/maf-sandbox/work/run-1/host_tools/program_exit_code",
+            pid="/maf-sandbox/work/run-1/host_tools/program_pid",
+            session="/elsewhere/program_session",
+        )
+        guest = _GuestThatRecordsRemovals([], finish=True)
+        assert asyncio.run(reclaim_run(guest, astray, timeout=5.0)) is False
+        assert guest.removals == [], f"a stray session still reached a command: {guest.commands}"
+
 
 class TestRemovalAgainstARealShell:
     """A fake proves a command was issued; only a filesystem proves it removed anything."""

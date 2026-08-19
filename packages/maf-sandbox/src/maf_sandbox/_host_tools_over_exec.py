@@ -264,9 +264,10 @@ class SandboxProgramTimeout(TimeoutError):
     ``signal`` is what the transport managed to do about the program, and it is the thing to
     branch on — the message says the same in prose, but prose is not an interface:
 
-    - ``"sent"`` — a ``SIGKILL`` reached the pid. Not a promise the program is gone: the
-      kernel can discard it, the pid is read from a file the program can rewrite, and children
-      are never signalled.
+    - ``"sent"`` — ``kill`` accepted the target the launcher recorded. Not a promise the
+      program is gone: the kernel can discard the signal and the number is read from a file
+      the program can rewrite. ``reach`` says how wide it went — ``"group"`` for the
+      program's process group, ``"program"`` for a lone pid, which leaves its children.
     - ``"refused"`` — a pid was recorded and the signal did not land. Not evidence that a
       program is running: the same value covers a pid too malformed to aim at, a pid the host
       could not read, and a ``kill`` that reported no such process because the program had
@@ -1172,8 +1173,7 @@ async def _supervise(
 #: backend hiccup assert that a program is running.
 _Fate = SignalOutcome
 
-#: What a signal reached. Internal: the public vocabulary is :data:`SignalOutcome`, and
-#: this only decides which sentence the timeout carries.
+#: The private spelling of :data:`SignalReach`, for the plumbing that carries it.
 _Reach = SignalReach
 
 #: Said once, where a program is known to have been started and could not be stopped. Silence
@@ -1267,7 +1267,11 @@ async def reclaim_run(sandbox: Sandbox, layout: GuestRunLayout, *, timeout: floa
 
     Returns:
         Whether the ``rm`` succeeded — the guest's own status for one command, not a promise
-        the directory stays gone. A program's children are never signalled, so one that
+        the directory stays gone. A stop reaches the program's process group at most, so one
+        thing that survived it — a descendant that left the group, or a program on a guest
+        without `setsid` — can write a path back into existence after the removal returns.
+        Formerly stated as children never being signalled, which the group stop changed.
+        A survivor that
         outlived the run can write a path back into existence after the removal returns.
         ``False`` is the load-bearing answer: a data-retention failure rather than a tidiness
         one — nothing in the protocol deletes and ``acquire`` is get-or-create, so what is left
@@ -1291,6 +1295,7 @@ async def reclaim_run(sandbox: Sandbox, layout: GuestRunLayout, *, timeout: floa
             layout.output,
             layout.exit_code,
             layout.pid,
+            *([layout.session] if layout.session else []),
         )
         if guest_path_relative_to(path, layout.directory) is None
     ]
@@ -1422,7 +1427,7 @@ def _a_grace_from_now() -> float:
 async def _stop_the_program(
     sandbox: Sandbox, layout: GuestRunLayout, *, until: float, made_a_session: bool = False
 ) -> tuple[_Fate, _Reach]:
-    """``SIGKILL`` the program — its whole session where there is one — and say what went.
+    """``SIGKILL`` the program — its process group where there is one — and say what went.
 
     **Only call this once the exit marker is absent.** That narrows the window in which the
     number has already been recycled and does not close it — and the number is now a
