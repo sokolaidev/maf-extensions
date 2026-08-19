@@ -35,7 +35,10 @@ per call — serially, always (#439) — and the model writes none of the data i
 what comes back to it is the program's finished table.
 
 Act 5 is what the runs left in the guest, which #302 asks for and which is only half
-answerable: a fresh directory per run is real, and cleaning it up is #438.
+answerable, and the half that is moved: a fresh directory per run is real, and whether the
+traffic in it survives the run depends on which transport is installed — #434 gave the
+transport a cleanup for its own files, where before nothing in the protocol could delete
+anything (#438). Act 5 asks which it is running against and grades that one.
 
 Running this needs a real Azure subscription and **creates two billable sandboxes**, one per
 route — see this directory's README for the prerequisites, the environment variables, and why
@@ -83,8 +86,23 @@ from maf_sandbox import (
     sandbox_tool,
 )
 from maf_sandbox.maf import list_all_files, make_caller_context
+
+#: Whether the installed transport takes its own files back when a run ends. #434 gave it a
+#: cleanup and exported `reclaim_run` in the same release, so the import is the marker for
+#: both: before it, `dispatch_over_exec` left the request and response files in the guest and
+#: nothing in the protocol could remove them (#438); after it, the transport removes the
+#: directory it owns on every exit path. A sample runs against whatever is on PyPI, and act 5
+#: asks rather than assumes — the two are different measurements and both are correct.
+try:
+    from maf_sandbox import reclaim_run as _reclaim_run
+except ImportError:  # the published core before #434
+    _reclaim_run = None
+
 from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
 from maf_sandbox_codeact import codeact_sandbox_spec, make_codeact_tools
+
+TRANSPORT_RECLAIMS = _reclaim_run is not None
+RECLAIMED, KEPT = "reclaimed by the transport", "left for the sandbox (#438)"
 
 # Keyed by (scope, thread_id, agent_dir); constants here since this program serves one request.
 SCOPE = "samples"
@@ -96,9 +114,10 @@ AGENT_DIR = "analyst"
 #: sandbox would give the direct route's program a second road to the same data that this
 #: sample never measures, and the comparison rests on there being only one.
 #:
-#: Not fixable by cleaning up between the two: there is no way to delete a guest file (#438),
-#: which is the same gap act 5 reports. Two keys is what isolation looks like when deletion is
-#: not on the table.
+#: Two keys rather than a cleanup between them, and it stays two keys after #434. That gave
+#: the transport a cleanup for the files it owns, which closes this leak on the cores that have
+#: it — but a sample runs against whatever is published, and one sandbox would be right on the
+#: new transport and wrong on the old one. Two is right on both.
 #: And a run in the id, not only a route. `dispose_scope` selects on the labels the backend
 #: stamped and asks the *service* for them rather than this process, so an id two runs share
 #: is a delete they share — and the runs that verify a release are concurrent against one
@@ -719,16 +738,20 @@ async def _what_one_sandbox_holds(
 async def act_five_what_the_runs_left_behind(
     router: SandboxRouter, registry: HostToolRegistry
 ) -> None:
-    """The guest filesystem after both acts, which #302 asks for and #438 half-answers.
+    """The guest filesystem after both acts, which #302 asks for and the answer to which moved.
 
     Read with `list_dir`, which needs `Capability.FILES_LIST` — ACAS declares it and Docker does
     not, so this act is one of the reasons the sample belongs on this backend.
 
     **Both** sandboxes, because there are two: reporting only the dispatched one would leave the
-    direct route's runs out of a count the act claims is what the whole sample left behind, and
-    would make the contrast invisible — the direct route's sandbox holds run directories with no
-    transport files in them at all, which is what "nothing was left" looks like next to the
-    other.
+    direct route's runs out of a count the act claims is what the whole sample left behind.
+
+    What the counts mean depends on the transport, so the transport is named first. Where it
+    keeps its files, they are the run's traffic and the guest can be asked how many programs
+    dispatched. Where it reclaims them, zero is the cleanup working and the question has no
+    answer here — the run directories still say programs ran, and nothing in the guest says
+    which of them called out. That is a real loss of corroboration and the check says so in
+    the one place it now takes the model's word for the program count.
     """
     print("== 5. What the runs left in the guest ==\n")
     routes = ((DISPATCH_THREAD, registry), (DIRECT_THREAD, None))
@@ -738,6 +761,7 @@ async def act_five_what_the_runs_left_behind(
     left = sum(t[2] for t in totals)
     answered = sum(t[3] for t in totals)
 
+    print(f"{MEASURED}transport cleanup: {RECLAIMED if TRANSPORT_RECLAIMS else KEPT}")
     print(f"{MEASURED}run directories across both sandboxes: {directories}")
     print(f"{MEASURED}of those, runs that dispatched: {dispatched_runs}")
     print(f"{MEASURED}transport files left behind: {left}, of which answered calls: {answered}")
@@ -745,9 +769,19 @@ async def act_five_what_the_runs_left_behind(
     print("  A fresh directory per run is what keeps one run's traffic out of the next one's,")
     print("  and on a warm sandbox that is not hypothetical: every run above is still here.")
     print()
-    print("  Nothing deleted any of it. The transport has no way to — 'nothing in the protocol")
-    print("  deletes' — and no kind is obliged to try (#438). So the count above only ever goes")
-    print("  up until the sandbox is disposed of, which is the next line.\n")
+    if TRANSPORT_RECLAIMS:
+        print("  The traffic is not. `dispatch_over_exec` removes the directory it owns on every")
+        print("  exit path, so the requests and responses above are gone and zero is the cleanup")
+        print("  having worked (#434). What it does not remove is the run itself or the model's")
+        print("  files — those are the kind's, through `reclaim_run` — which is why the")
+        print("  directories are still counted and only their contents are not.")
+        print()
+        print("  The cost lands here: the guest no longer corroborates how many programs called")
+        print("  out, so that count comes from the host's own record alone.\n")
+    else:
+        print("  Nothing deleted any of it. This transport has no way to — 'nothing in the")
+        print("  protocol deletes' — and no kind is obliged to try (#438). So the count above")
+        print("  only ever goes up until the sandbox is disposed of, which is the next line.\n")
 
 
 async def run() -> int:
