@@ -7,11 +7,13 @@ and that every non-default stage gets an end-to-end run somewhere.
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import yaml
 
 CONFIG = Path(__file__).parent.parent / ".pre-commit-config.yaml"
+HOOKS = Path(__file__).parent.parent / ".githooks"
 
 
 def _hooks() -> list[dict]:
@@ -42,6 +44,35 @@ def test_hooks_default_to_pre_commit_only() -> None:
     # A bare `pre-commit install` wires only these hook types; the documented one-liner must
     # install all three tiers, and CI's explicit stage runs would not catch a removal.
     assert config.get("default_install_hook_types") == ["pre-commit", "pre-push", "commit-msg"]
+
+
+def test_every_installed_hook_type_has_a_tracked_script() -> None:
+    # `core.hooksPath` runs what is tracked and nothing else, so a fourth tier added to the
+    # config without a script here would never fire — no error, and no hook.
+    config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    tracked = {path.name for path in HOOKS.iterdir() if path.is_file()}
+    assert tracked == set(config["default_install_hook_types"])
+
+
+def test_each_script_runs_its_own_tier() -> None:
+    # The copy-paste failure: a script that names another tier's `--hook-type` runs the wrong
+    # checks and passes, which is worse than not running.
+    for path in sorted(HOOKS.iterdir()):
+        assert f"--hook-type={path.name}" in path.read_text(encoding="utf-8"), path.name
+
+
+def test_the_scripts_are_executable_in_the_index() -> None:
+    # The index mode, not the filesystem's: a checkout on Windows reports 0644 either way, and
+    # the bit that matters is the one a Linux contributor gets from the clone.
+    listed = subprocess.run(
+        ["git", "ls-files", "-s", "--", str(HOOKS)],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=HOOKS.parent,
+    ).stdout.splitlines()
+    assert listed, "no tracked scripts found"
+    assert all(line.startswith("100755 ") for line in listed), listed
 
 
 def test_staged_hooks_match_their_contract() -> None:
