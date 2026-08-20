@@ -1,43 +1,52 @@
 """Pin that no package's shipped `src/` carries an over-limit code or prose line.
 
-`AGENTS.md` asks for short comments and docstrings, and issue #454's stage one
-makes `E501` (line-length) and `W505` (max-doc-length) enforced rules in every
-package's `pyproject.toml`. The per-file-ignores grandfather the `tests/`,
-`scripts/` and `samples/` trees out of the prose rules — `src/` is what a reader
-sees, so it is where the rules must actually bite. This test is the backstop:
-a rule reverted, a `max-doc-length` dropped, or a new over-limit line added to
-`src/` all fail here. The first two are caught up front — `W505` is a no-op
-without `max-doc-length`, and a clean scan cannot prove an unenforced rule was
-ever selected in the first place.
-
-Each package is checked through its own `pyproject.toml` (ruff resolves the
-nearest ancestor per file), so the package's `max-doc-length` and per-file-ignores
-apply exactly as they do in the gate.
+Each package selects `E501` and `W505` (at `max-doc-length = 100`) in its own
+`pyproject.toml`, so a reverted select, a dropped `max-doc-length`, an ignore that
+matches the length rules out of `src/`, or a new over-limit line all fail here (#454).
 """
 
 from __future__ import annotations
 
+import fnmatch
 import subprocess
 import sys
 import tomllib
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
-_PACKAGES = sorted((_REPO_ROOT / "packages").glob("maf-sandbox*"))
+# packages/*/pyproject.toml, not "maf-sandbox*": a workspace package that does not
+# mirror the sandbox naming is still subject to the length rules. Same discovery as
+# scripts/gate_tasks.py and tests/test_release_config.py.
+_PACKAGES = sorted(_REPO_ROOT.glob("packages/*/pyproject.toml"))
 
 _SELECT = "E501,W505"
 _MAX_DOC = 100
 
 
-def _assert_enforced(package: Path) -> None:
+def _src_ignores(src: Path, lint: dict) -> list[str]:
+    """Per-file-ignore entries that silence ``E501``/``W505`` on ``src/`` files."""
+    offenders: list[str] = []
+    for pattern, rules in lint.get("per-file-ignores", {}).items():
+        if not any(rule in rules for rule in ("E501", "W505")):
+            continue
+        if any(
+            fnmatch.fnmatch(path.relative_to(src.parent).as_posix(), pattern)
+            for path in src.rglob("*.py")
+        ):
+            offenders.append(f"{pattern} -> {sorted(rules)}")
+    return offenders
+
+
+def _assert_enforced(pyproject: Path) -> None:
     """The package's own config enables the length rules, or the scan proves nothing.
 
-    A ruff run proves src/ is clean *today*; it cannot prove a dropped select or a
-    missing ``max-doc-length`` (which makes ``W505`` a no-op) was ever enforced in the
-    first place.
+    A ruff run proves src/ is clean *today*; it cannot prove a dropped select, a missing
+    ``max-doc-length`` (which makes ``W505`` a no-op), or an ignore matching the rules out
+    of ``src/`` was ever enforced. All of those are rejected here.
     """
-    config = tomllib.loads((package / "pyproject.toml").read_text())
+    config = tomllib.loads(pyproject.read_text())
     lint = config["tool"]["ruff"]["lint"]
+    package = pyproject.parent
     selected = list(lint.get("select", [])) + list(lint.get("extend-select", []))
     assert "E501" in selected and "W505" in selected, (
         f"{package.name} dropped the line-length rules (#454)"
@@ -45,9 +54,20 @@ def _assert_enforced(package: Path) -> None:
     assert lint.get("pycodestyle", {}).get("max-doc-length") == _MAX_DOC, (
         f"{package.name} dropped max-doc-length={_MAX_DOC}; W505 is a no-op without it (#454)"
     )
+    for key in ("ignore", "extend-ignore"):
+        disabled = [rule for rule in lint.get(key, []) if rule in ("E501", "W505")]
+        assert not disabled, (
+            f"{package.name} {key}={disabled} disables the line-length rules (#454)"
+        )
+    src = package / "src"
+    ignores = _src_ignores(src, lint)
+    assert not ignores, (
+        f"{package.name} per-file-ignores {_SELECT} out of src/: {', '.join(ignores)} (#454)"
+    )
 
 
-def _assert_clean(package: Path) -> None:
+def _assert_clean(pyproject: Path) -> None:
+    package = pyproject.parent
     src = package / "src"
     assert src.is_dir(), f"{package.name} has no src/ tree"
 
@@ -65,7 +85,7 @@ def _assert_clean(package: Path) -> None:
 
 class TestSrcDocLineLength:
     def test_every_package_src_is_clean(self):
-        assert _PACKAGES, "no packages/maf-sandbox* found"
-        for package in _PACKAGES:
-            _assert_enforced(package)
-            _assert_clean(package)
+        assert _PACKAGES, "no packages/*/pyproject.toml found"
+        for pyproject in _PACKAGES:
+            _assert_enforced(pyproject)
+            _assert_clean(pyproject)

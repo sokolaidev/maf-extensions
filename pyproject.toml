@@ -32,10 +32,12 @@ dev = [
 # section reaches that tree while each package still answers to its own; their self-containment is
 # what it was. Without it these files would fall back to ruff's defaults — the gap #274 closed.
 #
-# The rules mirror every package's: `I`, `UP`, and the `D100`/`D101`/`D103`/`D104` docstring rules,
-# at `line-length = 100`. `tests/**` is ignored for `D101`/`D103` for the same reason each package
-# ignores its own tests — the repo's `tests/` is repository-level wiring, no different in kind
-# from a package's, not API surface. #292 carries the decision and the measurements behind it.
+# The rules mirror every package's: `I`, `UP`, the `D100`/`D101`/`D103`/`D104` docstring rules,
+# the length rules (`E501`, `W505` with `max-doc-length = 100`), and the hygiene pins (`TD`,
+# `FIX`, `ERA001`), at `line-length = 100`. `tests/**` is ignored for `D101`/`D103` for the same
+# reason each package ignores its own tests — the repo's `tests/` is repository-level wiring, no
+# different in kind from a package's, not API surface. #292 and #454 carry the decisions and the
+# measurements behind them.
 [tool.ruff]
 line-length = 100
 target-version = "py312"

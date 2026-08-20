@@ -67,7 +67,7 @@ extend-select = ["I", "UP", "D100", "D101", "D103", "D104", "E501", "W505", "TD"
 # once this package gained its own [tool.ruff] section, the host application's root
 # pyproject.toml per-file-ignore entry for this package's tests stopped reaching these
 # files, so this package carries its own copy. The length rules join the docstring pair
-# for the same reason itself: test fixtures are hand-shaped strings and prose, not API drift.
+# for the same reason: test fixtures are hand-shaped strings and prose, not API drift.
 "tests/**" = ["D101", "D103", "E501", "W505"]
 
 [tool.ruff.lint.pycodestyle]
