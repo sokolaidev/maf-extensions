@@ -967,6 +967,8 @@ class TestAToolNameWithAPercentInIt:
             try:
                 _call(tool, target="x")
             except asyncio.CancelledError:
+                # Expected in this test path: cancellation is intentionally ignored so we can
+                # assert on the warning records emitted during reclaim failure handling.
                 pass
         return [record.getMessage() for record in caplog.records]
 
