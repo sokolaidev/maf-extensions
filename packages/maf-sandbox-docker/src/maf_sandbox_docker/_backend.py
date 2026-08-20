@@ -47,7 +47,11 @@ from maf_sandbox import (
     SandboxTransferCapExceeded,
     TransferLimits,
 )
-from maf_sandbox.paths import confine_guest_path, refuse_symlinked_parents
+from maf_sandbox.paths import (
+    confine_guest_path,
+    confine_guest_write_path,
+    refuse_symlinked_parents,
+)
 
 from ._config import DockerSandboxConfig
 from ._proxy import build_context
@@ -261,17 +265,20 @@ class _DockerSandbox:
     def container_name(self) -> str:
         return self._name
 
-    async def write_file(self, path: str, content: str | bytes) -> None:
+    async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
         """Write ``content`` to ``path`` inside the container, parents included.
 
         Sent as a one-entry tar on stdin.  A ``cp`` destination must already exist and ``/`` is
         the only path that always does, so the entry name carries the whole path and docker
         creates the missing directories from it.
         """
+        guest = await confine_guest_write_path(
+            lambda p: self._stat_guest(p, p), path, working_directory
+        )
         data = content.encode("utf-8") if isinstance(content, str) else content
         buffer = io.BytesIO()
         with tarfile.open(fileobj=buffer, mode="w") as archive:
-            entry = tarfile.TarInfo(path.lstrip("/"))
+            entry = tarfile.TarInfo(guest.lstrip("/"))
             entry.size = len(data)
             entry.mode = 0o644
             archive.addfile(entry, io.BytesIO(data))

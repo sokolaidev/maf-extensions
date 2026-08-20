@@ -1334,7 +1334,9 @@ class TestMakeFileSystemSink:
     def test_it_lands_a_whole_collection_through_collect_outputs(self, tmp_path):
         """End to end, because `deliver` alone does not prove the sink is shaped like one."""
         sandbox = InProcessSandbox()
-        asyncio.run(sandbox.write_file(f"{_WORK_DIR}/report.md", b"# hi"))
+        asyncio.run(
+            sandbox.write_file(f"{_WORK_DIR}/report.md", b"# hi", working_directory=_WORK_DIR)
+        )
         spec = _spec(DeclaredOutput(path="report.md", media_type="text/markdown"))
 
         landed = asyncio.run(

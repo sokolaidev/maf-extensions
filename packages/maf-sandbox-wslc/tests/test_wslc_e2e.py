@@ -71,7 +71,9 @@ class TestALiveContainer:
         async def scenario() -> None:
             sandbox = await backend.acquire(_key(scope), _spec())
             await sandbox.write_file(
-                "/maf-sandbox/work/nested/deep/main.bicep", "param naïve string\n"
+                "/maf-sandbox/work/nested/deep/main.bicep",
+                "param naïve string\n",
+                working_directory="/maf-sandbox/work",
             )
 
             read_back = await sandbox.exec(

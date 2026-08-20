@@ -486,14 +486,13 @@ class Sandbox(Protocol):
     ``remove`` raises :class:`NotImplementedError` — from a ``finally``, over whatever the run
     was already reporting.
 
-    ``working_directory`` is a parameter on those three exactly as it is on :meth:`exec`,
+    ``working_directory`` is a parameter on those four exactly as it is on :meth:`exec`,
     because no sandbox object knows the spec's ``work_dir``: it arrives per call or not at all,
     and a pull surface without it would assign the confinement duty to a layer with no way to
-    discharge it.  Their ``path`` is POSIX-shaped and relative to it, and one resolving outside
-    it is refused.  :meth:`write_file` is the residual asymmetry — it takes an absolute guest
-    path and has no path grammar — and unifying the two is a larger change than this.
+    discharge it.  Their ``path`` is POSIX-shaped and relative to it, and one resolving outside it is
+    refused.
 
-    **Confinement is a duty of all three, and it is not a check on the argument string.**  A
+    **Confinement is a duty of all five, and it is not a check on the argument string.**  A
     path whose *parent* is a link satisfies every lexical test and still reads outside: with
     ``out -> /etc``, ``out/hostname`` stats as a regular 12-byte file.  Discharge it with
     :func:`~maf_sandbox.paths.refuse_symlinked_parents` rather than by writing the walk again —
@@ -502,14 +501,22 @@ class Sandbox(Protocol):
     writes its own.
     """
 
-    async def write_file(self, path: str, content: str | bytes) -> None:
+    async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
         """Write ``content`` to ``path`` inside the sandbox.
 
-        ``str`` means UTF-8 whatever the host's locale says; ``bytes`` is written as given, and
-        is what an in-door carrying a PNG or a spreadsheet needs.  Parent directories are
-        created as needed — every shipped backend already does, and a write that refused them
-        would push directory creation onto every kind, which the protocol gives them no way
-        to do.
+        ``path`` is POSIX-shaped and relative to ``working_directory``; an absolute path resolving
+        inside it is accepted. ``str`` means UTF-8 whatever the host's locale says; ``bytes`` is
+        written as given, and is what an in-door carrying a PNG or a spreadsheet needs. Parent
+        directories are created as needed. A missing component ends the walk, so nothing created
+        by this call can be a link.
+
+        Raises:
+            ValueError: If the path is outside, passes through a link, names a link, or is the
+                working directory itself.
+            NotADirectoryError: If a parent is neither a directory nor a link.
+
+        The walk and write are not atomic on any shipped backend; a guest that turns a checked
+        component into a link in between wins.
         """
         ...
 

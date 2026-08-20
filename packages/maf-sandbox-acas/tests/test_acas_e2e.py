@@ -210,7 +210,9 @@ class TestALiveSandbox:
         async def scenario() -> None:
             sandbox = await backend.acquire(_key(scope), _spec())
 
-            await sandbox.write_file(f"{_WORK}/nested/deep/main.txt", "param naïve string\n")
+            await sandbox.write_file(
+                f"{_WORK}/nested/deep/main.txt", "param naïve string\n", working_directory=_WORK
+            )
             read_back = await sandbox.exec(
                 ["cat", "nested/deep/main.txt"], working_directory=_WORK, timeout=_EXEC_TIMEOUT
             )
@@ -307,7 +309,9 @@ class TestFilesOutAgainstTheRealService:
         content = "diagnostics: naïve ✓\n".encode()
 
         async def scenario() -> None:
-            await live.sandbox.write_file(f"{_WORK}/out/report.txt", content)
+            await live.sandbox.write_file(
+                f"{_WORK}/out/report.txt", content, working_directory=_WORK
+            )
 
             entry = await live.sandbox.stat_file("out/report.txt", working_directory=_WORK)
             assert entry is not None
@@ -323,7 +327,9 @@ class TestFilesOutAgainstTheRealService:
 
     def test_an_over_cap_output_is_refused_on_the_stat_before_its_content_moves(self, live):
         async def scenario() -> None:
-            await live.sandbox.write_file(f"{_WORK}/out/big.txt", b"x" * 4096)
+            await live.sandbox.write_file(
+                f"{_WORK}/out/big.txt", b"x" * 4096, working_directory=_WORK
+            )
             with pytest.raises(SandboxTransferCapExceeded):
                 await live.sandbox.read_file("out/big.txt", working_directory=_WORK, max_bytes=1024)
 
@@ -331,7 +337,9 @@ class TestFilesOutAgainstTheRealService:
 
     def test_a_directory_is_refused_rather_than_read(self, live):
         async def scenario() -> None:
-            await live.sandbox.write_file(f"{_WORK}/adir/child.txt", b"child\n")
+            await live.sandbox.write_file(
+                f"{_WORK}/adir/child.txt", b"child\n", working_directory=_WORK
+            )
             entry = await live.sandbox.stat_file("adir", working_directory=_WORK)
             assert entry is not None
             assert entry.kind is EntryKind.DIRECTORY
@@ -458,7 +466,7 @@ class TestWhatOnlyTheServiceCanSay:
             # `mkfifo` fail with "No such file or directory" — and the guard below then reported
             # a missing mkfifo and skipped green, dropping the only coverage of the read
             # timeout. A skip that misnames its own cause is worse than a failure.
-            await live.sandbox.write_file(f"{_WORK}/out/.keep", b"")
+            await live.sandbox.write_file(f"{_WORK}/out/.keep", b"", working_directory=_WORK)
 
             planted = await live.sandbox.exec(
                 ["mkfifo", "out/pipe"], working_directory=_WORK, timeout=_EXEC_TIMEOUT
@@ -493,7 +501,9 @@ class TestWhatOnlyTheServiceCanSay:
         """
 
         async def scenario() -> None:
-            await live.sandbox.write_file(f"{_WORK}/out/plain.txt", b"plain\n")
+            await live.sandbox.write_file(
+                f"{_WORK}/out/plain.txt", b"plain\n", working_directory=_WORK
+            )
             odd = f"{_WORK}/../work"
 
             entry = await live.sandbox.stat_file("out/plain.txt", working_directory=odd)
@@ -544,7 +554,7 @@ class TestWhetherThisBackendCouldServeHostTools:
             # The work directory is not in the image; the real flow creates it by writing the
             # program before it execs anything, so do the same rather than depend on some
             # earlier test in this module having left it behind.
-            await live.sandbox.write_file(f"{_WORK}/probe/.keep", "")
+            await live.sandbox.write_file(f"{_WORK}/probe/.keep", "", working_directory=_WORK)
             return await live.sandbox.exec(
                 f'for t in {wanted}; do command -v "$t" >/dev/null || echo "$t"; done',
                 working_directory=_WORK,
@@ -583,9 +593,12 @@ class TestWhetherThisBackendCouldServeHostTools:
             await live.sandbox.write_file(
                 layout.program,
                 f"sleep {program_seconds}\necho the program finished\n",
+                working_directory=_WORK,
             )
             await live.sandbox.write_file(
-                layout.launcher, launcher_script(layout, interpreter="sh")
+                layout.launcher,
+                launcher_script(layout, interpreter="sh"),
+                working_directory=_WORK,
             )
 
             started = asyncio.get_running_loop().time()

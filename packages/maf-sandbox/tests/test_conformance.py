@@ -64,7 +64,9 @@ class _FakeSubject:
         self.capabilities = capabilities
 
     async def plant_file(self, path: str, content: bytes) -> None:
-        await self.sandbox.write_file(path, content)
+        await self.sandbox.write_file(
+            path, content, working_directory=posixpath.dirname(path) or "/"
+        )
 
     async def plant_symlink(self, path: str, target: str) -> None:
         del target  # this fake refuses links rather than following them, so it stores no target
@@ -150,7 +152,8 @@ class _Leaky:
             if kind is not EntryKind.DIRECTORY:
                 raise NotADirectoryError(f"{walked!r} is not a directory")
 
-    async def write_file(self, path: str, content: str | bytes) -> None:
+    async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
+        del working_directory
         self.contents[path] = content.encode("utf-8") if isinstance(content, str) else content
 
     async def exec(self, command, *, working_directory: str, timeout: float) -> ExecResult:
@@ -458,8 +461,25 @@ class _SimulatedGuest:
         self._quoting = quoting
         self._exit_codes = exit_codes
 
-    async def write_file(self, path: str, content: str | bytes) -> None:
-        self.contents[path] = content.encode("utf-8") if isinstance(content, str) else content
+    async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
+        if "\\" in path:
+            raise ValueError("backslash is not a valid separator")
+        guest = posixpath.normpath(posixpath.join(working_directory, path))
+        base = posixpath.normpath(working_directory)
+        if guest != base and not guest.startswith(base + "/"):
+            raise ValueError(f"path {path!r} resolves outside working directory {base!r}")
+        if guest == posixpath.normpath(working_directory):
+            raise ValueError("refusing to write the working directory")
+        walked = ""
+        for part in (part for part in posixpath.dirname(guest).split("/") if part):
+            walked = f"{walked}/{part}"
+            if walked in self.symlinks:
+                raise ValueError(f"{walked!r} is a link")
+            if walked in self.contents:
+                raise NotADirectoryError(f"{walked!r} is not a directory")
+        if guest in self.symlinks:
+            raise ValueError(f"{guest!r} is a link")
+        self.contents[guest] = content.encode("utf-8") if isinstance(content, str) else content
 
     async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
         base = posixpath.normpath(working_directory)
@@ -599,8 +619,10 @@ class TestFilesInConformance:
 
     def test_a_write_that_lands_nowhere_fails_the_positive_control(self):
         class _Vanishing(_SimulatedGuest):
-            async def write_file(self, path: str, content: str | bytes) -> None:
-                del path, content  # the transport that drops every write
+            async def write_file(
+                self, path: str, content: str | bytes, *, working_directory: str
+            ) -> None:
+                del path, content, working_directory  # the transport that drops every write
 
         failures = _sim_results(
             _SimSubject(sandbox=_Vanishing(), working_directory=_WORK, capabilities=_EVERYTHING),
@@ -610,13 +632,15 @@ class TestFilesInConformance:
 
     def test_a_write_that_translates_bytes_fails_the_fidelity_probe(self):
         class _Translating(_SimulatedGuest):
-            async def write_file(self, path: str, content: str | bytes) -> None:
+            async def write_file(
+                self, path: str, content: str | bytes, *, working_directory: str
+            ) -> None:
                 if isinstance(content, bytes):
                     # LF → CRLF: the text-mode translation a transport commits when nobody
                     # told it the payload is bytes. The probe's payload carries LF (in its
                     # ASCII run and its text head), so the mangling is one it can see.
                     content = content.replace(b"\n", b"\r\n")
-                await super().write_file(path, content)
+                await super().write_file(path, content, working_directory=working_directory)
 
         failures = _sim_results(
             _SimSubject(sandbox=_Translating(), working_directory=_WORK, capabilities=_EVERYTHING),
@@ -626,7 +650,10 @@ class TestFilesInConformance:
 
     def test_a_write_that_appends_fails_the_replacement_probe(self):
         class _Appending(_SimulatedGuest):
-            async def write_file(self, path: str, content: str | bytes) -> None:
+            async def write_file(
+                self, path: str, content: str | bytes, *, working_directory: str
+            ) -> None:
+                path = posixpath.normpath(posixpath.join(working_directory, path))
                 blob = content.encode("utf-8") if isinstance(content, str) else content
                 self.contents[path] = self.contents.get(path, b"") + blob
 

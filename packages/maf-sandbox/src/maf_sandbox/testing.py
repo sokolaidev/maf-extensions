@@ -39,7 +39,12 @@ from ._protocol import (
     SandboxLimits,
     SandboxSpec,
 )
-from .paths import confine_guest_path, guest_path_relative_to, refuse_symlinked_parents
+from .paths import (
+    confine_guest_path,
+    confine_guest_write_path,
+    guest_path_relative_to,
+    refuse_symlinked_parents,
+)
 
 __all__ = ["InMemoryStore", "InProcessSandbox", "InProcessSandboxBackend"]
 
@@ -83,7 +88,8 @@ class InProcessSandbox:
             :data:`~maf_sandbox.EntryKind.OTHER` any other non-regular entry — neither has
             content, neither is readable, and only a link is refused as an escape.
 
-    Storage is bytes, and :attr:`contents` **is** that store — the place a caller reading or
+    Storage is bytes, and :attr:`contents` **is** that store, keyed by normalised absolute guest
+    paths — the place a caller reading or
     seeding binary content looks. ``write_file`` UTF-8-encodes ``str`` content on the way in.
     :attr:`symlinks` and :attr:`non_regular` are the stores for entries that have no content:
     sets of absolute guest paths, seedable above or writable directly to plant one mid-test.
@@ -101,7 +107,7 @@ class InProcessSandbox:
     ``OSError`` for a seeded non-regular entry — and it **refuses** rather than truncates a
     file over its ``max_bytes``, as the protocol requires.
 
-    All three also run :func:`~maf_sandbox.paths.refuse_symlinked_parents` over the components,
+    All four also run :func:`~maf_sandbox.paths.refuse_symlinked_parents` over the components,
     so a seeded link standing where a directory was expected is refused here as it is on a real
     backend. What this fake cannot model is the **escape** itself: a seeded link has no target,
     so nothing reads through one and a test going green here has asserted shape, not safety.
@@ -159,8 +165,9 @@ class InProcessSandbox:
             {path: content.decode("utf-8") for path, content in self.contents.items()}
         )
 
-    async def write_file(self, path: str, content: str | bytes) -> None:
-        self.contents[path] = content.encode("utf-8") if isinstance(content, str) else content
+    async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
+        full_path = await confine_guest_write_path(self._stat_unconfined, path, working_directory)
+        self.contents[full_path] = content.encode("utf-8") if isinstance(content, str) else content
 
     async def exec(
         self, command: str | Sequence[str], *, working_directory: str, timeout: float

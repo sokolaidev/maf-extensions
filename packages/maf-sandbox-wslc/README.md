@@ -54,7 +54,7 @@ config = WslcSandboxConfig(egress_proxy_image="maf-egress-proxy:local")
 | | |
 |---|---|
 | `acquire(key, spec)` | get-or-create, keyed `(scope, thread, agent)`. A running container is reused, a stopped one started, a missing one created — so a fix-round loop does not pay a cold start per iteration |
-| `write_file(path, content)` | a one-entry tar on stdin to `cp - <container>:/`, which creates the parent directories from the entry name |
+| `write_file(path, content, *, working_directory)` | a confined one-entry tar on stdin to `cp - <container>:/`, which creates the parent directories from the entry name |
 | `dispose(key)` | `remove -f` on the one container the key names |
 | `dispose_scope(scope, thread)` | delete every container for a conversation — **by label, read back from wslc**, not from process memory |
 | `isolation` | `container` — below the router's default `microvm` floor, so a host opts down explicitly with `min_isolation=Isolation.CONTAINER` |

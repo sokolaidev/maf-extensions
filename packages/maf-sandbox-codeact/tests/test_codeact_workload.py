@@ -101,7 +101,7 @@ class _ScriptedSandbox(InProcessSandbox):
 
 
 class _WriteFailingSandbox(_ScriptedSandbox):
-    async def write_file(self, path: str, content: str) -> None:
+    async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
         raise RuntimeError("no space left at https://internal.invalid subscription 0000-1111")
 
 
@@ -2362,8 +2362,8 @@ class _SlowToTakeTheLauncherSandbox(_ScriptedSandbox):
     #: reaches this path at all, and this has to outlast it.
     _SLOWER_THAN_THE_RUN = 1.2
 
-    async def write_file(self, path: str, content: str | bytes) -> None:
-        await super().write_file(path, content)
+    async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
+        await super().write_file(path, content, working_directory=working_directory)
         if path.endswith(".sh"):
             await asyncio.sleep(self._SLOWER_THAN_THE_RUN)
 

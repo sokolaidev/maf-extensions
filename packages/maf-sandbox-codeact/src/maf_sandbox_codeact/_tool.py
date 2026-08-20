@@ -819,13 +819,19 @@ async def _execute(
     shared_dir = layout.work if layout is not None else run_dir
 
     for name, content in shared:
-        refusal = await _write_shared(sandbox, name, f"{shared_dir}/{name}", content)
+        refusal = await _write_shared(
+            sandbox, name, f"{shared_dir}/{name}", content, working_directory=shared_dir
+        )
         if refusal is not None:
             return refusal
 
     program_path = layout.program if layout is not None else f"{run_dir}/{_PROGRAM_FILENAME}"
     try:
-        await sandbox.write_file(program_path, code)
+        await sandbox.write_file(
+            program_path,
+            code,
+            working_directory=layout.directory if layout is not None else run_dir,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "execute_code: could not write the program into the sandbox: %s", error_detail(exc)
@@ -836,7 +842,7 @@ async def _execute(
         # The two are built together above and are never one without the other; both are named
         # here so neither has to be narrowed from the other.
         if dispatch is not None and layout is not None:
-            await sandbox.write_file(layout.shim, dispatch.shim)
+            await sandbox.write_file(layout.shim, dispatch.shim, working_directory=layout.directory)
             # A fresh run per call: the dispatch cap and the ledger bound one program.
             result = await dispatch_over_exec(
                 sandbox,
@@ -1078,10 +1084,17 @@ class _InboundTally:
         return None
 
 
-async def _write_shared(sandbox: Sandbox, name: str, guest_path: str, content: str) -> str | None:
+async def _write_shared(
+    sandbox: Sandbox,
+    name: str,
+    guest_path: str,
+    content: str,
+    *,
+    working_directory: str,
+) -> str | None:
     """Put one already-read file store file into the run's directory, or answer with the refusal."""
     try:
-        await sandbox.write_file(guest_path, content)
+        await sandbox.write_file(guest_path, content, working_directory=working_directory)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "execute_code: could not write %r into the sandbox: %s", name, error_detail(exc)

@@ -20,6 +20,7 @@ the suite does, without the bicep CLI. Async tests follow the repo convention: a
 from __future__ import annotations
 
 import asyncio
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -62,7 +63,11 @@ def test_write_file_places_content_under_the_host_root():
     async def body() -> None:
         backend, sandbox = await _fresh()
         try:
-            await sandbox.write_file(f"{_GUEST_WORK_DIR}/main.bicep", "param location string")
+            await sandbox.write_file(
+                f"{_GUEST_WORK_DIR}/main.bicep",
+                "param location string",
+                working_directory=_GUEST_WORK_DIR,
+            )
             host_file = sandbox._host_root / "main.bicep"  # noqa: SLF001
             assert host_file.read_text(encoding="utf-8") == "param location string"
         finally:
@@ -84,10 +89,53 @@ def test_host_path_rejects_a_guest_path_that_escapes_the_root():
         backend, sandbox = await _fresh()
         try:
             with pytest.raises(ValueError):
-                await sandbox.write_file(f"{_GUEST_WORK_DIR}/../../escaped.bicep", "x")
+                await sandbox.write_file(
+                    f"{_GUEST_WORK_DIR}/../../escaped.bicep", "x", working_directory=_GUEST_WORK_DIR
+                )
             # A `..` that resolves back under the root is allowed.
-            await sandbox.write_file(f"{_GUEST_WORK_DIR}/sub/../ok.bicep", "x")
+            await sandbox.write_file(
+                f"{_GUEST_WORK_DIR}/sub/../ok.bicep", "x", working_directory=_GUEST_WORK_DIR
+            )
             assert (sandbox._host_root / "ok.bicep").read_text(encoding="utf-8") == "x"  # noqa: SLF001
+        finally:
+            await _drop(backend)
+
+    asyncio.run(body())
+
+
+def test_write_file_refuses_symlinked_parents_and_destinations():
+    async def body() -> None:
+        backend, sandbox = await _fresh()
+        try:
+            outside = Path(tempfile.mkdtemp())
+            try:
+                try:
+                    (sandbox._host_root / "link").symlink_to(outside, target_is_directory=True)  # noqa: SLF001
+                except OSError as error:
+                    if getattr(error, "winerror", None) == 1314:
+                        pytest.skip(
+                            "creating symlinks requires privileges unavailable on this host"
+                        )
+                    raise
+                with pytest.raises(ValueError):
+                    await sandbox.write_file(
+                        "/maf-sandbox/work/link/escaped.txt",
+                        "x",
+                        working_directory=_GUEST_WORK_DIR,
+                    )
+
+                target = outside / "target.txt"
+                target.write_text("original", encoding="utf-8")
+                (sandbox._host_root / "victim").symlink_to(target)  # noqa: SLF001
+                with pytest.raises(ValueError):
+                    await sandbox.write_file(
+                        "/maf-sandbox/work/victim",
+                        "changed",
+                        working_directory=_GUEST_WORK_DIR,
+                    )
+                assert target.read_text(encoding="utf-8") == "original"
+            finally:
+                shutil.rmtree(outside, ignore_errors=True)
         finally:
             await _drop(backend)
 
@@ -190,7 +238,9 @@ def test_exec_sequence_form_translates_each_argv_element():
         backend, sandbox = await _fresh()
         try:
             guest_script = f"{_GUEST_WORK_DIR}/echo.py"
-            await sandbox.write_file(guest_script, 'print("argv-pinned")\n')
+            await sandbox.write_file(
+                guest_script, 'print("argv-pinned")\n', working_directory=_GUEST_WORK_DIR
+            )
             result = await sandbox.exec(
                 [sys.executable, guest_script],
                 working_directory=_GUEST_WORK_DIR,

@@ -18,7 +18,8 @@ The same shape covers the other capabilities, each as its own suite:
 :func:`assert_files_in_conformance` (:data:`~maf_sandbox.Capability.FILES_IN`),
 :func:`assert_exec_conformance` (:data:`~maf_sandbox.Capability.EXEC`), and
 :func:`assert_files_delete_conformance`
-(:data:`~maf_sandbox.Capability.FILES_DELETE`).  The FILES_IN, EXEC and FILES_DELETE probes
+(:data:`~maf_sandbox.Capability.FILES_DELETE`).  The FILES_IN probes also attack write-path
+confinement.  The FILES_IN, EXEC and FILES_DELETE probes
 verify through :meth:`Sandbox.exec` rather than the pull surface, because a backend with no
 pull surface still owes those capabilities.  They need ``cat``, ``test``, ``printf``, ``pwd``,
 ``sleep``, ``sh`` and ``mkdir`` — beyond ``PosixGuestSubject``'s own ``ln``, so the
@@ -138,7 +139,10 @@ class PosixGuestSubject:
     exec_timeout: float = 60.0
 
     async def plant_file(self, path: str, content: bytes) -> None:
-        await self.sandbox.write_file(path, content)
+        """Planting is the guest's move, so use the path's parent as its narrowest root while the walk still runs above it."""
+        await self.sandbox.write_file(
+            path, content, working_directory=posixpath.dirname(path) or "/"
+        )
 
     async def plant_symlink(self, path: str, target: str) -> None:
         result = await self.sandbox.exec(
@@ -614,7 +618,9 @@ async def assert_files_out_conformance(subject: ConformanceSubject) -> tuple[Pro
 async def _probe_a_write_lands_and_reads_back(
     subject: ConformanceSubject, paths: ConformancePaths
 ) -> None:
-    await subject.sandbox.write_file(f"{paths.work}/real/written.txt", "written")
+    await subject.sandbox.write_file(
+        f"{paths.work}/real/written.txt", "written", working_directory=subject.working_directory
+    )
     result = await subject.sandbox.exec(
         ["test", "-f", "real/written.txt"],
         working_directory=subject.working_directory,
@@ -632,7 +638,9 @@ async def _probe_a_write_lands_and_reads_back(
 async def _probe_bytes_survive_the_round_trip(
     subject: ConformanceSubject, paths: ConformancePaths
 ) -> None:
-    await subject.sandbox.write_file(f"{paths.work}/binary.bin", _BINARY)
+    await subject.sandbox.write_file(
+        f"{paths.work}/binary.bin", _BINARY, working_directory=subject.working_directory
+    )
     back = await subject.sandbox.exec(
         ["cat", "binary.bin"], working_directory=subject.working_directory, timeout=60
     )
@@ -651,7 +659,9 @@ async def _probe_bytes_survive_the_round_trip(
 
 
 async def _probe_str_content_is_utf8(subject: ConformanceSubject, paths: ConformancePaths) -> None:
-    await subject.sandbox.write_file(f"{paths.work}/text.txt", "naïve")
+    await subject.sandbox.write_file(
+        f"{paths.work}/text.txt", "naïve", working_directory=subject.working_directory
+    )
     back = await subject.sandbox.exec(
         ["cat", "text.txt"], working_directory=subject.working_directory, timeout=60
     )
@@ -662,8 +672,12 @@ async def _probe_str_content_is_utf8(subject: ConformanceSubject, paths: Conform
 async def _probe_a_second_write_replaces(
     subject: ConformanceSubject, paths: ConformancePaths
 ) -> None:
-    await subject.sandbox.write_file(f"{paths.work}/overwritten.txt", "first")
-    await subject.sandbox.write_file(f"{paths.work}/overwritten.txt", "second")
+    await subject.sandbox.write_file(
+        f"{paths.work}/overwritten.txt", "first", working_directory=subject.working_directory
+    )
+    await subject.sandbox.write_file(
+        f"{paths.work}/overwritten.txt", "second", working_directory=subject.working_directory
+    )
     back = await subject.sandbox.exec(
         ["cat", "overwritten.txt"], working_directory=subject.working_directory, timeout=60
     )
@@ -672,7 +686,11 @@ async def _probe_a_second_write_replaces(
 
 
 async def _probe_parents_are_created(subject: ConformanceSubject, paths: ConformancePaths) -> None:
-    await subject.sandbox.write_file(f"{paths.work}/deep/er/est/leaf.txt", "deep")
+    await subject.sandbox.write_file(
+        f"{paths.work}/deep/er/est/leaf.txt",
+        "deep",
+        working_directory=subject.working_directory,
+    )
     result = await subject.sandbox.exec(
         ["test", "-f", "deep/er/est/leaf.txt"],
         working_directory=subject.working_directory,
@@ -680,6 +698,140 @@ async def _probe_parents_are_created(subject: ConformanceSubject, paths: Conform
     )
     if result.exit_code != 0:
         raise AssertionError("a write under unannounced parents did not create them")
+
+
+async def _probe_a_write_path_outside_is_refused(
+    subject: ConformanceSubject, paths: ConformancePaths
+) -> None:
+    await _refused_with(
+        ValueError,
+        "writing outside the working directory",
+        subject.sandbox.write_file(
+            paths.beyond("planted.txt"),
+            b"outside",
+            working_directory=subject.working_directory,
+        ),
+    )
+    result = await subject.sandbox.exec(
+        ["test", "-e", "planted.txt"],
+        working_directory=paths.outside,
+        timeout=60,
+    )
+    if result.exit_code == 0:
+        raise AssertionError("a refused outside write created the outside file")
+
+
+async def _probe_a_path_through_a_linked_parent_is_refused_for_write(
+    subject: ConformanceSubject, paths: ConformancePaths
+) -> None:
+    await subject.sandbox.write_file(
+        f"{paths.work}/.probe-cwd", b"", working_directory=subject.working_directory
+    )
+    await subject.plant_file(f"{paths.outside}/marker.txt", b"marker")
+    await subject.plant_symlink(paths.linked_directory, paths.outside)
+    await _refused_with(
+        ValueError,
+        "writing through a linked parent",
+        subject.sandbox.write_file(
+            "link-dir/landed.txt", b"landed", working_directory=subject.working_directory
+        ),
+    )
+    result = await subject.sandbox.exec(
+        ["test", "-e", "landed.txt"], working_directory=paths.outside, timeout=60
+    )
+    if result.exit_code == 0:
+        raise AssertionError("a refused linked-parent write created the outside file")
+
+
+async def _probe_a_linked_destination_is_refused_not_followed(
+    subject: ConformanceSubject, paths: ConformancePaths
+) -> None:
+    await subject.sandbox.write_file(
+        f"{paths.work}/.probe-cwd", b"", working_directory=subject.working_directory
+    )
+    target = f"{paths.outside}/target.txt"
+    await subject.plant_file(target, b"known")
+    await subject.plant_symlink(paths.linked_file, target)
+    await _refused_with(
+        ValueError,
+        "writing to a linked destination",
+        subject.sandbox.write_file(
+            "link-file", b"changed", working_directory=subject.working_directory
+        ),
+    )
+    result = await subject.sandbox.exec(["cat", target], working_directory="/", timeout=60)
+    if result.stdout != "known":
+        raise AssertionError("a refused linked-destination write changed its target")
+
+
+async def _probe_the_working_directory_is_refused_for_write(
+    subject: ConformanceSubject, paths: ConformancePaths
+) -> None:
+    await subject.sandbox.write_file(
+        "control.txt", b"control", working_directory=subject.working_directory
+    )
+    await _refused_with(
+        ValueError,
+        "writing over the working directory",
+        subject.sandbox.write_file(".", b"no", working_directory=subject.working_directory),
+    )
+    result = await subject.sandbox.exec(
+        ["test", "-e", "control.txt"], working_directory=subject.working_directory, timeout=60
+    )
+    if result.exit_code != 0:
+        raise AssertionError("refusing the working directory removed the positive control")
+
+
+async def _probe_a_backslash_is_refused_for_write(
+    subject: ConformanceSubject, paths: ConformancePaths
+) -> None:
+    await _refused_with(
+        ValueError,
+        "writing a path containing a backslash",
+        subject.sandbox.write_file(
+            r"sub\file.txt", b"no", working_directory=subject.working_directory
+        ),
+    )
+
+
+async def _probe_a_linked_working_directory_refuses_write(
+    subject: ConformanceSubject, paths: ConformancePaths
+) -> None:
+    await subject.sandbox.write_file(
+        f"{paths.work}/.probe-cwd", b"", working_directory=subject.working_directory
+    )
+    await subject.plant_symlink(paths.linked_directory, paths.outside)
+    await _refused_with(
+        ValueError,
+        "writing under a linked working directory",
+        subject.sandbox.write_file("landed.txt", b"no", working_directory=paths.linked_directory),
+    )
+    result = await subject.sandbox.exec(
+        ["test", "-e", "landed.txt"], working_directory=paths.outside, timeout=60
+    )
+    if result.exit_code == 0:
+        raise AssertionError("a linked working-directory write created the outside file")
+
+
+async def _probe_a_linked_ancestor_of_the_working_directory_refuses_write(
+    subject: ConformanceSubject, paths: ConformancePaths
+) -> None:
+    await subject.sandbox.write_file(
+        f"{paths.work}/.probe-cwd", b"", working_directory=subject.working_directory
+    )
+    await subject.plant_symlink(paths.linked_directory, paths.outside)
+    await _refused_with(
+        ValueError,
+        "writing under a working directory with a linked ancestor",
+        subject.sandbox.write_file(
+            "landed.txt", b"no", working_directory=paths.under_linked_directory
+        ),
+    )
+    result = await subject.sandbox.exec(
+        ["test", "-e", "landed.txt"], working_directory=paths.outside, timeout=60
+    )
+    if result.exit_code == 0:
+        raise AssertionError("a linked-ancestor write created the outside file")
 
 
 FILES_IN_PROBES: tuple[Probe, ...] = (
@@ -733,6 +885,48 @@ FILES_IN_PROBES: tuple[Probe, ...] = (
         ),
         requires=frozenset({Capability.FILES_IN}),
         run=_probe_parents_are_created,
+    ),
+    Probe(
+        name="a-path-outside-is-refused",
+        why="an output path escaping its declared work directory would let a workload overwrite host-visible files.",
+        requires=frozenset({Capability.FILES_IN}),
+        run=_probe_a_write_path_outside_is_refused,
+    ),
+    Probe(
+        name="a-path-through-a-linked-parent-is-refused",
+        why="a symlinked output directory can redirect writes outside the sandbox.",
+        requires=frozenset({Capability.FILES_IN}),
+        run=_probe_a_path_through_a_linked_parent_is_refused_for_write,
+    ),
+    Probe(
+        name="a-linked-destination-is-refused-not-followed",
+        why="following a symlink at the destination would overwrite bytes chosen by the guest.",
+        requires=frozenset({Capability.FILES_IN}),
+        run=_probe_a_linked_destination_is_refused_not_followed,
+    ),
+    Probe(
+        name="the-working-directory-is-refused",
+        why="writing the working directory itself would replace the sandbox's filesystem root.",
+        requires=frozenset({Capability.FILES_IN}),
+        run=_probe_the_working_directory_is_refused_for_write,
+    ),
+    Probe(
+        name="a-backslash-is-refused",
+        why="accepting host separators would make the guest path grammar platform-dependent.",
+        requires=frozenset({Capability.FILES_IN}),
+        run=_probe_a_backslash_is_refused_for_write,
+    ),
+    Probe(
+        name="a-linked-working-directory",
+        why="a linked working directory can redirect every relative output outside its declared root.",
+        requires=frozenset({Capability.FILES_IN}),
+        run=_probe_a_linked_working_directory_refuses_write,
+    ),
+    Probe(
+        name="a-linked-ancestor-of-the-working-directory",
+        why="a linked ancestor can redirect a working directory before any output path is checked.",
+        requires=frozenset({Capability.FILES_IN}),
+        run=_probe_a_linked_ancestor_of_the_working_directory_refuses_write,
     ),
 )
 
@@ -923,7 +1117,9 @@ EXEC_PROBES: tuple[Probe, ...] = (
 async def _plant_nothing(subject: ConformanceSubject) -> ConformancePaths:
     """Plant the working directory the probes exec in — see the module docstring for why."""
     paths = ConformancePaths.under(subject.working_directory)
-    await subject.sandbox.write_file(f"{paths.work}/.probe-cwd", b"")
+    await subject.sandbox.write_file(
+        f"{paths.work}/.probe-cwd", b"", working_directory=subject.working_directory
+    )
     return paths
 
 
@@ -955,8 +1151,14 @@ async def _assert_present(sandbox: Sandbox, path: str, working_directory: str, w
 
 
 async def _probe_a_removal_removes(subject: ConformanceSubject, paths: ConformancePaths) -> None:
-    await subject.sandbox.write_file(f"{paths.work}/doomed.txt", b"to be removed\n")
-    await subject.sandbox.write_file(f"{paths.work}/bystander.txt", b"not the target\n")
+    await subject.sandbox.write_file(
+        f"{paths.work}/doomed.txt", b"to be removed\n", working_directory=subject.working_directory
+    )
+    await subject.sandbox.write_file(
+        f"{paths.work}/bystander.txt",
+        b"not the target\n",
+        working_directory=subject.working_directory,
+    )
     await subject.sandbox.remove("doomed.txt", working_directory=subject.working_directory)
     result = await subject.sandbox.exec(
         ["test", "-e", "doomed.txt"], working_directory=subject.working_directory, timeout=60
@@ -976,7 +1178,11 @@ async def _probe_a_missing_path_is_success(
     # Idempotence is the two-call shape a finally-based cleanup actually runs: remove the
     # same path twice, the second call from nothing. A backend that succeeds on never-seen
     # paths but raises on the repeat breaks exactly the second call.
-    await subject.sandbox.write_file(f"{paths.work}/was-here.txt", b"gone after the first call\n")
+    await subject.sandbox.write_file(
+        f"{paths.work}/was-here.txt",
+        b"gone after the first call\n",
+        working_directory=subject.working_directory,
+    )
     await subject.sandbox.remove("was-here.txt", working_directory=subject.working_directory)
     await subject.sandbox.remove("was-here.txt", working_directory=subject.working_directory)
 
@@ -1141,7 +1347,11 @@ async def _probe_a_link_inside_a_recursive_removal_is_unlinked_not_followed(
 async def _probe_the_working_directory_is_refused(
     subject: ConformanceSubject, paths: ConformancePaths
 ) -> None:
-    await subject.sandbox.write_file(f"{paths.work}/ground.txt", b"still standing\n")
+    await subject.sandbox.write_file(
+        f"{paths.work}/ground.txt",
+        b"still standing\n",
+        working_directory=subject.working_directory,
+    )
     for recursive in (False, True):
         await _refused_with(
             ValueError,

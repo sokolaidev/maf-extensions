@@ -1010,7 +1010,11 @@ async def _supervise(
         await _within(
             deadline,
             "the launcher upload",
-            sandbox.write_file(layout.launcher, launcher_script(layout, interpreter)),
+            sandbox.write_file(
+                layout.launcher,
+                launcher_script(layout, interpreter),
+                working_directory=layout.directory,
+            ),
         )
     except _DeadlineExpired as gone:
         # The one `_within` outside the supervisor loop, so nothing else converts what it
@@ -1670,7 +1674,7 @@ async def _serve_next_request(
     await _within(
         max(deadline, time.monotonic() + _RESPONSE_WRITE_GRACE),
         f"write the answer to {identifier}",
-        sandbox.write_file(response_path, answer),
+        sandbox.write_file(response_path, answer, working_directory=layout.directory),
     )
     return served + 1
 

@@ -411,7 +411,9 @@ async def act_five_disposal_reaches_everyone() -> tuple[int, int]:
         # `write_file` before `exec`, and not only to have something to echo: a container starts
         # with nothing at `work_dir`, and `exec` would fail to chdir into a directory that does
         # not exist. Writing creates the parents, which is why a kind pushes its inputs first.
-        await sandbox.write_file(f"{spec.work_dir}/marker", "routed\n")
+        await sandbox.write_file(
+            f"{spec.work_dir}/marker", "routed\n", working_directory=spec.work_dir
+        )
         result = await sandbox.exec("cat marker", working_directory=spec.work_dir, timeout=60)
         print(f"{MEASURED}it runs: {result.stdout.strip()!r}\n")
     finally:

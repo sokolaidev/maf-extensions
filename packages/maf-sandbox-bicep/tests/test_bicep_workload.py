@@ -175,9 +175,11 @@ class TestWriteOrdering:
 
     def _recording_sandbox(self, events: list[tuple[str, str]]) -> InProcessSandbox:
         class _Recording(InProcessSandbox):
-            async def write_file(self, path: str, content: str) -> None:
+            async def write_file(
+                self, path: str, content: str | bytes, *, working_directory: str
+            ) -> None:
                 events.append(("write", path))
-                await super().write_file(path, content)
+                await super().write_file(path, content, working_directory=working_directory)
 
             async def exec(self, command: str, *, working_directory: str, timeout: float):
                 events.append(("exec", command))
@@ -500,9 +502,9 @@ class _YieldingSandbox(InProcessSandbox):
     the other and a test of concurrency would pass against code that is not safe under it.
     """
 
-    async def write_file(self, path: str, content: str) -> None:
+    async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
         await asyncio.sleep(0)
-        await super().write_file(path, content)
+        await super().write_file(path, content, working_directory=working_directory)
 
     async def exec(self, command, *, working_directory: str, timeout: float):
         await asyncio.sleep(0)

@@ -93,7 +93,9 @@ class TestALiveContainer:
         async def scenario() -> None:
             sandbox = await backend.acquire(_key(scope), _spec())
             await sandbox.write_file(
-                "/maf-sandbox/work/nested/deep/main.txt", "param naïve string\n"
+                "/maf-sandbox/work/nested/deep/main.txt",
+                "param naïve string\n",
+                working_directory=_WORK,
             )
 
             read_back = await sandbox.exec(
@@ -147,7 +149,7 @@ class TestFilesOutAgainstARealEngine:
 
         async def scenario() -> None:
             sandbox = await backend.acquire(_key(scope), _spec())
-            await sandbox.write_file("/maf-sandbox/work/out.png", payload)
+            await sandbox.write_file("/maf-sandbox/work/out.png", payload, working_directory=_WORK)
 
             entry = await sandbox.stat_file("out.png", working_directory=_WORK)
             assert entry is not None
@@ -168,7 +170,9 @@ class TestFilesOutAgainstARealEngine:
 
         async def scenario() -> None:
             sandbox = await backend.acquire(_key(scope), _spec())
-            await sandbox.write_file("/maf-sandbox/work/big.bin", b"x" * 5000)
+            await sandbox.write_file(
+                "/maf-sandbox/work/big.bin", b"x" * 5000, working_directory=_WORK
+            )
             with pytest.raises(SandboxTransferCapExceeded):
                 await sandbox.read_file("big.bin", working_directory=_WORK, max_bytes=100)
 
@@ -185,7 +189,7 @@ class TestFilesOutAgainstARealEngine:
             sandbox = await backend.acquire(_key(scope), _spec())
             # A kind's first write creates the working directory (docker cp makes the parents);
             # exec's -w needs it to exist, exactly as it does for a real workload.
-            await sandbox.write_file("/maf-sandbox/work/.keep", "")
+            await sandbox.write_file("/maf-sandbox/work/.keep", "", working_directory=_WORK)
             made = await sandbox.exec(
                 ["ln", "-s", "/etc/passwd", "/maf-sandbox/work/link"],
                 working_directory=_WORK,
@@ -217,7 +221,7 @@ class TestFilesOutAgainstARealEngine:
 
         async def scenario() -> None:
             sandbox = await backend.acquire(_key(scope), _spec())
-            await sandbox.write_file("/maf-sandbox/work/.keep", "")
+            await sandbox.write_file("/maf-sandbox/work/.keep", "", working_directory=_WORK)
             made = await sandbox.exec(
                 ["ln", "-sfn", "/etc", "/maf-sandbox/work/out"], working_directory=_WORK, timeout=60
             )
@@ -401,7 +405,7 @@ class TestCollectOutputsAgainstARealEngine:
             sandbox = await router.acquire(_key(scope), spec)
             # Seed the working directory the way a real kind does — its first write_file is what
             # creates /maf-sandbox/work before any exec -w into it.
-            await sandbox.write_file("/maf-sandbox/work/.keep", "")
+            await sandbox.write_file("/maf-sandbox/work/.keep", "", working_directory=_WORK)
             await sandbox.exec(
                 ["sh", "-c", "echo rendered > result.txt"], working_directory=_WORK, timeout=60
             )
@@ -457,7 +461,7 @@ class TestAllowlistEgress:
         sandbox = asyncio.run(backend.acquire(_key(scope), spec))
         net = sandbox.container_name + "-net"
         # A kind's first write creates the working directory that exec -w needs.
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/.keep", ""))
+        asyncio.run(sandbox.write_file("/maf-sandbox/work/.keep", "", working_directory=_WORK))
         try:
             assert _network_present(net)
             allowed_rc, allowed_status = self._curl_status(sandbox, "https://mcr.microsoft.com/v2/")
@@ -504,7 +508,7 @@ class TestWhetherThisBackendCouldServeHostTools:
                 # The work directory is not in the image; the real flow creates it by writing
                 # the program before it execs anything, so do the same rather than depend on
                 # some earlier test having left it behind.
-                await sandbox.write_file(f"{_WORK}/probe/.keep", "")
+                await sandbox.write_file(f"{_WORK}/probe/.keep", "", working_directory=_WORK)
                 result = await sandbox.exec(
                     'for t in sh nohup printf mv; do command -v "$t" >/dev/null || echo "$t"; done',
                     working_directory=_WORK,
@@ -545,8 +549,13 @@ class TestWhetherThisBackendCouldServeHostTools:
                 await sandbox.write_file(
                     layout.program,
                     f"sleep {program_seconds}\necho the program finished\n",
+                    working_directory=_WORK,
                 )
-                await sandbox.write_file(layout.launcher, launcher_script(layout, interpreter="sh"))
+                await sandbox.write_file(
+                    layout.launcher,
+                    launcher_script(layout, interpreter="sh"),
+                    working_directory=_WORK,
+                )
 
                 loop = asyncio.get_running_loop()
                 started = loop.time()
@@ -615,8 +624,9 @@ class TestWhatOnlyARealRunawayCanSettle:
                 await sandbox.write_file(
                     layout.program,
                     f"echo $$ > {layout.work}/program.pid\nwhile true; do :; done\n",
+                    working_directory=_WORK,
                 )
-                await sandbox.write_file(layout.shim, "")
+                await sandbox.write_file(layout.shim, "", working_directory=_WORK)
 
                 with pytest.raises(SandboxProgramTimeout) as expired:
                     await dispatch_over_exec(
