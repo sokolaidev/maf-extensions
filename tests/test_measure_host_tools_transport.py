@@ -1,4 +1,4 @@
-"""Keep the issue 439 transport measurement structural rather than timing-based."""
+"""Keep transport measurements structural rather than timing-based."""
 
 from __future__ import annotations
 
