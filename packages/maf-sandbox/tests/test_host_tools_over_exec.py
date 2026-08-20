@@ -3556,7 +3556,10 @@ class _GuestThatRecordsRemovals(_GuestThatRecordsTheKill):
 
 
 class TestTheTransportReclaimsItsOwnFiles:
-    """Nothing in the protocol deletes, so the transport reaches for the `exec` it already has.
+    """The protocol's delete is capability-gated, so the transport uses the `exec` it has.
+
+    Requiring `FILES_DELETE` would cut off a backend that serves dispatch and withholds it,
+    which is why the framework reclaim is `EXEC`-shaped too.
 
     The files it writes carry a run's host-tool traffic — every argument a program passed to a
     host tool and every value it got back — plus the program a model wrote. Left behind, they

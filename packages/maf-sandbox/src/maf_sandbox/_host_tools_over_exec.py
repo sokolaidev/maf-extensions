@@ -1295,7 +1295,8 @@ async def reclaim_run(sandbox: Sandbox, layout: GuestRunLayout, *, timeout: floa
         descendant that left it, or any program on a guest without `setsid`, outlives one and
         can write a path back into existence after the removal returns.
         ``False`` is the load-bearing answer: a data-retention failure rather than a tidiness
-        one — nothing in the protocol deletes and ``acquire`` is get-or-create, so what is left
+        one — nothing comes back for it, since the protocol's delete is capability-gated and
+        this transport does not require it, and ``acquire`` is get-or-create, so what is left
         stays readable by every later run in this sandbox — and the caller is expected to
         escalate, which means disposing the sandbox. ``True`` narrows the window rather than
         closing it, and a caller that needs the data provably gone disposes either way.
