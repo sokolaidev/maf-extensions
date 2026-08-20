@@ -136,6 +136,7 @@ from ._protocol import (
     meets_floor,
 )
 from ._purger import SandboxPurger
+from ._reclaim import ReclaimFailure
 from ._router import (
     NoSandboxBackend,
     SandboxBackendNotPermitted,
@@ -182,6 +183,7 @@ __all__ = [
     "NoSandboxBackend",
     "OutputDisposition",
     "OutputSink",
+    "ReclaimFailure",
     "Sandbox",
     "SandboxArtifactNameCollision",
     "SandboxArtifactNameInvalid",

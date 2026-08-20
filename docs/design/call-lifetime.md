@@ -1,6 +1,6 @@
 # The tool call: what owns it, what it owns, and what happens when it ends
 
-> **Status: PROPOSED.** Nothing described here is built yet. The isolation and capability axes it leans on are [`two-axis-sandbox-policy.md`](two-axis-sandbox-policy.md); the baseline it evolves is [`sandbox-architecture.md`](sandbox-architecture.md).
+> **Status: PROPOSED.** This is the target, written as one; where it and the code disagree, the code is what exists. The isolation and capability axes it leans on are [`two-axis-sandbox-policy.md`](two-axis-sandbox-policy.md); the baseline it evolves is [`sandbox-architecture.md`](sandbox-architecture.md).
 
 ## The question
 
@@ -81,16 +81,23 @@ _CALL: ContextVar[_SandboxToolCall | None] = ContextVar("maf_sandbox_call", defa
 @dataclass
 class _SandboxToolCall:
     """What one tool call has done that the `finally` has to undo."""
-    path: str | None = None         # set by the first guest_call_path()
-    sandbox: Sandbox | None = None  # set by acquire(), when it succeeds
-    key: SandboxKey | None = None   # set alongside it, for the failure report
+    owner: object                   # the binding whose wrapper opened this call
+    name: str | None = None         # set by the first guest_call_path()
+    acquired: dict[SandboxKey, Sandbox] = ...   # every sandbox this call reached
+    closed: bool = False            # set before the removal walks `acquired`
 ```
+
+Four fields rather than one path, and each answers a way the record was wrong about *which*
+sandbox owns a call's files: `owner`, because one `ContextVar` serves every binding in the
+process; `acquired` as a mapping, because `acquire` takes a key and a call can reach two;
+`closed`, because a task the body left running still holds the record after the removal has
+run. Only `name` is the thing a kind asked for.
 
 Correct under asyncio: each task starts from a copy of its parent's context, so a body that spawns children has them *read* the right record and nothing a child sets reaches a sibling.
 
 - **It is mutable, and the only mutable thing in the chain** — because its lifetime is one call. The binding is immutable because its lifetime is the process. One rule, two objects.
 - **It is private.** A kind calls `binding.guest_call_path()`; the record answers.
-- **Asking outside a call raises.** There is no call. Returning a path nothing will reclaim is the leak wearing the API meant to close it.
+- **Asking outside a call raises**, and so does asking after one returned. There is no call, or there is no longer one: returning a path nothing will reclaim is the leak wearing the API meant to close it.
 
 Both alternatives are closed rather than unattractive. Passing a per-call object into the body would put it in the tool's JSON schema, because the body's signature *is* the schema. Rebuilding the binding per call contradicts the guarantee that `build` runs once, when a tool is attached.
 
