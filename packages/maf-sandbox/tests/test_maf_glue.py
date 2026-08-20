@@ -842,6 +842,18 @@ class TestAReclaimThatDidNotHappen:
             assert _call(tool, target="x").startswith("/maf-sandbox/work/")
         assert any("on_reclaim_failure raised" in r.message for r in caplog.records)
 
+    def test_a_callback_cancelled_mid_dispose_does_not_fail_the_call(self, caplog):
+        """`CancelledError` is a `BaseException`: it would leave the `finally` and take the answer."""
+
+        async def on_failure(failure: ReclaimFailure) -> None:
+            raise asyncio.CancelledError()
+
+        backend = InProcessSandboxBackend(_RefusesToRemove())
+        tool = _reclaiming(backend, on_reclaim_failure=on_failure)
+        with caplog.at_level(logging.WARNING, logger="test_workload"):
+            assert _call(tool, target="x").startswith("/maf-sandbox/work/")
+        assert any("on_reclaim_failure raised" in r.message for r in caplog.records)
+
     def test_a_removal_the_backend_cannot_even_attempt_is_reported(self):
         heard: list[ReclaimFailure] = []
 
@@ -866,6 +878,79 @@ class TestTheReclaimBound:
     def test_the_attach_gate_still_wins(self):
         """Refused after the gate, like the three spec refusals: unconfigured still gets ``[]``."""
         assert _attach_with(_reclaiming_body, None, reclaim_timeout=0) == []
+
+
+class TestWhatTheWrapperDoesNotTouch:
+    """A synchronous body cannot hold a sandbox, so it owns nothing and is left alone."""
+
+    def _sync_tool(self):
+        def build(session: SandboxToolSession):
+            def widget_run(target: str) -> str:
+                """Do a thing to ``target``, without awaiting anything."""
+                return f"did {target}"
+
+            return widget_run
+
+        return _attach_with(build, _router(InProcessSandboxBackend()))[0]
+
+    def test_a_sync_body_still_runs(self):
+        """Wrapping it in `async def ... await body(...)` would raise TypeError on every call."""
+        tool = self._sync_tool()
+        assert _fn(tool)(target="x") == "did x"
+
+    def test_a_sync_body_reaches_maf_unwrapped(self):
+        """MAF runs a sync tool off the event loop, and decides that from this predicate."""
+        assert not asyncio.iscoroutinefunction(_fn(self._sync_tool()))
+
+
+class TestASecondBinding:
+    """One `ContextVar` serves every binding in the process, so a record has to know whose it is."""
+
+    def test_acquiring_through_another_session_does_not_redirect_the_reclaim(self):
+        mine = InProcessSandboxBackend()
+        theirs = InProcessSandboxBackend()
+        other = SandboxToolSession(
+            _router(theirs),
+            _context(),
+            "agent-2",
+            _SPEC,
+            name="other_tool",
+            logger=logging.getLogger("test_workload"),
+        )
+
+        def build(session: SandboxToolSession):
+            async def widget_run(target: str) -> str:
+                """Reach a second session on the way through."""
+                key = session.key()
+                assert not isinstance(key, str)
+                assert not isinstance(await session.acquire(key), str)
+                path = session.guest_call_path()
+                stray = other.key()
+                assert not isinstance(stray, str)
+                assert not isinstance(await other.acquire(stray), str)
+                return path
+
+            return widget_run
+
+        path = _call(_reclaiming(mine, build), target="x")
+        assert _rm_targets(mine.sandbox) == [path]
+        assert _rm_targets(theirs.sandbox) == []
+
+    def test_a_second_session_cannot_take_a_path_inside_this_call(self):
+        other = _session()
+
+        def build(session: SandboxToolSession):
+            async def widget_run(target: str) -> str:
+                """Ask the wrong session for a path."""
+                try:
+                    other.guest_call_path()
+                except RuntimeError:
+                    return "refused"
+                return "answered"
+
+            return widget_run
+
+        assert _call(_reclaiming(InProcessSandboxBackend(), build), target="x") == "refused"
 
 
 class TestTheWrapperIsTransparent:

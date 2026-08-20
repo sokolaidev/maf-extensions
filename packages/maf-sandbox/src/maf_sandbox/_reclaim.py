@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import posixpath
 import shlex
+from asyncio import CancelledError
 from dataclasses import dataclass
 
 from ._error_detail import error_detail
@@ -34,8 +35,9 @@ class ReclaimFailure:
 
     #: The tool whose call left it, as the model sees the name.
     tool: str
-    #: The sandbox it is in, or ``None`` when the call never acquired one.
-    key: SandboxKey | None
+    #: The sandbox it is in. Always set: nothing is reported for a call that acquired none,
+    #: because such a call wrote nothing.
+    key: SandboxKey
     #: The absolute guest path that is still there, with whatever is under it.
     path: str
     #: Why the removal did not happen, in this stack's own words.
@@ -58,17 +60,27 @@ async def reclaim_guest_path(
         resolved = confine_guest_path(path, working_directory)
     except ValueError as outside:
         return str(outside)
+    # Both guards stand on their own, because a recursive delete is irreversible and neither
+    # should depend on the caller having derived `path` the way `guest_call_path` does. Two
+    # components at minimum: `/` and `/tmp` are the shapes that turn a cleanup into an outage.
     if resolved == posixpath.normpath(working_directory):
-        # An irreversible recursive delete, so the guard does not rely on the caller having
-        # derived `path` the way `guest_call_path` does.
         return f"{resolved!r} is the working directory itself"
+    if len([part for part in resolved.split("/") if part]) < 2:
+        return f"{resolved!r} is too close to the root to remove recursively"
     try:
         removed = await sandbox.exec(
             f"rm -rf {shlex.quote(resolved)}",
-            working_directory=working_directory,
+            # `/`, not `working_directory`: the target is absolute, so the shell's own
+            # directory decides nothing — and no backend creates a spec's work dir, so a call
+            # that took a path and wrote nothing would have this fail on the missing directory
+            # it was told to run in, reporting a leak where there is nothing left.
+            working_directory="/",
             timeout=timeout,
         )
-    except Exception as refused:  # noqa: BLE001 — an unreclaimed directory is a leak, not a fault
+    except (Exception, CancelledError, GeneratorExit) as refused:  # noqa: BLE001
+        # A `CancelledError` is a `BaseException` and would walk straight past `Exception`, out
+        # of the `finally` that called this, taking the record of the leak with it — and a
+        # cancelled call is exactly when something is most likely to be left behind.
         return f"the removal call failed: {error_detail(refused)}"
     if removed.exit_code != 0:
         detail = removed.stderr.strip()

@@ -29,8 +29,10 @@ Five things live here, and each of them had begun to exist twice before it did:
 from __future__ import annotations
 
 import functools
+import inspect
 import logging
 import math
+from asyncio import CancelledError
 from collections.abc import Awaitable, Callable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -83,24 +85,30 @@ _SANDBOX_UNAVAILABLE = "Error: sandbox unavailable — degrading to T0 (LLM self
 class _SandboxToolCall:
     """What one tool call has done that the ``finally`` has to undo.
 
-    The only mutable object in this module, and the only one whose lifetime is a single call —
-    which is the same fact twice. :class:`SandboxToolSession` is immutable because it lives for
-    the process.
+    ``owner`` is the session whose wrapper opened the call. One `ContextVar` serves every
+    binding in the process, so a body that reaches a *second* session would otherwise record
+    that session's sandbox here and have its own path removed from the wrong one.
     """
 
+    owner: object
     path: str | None = None
-    sandbox: Sandbox | None = None
-    key: SandboxKey | None = None
+    acquired: tuple[Sandbox, SandboxKey] | None = None
 
 
 #: The call a tool body is running inside, or ``None`` outside one.
 #:
-#: A :class:`~contextvars.ContextVar` rather than an attribute on the session, because one
-#: session serves every concurrent call to its tool: two parallel calls would be handed the same
-#: directory, and the first to finish would reclaim one the other is still running out of. Each
-#: task starts from a copy of its parent's context, so a body that spawns children has them read
-#: the right record and nothing a child sets reaches a sibling.
+#: Not an attribute on the session: one session serves every concurrent call to its tool, so two
+#: parallel calls would be handed the same path and the first to finish would remove one the
+#: other is still running in. A task starts from a copy of its parent's context, so a child
+#: reads the record and cannot reach a sibling's — but a child outliving the call reads a path
+#: the ``finally`` has already removed, and nothing will reclaim what it writes after that.
 _CALL: ContextVar[_SandboxToolCall | None] = ContextVar("maf_sandbox_call", default=None)
+
+
+def _this_call(owner: object) -> _SandboxToolCall | None:
+    """The call ``owner`` is running inside, or ``None`` — including when it belongs elsewhere."""
+    call = _CALL.get()
+    return call if call is not None and call.owner is owner else None
 
 
 def _prefixed(name: str) -> str:
@@ -325,10 +333,13 @@ class SandboxToolSession:
         ``directory`` because that is all the protocol promises: a backend serving its store from
         memory, or with no enumeration primitive under it, addresses one the same way.
 
+        The reclaim covers what was written through the sandbox :meth:`acquire` returned. A kind
+        that writes here through a sandbox it got elsewhere keeps what it wrote.
+
         Raises:
             RuntimeError: Called outside a tool call, where nothing would reclaim what it names.
         """
-        call = _CALL.get()
+        call = _this_call(self)
         if call is None:
             raise RuntimeError(
                 f"{self._name}: guest_call_path() was called outside a tool call, so nothing "
@@ -392,12 +403,11 @@ class SandboxToolSession:
             # tenant ids, so it goes to the log and never into the model's context.
             self._logger.warning(f"{self._log_prefix}: sandbox unavailable: %s", error_detail(exc))
             return _SANDBOX_UNAVAILABLE
-        call = _CALL.get()
+        call = _this_call(self)
         if call is not None:
             # Recorded on the way through rather than re-derived in the `finally`, where a
             # second `acquire` could fail on its own and report a reclaim failure for it.
-            call.sandbox = sandbox
-            call.key = key
+            call.acquired = (sandbox, key)
         return sandbox
 
 
@@ -415,13 +425,14 @@ async def _reclaim_the_call(
     Never raises. It runs in :func:`sandboxed_tool`'s ``finally``, where an exception would
     replace whatever the call was already reporting with a message about cleanup.
     """
-    if call.path is None or call.sandbox is None:
+    if call.path is None or call.acquired is None:
         # Nothing was named, or nothing was acquired to write into it — either way there is
         # nothing there, and no round trip is worth spending to prove it.
         return
+    sandbox, key = call.acquired
     prefix = _prefixed(tool)
     reason = await reclaim_guest_path(
-        call.sandbox, call.path, working_directory=spec.work_dir, timeout=timeout
+        sandbox, call.path, working_directory=spec.work_dir, timeout=timeout
     )
     if reason is None:
         return
@@ -431,8 +442,10 @@ async def _reclaim_the_call(
     if on_failure is None:
         return
     try:
-        await on_failure(ReclaimFailure(tool=tool, key=call.key, path=call.path, reason=reason))
-    except Exception as raised:  # noqa: BLE001 — a host's callback must not fail the call
+        await on_failure(ReclaimFailure(tool=tool, key=key, path=call.path, reason=reason))
+    except (Exception, CancelledError, GeneratorExit) as raised:  # noqa: BLE001
+        # Including the two that are not `Exception`: a host's callback must not fail the call,
+        # and one cancelled mid-dispose would otherwise replace the answer the body produced.
         logger.warning(f"{prefix}: on_reclaim_failure raised: %s", error_detail(raised))
 
 
@@ -596,16 +609,20 @@ def sandboxed_tool(
         additional_properties=properties,
     )
     body = build(session)
+    if not inspect.iscoroutinefunction(body):
+        # `acquire` is a coroutine, so a synchronous body can hold no sandbox and owns nothing
+        # to reclaim. Left unwrapped rather than wrapped-and-skipped: MAF runs a sync tool off
+        # the event loop, and this predicate is the one it decides that with.
+        return [decorate(body)]
 
-    # `functools.wraps` is what keeps MAF reading the *body*: the tool's description is
-    # `__doc__`, its parameter schema is `inspect.signature` plus `get_type_hints`, and its
-    # context injection is the signature again — all of which follow `__wrapped__`. Every one
-    # of those fails silently without it, and towards the model rather than the log: no
-    # description, a schema with no parameters at all, or every parameter degraded to `str`.
-    # Deliberately no docstring here for the same reason — one would become what a model reads.
+    # `functools.wraps` is what keeps MAF reading the *body* — the description is `__doc__`,
+    # the parameter schema is `inspect.signature` plus `get_type_hints`, the context injection
+    # is the signature again. Without it each fails silently and towards the model: no
+    # description, a schema with no parameters, every parameter degraded to `str`. No docstring
+    # here for the same reason — one would become what a model reads.
     @functools.wraps(body)
     async def reclaiming(*args: Any, **kwargs: Any) -> Any:
-        call = _SandboxToolCall()
+        call = _SandboxToolCall(owner=session)
         token = _CALL.set(call)
         try:
             return await body(*args, **kwargs)

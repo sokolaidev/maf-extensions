@@ -27,7 +27,17 @@ class TestARemovalThatRuns:
     def test_a_path_under_the_work_dir_is_removed(self):
         sandbox = InProcessSandbox()
         assert _reclaim(sandbox, f"{_WORK}/abc123") is None
-        assert sandbox.commands == [(f"rm -rf {_WORK}/abc123", _WORK, 30.0)]
+        assert sandbox.commands == [(f"rm -rf {_WORK}/abc123", "/", 30.0)]
+
+    def test_it_runs_from_a_directory_that_exists(self):
+        """No backend creates a spec's work dir, and a backend that `cd`s there first fails.
+
+        The target is absolute, so the shell's own directory decides nothing — and running from
+        the work dir would report a leak for a call that took a path and wrote nothing.
+        """
+        sandbox = InProcessSandbox()
+        _reclaim(sandbox, f"{_WORK}/abc123")
+        assert sandbox.commands[0][1] == "/"
 
     def test_a_name_the_shell_would_read_is_quoted(self):
         sandbox = InProcessSandbox()
@@ -57,6 +67,14 @@ class TestARemovalThatIsRefused:
         assert "the working directory itself" in reason
         assert sandbox.commands == []
 
+    def test_a_path_one_component_from_the_root(self):
+        """`rm -rf /abc123` under a work dir of `/` — the shape that turns cleanup into outage."""
+        sandbox = InProcessSandbox()
+        reason = _reclaim(sandbox, "/abc123", working_directory="/")
+        assert reason is not None
+        assert "too close to the root" in reason
+        assert sandbox.commands == []
+
     def test_the_working_directory_spelled_another_way(self):
         """`==` on the caller's spelling would answer "not the work dir" to `/x/work/.`."""
         sandbox = InProcessSandbox()
@@ -80,3 +98,14 @@ class TestItNeverRaises:
         reason = _reclaim(InProcessSandbox(raises=OSError("the guest is gone")), f"{_WORK}/abc123")
         assert reason is not None
         assert "the guest is gone" in reason
+
+    def test_a_cancelled_removal_becomes_a_reason_rather_than_a_lost_record(self):
+        """`CancelledError` is a `BaseException` and walks straight past `except Exception`.
+
+        A cancelled call is when something is most likely to be left behind, so it is the one
+        path that must not lose the record on its way out of the caller's `finally`.
+        """
+        cancelled = InProcessSandbox(raises=asyncio.CancelledError())
+        reason = _reclaim(cancelled, f"{_WORK}/abc123")
+        assert reason is not None
+        assert "the removal call failed" in reason
