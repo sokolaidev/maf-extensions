@@ -35,7 +35,6 @@ import logging
 import math
 import posixpath
 import sys
-from asyncio import CancelledError
 from collections.abc import Awaitable, Callable, Mapping
 from contextvars import ContextVar
 from dataclasses import dataclass, field
@@ -477,7 +476,7 @@ async def _reclaim_the_call(
             reason = await reclaim_guest_path(
                 sandbox, call.name, working_directory=spec.work_dir, timeout=timeout
             )
-        except (CancelledError, GeneratorExit):
+        except (asyncio.CancelledError, GeneratorExit):
             # Recorded and then let through, and the rest of the sandboxes are abandoned: the
             # caller's deadline has passed, and containing this would have the call return the
             # body's answer past a bound the host thought it had. The leak still has to be
@@ -505,7 +504,7 @@ async def _reclaim_the_call(
             logger.warning(f"{prefix}: on_reclaim_failure did not finish within %ss", timeout)
         except Exception as raised:  # noqa: BLE001 — a host's callback must not fail the call
             logger.warning(f"{prefix}: on_reclaim_failure raised: %s", error_detail(raised))
-        except (CancelledError, GeneratorExit) as stopped:
+        except (asyncio.CancelledError, GeneratorExit) as stopped:
             # Not contained, for the reason above: the callback awaits, so this is the caller's
             # cancellation arriving inside it and not a failure of the callback's own.
             # Named rather than stated, so this line interpolates: `prefix` has its `%` doubled
@@ -719,7 +718,7 @@ def sandboxed_tool(
             # be handed this path while it is being deleted.
             call.closed = True
             bound = reclaim_timeout
-            if isinstance(sys.exception(), (CancelledError, GeneratorExit)):
+            if isinstance(sys.exception(), (asyncio.CancelledError, GeneratorExit)):
                 bound = min(reclaim_timeout, _CANCELLED_CALL_GRACE)
             await _reclaim_the_call(
                 call,

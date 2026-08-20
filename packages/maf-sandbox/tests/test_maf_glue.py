@@ -1163,7 +1163,7 @@ class TestAStragglerDuringTheRemoval:
 
     def test_it_cannot_change_what_is_being_removed(self):
         release = asyncio.Event()
-        started: list[asyncio.Task[None]] = []
+        started: list[asyncio.Task[bool]] = []
 
         class _YieldsMidRemoval(InProcessSandbox):
             async def exec(self, command, *, working_directory, timeout):
@@ -1185,9 +1185,10 @@ class TestAStragglerDuringTheRemoval:
                 assert not isinstance(await session.acquire(key), str)
                 session.guest_call_path()
 
-                async def straggler() -> None:
+                async def straggler() -> bool:
                     await release.wait()
-                    await session.acquire(TestAStragglerDuringTheRemoval._LATER)
+                    got = await session.acquire(TestAStragglerDuringTheRemoval._LATER)
+                    return not isinstance(got, str)
 
                 started.append(asyncio.create_task(straggler()))
                 return "done"
@@ -1196,7 +1197,9 @@ class TestAStragglerDuringTheRemoval:
 
         async def scenario() -> str:
             answered = await _fn(_reclaiming(backend, build))(target="x")
-            await started[0]
+            # A closed call still serves `acquire` — it just records nothing, so there is
+            # nothing for the removal to trip over.
+            assert await started[0]
             return answered
 
         # Without the guard this is `RuntimeError: dictionary changed size during iteration`,
