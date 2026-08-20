@@ -238,6 +238,37 @@ class TestCli:
         subprocess.run(["git", "add", "--", "--commit-msg"], cwd=tmp_path, check=True)
         assert _main_in(monkeypatch, tmp_path, "--staged", "--commit-msg") == 0
 
+    def test_the_staged_show_uses_the_path_form(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        # ``:<path>`` lets a staged name of the shape ``0:notes.md`` parse as
+        # ``:stage:path`` and read a sibling's blob; only the ``:./`` form names the
+        # path unambiguously.
+        _init_repo(tmp_path)
+        _stage(tmp_path, "notes.md", "connect to db.orders." + "internal\n")
+        shows: list[str] = []
+        original_run = subprocess.run
+
+        def recording(argv, *args, **kwargs):
+            if argv[:2] == ["git", "show"]:
+                shows.append(argv[2])
+            return original_run(argv, *args, **kwargs)
+
+        monkeypatch.setattr(guard.subprocess, "run", recording)
+        assert _main_in(monkeypatch, tmp_path, "--staged", "notes.md") == 1
+        assert shows == [":./notes.md"]
+
+    def test_a_staged_path_shaped_like_a_stage_number_is_judged(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        if os.sep != "/":
+            pytest.skip("file names cannot carry a colon on this platform")
+        _init_repo(tmp_path)
+        (tmp_path / "0:notes.md").write_text("connect to db.orders." + "internal\n", "utf-8")
+        (tmp_path / "notes.md").write_text("nothing to see\n", "utf-8")
+        subprocess.run(["git", "add", "0:notes.md", "notes.md"], cwd=tmp_path, check=True)
+        assert _main_in(monkeypatch, tmp_path, "--staged", "0:notes.md") == 1
+
     def test_the_list_reaches_linked_worktrees(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ):

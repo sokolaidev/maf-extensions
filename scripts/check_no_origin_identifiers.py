@@ -41,8 +41,10 @@ _DECODINGS = ("utf-8", "utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be")
 
 def _staged_blob(path: str) -> str:
     """The staged content of ``path`` as text, decoded lossily in every known encoding."""
+    # ``:./`` forces path interpretation: a staged name of the shape ``0:notes.md`` would
+    # otherwise parse as ``:stage:path`` and git would read a different file.
     result = subprocess.run(
-        ["git", "show", f":{path}"], cwd=_REPO_ROOT, capture_output=True, check=False
+        ["git", "show", f":./{path}"], cwd=_REPO_ROOT, capture_output=True, check=False
     )
     if result.returncode != 0:
         return ""
