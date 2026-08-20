@@ -26,6 +26,17 @@ _MAX_DOC = 100
 _LENGTH_RULES = ("E501", "W505")
 
 
+def _selects_length_rule(rule: str) -> bool:
+    """Whether a ruff selector names either length rule.
+
+    Selectors are prefixes (``E5`` matches ``E501``) and ``ALL`` matches everything,
+    so an exact-membership test would miss both.
+    """
+    if rule == "ALL":
+        return True
+    return any(target.startswith(rule) for target in _LENGTH_RULES)
+
+
 def src_pattern_matches(src: Path, pattern: str) -> bool:
     """Whether a ruff path pattern could resolve to a ``src/`` file.
 
@@ -45,7 +56,7 @@ def _src_ignores(src: Path, lint: dict) -> list[str]:
     """Per-file-ignore entries that silence ``E501``/``W505`` on ``src/`` files."""
     offenders: list[str] = []
     for pattern, rules in lint.get("per-file-ignores", {}).items():
-        if not any(rule in rules for rule in _LENGTH_RULES):
+        if not any(_selects_length_rule(rule) for rule in rules):
             continue
         if pattern.startswith("!") or src_pattern_matches(src, pattern):
             # A negated pattern ("!tests/**") makes ruff apply the listed rules only
@@ -59,12 +70,18 @@ def _assert_enforced(pyproject: Path) -> None:
     """The package's own config enables the length rules, or the scan proves nothing.
 
     A ruff run proves src/ is clean today; it cannot prove a dropped select, a missing
-    ``max-doc-length`` (which makes ``W505`` a no-op), or an ignore matching the rules out
-    of ``src/`` was ever enforced. All of those are rejected here.
+    ``max-doc-length`` (which makes ``W505`` a no-op), a raised ``line-length``, an exclude
+    covering ``src/``, or an ignore matching the rules out of ``src/`` was ever enforced.
+    All of those are rejected here.
     """
     config = tomllib.loads(pyproject.read_text())
-    lint = config["tool"]["ruff"]["lint"]
+    tool = config["tool"]["ruff"]
+    lint = tool["lint"]
     package = pyproject.parent
+    assert tool.get("line-length") == _MAX_DOC, (
+        f"{package.name} dropped line-length={_MAX_DOC}; E501 no longer enforces the "
+        f"100-column rule (#454)"
+    )
     selected = list(lint.get("select", [])) + list(lint.get("extend-select", []))
     assert "E501" in selected and "W505" in selected, (
         f"{package.name} dropped the line-length rules (#454)"
@@ -79,10 +96,17 @@ def _assert_enforced(pyproject: Path) -> None:
         )
     src = package / "src"
     # `exclude`/`extend-exclude` are honoured during directory traversal, not for the
-    # explicit `src/` path the scan passes below, so none is exploitable today. A future
-    # switch to a dir-scan would reopen the gate silently; reject fail-closed.
-    for key in ("exclude", "extend-exclude"):
-        for pattern in lint.get(key, []):
+    # explicit `src/` path the scan passes below, so a lint-scoped one is only a trap for
+    # a future dir-scan. The top-level `[tool.ruff]` lists, however, hold through: they
+    # are read before lint settings and would hide `src/` from the scan even now. Reject
+    # both, and reject both scopes fail-closed.
+    for table, key in (
+        (lint, "exclude"),
+        (lint, "extend-exclude"),
+        (tool, "exclude"),
+        (tool, "extend-exclude"),
+    ):
+        for pattern in table.get(key, []):
             if src_pattern_matches(src, pattern):
                 raise AssertionError(
                     f"{package.name} {key}={pattern!r} could exclude src/ files "
@@ -107,7 +131,7 @@ def _assert_clean(pyproject: Path) -> None:
     assert result.returncode == 0, (
         f"{package.name} src/ violates {_SELECT}. The package's pyproject enables these rules; "
         "a violation here is either a new over-limit line or a config that silently stopped "
-        "enforcing them (#454).\n" + result.stdout
+        "enforcing them (#454).\n" + result.stdout + result.stderr
     )
 
 
@@ -151,6 +175,9 @@ class TestSrcDocLineLength:
         pyproject = pkg / "pyproject.toml"
         pyproject.write_text(
             """\
+[tool.ruff]
+line-length = 100
+
 [tool.ruff.lint]
 select = ["E501", "W505"]
 exclude = ["src/**"]
@@ -162,3 +189,83 @@ max-doc-length = 100
         )
         with pytest.raises(AssertionError, match="could exclude src/ files"):
             _assert_enforced(pyproject)
+
+    def test_assert_enforced_rejects_top_level_exclude(self, tmp_path):
+        # `[tool.ruff] exclude` is read before lint settings, so it holds even for the
+        # explicit src/ path the scan passes. Finding 1: the guard must reject it.
+        pkg = tmp_path / "pkg"
+        (pkg / "src").mkdir(parents=True)
+        (pkg / "src" / "x.py").write_text("x = 1\n", encoding="utf-8")
+        pyproject = pkg / "pyproject.toml"
+        pyproject.write_text(
+            """\
+[tool.ruff]
+line-length = 100
+exclude = ["src/**"]
+
+[tool.ruff.lint]
+select = ["E501", "W505"]
+
+[tool.ruff.lint.pycodestyle]
+max-doc-length = 100
+""",
+            encoding="utf-8",
+        )
+        with pytest.raises(AssertionError, match="could exclude src/ files"):
+            _assert_enforced(pyproject)
+
+    def test_assert_enforced_rejects_line_length_above_100(self, tmp_path):
+        # Finding 2: the gate pinned max-doc-length but never line-length, so a package
+        # could raise line-length to 120 and E501 would stop mattering while the test
+        # stayed green. line-length must equal the 100-column floor.
+        pkg = tmp_path / "pkg"
+        (pkg / "src").mkdir(parents=True)
+        (pkg / "src" / "x.py").write_text("x = 1\n", encoding="utf-8")
+        pyproject = pkg / "pyproject.toml"
+        pyproject.write_text(
+            """\
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E501", "W505"]
+
+[tool.ruff.lint.pycodestyle]
+max-doc-length = 100
+""",
+            encoding="utf-8",
+        )
+        with pytest.raises(AssertionError, match="line-length=100"):
+            _assert_enforced(pyproject)
+
+    def test_src_ignores_rejects_length_rule_prefix(self, tmp_path):
+        # Finding 3: per-file-ignores accept selector prefixes ("E5") and "ALL", which
+        # the exact-membership check missed. The gate must stay fail-closed.
+        src = tmp_path / "pkg" / "src"
+        src.mkdir(parents=True)
+        (src / "x.py").write_text("x = 1\n", encoding="utf-8")
+        assert _src_ignores(src, {"per-file-ignores": {"src/**": ["E5"]}})
+        assert _src_ignores(src, {"per-file-ignores": {"src/**": ["ALL"]}})
+
+    def test_src_ignores_accepts_unrelated_prefix(self):
+        # A prefix that names no length rule (e.g. "F5") is not a length-rule ignore.
+        lint = {"per-file-ignores": {"src/**": ["F5"]}}
+        assert _src_ignores(Path("pkg/src"), lint) == []
+
+    def test_assert_clean_failure_appends_stderr(self, tmp_path, monkeypatch):
+        # Finding 4: a failed scan must surface stderr too, or a violation that only
+        # appears there (a config error, say) is invisible in the assertion message.
+        src = tmp_path / "pkg" / "src"
+        src.mkdir(parents=True)
+        (src / "x.py").write_text("x = 1\n", encoding="utf-8")
+        pyproject = tmp_path / "pkg" / "pyproject.toml"
+        pyproject.write_text("", encoding="utf-8")
+
+        class R:
+            returncode = 1
+            stdout = "out-line\n"
+            stderr = "err-line\n"
+
+        monkeypatch.setattr(subprocess, "run", lambda *a, **k: R())
+        with pytest.raises(AssertionError, match="err-line"):
+            _assert_clean(pyproject)
