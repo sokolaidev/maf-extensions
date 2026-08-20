@@ -33,7 +33,6 @@ import unicodedata
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, cast
-from uuid import uuid4
 
 from maf_sandbox import (
     DEFAULT_TRANSFER_LIMITS,
@@ -754,7 +753,8 @@ async def _execute(
 
     # Chosen here rather than after `acquire`, so that a declared name can be judged against
     # the guest path it will actually become — the prefix is 13 bytes of the 255 a name gets.
-    run_id = uuid4().hex[:12]
+    call_directory = session.guest_call_path()
+    run_id = call_directory.rsplit("/", 1)[-1]
     # Where the model's own files live, relative to `work_dir`: the run directory itself, or
     # the work subdirectory of it when the transport owns the run. Everything addressed by a
     # name a model chose is built from this — what is shared in, what the manifest is read
@@ -808,15 +808,18 @@ async def _execute(
     if isinstance(sandbox, str):
         return sandbox
 
-    # Fresh per call, because `acquire` is get-or-create: see where `run_id` is chosen.
-    run_dir = f"{session.spec.work_dir}/{run_id}"
+    # The session owns this path, and `sandboxed_tool` reclaims it when the call returns.
     # Built before anything is written, because it decides where everything goes. A run that
     # dispatches is two directories — the model's files in `work`, the program and the shim in
     # the transport's — and one that does not is the run directory flat, which is what a kind
     # writing no shim has always been. The program name and the interpreter are passed rather
     # than defaulted, so this kind's constants and the transport's cannot drift apart.
-    layout = guest_run_layout(run_dir, program=_PROGRAM_FILENAME) if dispatch is not None else None
-    shared_dir = layout.work if layout is not None else run_dir
+    layout = (
+        guest_run_layout(call_directory, program=_PROGRAM_FILENAME)
+        if dispatch is not None
+        else None
+    )
+    shared_dir = layout.work if layout is not None else call_directory
 
     for name, content in shared:
         refusal = await _write_shared(
@@ -825,12 +828,12 @@ async def _execute(
         if refusal is not None:
             return refusal
 
-    program_path = layout.program if layout is not None else f"{run_dir}/{_PROGRAM_FILENAME}"
+    program_path = layout.program if layout is not None else f"{call_directory}/{_PROGRAM_FILENAME}"
     try:
         await sandbox.write_file(
             program_path,
             code,
-            working_directory=layout.directory if layout is not None else run_dir,
+            working_directory=layout.directory if layout is not None else call_directory,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning(
@@ -854,7 +857,7 @@ async def _execute(
         else:
             # An argv sequence, never a command line: the model's source never reaches a shell.
             result = await sandbox.exec(
-                [_INTERPRETER, program_path], working_directory=run_dir, timeout=timeout
+                [_INTERPRETER, program_path], working_directory=call_directory, timeout=timeout
             )
     except SandboxProgramTimeout as expired:
         # The transport's own bound — but *which* of its bounds is something only its message
