@@ -867,13 +867,14 @@ async def _execute(
         # the host's reason for having none; `output` is empty in the second case, so
         # rebuilding the sentence from that attribute drops the reason silently.
         #
+        # It says what became of the program too — signalled with its process group, signalled
+        # alone with anything it spawned still running, or not signalled at all. Only the last
+        # leaves disposal as the remedy, so a blanket claim added here would contradict the
+        # sentence it is appended to.
+        #
         # Surfaced whole rather than quoted from: the transport writes these model-safe, with
         # a backend's own text kept to the log, which is the same rule this kind follows.
-        logger.warning(
-            "execute_code: %s — if the program was started it is still running, and nothing "
-            "here can stop a detached process; disposing the sandbox is what does (#375)",
-            expired,
-        )
+        logger.warning("execute_code: %s", expired)
         return f"Error: {expired}"
     except TimeoutError as unfinished:
         if dispatch is None:
