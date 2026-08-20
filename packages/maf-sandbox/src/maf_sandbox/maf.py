@@ -121,6 +121,18 @@ class _SandboxToolCall:
 _CALL: ContextVar[_SandboxToolCall | None] = ContextVar("maf_sandbox_call", default=None)
 
 
+def _awaits(body: object) -> bool:
+    """Whether calling ``body`` gives something to await.
+
+    An instance with an async ``__call__`` is as awaitable as a coroutine function, and only its
+    ``__call__`` is the coroutine function :mod:`inspect` can see — the same reading
+    ``_host_tools`` makes of a dispatch observer.
+    """
+    return inspect.iscoroutinefunction(body) or inspect.iscoroutinefunction(
+        getattr(body, "__call__", None)
+    )
+
+
 def _this_call(owner: object) -> _SandboxToolCall | None:
     """The call ``owner`` is running inside, or ``None`` — including when it belongs elsewhere."""
     call = _CALL.get()
@@ -685,10 +697,10 @@ def sandboxed_tool(
         additional_properties=properties,
     )
     body = build(session)
-    if not inspect.iscoroutinefunction(body):
-        # `acquire` is a coroutine, so a synchronous body can hold no sandbox and owns nothing
-        # to reclaim. Left unwrapped rather than wrapped-and-skipped: MAF runs a sync tool off
-        # the event loop, and this predicate is the one it decides that with.
+    if not _awaits(body):
+        # `acquire` is a coroutine, so a body that awaits nothing can hold no sandbox and owns
+        # nothing to reclaim. Left unwrapped rather than wrapped-and-skipped, so MAF still runs
+        # it off the event loop the way it runs any synchronous tool.
         return [decorate(body)]
     if not [part for part in posixpath.normpath(spec.work_dir).split("/") if part]:
         # Here rather than with the spec refusals above, because it constrains only a tool that

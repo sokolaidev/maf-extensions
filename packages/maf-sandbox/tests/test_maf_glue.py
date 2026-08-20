@@ -1023,6 +1023,50 @@ class TestAToolNameWithAPercentInIt:
         assert not any("odd%%name" in m for m in rendered)
 
 
+class _CallableBody:
+    """A tool body that is an instance, which `inspect.iscoroutinefunction` reads as sync."""
+
+    def __init__(self, session: SandboxToolSession) -> None:
+        self._session = session
+
+    async def __call__(self, target: str) -> str:
+        """Do a thing to ``target`` inside a sandbox.
+
+        Args:
+            target: What to do it to.
+        """
+        key = self._session.key()
+        assert not isinstance(key, str)
+        sandbox = await self._session.acquire(key)
+        assert not isinstance(sandbox, str)
+        path = self._session.guest_call_path()
+        await sandbox.write_file(f"{path}/program.py", target)
+        return path
+
+
+class TestABodyThatIsAnInstance:
+    """Only its `__call__` is the coroutine function `inspect` can see, and it still awaits."""
+
+    def test_it_is_wrapped_and_reclaimed(self):
+        backend = InProcessSandboxBackend()
+        path = _call(_reclaiming(backend, _CallableBody), target="x")
+        assert _rm_targets(backend.sandbox) == [path]
+
+    def test_a_body_that_awaits_nothing_is_still_left_alone(self):
+        """The narrowing must not swallow the synchronous case it was written for."""
+
+        class _Sync:
+            def __init__(self, session: SandboxToolSession) -> None:
+                self._session = session
+
+            def __call__(self, target: str) -> str:
+                """Do a thing to ``target``, without awaiting anything."""
+                return f"did {target}"
+
+        tool = _attach_with(_Sync, _router(InProcessSandboxBackend()))[0]
+        assert _fn(tool)(target="x") == "did x"
+
+
 class TestWhatTheWrapperDoesNotTouch:
     """A synchronous body cannot hold a sandbox, so it owns nothing and is left alone."""
 
