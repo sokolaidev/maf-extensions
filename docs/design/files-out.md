@@ -186,7 +186,7 @@ This is the third optional backend declaration read with `getattr`. Three is whe
 
 It gets no capability, by the test above: ACAS's SDK signature is already `content: str | bytes`, and Docker and wslc both transport via tar, which is binary-native. No backend lacks it.
 
-`write_file` now uses the same POSIX path grammar and `working_directory` confinement as the read surface, including refusal of lexical escapes and symlinked parents or destinations. The backend still owns the guest storage base, and the check and write are not atomic on shipped backends.
+`write_file` now uses the same POSIX path grammar and `working_directory` confinement as the read surface, including refusal of lexical escapes and symlinked parents or destinations. The guest storage base is still owned by no layer — a workload declares it and no backend creates it ([#480](https://github.com/sokolaidev/maf-extensions/issues/480)) — and the check and write are not atomic on shipped backends.
 
 ### Error taxonomy
 

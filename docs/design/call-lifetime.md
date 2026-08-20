@@ -115,7 +115,7 @@ It is the only shape that serves a backend whose store has no filesystem under i
 
 Two things it depends on, both real work:
 
-- **`write_file` now takes a working directory and participates in confinement** — the surface asymmetry is closed; a backend still owns the guest storage base.
+- **`write_file` now takes a working directory and participates in confinement** — the surface asymmetry is closed, so every path-taking method refuses one that escapes. What has not moved is the base those paths are relative to: it is still owned by nobody, as above.
 - **Something still needs a real absolute path inside the guest.** The transport puts the shim's directory on `PYTHONPATH`, which the interpreter resolves against nothing. Either the launcher works relative to its own working directory, or the protocol gains a resolution step. This is the open question.
 
 `guest_call_path()` is correct either way: a path relative to a base is still a path, so nothing renames when the base moves.
