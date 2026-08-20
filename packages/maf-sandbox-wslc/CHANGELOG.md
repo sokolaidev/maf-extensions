@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.9.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.8.0...maf-sandbox-wslc-v0.9.0) (2026-08-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* Sandbox.write_file now requires the keyword-only working_directory argument and refuses paths that escape it, pass through symlinked parents, target symlinks, or name the working directory itself.
+
+### Features
+
+* require a working directory for write_file and refuse paths that escape it ([#488](https://github.com/sokolaidev/maf-extensions/issues/488)) ([49795fa](https://github.com/sokolaidev/maf-extensions/commit/49795fa78a968451eef55fe27cd8784106f4ccc3))
+
+
+### Fixes
+
+* require maf-sandbox 0.18.0 in the dependents and 0.18 in the samples, and admit 0.19 ([#494](https://github.com/sokolaidev/maf-extensions/issues/494)) ([dd12d77](https://github.com/sokolaidev/maf-extensions/commit/dd12d7745b526052268b2124803e549b1e8c3d7f))
+
 ## [0.8.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.7.0...maf-sandbox-wslc-v0.8.0) (2026-08-19)
 
 
