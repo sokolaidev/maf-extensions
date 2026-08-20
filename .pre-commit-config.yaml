@@ -1,0 +1,100 @@
+# The local gate's hook config: the commit, push and message tiers, mirroring the checks CI
+# runs. Tier assignments are the `stages` keys below; the full suite stays in CONTRIBUTING.md.
+#
+
+# A hook without an explicit `stages` key inherits *every* stage and re-runs on commit,
+# push and message alike; the default keeps the tiers where the tiers put it.
+default_stages: [pre-commit]
+default_install_hook_types: [pre-commit, pre-push, commit-msg]
+
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check .
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: ruff-format
+        name: ruff format --check
+        entry: uv run ruff format --check .
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+      - id: no-origin-identifiers
+        name: no origin identifiers (staged files)
+        entry: uv run python scripts/check_no_origin_identifiers.py
+        args: ["--staged"]
+        language: system
+        # pre-commit filters by `types` before the hook runs, and a staged symlink is tagged
+        # `symlink`, not `file`, so the default `types: [file]` would keep symlinks away from
+        # both scans. An empty list disables the filter: regular, binary and symlink blobs alike.
+        types: []
+        stages: [pre-commit]
+      - id: no-origin-identifiers-msg
+        name: no origin identifiers (commit message)
+        entry: uv run python scripts/check_no_origin_identifiers.py
+        args: ["--commit-msg"]
+        language: system
+        stages: [commit-msg]
+      # The two pyright passes, the same two CI runs: each package's strict config, enumerated
+      # from the workspace so a seventh package is checked on the commit that adds it (#450),
+      # then the bare pass over scripts/, tests/ and samples/.
+      - id: pyright-packages
+        name: pyright (per-package strict configs)
+        entry: uv run python scripts/gate_tasks.py
+        args: ["pyright-packages"]
+        language: system
+        pass_filenames: false
+        # Whole-tree passes, so a push that deletes the last changed file still runs them:
+        # with no filenames, pre-commit would skip a hook that does not run unconditionally.
+        always_run: true
+        stages: [pre-push]
+      - id: pyroot
+        name: pyright (scripts, tests & samples)
+        entry: uv run pyright
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+
+  # Pinned by commit SHA, not tag — this repository publishes to PyPI, and a moving tag is a
+  # supply-chain hole (AGENTS.md).
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c # v6.0.0
+    hooks:
+      # Every external hook names its stages: the test model reads only this file, never the
+      # pinned repos' manifests, so a stage that would come from a manifest must be written
+      # here to be visible to it. The six hygiene hooks below declare none in their manifest
+      # and take the config default; the value is the same, made explicit.
+      # The branch guard is local: `manual` keeps it runnable from the command line.
+      - id: no-commit-to-branch
+        args: ["--branch", "main"]
+        stages: [pre-commit, manual]
+      - id: check-merge-conflict
+        stages: [pre-commit]
+      - id: detect-private-key
+        stages: [pre-commit]
+      # Its manifest declares the pre-push stage; naming the same stages here leaves the
+      # merged result unchanged.
+      - id: check-added-large-files
+        stages: [pre-commit, pre-push, manual]
+      - id: check-ast
+        stages: [pre-commit]
+      - id: check-toml
+        stages: [pre-commit]
+      - id: check-yaml
+        stages: [pre-commit]
+      - id: check-json
+        stages: [pre-commit]
+
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: b84c4a0a90bd58c7d82ae8f0d4d5e77b1ddd3ce6 # 0.12.5
+    hooks:
+      # The one intended rewriter: a pyproject.toml edit without a lock refresh is a guaranteed
+      # red build with a purely mechanical fix.
+      - id: uv-lock
+        # Its manifest declares no stages, so pre-commit would give it the config default;
+        # the same tier, made explicit.
+        stages: [pre-commit]

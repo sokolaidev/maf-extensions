@@ -7,9 +7,12 @@ Thanks for looking. These packages are early (`0.x`) and the API may still move,
 ```bash
 uv sync            # one workspace, one lock, every package editable
 uv run pytest -q   # the whole suite, about half a minute
+uv run pre-commit install # the commit, message and push hooks: lint, format, the scrub guard, pyright
 ```
 
 `agent-framework-core` resolves from PyPI at the range each package declares — deliberately the same artifact a consumer of the published wheel gets, not a development pin.
+
+The hooks install into the git common directory, so one `uv run pre-commit install` in the main checkout covers every worktree of it; a worktree you check out on its own needs the install once in itself. The scrub guard's optional owner-only list (`.no-origin-identifiers`) lives in that same shared directory, so one list covers the main checkout and every worktree.
 
 ## Before opening a PR
 

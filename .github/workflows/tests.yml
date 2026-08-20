@@ -73,6 +73,29 @@ jobs:
         # tree on their first sync instead.
         run: uv sync --locked
 
+      - name: Pre-commit (whole tree)
+        # The pre-commit tier as a whole tree; no `--hook-stage` filter, so pre-commit uses
+        # its default stage. A hook whose `stages` were dropped would run here, which is how
+        # the wiring is caught (the suite's config test pins it too).
+        env:
+          # `main` is checked out as a local branch here, so the branch guard — a local
+          # hook that keeps a commit on the protected branch — would fail the run.
+          SKIP: no-commit-to-branch
+        run: uv run pre-commit run --all-files
+
+      - name: Pre-commit (pre-push stage, whole tree)
+        # The whole tier through pre-commit, the way a developer's push runs it, so the
+        # hooks' entries and arguments are exercised end to end; the Types steps below run
+        # the same pyright commands raw, outside the framework.
+        run: uv run pre-commit run --hook-stage pre-push --all-files
+
+      - name: Pre-commit (commit-msg stage)
+        # The commit-msg guard against a clean fixture message, so the stage's entry and
+        # arguments are exercised through pre-commit the way an installed hook drives it.
+        run: |
+          printf 'ci: a fixture message for the commit-msg stage\n' > "$RUNNER_TEMP/ci-commit-msg"
+          uv run pre-commit run --hook-stage commit-msg --commit-msg-filename "$RUNNER_TEMP/ci-commit-msg" no-origin-identifiers-msg
+
       - name: Tests
         run: uv run pytest -q
 
