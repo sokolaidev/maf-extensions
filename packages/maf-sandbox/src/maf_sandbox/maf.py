@@ -619,8 +619,9 @@ def sandboxed_tool(
             above, carried on the session, and passed on to
             :func:`~maf_sandbox.collect_outputs` by the workload itself.
         on_reclaim_failure: Called with a :class:`~maf_sandbox.ReclaimFailure` when a call's
-            own guest path could not be removed. Default ``None`` logs it and carries on; a host that
-            needs the data provably gone disposes the sandbox from here, which is the only
+            own guest path could not be removed. Default ``None`` logs it and carries on; a
+            host that needs the data provably gone disposes the sandbox from here, which is
+            the only
             remedy that closes the window rather than narrowing it. Its own failure is logged
             and swallowed — it runs in a ``finally``, over a call that may already be failing.
         reclaim_timeout: Seconds the removal gets, per sandbox the call acquired — ordinarily
