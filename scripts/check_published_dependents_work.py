@@ -49,10 +49,9 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
 from check_published_dependents_admit import ceiling_of, dependent_distributions
-from check_release_order import admits, version
+from check_release_order import admits, fetch_published_versions, version
 
 _TIMEOUT_SECONDS = 30
 
@@ -62,26 +61,14 @@ def import_module(distribution: str) -> str:
     return distribution.replace("-", "_")
 
 
-def _fetch_project(distribution: str) -> dict[str, Any] | None:
-    """The top-level PyPI project JSON, or None if the distribution was never released."""
-    url = f"https://pypi.org/pypi/{distribution}/json"
-    try:
-        with urllib.request.urlopen(url, timeout=_TIMEOUT_SECONDS) as response:
-            return json.load(response)
-    except urllib.error.HTTPError as exc:
-        if exc.code == 404:
-            return None
-        raise
-
-
 def fetch_requires_dist_for_version(distribution: str, version_str: str) -> list[str] | None:
     """One version's ``requires_dist``, or None if that version is gone or yanked.
 
-    The top-level index JSON carries ``requires_dist`` only for the latest version; every other
-    version needs its own per-version fetch. A yanked version is skipped — not because the ``==``
-    pin cannot install it (PEP 592 allows that, with a warning) but because normal unpinned
-    resolution never selects a yanked release, so a user does not land on one and a break there
-    is not a real-user break.
+    Per-version documents are the transport for every version, newest and oldest alike: the
+    top-level document only carries the latest, which is exactly the field the publish guards
+    no longer trust. A yanked version is skipped — not because the ``==`` pin cannot install it
+    (PEP 592 allows that, with a warning) but because normal unpinned resolution never selects a
+    yanked release, so a user does not land on one and a break there is not a real-user break.
     """
     url = f"https://pypi.org/pypi/{distribution}/{version_str}/json"
     try:
@@ -100,21 +87,15 @@ def fetch_requires_dist_for_version(distribution: str, version_str: str) -> list
 def fetch_version_requirements(distribution: str) -> dict[str, list[str]] | None:
     """Every non-yanked published version's ``requires_dist``, or None if never released.
 
-    The latest version reuses the top-level ``info.requires_dist`` (one fetch already made); every
-    other version needs its own fetch. A per-version 404 (an empty or pulled release) is skipped
-    rather than fatal — the version is simply not testable, not a break.
+    The version list comes from the PEP 691 simple index; each version is read from its own
+    per-version document. A per-version 404 (an empty or pulled release) is skipped rather than
+    fatal — the version is simply not testable, not a break.
     """
-    payload = _fetch_project(distribution)
-    if payload is None:
+    versions = fetch_published_versions(distribution)
+    if versions is None:
         return None
-    info = payload["info"]
-    latest_version = info["version"]
     by_version: dict[str, list[str]] = {}
-    if not info.get("yanked"):
-        by_version[latest_version] = list(info.get("requires_dist") or [])
-    for version_str in payload["releases"]:
-        if version_str == latest_version:
-            continue
+    for version_str in versions:
         requires = fetch_requires_dist_for_version(distribution, version_str)
         if requires is not None:
             by_version[version_str] = requires

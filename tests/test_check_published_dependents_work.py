@@ -17,6 +17,7 @@ import io
 import json
 import sys
 import urllib.error
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -153,14 +154,15 @@ def _patch_urlopen(
     ``bicep/0.2.0/json`` is not shadowed by the top-level ``bicep/json``.
     """
 
-    def fake_urlopen(url: str, timeout: int | None = None) -> _Response:
+    def fake_urlopen(url: str | urllib.request.Request, timeout: int | None = None) -> _Response:
+        target = url.full_url if isinstance(url, urllib.request.Request) else url
         for key in sorted(routes, key=len, reverse=True):
-            if key in url:
+            if key in target:
                 result = routes[key]
                 if isinstance(result, urllib.error.HTTPError):
                     raise result
                 return _Response(result)
-        raise AssertionError(f"unexpected url {url}")
+        raise AssertionError(f"unexpected url {target}")
 
     monkeypatch.setattr(check.urllib.request, "urlopen", fake_urlopen)
 
@@ -206,89 +208,78 @@ class TestFetchRequiresDistForVersion:
 
 
 class TestFetchVersionRequirements:
-    """``fetch_version_requirements`` reuses the latest from the top-level fetch and fills the rest."""
+    """``fetch_version_requirements`` resolves the version list from the simple index."""
 
-    def test_the_latest_reuses_top_level_info_and_others_are_fetched_per_version(self, monkeypatch):
+    def test_every_version_listed_by_the_simple_index_is_fetched_per_version(self, monkeypatch):
         _patch_urlopen(
             monkeypatch,
             {
-                "maf-sandbox-bicep/json": {
-                    "info": {
-                        "version": "0.6.0",
-                        "requires_dist": ["maf-sandbox<0.13,>=0.11.0"],
-                        "yanked": False,
-                    },
-                    "releases": {"0.6.0": [{}], "0.2.0": [{}]},
+                "simple/maf-sandbox-bicep/": {"versions": ["0.0.1", "0.2.0", "0.6.0"]},
+                "maf-sandbox-bicep/0.6.0/json": {
+                    "info": {"requires_dist": ["maf-sandbox<0.13,>=0.11.0"], "yanked": False}
                 },
                 "maf-sandbox-bicep/0.2.0/json": {
-                    "info": {
-                        "requires_dist": ["maf-sandbox<0.12,>=0.10.0"],
-                        "yanked": False,
-                    }
+                    "info": {"requires_dist": ["maf-sandbox<0.12,>=0.10.0"], "yanked": False}
+                },
+                "maf-sandbox-bicep/0.0.1/json": {
+                    "info": {"requires_dist": ["maf-sandbox<0.9,>=0.8.0"], "yanked": False}
                 },
             },
         )
         assert check.fetch_version_requirements("maf-sandbox-bicep") == {
             "0.6.0": ["maf-sandbox<0.13,>=0.11.0"],
             "0.2.0": ["maf-sandbox<0.12,>=0.10.0"],
+            "0.0.1": ["maf-sandbox<0.9,>=0.8.0"],
         }
 
-    def test_a_yanked_latest_is_excluded_but_other_versions_still_returned(self, monkeypatch):
+    def test_a_stale_top_level_document_no_longer_matters(self, monkeypatch):
         _patch_urlopen(
             monkeypatch,
             {
                 "maf-sandbox-bicep/json": {
-                    "info": {
-                        "version": "0.6.0",
-                        "requires_dist": ["maf-sandbox<0.13"],
-                        "yanked": True,
-                    },
-                    "releases": {"0.6.0": [{}], "0.2.0": [{}]},
+                    "info": {"version": "0.5.0", "requires_dist": ["maf-sandbox<0.13"]},
+                    "releases": {"0.5.0": [{}], "0.2.0": [{}]},
+                },
+                "simple/maf-sandbox-bicep/": {"versions": ["0.2.0", "0.5.0", "0.6.0"]},
+                "maf-sandbox-bicep/0.6.0/json": {
+                    "info": {"requires_dist": ["maf-sandbox<0.13,>=0.11.0"], "yanked": False}
+                },
+                "maf-sandbox-bicep/0.5.0/json": {
+                    "info": {"requires_dist": ["maf-sandbox<0.13"], "yanked": False}
                 },
                 "maf-sandbox-bicep/0.2.0/json": {
-                    "info": {
-                        "requires_dist": ["maf-sandbox<0.12,>=0.10.0"],
-                        "yanked": False,
-                    }
+                    "info": {"requires_dist": ["maf-sandbox<0.12,>=0.10.0"], "yanked": False}
                 },
             },
         )
-        assert check.fetch_version_requirements("maf-sandbox-bicep") == {
-            "0.2.0": ["maf-sandbox<0.12,>=0.10.0"]
-        }
+        by_version = check.fetch_version_requirements("maf-sandbox-bicep")
+        assert by_version is not None
+        assert "0.6.0" in by_version
 
-    def test_a_yanked_non_latest_is_skipped(self, monkeypatch):
+    def test_a_yanked_version_is_skipped(self, monkeypatch):
         _patch_urlopen(
             monkeypatch,
             {
-                "maf-sandbox-bicep/json": {
-                    "info": {
-                        "version": "0.6.0",
-                        "requires_dist": ["maf-sandbox<0.13"],
-                        "yanked": False,
-                    },
-                    "releases": {"0.6.0": [{}], "0.2.0": [{}]},
+                "simple/maf-sandbox-bicep/": {"versions": ["0.2.0", "0.6.0"]},
+                "maf-sandbox-bicep/0.6.0/json": {
+                    "info": {"requires_dist": ["maf-sandbox<0.13"], "yanked": True}
                 },
                 "maf-sandbox-bicep/0.2.0/json": {
-                    "info": {"requires_dist": ["maf-sandbox<0.12"], "yanked": True}
+                    "info": {"requires_dist": ["maf-sandbox<0.12"], "yanked": False}
                 },
             },
         )
         assert check.fetch_version_requirements("maf-sandbox-bicep") == {
-            "0.6.0": ["maf-sandbox<0.13"]
+            "0.2.0": ["maf-sandbox<0.12"]
         }
 
     def test_a_per_version_404_is_skipped_not_fatal(self, monkeypatch):
         _patch_urlopen(
             monkeypatch,
             {
-                "maf-sandbox-bicep/json": {
-                    "info": {
-                        "version": "0.6.0",
-                        "requires_dist": ["maf-sandbox<0.13"],
-                        "yanked": False,
-                    },
-                    "releases": {"0.6.0": [{}], "0.2.0": [{}]},
+                "simple/maf-sandbox-bicep/": {"versions": ["0.2.0", "0.6.0"]},
+                "maf-sandbox-bicep/0.6.0/json": {
+                    "info": {"requires_dist": ["maf-sandbox<0.13"], "yanked": False}
                 },
                 "maf-sandbox-bicep/0.2.0/json": _http_error(404),
             },
@@ -298,11 +289,11 @@ class TestFetchVersionRequirements:
         }
 
     def test_a_never_released_distribution_returns_none(self, monkeypatch):
-        _patch_urlopen(monkeypatch, {"maf-sandbox-bicep/json": _http_error(404)})
+        _patch_urlopen(monkeypatch, {"simple/maf-sandbox-bicep/": _http_error(404)})
         assert check.fetch_version_requirements("maf-sandbox-bicep") is None
 
-    def test_a_non_404_error_on_the_top_level_is_fatal(self, monkeypatch):
-        _patch_urlopen(monkeypatch, {"maf-sandbox-bicep/json": _http_error(500)})
+    def test_a_non_404_error_on_the_simple_index_is_fatal(self, monkeypatch):
+        _patch_urlopen(monkeypatch, {"simple/maf-sandbox-bicep/": _http_error(500)})
         with pytest.raises(urllib.error.HTTPError):
             check.fetch_version_requirements("maf-sandbox-bicep")
 
@@ -310,13 +301,9 @@ class TestFetchVersionRequirements:
         _patch_urlopen(
             monkeypatch,
             {
-                "maf-sandbox-bicep/json": {
-                    "info": {
-                        "version": "0.6.0",
-                        "requires_dist": ["maf-sandbox<0.13"],
-                        "yanked": False,
-                    },
-                    "releases": {"0.6.0": [{}], "0.2.0": [{}]},
+                "simple/maf-sandbox-bicep/": {"versions": ["0.2.0", "0.6.0"]},
+                "maf-sandbox-bicep/0.6.0/json": {
+                    "info": {"requires_dist": ["maf-sandbox<0.13"], "yanked": False}
                 },
                 "maf-sandbox-bicep/0.2.0/json": _http_error(500),
             },
