@@ -137,7 +137,8 @@ def _sandbox_labels(key: SandboxKey, spec: SandboxSpec) -> dict[str, str]:
 
 
 def _container_name(key: SandboxKey, kind: str, egress_id: str = "") -> str:
-    """The container name a key and kind map to — derived, so acquire and dispose agree without a registry.
+    """The container name a key and kind map to — derived, so acquire and dispose agree
+    without a registry.
 
     ``kind`` is part of the identity, not decoration: a sandbox carries its spec's image and
     egress, so serving two kinds from one container would run the second workload under the
@@ -425,7 +426,8 @@ class WslcSandboxBackend:
             return _WslcSandbox(self._wslc, name, self._config.command_timeout_seconds)
 
     async def dispose(self, key: SandboxKey) -> None:
-        """Delete every container for ``key`` — every kind, closed or allowlisted — with proxies and networks.
+        """Delete every container for ``key`` — every kind, closed or allowlisted — with
+        proxies and networks.
 
         By label, so it reaches a sandbox created under an egress configuration this backend no
         longer runs; the registry name is the fallback for when the listing itself fails. Never

@@ -216,8 +216,9 @@ class DispatchResult:
     ``value_json`` is the tool's return value as JSON text — serialized here, host-side,
     because the size cap is enforced on what actually crosses the boundary and a transport
     delivers exactly these bytes, inside whatever framing it declared through
-    :meth:`HostToolRun.dispatch`'s ``framing_bytes`` and which was capped along with them.  ``refusal`` is a sanitized sentence in the failure-ladder
-    style: fixed shape, no provider detail, safe to land in a transcript.  Exactly one of the
+    :meth:`HostToolRun.dispatch`'s ``framing_bytes`` and which was capped along with them.
+    ``refusal`` is a sanitized sentence in the failure-ladder style: fixed shape, no provider
+    detail, safe to land in a transcript.  Exactly one of the
     two is set, and :attr:`ok` says which.
     """
 

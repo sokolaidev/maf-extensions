@@ -35,7 +35,8 @@ def safe_listed_path(name: str, listing: list[str], work_dir: str) -> str | None
 
     >>> safe_listed_path("main.bicep", ["main.bicep"], "/maf-sandbox/work")
     '/maf-sandbox/work/main.bicep'
-    >>> safe_listed_path("main.bicep; rm -rf /", ["main.bicep; rm -rf /"], "/maf-sandbox/work") is None
+    >>> safe_listed_path("main.bicep; rm -rf /", ["main.bicep; rm -rf /"],
+    ...                      "/maf-sandbox/work") is None
     True
     """
     path, _, _ = resolve_listed_path(name, listing, work_dir)

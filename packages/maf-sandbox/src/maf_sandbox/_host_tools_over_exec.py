@@ -816,9 +816,9 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
         # Two paths, because the better one needs a utility not every image has. With
         # `setsid` the shell it runs leads a session of its own, and the program starts
         # inside that one, so the host can stop it and its children together; without, the
-        # program shares the launcher's session, where a group signal reaches the container. Which path ran is reported on the launcher's own stdout,
-        # not inferred from the file it writes — a claim that varies by image, reported
-        # rather than hidden.
+        # program shares the launcher's session, where a group signal reaches the container.
+        # Which path ran is reported on the launcher's own stdout, not inferred from the file
+        # it writes — a claim that varies by image, reported rather than hidden.
         "if command -v setsid >/dev/null 2>&1; then\n"
         f"  setsid nohup sh -c {_quote(record_session + inner)} >/dev/null 2>&1 &\n"
         # On this branch only, and on the launcher's own stdout — which the guest cannot
@@ -885,10 +885,11 @@ async def dispatch_over_exec(
             rewrote, and ``reach`` says how wide it went: ``"group"`` took the program's
             process group with it, ``"program"`` reached one pid and left anything it
             spawned running. The message says which of the two happened, and disposing
-            of the sandbox is what stops what remains. On the two starting legs, the launcher upload and the ``exec`` that
-            runs it, ``output`` is empty instead: the output file does not exist yet, and on a
-            backend that began the command before its own call returned there may be output
-            nobody read — so the kill is attempted on the second of those legs too.
+            of the sandbox is what stops what remains. On the two starting legs, the launcher
+            upload and the ``exec`` that runs it, ``output`` is empty instead: the output file
+            does not exist yet, and on a backend that began the command before its own call
+            returned there may be output nobody read — so the kill is attempted on the second
+            of those legs too.
             Distinct from a bare ``TimeoutError`` below, which is a backend failing for a
             reason of its own and says nothing about whether the program is still going.
         Exception: Whatever the backend raises from a stat or a read that is not a file

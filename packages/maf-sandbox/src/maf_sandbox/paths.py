@@ -42,10 +42,11 @@ def guest_path_relative_to(path: str, base: str) -> str | None:
     """``path`` relative to ``base``, or ``None`` when it does not sit inside ``base``.
 
     Both are normalised first, so a caller using this as its own containment check cannot be
-    walked out of by a ``..`` the string comparison would otherwise carry: ``/maf-sandbox/work/../etc``
-    is outside ``/maf-sandbox/work`` and answers ``None``.  Comparison is against ``base + "/"`` rather
-    than ``base``, so a sibling sharing a string prefix — ``/maf-sandbox/work/sub2`` under ``/maf-sandbox/work/sub``
-    — is not read as a descendant.
+    walked out of by a ``..`` the string comparison would otherwise carry:
+    ``/maf-sandbox/work/../etc`` is outside ``/maf-sandbox/work`` and answers ``None``.
+    Comparison is against ``base + "/"`` rather than ``base``, so a sibling sharing a string
+    prefix — ``/maf-sandbox/work/sub2`` under ``/maf-sandbox/work/sub`` — is not read as a
+    descendant.
     """
     resolved = posixpath.normpath(path)
     root = posixpath.normpath(base)

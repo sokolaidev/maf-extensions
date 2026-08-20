@@ -157,11 +157,11 @@ class PosixGuestSubject:
 class ConformancePaths:
     """The hostile layout, derived from a subject's working directory.
 
-    ``outside`` is a **sibling** rather than a child of the root: ``/maf-sandbox/work-outside`` shares a
-    string prefix with ``/maf-sandbox/work`` and is still outside it, so a backend comparing prefixes
-    without the separator fails here rather than in production.  Every path is absolute,
-    because planting goes through :meth:`Sandbox.write_file`; the probes attack with paths
-    relative to ``work``.
+    ``outside`` is a **sibling** rather than a child of the root:
+    ``/maf-sandbox/work-outside`` shares a string prefix with ``/maf-sandbox/work`` and is
+    still outside it, so a backend comparing prefixes without the separator fails here rather
+    than in production.  Every path is absolute, because planting goes through
+    :meth:`Sandbox.write_file`; the probes attack with paths relative to ``work``.
     """
 
     work: str
@@ -513,7 +513,7 @@ FILES_OUT_PROBES: tuple[Probe, ...] = (
         why=(
             "the walk starts above the working directory, not at it: a nested work dir has "
             "ancestors the guest can replace, and an implementation beginning at the work dir "
-            "stats straight through them. This is the /maf-sandbox -> / case, and it is the one the "
+            "stats straight through them. This is the /maf-sandbox -> / case, the one the "
             "probe above does not reach."
         ),
         requires=frozenset({Capability.FILES_OUT}),

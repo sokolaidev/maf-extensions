@@ -41,12 +41,17 @@ line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
-extend-select = ["I", "UP", "D100", "D101", "D103", "D104"]
+extend-select = ["I", "UP", "D100", "D101", "D103", "D104", "E501", "W505", "TD", "FIX", "ERA001"]
 
-# Mirrors each package's own `tests/**` ignore: the repo-level tests/ is wiring, not API surface,
-# so ruff resolves it from this root section the same way a package's tests resolve from its own.
+# Mirrors each package's tests/** ignore: repo-level tests/ is wiring, not API surface.
+# Length rules join the docstring pair so fixtures that exercise live samples are exempt.
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["D101", "D103"]
+"tests/**" = ["D101", "D103", "E501", "W505"]
+"scripts/**" = ["E501", "W505"]
+"samples/**" = ["E501", "W505"]
+
+[tool.ruff.lint.pycodestyle]
+max-doc-length = 100
 
 # Repo-level pyright for the code the per-package strict configs do not cover: scripts/, the
 # test trees and samples/. Package src/ stays on its own per-package strict config (uv run

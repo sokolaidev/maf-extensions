@@ -164,8 +164,9 @@ def codeact_sandbox_spec(
     been.  The other half is :data:`_KIND_EGRESS`, what the kind needs to function: empty,
     because nothing in ``execute_code`` fetches, and fixed here rather than configurable
     because a deployment able to widen what the *kind itself* requires could undo the
-    containment the design rests on.  The spec carries the **union**, because that is what the router matches against
-    the backend and what decides whether this tool is declared as carrying something out.
+    containment the design rests on.  The spec carries the **union**, because that is what the
+    router matches against the backend and what decides whether this tool is declared as
+    carrying something out.
 
     Naming a host here is a real widening of a sandbox running model-written code: every
     allowed host is a way out for anything the program can read, including files shared into
