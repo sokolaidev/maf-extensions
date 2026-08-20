@@ -1,20 +1,35 @@
 <!--
-Before anything else: your PR title is the changelog entry.
-
-It becomes the commit subject when this is squashed, which is what release-please
-reads — so it decides the next version AND is what a reader sees in the release
-notes. Write it for someone deciding whether to upgrade, not as a summary of the
-diff: "accept a list of arguments to exec, and quote them" rather than "update exec".
-
-  feat:  a minor release      fix: / perf: / revert: / docs:  a patch
-  refactor: / test: / build: / ci: / chore:  release nothing
-
-Breaking something? Add a `BREAKING CHANGE: …` footer in the squash-commit box when
-you merge — it becomes its own section, above everything else, in the release notes.
-
-CONTRIBUTING.md has the rest: the type list, and what the boundary tests protect.
+ Fill in the sections below. Keep it short — the diff is the detail.
+ Remove any section that doesn't apply.
 -->
 
-## What changed, and why
+## Summary
 
-<!-- Anything a reviewer should look at first, or any boundary you had to cross? -->
+<!-- What does this PR do, and why? One or two sentences. -->
+
+## Related issue
+
+<!-- Link the issue this PR closes. Use "Fixes #xxx" so the issue auto-closes on merge.
+ For a partial/related change that should NOT auto-close, use "Refs #xxx" instead. -->
+
+Fixes #xxx
+
+## Changes
+
+<!-- Bullet the notable changes (modules touched, new behavior, config/env added). -->
+
+-
+
+## Verification
+
+<!-- How you know it works. -->
+
+- [ ] `uv run pytest` passes
+- [ ] `uv run ruff check .` is clean
+- [ ] Docs updated (`docs/`, `.agents/AGENTS.md`) where behavior changed
+- [ ] Manual/live check (if applicable): <!-- what you ran -->
+
+## Notes for reviewers
+
+<!-- Anything reviewers should know: trade-offs, follow-ups, out-of-scope items,
+ new env vars, or areas that need a closer look. Delete if none. -->
