@@ -888,6 +888,18 @@ class TestAReclaimThatDidNotHappen:
                 _call(_reclaiming(backend), target="x")
         assert any("cancelled during the removal" in r.message for r in caplog.records)
 
+    def test_a_callback_that_never_returns_does_not_hold_the_call(self, caplog):
+        """A host disposes a sandbox in here — a round trip, and an unbounded one hangs the call."""
+
+        async def on_failure(failure: ReclaimFailure) -> None:
+            await asyncio.Event().wait()
+
+        backend = InProcessSandboxBackend(_RefusesToRemove())
+        tool = _reclaiming(backend, on_reclaim_failure=on_failure, reclaim_timeout=0.05)
+        with caplog.at_level(logging.WARNING, logger="test_workload"):
+            assert _call(tool, target="x").startswith("/maf-sandbox/work/")
+        assert any("did not finish within" in record.message for record in caplog.records)
+
     def test_a_removal_the_backend_cannot_even_attempt_is_reported(self):
         heard: list[ReclaimFailure] = []
 
@@ -1141,6 +1153,55 @@ class TestACallThatReachesTwoSandboxes:
         backend.per_key[self._OTHER] = _RefusesToRemove()
         _call(_reclaiming(backend, self._build, on_reclaim_failure=on_failure), target="x")
         assert heard == [self._OTHER]
+
+
+class TestAStragglerDuringTheRemoval:
+    """The removal walks what `acquire` writes into, and a task the body left running can reach
+    both. Closing the record stops the write; the walk holds a copy in case anything else does."""
+
+    _LATER = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent-3")
+
+    def test_it_cannot_change_what_is_being_removed(self):
+        release = asyncio.Event()
+        started: list[asyncio.Task[None]] = []
+
+        class _YieldsMidRemoval(InProcessSandbox):
+            async def exec(self, command, *, working_directory, timeout):
+                release.set()
+                for _ in range(3):
+                    await asyncio.sleep(0)
+                return await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+
+        backend = _PerKeyBackend()
+        backend.per_key[_KEY] = _YieldsMidRemoval()
+
+        def build(session: SandboxToolSession):
+            async def widget_run(target: str) -> str:
+                """Leave a task that acquires while the removal is in flight."""
+                key = session.key()
+                assert not isinstance(key, str)
+                assert not isinstance(await session.acquire(key), str)
+                session.guest_call_path()
+
+                async def straggler() -> None:
+                    await release.wait()
+                    await session.acquire(TestAStragglerDuringTheRemoval._LATER)
+
+                started.append(asyncio.create_task(straggler()))
+                return "done"
+
+            return widget_run
+
+        async def scenario() -> str:
+            answered = await _fn(_reclaiming(backend, build))(target="x")
+            await started[0]
+            return answered
+
+        # Without the guard this is `RuntimeError: dictionary changed size during iteration`,
+        # raised out of the `finally` in place of the body's answer.
+        assert asyncio.run(scenario()) == "done"
 
 
 class TestASecondBinding:

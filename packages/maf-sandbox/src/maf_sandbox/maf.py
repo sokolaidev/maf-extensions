@@ -28,6 +28,7 @@ Five things live here, and each of them had begun to exist twice before it did:
 
 from __future__ import annotations
 
+import asyncio
 import functools
 import inspect
 import logging
@@ -430,9 +431,12 @@ class SandboxToolSession:
             self._logger.warning(f"{self._log_prefix}: sandbox unavailable: %s", error_detail(exc))
             return _SANDBOX_UNAVAILABLE
         call = _this_call(self)
-        if call is not None:
+        if call is not None and not call.closed:
             # Recorded on the way through rather than re-derived in the `finally`, where a
-            # second `acquire` could fail on its own and report a reclaim failure for it.
+            # second `acquire` could fail on its own and report a reclaim failure for it. Not
+            # once the call is closed: the removal is already walking this, and a task the body
+            # left running would otherwise add to it mid-walk — and nothing would reclaim what
+            # it wrote anyway.
             call.acquired[key] = sandbox
         return sandbox
 
@@ -448,8 +452,9 @@ async def _reclaim_the_call(
 ) -> None:
     """Remove what one tool call owns, and report a removal that did not happen.
 
-    Once per sandbox the call acquired, so ``timeout`` and any report are per sandbox too —
-    ordinarily one, and more only for a call that reached a second key.
+    Once per sandbox the call acquired — ordinarily one, and more only for a call that
+    reached a second key. ``timeout`` bounds the removal and, separately, the report, so one
+    sandbox can cost up to twice it.
 
     Raises only what the caller asked for. A failed removal, and a host callback that fails with
     it, are logged and swallowed: this runs in :func:`sandboxed_tool`'s ``finally``, where
@@ -464,7 +469,7 @@ async def _reclaim_the_call(
         return
     prefix = _prefixed(tool)
     path = f"{spec.work_dir}/{call.name}"
-    for key, sandbox in call.acquired.items():
+    for key, sandbox in tuple(call.acquired.items()):
         try:
             # By name, against the working directory — not as one composed string. A ``work_dir``
             # the protocol accepts may not be POSIX-shaped, and a composed path would carry its
@@ -489,7 +494,15 @@ async def _reclaim_the_call(
         if on_failure is None:
             continue
         try:
-            await on_failure(ReclaimFailure(tool=tool, key=key, path=path, reason=reason))
+            # Bounded like the removal, and separately from it: a host disposes a sandbox in
+            # here, which is a round trip that can hang, and an unbounded one holds the tool
+            # call open for as long as it hangs — on a cancelled call, past a deadline that has
+            # already expired. Separate rather than one shared budget, because a removal that
+            # spent the whole of it is exactly when there is a failure worth reporting.
+            async with asyncio.timeout(timeout):
+                await on_failure(ReclaimFailure(tool=tool, key=key, path=path, reason=reason))
+        except TimeoutError:
+            logger.warning(f"{prefix}: on_reclaim_failure did not finish within %ss", timeout)
         except Exception as raised:  # noqa: BLE001 — a host's callback must not fail the call
             logger.warning(f"{prefix}: on_reclaim_failure raised: %s", error_detail(raised))
         except (CancelledError, GeneratorExit) as stopped:
@@ -600,8 +613,9 @@ def sandboxed_tool(
             remedy that closes the window rather than narrowing it. Its own failure is logged
             and swallowed — it runs in a ``finally``, over a call that may already be failing.
         reclaim_timeout: Seconds the removal gets, per sandbox the call acquired — ordinarily
-            one. Spent after the body has returned, so it is added to the call's own latency and
-            an outer deadline should allow for it. A body that
+            one — and separately the seconds ``on_reclaim_failure`` gets, so a sandbox whose
+            removal fails can cost twice it. Spent after the body has returned, so it is added
+            to the call's own latency and an outer deadline should allow for it. A body that
             was **cancelled** gets :data:`_CANCELLED_CALL_GRACE` instead, or this, whichever is
             smaller: its caller's deadline has already passed, and the removal must not extend
             one that has.
