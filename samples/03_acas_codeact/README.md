@@ -21,7 +21,7 @@ Read these first; none of them is quick to arrange halfway through.
 
 **This creates a billable sandbox.** The sample deletes it on the way out, and the backend's auto-suspend and auto-delete timers are a backstop underneath that — but they run in sequence rather than together, so a run killed mid-turn leaves a sandbox running for `auto_suspend_seconds` (60 by default), suspended for `auto_delete_seconds` (600) after that, and gone about eleven minutes from the last call. Reclaiming it yourself is the plan; the timers are what happens when the process dies before it can.
 
-`python-3.13` is one of the prebuilt images the service keeps Ready for every sandbox group, so the sample names it and imports nothing. For prototyping that is the whole image story; production replaces it with a hardened image you build, own and import into the sandbox group yourself — minimal, digest-pinned, scanned, rebuilt on your patch cadence — the import path [the `maf-sandbox-acas` README](../../packages/maf-sandbox-acas/README.md) and [its import script](../../packages/maf-sandbox-acas/scripts/import_disk_image.py) document.
+`python-3.13` is one of the prebuilt images the service keeps Ready for every sandbox group, so the sample names it and imports nothing. For prototyping that is the whole image story; production replaces it with a hardened image you build, own and import into the sandbox group yourself — minimal, digest-pinned, scanned, rebuilt on your patch cadence — the [maf-sandbox-acas README](../../packages/maf-sandbox-acas/README.md) explains the image namespaces, and [its import script README](../../packages/maf-sandbox-acas/scripts/README.md) documents the import command.
 
 ## Install
 
@@ -44,7 +44,7 @@ uv run agent.py
 | `AZURE_OPENAI_ENDPOINT` | `https://<resource>.openai.azure.com` |
 | `AZURE_OPENAI_CHAT_MODEL` | Deployment name of the chat model — a reasoning model, per the prerequisites |
 
-There is no `ACAS_SANDBOX_REGISTRY` here, unlike sample 01: `agent.py` names a prebuilt image by its bare service-provided name (`python-3.13`), which carries no tag — a bare name resolves against the sandbox group's catalogue, and only a `repository:tag` reference would be qualified against a registry.
+There is no `ACAS_SANDBOX_REGISTRY` here, unlike sample 01: `agent.py` names a prebuilt image by its bare service-provided name (`python-3.13`), which carries no tag — a bare name resolves against the sandbox group's catalogue, while non-bare imported references (such as `repository:tag`) use the registry-qualified disk-image path.
 
 With any of these unset the program says which and exits non-zero, rather than running. That is deliberate: `make_codeact_tools` returns an empty list when the router has no backend, so a half-configured run does not crash — it produces an agent with no tools, which answers from the model alone. That failure looks exactly like success.
 
@@ -79,7 +79,7 @@ The wording around the number is the model's and varies run to run; the model is
 
 **`SandboxCapabilityNotSupported` at startup** — the backend cannot do what `execute_code` requires: run a command and take a file in. `AcasSandboxBackend` declares both, so this only appears against a swapped-in backend that declares less.
 
-**A disk image that cannot be resolved** — the image was named but the group cannot find it, for one of two reasons. A `repository:tag` reference was never imported into the sandbox group — the reference in the error has to match the one the import step used exactly. Or a bare name the service's catalogue does not hold — `python-3.13` is what the service provides today, and a name the catalogue lacks is refused at boot with the catalogue in the message (`It provides: …`); `aca sandboxgroup disk list-public` is the live version of that list.
+**A disk image that cannot be resolved** — the image was named but the group cannot find it, for one of two reasons. A `repository:tag` reference was never imported into the sandbox group — the reference in the error has to match the one the import step used exactly. Or a bare name the service's catalogue does not hold — `python-3.13` is what the service provides today, and a name the catalogue lacks is refused before a sandbox is created with the catalogue in the message (`It provides: …`); `aca sandboxgroup disk list-public` is the live version of that list.
 
 **`400 — Encrypted content is not supported with this model`** — the chat deployment is not a reasoning model. See the prerequisite above; nothing about the sandbox is involved, and the run fails before one is created.
 

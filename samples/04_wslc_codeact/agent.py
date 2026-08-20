@@ -50,7 +50,7 @@ SCOPE = "samples"
 THREAD_ID = "04-wslc-codeact"
 AGENT_DIR = "data-analyst"
 
-#: The same reference sample 03 uses; see this directory's README for why.
+#: A standard MCR devcontainer image at Python 3.13; see this directory's README for why.
 CODEACT_IMAGE = "mcr.microsoft.com/devcontainers/python:3.13-bookworm"
 
 TASK = (
