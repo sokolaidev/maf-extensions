@@ -21,6 +21,10 @@ dev = [
     # task through `uv run` itself, so the tasks below name bare commands. Root-only — the
     # packages stay self-contained and ship no tasks of their own.
     "poethepoet>=0.34,<1",
+    # Runs the commit and push hooks — locally via `pre-commit install` and in CI as
+    # `pre-commit run --all-files` (tests.yml), so the config cannot rot while every
+    # local copy stays green.
+    "pre-commit>=4.6.2,<4.7",
     # Every sample that talks to a model imports this, and nothing else here pulls it in.
     # Wide where the tooling bands are narrow, and deliberately: a sample declares it unpinned,
     # so a check held to an older minor would pass against a version no live run uses.

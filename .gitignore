@@ -11,6 +11,10 @@ dist/
 .ruff_cache/
 *.egg-info/
 
+# The owner-only blocklist for scripts/check_no_origin_identifiers.py — it names things that
+# must never appear in this public repository, so it must never be committed either.
+.no-origin-identifiers
+
 # Sample runs land artifacts here; the sink is a host directory, not the repository.
 samples/*/out/
 
