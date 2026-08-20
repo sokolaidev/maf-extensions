@@ -1,15 +1,17 @@
 """One deterministic turn of an agent that computes with code instead of with itself.
 
-Sample 03 with exactly one thing changed — the backend::
+Sample 03 with its CodeAct workload, task, and model wiring unchanged, running on Docker::
 
     app  ->  maf_sandbox (router)  ->  maf_sandbox_docker  ->  the container
                   ^ maf_sandbox_codeact calls the router
 
-The workload, the task and the model wiring are identical to sample 03's; only the
-backend and the isolation floor differ.  That is the tightest "one line lower" in
-the set: sample 04 also swapped sample 03's Azure model for a local one, and this
-keeps it, because keeping it is what lets this sample be verified in CI with no
-stored secret and — unlike sample 03 — no billable sandbox.
+The workload, the task and the model wiring are identical to sample 03's; what
+differs is the configuration around them — the backend and its isolation floor,
+and the image it runs in (a registry pull, not the service-provided
+`python-3.13`).  That is the tightest "one line lower" in the set: sample 04 also
+swapped sample 03's Azure model for a local one, and this keeps it, because
+keeping it is what lets this sample be verified in CI with no stored secret and
+— unlike sample 03 — no billable sandbox.
 
 The sandbox is a plain Docker container on the runner (or your own machine), which
 costs nothing; the model is the same Azure OpenAI deployment sample 03 uses,

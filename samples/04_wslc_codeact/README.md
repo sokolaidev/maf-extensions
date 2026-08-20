@@ -1,13 +1,13 @@
 # 04 — compute an answer in a WSL container
 
-Sample 03 with exactly one thing changed: the backend. Same agent, same tool, same task — a Python interpreter's answer rather than a model's guess at one — but the sandbox is a container on your own machine, created in about half a second, and there is no Azure subscription anywhere in the picture.
+Sample 03 with the CodeAct workload and the task unchanged — same agent, same tool, same task, a Python interpreter's answer rather than a model's guess at one — but the sandbox is a container on your own machine, created in about half a second, and there is no Azure subscription anywhere in the picture. What differs is the configuration around that unchanged workload: the backend (and the isolation floor it forces), the image it pulls, and the model client, which here drops Azure for any OpenAI-compatible endpoint.
 
 ```
 app  ->  maf_sandbox (router)  ->  maf_sandbox_wslc  ->  the container
               ^ maf_sandbox_codeact calls the router
 ```
 
-[`agent.py`](agent.py) is the `app` box, and it is worth diffing against [sample 03's](../03_acas_codeact/agent.py): two import lines, one constructor, and the `min_isolation=` argument. Everything below the router is untouched — the same claim samples 01 and 02 make for `bicep_validate`, shown here for `execute_code` instead.
+[`agent.py`](agent.py) is the `app` box, and it is worth diffing against [sample 03's](../03_acas_codeact/agent.py): the CodeAct workload — the `make_codeact_tools` call, the task, and the check on what `execute_code` returned — is identical to sample 03's, while the backend and its configuration differ: the backend import and constructor, the `min_isolation=` floor, the image reference, and the model client. The untouched workload is the same claim samples 01 and 02 make for `bicep_validate`, shown here for `execute_code` instead.
 
 ## The boundary is weaker, and the refusal is the feature
 
@@ -18,7 +18,7 @@ app  ->  maf_sandbox (router)  ->  maf_sandbox_wslc  ->  the container
 ## Prerequisites
 
 - **Windows with WSL 2.9.3 or later.** `wslc` is WSL's container CLI and ships with it; `wsl --version` reports the version, `wslc --version` confirms the CLI is on `PATH`. Nothing else needs installing — no Docker, no daemon, no login.
-- **`mcr.microsoft.com/devcontainers/python:3.13-bookworm`**, the same reference [sample 03](../03_acas_codeact/) uses. Nothing to build, but pull it once before the first run — `wslc pull mcr.microsoft.com/devcontainers/python:3.13-bookworm`. `wslc container run` would fetch it on demand the way `docker run` does; pulling first separates "the image could not be fetched" from "the sandbox failed", which the tool reports identically, and the troubleshooting section below has the one failure that catches people out. It is a dev-container image — a full toolchain this workload never touches, not just an interpreter — so it is bulkier than the sandbox strictly needs; a minimal Azure Linux Python image becomes the better choice the day that family ships 3.13 too. Either way this reference is for prototyping the sample: production replaces it with a hardened image you build and own — minimal, digest-pinned, scanned, rebuilt on your patch cadence — pulled the same way.
+- **`mcr.microsoft.com/devcontainers/python:3.13-bookworm`**. Nothing to build, but pull it once before the first run — `wslc pull mcr.microsoft.com/devcontainers/python:3.13-bookworm`. `wslc container run` would fetch it on demand the way `docker run` does; pulling first separates "the image could not be fetched" from "the sandbox failed", which the tool reports identically, and the troubleshooting section below has the one failure that catches people out. It is a dev-container image — a full toolchain this workload never touches, not just an interpreter — so it is bulkier than the sandbox strictly needs; a minimal Azure Linux Python image becomes the better choice the day that family ships 3.13 too. Either way this reference is for prototyping the sample: production replaces it with a hardened image you build and own — minimal, digest-pinned, scanned, rebuilt on your patch cadence — pulled the same way.
 - **An OpenAI-compatible endpoint** — api.openai.com, or a local server that speaks the same protocol. The sample deliberately uses the chat-completions API, the one surface local servers implement well; their newer-API support is often partial in ways that surface as an empty final answer. The model needs to be able to call a tool; beyond that this sample asks nothing unusual of it.
 
 No Azure subscription, no preview enrolment, no billable sandbox. A run that is killed mid-turn leaves the container **running** — it was started with `sleep infinity` and nothing stops it on the way out — so plain `wslc container list` shows it, it holds WSL VM memory until it goes, and `wslc container remove -f <name>` reclaims it.
@@ -64,7 +64,7 @@ It printed:
 
 That block is one real run, against a local OpenAI-compatible endpoint. The prose and the formatting around the number are the model's and vary; the number and the disposal line do not.
 
-The same number sample 03 gets from a microVM in Azure, computed by the same program in the same way — only the backend underneath differs. The wording around it is the model's and varies run to run. The block under it does not: it is what `execute_code` returned, printed from the tool result rather than from the reply, which is what separates a number the interpreter produced from one the model recited ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)). `[measured] Disposed 1 sandbox(es).` is what tells you a container was really created and torn down.
+The same number sample 03 gets from a microVM in Azure, computed by the same program in the same way — the interpreter, not the model. The backend and the image it runs in are what differ from sample 03; the method is not. The wording around it is the model's and varies run to run. The block under it does not: it is what `execute_code` returned, printed from the tool result rather than from the reply, which is what separates a number the interpreter produced from one the model recited ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)). `[measured] Disposed 1 sandbox(es).` is what tells you a container was really created and torn down.
 
 ## Troubleshooting
 

@@ -1,14 +1,17 @@
 """One deterministic turn of an agent that computes with code instead of with itself.
 
-Sample 03 with exactly one thing changed — the backend::
+Sample 03 with its CodeAct workload and task unchanged, running on WSLC::
 
     app  ->  maf_sandbox (router)  ->  maf_sandbox_wslc  ->  the container
                   ^ maf_sandbox_codeact calls the router
 
-The workload and the task are identical to sample 03's; only the backend and the
-isolation floor differ.  That is what makes the pair worth having: it is the
-protocol's central claim — a workload written against `maf_sandbox` runs unchanged
-on another backend — shown rather than asserted.
+The task, the CodeAct tool, and the check on what `execute_code` returned are
+identical to sample 03's; what differs is the configuration around them — the
+backend and its isolation floor, the image it runs in (a registry pull, not the
+service-provided `python-3.13`), and the model client (an OpenAI-compatible
+endpoint instead of the Azure deployment).  That is what makes the pair worth
+having: a workload written against `maf_sandbox` runs unchanged on another
+backend, shown rather than asserted.
 
 Nothing here needs Azure.  `wslc`, the container CLI that ships with WSL 2.9.3 and
 later, runs the sandbox on the developer's own machine, and the model is any
@@ -50,7 +53,7 @@ SCOPE = "samples"
 THREAD_ID = "04-wslc-codeact"
 AGENT_DIR = "data-analyst"
 
-#: The same reference sample 03 uses; see this directory's README for why.
+#: A standard MCR devcontainer image at Python 3.13; see this directory's README for why.
 CODEACT_IMAGE = "mcr.microsoft.com/devcontainers/python:3.13-bookworm"
 
 TASK = (

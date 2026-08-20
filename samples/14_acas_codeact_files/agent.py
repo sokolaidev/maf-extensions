@@ -67,8 +67,8 @@ SCOPE = "samples"
 THREAD_ID = conversation_id("14-acas-codeact-files")
 AGENT_DIR = "data-analyst"
 
-#: A standard MCR devcontainer image at Python 3.13 — sample 03's, imported into the sandbox
-#: group as a disk image. Fully qualified, so no registry variable accompanies it.
+#: A standard MCR devcontainer image at Python 3.13, imported into the sandbox group as a disk
+#: image. Fully qualified, so no registry variable accompanies it.
 CODEACT_IMAGE = "mcr.microsoft.com/devcontainers/python:3.13-bookworm"
 
 #: Ships beside this file and is seeded into the agent's file store under the same name. A copy

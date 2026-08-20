@@ -1,13 +1,13 @@
 # 06 — compute an answer in a Docker container
 
-Sample 03 with exactly one thing changed: the backend. Same agent, same tool, same task — a Python interpreter's answer rather than a model's guess at one — but the sandbox is a plain Docker container instead of a billable Azure microVM, and it runs on any machine with a Docker-compatible engine.
+Sample 03 with its CodeAct workload and task unchanged — same agent, same tool, same task, a Python interpreter's answer rather than a model's guess at one — but the sandbox is a plain Docker container instead of a billable Azure microVM, and it runs on any machine with a Docker-compatible engine. What differs is the configuration around that unchanged workload: the backend (and the isolation floor it forces) and the image it pulls; the model stays on sample 03's Azure deployment.
 
 ```
 app  ->  maf_sandbox (router)  ->  maf_sandbox_docker  ->  the container
               ^ maf_sandbox_codeact calls the router
 ```
 
-[`agent.py`](agent.py) is the `app` box, and it is worth diffing against [sample 03's](../03_acas_codeact/agent.py): two import lines, one constructor, and the `min_isolation=` argument. That is the tightest diff in the whole set — [sample 04](../04_wslc_codeact/) also swapped sample 03's Azure model for a local one, and this keeps it, because keeping it is exactly what lets this sample be verified in CI.
+[`agent.py`](agent.py) is the `app` box, and it is worth diffing against [sample 03's](../03_acas_codeact/agent.py): the CodeAct workload — the `make_codeact_tools` call, the task, and the check on what `execute_code` returned — is identical to sample 03's, while the backend and its configuration differ: the backend import and constructor, the `min_isolation=` floor, and the image reference. That is the tightest diff in the whole set — [sample 04](../04_wslc_codeact/) also swapped sample 03's Azure model for a local one, and this keeps it, because keeping it is exactly what lets this sample be verified in CI.
 
 ## The first sample CI verifies without a cloud sandbox
 
@@ -24,7 +24,7 @@ A developer without Azure runs it locally by making sample 04's one-line client 
 ## Prerequisites
 
 - **A Docker-compatible engine, reachable through the `docker` client.** Docker Desktop (macOS, Linux, Windows with WSL 2) or Docker Engine (Linux). `docker version` confirms the client can reach a running daemon.
-- **`mcr.microsoft.com/devcontainers/python:3.13-bookworm`**, the same reference [sample 03](../03_acas_codeact/) uses. Nothing to build, but pull it once before the first run — `docker pull mcr.microsoft.com/devcontainers/python:3.13-bookworm`. The backend pulls an absent image explicitly before it creates the container, so a first run works without this step; pulling first just separates "the image could not be fetched" from "the sandbox failed". It is a dev-container image — a full toolchain this workload never touches, not just an interpreter — so it is bulkier than the sandbox strictly needs; a minimal Azure Linux Python image becomes the better choice the day that family ships 3.13 too. Either way this reference is for prototyping: production replaces it with a hardened image you build and own — minimal, digest-pinned, scanned, rebuilt on your patch cadence.
+- **`mcr.microsoft.com/devcontainers/python:3.13-bookworm`**. Nothing to build, but pull it once before the first run — `docker pull mcr.microsoft.com/devcontainers/python:3.13-bookworm`. The backend pulls an absent image explicitly before it creates the container, so a first run works without this step; pulling first just separates "the image could not be fetched" from "the sandbox failed". It is a dev-container image — a full toolchain this workload never touches, not just an interpreter — so it is bulkier than the sandbox strictly needs; a minimal Azure Linux Python image becomes the better choice the day that family ships 3.13 too. Either way this reference is for prototyping: production replaces it with a hardened image you build and own — minimal, digest-pinned, scanned, rebuilt on your patch cadence.
 - **An Azure OpenAI deployment of a reasoning model** — `gpt-5.4` and its siblings work. This is not a preference: the framework's client asks for encrypted reasoning content, and a deployment that does not support it rejects the very first call with `400 — Encrypted content is not supported with this model` on `param: include`. That error names neither this sample nor the setting behind it, so it is worth choosing correctly rather than debugging later.
 - **`az login`**, or any other credential `DefaultAzureCredential` resolves. No API keys are read, and none belong in this tree.
 
@@ -68,7 +68,7 @@ The first call pays for pulling the image, if it is not already local, plus crea
 
 That block is one real run. This model answered with the number alone; another will wrap it in a sentence. What does not vary is the block under it. `354224848179261915075` is a constant a model can recite, so the live check reads the copy inside `== Program output as execute_code returned it ==` — the interpreter's own stdout, recorded by the framework beside the call — and not the one in the reply ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)). `[measured] Disposed 1 sandbox(es).` only prints once `execute_code` has actually created and torn down a container; a `Disposed 0` would mean the model answered without running anything, the T0 behaviour this sample exists to contrast with.
 
-The same number sample 03 gets from a microVM in Azure, computed by the same program in the same way — only the backend underneath differs.
+The same number sample 03 gets from a microVM in Azure, computed by the same program in the same way — the interpreter, not the model. The sandbox and the image it runs in are what differ from sample 03; the method is not.
 
 ## Troubleshooting
 
