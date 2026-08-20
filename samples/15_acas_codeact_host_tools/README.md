@@ -40,11 +40,11 @@ From a live run:
 | **sales figures the model wrote into code** | **0** | **12** |
 | state totals the program printed | 2 of 2 | 2 of 2 |
 
-Read `[2, 2, 5, 3, 1]` — the first four entries *are* the walk, and the last is the program. Two state ids, two store lists, five sales rows, three product names, then one `execute_code`. On the dispatched side every entry is `execute_code`; the lookups do not appear there at all, because they never reach the model. **Direct tool calling batches within a stage and never across one**, because it cannot ask for a store's sales until it has been told the store ids. So it pays a tool-calling round per stage.
+Read `[2, 2, 5, 3, 1]` — the first four entries *are* the walk, and the last is the program. Two state ids, two store lists, five sales rows, three product names, then one `execute_code`. On the dispatched side every entry is `execute_code`; the lookups do not appear there at all, because they never reach the model. **Direct tool calling batches within a stage and never across one**, because it cannot ask for a store's sales until it has been told the store ids. So it pays a tool-calling round per stage. Dispatch does not batch host-tool calls: each discovered request is served sequentially. Concurrent guest callers can overlap request discovery, but that does not make host-tool execution concurrent or collapse the wall clock into one interval.
 
 **Rounds, not model invocations.** The final message of a turn carries the answer and no tool call, so each route is invoked once more than the table counts — four and six. Both pay that extra invocation exactly once, so the *difference* is the same either way; the absolute figure is what the token arithmetic needs, and it is one higher than shown.
 
-Dispatch resolves the whole walk inside one program and pays a *transport* round trip per call instead — serially, always, with no batching available at any layer ([#439](https://github.com/sokolaidev/maf-extensions/issues/439)).
+Dispatch resolves the whole walk inside one program and pays a *transport* round trip per discovered call instead. The host serves those calls sequentially; concurrent guest callers can overlap request discovery, but that does not make host-tool execution concurrent or collapse the calls into one wall-clock interval ([#439](https://github.com/sokolaidev/maf-extensions/issues/439)).
 
 **One gap per program boundary is excluded before those figures are taken.** The host observer records which `HostToolRun` made each call, so a gap between calls from the same run is a transport round trip and a gap between runs is a program boundary. There are exactly as many such boundaries as dispatching programs minus one; no latency ordering or largest-gap assumption is involved.
 
