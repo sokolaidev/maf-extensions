@@ -68,8 +68,9 @@ from maf_sandbox.maf import list_all_files, make_caller_context
 
 #: Whether the installed transport takes its own files back when a run ends. #434 gave it a
 #: cleanup and exported `reclaim_run` in the same release, so the import is the marker for
-#: both: before it, `dispatch_over_exec` left the request and response files in the guest and
-#: nothing in the protocol could remove them (#438); after it, the transport removes the
+#: transport cleanup: before it, `dispatch_over_exec` left the request and response files in the
+#: guest; after it, the transport removes the directory it owns. The framework's call-directory
+#: cleanup is reported separately because it belongs to the CodeAct kind's installed version.
 #: directory it owns on every exit path. A sample runs against whatever is on PyPI, and act 5
 #: asks rather than assumes — the two are different measurements and both are correct.
 try:
@@ -82,6 +83,7 @@ from maf_sandbox_codeact import codeact_sandbox_spec, make_codeact_tools
 
 TRANSPORT_RECLAIMS = _reclaim_run is not None
 RECLAIMED, KEPT = "reclaimed by the transport", "left for the sandbox (#438)"
+CALL_RECLAIMED, CALL_KEPT = "reclaimed by the framework", "left for the sandbox (#438)"
 
 # Keyed by (scope, thread_id, agent_dir); constants here since this program serves one request.
 SCOPE = "samples"
@@ -679,26 +681,30 @@ async def act_five_what_the_runs_left_behind(
     answered = sum(t[3] for t in totals)
 
     print(f"{MEASURED}transport cleanup: {RECLAIMED if TRANSPORT_RECLAIMS else KEPT}")
+    call_reclaims = directories == 0
+    print(f"{MEASURED}call directory cleanup: {CALL_RECLAIMED if call_reclaims else CALL_KEPT}")
     print(f"{MEASURED}run directories across both sandboxes: {directories}")
     print(f"{MEASURED}of those, runs that dispatched: {dispatched_runs}")
     print(f"{MEASURED}transport files left behind: {left}, of which answered calls: {answered}")
     print()
-    print("  A fresh directory per run is what keeps one run's traffic out of the next one's,")
-    print("  and on a warm sandbox that is not hypothetical: every run above is still here.")
+    print("  A fresh directory per run keeps one run's traffic out of the next one's.")
+    if call_reclaims:
+        print("  The framework-owned call directories are gone when act 5 looks.")
+    else:
+        print("  On older CodeAct kinds, those call directories remain for act 5 to count.")
     print()
     if TRANSPORT_RECLAIMS:
         print("  The traffic is not. `dispatch_over_exec` removes the directory it owns on every")
         print("  exit path, so the requests and responses above are gone and zero is the cleanup")
-        print("  having worked (#434). What it does not remove is the run itself or the model's")
-        print("  files — those are the kind's, through `reclaim_run` — which is why the")
-        print("  directories are still counted and only their contents are not.")
+        print("  having worked (#434). The framework may also reclaim the whole call directory")
+        print("  after the kind returns; when it does, the host's observer is the only run count.")
         print()
         print("  The cost lands here: the guest no longer corroborates how many programs called")
         print("  out, so that count comes from the host's own record alone.\n")
     else:
-        print("  Nothing deleted any of it. This transport has no way to — 'nothing in the")
-        print("  protocol deletes' — and no kind is obliged to try (#438). So the count above")
-        print("  only ever goes up until the sandbox is disposed of, which is the next line.\n")
+        print("  The transport leaves its traffic behind on this older release, and the kind")
+        print("  leaves its call directories behind too. The count remains useful until the")
+        print("  sandbox is disposed of, which is the next line.\n")
 
 
 async def run() -> int:

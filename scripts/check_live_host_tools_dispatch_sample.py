@@ -13,7 +13,7 @@ interpreter's output or a structural property of the two roads:
 - Direct needed more tool-calling rounds than dispatch.
 - The dispatched route's model carried no sales figure into code; the direct route's carried
   all twelve.
-- The runs left what the installed transport leaves, which #434 changed and act 5 declares.
+- The runs declare both transport cleanup and framework call-directory cleanup, which act 5 measures.
 - The gaps behind the round-trip summary were the ones the transport made: *n* calls over *p*
   programs leave *n - p*.
 
@@ -111,6 +111,9 @@ _BOUNDARIES = _tagged(
 _STAGES_RUN = _tagged(rf"({_ANY_ROUTE}):\s+lookup stages exercised:\s+(\d+)\s+of\s+(\d+)")
 _NAMED = _tagged(rf"({_ANY_ROUTE}):\s+product names in the table:\s+(\d+)\s+of\s+(\d+)")
 _CLEANUP = _tagged(r"transport cleanup:\s+(reclaimed by the transport|left for the sandbox)")
+_CALL_CLEANUP = _tagged(
+    r"call directory cleanup:\s+(reclaimed by the framework|left for the sandbox)"
+)
 _RUN_DIRS = _tagged(r"run directories across both sandboxes:\s+(\d+)")
 _DISPATCHING = _tagged(r"of those, runs that dispatched:\s+(\d+)")
 _LEFT = _tagged(r"transport files left behind:\s+(\d+), of which answered calls:\s+(\d+)")
@@ -546,12 +549,14 @@ def _assess_the_round_trips(output: str) -> list[str]:
 
 
 def _reclaims(output: str) -> bool | None:
-    """Whether this run's transport takes its own files back, or None if it did not say.
-
-    #434 gave `dispatch_over_exec` a cleanup and a sample runs against whatever is published, so
-    both behaviours are correct and the run declares which it measured.
-    """
+    """Whether this run's transport takes its own files back, or None if it did not say."""
     said = _CLEANUP.findall(output)
+    return said[0].startswith("reclaimed") if len(said) == 1 else None
+
+
+def _call_reclaims(output: str) -> bool | None:
+    """Whether the framework reclaims CodeAct call directories, if the run reports it."""
+    said = _CALL_CLEANUP.findall(output)
     return said[0].startswith("reclaimed") if len(said) == 1 else None
 
 
@@ -596,15 +601,31 @@ def _assess_what_the_runs_left(output: str) -> list[str]:
     said = _CLEANUP.findall(output)
     _, problems = _once(said, "transport cleanup")
     failures.extend(problems)
+    call_said = _CALL_CLEANUP.findall(output)
+    call_reclaims, problems = _once(call_said, "call directory cleanup")
+    failures.extend(problems)
     dirs, problems = _once(_RUN_DIRS.findall(output), "run directories")
     failures.extend(problems)
     dispatching, problems = _once(_DISPATCHING.findall(output), "runs that dispatched")
     failures.extend(problems)
     left, problems = _once(_LEFT.findall(output), "files left behind")
     failures.extend(problems)
-    if None in (dirs, dispatching, left) or len(said) != 1:
+    if None in (dirs, dispatching, left) or len(said) != 1 or call_reclaims is None:
         return failures
     total, answers = int(left[0]), int(left[1])  # type: ignore[index]
+
+    if call_reclaims.startswith("reclaimed"):
+        if int(dirs) != 0 or int(dispatching) != 0:  # type: ignore[arg-type]
+            failures.append(
+                f"{dirs} run director(y/ies), including {dispatching} dispatched run(s), survived "
+                "framework reclamation of CodeAct call directories"
+            )
+        if total or answers:
+            failures.append(
+                f"{total} transport file(s) and {answers} answered call(s) survived after the "
+                "framework reclaimed every CodeAct call directory"
+            )
+        return failures
 
     if _reclaims(output):
         # Nothing is a measurement here, so it has to be exactly nothing: this transport removes
@@ -656,9 +677,9 @@ def _assess_what_the_runs_left(output: str) -> list[str]:
         )
     if total < 1:
         failures.append(
-            "no transport files were found in the guest. Nothing deletes them — the protocol "
-            "has no way (#438) — so zero means the enumeration looked somewhere the transport "
-            "does not write"
+            "no transport files were found in the guest for a legacy cleanup report. The "
+            "transport leaves those files behind, so zero means the enumeration looked somewhere "
+            "the transport does not write"
         )
     if answers > total:
         failures.append(f"{answers} answered call(s) among {total} file(s) is not arithmetic")
@@ -680,8 +701,9 @@ def _assess_what_the_runs_left(output: str) -> list[str]:
         failures.append(
             f"the guest holds {answers} answered call(s) against the {dispatched[_DISPATCH]} "
             "lookup(s) the dispatched route recorded. The host answers every call it serves and "
-            "nothing deletes the answer, so fewer answers than lookups is the enumeration "
-            "having missed part of the traffic rather than the run having made less of it"
+            "the legacy transport leaves every answer, so fewer answers than lookups is the "
+            "enumeration having missed part of the traffic rather than the run having made less "
+            "of it"
         )
     return failures
 

@@ -73,6 +73,7 @@ Oregon	TOTAL	3514.35
 == 5. What the runs left in the guest ==
 
   [measured] transport cleanup: left for the sandbox (#438)
+  [measured] call directory cleanup: left for the sandbox (#438)
   [measured] run directories across both sandboxes: 3
   [measured] of those, runs that dispatched: 2
   [measured] transport files left behind: 75, of which answered calls: 25
@@ -95,6 +96,11 @@ _RECLAIMED = (
         "transport cleanup: left for the sandbox (#438)",
         "transport cleanup: reclaimed by the transport",
     )
+    .replace(
+        "call directory cleanup: left for the sandbox (#438)",
+        "call directory cleanup: reclaimed by the framework",
+    )
+    .replace("run directories across both sandboxes: 3", "run directories across both sandboxes: 0")
     .replace("of those, runs that dispatched: 2", "of those, runs that dispatched: 0")
     .replace(
         "transport files left behind: 75, of which answered calls: 25",
@@ -106,6 +112,17 @@ _RECLAIMED = (
 def _reclaimed(old: str, new: str) -> str:
     assert old in _RECLAIMED, f"{old!r} is not in the reclaimed fixture"
     return _RECLAIMED.replace(old, new)
+
+
+_TRANSPORT_RECLAIMED = _HEALTHY.replace(
+    "transport cleanup: left for the sandbox (#438)",
+    "transport cleanup: reclaimed by the transport",
+)
+
+
+def _transport_reclaimed(old: str, new: str) -> str:
+    assert old in _TRANSPORT_RECLAIMED, f"{old!r} is not in the transport fixture"
+    return _TRANSPORT_RECLAIMED.replace(old, new)
 
 
 def _swap(old: str, new: str) -> str:
@@ -682,8 +699,8 @@ class TestATransportThatReclaimsItsOwn:
         assert any(
             "the cleanup having half worked" in r
             for r in check.assess(
-                _reclaimed(
-                    "transport files left behind: 0, of which answered calls: 0",
+                _transport_reclaimed(
+                    "transport files left behind: 75, of which answered calls: 25",
                     "transport files left behind: 3, of which answered calls: 1",
                 )
             )
@@ -693,7 +710,9 @@ class TestATransportThatReclaimsItsOwn:
         assert any(
             "removes the one it owns on every exit path" in r
             for r in check.assess(
-                _reclaimed("of those, runs that dispatched: 0", "of those, runs that dispatched: 2")
+                _transport_reclaimed(
+                    "of those, runs that dispatched: 2", "of those, runs that dispatched: 2"
+                )
             )
         )
 
@@ -702,7 +721,7 @@ class TestATransportThatReclaimsItsOwn:
         assert any(
             "the only thing left saying the programs ran" in r
             for r in check.assess(
-                _reclaimed(
+                _transport_reclaimed(
                     "run directories across both sandboxes: 3",
                     "run directories across both sandboxes: 2",
                 )
