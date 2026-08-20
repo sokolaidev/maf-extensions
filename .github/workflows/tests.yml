@@ -74,14 +74,9 @@ jobs:
         run: uv sync --locked
 
       - name: Pre-commit (whole tree)
-        # The config itself cannot rot while every local copy stays green, so the pre-commit
-        # stage of the hooks runs here as the whole tree: ruff, the scrub guard and the
-        # hygiene hooks, plus `uv-lock`'s rewriter. No `--hook-stage` filter is passed, so
-        # pre-commit uses its default — the pre-commit stage; a hook whose `stages` key were
-        # dropped would inherit all stages and run here, which is how the wiring of the two
-        # non-default stages is caught (on top of the config-level test in the suite). The
-        # non-default stages get their own steps below. `uv sync --locked` above installed
-        # the dev group, which is where pre-commit lives.
+        # The pre-commit tier as a whole tree; no `--hook-stage` filter, so pre-commit uses
+        # its default stage. A hook whose `stages` were dropped would run here, which is how
+        # the wiring is caught (the suite's config test pins it too).
         env:
           # `main` is checked out as a local branch here, so the branch guard — a local
           # hook that keeps a commit on the protected branch — would fail the run.
@@ -89,14 +84,9 @@ jobs:
         run: uv run pre-commit run --all-files
 
       - name: Pre-commit (pre-push stage, whole tree)
-        # The pre-push tier through the framework: the hygiene hooks that declare the stage.
-        # The two `always_run` pyright passes are skipped — the dedicated Types steps below
-        # run the same two commands, and re-running them here would double CI's wall-clock
-        # without checking anything new; their pre-push wiring stays pinned by the config
-        # test.
-        env:
-          # Comma-separated: pre-commit's `_get_skips` splits on `,`.
-          SKIP: pyright-packages,pyroot
+        # The whole tier through pre-commit, the way a developer's push runs it, so the
+        # hooks' entries and arguments are exercised end to end; the Types steps below run
+        # the same pyright commands raw, outside the framework.
         run: uv run pre-commit run --hook-stage pre-push --all-files
 
       - name: Pre-commit (commit-msg stage)

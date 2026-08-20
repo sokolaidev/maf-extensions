@@ -1,24 +1,9 @@
-# The pre-push gate, in three tiers — the same checks CI runs, moved as close to the act as
-# each can get. The cheap ones (lint, format, the scrub guard, hygiene) run on every commit;
-# the pyright passes run on push; the full suite stays where CONTRIBUTING.md puts it, before
-# a PR.
+# The local gate's hook config: the commit, push and message tiers, mirroring the checks CI
+# runs. Tier assignments are the `stages` keys below; the full suite stays in CONTRIBUTING.md.
 #
-# ruff and pyright are local `system` hooks calling `uv run`, not the upstream ruff-pre-commit
-# or a pyright hook: an upstream hook installs its own pinned tool, which would put a second
-# ruff beside the `ruff>=0.15.20,<0.16` band in pyproject.toml and a second pyright beside
-# the workspace's. Two rule sets disagreeing about one file is worse than no hook.
-#
-# No file-rewriting whitespace hooks (trailing-whitespace, end-of-file-fixer,
-# mixed-line-ending): they fail the commit *and* modify the tree, which on a partial-stage
-# risks staging something unintended. The one intended rewriter is `uv-lock` below.
 
-# All three types, so a bare `pre-commit install` (the one line CONTRIBUTING.md asks for)
-# wires the commit, the push and the message guard alike.
-
-# A hook without an explicit `stages` key would inherit *every* stage and re-run on commit,
-# push and message alike; the default keeps the tiers where the tiers put it. Every hook
-# below also names its stages: the config test reads only this file, never the manifests
-# of the pinned repos, so a manifest-declared stage would drift out of the model.
+# A hook without an explicit `stages` key inherits *every* stage and re-runs on commit,
+# push and message alike; the default keeps the tiers where the tiers put it.
 default_stages: [pre-commit]
 default_install_hook_types: [pre-commit, pre-push, commit-msg]
 
