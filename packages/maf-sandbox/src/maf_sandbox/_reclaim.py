@@ -48,8 +48,11 @@ async def reclaim_guest_path(
 ) -> str | None:
     """Remove ``path`` and everything under it. ``None``, or why it did not happen.
 
-    **Never raises.** It runs in a ``finally``, where an exception would replace whatever the
-    call was already reporting with a message about cleanup.
+    **No failure of the removal raises.** It runs in a ``finally``, where an exception would
+    replace whatever the call was already reporting with a message about cleanup. Cancellation
+    is not such a failure: a :class:`~asyncio.CancelledError` or ``GeneratorExit`` at the
+    ``exec`` is the caller's deadline arriving, and it propagates — containing it would let the
+    call return past a bound the host thought it had.
 
     ``rm -rf`` because that is the one removal every backend serving a kind can do today: the
     protocol's own delete is gated by a capability no shipped spec requires. Which mechanism to

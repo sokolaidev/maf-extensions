@@ -94,6 +94,7 @@ class _SandboxToolCall:
     owner: object
     path: str | None = None
     acquired: tuple[Sandbox, SandboxKey] | None = None
+    closed: bool = False
 
 
 #: The call a tool body is running inside, or ``None`` outside one.
@@ -101,8 +102,9 @@ class _SandboxToolCall:
 #: Not an attribute on the session: one session serves every concurrent call to its tool, so two
 #: parallel calls would be handed the same path and the first to finish would remove one the
 #: other is still running in. A task starts from a copy of its parent's context, so a child
-#: reads the record and cannot reach a sibling's — but a child outliving the call reads a path
-#: the ``finally`` has already removed, and nothing will reclaim what it writes after that.
+#: reads the record and cannot reach a sibling's. A child outliving the call keeps that copy, so
+#: the record is *closed* before the removal runs and asking it for a path then raises: anything
+#: such a task wrote afterwards would sit in the sandbox with nothing left to reclaim it.
 _CALL: ContextVar[_SandboxToolCall | None] = ContextVar("maf_sandbox_call", default=None)
 
 
@@ -334,17 +336,25 @@ class SandboxToolSession:
         ``directory`` because that is all the protocol promises: a backend serving its store from
         memory, or with no enumeration primitive under it, addresses one the same way.
 
-        The reclaim covers what was written through the sandbox :meth:`acquire` returned. A kind
-        that writes here through a sandbox it got elsewhere keeps what it wrote.
+        The reclaim covers what was written through the sandbox :meth:`acquire` returned, before
+        the call returns. A kind that writes here through a sandbox it got elsewhere, or from a
+        task that outlives the call, keeps what it wrote.
 
         Raises:
-            RuntimeError: Called outside a tool call, where nothing would reclaim what it names.
+            RuntimeError: Called outside a tool call, or after one returned — in both cases
+                nothing would reclaim what it names.
         """
         call = _this_call(self)
         if call is None:
             raise RuntimeError(
                 f"{self._name}: guest_call_path() was called outside a tool call, so nothing "
                 "would reclaim what it names. Call it from the tool body."
+            )
+        if call.closed:
+            raise RuntimeError(
+                f"{self._name}: guest_call_path() was called after its tool call returned. That "
+                "path is already reclaimed, and anything written to it now would stay in the "
+                "sandbox. A task outliving the call needs a path of its own."
             )
         if call.path is None:
             call.path = f"{self._spec.work_dir}/{uuid4().hex[:12]}"
@@ -423,8 +433,12 @@ async def _reclaim_the_call(
 ) -> None:
     """Remove what one tool call owns, and report a removal that did not happen.
 
-    Never raises. It runs in :func:`sandboxed_tool`'s ``finally``, where an exception would
-    replace whatever the call was already reporting with a message about cleanup.
+    Raises only what the caller asked for. A failed removal, and a host callback that fails with
+    it, are logged and swallowed: this runs in :func:`sandboxed_tool`'s ``finally``, where
+    raising would replace whatever the call was already reporting with a message about cleanup.
+    A :class:`~asyncio.CancelledError` or ``GeneratorExit`` is not such a failure — it is an
+    outer deadline arriving mid-removal, so it is recorded and re-raised, and it *does* replace
+    the body's result.
     """
     if call.path is None or call.acquired is None:
         # Nothing was named, or nothing was acquired to write into it — either way there is
@@ -652,6 +666,9 @@ def sandboxed_tool(
             return await body(*args, **kwargs)
         finally:
             _CALL.reset(token)
+            # Closed before the removal, not after: a task the body left running would otherwise
+            # be handed this path while it is being deleted.
+            call.closed = True
             await _reclaim_the_call(
                 call,
                 spec=spec,

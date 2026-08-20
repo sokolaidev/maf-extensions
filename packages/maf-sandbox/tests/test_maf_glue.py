@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import enum
 import logging
 import math
 
@@ -616,6 +617,11 @@ class TestTheIsolationFloorStillApplies:
 # ---------------------------------------------------------------------------
 
 
+async def _ask_again(session: SandboxToolSession) -> str:
+    """Ask a session for its call path from wherever the caller happens to be."""
+    return session.guest_call_path()
+
+
 def _rm_targets(sandbox):
     """The paths this fake was asked to remove, in order."""
     return [
@@ -650,6 +656,25 @@ def _reclaiming_body(session: SandboxToolSession):
         path = session.guest_call_path()
         await sandbox.write_file(f"{path}/program.py", target)
         return path
+
+    return widget_run
+
+
+class _Mode(enum.StrEnum):
+    """A parameter type only the *kind's* module can resolve, which `maf.py` cannot see."""
+
+    FAST = "fast"
+    SLOW = "slow"
+
+
+def _typed_body(session: SandboxToolSession):
+    async def widget_run(mode: _Mode) -> str:
+        """Do a thing in ``mode``.
+
+        Args:
+            mode: How to do it.
+        """
+        return str(mode)
 
     return widget_run
 
@@ -912,6 +937,64 @@ class TestWhatTheWrapperDoesNotTouch:
         assert not asyncio.iscoroutinefunction(_fn(self._sync_tool()))
 
 
+class TestATaskThatOutlivesItsCall:
+    """The record is closed before the removal, so a straggler is refused rather than served."""
+
+    def test_the_path_cannot_be_taken_after_the_call_returned(self):
+        """A straggler inherits the context, so it reaches the record — and must be refused.
+
+        Not `asyncio.run` from the test: that is a fresh context where the var is unset, which
+        takes the *other* branch and would pass against a record that never closes.
+        """
+        release = asyncio.Event()
+        started: list[asyncio.Task[str]] = []
+
+        def build(session: SandboxToolSession):
+            async def widget_run(target: str) -> str:
+                """Leave a task running past the return."""
+                key = session.key()
+                assert not isinstance(key, str)
+                assert not isinstance(await session.acquire(key), str)
+                session.guest_call_path()
+
+                async def straggler() -> str:
+                    await release.wait()
+                    return session.guest_call_path()
+
+                started.append(asyncio.create_task(straggler()))
+                return "done"
+
+            return widget_run
+
+        tool = _reclaiming(InProcessSandboxBackend(), build)
+
+        async def scenario() -> str:
+            answered = await _fn(tool)(target="x")
+            release.set()
+            with pytest.raises(RuntimeError, match="after its tool call returned"):
+                await started[0]
+            return answered
+
+        assert asyncio.run(scenario()) == "done"
+
+    def test_a_child_task_still_inside_the_call_is_served(self):
+        """Closing must not break the case a `ContextVar` was chosen for."""
+
+        def build(session: SandboxToolSession):
+            async def widget_run(target: str) -> str:
+                """Read the path from a child task, before returning."""
+                key = session.key()
+                assert not isinstance(key, str)
+                assert not isinstance(await session.acquire(key), str)
+                mine = session.guest_call_path()
+                child = asyncio.create_task(_ask_again(session))
+                return "same" if await child == mine else "different"
+
+            return widget_run
+
+        assert _call(_reclaiming(InProcessSandboxBackend(), build), target="x") == "same"
+
+
 class TestASecondBinding:
     """One `ContextVar` serves every binding in the process, so a record has to know whose it is."""
 
@@ -987,6 +1070,21 @@ class TestTheWrapperIsTransparent:
         tool = _reclaiming(InProcessSandboxBackend())
         assert tool.input_model is not None
         assert list(tool.input_model.model_json_schema()["properties"]) == ["target"]
+
+    def test_a_parameter_typed_from_the_kinds_own_module_still_resolves(self):
+        """This file has `from __future__ import annotations`, so the annotation reaching the
+        wrapper is the string ``"_Mode"`` and `maf.py`'s globals do not contain it.
+
+        `functools.wraps` sets ``__wrapped__``, and `typing.get_type_hints` walks that chain to
+        pick globals off the body — so the enum resolves. Were it read against the wrapper's own
+        module it would raise, MAF would swallow it, and the parameter would reach the model as
+        a bare string with its choices gone.
+        """
+        tool = _reclaiming(InProcessSandboxBackend(), _typed_body)
+        assert tool.input_model is not None
+        schema = tool.input_model.model_json_schema()
+        enums = [d.get("enum") for d in schema.get("$defs", {}).values()]
+        assert [sorted(e) for e in enums if e] == [["fast", "slow"]], schema
 
     def test_the_description_survives_the_wrapper(self):
         tool = _reclaiming(InProcessSandboxBackend())
