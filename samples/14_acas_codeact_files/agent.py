@@ -47,7 +47,7 @@ import json
 import sys
 from pathlib import Path
 
-from _scaffold import installed_versions, MEASURED, conversation_id, quoted, require_env_vars
+from _scaffold import MEASURED, conversation_id, installed_versions, quoted, require_env_vars
 from agent_framework import Agent, InMemoryAgentFileStore
 from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import warnings
 
+from _scaffold import installed_versions
 from host_tools import (
     fetch_changelog,
     publish_release_note,
@@ -38,7 +39,6 @@ from maf_sandbox import (
     SandboxSpec,
 )
 from maf_sandbox.testing import InProcessSandboxBackend
-from _scaffold import installed_versions
 
 #: The kind this host would be attaching. Named once; every act below builds a spec for it.
 KIND = "release-notes"

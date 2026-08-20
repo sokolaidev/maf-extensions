@@ -49,7 +49,14 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from _scaffold import installed_versions, MEASURED, conversation_id, quoted, require_env_vars, tool_results
+from _scaffold import (
+    MEASURED,
+    conversation_id,
+    installed_versions,
+    quoted,
+    require_env_vars,
+    tool_results,
+)
 from agent_framework import Agent, tool
 from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential

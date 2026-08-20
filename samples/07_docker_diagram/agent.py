@@ -45,7 +45,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from _scaffold import installed_versions, MEASURED, quoted, require_env_vars
+from _scaffold import MEASURED, installed_versions, quoted, require_env_vars
 from agent_framework import Agent
 from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential

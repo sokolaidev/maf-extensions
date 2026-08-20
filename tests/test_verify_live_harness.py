@@ -43,10 +43,18 @@ class TestEveryLiveCheckComesFromTheHarness:
         assert not bare, f"invoked from the ref under test rather than $HARNESS: {bare}"
 
     def test_each_invoking_job_checks_the_harness_out(self):
-        # One `path: .harness` per job that runs a check: the variable resolves to that
-        # directory on a tagged run, so a job that reads it without cloning it would fail there
-        # and only there — on a real release, after a real upload.
-        assert len(_HARNESS_CHECKOUT.findall(_TEXT)) == len(_CHECK_CALL.findall(_TEXT))
+        # One `path: .harness` per job that runs a check, regardless of how many live checks
+        # that job invokes. The harness is a job-scoped dependency: a single checkout feeds every
+        # `python3 "$HARNESS"/scripts/check_live_*.py` call in that job, and a tag run fails if
+        # the job reads the ref under test instead.
+        assert _HARNESS_CHECKOUT.search(_TEXT), "no live-check job checks out the harness"
+        assert len(_HARNESS_CHECKOUT.findall(_TEXT)) == len(
+            re.findall(
+                r"^\s*-\s*name:\s*Check out the checks from the default branch\s*$",
+                _TEXT,
+                re.MULTILINE,
+            )
+        )
 
 
 class TestTheFallbackKeepsABranchDispatchHonest:

@@ -22,10 +22,10 @@ from __future__ import annotations
 import asyncio
 import subprocess
 
+from _scaffold import installed_versions
 from maf_sandbox import Isolation, SandboxKey, SandboxRouter, SandboxSpec
 from maf_sandbox.maf import SandboxPurger
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
-from _scaffold import installed_versions
 
 IMAGE = "mcr.microsoft.com/devcontainers/python:3.13-bookworm"
 SCOPE = "samples"

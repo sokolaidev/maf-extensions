@@ -39,10 +39,10 @@ from _scaffold import (
     MEASURED,
     conversation_id,
     evidence,
+    installed_versions,
     quoted,
     require_env_vars,
     tool_results,
-    installed_versions,
 )
 from agent_framework import Agent
 from agent_framework.openai import OpenAIChatClient
