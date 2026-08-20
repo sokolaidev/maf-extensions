@@ -90,7 +90,7 @@ def _assert_enforced(pyproject: Path) -> None:
         f"{package.name} dropped max-doc-length={_MAX_DOC}; W505 is a no-op without it (#454)"
     )
     for key in ("ignore", "extend-ignore"):
-        disabled = [rule for rule in lint.get(key, []) if rule in _LENGTH_RULES]
+        disabled = [rule for rule in lint.get(key, []) if _selects_length_rule(rule)]
         assert not disabled, (
             f"{package.name} {key}={disabled} disables the line-length rules (#454)"
         )
@@ -192,7 +192,7 @@ max-doc-length = 100
 
     def test_assert_enforced_rejects_top_level_exclude(self, tmp_path):
         # `[tool.ruff] exclude` is read before lint settings, so it holds even for the
-        # explicit src/ path the scan passes. Finding 1: the guard must reject it.
+        # explicit src/ path the scan passes; the guard must reject it.
         pkg = tmp_path / "pkg"
         (pkg / "src").mkdir(parents=True)
         (pkg / "src" / "x.py").write_text("x = 1\n", encoding="utf-8")
@@ -215,9 +215,8 @@ max-doc-length = 100
             _assert_enforced(pyproject)
 
     def test_assert_enforced_rejects_line_length_above_100(self, tmp_path):
-        # Finding 2: the gate pinned max-doc-length but never line-length, so a package
-        # could raise line-length to 120 and E501 would stop mattering while the test
-        # stayed green. line-length must equal the 100-column floor.
+        # E501 reads the configured line-length, so it must stay at the 100-column floor;
+        # a higher line-length would let code drift past what the doc rule bounds.
         pkg = tmp_path / "pkg"
         (pkg / "src").mkdir(parents=True)
         (pkg / "src" / "x.py").write_text("x = 1\n", encoding="utf-8")
@@ -239,8 +238,7 @@ max-doc-length = 100
             _assert_enforced(pyproject)
 
     def test_src_ignores_rejects_length_rule_prefix(self, tmp_path):
-        # Finding 3: per-file-ignores accept selector prefixes ("E5") and "ALL", which
-        # the exact-membership check missed. The gate must stay fail-closed.
+        # Selectors are prefixes ("E5") and "ALL", and either must be rejected fail-closed.
         src = tmp_path / "pkg" / "src"
         src.mkdir(parents=True)
         (src / "x.py").write_text("x = 1\n", encoding="utf-8")
@@ -252,9 +250,33 @@ max-doc-length = 100
         lint = {"per-file-ignores": {"src/**": ["F5"]}}
         assert _src_ignores(Path("pkg/src"), lint) == []
 
+    def test_assert_enforced_rejects_ignore_prefix(self, tmp_path):
+        # `ignore`/`extend-ignore` follow the same selector semantics as per-file-ignores:
+        # a prefix ("E5") or "ALL" still disables the length rules fail-closed.
+        pkg = tmp_path / "pkg"
+        (pkg / "src").mkdir(parents=True)
+        (pkg / "src" / "x.py").write_text("x = 1\n", encoding="utf-8")
+        pyproject = pkg / "pyproject.toml"
+        pyproject.write_text(
+            """\
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E501", "W505"]
+ignore = ["E5"]
+
+[tool.ruff.lint.pycodestyle]
+max-doc-length = 100
+""",
+            encoding="utf-8",
+        )
+        with pytest.raises(AssertionError, match="disables the line-length rules"):
+            _assert_enforced(pyproject)
+
     def test_assert_clean_failure_appends_stderr(self, tmp_path, monkeypatch):
-        # Finding 4: a failed scan must surface stderr too, or a violation that only
-        # appears there (a config error, say) is invisible in the assertion message.
+        # A failed scan must surface stderr too, or a violation that only appears there
+        # (a config error, say) is invisible in the assertion message.
         src = tmp_path / "pkg" / "src"
         src.mkdir(parents=True)
         (src / "x.py").write_text("x = 1\n", encoding="utf-8")
