@@ -16,6 +16,7 @@ from ._protocol import EntryKind, SandboxEntry
 
 __all__ = [
     "confine_guest_path",
+    "confine_guest_write_path",
     "guest_directory_chain",
     "guest_path_relative_to",
     "refuse_symlinked_parents",
@@ -35,6 +36,25 @@ def confine_guest_path(path: str, working_directory: str) -> str:
     resolved = posixpath.normpath(posixpath.join(base, path))
     if guest_path_relative_to(resolved, base) is None:
         raise ValueError(f"path {path!r} resolves outside working directory {working_directory!r}")
+    return resolved
+
+
+async def confine_guest_write_path(
+    stat: Callable[[str], Awaitable[SandboxEntry | None]],
+    path: str,
+    working_directory: str,
+) -> str:
+    """Confine a write using an unconfined, no-follow stat; refuse a link at the leaf."""
+    resolved = confine_guest_path(path, working_directory)
+    if resolved == posixpath.normpath(working_directory):
+        raise ValueError(f"refusing to write over the working directory itself: {resolved!r}")
+    await refuse_symlinked_parents(stat, resolved, working_directory)
+    entry = await stat(resolved)
+    if entry is not None and entry.kind is EntryKind.SYMLINK:
+        raise ValueError(
+            f"{resolved!r} is a link, so writing to it would land the bytes wherever it points, "
+            f"outside working directory {working_directory!r}"
+        )
     return resolved
 
 

@@ -115,7 +115,7 @@ It is the only shape that serves a backend whose store has no filesystem under i
 
 Two things it depends on, both real work:
 
-- **`write_file` takes an absolute path and no working directory** — the one asymmetry left on the surface, and the first call every kind makes. Until it is closed, a relative answer would force each kind to compose the absolute path itself, which is the thing being removed.
+- **`write_file` now takes a working directory and participates in confinement** — the surface asymmetry is closed; a backend still owns the guest storage base.
 - **Something still needs a real absolute path inside the guest.** The transport puts the shim's directory on `PYTHONPATH`, which the interpreter resolves against nothing. Either the launcher works relative to its own working directory, or the protocol gains a resolution step. This is the open question.
 
 `guest_call_path()` is correct either way: a path relative to a base is still a path, so nothing renames when the base moves.
@@ -152,7 +152,7 @@ The answer is a **lifetime or a lock**, never a capability:
 1. **The call owns a path.** `guest_call_path()`, the per-call record, the wrapper and its `finally`, the failure callback, and the invariant above in the binding's docstring. Core alone; the three call sites — codeact's two paths and bicep's per-round directory — are wired after.
 2. **A mandatory reclaim method on `Sandbox`.** Every backend implements it, core stops choosing. Breaking: the protocol is `@runtime_checkable`.
 3. **Serialising calls that share a sandbox**, which unblocks the disposal escalation.
-4. **The backend owns the base.** Depends on closing the `write_file` asymmetry, and answers the `PYTHONPATH` question above.
+4. **The backend owns the base.** Answers the `PYTHONPATH` question above; the `write_file` asymmetry is closed.
 5. **`SandboxToolBinding`**, once the semantics have settled.
 
 Two pieces belong in code rather than here, where someone will trip over them: the vocabulary rule in `AGENTS.md`, so the next kind does not invent a fourth word, and the binding invariant in its class docstring, where the mistake it prevents is made.

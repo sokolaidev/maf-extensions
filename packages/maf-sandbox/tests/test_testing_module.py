@@ -43,7 +43,11 @@ _AMPLE = 1024
 class TestInProcessSandboxExec:
     def test_write_file_records_content_by_path(self):
         sandbox = InProcessSandbox()
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/a.txt", "hello"))
+        asyncio.run(
+            sandbox.write_file(
+                "/maf-sandbox/work/a.txt", "hello", working_directory="/maf-sandbox/work"
+            )
+        )
         assert sandbox.files == {"/maf-sandbox/work/a.txt": "hello"}
 
     def test_a_string_command_is_recorded_as_given(self):
@@ -228,7 +232,11 @@ class TestInProcessSandboxSatisfiesTheProtocol:
 class TestInProcessSandboxWriteFileIsBytesBacked:
     def test_str_content_is_utf8_encoded_on_the_way_in(self):
         sandbox = InProcessSandbox()
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/greeting.txt", "héllo"))
+        asyncio.run(
+            sandbox.write_file(
+                "/maf-sandbox/work/greeting.txt", "héllo", working_directory="/maf-sandbox/work"
+            )
+        )
         result = asyncio.run(
             sandbox.read_file(
                 "greeting.txt", working_directory="/maf-sandbox/work", max_bytes=_AMPLE
@@ -239,7 +247,11 @@ class TestInProcessSandboxWriteFileIsBytesBacked:
     def test_bytes_content_round_trips_exactly(self):
         sandbox = InProcessSandbox()
         payload = b"\x89PNG\r\n\x1a\n\x00\x01"
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/out.png", payload))
+        asyncio.run(
+            sandbox.write_file(
+                "/maf-sandbox/work/out.png", payload, working_directory="/maf-sandbox/work"
+            )
+        )
         result = asyncio.run(
             sandbox.read_file("out.png", working_directory="/maf-sandbox/work", max_bytes=_AMPLE)
         )
@@ -247,7 +259,11 @@ class TestInProcessSandboxWriteFileIsBytesBacked:
 
     def test_files_stays_a_str_dict_for_callers_written_against_the_old_shape(self):
         sandbox = InProcessSandbox()
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/a.txt", "hello"))
+        asyncio.run(
+            sandbox.write_file(
+                "/maf-sandbox/work/a.txt", "hello", working_directory="/maf-sandbox/work"
+            )
+        )
         assert sandbox.files == {"/maf-sandbox/work/a.txt": "hello"}
 
 
@@ -337,14 +353,22 @@ class TestInProcessSandboxSeedFiles:
 class TestInProcessSandboxStatFile:
     def test_stats_a_regular_file(self):
         sandbox = InProcessSandbox()
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/a.txt", "hello"))
+        asyncio.run(
+            sandbox.write_file(
+                "/maf-sandbox/work/a.txt", "hello", working_directory="/maf-sandbox/work"
+            )
+        )
         entry = asyncio.run(sandbox.stat_file("a.txt", working_directory="/maf-sandbox/work"))
         assert entry == SandboxEntry(path="a.txt", kind=EntryKind.FILE, size_bytes=5)
 
     def test_size_bytes_counts_bytes_not_characters(self):
         """`é` is one character and two UTF-8 bytes — the cap this feeds must see the bytes."""
         sandbox = InProcessSandbox()
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/a.txt", "é"))
+        asyncio.run(
+            sandbox.write_file(
+                "/maf-sandbox/work/a.txt", "é", working_directory="/maf-sandbox/work"
+            )
+        )
         entry = asyncio.run(sandbox.stat_file("a.txt", working_directory="/maf-sandbox/work"))
         assert entry is not None
         assert entry.size_bytes == 2
@@ -358,7 +382,11 @@ class TestInProcessSandboxStatFile:
 
     def test_stats_an_implied_directory(self):
         sandbox = InProcessSandbox()
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/sub/a.txt", "x"))
+        asyncio.run(
+            sandbox.write_file(
+                "/maf-sandbox/work/sub/a.txt", "x", working_directory="/maf-sandbox/work"
+            )
+        )
         entry = asyncio.run(sandbox.stat_file("sub", working_directory="/maf-sandbox/work"))
         assert entry == SandboxEntry(path="sub", kind=EntryKind.DIRECTORY, size_bytes=None)
 
@@ -366,7 +394,11 @@ class TestInProcessSandboxStatFile:
 class TestInProcessSandboxReadFile:
     def test_reads_written_bytes(self):
         sandbox = InProcessSandbox()
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/a.txt", "hello"))
+        asyncio.run(
+            sandbox.write_file(
+                "/maf-sandbox/work/a.txt", "hello", working_directory="/maf-sandbox/work"
+            )
+        )
         assert (
             asyncio.run(
                 sandbox.read_file("a.txt", working_directory="/maf-sandbox/work", max_bytes=_AMPLE)
@@ -385,7 +417,11 @@ class TestInProcessSandboxReadFile:
 
     def test_refuses_a_directory(self):
         sandbox = InProcessSandbox()
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/sub/a.txt", "x"))
+        asyncio.run(
+            sandbox.write_file(
+                "/maf-sandbox/work/sub/a.txt", "x", working_directory="/maf-sandbox/work"
+            )
+        )
         with pytest.raises(IsADirectoryError):
             asyncio.run(
                 sandbox.read_file("sub", working_directory="/maf-sandbox/work", max_bytes=_AMPLE)
@@ -406,8 +442,16 @@ class TestInProcessSandboxReadFile:
 class TestInProcessSandboxListDir:
     def test_lists_files_and_collapses_a_subtree_into_one_directory_entry(self):
         sandbox = InProcessSandbox()
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/a.txt", "1"))
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/sub/nested/b.txt", "22"))
+        asyncio.run(
+            sandbox.write_file(
+                "/maf-sandbox/work/a.txt", "1", working_directory="/maf-sandbox/work"
+            )
+        )
+        asyncio.run(
+            sandbox.write_file(
+                "/maf-sandbox/work/sub/nested/b.txt", "22", working_directory="/maf-sandbox/work"
+            )
+        )
         entries = asyncio.run(sandbox.list_dir(".", working_directory="/maf-sandbox/work"))
         assert set(entries) == {
             SandboxEntry(path="a.txt", kind=EntryKind.FILE, size_bytes=1),
@@ -416,8 +460,16 @@ class TestInProcessSandboxListDir:
 
     def test_lists_only_the_immediate_children_of_a_subdirectory(self):
         sandbox = InProcessSandbox()
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/sub/b.txt", "22"))
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/sub/nested/c.txt", "3"))
+        asyncio.run(
+            sandbox.write_file(
+                "/maf-sandbox/work/sub/b.txt", "22", working_directory="/maf-sandbox/work"
+            )
+        )
+        asyncio.run(
+            sandbox.write_file(
+                "/maf-sandbox/work/sub/nested/c.txt", "3", working_directory="/maf-sandbox/work"
+            )
+        )
         entries = asyncio.run(sandbox.list_dir("sub", working_directory="/maf-sandbox/work"))
         assert set(entries) == {
             SandboxEntry(path="sub/b.txt", kind=EntryKind.FILE, size_bytes=2),
@@ -443,7 +495,11 @@ class TestInProcessSandboxRemove:
 
     def test_a_file_is_removed(self):
         sandbox = InProcessSandbox()
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/a.txt", "1"))
+        asyncio.run(
+            sandbox.write_file(
+                "/maf-sandbox/work/a.txt", "1", working_directory="/maf-sandbox/work"
+            )
+        )
         asyncio.run(sandbox.remove("a.txt", working_directory="/maf-sandbox/work"))
         assert (
             asyncio.run(sandbox.stat_file("a.txt", working_directory="/maf-sandbox/work")) is None
@@ -485,7 +541,11 @@ class TestInProcessSandboxRemove:
     def test_the_working_directory_itself_is_refused(self):
         """It is the confinement root, and removing it takes the next run's ground with it."""
         sandbox = InProcessSandbox()
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/a.txt", "1"))
+        asyncio.run(
+            sandbox.write_file(
+                "/maf-sandbox/work/a.txt", "1", working_directory="/maf-sandbox/work"
+            )
+        )
         with pytest.raises(ValueError):
             asyncio.run(sandbox.remove(".", working_directory="/maf-sandbox/work"))
         assert "/maf-sandbox/work/a.txt" in sandbox.contents
@@ -493,7 +553,11 @@ class TestInProcessSandboxRemove:
     def test_a_directory_is_refused_without_recursive(self):
         """Named rather than implied: the alternative reads like a single-file delete."""
         sandbox = InProcessSandbox()
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/sub/a.txt", "1"))
+        asyncio.run(
+            sandbox.write_file(
+                "/maf-sandbox/work/sub/a.txt", "1", working_directory="/maf-sandbox/work"
+            )
+        )
         with pytest.raises(OSError):
             asyncio.run(sandbox.remove("sub", working_directory="/maf-sandbox/work"))
         assert "/maf-sandbox/work/sub/a.txt" in sandbox.contents
@@ -530,9 +594,21 @@ class TestInProcessSandboxRemove:
 
     def test_recursive_removes_the_tree_and_nothing_beside_it(self):
         sandbox = InProcessSandbox()
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/sub/a.txt", "1"))
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/sub/nested/b.txt", "2"))
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/sibling.txt", "3"))
+        asyncio.run(
+            sandbox.write_file(
+                "/maf-sandbox/work/sub/a.txt", "1", working_directory="/maf-sandbox/work"
+            )
+        )
+        asyncio.run(
+            sandbox.write_file(
+                "/maf-sandbox/work/sub/nested/b.txt", "2", working_directory="/maf-sandbox/work"
+            )
+        )
+        asyncio.run(
+            sandbox.write_file(
+                "/maf-sandbox/work/sibling.txt", "3", working_directory="/maf-sandbox/work"
+            )
+        )
         asyncio.run(sandbox.remove("sub", working_directory="/maf-sandbox/work", recursive=True))
         assert "/maf-sandbox/work/sub/a.txt" not in sandbox.contents
         assert "/maf-sandbox/work/sub/nested/b.txt" not in sandbox.contents
@@ -560,8 +636,16 @@ class TestInProcessSandboxRemove:
     def test_a_sibling_sharing_a_prefix_survives_a_recursive_removal(self):
         """`sub` and `sub-2` are two directories, and a prefix comparison reads them as one."""
         sandbox = InProcessSandbox()
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/sub/a.txt", "1"))
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/sub-2/b.txt", "2"))
+        asyncio.run(
+            sandbox.write_file(
+                "/maf-sandbox/work/sub/a.txt", "1", working_directory="/maf-sandbox/work"
+            )
+        )
+        asyncio.run(
+            sandbox.write_file(
+                "/maf-sandbox/work/sub-2/b.txt", "2", working_directory="/maf-sandbox/work"
+            )
+        )
         asyncio.run(sandbox.remove("sub", working_directory="/maf-sandbox/work", recursive=True))
         assert "/maf-sandbox/work/sub-2/b.txt" in sandbox.contents, "a sibling was removed"
 
@@ -577,7 +661,7 @@ class TestInProcessSandboxConfinement:
 
     def test_a_resolved_path_outside_the_working_directory_is_refused(self):
         sandbox = InProcessSandbox()
-        asyncio.run(sandbox.write_file("/etc/passwd", "root:x"))
+        sandbox.contents["/etc/passwd"] = b"root:x"
         with pytest.raises(ValueError, match="outside working directory"):
             asyncio.run(
                 sandbox.stat_file("../../etc/passwd", working_directory="/maf-sandbox/work/sub")
@@ -586,7 +670,11 @@ class TestInProcessSandboxConfinement:
     def test_a_same_prefix_sibling_directory_is_not_treated_as_a_descendant(self):
         """`/maf-sandbox/work/sub2` must not read as inside `/maf-sandbox/work/sub` because the strings share a prefix."""
         sandbox = InProcessSandbox()
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/sub2/a.txt", "x"))
+        asyncio.run(
+            sandbox.write_file(
+                "/maf-sandbox/work/sub2/a.txt", "x", working_directory="/maf-sandbox/work"
+            )
+        )
         with pytest.raises(ValueError, match="outside working directory"):
             asyncio.run(
                 sandbox.stat_file("../sub2/a.txt", working_directory="/maf-sandbox/work/sub")
@@ -689,7 +777,9 @@ class TestInProcessSandboxWalksTheComponents:
     def test_the_planting_surface_is_public(self):
         """`symlinks` and `non_regular` are stores a test writes to, like `contents`."""
         sandbox = InProcessSandbox()
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/.keep", ""))
+        asyncio.run(
+            sandbox.write_file("/maf-sandbox/work/.keep", "", working_directory="/maf-sandbox/work")
+        )
         sandbox.symlinks.add("/maf-sandbox/work/late")
         entry = asyncio.run(sandbox.stat_file("late", working_directory="/maf-sandbox/work"))
         assert entry is not None and entry.kind is EntryKind.SYMLINK

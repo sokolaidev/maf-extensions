@@ -661,20 +661,46 @@ class TestFileWrites:
         class _RecordingClient:
             def __init__(self) -> None:
                 self.calls: list[tuple] = []
+                self._sbx_path = ""
+                self._api_version = ""
 
             async def write_file(self, path, content, **kwargs):
                 self.calls.append((path, content, kwargs))
 
+            async def _dp_get(self, path, *, params):
+                return {"isSymlink": False, "isDir": True}
+
         client = _RecordingClient()
         asyncio.run(
             _AcasSandbox(client, 30.0).write_file(
-                "/maf-sandbox/work/infra/main.bicep", "param x string"
+                "/maf-sandbox/work/infra/main.bicep",
+                "param x string",
+                working_directory="/maf-sandbox/work",
             )
         )
 
         assert client.calls == [
             ("/maf-sandbox/work/infra/main.bicep", "param x string", {"create_dirs": True})
         ]
+
+    def test_a_refused_path_never_reaches_the_sdk(self):
+        from maf_sandbox_acas._backend import _AcasSandbox
+
+        class _RecordingClient:
+            def __init__(self) -> None:
+                self.calls: list[tuple] = []
+
+            async def write_file(self, path, content, **kwargs):
+                self.calls.append((path, content, kwargs))
+
+        client = _RecordingClient()
+        with pytest.raises(ValueError):
+            asyncio.run(
+                _AcasSandbox(client, 30.0).write_file(
+                    "../escape", "x", working_directory="/maf-sandbox/work"
+                )
+            )
+        assert client.calls == []
 
 
 class TestExecArgv:

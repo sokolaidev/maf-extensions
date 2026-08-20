@@ -137,8 +137,9 @@ class _ScriptedGuest:
         """
         return confine_guest_path(path, working_directory)
 
-    async def write_file(self, path: str, content: str | bytes) -> None:
+    async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
         await asyncio.sleep(0)  # as in `stat_file`: a bound is only a bound against a yield
+        del working_directory
         self.files[path] = content.encode("utf-8") if isinstance(content, str) else content
 
     async def exec(
@@ -416,9 +417,9 @@ class TestTheSupervisorsOwnBounds:
         seen: list[float] = []
 
         class _SlowUpload(_ScriptedGuest):
-            async def write_file(self, path: str, content):
+            async def write_file(self, path: str, content, *, working_directory: str):
                 await asyncio.sleep(0.1)
-                await super().write_file(path, content)
+                await super().write_file(path, content, working_directory=working_directory)
 
             async def exec(self, command, *, working_directory: str, timeout: float):
                 seen.append(timeout)
@@ -2230,7 +2231,9 @@ class TestWhoseTimeoutItWas:
         """
 
         class _StallsOnTheUpload(_ScriptedGuest):
-            async def write_file(self, path: str, content: str | bytes) -> None:
+            async def write_file(
+                self, path: str, content: str | bytes, *, working_directory: str
+            ) -> None:
                 await asyncio.sleep(3600)
 
         with pytest.raises(SandboxProgramTimeout, match="before the program was started") as gone:
@@ -4121,7 +4124,9 @@ class TestWhatACallerCanBranchOn:
         """
 
         class _StallsOnTheUpload(_ScriptedGuest):
-            async def write_file(self, path: str, content: str | bytes) -> None:
+            async def write_file(
+                self, path: str, content: str | bytes, *, working_directory: str
+            ) -> None:
                 await asyncio.sleep(3600)
 
         with pytest.raises(SandboxProgramTimeout) as gone:

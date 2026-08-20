@@ -12,6 +12,7 @@ the kind-agnostic implementation.
 from __future__ import annotations
 
 import asyncio
+import posixpath
 import shutil
 import subprocess
 import tempfile
@@ -81,8 +82,26 @@ class NoIsolationSandbox:
             raise ValueError(f"guest path {guest_path!r} escapes the work directory")
         return host_path
 
-    async def write_file(self, path: str, content: str | bytes) -> None:
-        host_path = self._host_path(path)
+    async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
+        if "\\" in path:
+            raise ValueError(f"guest path {path!r} contains a backslash")
+        base = posixpath.normpath(working_directory)
+        guest_path = posixpath.normpath(posixpath.join(base, path))
+        if guest_path == base:
+            raise ValueError(f"refusing to write over the working directory itself: {guest_path!r}")
+        if not guest_path.startswith(base.rstrip("/") + "/"):
+            raise ValueError(f"guest path {path!r} escapes the working directory")
+        host_path = self._host_path(guest_path)
+        relative = host_path.relative_to(self._host_root)
+        current = self._host_root
+        for part in relative.parts[:-1]:
+            current /= part
+            if current.is_symlink():
+                raise ValueError(f"guest path {path!r} passes through a link")
+            if current.exists() and not current.is_dir():
+                raise NotADirectoryError(f"{current!s} is not a directory")
+        if host_path.is_symlink():
+            raise ValueError(f"guest path {path!r} names a link")
         host_path.parent.mkdir(parents=True, exist_ok=True)
         if isinstance(content, str):
             host_path.write_text(content, encoding="utf-8")

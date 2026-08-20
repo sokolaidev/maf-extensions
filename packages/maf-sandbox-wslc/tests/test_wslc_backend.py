@@ -44,6 +44,7 @@ from maf_sandbox_wslc._backend import (
 _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
 _SPEC = SandboxSpec(kind="bicep", image="bicep-sandbox:local")
 _NAME = _container_name(_KEY, _SPEC.kind)
+_WORK = "/maf-sandbox/work"
 
 
 class _Recorded:
@@ -58,17 +59,33 @@ class _FakeWslc:
 
     def __init__(self, responder=None) -> None:
         self.calls: list[_Recorded] = []
-        self._responder = responder or (lambda args: _WslcResult(0, b"", b""))
+        self._responder = responder or (
+            lambda args: (
+                _WslcResult(1, b"", b"no such file")
+                if args[:2] == ("container", "cp") and args[2] != "-"
+                else _WslcResult(0, b"", b"")
+            )
+        )
 
-    async def __call__(self, *args: str, stdin=None, timeout=None) -> _WslcResult:
+    async def __call__(self, *args: str, stdin=None, timeout=None, read_limit=None) -> _WslcResult:
         self.calls.append(_Recorded(args, stdin, timeout))
-        return self._responder(args)
+        result = self._responder(args)
+        if (
+            args[:2] == ("container", "cp")
+            and args[2] != "-"
+            and result.returncode == 0
+            and not result.stdout
+        ):
+            return _WslcResult(1, b"", b"no such file")
+        return result
 
     def matching(self, *prefix: str) -> list[_Recorded]:
         return [c for c in self.calls if c.args[: len(prefix)] == prefix]
 
     def only(self, *prefix: str) -> _Recorded:
         found = self.matching(*prefix)
+        if prefix == ("container", "cp"):
+            found = [call for call in found if len(call.args) > 2 and call.args[2] == "-"]
         assert len(found) == 1, [c.args for c in self.calls]
         return found[0]
 
@@ -480,7 +497,7 @@ class TestWriteFile:
     def _sent(self, path: str, content: str) -> tuple[_Recorded, tarfile.TarFile]:
         backend, fake = _backend_with(_machine(running=[_NAME]))
         sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
-        asyncio.run(sandbox.write_file(path, content))
+        asyncio.run(sandbox.write_file(path, content, working_directory=_WORK))
         call = fake.only("container", "cp")
         assert call.stdin is not None
         return call, tarfile.open(fileobj=io.BytesIO(call.stdin), mode="r")
@@ -496,7 +513,7 @@ class TestWriteFile:
 
     def test_a_relative_path_is_left_alone(self):
         _, archive = self._sent("maf-sandbox/work/main.bicep", "x")
-        assert archive.getnames() == ["maf-sandbox/work/main.bicep"]
+        assert archive.getnames() == ["maf-sandbox/work/maf-sandbox/work/main.bicep"]
 
     def test_the_content_round_trips_as_utf8(self):
         _, archive = self._sent("/maf-sandbox/work/main.bicep", "param naïve string\n")
@@ -511,7 +528,9 @@ class TestWriteFile:
         backend, fake = _backend_with(_machine(running=[_NAME]))
         sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
         payload = b"\x89PNG\r\n\x1a\n" + bytes(range(256))
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/diagram.png", payload))
+        asyncio.run(
+            sandbox.write_file("/maf-sandbox/work/diagram.png", payload, working_directory=_WORK)
+        )
 
         call = fake.only("container", "cp")
         assert call.stdin is not None
@@ -527,12 +546,21 @@ class TestWriteFile:
     def test_a_failed_copy_raises(self):
         """A write that silently did nothing would surface as a compiler error about a file
         the workload believes it just wrote."""
-        overrides = {("container", "cp"): _WslcResult(1, b"", b"WSLC_E_PATH_NOT_FOUND")}
+        overrides = {("container", "cp", "-"): _WslcResult(1, b"", b"WSLC_E_PATH_NOT_FOUND")}
         backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
         sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
 
         with pytest.raises(RuntimeError, match="WSLC_E_PATH_NOT_FOUND"):
-            asyncio.run(sandbox.write_file("/maf-sandbox/work/main.bicep", "x"))
+            asyncio.run(
+                sandbox.write_file("/maf-sandbox/work/main.bicep", "x", working_directory=_WORK)
+            )
+
+    def test_a_refused_path_never_reaches_the_copy_seam(self):
+        backend, fake = _backend_with(_machine(running=[_NAME]))
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        with pytest.raises(ValueError):
+            asyncio.run(sandbox.write_file("../escape", "x", working_directory=_WORK))
+        assert fake.matching("container", "cp", "-") == []
 
 
 # ---------------------------------------------------------------------------
@@ -768,6 +796,34 @@ class TestTheSeam:
         result = asyncio.run(backend._wslc("-c", script, stdin=b"tar bytes", timeout=30))
 
         assert result.stdout == b"tar bytes"
+
+    def test_a_bounded_read_caps_stdout_and_reaps_the_process(self):
+        backend = WslcSandboxBackend(WslcSandboxConfig(wslc_path=sys.executable))
+        script = "import sys,time; sys.stdout.buffer.write(b'x' * 1000); sys.stdout.flush(); time.sleep(3600)"
+        result = asyncio.run(backend._wslc("-c", script, read_limit=64, timeout=30))
+
+        assert len(result.stdout) == 64
+        assert result.returncode != 0
+
+    def test_a_bounded_read_timeout_kills_and_propagates(self):
+        backend = WslcSandboxBackend(WslcSandboxConfig(wslc_path=sys.executable))
+        script = "import time; time.sleep(3600)"
+
+        with pytest.raises(TimeoutError):
+            asyncio.run(backend._wslc("-c", script, read_limit=64, timeout=0.01))
+
+    def test_a_cancelled_bounded_read_kills_and_propagates(self):
+        backend = WslcSandboxBackend(WslcSandboxConfig(wslc_path=sys.executable))
+        script = "import time; time.sleep(3600)"
+
+        async def scenario() -> None:
+            task = asyncio.ensure_future(backend._wslc("-c", script, read_limit=64, timeout=60))
+            await asyncio.sleep(0.1)
+            task.cancel()
+            result = await asyncio.gather(task, return_exceptions=True)
+            assert isinstance(result[0], asyncio.CancelledError)
+
+        asyncio.run(scenario())
 
     def test_a_timeout_kills_the_process_and_propagates(self, monkeypatch):
         """`TimeoutError` propagating is the workload's cue to report a hang as a diagnostic;

@@ -654,7 +654,7 @@ def _reclaiming_body(session: SandboxToolSession):
         sandbox = await session.acquire(key)
         assert not isinstance(sandbox, str)
         path = session.guest_call_path()
-        await sandbox.write_file(f"{path}/program.py", target)
+        await sandbox.write_file("program.py", target, working_directory=path)
         return path
 
     return widget_run
@@ -1040,7 +1040,7 @@ class _CallableBody:
         sandbox = await self._session.acquire(key)
         assert not isinstance(sandbox, str)
         path = self._session.guest_call_path()
-        await sandbox.write_file(f"{path}/program.py", target)
+        await sandbox.write_file(f"{path}/program.py", target, working_directory=path)
         return path
 
 
@@ -1174,7 +1174,7 @@ class TestACallThatReachesTwoSandboxes:
             for key in (mine, TestACallThatReachesTwoSandboxes._OTHER):
                 sandbox = await session.acquire(key)
                 assert not isinstance(sandbox, str)
-                await sandbox.write_file(f"{path}/program.py", target)
+                await sandbox.write_file(f"{path}/program.py", target, working_directory=path)
             return path
 
         return widget_run

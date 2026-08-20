@@ -370,7 +370,7 @@ def _bicep_validate_tool(
                 continue
 
             try:
-                await sandbox.write_file(sandbox_path, content)
+                await sandbox.write_file(sandbox_path, content, working_directory=round_dir)
             except Exception as exc:  # noqa: BLE001
                 # Detail, not just str(): a live run produced `Operation returned an invalid
                 # status 'Conflict'` for four files at once, and that sentence alone cannot

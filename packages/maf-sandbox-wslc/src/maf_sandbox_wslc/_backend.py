@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Protocol, cast
 from maf_sandbox import (
     Capability,
     Egress,
+    EntryKind,
     ExecResult,
     Isolation,
     Sandbox,
@@ -43,6 +44,7 @@ from maf_sandbox import (
     SandboxKey,
     SandboxSpec,
 )
+from maf_sandbox.paths import confine_guest_write_path
 
 from ._config import WslcSandboxConfig
 from ._proxy import build_context
@@ -82,6 +84,12 @@ _LABEL_VALUE_DIGEST = re.compile(r"sha256-[0-9a-f]{48}")
 
 #: `wslc` exits non-zero for a container that is not there, so removal is judged by this.
 _NOT_FOUND = "WSLC_E_CONTAINER_NOT_FOUND"
+# `container cp` reports a missing guest path with this code on the live CLI.
+_PATH_NOT_FOUND = "ERROR_PATH_NOT_FOUND"
+# A directory cannot be streamed to stdout, but this diagnostic proves it exists and is a directory.
+_DIRECTORY_COPY_ERROR = "cannot copy a directory to a file path"
+# `container cp` uses the docker engine's wording; confirm this branch on a live WSL host.
+_NO_SUCH = "no such"
 
 #: What `run --name` reports when the name is taken — the one create failure that is recoverable.
 #: `network create` reports the same code for a taken network name.
@@ -169,6 +177,23 @@ def _proxy_name(container: str) -> str:
     return f"{container}{_PROXY_SUFFIX}"
 
 
+# Duplicated from maf-sandbox-docker because backend packages must keep independent dependencies
+# (#125); both consume the shared container-engine tar stream.
+_TAR_BLOCK = 512
+
+
+def _stat_from_tar_header(block: bytes, rel_path: str) -> SandboxEntry:
+    """Read a container cp tar header into a sandbox entry."""
+    info = tarfile.TarInfo.frombuf(block, encoding="utf-8", errors="surrogateescape")
+    if info.isreg():
+        return SandboxEntry(path=rel_path, kind=EntryKind.FILE, size_bytes=info.size)
+    if info.isdir():
+        return SandboxEntry(path=rel_path, kind=EntryKind.DIRECTORY, size_bytes=None)
+    if info.issym():
+        return SandboxEntry(path=rel_path, kind=EntryKind.SYMLINK, size_bytes=None)
+    return SandboxEntry(path=rel_path, kind=EntryKind.OTHER, size_bytes=None)
+
+
 def _listed_names(payload: str) -> list[str]:
     """The container names in a ``container list --format json`` payload."""
     try:
@@ -216,7 +241,11 @@ class _WslcRunner(Protocol):
     """The seam every ``wslc`` invocation goes through."""
 
     async def __call__(
-        self, *args: str, stdin: bytes | None = None, timeout: float | None = None
+        self,
+        *args: str,
+        stdin: bytes | None = None,
+        timeout: float | None = None,
+        read_limit: int | None = None,
     ) -> _WslcResult: ...
 
 
@@ -232,7 +261,7 @@ class _WslcSandbox:
     def container_name(self) -> str:
         return self._name
 
-    async def write_file(self, path: str, content: str | bytes) -> None:
+    async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
         """Write ``content`` to ``path`` inside the container, parents included.
 
         Sent as a one-entry tar on stdin.  A ``cp`` destination must already exist and ``/``
@@ -243,10 +272,13 @@ class _WslcSandbox:
         given, and is what an in-door carrying a PNG or a spreadsheet needs — the shape the
         :class:`~maf_sandbox.Sandbox` protocol promises and the docker backend already takes.
         """
+        guest = await confine_guest_write_path(
+            lambda p: self._stat_guest(p, p), path, working_directory
+        )
         data = content.encode("utf-8") if isinstance(content, str) else content
         buffer = io.BytesIO()
         with tarfile.open(fileobj=buffer, mode="w") as archive:
-            entry = tarfile.TarInfo(path.lstrip("/"))
+            entry = tarfile.TarInfo(guest.lstrip("/"))
             entry.size = len(data)
             entry.mode = 0o644
             archive.addfile(entry, io.BytesIO(data))
@@ -260,7 +292,46 @@ class _WslcSandbox:
             timeout=self._command_timeout,
         )
         if result.returncode != 0:
-            raise RuntimeError(f"wslc could not write {path}: {result.stderr_text.strip()}")
+            raise RuntimeError(f"wslc could not write {guest}: {result.stderr_text.strip()}")
+
+    async def _stat_guest(self, guest: str, rel: str) -> SandboxEntry | None:
+        """Stat an absolute guest path from the first container-cp tar header."""
+        result = await self._run(
+            "container",
+            "cp",
+            f"{self._name}:{guest}",
+            "-",
+            timeout=self._command_timeout,
+            read_limit=_TAR_BLOCK,
+        )
+        if result.returncode != 0 and not result.stdout:
+            error_text = result.stderr_text.lower()
+            if _NO_SUCH in error_text or _PATH_NOT_FOUND.lower() in error_text:
+                return None
+            if _DIRECTORY_COPY_ERROR in error_text:
+                return SandboxEntry(path=rel, kind=EntryKind.DIRECTORY, size_bytes=None)
+            raise RuntimeError(f"wslc could not stat {rel}: {result.stderr_text.strip()}")
+        if len(result.stdout) < _TAR_BLOCK:
+            # WSLC streams an empty response for regular files and links. Probe the entry type
+            # without following it; the tar header remains the fast path where the CLI provides one.
+            for flag, kind in (
+                ("-L", EntryKind.SYMLINK),
+                ("-d", EntryKind.DIRECTORY),
+                ("-f", EntryKind.FILE),
+            ):
+                probe = await self._run(
+                    "container",
+                    "exec",
+                    self._name,
+                    "test",
+                    flag,
+                    guest,
+                    timeout=self._command_timeout,
+                )
+                if probe.returncode == 0:
+                    return SandboxEntry(path=rel, kind=kind, size_bytes=None)
+            raise RuntimeError(f"wslc returned no tar header for {rel}")
+        return _stat_from_tar_header(result.stdout[:_TAR_BLOCK], rel)
 
     async def exec(
         self, command: str | Sequence[str], *, working_directory: str, timeout: float
@@ -505,7 +576,11 @@ class WslcSandboxBackend:
     # -- internals ----------------------------------------------------------------
 
     async def _wslc(
-        self, *args: str, stdin: bytes | None = None, timeout: float | None = None
+        self,
+        *args: str,
+        stdin: bytes | None = None,
+        timeout: float | None = None,
+        read_limit: int | None = None,
     ) -> _WslcResult:
         """Run one ``wslc`` command — the single seam every invocation goes through.
 
@@ -528,7 +603,14 @@ class WslcSandboxBackend:
                 "that is asyncio's default Proactor loop"
             ) from exc
         try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(stdin), timeout=timeout)
+            if read_limit is None:
+                stdout, stderr = await asyncio.wait_for(process.communicate(stdin), timeout=timeout)
+            else:
+                if stdin is not None and process.stdin is not None:
+                    process.stdin.write(stdin)
+                    await process.stdin.drain()
+                    process.stdin.close()
+                stdout, stderr = await self._read_bounded(process, read_limit, timeout)
         except BaseException:
             with contextlib.suppress(Exception):
                 process.kill()
@@ -536,6 +618,44 @@ class WslcSandboxBackend:
                 await process.wait()
             raise
         return _WslcResult(process.returncode or 0, stdout, stderr)
+
+    @staticmethod
+    async def _read_bounded(
+        process: asyncio.subprocess.Process, read_limit: int, timeout: float | None
+    ) -> tuple[bytes, bytes]:
+        """Read a bounded stdout head, then kill and reap before collecting stderr."""
+        assert process.stdout is not None and process.stderr is not None
+        out_stream = process.stdout
+        err_stream = process.stderr
+
+        async def _pull_head() -> bytes:
+            chunks: list[bytes] = []
+            got = 0
+            while got < read_limit:
+                chunk = await out_stream.read(min(65536, read_limit - got))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                got += len(chunk)
+            return b"".join(chunks)
+
+        try:
+            stdout = await asyncio.wait_for(_pull_head(), timeout=timeout)
+        except BaseException:
+            with contextlib.suppress(Exception):
+                process.kill()
+            with contextlib.suppress(Exception):
+                await process.wait()
+            raise
+        with contextlib.suppress(Exception):
+            process.kill()
+        try:
+            stderr = await asyncio.wait_for(err_stream.read(), timeout=timeout)
+        except Exception:
+            stderr = b""
+        with contextlib.suppress(Exception):
+            await process.wait()
+        return stdout, stderr
 
     async def _is_listed(self, name: str, *, all_states: bool) -> bool:
         """Whether ``name`` is listed — running only, or in any state.

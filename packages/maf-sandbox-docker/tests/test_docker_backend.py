@@ -187,6 +187,8 @@ def _machine(
             return _DockerResult(0, "".join(f"{n}\n" for n in names).encode(), "")
         if args[0] == "logs":
             return _DockerResult(0, b"listening on 3128\n", "")
+        if args[0] == "cp" and args[1] != "-":
+            return _DockerResult(1, b"", "no such file")
         return _DockerResult(0, b"", "")
 
     return respond
@@ -643,12 +645,16 @@ class TestWriteFile:
 
     def test_the_copy_targets_the_container_root(self):
         sandbox, fake = self._sandbox()
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/main.bicep", "x"))
+        asyncio.run(
+            sandbox.write_file("/maf-sandbox/work/main.bicep", "x", working_directory=_WORK)
+        )
         assert fake.only("cp", "-").args == ("cp", "-", f"{_NAME}:/")
 
     def test_the_entry_is_the_path_without_its_leading_slash(self):
         sandbox, fake = self._sandbox()
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/main.bicep", "content"))
+        asyncio.run(
+            sandbox.write_file("/maf-sandbox/work/main.bicep", "content", working_directory=_WORK)
+        )
         stdin = fake.only("cp", "-").stdin
         assert stdin is not None
         with tarfile.open(fileobj=io.BytesIO(stdin)) as archive:
@@ -656,7 +662,7 @@ class TestWriteFile:
 
     def test_str_content_round_trips_as_utf8(self):
         sandbox, fake = self._sandbox()
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/f", "héllo"))
+        asyncio.run(sandbox.write_file("/maf-sandbox/work/f", "héllo", working_directory=_WORK))
         stdin = fake.only("cp", "-").stdin
         assert stdin is not None
         with tarfile.open(fileobj=io.BytesIO(stdin)) as archive:
@@ -667,7 +673,9 @@ class TestWriteFile:
     def test_bytes_content_is_written_as_given(self):
         sandbox, fake = self._sandbox()
         payload = b"\x89PNG\r\n\x1a\n"
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/img.png", payload))
+        asyncio.run(
+            sandbox.write_file("/maf-sandbox/work/img.png", payload, working_directory=_WORK)
+        )
         stdin = fake.only("cp", "-").stdin
         assert stdin is not None
         with tarfile.open(fileobj=io.BytesIO(stdin)) as archive:
@@ -680,7 +688,13 @@ class TestWriteFile:
         backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
         sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
         with pytest.raises(RuntimeError, match="could not write"):
-            asyncio.run(sandbox.write_file("/maf-sandbox/work/f", "x"))
+            asyncio.run(sandbox.write_file("/maf-sandbox/work/f", "x", working_directory=_WORK))
+
+    def test_a_refused_path_never_reaches_the_copy_seam(self):
+        sandbox, fake = self._sandbox()
+        with pytest.raises(ValueError):
+            asyncio.run(sandbox.write_file("../escape", "x", working_directory=_WORK))
+        assert fake.matching("cp", "-") == []
 
 
 # ---------------------------------------------------------------------------

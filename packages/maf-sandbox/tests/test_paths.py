@@ -15,6 +15,7 @@ import pytest
 from maf_sandbox import EntryKind, SandboxEntry
 from maf_sandbox.paths import (
     confine_guest_path,
+    confine_guest_write_path,
     guest_directory_chain,
     guest_path_relative_to,
     refuse_symlinked_parents,
@@ -121,6 +122,68 @@ class TestGuestPathRelativeTo:
             guest_path_relative_to("/maf-sandbox/work/./sub/../a.txt", "/maf-sandbox/work")
             == "a.txt"
         )
+
+
+class TestConfineGuestWritePath:
+    def _run(self, path, *, kinds=None, working_directory=_WORK_DIR):
+        kinds = kinds or {}
+
+        async def stat(guest):
+            kind = kinds.get(guest)
+            return None if kind is None else SandboxEntry(guest, kind, None)
+
+        return asyncio.run(confine_guest_write_path(stat, path, working_directory))
+
+    def test_a_plain_nested_path_passes(self):
+        assert self._run("sub/file.txt") == "/maf-sandbox/work/sub/file.txt"
+
+    def test_parents_that_do_not_exist_yet_pass(self):
+        assert self._run("new/deeper/file.txt") == "/maf-sandbox/work/new/deeper/file.txt"
+
+    def test_a_backslash_is_refused(self):
+        with pytest.raises(ValueError, match="backslash"):
+            self._run(r"sub\file.txt")
+
+    def test_a_path_outside_is_refused(self):
+        with pytest.raises(ValueError, match="outside"):
+            self._run("../outside.txt")
+
+    def test_the_working_directory_itself_is_refused(self):
+        with pytest.raises(ValueError, match="working directory"):
+            self._run(".")
+
+    def test_a_linked_parent_is_refused(self):
+        with pytest.raises(ValueError, match="real directory"):
+            self._run(
+                "link/file.txt",
+                kinds={
+                    "/maf-sandbox": EntryKind.DIRECTORY,
+                    "/maf-sandbox/work": EntryKind.DIRECTORY,
+                    "/maf-sandbox/work/link": EntryKind.SYMLINK,
+                },
+            )
+
+    def test_a_non_directory_parent_is_refused(self):
+        with pytest.raises(NotADirectoryError):
+            self._run(
+                "file/child.txt",
+                kinds={
+                    "/maf-sandbox": EntryKind.DIRECTORY,
+                    "/maf-sandbox/work": EntryKind.DIRECTORY,
+                    "/maf-sandbox/work/file": EntryKind.FILE,
+                },
+            )
+
+    def test_a_linked_leaf_is_refused(self):
+        with pytest.raises(ValueError, match="is a link"):
+            self._run(
+                "victim.txt",
+                kinds={
+                    "/maf-sandbox": EntryKind.DIRECTORY,
+                    "/maf-sandbox/work": EntryKind.DIRECTORY,
+                    "/maf-sandbox/work/victim.txt": EntryKind.SYMLINK,
+                },
+            )
 
 
 class TestGuestDirectoryChain:

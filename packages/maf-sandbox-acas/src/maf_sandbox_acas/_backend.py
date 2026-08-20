@@ -39,6 +39,7 @@ from maf_sandbox import (
 )
 from maf_sandbox.paths import (
     confine_guest_path,
+    confine_guest_write_path,
     guest_path_relative_to,
     refuse_symlinked_parents,
 )
@@ -271,14 +272,17 @@ class _AcasSandbox:
     def sandbox_id(self) -> str:
         return self._sc.sandbox_id
 
-    async def write_file(self, path: str, content: str | bytes) -> None:
+    async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
         # `create_dirs=True` is the SDK's own default, and it is passed explicitly anyway.
         # A workload may hand us a nested path — `infra/main.bicep` is the example in the
         # bicep tool's own description — and without it every such write fails on a missing
         # parent. The file API docs do not mention the behaviour at all, so it is the SDK
         # signature that is load-bearing here; relying silently on a `0.1.0bN` default is how
         # `DiskImage.image` got missed. Stating it costs nothing and pins the intent.
-        await self._sc.write_file(path, content, create_dirs=True)
+        guest = await confine_guest_write_path(
+            lambda p: self._stat_guest(p, p), path, working_directory
+        )
+        await self._sc.write_file(guest, content, create_dirs=True)
 
     async def exec(
         self, command: str | Sequence[str], *, working_directory: str, timeout: float

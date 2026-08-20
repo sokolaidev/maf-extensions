@@ -200,7 +200,7 @@ def _render_diagram_tool(
         # paths — see the note where `render_lock` is created.
         async with render_lock:
             try:
-                await sandbox.write_file(source_path, dot)
+                await sandbox.write_file(source_path, dot, working_directory=session.spec.work_dir)
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "render_diagram: could not write the DOT source into the sandbox: %s",
