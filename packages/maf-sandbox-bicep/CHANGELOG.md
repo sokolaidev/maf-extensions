@@ -2,6 +2,22 @@
 
 All notable changes to `maf-sandbox-bicep` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.8.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.7.5...maf-sandbox-bicep-v0.8.0) (2026-08-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* Sandbox.write_file now requires the keyword-only working_directory argument and refuses paths that escape it, pass through symlinked parents, target symlinks, or name the working directory itself.
+
+### Features
+
+* require a working directory for write_file and refuse paths that escape it ([#488](https://github.com/sokolaidev/maf-extensions/issues/488)) ([49795fa](https://github.com/sokolaidev/maf-extensions/commit/49795fa78a968451eef55fe27cd8784106f4ccc3))
+
+
+### Fixes
+
+* require maf-sandbox 0.18.0 in the dependents and 0.18 in the samples, and admit 0.19 ([#494](https://github.com/sokolaidev/maf-extensions/issues/494)) ([dd12d77](https://github.com/sokolaidev/maf-extensions/commit/dd12d7745b526052268b2124803e549b1e8c3d7f))
+
 ## [0.7.5](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.7.4...maf-sandbox-bicep-v0.7.5) (2026-08-19)
 
 
