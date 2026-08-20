@@ -37,7 +37,7 @@ import sys
 from asyncio import CancelledError
 from collections.abc import Awaitable, Callable, Mapping
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 from uuid import uuid4
 
@@ -103,7 +103,10 @@ class _SandboxToolCall:
 
     owner: object
     name: str | None = None
-    acquired: tuple[Sandbox, SandboxKey] | None = None
+    #: Every sandbox this call acquired, by key. A mapping rather than the last one: `acquire`
+    #: takes a key, so one call can reach two sandboxes and write its name into both, and
+    #: keeping only the newest would reclaim one of them and say nothing about the other.
+    acquired: dict[SandboxKey, Sandbox] = field(default_factory=dict[SandboxKey, Sandbox])
     closed: bool = False
 
 
@@ -430,7 +433,7 @@ class SandboxToolSession:
         if call is not None:
             # Recorded on the way through rather than re-derived in the `finally`, where a
             # second `acquire` could fail on its own and report a reclaim failure for it.
-            call.acquired = (sandbox, key)
+            call.acquired[key] = sandbox
         return sandbox
 
 
@@ -445,6 +448,9 @@ async def _reclaim_the_call(
 ) -> None:
     """Remove what one tool call owns, and report a removal that did not happen.
 
+    Once per sandbox the call acquired, so ``timeout`` and any report are per sandbox too —
+    ordinarily one, and more only for a call that reached a second key.
+
     Raises only what the caller asked for. A failed removal, and a host callback that fails with
     it, are logged and swallowed: this runs in :func:`sandboxed_tool`'s ``finally``, where
     raising would replace whatever the call was already reporting with a message about cleanup.
@@ -452,47 +458,49 @@ async def _reclaim_the_call(
     outer deadline arriving mid-removal, so it is recorded and re-raised, and it *does* replace
     the body's result.
     """
-    if call.name is None or call.acquired is None:
+    if call.name is None or not call.acquired:
         # Nothing was named, or nothing was acquired to write into it — either way there is
         # nothing there, and no round trip is worth spending to prove it.
         return
-    sandbox, key = call.acquired
     prefix = _prefixed(tool)
     path = f"{spec.work_dir}/{call.name}"
-    try:
-        # By name, against the working directory — not as one composed string. A ``work_dir``
-        # the protocol accepts may not be POSIX-shaped, and a composed path would carry its
-        # separators into a grammar that refuses them, failing every call on such a spec.
-        reason = await reclaim_guest_path(
-            sandbox, call.name, working_directory=spec.work_dir, timeout=timeout
-        )
-    except (CancelledError, GeneratorExit):
-        # Recorded and then let through. Cancellation is the caller's — an outer deadline
-        # arriving while the removal is in flight — and containing it here would have the call
-        # return the body's answer past a bound the host thought it had. The leak still has to
-        # be visible, so the line is written before the cancellation goes on.
-        logger.warning(
-            f"{prefix}: %s was not reclaimed: the call was cancelled during the removal", path
-        )
-        raise
-    if reason is None:
-        return
-    # Logged whether or not a host is listening: what is left stays readable by every later
-    # call in this sandbox, and a callback that swallows it would take the record with it.
-    logger.warning(f"{prefix}: %s was not reclaimed: %s", path, reason)
-    if on_failure is None:
-        return
-    try:
-        await on_failure(ReclaimFailure(tool=tool, key=key, path=path, reason=reason))
-    except Exception as raised:  # noqa: BLE001 — a host's callback must not fail the call
-        logger.warning(f"{prefix}: on_reclaim_failure raised: %s", error_detail(raised))
-    except (CancelledError, GeneratorExit) as stopped:
-        # Not contained, for the reason above: the callback awaits, so this is the caller's
-        # cancellation arriving inside it and not a failure of the callback's own.
-        # Named rather than stated, so this line interpolates: `prefix` has its `%` doubled for
-        # exactly that, and `logging` leaves the doubling alone when a record carries no args.
-        logger.warning(f"{prefix}: on_reclaim_failure did not finish: %s", type(stopped).__name__)
-        raise
+    for key, sandbox in call.acquired.items():
+        try:
+            # By name, against the working directory — not as one composed string. A ``work_dir``
+            # the protocol accepts may not be POSIX-shaped, and a composed path would carry its
+            # separators into a grammar that refuses them, failing every call on such a spec.
+            reason = await reclaim_guest_path(
+                sandbox, call.name, working_directory=spec.work_dir, timeout=timeout
+            )
+        except (CancelledError, GeneratorExit):
+            # Recorded and then let through, and the rest of the sandboxes are abandoned: the
+            # caller's deadline has passed, and containing this would have the call return the
+            # body's answer past a bound the host thought it had. The leak still has to be
+            # visible, so the line is written before the cancellation goes on.
+            logger.warning(
+                f"{prefix}: %s was not reclaimed: the call was cancelled during the removal", path
+            )
+            raise
+        if reason is None:
+            continue
+        # Logged whether or not a host is listening: what is left stays readable by every later
+        # call in that sandbox, and a callback that swallows it would take the record with it.
+        logger.warning(f"{prefix}: %s was not reclaimed: %s", path, reason)
+        if on_failure is None:
+            continue
+        try:
+            await on_failure(ReclaimFailure(tool=tool, key=key, path=path, reason=reason))
+        except Exception as raised:  # noqa: BLE001 — a host's callback must not fail the call
+            logger.warning(f"{prefix}: on_reclaim_failure raised: %s", error_detail(raised))
+        except (CancelledError, GeneratorExit) as stopped:
+            # Not contained, for the reason above: the callback awaits, so this is the caller's
+            # cancellation arriving inside it and not a failure of the callback's own.
+            # Named rather than stated, so this line interpolates: `prefix` has its `%` doubled
+            # for exactly that, and `logging` leaves the doubling alone with no args.
+            logger.warning(
+                f"{prefix}: on_reclaim_failure did not finish: %s", type(stopped).__name__
+            )
+            raise
 
 
 def sandboxed_tool(
@@ -591,8 +599,9 @@ def sandboxed_tool(
             needs the data provably gone disposes the sandbox from here, which is the only
             remedy that closes the window rather than narrowing it. Its own failure is logged
             and swallowed — it runs in a ``finally``, over a call that may already be failing.
-        reclaim_timeout: Seconds the removal gets. Spent after the body has returned, so it is
-            added to the call's own latency — an outer deadline should allow for it. A body that
+        reclaim_timeout: Seconds the removal gets, per sandbox the call acquired — ordinarily
+            one. Spent after the body has returned, so it is added to the call's own latency and
+            an outer deadline should allow for it. A body that
             was **cancelled** gets :data:`_CANCELLED_CALL_GRACE` instead, or this, whichever is
             smaller: its caller's deadline has already passed, and the removal must not extend
             one that has.

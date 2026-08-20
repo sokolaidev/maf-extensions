@@ -1092,6 +1092,57 @@ class TestATaskThatOutlivesItsCall:
         assert _call(_reclaiming(InProcessSandboxBackend(), build), target="x") == "same"
 
 
+class _PerKeyBackend(InProcessSandboxBackend):
+    """A sandbox per key, as a real backend has — the shared fake returns one for every key."""
+
+    def __init__(self):
+        super().__init__()
+        self.per_key: dict[SandboxKey, InProcessSandbox] = {}
+
+    async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> InProcessSandbox:
+        await super().acquire(key, spec)
+        return self.per_key.setdefault(key, InProcessSandbox())
+
+
+class TestACallThatReachesTwoSandboxes:
+    """`acquire` takes a key, so one call can hold two — and wrote its name into both."""
+
+    _OTHER = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent-2")
+
+    def _build(self, session: SandboxToolSession):
+        async def widget_run(target: str) -> str:
+            """Write the call's name into two sandboxes."""
+            mine = session.key()
+            assert not isinstance(mine, str)
+            path = session.guest_call_path()
+            for key in (mine, TestACallThatReachesTwoSandboxes._OTHER):
+                sandbox = await session.acquire(key)
+                assert not isinstance(sandbox, str)
+                await sandbox.write_file(f"{path}/program.py", target)
+            return path
+
+        return widget_run
+
+    def test_both_are_reclaimed(self):
+        backend = _PerKeyBackend()
+        path = _call(_reclaiming(backend, self._build), target="x")
+        removed = {key: _rm_targets(sandbox) for key, sandbox in backend.per_key.items()}
+        assert len(removed) == 2, removed
+        assert all(targets == [path] for targets in removed.values()), removed
+
+    def test_a_failure_in_one_names_that_one(self):
+        """`ReclaimFailure.key` is what tells a host which sandbox to dispose."""
+        heard: list[SandboxKey] = []
+
+        async def on_failure(failure: ReclaimFailure) -> None:
+            heard.append(failure.key)
+
+        backend = _PerKeyBackend()
+        backend.per_key[self._OTHER] = _RefusesToRemove()
+        _call(_reclaiming(backend, self._build, on_reclaim_failure=on_failure), target="x")
+        assert heard == [self._OTHER]
+
+
 class TestASecondBinding:
     """One `ContextVar` serves every binding in the process, so a record has to know whose it is."""
 
