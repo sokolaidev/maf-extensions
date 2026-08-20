@@ -26,7 +26,7 @@ Fixes #xxx
 
 - [ ] `uv run pytest` passes
 - [ ] `uv run ruff check .` is clean
-- [ ] Docs updated (`docs/`, `.agents/AGENTS.md`) where behavior changed
+- [ ] Docs updated (`docs/`, `AGENTS.md`, etc.) where behavior changed
 - [ ] Manual/live check (if applicable): <!-- what you ran -->
 
 ## Notes for reviewers
