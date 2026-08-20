@@ -12,8 +12,13 @@ silent and permanent, which is worse than the bug it is meant to catch.
 
 from __future__ import annotations
 
+import email.message
 import importlib.util
+import io
+import json
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -26,6 +31,51 @@ _spec = importlib.util.spec_from_file_location(
 assert _spec and _spec.loader
 check = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(check)
+
+
+def _http_error(code: int) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(
+        "https://pypi.org/", code, "err", email.message.Message(), io.BytesIO(b"")
+    )
+
+
+class _Response:
+    """The slice of an HTTP response ``json.load`` reads: a ``read()`` returning JSON bytes."""
+
+    def __init__(self, payload: object) -> None:
+        self._body = json.dumps(payload).encode()
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self) -> _Response:
+        return self
+
+    def __exit__(self, *_args: object) -> bool:
+        return False
+
+
+def _patch_urlopen(
+    monkeypatch: pytest.MonkeyPatch,
+    routes: dict[str, object],
+) -> None:
+    """Route a URL to a payload dict (success) or an ``HTTPError`` (raise).
+
+    Keys are matched as substrings, longest first, so a per-version segment like
+    ``bicep/0.2.0/json`` is not shadowed by the top-level ``bicep/json``.
+    """
+
+    def fake_urlopen(url: str | urllib.request.Request, timeout: int | None = None) -> _Response:
+        target = url.full_url if isinstance(url, urllib.request.Request) else url
+        for key in sorted(routes, key=len, reverse=True):
+            if key in target:
+                result = routes[key]
+                if isinstance(result, urllib.error.HTTPError):
+                    raise result
+                return _Response(result)
+        raise AssertionError(f"unexpected url {target}")
+
+    monkeypatch.setattr(check.urllib.request, "urlopen", fake_urlopen)
 
 
 class TestReadingTheCeilingOutOfPublishedMetadata:
@@ -106,3 +156,53 @@ class TestRequirementNames:
     )
     def test_the_name_is_read_without_its_constraint(self, requirement: str, expected: str):
         assert check._requirement_name(requirement) == expected
+
+
+class TestFetchRequiresDist:
+    """``fetch_requires_dist`` resolves the newest version from the simple index and reads its per-version document."""
+
+    def test_reads_the_newest_version_from_the_simple_index(self, monkeypatch):
+        # No top-level ``info`` route is registered: the simple index and per-version documents
+        # are the whole of what the guard may consult, so an unexpected URL fails the test.
+        _patch_urlopen(
+            monkeypatch,
+            {
+                "simple/maf-sandbox-bicep/": {"versions": ["0.2.0", "0.6.0"]},
+                "maf-sandbox-bicep/0.6.0/json": {
+                    "info": {"requires_dist": ["maf-sandbox<0.13"], "yanked": False}
+                },
+            },
+        )
+        assert check.fetch_requires_dist("maf-sandbox-bicep") == ["maf-sandbox<0.13"]
+
+    def test_a_never_released_distribution_returns_none(self, monkeypatch):
+        _patch_urlopen(monkeypatch, {"simple/maf-sandbox-bicep/": _http_error(404)})
+        assert check.fetch_requires_dist("maf-sandbox-bicep") is None
+
+    def test_a_non_404_error_on_the_simple_index_is_fatal(self, monkeypatch):
+        _patch_urlopen(monkeypatch, {"simple/maf-sandbox-bicep/": _http_error(500)})
+        with pytest.raises(urllib.error.HTTPError):
+            check.fetch_requires_dist("maf-sandbox-bicep")
+
+    def test_a_yanked_newest_returns_none(self, monkeypatch):
+        _patch_urlopen(
+            monkeypatch,
+            {
+                "simple/maf-sandbox-bicep/": {"versions": ["0.2.0", "0.6.0"]},
+                "maf-sandbox-bicep/0.6.0/json": {
+                    "info": {"requires_dist": ["maf-sandbox<0.13"], "yanked": True}
+                },
+            },
+        )
+        assert check.fetch_requires_dist("maf-sandbox-bicep") is None
+
+    def test_a_non_404_error_on_the_per_version_fetch_is_fatal(self, monkeypatch):
+        _patch_urlopen(
+            monkeypatch,
+            {
+                "simple/maf-sandbox-bicep/": {"versions": ["0.2.0", "0.6.0"]},
+                "maf-sandbox-bicep/0.6.0/json": _http_error(500),
+            },
+        )
+        with pytest.raises(urllib.error.HTTPError):
+            check.fetch_requires_dist("maf-sandbox-bicep")

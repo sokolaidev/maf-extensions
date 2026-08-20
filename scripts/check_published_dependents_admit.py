@@ -2,11 +2,12 @@
 
     python scripts/check_published_dependents_admit.py <version>
 
-Reads each dependent's `requires_dist` from PyPI and refuses if its ceiling excludes the
-version about to go out. That state is the publication window: PyPI metadata is immutable, so
-a widened ceiling only reaches a user when that dependent is *published*, and until then the
-index does not resolve as a set. RELEASING.md orders the releases so this never happens; this
-is what makes the order enforced rather than remembered.
+Resolves each dependent's newest version from PyPI's simple index, reads its `requires_dist`
+from the per-version document, and refuses if its ceiling excludes the version about to go
+out. That state is the publication window: PyPI metadata is immutable, so a widened ceiling
+only reaches a user when that dependent is *published*, and until then the index does not
+resolve as a set. RELEASING.md orders the releases so this never happens; this is what makes
+the order enforced rather than remembered.
 
 A dependent that is not on PyPI yet is skipped — a first release has nothing to contradict.
 A network failure is fatal rather than skipped: passing because PyPI could not be reached is
@@ -27,7 +28,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from check_release_order import admits, version
+from check_release_order import admits, fetch_published_versions, version
 
 _CORE = "maf-sandbox"
 #: A distribution name and its optional extras, at the head of a requirement.
@@ -92,8 +93,20 @@ def refusals(published: dict[str, list[str] | None], released: tuple[int, ...]) 
 
 
 def fetch_requires_dist(distribution: str) -> list[str] | None:
-    """The published `requires_dist`, or None if the distribution has never been released."""
-    url = f"https://pypi.org/pypi/{distribution}/json"
+    """The newest non-yanked published ``requires_dist``, or None if never released.
+
+    The version is resolved from the PEP 691 simple index, not the CDN-cached top-level JSON
+    document — that field is what flaps and what this guard exists to stop trusting. The
+    per-version document then supplies the requirements, exactly as the work guard reads them.
+    Project-level yanking is invisible to the simple index, so it is checked here on the
+    per-version hop and, yanked, the "latest" has nothing to contradict a release and yields
+    None.
+    """
+    latest = fetch_published_versions(distribution)
+    if latest is None:
+        return None
+    newest = latest[0]
+    url = f"https://pypi.org/pypi/{distribution}/{newest}/json"
     try:
         with urllib.request.urlopen(url, timeout=_TIMEOUT_SECONDS) as response:
             payload = json.load(response)
@@ -101,7 +114,10 @@ def fetch_requires_dist(distribution: str) -> list[str] | None:
         if exc.code == 404:
             return None
         raise
-    return list(payload["info"].get("requires_dist") or [])
+    info = payload["info"]
+    if info.get("yanked"):
+        return None
+    return list(info.get("requires_dist") or [])
 
 
 def main(argv: list[str]) -> int:

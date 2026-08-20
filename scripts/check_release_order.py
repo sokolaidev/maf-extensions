@@ -13,9 +13,12 @@ the Release PR, where the version has stopped being a prediction.
 
 from __future__ import annotations
 
+import json
 import re
 import sys
 import tomllib
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 _CORE = "maf-sandbox"
@@ -25,6 +28,9 @@ _CEILING = re.compile(r"maf-sandbox>=\d+(?:\.\d+)*,<(\d+(?:\.\d+)*)")
 _DIST_NAME = re.compile(r"[A-Za-z0-9._-]+")
 #: Mirrors `changelog-sections` in release-please-config.json: the types that cut a release.
 _PATCH_TYPES = frozenset({"fix", "perf", "revert", "docs"})
+
+_SIMPLE_ACCEPT = "application/vnd.pypi.simple.v1+json"
+_TIMEOUT_SECONDS = 30
 
 
 def version(text: str) -> tuple[int, ...]:
@@ -37,6 +43,28 @@ def admits(version: tuple[int, ...], ceiling: tuple[int, ...]) -> bool:
     width = max(len(version), len(ceiling))
     padded = version + (0,) * (width - len(version))
     return padded < ceiling + (0,) * (width - len(ceiling))
+
+
+def fetch_published_versions(distribution: str) -> list[str] | None:
+    """The published versions of ``distribution``, newest-first, or None if never released.
+
+    Versions come from PyPI's PEP 691 simple index, which is fresher than the CDN-cached
+    top-level JSON document whose ``info.version`` the publish guards used to read. The index
+    returns a ``versions`` array (pypi.org's non-spec but observed extension) in ascending
+    order; project-level yanking is not visible here, so a caller that cares must check each
+    per-version document. A 404 means the distribution was never released; any other HTTP error
+    is fatal.
+    """
+    url = f"https://pypi.org/simple/{distribution}/"
+    request = urllib.request.Request(url, headers={"Accept": _SIMPLE_ACCEPT})
+    try:
+        with urllib.request.urlopen(request, timeout=_TIMEOUT_SECONDS) as response:
+            payload = json.load(response)
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            return None
+        raise
+    return sorted(payload["versions"], key=version, reverse=True)
 
 
 def next_version(current: tuple[int, ...], title: str) -> tuple[int, ...] | None:
