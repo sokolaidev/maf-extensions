@@ -900,6 +900,33 @@ class TestAReclaimThatDidNotHappen:
         assert "the guest is gone" in heard[0].reason
 
 
+class TestAWorkDirThatIsNotPosixShaped:
+    """`SandboxSpec` accepts any `work_dir` and infers no guest OS — see the router's own
+    `test_the_spec_imposes_no_platform_constraint_on_work_dir`. So the reclaim addresses a call
+    by *name* against that directory rather than composing one string: a composed path carries
+    the directory's separators into `confine_guest_path`, which refuses a backslash outright."""
+
+    _WINDOWS = dataclasses.replace(_SPEC, work_dir=r"D:\agent\work")
+
+    def test_the_call_is_still_reclaimed(self):
+        heard: list[ReclaimFailure] = []
+
+        async def on_failure(failure: ReclaimFailure) -> None:
+            heard.append(failure)
+
+        backend = InProcessSandboxBackend()
+        tool = _attach_with(
+            _reclaiming_body, _router(backend), spec=self._WINDOWS, on_reclaim_failure=on_failure
+        )[0]
+        path = _call(tool, target="x")
+        assert path.startswith(r"D:\agent\work" + "/")
+        # Quoted inside the command, because a name carrying backslashes is not shell-safe.
+        removals = _rm_targets(backend.sandbox)
+        assert len(removals) == 1
+        assert path in removals[0]
+        assert heard == []
+
+
 class TestACancelledBodyDoesNotExtendTheDeadline:
     """The `finally` still runs, and its await still completes — on a deadline already spent."""
 
@@ -1131,6 +1158,19 @@ class TestAWorkDirTheReclaimCouldNotServe:
 
     def test_the_attach_gate_still_wins(self):
         assert _attach_with(_reclaiming_body, None, spec=self._ROOT_SPEC) == []
+
+    def test_a_synchronous_tool_is_not_held_to_it(self):
+        """It cannot `await` `acquire`, so it holds no sandbox and can leave nothing behind."""
+
+        def build(session: SandboxToolSession):
+            def widget_run(target: str) -> str:
+                """Do a thing to ``target``, without awaiting anything."""
+                return f"did {target}"
+
+            return widget_run
+
+        tool = _attach_with(build, _router(InProcessSandboxBackend()), spec=self._ROOT_SPEC)[0]
+        assert _fn(tool)(target="x") == "did x"
 
 
 class TestTheWrapperIsTransparent:

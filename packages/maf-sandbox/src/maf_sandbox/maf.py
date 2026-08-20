@@ -102,7 +102,7 @@ class _SandboxToolCall:
     """
 
     owner: object
-    path: str | None = None
+    name: str | None = None
     acquired: tuple[Sandbox, SandboxKey] | None = None
     closed: bool = False
 
@@ -366,9 +366,11 @@ class SandboxToolSession:
                 "path is already reclaimed, and anything written to it now would stay in the "
                 "sandbox. A task outliving the call needs a path of its own."
             )
-        if call.path is None:
-            call.path = f"{self._spec.work_dir}/{uuid4().hex[:12]}"
-        return call.path
+        if call.name is None:
+            call.name = uuid4().hex[:12]
+        # Composed for the caller, and never stored composed: the reclaim addresses this by
+        # name against ``work_dir``, the way every other confined call on the surface does.
+        return f"{self._spec.work_dir}/{call.name}"
 
     async def list_files(self, store: Any) -> list[str] | str:
         """The paths this caller may act on, or the message to return if they cannot be read.
@@ -450,15 +452,19 @@ async def _reclaim_the_call(
     outer deadline arriving mid-removal, so it is recorded and re-raised, and it *does* replace
     the body's result.
     """
-    if call.path is None or call.acquired is None:
+    if call.name is None or call.acquired is None:
         # Nothing was named, or nothing was acquired to write into it — either way there is
         # nothing there, and no round trip is worth spending to prove it.
         return
     sandbox, key = call.acquired
     prefix = _prefixed(tool)
+    path = f"{spec.work_dir}/{call.name}"
     try:
+        # By name, against the working directory — not as one composed string. A ``work_dir``
+        # the protocol accepts may not be POSIX-shaped, and a composed path would carry its
+        # separators into a grammar that refuses them, failing every call on such a spec.
         reason = await reclaim_guest_path(
-            sandbox, call.path, working_directory=spec.work_dir, timeout=timeout
+            sandbox, call.name, working_directory=spec.work_dir, timeout=timeout
         )
     except (CancelledError, GeneratorExit):
         # Recorded and then let through. Cancellation is the caller's — an outer deadline
@@ -466,19 +472,18 @@ async def _reclaim_the_call(
         # return the body's answer past a bound the host thought it had. The leak still has to
         # be visible, so the line is written before the cancellation goes on.
         logger.warning(
-            f"{prefix}: %s was not reclaimed: the call was cancelled during the removal",
-            call.path,
+            f"{prefix}: %s was not reclaimed: the call was cancelled during the removal", path
         )
         raise
     if reason is None:
         return
     # Logged whether or not a host is listening: what is left stays readable by every later
     # call in this sandbox, and a callback that swallows it would take the record with it.
-    logger.warning(f"{prefix}: %s was not reclaimed: %s", call.path, reason)
+    logger.warning(f"{prefix}: %s was not reclaimed: %s", path, reason)
     if on_failure is None:
         return
     try:
-        await on_failure(ReclaimFailure(tool=tool, key=key, path=call.path, reason=reason))
+        await on_failure(ReclaimFailure(tool=tool, key=key, path=path, reason=reason))
     except Exception as raised:  # noqa: BLE001 — a host's callback must not fail the call
         logger.warning(f"{prefix}: on_reclaim_failure raised: %s", error_detail(raised))
     except (CancelledError, GeneratorExit) as stopped:
@@ -531,14 +536,17 @@ def sandboxed_tool(
        sink, because such a tool cannot honour its own spec; and a ``spec`` declaring any
        output without requiring :data:`~maf_sandbox.Capability.FILES_OUT` is refused, because
        the capability match is what stands between it and a backend with no pull surface.
-    7. **Reclaim what the call owned.**  A body that took a path from
+    7. **Reclaim what the call owned**, for an ``async`` body — a synchronous one cannot
+       ``await`` :meth:`SandboxToolSession.acquire`, so it holds no sandbox and owns nothing.
+       A body that took a path from
        :meth:`SandboxToolSession.guest_call_path` has it removed, with everything under it, when
        the call returns — after a result, a refusal and an exception alike — so a kind cannot
        forget a path it never held.
        A body that never asked for one costs nothing.  See ``on_reclaim_failure`` for the
        removal that does not happen, which is a data-retention failure rather than a tidy-up.
-       A ``spec`` whose ``work_dir`` is the guest root is refused here, because a path one
-       component from the root is one this cannot remove.
+       A ``spec`` whose ``work_dir`` is the guest root is refused, because a path one
+       component from the root is one this cannot remove — and only for such a body, since a
+       synchronous one is not held to a rule it cannot break.
 
     ``build`` is a callback rather than a decorated function because the session does not
     exist until the attach gate has passed, and the tool body needs it in its closure.  Two
@@ -616,13 +624,6 @@ def sandboxed_tool(
             "router's capability match never asks whether this backend has one — leaving the "
             "failure to happen inside the sandbox, where the reason is hardest to see."
         )
-    if not [part for part in posixpath.normpath(spec.work_dir).split("/") if part]:
-        raise ValueError(
-            f"{name}: the {spec.kind!r} workload's work_dir is {spec.work_dir!r}, which leaves "
-            "a call's own path one component from the guest root. Reclaiming one recursively is "
-            "refused at that depth, so every call would keep its files and report a retention "
-            "failure it could do nothing about. Give the workload a directory of its own."
-        )
     if not math.isfinite(reclaim_timeout) or reclaim_timeout <= 0:
         raise ValueError(
             f"{name}: reclaim_timeout must be a finite positive number of seconds, not "
@@ -667,6 +668,16 @@ def sandboxed_tool(
         # to reclaim. Left unwrapped rather than wrapped-and-skipped: MAF runs a sync tool off
         # the event loop, and this predicate is the one it decides that with.
         return [decorate(body)]
+    if not [part for part in posixpath.normpath(spec.work_dir).split("/") if part]:
+        # Here rather than with the spec refusals above, because it constrains only a tool that
+        # can reclaim: a body that never receives the wrapper cannot leave a path behind, and
+        # refusing it would be a rule enforcing something that cannot happen.
+        raise ValueError(
+            f"{name}: the {spec.kind!r} workload's work_dir is {spec.work_dir!r}, which leaves "
+            "a call's own path one component from the guest root. Reclaiming one recursively is "
+            "refused at that depth, so every call would keep its files and report a retention "
+            "failure it could do nothing about. Give the workload a directory of its own."
+        )
 
     # `functools.wraps` is what keeps MAF reading the *body* — the description is `__doc__`,
     # the parameter schema is `inspect.signature` plus `get_type_hints`, the context injection
