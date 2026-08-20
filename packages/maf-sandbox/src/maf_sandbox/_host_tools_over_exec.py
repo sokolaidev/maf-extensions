@@ -2011,9 +2011,10 @@ def _serving_bound(run: HostToolRun) -> int:
     """How many requests this supervisor will read before it stops reading them.
 
     Every request, not every dispatch: a malformed one is answered before the door and so
-    never spends the cap that is meant to bound this. One more than the cap because the
-    transport serves one outstanding call at a time, which makes a single refusal enough to
-    tell the guest the cap is gone. Past it the supervisor only waits for the program to end.
+    never spends the cap that is meant to bound this. One more than the cap because dispatch
+    stays sequential even when parallel, speculative probes discover several outstanding
+    requests: the first request past the cap receives the single refusal that tells the guest
+    the cap is gone. Past it the supervisor only waits for the program to end.
     """
     return run.registry.max_dispatches_per_run + 1
 
