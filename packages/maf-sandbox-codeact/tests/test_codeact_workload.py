@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import logging
 import warnings
 from collections.abc import Callable, Sequence
 from dataclasses import replace
@@ -2432,6 +2433,19 @@ class TestATimeoutSaysWhoseItWas:
 
         assert "before the program was started" in out, out
         assert "did not finish" not in out, "a run that never started was reported as overrunning"
+
+    def test_the_log_adds_no_claim_about_what_became_of_the_program(self, caplog):
+        """The transport says which of three fates the program met; the kind must not overrule it.
+
+        A blanket "it is still running" was false whenever the signal landed, and it sat on the
+        same line as the sentence that said so.
+        """
+        sandbox = _StallingSandbox(printed=b"step 1 done")
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox_codeact._tool"):
+            out = _run(_dispatching(sandbox, _round_half_up, exec_timeout_seconds=1), "print('x')")
+
+        logged = [r.getMessage() for r in caplog.records if r.getMessage().startswith("execute_")]
+        assert logged == [f"execute_code: {out.removeprefix('Error: ')}"], logged
 
     def test_the_plain_path_still_reads_a_timeout_as_the_programs_own(self):
         """No dispatch, one `exec`, one bound: the equation this class complicates holds here."""
