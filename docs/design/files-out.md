@@ -182,11 +182,11 @@ This is the third optional backend declaration read with `getattr`. Three is whe
 
 ### `write_file` widens; no capability for it
 
-`write_file` becomes `(path: str, content: str | bytes)`, with `str` continuing to mean UTF-8. The in-door otherwise cannot carry a PNG or a spreadsheet, and this release already has every backend's file code open.
+`write_file` takes `(path: str, content: str | bytes, *, working_directory: str)`, with `str` continuing to mean UTF-8. The in-door otherwise cannot carry a PNG or a spreadsheet, and this release already has every backend's file code open.
 
 It gets no capability, by the test above: ACAS's SDK signature is already `content: str | bytes`, and Docker and wslc both transport via tar, which is binary-native. No backend lacks it.
 
-Note the residual asymmetry, stated rather than hidden: `write_file` takes an **absolute** guest path and has no path grammar today, while the read surface takes a path relative to a `working_directory` and validates it. Unifying them is a larger change than this one and is not attempted here.
+`write_file` now uses the same POSIX path grammar and `working_directory` confinement as the read surface, including refusal of lexical escapes and symlinked parents or destinations. The backend still owns the guest storage base, and the check and write are not atomic on shipped backends.
 
 ### Error taxonomy
 
