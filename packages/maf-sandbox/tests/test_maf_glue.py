@@ -679,7 +679,7 @@ def _typed_body(session: SandboxToolSession):
     return widget_run
 
 
-def _attach_with(build, router, *, spec=_SPEC, **kw):
+def _attach_with(build, router, *, spec=_SPEC, name="widget_run", **kw):
     kw.setdefault("logger", logging.getLogger("test_workload"))
     return sandboxed_tool(
         build,
@@ -687,7 +687,7 @@ def _attach_with(build, router, *, spec=_SPEC, **kw):
         context=_context(),
         agent_dir="agent-1",
         spec=spec,
-        name="widget_run",
+        name=name,
         **kw,
     )
 
@@ -878,7 +878,7 @@ class TestAReclaimThatDidNotHappen:
         with caplog.at_level(logging.WARNING, logger="test_workload"):
             with pytest.raises(asyncio.CancelledError):
                 _call(tool, target="x")
-        assert any("did not finish: the call was cancelled" in r.message for r in caplog.records)
+        assert any("did not finish: CancelledError" in r.message for r in caplog.records)
 
     def test_a_cancelled_removal_lets_it_through_and_still_leaves_the_record(self, caplog):
         """The leak has to stay visible even though the cancellation is not contained."""
@@ -900,6 +900,43 @@ class TestAReclaimThatDidNotHappen:
         assert "the guest is gone" in heard[0].reason
 
 
+class TestACancelledBodyDoesNotExtendTheDeadline:
+    """The `finally` still runs, and its await still completes — on a deadline already spent."""
+
+    def _cancelling_body(self, session: SandboxToolSession):
+        async def widget_run(target: str) -> str:
+            """Take a path, then be cancelled."""
+            key = session.key()
+            assert not isinstance(key, str)
+            assert not isinstance(await session.acquire(key), str)
+            session.guest_call_path()
+            raise asyncio.CancelledError
+
+        return widget_run
+
+    def _removal_bounds(self, backend):
+        return [
+            timeout for command, _, timeout in backend.sandbox.commands if command[:7] == "rm -rf "
+        ]
+
+    def test_a_cancelled_body_gets_the_grace(self):
+        backend = InProcessSandboxBackend()
+        with pytest.raises(asyncio.CancelledError):
+            _call(_reclaiming(backend, self._cancelling_body), target="x")
+        assert self._removal_bounds(backend) == [2.0]
+
+    def test_an_ordinary_return_gets_the_whole_bound(self):
+        backend = InProcessSandboxBackend()
+        _call(_reclaiming(backend), target="x")
+        assert self._removal_bounds(backend) == [30.0]
+
+    def test_the_grace_never_raises_a_bound_the_host_set_lower(self):
+        backend = InProcessSandboxBackend()
+        with pytest.raises(asyncio.CancelledError):
+            _call(_reclaiming(backend, self._cancelling_body, reclaim_timeout=0.5), target="x")
+        assert self._removal_bounds(backend) == [0.5]
+
+
 class TestTheReclaimBound:
     def test_a_bound_that_bounds_nothing_is_refused(self):
         with pytest.raises(ValueError, match="reclaim_timeout"):
@@ -912,6 +949,37 @@ class TestTheReclaimBound:
     def test_the_attach_gate_still_wins(self):
         """Refused after the gate, like the three spec refusals: unconfigured still gets ``[]``."""
         assert _attach_with(_reclaiming_body, None, reclaim_timeout=0) == []
+
+
+class TestAToolNameWithAPercentInIt:
+    """The prefix is baked into the format string with its `%` doubled, which only interpolation
+    undoes — `logging` leaves the doubling alone on a record that carries no arguments."""
+
+    def _log_of(self, on_failure, caplog):
+        backend = InProcessSandboxBackend(_RefusesToRemove())
+        tool = _attach_with(
+            _reclaiming_body,
+            _router(backend),
+            name="odd%name",
+            on_reclaim_failure=on_failure,
+        )[0]
+        with caplog.at_level(logging.WARNING, logger="test_workload"):
+            try:
+                _call(tool, target="x")
+            except asyncio.CancelledError:
+                pass
+        return [record.getMessage() for record in caplog.records]
+
+    def test_the_name_survives_the_failure_record(self, caplog):
+        assert any(m.startswith("odd%name: ") for m in self._log_of(None, caplog))
+
+    def test_and_the_cancelled_callback_record(self, caplog):
+        async def on_failure(failure: ReclaimFailure) -> None:
+            raise asyncio.CancelledError
+
+        rendered = self._log_of(on_failure, caplog)
+        assert any("odd%name: on_reclaim_failure did not finish" in m for m in rendered)
+        assert not any("odd%%name" in m for m in rendered)
 
 
 class TestWhatTheWrapperDoesNotTouch:

@@ -33,6 +33,7 @@ import inspect
 import logging
 import math
 import posixpath
+import sys
 from asyncio import CancelledError
 from collections.abc import Awaitable, Callable, Mapping
 from contextvars import ContextVar
@@ -80,6 +81,15 @@ __all__ = [
 _SDK_NOT_INSTALLED = "Error: the sandbox backend is not installed — degrading to T0"
 _NO_BACKEND_CONFIGURED = "Error: no sandbox backend is configured — degrading to T0"
 _SANDBOX_UNAVAILABLE = "Error: sandbox unavailable — degrading to T0 (LLM self-check only)"
+
+#: What the removal gets when the body was cancelled, instead of the full ``reclaim_timeout``.
+#:
+#: The `finally` still runs after a cancellation, and its ``await`` is still allowed to
+#: complete — so a slow backend would extend a deadline that has *already* expired by the whole
+#: bound. A grace rather than a skip: skipping leaks the call's path with nothing said, which is
+#: the failure this module exists to prevent, and a cancelled caller is owed promptness rather
+#: than nothing.
+_CANCELLED_CALL_GRACE = 2.0
 
 
 @dataclass
@@ -471,10 +481,12 @@ async def _reclaim_the_call(
         await on_failure(ReclaimFailure(tool=tool, key=key, path=call.path, reason=reason))
     except Exception as raised:  # noqa: BLE001 — a host's callback must not fail the call
         logger.warning(f"{prefix}: on_reclaim_failure raised: %s", error_detail(raised))
-    except (CancelledError, GeneratorExit):
+    except (CancelledError, GeneratorExit) as stopped:
         # Not contained, for the reason above: the callback awaits, so this is the caller's
         # cancellation arriving inside it and not a failure of the callback's own.
-        logger.warning(f"{prefix}: on_reclaim_failure did not finish: the call was cancelled")
+        # Named rather than stated, so this line interpolates: `prefix` has its `%` doubled for
+        # exactly that, and `logging` leaves the doubling alone when a record carries no args.
+        logger.warning(f"{prefix}: on_reclaim_failure did not finish: %s", type(stopped).__name__)
         raise
 
 
@@ -572,7 +584,10 @@ def sandboxed_tool(
             remedy that closes the window rather than narrowing it. Its own failure is logged
             and swallowed — it runs in a ``finally``, over a call that may already be failing.
         reclaim_timeout: Seconds the removal gets. Spent after the body has returned, so it is
-            added to the call's own latency.
+            added to the call's own latency — an outer deadline should allow for it. A body that
+            was **cancelled** gets :data:`_CANCELLED_CALL_GRACE` instead, or this, whichever is
+            smaller: its caller's deadline has already passed, and the removal must not extend
+            one that has.
         logger: Where the failure ladder writes its detail. Defaults to this module's logger;
             pass the workload's own so its records keep the workload's logger name.
     """
@@ -669,13 +684,16 @@ def sandboxed_tool(
             # Closed before the removal, not after: a task the body left running would otherwise
             # be handed this path while it is being deleted.
             call.closed = True
+            bound = reclaim_timeout
+            if isinstance(sys.exception(), (CancelledError, GeneratorExit)):
+                bound = min(reclaim_timeout, _CANCELLED_CALL_GRACE)
             await _reclaim_the_call(
                 call,
                 spec=spec,
                 tool=name,
                 logger=records,
                 on_failure=on_reclaim_failure,
-                timeout=reclaim_timeout,
+                timeout=bound,
             )
 
     return [decorate(reclaiming)]
