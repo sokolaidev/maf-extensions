@@ -79,7 +79,7 @@ The wording around the number is the model's and varies run to run; the model is
 
 **`SandboxCapabilityNotSupported` at startup** — the backend cannot do what `execute_code` requires: run a command and take a file in. `AcasSandboxBackend` declares both, so this only appears against a swapped-in backend that declares less.
 
-**A disk image that cannot be resolved** — the image was named but the group cannot find it, for one of two reasons. A `repository:tag` reference was never imported into the sandbox group — the reference in the error has to match the one the import step used exactly. Or a bare name the service's catalogue does not hold: `python-3.13` is what the service provides today, but the catalogue is per group and the service owns its contents, so a group whose catalogue does not carry the name fails at boot with the catalogue in the message (`It provides: …`) — `aca sandboxgroup disk list-public` is the live version of the same list.
+**A disk image that cannot be resolved** — the image was named but the group cannot find it, for one of two reasons. A `repository:tag` reference was never imported into the sandbox group — the reference in the error has to match the one the import step used exactly. Or a bare name the service's catalogue does not hold — `python-3.13` is what the service provides today, and a name the catalogue lacks is refused at boot with the catalogue in the message (`It provides: …`); `aca sandboxgroup disk list-public` is the live version of that list.
 
 **`400 — Encrypted content is not supported with this model`** — the chat deployment is not a reasoning model. See the prerequisite above; nothing about the sandbox is involved, and the run fails before one is created.
 
