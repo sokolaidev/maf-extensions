@@ -25,6 +25,10 @@ dev = [
     # `pre-commit run --all-files` (tests.yml), so the config cannot rot while every
     # local copy stays green.
     "pre-commit>=4.6.2,<4.7",
+    # The test suite reads .pre-commit-config.yaml and tests.yml directly; it comes in
+    # transitively via pre-commit today, and a transitive import is a declared-dependency
+    # violation the moment that graph changes.
+    "pyyaml>=6,<7",
     # Every sample that talks to a model imports this, and nothing else here pulls it in.
     # Wide where the tooling bands are narrow, and deliberately: a sample declares it unpinned,
     # so a check held to an older minor would pass against a version no live run uses.

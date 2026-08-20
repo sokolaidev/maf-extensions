@@ -39,6 +39,9 @@ def test_hooks_default_to_pre_commit_only() -> None:
     # the default must keep the tiers where the tiers put it.
     config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
     assert config.get("default_stages") == ["pre-commit"]
+    # A bare `pre-commit install` wires only these hook types; the documented one-liner must
+    # install all three tiers, and CI's explicit stage runs would not catch a removal.
+    assert config.get("default_install_hook_types") == ["pre-commit", "pre-push", "commit-msg"]
 
 
 def test_staged_hooks_match_their_contract() -> None:
@@ -57,6 +60,16 @@ def test_staged_hooks_match_their_contract() -> None:
     # filter them out, and a symlink's stored target is content the rules must see.
     assert by_id["no-origin-identifiers"]["types"] == []
     assert by_id["no-origin-identifiers-msg"]["args"] == ["--commit-msg"]
+    # `_hooks()` models stages from this file alone: pre-commit merges the external repos'
+    # manifests first, so a hook without a local `stages` key keeps its manifest's. Every
+    # external hook must name its stages here, or a manifest-declared stage (as
+    # check-added-large-files' pre-push) drifts out of this model silently.
+    config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    for repo in config["repos"]:
+        if repo.get("repo") == "local":
+            continue
+        for hook in repo.get("hooks", []):
+            assert isinstance(hook.get("stages"), list), f"{hook['id']}: stages not explicit"
 
 
 def test_ci_exercises_every_non_default_stage() -> None:

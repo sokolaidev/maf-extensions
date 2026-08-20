@@ -89,8 +89,14 @@ jobs:
         run: uv run pre-commit run --all-files
 
       - name: Pre-commit (pre-push stage, whole tree)
-        # The pre-push hooks through the framework: the `always_run` pyright passes over the
-        # whole tree plus the hygiene hooks that declare the pre-push stage.
+        # The pre-push tier through the framework: the hygiene hooks that declare the stage.
+        # The two `always_run` pyright passes are skipped — the dedicated Types steps below
+        # run the same two commands, and re-running them here would double CI's wall-clock
+        # without checking anything new; their pre-push wiring stays pinned by the config
+        # test.
+        env:
+          # Comma-separated: pre-commit's `_get_skips` splits on `,`.
+          SKIP: pyright-packages,pyroot
         run: uv run pre-commit run --hook-stage pre-push --all-files
 
       - name: Pre-commit (commit-msg stage)

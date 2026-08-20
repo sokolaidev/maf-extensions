@@ -2,7 +2,8 @@
 
 Wired as a pre-commit hook over the staged blobs and a commit-msg hook over the message.
 The committed rules are the anonymous structural patterns; the names only the origin owner
-knows are read from the untracked local list ``.no-origin-identifiers``.
+knows are read from the untracked local list ``.no-origin-identifiers``, which lives in the
+shared git common directory so every linked worktree of the repository sees the same one.
 """
 
 from __future__ import annotations
@@ -49,9 +50,31 @@ def _staged_blob(path: str) -> str:
     return "\n".join(raw.decode(encoding, errors="ignore") for encoding in _DECODINGS)
 
 
-def load_local_names(repo_root: Path) -> tuple[str, ...]:
+def _local_list_dir(repo_root: Path) -> Path:
+    """The directory holding the shared local list, resolved through git.
+
+    ``--git-common-dir`` answers ``.git`` in a normal checkout and the main checkout's
+    ``.git`` from a linked worktree, so the list is read from one place for the whole
+    repository. A relative answer is resolved against the working root; if git cannot
+    answer, ``.git`` in that root is the only candidate anyway.
+    """
+    result = subprocess.run(
+        ["git", "rev-parse", "--git-common-dir"],
+        cwd=repo_root,
+        capture_output=True,
+        encoding="utf-8",
+    )
+    if result.returncode != 0 or not result.stdout.strip():
+        return repo_root / ".git"
+    common_dir = Path(result.stdout.strip())
+    if not common_dir.is_absolute():
+        common_dir = repo_root / common_dir
+    return common_dir
+
+
+def load_local_names(list_dir: Path) -> tuple[str, ...]:
     """The owner-only names from ``.no-origin-identifiers``, or none if it is absent."""
-    path = repo_root / LOCAL_LIST_NAME
+    path = list_dir / LOCAL_LIST_NAME
     if not path.is_file():
         return ()
     names = [
@@ -81,36 +104,30 @@ def scan(text: str, local_names: tuple[str, ...] = ()) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
-    """CLI entry. ``--staged <path>…`` scans the staged blobs, ``--commit-msg <file>`` scans a message."""
+    """CLI entry. ``--staged <path>…`` scans the staged blobs, ``--commit-msg <file>`` scans a message.
+
+    The first argument names the mode; everything after it is a path. Pre-commit appends the
+    staged filenames verbatim, so a file whose name starts with ``--`` must not be read back
+    as a flag.
+    """
+    repo_root = _REPO_ROOT
+    local_names = load_local_names(_local_list_dir(repo_root))
+
     paths: list[str] = []
     message_file: str | None = None
-    i = 1
-    while i < len(argv):
-        arg = argv[i]
-        if arg == "--staged":
-            i += 1
-            while i < len(argv) and not argv[i].startswith("--"):
-                paths.append(argv[i])
-                i += 1
-        elif arg == "--commit-msg":
-            i += 1
-            if i >= len(argv):
-                break
-            message_file = argv[i]
-            i += 1
-        else:
-            print(f"unexpected argument: {arg}", file=sys.stderr)
-            return 2
-
-    repo_root = _REPO_ROOT
-    local_names = load_local_names(repo_root)
+    if len(argv) < 2:
+        return _usage(argv)
+    mode = argv[1]
+    if mode == "--staged":
+        paths = argv[2:]
+    elif mode == "--commit-msg":
+        message_file = argv[2] if len(argv) > 2 else None
+    else:
+        print(f"unexpected argument: {mode}", file=sys.stderr)
+        return 2
 
     if not paths and message_file is None:
-        print(
-            f"usage: {argv[0]} --staged <path>… | --commit-msg <message-file>",
-            file=sys.stderr,
-        )
-        return 2
+        return _usage(argv)
 
     problems: list[str] = []
     for path in paths:
@@ -129,6 +146,14 @@ def main(argv: list[str]) -> int:
     if problems:
         return 1
     return 0
+
+
+def _usage(argv: list[str]) -> int:
+    print(
+        f"usage: {argv[0]} --staged <path>… | --commit-msg <message-file>",
+        file=sys.stderr,
+    )
+    return 2
 
 
 if __name__ == "__main__":

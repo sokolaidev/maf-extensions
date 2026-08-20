@@ -125,9 +125,9 @@ class TestCli:
         assert _main_in(monkeypatch, tmp_path, "--staged", "blob.bin") == 1
 
     def test_wide_encodings_are_decoded_too(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-        # An identifier can be committed in a wide encoding; the lossy single-encoding decode
-        # used to interleave NULs and let it past both rules.
-        for encoding in ("utf-16-le", "utf-32-le"):
+        # The blob is scanned in every encoding view it can be committed in, so each one
+        # must be refused.
+        for encoding in guard._DECODINGS:
             blob = ("connect to db.orders." + "internal\n").encode(encoding)
             _init_repo(tmp_path)
             (tmp_path / "wide.txt").write_bytes(blob)
@@ -139,7 +139,7 @@ class TestCli:
         # list must reach. pre-commit's `types: [file]` default would keep symlinks away from
         # the hook; the config sets `types: []`.
         _init_repo(tmp_path)
-        (tmp_path / guard.LOCAL_LIST_NAME).write_text("origin-repo\n", "utf-8")
+        (tmp_path / ".git" / guard.LOCAL_LIST_NAME).write_text("origin-repo\n", "utf-8")
         try:
             os.symlink("origin-repo" + ".md", tmp_path / "link.md")
             subprocess.run(["git", "add", "link.md"], cwd=tmp_path, check=True)
@@ -165,7 +165,7 @@ class TestCli:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ):
         _init_repo(tmp_path)
-        (tmp_path / guard.LOCAL_LIST_NAME).write_text("origin-repo\n", "utf-8")
+        (tmp_path / ".git" / guard.LOCAL_LIST_NAME).write_text("origin-repo\n", "utf-8")
         _stage(tmp_path, "notes.md", "extracted from origin-repo once\n")
         assert _main_in(monkeypatch, tmp_path, "--staged", "notes.md") == 1
 
@@ -180,14 +180,14 @@ class TestCli:
     def test_a_path_carrying_a_local_name_is_refused(self, monkeypatch, tmp_path: Path):
         # A file or directory name is part of the tree too: a leak in the name alone is refused.
         _init_repo(tmp_path)
-        (tmp_path / guard.LOCAL_LIST_NAME).write_text("origin-repo\n", "utf-8")
+        (tmp_path / ".git" / guard.LOCAL_LIST_NAME).write_text("origin-repo\n", "utf-8")
         (tmp_path / "origin-repo").mkdir()
         _stage(tmp_path, "origin-repo/notes.md", "nothing to see\n")
         assert _main_in(monkeypatch, tmp_path, "--staged", "origin-repo/notes.md") == 1
 
     def test_the_guards_own_paths_are_judged(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-        # The guard's files are not special: clean content at their own paths passes, so the
-        # suite cannot hide a leak behind the guard's file name.
+        # The guard's files are not special: clean content at their own paths passes, and a
+        # leak there is refused like anywhere else — the paths get no exemption.
         _init_repo(tmp_path)
         _stage(tmp_path, "scripts/check_no_origin_identifiers.py", "def scan(text):\n    ...\n")
         _stage(tmp_path, "tests/test_check_no_origin_identifiers.py", "def test_ok():\n    ...\n")
@@ -200,6 +200,15 @@ class TestCli:
                 "tests/test_check_no_origin_identifiers.py",
             )
             == 0
+        )
+        _stage(
+            tmp_path,
+            "scripts/check_no_origin_identifiers.py",
+            "connect to db.orders." + "internal\n",
+        )
+        assert (
+            _main_in(monkeypatch, tmp_path, "--staged", "scripts/check_no_origin_identifiers.py")
+            == 1
         )
 
     def test_a_near_name_at_a_guard_path_is_refused(
@@ -215,3 +224,34 @@ class TestCli:
             _main_in(monkeypatch, tmp_path, "--staged", "other/test_check_no_origin_identifiers.py")
             == 1
         )
+
+    def test_a_staged_file_named_like_a_flag_is_judged(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        # Pre-commit appends the staged filenames verbatim, so a name that starts with
+        # ``--`` is a path, not a control flag, and its blob is scanned like any other.
+        _init_repo(tmp_path)
+        (tmp_path / "--commit-msg").write_text("connect to db.orders." + "internal\n", "utf-8")
+        subprocess.run(["git", "add", "--", "--commit-msg"], cwd=tmp_path, check=True)
+        assert _main_in(monkeypatch, tmp_path, "--staged", "--commit-msg") == 1
+        (tmp_path / "--commit-msg").write_text("nothing to see\n", "utf-8")
+        subprocess.run(["git", "add", "--", "--commit-msg"], cwd=tmp_path, check=True)
+        assert _main_in(monkeypatch, tmp_path, "--staged", "--commit-msg") == 0
+
+    def test_the_list_reaches_linked_worktrees(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        # The list lives in the shared git common directory: one list in the main checkout
+        # must reach a commit made from a linked worktree, where the worktree's own ``.git``
+        # is a file, not a directory.
+        _init_repo(tmp_path)
+        subprocess.run(
+            ["git", "commit", "-q", "--allow-empty", "-m", "seed"], cwd=tmp_path, check=True
+        )
+        worktree = tmp_path.parent / "atc-wt"
+        subprocess.run(["git", "worktree", "add", "-q", str(worktree)], cwd=tmp_path, check=True)
+        (tmp_path / ".git" / guard.LOCAL_LIST_NAME).write_text("origin-repo\n", "utf-8")
+        (worktree / "notes.md").write_text("extracted from origin-repo once\n", "utf-8")
+        subprocess.run(["git", "add", "notes.md"], cwd=worktree, check=True)
+        monkeypatch.setattr(guard, "_REPO_ROOT", worktree)
+        assert guard.main(["check_no_origin_identifiers.py", "--staged", "notes.md"]) == 1
