@@ -654,7 +654,7 @@ def _reclaiming_body(session: SandboxToolSession):
         sandbox = await session.acquire(key)
         assert not isinstance(sandbox, str)
         path = session.guest_call_path()
-        await sandbox.write_file("program.py", target, working_directory="/")
+        await sandbox.write_file("program.py", target, working_directory=path)
         return path
 
     return widget_run

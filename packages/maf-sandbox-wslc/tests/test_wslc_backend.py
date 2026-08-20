@@ -797,6 +797,34 @@ class TestTheSeam:
 
         assert result.stdout == b"tar bytes"
 
+    def test_a_bounded_read_caps_stdout_and_reaps_the_process(self):
+        backend = WslcSandboxBackend(WslcSandboxConfig(wslc_path=sys.executable))
+        script = "import sys,time; sys.stdout.buffer.write(b'x' * 1000); sys.stdout.flush(); time.sleep(3600)"
+        result = asyncio.run(backend._wslc("-c", script, read_limit=64, timeout=30))
+
+        assert len(result.stdout) == 64
+        assert result.returncode != 0
+
+    def test_a_bounded_read_timeout_kills_and_propagates(self):
+        backend = WslcSandboxBackend(WslcSandboxConfig(wslc_path=sys.executable))
+        script = "import time; time.sleep(3600)"
+
+        with pytest.raises(TimeoutError):
+            asyncio.run(backend._wslc("-c", script, read_limit=64, timeout=0.01))
+
+    def test_a_cancelled_bounded_read_kills_and_propagates(self):
+        backend = WslcSandboxBackend(WslcSandboxConfig(wslc_path=sys.executable))
+        script = "import time; time.sleep(3600)"
+
+        async def scenario() -> None:
+            task = asyncio.ensure_future(backend._wslc("-c", script, read_limit=64, timeout=60))
+            await asyncio.sleep(0.1)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        asyncio.run(scenario())
+
     def test_a_timeout_kills_the_process_and_propagates(self, monkeypatch):
         """`TimeoutError` propagating is the workload's cue to report a hang as a diagnostic;
         killing is what keeps a hung command from outliving the call."""

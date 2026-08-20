@@ -828,7 +828,7 @@ async def _probe_a_linked_ancestor_of_the_working_directory_refuses_write(
         ),
     )
     result = await subject.sandbox.exec(
-        ["test", "-e", "landed.txt"], working_directory=paths.outside, timeout=60
+        ["test", "-e", f"{paths.outside}/sub/landed.txt"], working_directory="/", timeout=60
     )
     if result.exit_code == 0:
         raise AssertionError("a linked-ancestor write created the outside file")
