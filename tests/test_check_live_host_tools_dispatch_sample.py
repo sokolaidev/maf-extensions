@@ -963,6 +963,15 @@ class TestTheBoundariesTheSummaryRestsOn:
         )
         assert any("exactly one boundary summary" in reason for reason in check.assess(duplicate))
 
+    def test_a_boundary_summary_with_one_program_fails(self):
+        one_program = _HEALTHY.replace(
+            "programs that dispatched: 2", "programs that dispatched: 1"
+        ).replace("program boundaries observed: 1", "program boundaries observed: 0")
+        assert any(
+            "boundary requires at least two programs" in reason
+            for reason in check.assess(one_program)
+        )
+
 
 class TestObservedProgramCount:
     def test_a_missing_observer_count_fails(self):

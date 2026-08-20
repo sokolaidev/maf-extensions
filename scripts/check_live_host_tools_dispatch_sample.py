@@ -518,6 +518,11 @@ def _assess_the_round_trips(output: str) -> list[str]:
     if len(observed) == 1 and dispatching is not None:
         _, count, smallest, largest = observed[0]
         expected = dispatching - 1
+        if expected < 1:
+            failures.append(
+                f"the dispatch route reports a program boundary summary, but only {dispatching} "
+                "program dispatched; a boundary requires at least two programs"
+            )
         if int(count) != expected:
             failures.append(
                 f"{count} program boundary/ies were observed where {dispatching} program(s) "
