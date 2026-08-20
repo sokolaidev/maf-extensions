@@ -46,8 +46,9 @@ Oregon	TOTAL	3514.35
   [measured] dispatch route: table rows the program printed: 6 of 6
   [measured] dispatch route: product names in the table: 3 of 3
   [measured] dispatch route: sales figures the model wrote into code: 0 of 12
+  [measured] dispatch route: programs that dispatched: 2
   [measured] dispatch route: round trip: 23 gap(s), min 1.08s, median 1.11s, max 1.60s
-  [measured] dispatch route: program boundaries dropped: 1, smallest 5.38s against a 1.60s largest round trip
+  [measured] dispatch route: program boundaries observed: 1, min 5.38s, max 5.38s
 
 == 3. The lookups happen in the model's tool loop ==
 
@@ -227,7 +228,7 @@ class TestDirectPaysPerStage:
     def test_a_dispatched_batch_of_more_than_one_fails(self):
         """One message asking for two programs runs them at once, and one ledger times both."""
         assert any(
-            "run concurrently" in r
+            "can interleave" in r
             for r in check.assess(
                 _swap(
                     "[measured] dispatch route: tool calls per round: [1, 1]",
@@ -275,13 +276,13 @@ class TestDirectPaysPerStage:
                     "[measured] dispatch route: 29 lookup(s) over 3 tool-calling round(s)",
                 )
                 .replace("round trip: 23 gap(s)", "round trip: 26 gap(s)")
-                .replace("program boundaries dropped: 1,", "program boundaries dropped: 2,")
+                .replace("program boundaries observed: 1,", "program boundaries observed: 2,")
                 .replace(
                     "dispatch route: tool calls per round: [1, 1]",
                     "dispatch route: tool calls per round: [1, 1, 1]",
                 )
                 .replace("run directories across both sandboxes: 3", "…dirs…")
-                .replace("of those, runs that dispatched: 2", "of those, runs that dispatched: 3")
+                .replace("programs that dispatched: 2", "programs that dispatched: 3")
                 .replace("…dirs…", "run directories across both sandboxes: 4")
                 .replace(
                     "transport files left behind: 75, of which answered calls: 25",
@@ -711,7 +712,7 @@ class TestATransportThatReclaimsItsOwn:
     def test_the_gap_arithmetic_still_binds_without_the_guest(self):
         """The program count comes from the shape now; the ledger's own clock still checks it."""
         assert any(
-            "a different set of calls" in r
+            "observer saw" in r
             for r in check.assess(_reclaimed("round trip: 23 gap(s)", "round trip: 20 gap(s)"))
         )
 
@@ -841,7 +842,7 @@ class TestACountIsNotAMatch:
     def test_a_positive_but_inconsistent_gap_count_fails(self):
         """21 lookups yield exactly 20 gaps; one gap is a median over a twentieth of the run."""
         assert any(
-            "different set of calls" in r
+            "observer saw" in r
             for r in check.assess(_swap("round trip: 23 gap(s)", "round trip: 1 gap(s)"))
         )
 
@@ -878,15 +879,17 @@ class TestTheRoundTripLine:
     def test_a_missing_round_trip_line_fails(self):
         assert any("round trip" in r for r in check.assess(_without("round trip:")))
 
-    def test_a_gap_count_the_guest_contradicts_fails(self):
-        """The boundary count is the guest's, not the emitter's arithmetic about itself."""
+    def test_a_observed_program_count_contradicts_the_gap_count(self):
+        """The observer-derived program count determines how many same-run gaps remain."""
         assert any(
-            "different set of calls from the one the guest" in r
-            for r in check.assess(_swap("runs that dispatched: 2", "runs that dispatched: 3"))
+            "observer saw 3" in r
+            for r in check.assess(
+                _swap("programs that dispatched: 2", "programs that dispatched: 3")
+            )
         )
 
-    def test_a_program_that_dispatched_nothing_fails(self):
-        """A probe program has no boundary, so dropping a gap for it drops a real round trip."""
+    def test_a_batched_program_shape_fails_the_observed_measurement(self):
+        """A batched message can interleave runs, so it is not a valid sequential ledger."""
         probed = _swap(
             "[measured] dispatch route: 25 lookup(s) over 2 tool-calling round(s)",
             "[measured] dispatch route: 25 lookup(s) over 3 tool-calling round(s)",
@@ -894,7 +897,7 @@ class TestTheRoundTripLine:
             "dispatch route: tool calls per round: [1, 1]",
             "dispatch route: tool calls per round: [1, 1, 1]",
         )
-        assert any("have to agree" in r for r in check.assess(probed))
+        assert any("shape describes 3 program(s)" in r for r in check.assess(probed))
 
     def test_an_all_zero_summary_fails(self):
         """Ordered, and every figure zero: the measurement disappeared rather than went fast."""
@@ -916,47 +919,82 @@ class TestTheRoundTripLine:
 
 
 class TestTheBoundariesTheSummaryRestsOn:
-    """Which gaps are boundaries is inferred from size, so both halves have to be published.
+    """Observed run transitions, not latency ordering, define the boundaries."""
 
-    Nothing in the numbers can say the inference was right. What the check can say is that the two
-    lines describe one sorted set of gaps, and that the margin is on the page.
-    """
-
-    _LINE = (
-        "[measured] dispatch route: program boundaries dropped: 1, smallest 5.38s against a "
-        "1.60s largest round trip"
-    )
+    _LINE = "[measured] dispatch route: program boundaries observed: 1, min 5.38s, max 5.38s"
 
     def test_a_missing_boundary_line_fails(self):
-        """Two programs dispatched, so one gap was dropped and the reader is owed which."""
         assert any(
             "no program boundary was reported" in r
-            for r in check.assess(_HEALTHY.replace(f"  {self._LINE}\n", ""))
+            for r in check.assess(_HEALTHY.replace(self._LINE, ""))
         )
 
     def test_a_boundary_count_that_is_not_one_per_program_fails(self):
         assert any(
-            "not the ones the summary describes" in r
+            "run identity should produce 1" in r
             for r in check.assess(
-                _swap("program boundaries dropped: 1,", "program boundaries dropped: 2,")
+                _swap("program boundaries observed: 1,", "program boundaries observed: 2,")
             )
         )
 
-    def test_a_largest_gap_that_disagrees_with_the_summary_fails(self):
-        """Both lines quote the maximum of the kept gaps, so they cannot differ."""
+    def test_boundary_values_need_not_exceed_transport_values(self):
+        changed = _swap("min 5.38s, max 5.38s", "min 0.90s, max 0.90s")
+        assert check.assess(changed) == []
+
+    def test_a_nonpositive_boundary_fails(self):
         assert any(
-            "counted from different sets" in r
-            for r in check.assess(
-                _swap("against a 1.60s largest round trip", "against a 2.90s largest round trip")
-            )
+            "not positive and ordered" in r
+            for r in check.assess(_swap("min 5.38s, max 5.38s", "min 0.00s, max 0.00s"))
         )
 
-    def test_a_boundary_smaller_than_a_kept_gap_fails(self):
-        """The boundaries are the largest gaps by construction, so this cannot arise."""
-        assert any(
-            "did not come from one sorted set" in r
-            for r in check.assess(_swap("smallest 5.38s against", "smallest 1.40s against"))
+    def test_a_direct_boundary_line_fails(self):
+        direct = _HEALTHY.replace(
+            "== 4. What the round trips bought ==",
+            "  [measured] direct route: program boundaries observed: 1, min 2.00s, max 2.00s\n"
+            "== 4. What the round trips bought ==",
         )
+        assert any("direct route" in reason for reason in check.assess(direct))
+
+    def test_duplicate_dispatch_boundary_lines_fail(self):
+        duplicate = _HEALTHY.replace(
+            "== 4. What the round trips bought ==",
+            "  [measured] dispatch route: program boundaries observed: 1, min 5.38s, max 5.38s\n"
+            "== 4. What the round trips bought ==",
+        )
+        assert any("exactly one boundary summary" in reason for reason in check.assess(duplicate))
+
+    def test_a_boundary_summary_with_one_program_fails(self):
+        one_program = _HEALTHY.replace(
+            "programs that dispatched: 2", "programs that dispatched: 1"
+        ).replace("program boundaries observed: 1", "program boundaries observed: 0")
+        assert any(
+            "boundary requires at least two programs" in reason
+            for reason in check.assess(one_program)
+        )
+
+
+class TestObservedProgramCount:
+    def test_a_missing_observer_count_fails(self):
+        assert any(
+            "no tagged dispatch-route" in reason
+            for reason in check.assess(_without("programs that dispatched"))
+        )
+
+    def test_a_duplicate_observer_count_fails(self):
+        duplicate = _HEALTHY.replace(
+            "  [measured] dispatch route: round trip:",
+            "  [measured] dispatch route: programs that dispatched: 2\n"
+            "  [measured] dispatch route: round trip:",
+        )
+        assert any("exactly one observer count" in reason for reason in check.assess(duplicate))
+
+    def test_a_direct_observer_count_fails(self):
+        direct = _HEALTHY.replace(
+            "== 4. What the round trips bought ==",
+            "  [measured] direct route: programs that dispatched: 1\n"
+            "== 4. What the round trips bought ==",
+        )
+        assert any("only the dispatch route" in reason for reason in check.assess(direct))
 
 
 class TestTheCapWasBudgeted:

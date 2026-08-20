@@ -99,13 +99,14 @@ _WROTE = _tagged(
 _RESTATED = _tagged(
     r"sales figures the model wrote into code,\s+(dispatched|direct):\s+(\d+)\s+of\s+(\d+)"
 )
+_OBSERVED_PROGRAMS = _tagged(rf"({_ANY_ROUTE}):\s+programs that dispatched:\s+(\d+)")
 _ROUND_TRIP = _tagged(
     rf"({_ANY_ROUTE}):\s+round trip:\s+(\d+)\s+gap\(s\),\s+min\s+([\d.]+)s,\s+"
     r"median\s+([\d.]+)s,\s+max\s+([\d.]+)s"
 )
 _BOUNDARIES = _tagged(
-    rf"({_ANY_ROUTE}):\s+program boundaries dropped:\s+(\d+),\s+smallest\s+([\d.]+)s\s+"
-    r"against a\s+([\d.]+)s\s+largest round trip"
+    rf"({_ANY_ROUTE}):\s+program boundaries observed:\s+(\d+),\s+min\s+([\d.]+)s,\s+"
+    r"max\s+([\d.]+)s"
 )
 _STAGES_RUN = _tagged(rf"({_ANY_ROUTE}):\s+lookup stages exercised:\s+(\d+)\s+of\s+(\d+)")
 _NAMED = _tagged(rf"({_ANY_ROUTE}):\s+product names in the table:\s+(\d+)\s+of\s+(\d+)")
@@ -200,8 +201,7 @@ def _assess_the_cap_was_budgeted(output: str) -> list[str]:
     # program's budget is refused before the tool body that records it runs.
     counted = {route: int(count) for route, count, _ in _TRIPS.findall(output)}
     # A missing or doubled line belongs to the assessment that owns it, not to this one.
-    seen = _DISPATCHING.findall(output)
-    dispatching = int(seen[0]) if len(seen) == 1 else None
+    dispatching = _observed_programs(output)
     if _DISPATCH in counted and dispatching is not None and dispatching > 0:
         allowed = cap * dispatching
         if counted[_DISPATCH] > allowed:
@@ -365,6 +365,16 @@ def _assess_direct_pays_per_stage(output: str) -> list[str]:
                 f"{len(groups)} entr(y/ies); the sample derives both from one list, so these "
                 "cannot both be from this run"
             )
+        if (
+            route == _DISPATCH
+            and all(entry.isdigit() for entry in groups)
+            and any(int(entry) > 1 for entry in groups)
+        ):
+            failures.append(
+                f"the dispatched route asked for {max(int(entry) for entry in groups)} tool call(s) "
+                "in one message. Those programs can interleave in the ledger, so the observed "
+                "run-boundary measurement would not describe consecutive programs"
+            )
     if _DIRECT in shapes:
         groups = [g for g in shapes[_DIRECT][1].split(",") if g.strip()]
         # Length says how many times the model waited; the entries say what it asked for. On
@@ -474,92 +484,59 @@ def _assess_the_round_trips(output: str) -> list[str]:
             "no time at all, which a file round trip through the control plane cannot do"
         )
 
-    # The ledger times the interval between consecutive calls — *n* dispatches give *n - 1* —
-    # and then drops the one gap per program boundary, because those contain a model turn
-    # rather than a file round trip. So *n* calls over *p* programs leave exactly *n - p*.
-    # Checking only that the count is positive would accept a line claiming 25 lookups and one
-    # measured gap, which is a median over a twenty-fifth of the run.
-    #
-    # *p* is the programs that **dispatched**, which is neither the round count nor the program
-    # count: one round can ask for several `execute_code` calls, and a program that dispatches
-    # nothing leaves no boundary in the ledger to drop. The guest settles it rather than the
-    # emitter — the transport creates a run's call directory on its first dispatch and not
-    # before, so act 5's count of runs that dispatched *is* p, measured on the filesystem.
+    # The ledger now classifies every gap from the observed HostToolRun identity. There are still
+    # *n - 1* gaps, but no arithmetic or latency threshold decides which ones are boundaries.
     counted = {route: int(count) for route, count, _ in _TRIPS.findall(output)}
+    dispatching = _observed_programs(output)
     shaped = dict(_SHAPE.findall(output))
     groups = [g.strip() for g in shaped.get(_DISPATCH, "").split(",") if g.strip()]
-    # A missing or doubled line is `_assess_what_the_runs_left`'s to report, not this one's.
-    dispatching = _programs_that_dispatched(output, groups)
-
     if _DISPATCH in counted and dispatching is not None:
         lookups = counted[_DISPATCH]
-        if gaps != lookups - dispatching:
+        expected = lookups - dispatching
+        if gaps != expected:
             failures.append(
                 f"{gaps} round-trip gap(s) were measured across {lookups} dispatched lookup(s), "
-                f"where {dispatching} program(s) dispatched and dropping one gap per boundary "
-                f"leaves {lookups - dispatching} — so the summary describes a different set of "
-                "calls from the one the guest is holding"
+                f"where the observer saw {dispatching} program(s) and run transitions leave "
+                f"{expected} same-run gaps"
             )
-    # A shape that is not a list of counts is `_assess_direct_pays_per_stage`'s to report, on
-    # both routes at once; here it only means the programs cannot be summed.
     if groups and all(entry.isdigit() for entry in groups) and dispatching is not None:
-        programs = sum(int(g) for g in groups)
-        # Dropping one gap per boundary assumes the programs ran one after another. The router's
-        # own contract says they do not have to: "the function calls in a single assistant
-        # message are executed concurrently" — so a message asking for two `execute_code` calls
-        # runs two programs at once, and their dispatches interleave in the one ledger that
-        # times them. The gaps then span two programs and the largest are no longer boundaries.
-        if any(int(g) > 1 for g in groups):
+        shaped_programs = sum(int(entry) for entry in groups)
+        if shaped_programs != dispatching:
             failures.append(
-                f"the dispatched route asked for {max(int(g) for g in groups)} tool call(s) in "
-                "one message, and on this route those are all `execute_code`. Calls in one "
-                "message run concurrently, so those programs interleave in the ledger that "
-                "times the gaps and the round-trip summary above is not measuring round trips"
+                f"the tool-call shape describes {shaped_programs} program(s), but the observer "
+                f"saw {dispatching}; the independent host record and model message shape disagree"
             )
-        # Only where the guest is the other source. Under a reclaiming transport `dispatching`
-        # *is* this sum, and an assertion comparing a number with itself reads like corroboration
-        # while proving nothing — which is the failure this file has already had to fix twice.
-        if _reclaims(output) is False and programs != dispatching:
+    observed = [match for match in _BOUNDARIES.findall(output) if match[0] == _DISPATCH]
+    direct_boundaries = [match for match in _BOUNDARIES.findall(output) if match[0] == _DIRECT]
+    if direct_boundaries:
+        failures.append("a program-boundary line was printed for the direct route")
+    if len(observed) > 1:
+        failures.append(
+            f"the dispatch route reports program boundaries {len(observed)} times; exactly one "
+            "boundary summary is required"
+        )
+    if len(observed) == 1 and dispatching is not None:
+        _, count, smallest, largest = observed[0]
+        expected = dispatching - 1
+        if expected < 1:
             failures.append(
-                f"the dispatched route ran {programs} program(s) and the guest holds "
-                f"{dispatching} that dispatched. One gap is dropped per program the route ran, "
-                "and only a program that dispatched leaves a boundary to drop, so these have to "
-                "agree or the summary above dropped genuine round trips as though they were "
-                "model turns"
+                f"the dispatch route reports a program boundary summary, but only {dispatching} "
+                "program dispatched; a boundary requires at least two programs"
             )
-    # Which gaps are boundaries is inferred from size, so the run publishes the margin and
-    # this holds the two lines to one another. Not that the margin is wide enough — nothing in
-    # the numbers can say that, and a threshold picked from the runs so far would fail a later
-    # one the way the dispatch cap did twice. What it can say is that both lines describe the
-    # same set of gaps, and that one boundary was dropped per program after the first.
-    dropped = _BOUNDARIES.findall(output)
-    if dropped and dispatching is not None:
-        _, count, smallest, largest = dropped[0]
-        if int(count) != dispatching - 1:
+        if int(count) != expected:
             failures.append(
-                f"{count} program boundary/ies were dropped where {dispatching} program(s) "
-                f"dispatched, and a route running them one after another leaves "
-                f"{dispatching - 1} — so the gaps below are not the ones the summary describes"
+                f"{count} program boundary/ies were observed where {dispatching} program(s) "
+                f"dispatched, so run identity should produce {expected}"
             )
-        if abs(float(largest) - high) >= 0.005:
+        if float(smallest) <= 0 or float(largest) <= 0 or float(smallest) > float(largest):
             failures.append(
-                f"the boundary line quotes a {largest}s largest round trip where the summary "
-                f"above reports {high}s. Both are the maximum of the gaps that were kept, so "
-                "these two lines were counted from different sets"
-            )
-        if float(smallest) <= float(largest):
-            failures.append(
-                f"the smallest boundary dropped is {smallest}s against a {largest}s gap that "
-                "was kept. The boundaries are chosen by being the largest, so this cannot "
-                "happen and the split did not come from one sorted set of gaps"
+                f"observed boundary times {smallest}s and {largest}s are not positive and ordered"
             )
     elif dispatching is not None and dispatching > 1:
         failures.append(
-            f"{dispatching} program(s) dispatched and no program boundary was reported. Each "
-            "one after the first leaves a gap holding a model turn, and dropping those is what "
-            "the summary above rests on — unreported, the reader cannot see what it rests on"
+            f"{dispatching} program(s) dispatched and no program boundary was reported; "
+            "the observer-derived run identities must be visible in the measurement"
         )
-
     if not low <= mid <= high:
         failures.append(
             f"min {low}s, median {mid}s and max {high}s are not ordered — whatever produced "
@@ -578,21 +555,35 @@ def _reclaims(output: str) -> bool | None:
     return said[0].startswith("reclaimed") if len(said) == 1 else None
 
 
-def _programs_that_dispatched(output: str, groups: list[str]) -> int | None:
-    """How many programs called out, from the guest where the guest still knows.
+def _observed_programs(output: str) -> int | None:
+    """How many distinct `HostToolRun` identities the host observer saw dispatch."""
+    seen = _OBSERVED_PROGRAMS.findall(output)
+    dispatch = [match for match in seen if match[0] == _DISPATCH]
+    direct = [match for match in seen if match[0] == _DIRECT]
+    if len(dispatch) != 1 or direct:
+        return None
+    return int(dispatch[0][1])
 
-    Where the transport keeps its files, act 5 counts the runs holding them — a number the model
-    had no hand in. Where it reclaims them the only source is the shape, so `programs ==
-    dispatching` stops being a comparison of two sources and is dropped rather than left to look
-    like one.
-    """
-    reclaims = _reclaims(output)
-    if reclaims is False:
-        seen = _DISPATCHING.findall(output)
-        return int(seen[0]) if len(seen) == 1 else None
-    if reclaims and groups and all(entry.isdigit() for entry in groups):
-        return sum(int(entry) for entry in groups)
-    return None
+
+def _assess_observed_program_count(output: str) -> list[str]:
+    """Require one observer count for the dispatched route and none for the direct route."""
+    seen = _OBSERVED_PROGRAMS.findall(output)
+    dispatch = [match for match in seen if match[0] == _DISPATCH]
+    direct = [match for match in seen if match[0] == _DIRECT]
+    failures: list[str] = []
+    if len(dispatch) == 0:
+        failures.append("no tagged dispatch-route 'programs that dispatched' line was reported")
+    elif len(dispatch) > 1:
+        failures.append(
+            f"the dispatch route reports 'programs that dispatched' {len(dispatch)} times; "
+            "exactly one observer count is required"
+        )
+    if direct:
+        failures.append(
+            "the direct route reports 'programs that dispatched'; only the dispatch route has "
+            "an observer count"
+        )
+    return failures
 
 
 def _assess_what_the_runs_left(output: str) -> list[str]:
@@ -741,6 +732,7 @@ def assess(output: str) -> list[str]:
         *_assess_the_cost_was_measured(output),
         *_assess_both_interpreters_answered(output),
         *_assess_the_whole_walk_happened(output),
+        *_assess_observed_program_count(output),
         *_assess_direct_pays_per_stage(output),
         *_assess_who_carried_the_figures(output),
         *_assess_the_round_trips(output),

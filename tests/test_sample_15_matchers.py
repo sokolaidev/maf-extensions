@@ -201,6 +201,37 @@ class TestAmountsTheModelWrote:
         assert sample.amounts_the_model_wrote(_Response()) == 0
 
 
+class TestLedgerRunAttribution:
+    def test_same_run_gaps_are_transport_and_cross_run_gaps_are_boundaries(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        ledger = sample.Ledger()
+        first = sample.HostToolRun(sample.HostToolRegistry())
+        second = sample.HostToolRun(sample.HostToolRegistry())
+        clock = iter([0.0, 1.0, 2.0, 3.0, 10.0, 11.0])
+        monkeypatch.setattr(sample.time, "perf_counter", lambda: next(clock))
+
+        with sample.observe_dispatch(first, "state_id"):
+            ledger.arriving("state_id(Washington)")
+            ledger.answered()
+        with sample.observe_dispatch(first, "stores_in_state"):
+            ledger.arriving("stores_in_state(ST-WA)")
+            ledger.answered()
+        with sample.observe_dispatch(second, "store_sales"):
+            ledger.arriving("store_sales(STO-101)")
+            ledger.answered()
+
+        trips, boundaries = ledger.round_trips()
+        assert trips == [1.0]
+        assert boundaries == [7.0]
+        assert ledger.dispatched_runs == {first, second}
+
+    def test_an_unobserved_call_does_not_count_as_a_dispatched_run(self):
+        ledger = sample.Ledger()
+        ledger.arriving("state_id(Washington)")
+        assert ledger.dispatched_runs == set()
+
+
 class TestTheConversationIds:
     """One conversation per route and per run: `dispose_scope` deletes by label, not by owner."""
 
