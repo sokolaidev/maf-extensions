@@ -64,11 +64,11 @@ def import_module(distribution: str) -> str:
 def fetch_requires_dist_for_version(distribution: str, version_str: str) -> list[str] | None:
     """One version's ``requires_dist``, or None if that version is gone or yanked.
 
-    Every published version needs its own per-version fetch; the top-level document only ever
-    carries the latest, which is exactly the field the publish guards no longer trust. A yanked
-    version is skipped — not because the ``==`` pin cannot install it (PEP 592 allows that, with
-    a warning) but because normal unpinned resolution never selects a yanked release, so a user
-    does not land on one and a break there is not a real-user break.
+    Per-version documents are the transport for every version, newest and oldest alike: the
+    top-level document only carries the latest, which is exactly the field the publish guards
+    no longer trust. A yanked version is skipped — not because the ``==`` pin cannot install it
+    (PEP 592 allows that, with a warning) but because normal unpinned resolution never selects a
+    yanked release, so a user does not land on one and a break there is not a real-user break.
     """
     url = f"https://pypi.org/pypi/{distribution}/{version_str}/json"
     try:
@@ -87,11 +87,9 @@ def fetch_requires_dist_for_version(distribution: str, version_str: str) -> list
 def fetch_version_requirements(distribution: str) -> dict[str, list[str]] | None:
     """Every non-yanked published version's ``requires_dist``, or None if never released.
 
-    The newest version comes from the PEP 691 simple index, not from the top-level JSON document
-    that used to pick it — stale there, the newly-published version was also missing from
-    ``releases`` and silently never tested. Every version now goes through the same per-version
-    fetch. A per-version 404 (an empty or pulled release) is skipped rather than fatal — the
-    version is simply not testable, not a break.
+    The version list comes from the PEP 691 simple index; each version is read from its own
+    per-version document. A per-version 404 (an empty or pulled release) is skipped rather than
+    fatal — the version is simply not testable, not a break.
     """
     versions = fetch_published_versions(distribution)
     if versions is None:

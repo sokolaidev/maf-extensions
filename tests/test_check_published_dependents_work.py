@@ -233,8 +233,6 @@ class TestFetchVersionRequirements:
         }
 
     def test_a_stale_top_level_document_no_longer_matters(self, monkeypatch):
-        # The regression this fix exists to pin: the fresh simple index lists 0.6.0, which a
-        # stale top-level ``info.version`` of 0.5.0 would have missed and never tested.
         _patch_urlopen(
             monkeypatch,
             {

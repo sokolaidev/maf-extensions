@@ -92,21 +92,9 @@ def refusals(published: dict[str, list[str] | None], released: tuple[int, ...]) 
     return out
 
 
-def fetch_requires_dist(distribution: str) -> list[str] | None:
-    """The newest non-yanked published ``requires_dist``, or None if never released.
-
-    The version is resolved from the PEP 691 simple index, not the CDN-cached top-level JSON
-    document — that field is what flaps and what this guard exists to stop trusting. The
-    per-version document then supplies the requirements, exactly as the work guard reads them.
-    Project-level yanking is invisible to the simple index, so it is checked here on the
-    per-version hop and, yanked, the "latest" has nothing to contradict a release and yields
-    None.
-    """
-    latest = fetch_published_versions(distribution)
-    if latest is None:
-        return None
-    newest = latest[0]
-    url = f"https://pypi.org/pypi/{distribution}/{newest}/json"
+def _requires_dist_for_version(distribution: str, version_str: str) -> list[str] | None:
+    """One version's ``requires_dist``, or None if that version is gone or yanked."""
+    url = f"https://pypi.org/pypi/{distribution}/{version_str}/json"
     try:
         with urllib.request.urlopen(url, timeout=_TIMEOUT_SECONDS) as response:
             payload = json.load(response)
@@ -118,6 +106,25 @@ def fetch_requires_dist(distribution: str) -> list[str] | None:
     if info.get("yanked"):
         return None
     return list(info.get("requires_dist") or [])
+
+
+def fetch_requires_dist(distribution: str) -> list[str] | None:
+    """The ``requires_dist`` of the newest non-yanked published version, or None if never released.
+
+    The version list comes from the PEP 691 simple index and each candidate's requirements come
+    from its own per-version document. The newest yanked release is skipped: no unpinned
+    resolution selects it, so its ceiling is not the one a new release must satisfy — the next
+    non-yanked version's is. A per-version 404 (an empty or pulled release) is skipped the same
+    way.
+    """
+    versions = fetch_published_versions(distribution)
+    if versions is None:
+        return None
+    for version_str in versions:
+        requires = _requires_dist_for_version(distribution, version_str)
+        if requires is not None:
+            return requires
+    return None
 
 
 def main(argv: list[str]) -> int:

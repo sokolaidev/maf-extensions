@@ -49,11 +49,11 @@ def fetch_published_versions(distribution: str) -> list[str] | None:
     """The published versions of ``distribution``, newest-first, or None if never released.
 
     Versions come from PyPI's PEP 691 simple index, which is fresher than the CDN-cached
-    top-level JSON document whose ``info.version`` the publish guards used to read. The index
-    returns a ``versions`` array (pypi.org's non-spec but observed extension) in ascending
-    order; project-level yanking is not visible here, so a caller that cares must check each
-    per-version document. A 404 means the distribution was never released; any other HTTP error
-    is fatal.
+    top-level JSON document whose ``info.version`` the publish guards used to read. The
+    ``versions`` array is standardized (PEP 700) but its order carries no meaning, so it is
+    sorted here; project-level yanking is not visible at the index, so a caller that cares must
+    check each per-version document. A 404 means the distribution was never released; any other
+    HTTP error is fatal.
     """
     url = f"https://pypi.org/simple/{distribution}/"
     request = urllib.request.Request(url, headers={"Accept": _SIMPLE_ACCEPT})

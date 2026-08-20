@@ -184,7 +184,10 @@ class TestFetchRequiresDist:
         with pytest.raises(urllib.error.HTTPError):
             check.fetch_requires_dist("maf-sandbox-bicep")
 
-    def test_a_yanked_newest_returns_none(self, monkeypatch):
+    def test_a_yanked_newest_falls_back_to_the_older_non_yanked(self, monkeypatch):
+        # The newest yanked release is skipped: no unpinned resolution selects it, and an
+        # installer settles on the next non-yanked release, whose ceiling is the one that must
+        # admit the new version.
         _patch_urlopen(
             monkeypatch,
             {
@@ -192,9 +195,12 @@ class TestFetchRequiresDist:
                 "maf-sandbox-bicep/0.6.0/json": {
                     "info": {"requires_dist": ["maf-sandbox<0.13"], "yanked": True}
                 },
+                "maf-sandbox-bicep/0.2.0/json": {
+                    "info": {"requires_dist": ["maf-sandbox<0.12,>=0.10.0"], "yanked": False}
+                },
             },
         )
-        assert check.fetch_requires_dist("maf-sandbox-bicep") is None
+        assert check.fetch_requires_dist("maf-sandbox-bicep") == ["maf-sandbox<0.12,>=0.10.0"]
 
     def test_a_non_404_error_on_the_per_version_fetch_is_fatal(self, monkeypatch):
         _patch_urlopen(
