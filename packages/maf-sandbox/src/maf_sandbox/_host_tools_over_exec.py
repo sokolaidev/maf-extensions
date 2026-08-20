@@ -20,17 +20,17 @@ argument validation, the dispatch cap, the response ceiling — is host-side in
 Three costs, named here rather than discovered later:
 
 - **Three backend calls per dispatch, at minimum, plus polling.** Serving one request is a
-  ``stat_file``, then a ``read_file``, then a ``write_file`` for the answer — and the polling
-  in between adds a ``stat_file`` per interval for the exit marker and another for the next
-  request. On a remote backend every one of those is an HTTP round trip, so a call-heavy
-  program can cost far more of them than the direct tool-calling this replaces. Whether that
-  is worth it is a measurement, not an assumption (#133).
-- **One outstanding call at a time.** The supervisor polls for the *next* request by name
-  rather than enumerating a directory, because the backend that most needs this transport
-  (`maf-sandbox-docker`) serves ``FILES_OUT`` and not ``FILES_LIST``. A guest that fires two
-  calls concurrently has the second answered only after the first. Concurrent means threads
-  *and* processes: the shim claims each number with an exclusive create, so a program that
-  forks or spawns cannot have two workers writing one request path.
+  ``stat_file``, then a ``read_file``, then a ``write_file`` for the answer. The exit-marker
+  probe overlaps the request probes, and a small adaptive window discovers contiguous requests
+  ahead of the one being served. On a remote backend every operation is still a round trip, so
+  a call-heavy program can cost far more of them than the direct tool-calling this replaces.
+  Whether that is worth it is a measurement, not an assumption (#133).
+- **Dispatch stays sequential.** The supervisor discovers requests by sequential name rather
+  than enumerating a directory, because the backend that most needs this transport
+  (`maf-sandbox-docker`) serves ``FILES_OUT`` and not ``FILES_LIST``. Concurrent guest callers
+  can publish several requests before the prior answer lands, but their host tools still run
+  strictly in identifier order. Threads and processes share that order: the shim claims each
+  number with an exclusive create, so two workers cannot write one request path.
 - **Cleanup is this transport's own doing, because the protocol offers none.** Nothing in the
   vocabulary deletes, so the files a run leaves would sit in the guest until the sandbox was
   disposed of — readable by every later run in it, since ``acquire`` is get-or-create. What
@@ -359,6 +359,10 @@ _RECLAIM_GRACE = 10.0
 #: not the run's remainder: a dispatch may finish after the deadline by design, and the answer
 #: to a tool that has already acted is worth one more round trip to record.
 _RESPONSE_WRITE_GRACE = 2.0
+
+#: The largest request-read window. Discovery gets enough width to hide several remote stats
+#: without turning an idle sequential program into an unbounded stream of speculative calls.
+_MAX_SPECULATIVE_REQUESTS = 4
 
 #: What the supervisor writes around a delivered value, and what that costs. The guest reads
 #: the response as an object so a refusal and a value are told apart by key rather than by
@@ -1087,6 +1091,7 @@ async def _supervise(
     served = 0
     allowance = _serving_bound(run)
     spent = False
+    request_window = 1
     while True:
         if time.monotonic() >= deadline:
             # First in the loop, so an expired run reports *itself*. Every transport call
@@ -1118,16 +1123,26 @@ async def _supervise(
                 reach=reach,
             )
         try:
-            finished = await _read_if_present(
-                sandbox, layout, layout.exit_code, cap=32, deadline=deadline
+            remaining_allowance = allowance - served
+            request_count = min(request_window, remaining_allowance)
+            finished, request_probes = await _probe_exit_and_requests(
+                sandbox,
+                run,
+                layout,
+                served=served,
+                count=request_count,
+                deadline=deadline,
             )
             if finished is not None:
                 return await _completed(sandbox, run, layout, finished, deadline)
-            # Serving awaits the tool, so the check at the top of the loop is what keeps a
-            # request arriving a millisecond before the deadline from starting a dispatch the
-            # bound cannot interrupt.
-            if served < allowance:
-                served = await _serve_next_request(sandbox, run, layout, served, deadline)
+            if request_probes:
+                served, full_prefix = await _serve_request_probes(
+                    sandbox, run, layout, served, request_probes, deadline
+                )
+                if not full_prefix:
+                    request_window = 1
+                elif request_count == request_window and served < allowance:
+                    request_window = min(_MAX_SPECULATIVE_REQUESTS, request_window * 2)
             elif not spent:
                 spent = True
                 logger.warning(
@@ -1628,56 +1643,101 @@ async def _completed(
     )
 
 
-async def _serve_next_request(
-    sandbox: Sandbox, run: HostToolRun, layout: GuestRunLayout, served: int, deadline: float
-) -> int:
-    """Answer request ``served + 1`` if it is there, and say how many have now been answered.
+async def _cancel_and_drain(tasks: tuple[asyncio.Task[Any], ...]) -> None:
+    """Cancel unfinished probe tasks and retrieve every outcome before returning."""
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
 
-    By name rather than by enumeration, so a backend serving ``FILES_OUT`` without
-    ``FILES_LIST`` can host this. Sequential ids also make a replayed one unreachable: the
-    supervisor never looks at an id it has already answered, so a guest rewriting an old
-    request file cannot spend a second dispatch on it.
-    """
-    identifier = f"{served + 1:04d}"
-    request_path = posixpath.join(layout.calls, f"{identifier}.request.json")
-    body = await _read_if_present(
-        sandbox,
-        layout,
-        request_path,
-        cap=_request_cap(run),
-        deadline=deadline,
-        exact=True,
+
+async def _probe_exit_and_requests(
+    sandbox: Sandbox,
+    run: HostToolRun,
+    layout: GuestRunLayout,
+    *,
+    served: int,
+    count: int,
+    deadline: float,
+) -> tuple[
+    str | _TooLarge | _NotText | None,
+    tuple[asyncio.Task[str | _TooLarge | _NotText | None], ...],
+]:
+    """Read the exit marker beside a bounded window of requests, with exit taking priority."""
+    marker_probe = asyncio.create_task(
+        _read_if_present(sandbox, layout, layout.exit_code, cap=32, deadline=deadline)
     )
-    if body is None:
-        return served
-    if time.monotonic() >= deadline:
-        # Between reading the request and dispatching it, the bound can pass — the reads above
-        # are bounded, so they can succeed with a microsecond left. Checking at the top of the
-        # supervisor loop cannot see that window; this can. The request stays unanswered and
-        # unserved, so the id is not spent and a later run would find it again.
-        return served
-    answer = await _answer(run, body, identifier)
-    if answer is None:
-        # An abandoned number: the guest took it and could not publish a request under it, so
-        # nothing is waiting for a response and writing one would be a round trip spent on
-        # nobody. Stepping over it is what keeps the caller of the *next* number from waiting
-        # on a request that is never coming.
-        logger.debug(
-            "host tools: request %s was abandoned by the guest, stepping over it", identifier
+    request_probes = tuple(
+        asyncio.create_task(
+            _read_if_present(
+                sandbox,
+                layout,
+                posixpath.join(layout.calls, f"{identifier:04d}.request.json"),
+                cap=_request_cap(run),
+                deadline=deadline,
+                exact=True,
+            )
         )
-        return served + 1
-    response_path = posixpath.join(layout.calls, f"{identifier}.response.json")
-    # Its own floor, not the run's remainder. A dispatch is allowed to finish after the
-    # deadline — that is the whole no-cancellation policy — and a tool that starts with a
-    # millisecond left and returns a second later would otherwise have its answer thrown away
-    # by a write bounded at zero: the effect happened, the record did not. Enforcing the bound
-    # on the record while exempting the effect is the wrong half of the pair to keep.
-    await _within(
-        max(deadline, time.monotonic() + _RESPONSE_WRITE_GRACE),
-        f"write the answer to {identifier}",
-        sandbox.write_file(response_path, answer, working_directory=layout.directory),
+        for identifier in range(served + 1, served + count + 1)
     )
-    return served + 1
+    try:
+        finished = await marker_probe
+    except BaseException:
+        await _cancel_and_drain((marker_probe, *request_probes))
+        raise
+    if finished is not None:
+        await _cancel_and_drain(request_probes)
+        return finished, ()
+    return None, request_probes
+
+
+async def _serve_request_probes(
+    sandbox: Sandbox,
+    run: HostToolRun,
+    layout: GuestRunLayout,
+    served: int,
+    probes: tuple[asyncio.Task[str | _TooLarge | _NotText | None], ...],
+    deadline: float,
+) -> tuple[int, bool]:
+    """Serve the contiguous discovered prefix in identifier order."""
+    full_prefix = True
+    try:
+        for probe in probes:
+            body = await probe
+            if body is None:
+                full_prefix = False
+                break
+            if time.monotonic() >= deadline:
+                # The request stays unanswered and unserved, so the identifier remains the
+                # replay frontier. A later run would find it again rather than skipping it.
+                full_prefix = False
+                break
+            identifier = f"{served + 1:04d}"
+            answer = await _answer(run, body, identifier)
+            if answer is None:
+                # Only the explicit marker advances a hole. A missing speculative probe does
+                # not say the guest abandoned its identifier.
+                logger.debug(
+                    "host tools: request %s was abandoned by the guest, stepping over it",
+                    identifier,
+                )
+                served += 1
+                continue
+            response_path = posixpath.join(layout.calls, f"{identifier}.response.json")
+            # A dispatch may finish after the deadline by design. Its answer gets a fresh
+            # write grace so the effect and its record cannot be split.
+            await _within(
+                max(deadline, time.monotonic() + _RESPONSE_WRITE_GRACE),
+                f"write the answer to {identifier}",
+                sandbox.write_file(response_path, answer, working_directory=layout.directory),
+            )
+            served += 1
+        return served, full_prefix
+    finally:
+        # Later probe failures are not observed before their identifier reaches the frontier.
+        # A miss or failure at the frontier discards all speculative outcomes beyond it.
+        await _cancel_and_drain(probes)
 
 
 async def _answer(
@@ -1951,9 +2011,10 @@ def _serving_bound(run: HostToolRun) -> int:
     """How many requests this supervisor will read before it stops reading them.
 
     Every request, not every dispatch: a malformed one is answered before the door and so
-    never spends the cap that is meant to bound this. One more than the cap because the
-    transport serves one outstanding call at a time, which makes a single refusal enough to
-    tell the guest the cap is gone. Past it the supervisor only waits for the program to end.
+    never spends the cap that is meant to bound this. One more than the cap because dispatch
+    stays sequential even when parallel, speculative probes discover several outstanding
+    requests: the first request past the cap receives the single refusal that tells the guest
+    the cap is gone. Past it the supervisor only waits for the program to end.
     """
     return run.registry.max_dispatches_per_run + 1
 

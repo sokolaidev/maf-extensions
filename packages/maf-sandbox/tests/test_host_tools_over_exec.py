@@ -240,6 +240,30 @@ class _ScriptedGuest:
         return posixpath.join(_LAYOUT.calls, f"{index:04d}.response.json")
 
 
+class _ConcurrentGuest(_ScriptedGuest):
+    """A guest that publishes every request before waiting for their ordered answers."""
+
+    async def exec(
+        self, command: str | Any, *, working_directory: str, timeout: float
+    ) -> ExecResult:
+        result = await super().exec(command, working_directory=working_directory, timeout=timeout)
+        while self._issued < len(self.calls):
+            self._issue_next()
+        return result
+
+    def _collect_answers(self) -> None:
+        while self._collected < self._issued:
+            index = self._collected + 1
+            answered = self.files.get(self._response_path(index))
+            if answered is None:
+                return
+            self._collected = index
+            self.answers.append(json.loads(answered))
+        if self._finish and self._collected == len(self.calls):
+            self.files[_LAYOUT.output] = self._output.encode("utf-8")
+            self.files[_LAYOUT.exit_code] = str(self._exit_code).encode("utf-8")
+
+
 def _registry(**kwargs: Any) -> HostToolRegistry:
     registry = HostToolRegistry(**kwargs)
     registry.register(add)
@@ -283,6 +307,227 @@ class TestTheHappyPath:
         guest = _ScriptedGuest([], launcher_exit_code=127)
         result = _run(guest, HostToolRun(_registry()))
         assert result.stderr == "the launcher did not start the program"
+
+
+class TestTheOverlappedProbes:
+    def test_an_exit_marker_cancels_and_drains_the_request_probe(self):
+        class _ExitWins(_ScriptedGuest):
+            request_started = False
+            request_drained = False
+
+            async def stat_file(self, path: str, *, working_directory: str):
+                if path == _LAYOUT.exit_code:
+                    while not self.request_started:
+                        await asyncio.sleep(0)
+                return await super().stat_file(path, working_directory=working_directory)
+
+            async def read_file(self, path: str, *, working_directory: str, max_bytes: int):
+                if path.endswith(".request.json"):
+                    self.request_started = True
+                    try:
+                        await asyncio.sleep(3600)
+                    finally:
+                        self.request_drained = True
+                return await super().read_file(
+                    path, working_directory=working_directory, max_bytes=max_bytes
+                )
+
+        async def probe() -> tuple[object, tuple[object, ...], _ExitWins]:
+            guest = _ExitWins([], finish=False)
+            guest.files[_LAYOUT.exit_code] = b"0"
+            guest.files[guest._request_path(1)] = b'{"name": "add", "arguments": {}}'
+            finished, requests = await host_tools_over_exec._probe_exit_and_requests(
+                guest,
+                HostToolRun(_registry()),
+                _LAYOUT,
+                served=0,
+                count=1,
+                deadline=time.monotonic() + 1,
+            )
+            return finished, requests, guest
+
+        finished, requests, guest = asyncio.run(probe())
+        assert finished == "0"
+        assert requests == ()
+        assert guest.request_drained, "the losing request probe survived the completed poll"
+
+    def test_a_marker_error_drains_the_request_probe_before_it_propagates(self):
+        class _MarkerFails(_ScriptedGuest):
+            request_started = False
+            request_drained = False
+
+            async def stat_file(self, path: str, *, working_directory: str):
+                if path == _LAYOUT.exit_code:
+                    while not self.request_started:
+                        await asyncio.sleep(0)
+                    raise RuntimeError("marker failed")
+                if path.endswith(".request.json"):
+                    self.request_started = True
+                    try:
+                        await asyncio.sleep(3600)
+                    finally:
+                        self.request_drained = True
+                return await super().stat_file(path, working_directory=working_directory)
+
+        guest = _MarkerFails([], finish=False)
+        with pytest.raises(RuntimeError, match="marker failed"):
+            asyncio.run(
+                host_tools_over_exec._probe_exit_and_requests(
+                    guest,
+                    HostToolRun(_registry()),
+                    _LAYOUT,
+                    served=0,
+                    count=1,
+                    deadline=time.monotonic() + 1,
+                )
+            )
+        assert guest.request_drained, "the sibling probe was not awaited after the marker failed"
+
+    def test_cancelling_the_poll_drains_both_probes(self):
+        class _Blocked(_ScriptedGuest):
+            entered: set[str]
+            drained: set[str]
+
+            def __init__(self) -> None:
+                super().__init__([], finish=False)
+                self.entered = set()
+                self.drained = set()
+
+            async def stat_file(self, path: str, *, working_directory: str):
+                kind = "marker" if path == _LAYOUT.exit_code else "request"
+                self.entered.add(kind)
+                try:
+                    await asyncio.sleep(3600)
+                finally:
+                    self.drained.add(kind)
+
+        async def cancel() -> _Blocked:
+            guest = _Blocked()
+            poll = asyncio.create_task(
+                host_tools_over_exec._probe_exit_and_requests(
+                    guest,
+                    HostToolRun(_registry()),
+                    _LAYOUT,
+                    served=0,
+                    count=1,
+                    deadline=time.monotonic() + 10,
+                )
+            )
+            while guest.entered != {"marker", "request"}:
+                await asyncio.sleep(0)
+            poll.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await poll
+            return guest
+
+        guest = asyncio.run(cancel())
+        assert guest.drained == {"marker", "request"}
+
+
+class TestSpeculativeRequestDiscovery:
+    def test_a_contiguous_prefix_widens_the_bounded_window(self):
+        looks: list[str] = []
+        dispatched: list[int] = []
+
+        @sandbox_tool(source=SourceIntegrity.TRUSTED, sink=None, identity=Identity.APP)
+        def record(value: int) -> int:
+            dispatched.append(value)
+            return value
+
+        class _RecordsRequests(_ConcurrentGuest):
+            async def stat_file(self, path: str, *, working_directory: str):
+                if path.endswith(".request.json"):
+                    looks.append(posixpath.basename(path))
+                return await super().stat_file(path, working_directory=working_directory)
+
+        registry = HostToolRegistry()
+        registry.register(record)
+        guest = _RecordsRequests([("record", {"value": value}) for value in range(6)])
+        result = _run(guest, HostToolRun(registry))
+
+        assert result.exit_code == 0
+        assert dispatched == [0, 1, 2, 3, 4, 5]
+        assert [answer["value"] for answer in guest.answers] == dispatched
+        assert looks[:7] == [
+            "0001.request.json",
+            "0002.request.json",
+            "0003.request.json",
+            "0004.request.json",
+            "0005.request.json",
+            "0006.request.json",
+            "0007.request.json",
+        ]
+        assert not any(name >= "0008.request.json" for name in looks)
+
+    def test_a_speculative_miss_collapses_the_next_window(self):
+        looks: list[str] = []
+
+        class _RecordsRequests(_ScriptedGuest):
+            async def stat_file(self, path: str, *, working_directory: str):
+                if path.endswith(".request.json"):
+                    looks.append(posixpath.basename(path))
+                return await super().stat_file(path, working_directory=working_directory)
+
+        guest = _RecordsRequests([("add", {"left": value, "right": 1}) for value in range(4)])
+        _run(guest, HostToolRun(_registry()))
+
+        assert looks[:6] == [
+            "0001.request.json",
+            "0002.request.json",
+            "0003.request.json",
+            "0003.request.json",
+            "0004.request.json",
+            "0005.request.json",
+        ]
+
+    def test_a_future_probe_error_waits_for_the_replay_frontier(self):
+        class _SecondProbeFails(_ScriptedGuest):
+            async def stat_file(self, path: str, *, working_directory: str):
+                if path.endswith("0002.request.json"):
+                    raise RuntimeError("second probe failed")
+                return await super().stat_file(path, working_directory=working_directory)
+
+        async def serve(guest: _SecondProbeFails) -> tuple[int, bool]:
+            _, probes = await host_tools_over_exec._probe_exit_and_requests(
+                guest,
+                HostToolRun(_registry()),
+                _LAYOUT,
+                served=0,
+                count=2,
+                deadline=time.monotonic() + 1,
+            )
+            return await host_tools_over_exec._serve_request_probes(
+                guest, HostToolRun(_registry()), _LAYOUT, 0, probes, time.monotonic() + 1
+            )
+
+        guest = _SecondProbeFails([], finish=False)
+        assert asyncio.run(serve(guest)) == (0, False)
+
+        guest.files[guest._request_path(1)] = b'{"id": "0001", "abandoned": true}'
+        with pytest.raises(RuntimeError, match="second probe failed"):
+            asyncio.run(serve(guest))
+
+    def test_speculation_never_reads_past_the_transport_allowance(self):
+        looks: list[str] = []
+
+        class _RecordsRequests(_ConcurrentGuest):
+            async def stat_file(self, path: str, *, working_directory: str):
+                if path.endswith(".request.json"):
+                    looks.append(posixpath.basename(path))
+                return await super().stat_file(path, working_directory=working_directory)
+
+        guest = _RecordsRequests([("add", {"left": 1, "right": 1})] * 4)
+        with pytest.raises(SandboxProgramTimeout):
+            _run(
+                guest,
+                HostToolRun(_registry(max_dispatches_per_run=1)),
+                timeout=0.1,
+            )
+
+        assert len(guest.answers) == 2
+        assert guest.answers[0]["value"] == 2
+        assert "dispatch cap" in guest.answers[1]["refusal"]
+        assert "0003.request.json" not in looks
 
 
 class TestWhatTheGuestIsAllowedToSee:
