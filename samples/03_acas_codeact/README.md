@@ -16,23 +16,12 @@ The task has exactly one right answer, and that is what makes the run worth watc
 Read these first; none of them is quick to arrange halfway through.
 
 - **An Azure subscription enrolled in the [Container Apps Sandboxes](https://learn.microsoft.com/azure/container-apps/sandboxes-overview) preview**, and a **sandbox group** in it.
-- **The sandbox image imported into the sandbox group as a disk image.** Unlike the Bicep samples, there is nothing to build or push here: `mcr.microsoft.com/devcontainers/python:3.13-bookworm` is already a public image, so importing it is the only step. A sandbox boots from a disk image, which is a different namespace from the registry an image lives in, so pointing the sample at the reference is not enough on its own.
-
-  ```bash
-  curl -fsSL https://aka.ms/aca-cli-install | sh                       # PowerShell: irm https://aka.ms/aca-cli-install-ps | iex
-  export AZURE_SUBSCRIPTION_ID=<sub-id> ACA_RESOURCE_GROUP=<sandbox-group-rg> ACA_SANDBOX_GROUP=<group>
-  aca sandboxgroup disk create --image mcr.microsoft.com/devcontainers/python:3.13-bookworm --name python-3-13
-  ```
-
-  The portal does the same thing without installing anything, which suits a one-off import: [sandboxes.azure.com](https://sandboxes.azure.com) → your sandbox group → **Disk Images** → **Create**, paste the reference into **Base Image URL**, and leave **Registry Authentication** on *No authentication (public registry)* — MCR needs none. Either way the disk image is a snapshot: the portal states that changes to the source container image do not affect disk images already created, so moving the tag later means importing again.
-
-  Both the CLI and the service are in preview and Microsoft says the command surface may change, so `aca sandboxgroup disk create --help` is the authority if a flag here does not match. `aca sandboxgroup disk list-public` lists the sandbox group's public presets, and one of them, `python`, may already carry a usable interpreter without an import step at all — check what Python version it actually has before relying on it, since a public preset moves independently of this sample and nothing here pins it.
 - **An Azure OpenAI deployment of a reasoning model** — `gpt-5.4` and its siblings work. This is not a preference: the framework's client asks for encrypted reasoning content, and a deployment that does not support it rejects the very first call with `400 — Encrypted content is not supported with this model` on `param: include`. That error names neither this sample nor the setting behind it, so it is worth choosing correctly rather than debugging later.
 - **`az login`**, or any other credential `DefaultAzureCredential` resolves. No API keys are read, and none belong in this tree.
 
 **This creates a billable sandbox.** The sample deletes it on the way out, and the backend's auto-suspend and auto-delete timers are a backstop underneath that — but they run in sequence rather than together, so a run killed mid-turn leaves a sandbox running for `auto_suspend_seconds` (60 by default), suspended for `auto_delete_seconds` (600) after that, and gone about eleven minutes from the last call. Reclaiming it yourself is the plan; the timers are what happens when the process dies before it can.
 
-`mcr.microsoft.com/devcontainers/python:3.13-bookworm` is a dev-container image — it carries a full toolchain this workload never touches, not just a Python interpreter, so it is bulkier than the sandbox strictly needs. It is used here because it is the only standard MCR image family at Python 3.13; a minimal Azure Linux Python image becomes the better choice the day that family ships 3.13 too. Either way this reference is for prototyping the sample: production replaces it with a hardened image you build and own — minimal, digest-pinned, scanned, rebuilt on your patch cadence — imported into the sandbox group the same way.
+`python-3.13` is one of the prebuilt images the service keeps Ready for every sandbox group, so the sample names it and imports nothing. For prototyping that is the whole image story; production replaces it with a hardened image you build, own and import into the sandbox group yourself — minimal, digest-pinned, scanned, rebuilt on your patch cadence — the import path [the `maf-sandbox-acas` README](../../packages/maf-sandbox-acas/README.md) and [its import script](../../packages/maf-sandbox-acas/scripts/import_disk_image.py) document.
 
 ## Install
 
@@ -55,7 +44,7 @@ uv run agent.py
 | `AZURE_OPENAI_ENDPOINT` | `https://<resource>.openai.azure.com` |
 | `AZURE_OPENAI_CHAT_MODEL` | Deployment name of the chat model — a reasoning model, per the prerequisites |
 
-There is no `ACAS_SANDBOX_REGISTRY` here, unlike sample 01: `agent.py` names the image by its full MCR reference, and a fully-qualified reference is passed through untouched rather than qualified against a registry.
+There is no `ACAS_SANDBOX_REGISTRY` here, unlike sample 01: `agent.py` names a prebuilt image by its bare service-provided name (`python-3.13`), which carries no tag — a bare name resolves against the sandbox group's catalogue, and only a `repository:tag` reference would be qualified against a registry.
 
 With any of these unset the program says which and exits non-zero, rather than running. That is deliberate: `make_codeact_tools` returns an empty list when the router has no backend, so a half-configured run does not crash — it produces an agent with no tools, which answers from the model alone. That failure looks exactly like success.
 
@@ -90,7 +79,7 @@ The wording around the number is the model's and varies run to run; the model is
 
 **`SandboxCapabilityNotSupported` at startup** — the backend cannot do what `execute_code` requires: run a command and take a file in. `AcasSandboxBackend` declares both, so this only appears against a swapped-in backend that declares less.
 
-**A disk image that cannot be resolved** — the image was named but never imported into the sandbox group. See the prerequisite above; the error names the reference it looked for, and that reference has to match the one the import step used exactly.
+**A disk image that cannot be resolved** — the image was named but the group cannot find it, for one of two reasons. A `repository:tag` reference was never imported into the sandbox group — the reference in the error has to match the one the import step used exactly. Or a bare name the service's catalogue does not hold: `python-3.13` is what the service provides today, but the catalogue is per group and the service owns its contents, so a group whose catalogue does not carry the name fails at boot with the catalogue in the message (`It provides: …`) — `aca sandboxgroup disk list-public` is the live version of the same list.
 
 **`400 — Encrypted content is not supported with this model`** — the chat deployment is not a reasoning model. See the prerequisite above; nothing about the sandbox is involved, and the run fails before one is created.
 

@@ -16,15 +16,14 @@ model reading its own training data (T0).  A question with a range of acceptable
 answers would prove much less.
 
 Running this needs a real Azure subscription and **creates a billable sandbox** —
-see this directory's README for the prerequisites, the environment variables, and
-how to import the sandbox image into your sandbox group.
+see this directory's README for the prerequisites and the environment variables.
 """
 
 # /// script
 # requires-python = ">=3.12"
 # dependencies = [
 #     "agent-framework-openai",
-#     "maf-sandbox-acas",
+#     "maf-sandbox-acas>=0.10.0",
 #     "maf-sandbox-codeact",
 #     "maf-sandbox>=0.17",
 # ]
@@ -57,8 +56,9 @@ SCOPE = "samples"
 THREAD_ID = conversation_id("03-acas-codeact")
 AGENT_DIR = "data-analyst"
 
-#: A standard MCR devcontainer image at Python 3.13; see this directory's README for why.
-CODEACT_IMAGE = "mcr.microsoft.com/devcontainers/python:3.13-bookworm"
+#: A prebuilt image the service keeps Ready for every sandbox group — a bare name with no
+#: tag, so it resolves against the group's catalogue rather than an imported disk image.
+CODEACT_IMAGE = "python-3.13"
 
 TASK = (
     "Write a Python program that computes the 100th Fibonacci number, with "
@@ -77,8 +77,8 @@ CODEACT_TOOL = "execute_code"
 #: exited 0 carries none of them either, and this task is not answered by one.
 _RAN = re.compile(r"^(stdout|stderr|exit code):", re.MULTILINE)
 
-#: Everything the sandbox backend needs. No `ACAS_SANDBOX_REGISTRY`: `CODEACT_IMAGE` is
-#: already fully-qualified.
+#: Everything the sandbox backend needs. No `ACAS_SANDBOX_REGISTRY`: `CODEACT_IMAGE` is a
+#: bare prebuilt name, and a name with no tag has nothing to qualify against a registry.
 SANDBOX_VARS = (
     "ACAS_SANDBOX_ENDPOINT",
     "ACAS_SANDBOX_SUBSCRIPTION_ID",

@@ -46,10 +46,10 @@ Everything else is the same file. Diff the two and what changes is the three cod
 
 ## Prerequisites
 
-Read these first; none of them is quick to arrange halfway through. They are sample 03's, unchanged — same service, same image.
+Read these first; none of them is quick to arrange halfway through. They start from sample 03's, but this sample names its image the way sample 03 no longer does, so the import step is its own.
 
 - **An Azure subscription enrolled in the [Container Apps Sandboxes](https://learn.microsoft.com/azure/container-apps/sandboxes-overview) preview**, and a **sandbox group** in it.
-- **The CodeAct image imported into that sandbox group as a disk image**: `mcr.microsoft.com/devcontainers/python:3.13-bookworm`. Nothing to build or push — it is already a public image, so importing it is the only step, and [sample 03's README](../03_acas_codeact/README.md#prerequisites) carries the command line and the portal route. If you have run sample 03, this is already done.
+- **The CodeAct image imported into that sandbox group as a disk image**: `mcr.microsoft.com/devcontainers/python:3.13-bookworm`. Nothing to build or push — it is already a public image, so importing it is the only step. [`packages/maf-sandbox-acas/README.md`](../../packages/maf-sandbox-acas/README.md) carries the command line (`scripts/import_disk_image.py`) and the portal route. Unlike [sample 03](../03_acas_codeact/), this one imports rather than naming a service-provided prebuilt image — the import stays until this sample is pointed at `python-3.13` too.
 - **An Azure OpenAI deployment of a reasoning model.** Not a preference: the framework's client asks for encrypted reasoning content, and a deployment that does not support it rejects the first call with `400 — Encrypted content is not supported with this model`.
 - **`az login`**, or any other credential `DefaultAzureCredential` resolves. No API keys are read, and none belong in this tree.
 
