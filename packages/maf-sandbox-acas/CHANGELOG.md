@@ -4,6 +4,22 @@ All notable changes to `maf-sandbox-acas` are documented here. The format follow
 
 Releases up to and including `0.2.3` were published as **`maf-sandbox-aca`**, and the entries below name it as it was — their tags and compare links point at real history and are left as they were written. `maf-sandbox-aca` is not maintained past `0.2.3`; PyPI names cannot be reused, so the rename is a new distribution rather than a continuation of that one.
 
+## [0.11.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.10.1...maf-sandbox-acas-v0.11.0) (2026-08-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* Sandbox.write_file now requires the keyword-only working_directory argument and refuses paths that escape it, pass through symlinked parents, target symlinks, or name the working directory itself.
+
+### Features
+
+* require a working directory for write_file and refuse paths that escape it ([#488](https://github.com/sokolaidev/maf-extensions/issues/488)) ([49795fa](https://github.com/sokolaidev/maf-extensions/commit/49795fa78a968451eef55fe27cd8784106f4ccc3))
+
+
+### Fixes
+
+* require maf-sandbox 0.18.0 in the dependents and 0.18 in the samples, and admit 0.19 ([#494](https://github.com/sokolaidev/maf-extensions/issues/494)) ([dd12d77](https://github.com/sokolaidev/maf-extensions/commit/dd12d7745b526052268b2124803e549b1e8c3d7f))
+
 ## [0.10.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-acas-v0.10.0...maf-sandbox-acas-v0.10.1) (2026-08-19)
 
 
