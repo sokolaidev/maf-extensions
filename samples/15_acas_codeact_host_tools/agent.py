@@ -71,8 +71,8 @@ from maf_sandbox.maf import list_all_files, make_caller_context
 #: transport cleanup: before it, `dispatch_over_exec` left the request and response files in the
 #: guest; after it, the transport removes the directory it owns. The framework's call-directory
 #: cleanup is reported separately because it belongs to the CodeAct kind's installed version.
-#: directory it owns on every exit path. A sample runs against whatever is on PyPI, and act 5
-#: asks rather than assumes — the two are different measurements and both are correct.
+#: A sample runs against whatever is on PyPI, and act 5 asks rather than assumes — the two are
+#: different measurements and both are correct.
 try:
     from maf_sandbox import reclaim_run as _reclaim_run
 except ImportError:  # the published core before #434
@@ -82,8 +82,9 @@ from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
 from maf_sandbox_codeact import codeact_sandbox_spec, make_codeact_tools
 
 TRANSPORT_RECLAIMS = _reclaim_run is not None
-RECLAIMED, KEPT = "reclaimed by the transport", "left for the sandbox (#438)"
-CALL_RECLAIMED, CALL_KEPT = "reclaimed by the framework", "left for the sandbox (#438)"
+RECLAIMED, KEPT = "reclaimed by the transport", "left for the sandbox (core before 0.17)"
+CALL_RECLAIMED = "reclaimed by the framework"
+CALL_KEPT = "left for the sandbox (an older CodeAct or core)"
 
 # Keyed by (scope, thread_id, agent_dir); constants here since this program serves one request.
 SCOPE = "samples"
@@ -754,8 +755,8 @@ async def run() -> int:
         await act_five_what_the_runs_left_behind(router, registry)
     finally:
         # Deletes rather than relying on the lifecycle timers — see sample 01's README. It is
-        # also the only thing that removes the files act 5 counted, and the only thing that
-        # stops a program a supervisor gave up on (#375).
+        # also what removes whatever act 5 still counted, and the last resort for a program
+        # the transport reported it could not signal.
         deleted = sum(
             [
                 await router.dispose_scope(SCOPE, DISPATCH_THREAD),

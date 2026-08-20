@@ -155,10 +155,18 @@ def _render_diagram_tool(
     # calls can drive the same sandbox at once — `maf_sandbox._protocol.Sandbox.acquire`
     # documents this. Both write `diagram.dot` and read `diagram.png` at the fixed paths below,
     # so without guarding, one call could collect the other's image. This lock serialises the
-    # write -> exec -> collect sequence per attached tool. A stdout-only kind could instead give
-    # each call its own sub-directory, as the Bicep kind does; a FILES_OUT kind cannot, because
-    # the declared output path is the artifact's name and a per-call directory would leak into
-    # it — so serialising is the natural remedy here.
+    # write -> exec -> collect sequence per attached tool.
+    #
+    # A per-call directory is the other remedy, and it is open to a FILES_OUT kind too:
+    # `DeclaredOutput.name` is the spelling an artifact lands under, so a guest path
+    # carrying a call id never reaches the host, and `outputs_named_at_call_time` admits a
+    # declaration built per call. That is what the CodeAct kind does, and the framework
+    # reclaims the directory when the call returns.
+    #
+    # This sample keeps the fixed paths anyway. Its one `DeclaredOutput` lives in the spec
+    # where a reader can see the whole contract at attach time, which is what a first custom
+    # kind is here to show; moving it to call time would buy reclamation and cost that.
+    # The lock is the price, and it is the smaller one.
     render_lock = asyncio.Lock()
 
     async def render_diagram(dot: str) -> str:
