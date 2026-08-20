@@ -12,7 +12,9 @@
 # mixed-line-ending): they fail the commit *and* modify the tree, which on a partial-stage
 # risks staging something unintended. The one intended rewriter is `uv-lock` below.
 
-default_install_hook_types: [pre-commit, pre-push]
+# All three types, so a bare `pre-commit install` (the one line CONTRIBUTING.md asks for)
+# wires the commit, the push and the message guard alike.
+default_install_hook_types: [pre-commit, pre-push, commit-msg]
 
 repos:
   - repo: local
