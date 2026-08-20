@@ -87,16 +87,11 @@ RECLAIMED, KEPT = "reclaimed by the transport", "left for the sandbox (#438)"
 SCOPE = "samples"
 AGENT_DIR = "analyst"
 
-#: A sandbox each, and the reason is act 5. Nothing deletes a run's transport files, so the
-#: dispatched route's responses — every state id, store list, sales row and product name —
-#: stay readable on the guest filesystem for anything that runs there afterwards. Sharing one
-#: sandbox would give the direct route's program a second road to the same data that this
-#: sample never measures, and the comparison rests on there being only one.
-#:
-#: Two keys rather than a cleanup between them, and it stays two keys after #434. That gave
-#: the transport a cleanup for the files it owns, which closes this leak on the cores that have
-#: it — but a sample runs against whatever is published, and one sandbox would be right on the
-#: new transport and wrong on the old one. Two is right on both.
+#: A sandbox each, and the reason is act 5. On a legacy transport, the dispatched route's
+#: responses remain readable on the guest filesystem for anything that runs there afterwards.
+#: Sharing one sandbox would give the direct route's program a second road to the same data that
+#: this sample never measures. Newer transports reclaim their own files, but the sample runs
+#: against whatever is published, so two sandboxes remain correct for both transport behaviors.
 #: And a run in each, not only a route: `conversation_id` says why, and #445 is the rest of
 #: the samples that needed it. The one thing that is this sample's own is that there are two —
 #: a sandbox apiece, so neither route can read the other's leftovers.

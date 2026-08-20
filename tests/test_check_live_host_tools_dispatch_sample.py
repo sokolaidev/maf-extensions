@@ -948,6 +948,30 @@ class TestTheBoundariesTheSummaryRestsOn:
         )
 
 
+class TestObservedProgramCount:
+    def test_a_missing_observer_count_fails(self):
+        assert any(
+            "no tagged dispatch-route" in reason
+            for reason in check.assess(_without("programs that dispatched"))
+        )
+
+    def test_a_duplicate_observer_count_fails(self):
+        duplicate = _HEALTHY.replace(
+            "  [measured] dispatch route: round trip:",
+            "  [measured] dispatch route: programs that dispatched: 2\n"
+            "  [measured] dispatch route: round trip:",
+        )
+        assert any("exactly one observer count" in reason for reason in check.assess(duplicate))
+
+    def test_a_direct_observer_count_fails(self):
+        direct = _HEALTHY.replace(
+            "== 4. What the round trips bought ==",
+            "  [measured] direct route: programs that dispatched: 1\n"
+            "== 4. What the round trips bought ==",
+        )
+        assert any("only the dispatch route" in reason for reason in check.assess(direct))
+
+
 class TestTheCapWasBudgeted:
     def test_a_cap_below_the_minimum_fails(self):
         assert any(

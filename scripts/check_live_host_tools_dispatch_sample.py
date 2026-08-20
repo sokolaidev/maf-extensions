@@ -552,9 +552,32 @@ def _reclaims(output: str) -> bool | None:
 def _observed_programs(output: str) -> int | None:
     """How many distinct `HostToolRun` identities the host observer saw dispatch."""
     seen = _OBSERVED_PROGRAMS.findall(output)
-    if len(seen) != 1:
+    dispatch = [match for match in seen if match[0] == _DISPATCH]
+    direct = [match for match in seen if match[0] == _DIRECT]
+    if len(dispatch) != 1 or direct:
         return None
-    return int(seen[0][1])
+    return int(dispatch[0][1])
+
+
+def _assess_observed_program_count(output: str) -> list[str]:
+    """Require one observer count for the dispatched route and none for the direct route."""
+    seen = _OBSERVED_PROGRAMS.findall(output)
+    dispatch = [match for match in seen if match[0] == _DISPATCH]
+    direct = [match for match in seen if match[0] == _DIRECT]
+    failures: list[str] = []
+    if len(dispatch) == 0:
+        failures.append("no tagged dispatch-route 'programs that dispatched' line was reported")
+    elif len(dispatch) > 1:
+        failures.append(
+            f"the dispatch route reports 'programs that dispatched' {len(dispatch)} times; "
+            "exactly one observer count is required"
+        )
+    if direct:
+        failures.append(
+            "the direct route reports 'programs that dispatched'; only the dispatch route has "
+            "an observer count"
+        )
+    return failures
 
 
 def _assess_what_the_runs_left(output: str) -> list[str]:
@@ -703,6 +726,7 @@ def assess(output: str) -> list[str]:
         *_assess_the_cost_was_measured(output),
         *_assess_both_interpreters_answered(output),
         *_assess_the_whole_walk_happened(output),
+        *_assess_observed_program_count(output),
         *_assess_direct_pays_per_stage(output),
         *_assess_who_carried_the_figures(output),
         *_assess_the_round_trips(output),
