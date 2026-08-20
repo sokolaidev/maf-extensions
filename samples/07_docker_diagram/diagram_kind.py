@@ -158,9 +158,10 @@ def _render_diagram_tool(
     # write -> exec -> collect sequence per attached tool.
     #
     # A FILES_OUT kind could instead build its `DeclaredOutput` per call under
-    # `guest_call_path()`, using `name` to keep the landed artifact name stable while the
-    # framework reclaims the call path. This sample keeps the output in the spec so a
-    # first-custom-kind reader sees the contract at attach time; the lock is that choice's price.
+    # `guest_call_path()`: `outputs_named_at_call_time` is what admits that, and `name`
+    # keeps the landed artifact name stable while the framework reclaims the call path.
+    # This sample keeps the output in the spec so a first-custom-kind reader sees the
+    # contract at attach time; the lock is that choice's price.
     render_lock = asyncio.Lock()
 
     async def render_diagram(dot: str) -> str:
