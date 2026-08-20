@@ -842,8 +842,8 @@ class TestAReclaimThatDidNotHappen:
             assert _call(tool, target="x").startswith("/maf-sandbox/work/")
         assert any("on_reclaim_failure raised" in r.message for r in caplog.records)
 
-    def test_a_callback_cancelled_mid_dispose_does_not_fail_the_call(self, caplog):
-        """`CancelledError` is a `BaseException`: it would leave the `finally` and take the answer."""
+    def test_a_callback_cancelled_mid_dispose_lets_the_cancellation_through(self, caplog):
+        """Containing it would return the body's answer past a deadline the host thought it had."""
 
         async def on_failure(failure: ReclaimFailure) -> None:
             raise asyncio.CancelledError()
@@ -851,8 +851,17 @@ class TestAReclaimThatDidNotHappen:
         backend = InProcessSandboxBackend(_RefusesToRemove())
         tool = _reclaiming(backend, on_reclaim_failure=on_failure)
         with caplog.at_level(logging.WARNING, logger="test_workload"):
-            assert _call(tool, target="x").startswith("/maf-sandbox/work/")
-        assert any("on_reclaim_failure raised" in r.message for r in caplog.records)
+            with pytest.raises(asyncio.CancelledError):
+                _call(tool, target="x")
+        assert any("did not finish: the call was cancelled" in r.message for r in caplog.records)
+
+    def test_a_cancelled_removal_lets_it_through_and_still_leaves_the_record(self, caplog):
+        """The leak has to stay visible even though the cancellation is not contained."""
+        backend = InProcessSandboxBackend(InProcessSandbox(raises=asyncio.CancelledError()))
+        with caplog.at_level(logging.WARNING, logger="test_workload"):
+            with pytest.raises(asyncio.CancelledError):
+                _call(_reclaiming(backend), target="x")
+        assert any("cancelled during the removal" in r.message for r in caplog.records)
 
     def test_a_removal_the_backend_cannot_even_attempt_is_reported(self):
         heard: list[ReclaimFailure] = []

@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import posixpath
 import shlex
-from asyncio import CancelledError
 from dataclasses import dataclass
 
 from ._error_detail import error_detail
@@ -77,10 +76,10 @@ async def reclaim_guest_path(
             working_directory="/",
             timeout=timeout,
         )
-    except (Exception, CancelledError, GeneratorExit) as refused:  # noqa: BLE001
-        # A `CancelledError` is a `BaseException` and would walk straight past `Exception`, out
-        # of the `finally` that called this, taking the record of the leak with it — and a
-        # cancelled call is exactly when something is most likely to be left behind.
+    except Exception as refused:  # noqa: BLE001 — an unreclaimed path is a leak, not a fault
+        # Only `Exception`. A `CancelledError` here is the caller's own deadline arriving at
+        # this await, and answering with a reason would let the call return past it; the caller
+        # records the loss and lets it through. See `maf._reclaim_the_call`.
         return f"the removal call failed: {error_detail(refused)}"
     if removed.exit_code != 0:
         detail = removed.stderr.strip()

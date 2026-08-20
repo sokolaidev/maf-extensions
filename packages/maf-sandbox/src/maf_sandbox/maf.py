@@ -432,9 +432,20 @@ async def _reclaim_the_call(
         return
     sandbox, key = call.acquired
     prefix = _prefixed(tool)
-    reason = await reclaim_guest_path(
-        sandbox, call.path, working_directory=spec.work_dir, timeout=timeout
-    )
+    try:
+        reason = await reclaim_guest_path(
+            sandbox, call.path, working_directory=spec.work_dir, timeout=timeout
+        )
+    except (CancelledError, GeneratorExit):
+        # Recorded and then let through. Cancellation is the caller's — an outer deadline
+        # arriving while the removal is in flight — and containing it here would have the call
+        # return the body's answer past a bound the host thought it had. The leak still has to
+        # be visible, so the line is written before the cancellation goes on.
+        logger.warning(
+            f"{prefix}: %s was not reclaimed: the call was cancelled during the removal",
+            call.path,
+        )
+        raise
     if reason is None:
         return
     # Logged whether or not a host is listening: what is left stays readable by every later
@@ -444,10 +455,13 @@ async def _reclaim_the_call(
         return
     try:
         await on_failure(ReclaimFailure(tool=tool, key=key, path=call.path, reason=reason))
-    except (Exception, CancelledError, GeneratorExit) as raised:  # noqa: BLE001
-        # Including the two that are not `Exception`: a host's callback must not fail the call,
-        # and one cancelled mid-dispose would otherwise replace the answer the body produced.
+    except Exception as raised:  # noqa: BLE001 — a host's callback must not fail the call
         logger.warning(f"{prefix}: on_reclaim_failure raised: %s", error_detail(raised))
+    except (CancelledError, GeneratorExit):
+        # Not contained, for the reason above: the callback awaits, so this is the caller's
+        # cancellation arriving inside it and not a failure of the callback's own.
+        logger.warning(f"{prefix}: on_reclaim_failure did not finish: the call was cancelled")
+        raise
 
 
 def sandboxed_tool(

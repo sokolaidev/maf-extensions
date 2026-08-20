@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from maf_sandbox import ExecResult
 from maf_sandbox._reclaim import reclaim_guest_path
 from maf_sandbox.testing import InProcessSandbox
@@ -99,13 +101,12 @@ class TestItNeverRaises:
         assert reason is not None
         assert "the guest is gone" in reason
 
-    def test_a_cancelled_removal_becomes_a_reason_rather_than_a_lost_record(self):
-        """`CancelledError` is a `BaseException` and walks straight past `except Exception`.
+    def test_a_cancelled_removal_is_not_answered_with_a_reason(self):
+        """Cancellation at this await is the caller's deadline, not a backend failure.
 
-        A cancelled call is when something is most likely to be left behind, so it is the one
-        path that must not lose the record on its way out of the caller's `finally`.
+        Answering with a reason would contain it, and the call would return past a bound the
+        host thought it had. The caller records the loss and lets it through.
         """
         cancelled = InProcessSandbox(raises=asyncio.CancelledError())
-        reason = _reclaim(cancelled, f"{_WORK}/abc123")
-        assert reason is not None
-        assert "the removal call failed" in reason
+        with pytest.raises(asyncio.CancelledError):
+            _reclaim(cancelled, f"{_WORK}/abc123")
