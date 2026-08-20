@@ -820,8 +820,8 @@ class TestTheSeam:
             task = asyncio.ensure_future(backend._wslc("-c", script, read_limit=64, timeout=60))
             await asyncio.sleep(0.1)
             task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await task
+            result = await asyncio.gather(task, return_exceptions=True)
+            assert isinstance(result[0], asyncio.CancelledError)
 
         asyncio.run(scenario())
 
