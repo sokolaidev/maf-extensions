@@ -17,7 +17,6 @@ from __future__ import annotations
 import logging
 from time import perf_counter
 from typing import TYPE_CHECKING, Any
-from uuid import uuid4
 
 from maf_sandbox import CallerContext, SandboxRouter, SandboxSpec, error_detail
 from maf_sandbox.maf import SandboxToolSession, sandboxed_tool
@@ -300,12 +299,14 @@ def _bicep_validate_tool(
         # defaults. Bicep finds that config by walking UP from the file, so a subdirectory
         # still picks it up — and the AVM module cache lives in ~/.bicep, untouched either
         # way. Staleness becomes impossible by construction instead of something to reconcile.
-        round_dir = f"{session.spec.work_dir}/{uuid4().hex[:12]}"
+        call_directory = session.guest_call_path()
 
         # Validate each name against that listing (the injection guard).
         validated: list[tuple[str, str]] = []  # (store_path, sandbox_path)
         for name in files:
-            sandbox_path, listing_key, rejection = resolve_listed_path(name, listing, round_dir)
+            sandbox_path, listing_key, rejection = resolve_listed_path(
+                name, listing, call_directory
+            )
             if rejection == "unsafe":
                 # No listing echoed back: that would invite a retry with another spelling.
                 return (
@@ -370,7 +371,7 @@ def _bicep_validate_tool(
                 continue
 
             try:
-                await sandbox.write_file(sandbox_path, content, working_directory=round_dir)
+                await sandbox.write_file(sandbox_path, content, working_directory=call_directory)
             except Exception as exc:  # noqa: BLE001
                 # Detail, not just str(): a live run produced `Operation returned an invalid
                 # status 'Conflict'` for four files at once, and that sentence alone cannot
@@ -390,7 +391,7 @@ def _bicep_validate_tool(
             ):
                 results.append(
                     await _run_phase(
-                        sandbox, phase, template, name, sandbox_path, round_dir, timeout
+                        sandbox, phase, template, name, sandbox_path, call_directory, timeout
                     )
                 )
 

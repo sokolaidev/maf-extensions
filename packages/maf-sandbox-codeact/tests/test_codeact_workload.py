@@ -95,7 +95,8 @@ class _ScriptedSandbox(InProcessSandbox):
         self.raw_commands: list[str | Sequence[str]] = []
 
     async def exec(self, command, *, working_directory, timeout):
-        self.raw_commands.append(command)
+        if not str(command).startswith("rm -rf "):
+            self.raw_commands.append(command)
         answer = await super().exec(command, working_directory=working_directory, timeout=timeout)
         return self.result if self.result is not None else answer
 
@@ -123,6 +124,8 @@ class _ProducingSandbox(_ScriptedSandbox):
 
     async def exec(self, command, *, working_directory, timeout):
         result = await super().exec(command, working_directory=working_directory, timeout=timeout)
+        if str(command).startswith("rm -rf "):
+            return result
         cwd = self._program_cwd(working_directory)
         for name, content in self.produces.items():
             self.contents[f"{cwd}/{name}"] = content
@@ -613,10 +616,21 @@ class TestCodeactSandboxSpec:
 # ---------------------------------------------------------------------------
 
 
+def _reclaimed_dirs(sandbox: InProcessSandbox) -> list[str]:
+    """The call directories passed to the framework's reclaim command."""
+    return [
+        command.removeprefix("rm -rf ")
+        for command, _, _ in sandbox.commands
+        if command.startswith("rm -rf ")
+    ]
+
+
 def _run_dirs(sandbox: InProcessSandbox) -> list[str]:
     """The distinct run directories this sandbox was written into, in first-seen order."""
     seen: list[str] = []
     for path in sandbox.contents:
+        if not path.startswith(f"{_WORK_DIR}/"):
+            continue
         parent = path.removeprefix(f"{_WORK_DIR}/").split("/", 1)[0]
         if parent not in seen:
             seen.append(parent)
@@ -631,6 +645,7 @@ class TestTheProgramIsWrittenThenRun:
         (run_dir,) = _run_dirs(sandbox)
         assert run_dir.startswith(f"{_WORK_DIR}/")
         assert sandbox.files == {f"{run_dir}/{_PROGRAM_FILENAME}": "print('hi')"}
+        assert _reclaimed_dirs(sandbox) == [run_dir]
 
     def test_the_interpreter_is_run_with_an_argv_sequence(self):
         """A sequence, not a string: a shell never sees any of this.
@@ -2297,6 +2312,7 @@ class TestAProgramThatCallsOut:
         assert sandbox.files.get(layout.program) == "print('hi')", sorted(sandbox.files)
         assert f"{layout.directory}/{_PROGRAM_FILENAME}" not in sandbox.files
         assert f"{layout.work}/{_PROGRAM_FILENAME}" not in sandbox.files
+        assert layout.directory in _reclaimed_dirs(sandbox)
 
     def test_the_shim_is_written_beside_the_program_with_the_runs_own_patience(self):
         """A guest that gives up before the supervisor does is wrong twice over: the dispatch

@@ -201,7 +201,9 @@ class TestWriteOrdering:
 
         _run(_tool(store, backend), ["main.bicep", "modules/db.bicep"])
 
-        kinds = [kind for kind, _ in events]
+        kinds = [
+            kind for kind, detail in events if kind != "exec" or not detail.startswith("rm -rf ")
+        ]
         assert kinds == ["write", "write"] + ["exec"] * 4, events
         assert kinds.index("exec") == 2, (
             f"a file was compiled before every file had been written: {events}"
@@ -371,8 +373,9 @@ class TestEndToEnd:
         _run(_tool(store, backend), ["main.bicep"])
 
         (path,) = backend.sandbox.files
-        commands = [c for c, _, _ in backend.sandbox.commands]
+        commands = [c for c, _, _ in backend.sandbox.commands if not c.startswith("rm -rf ")]
         assert commands == [_BUILD_CMD.format(path=path), _LINT_CMD.format(path=path)]
+        assert f"rm -rf {path.rsplit('/', 1)[0]}" in [c for c, _, _ in backend.sandbox.commands]
 
     def test_renders_diagnostics_from_sarif(self):
         store = InMemoryStore({"main.bicep": "x"})
@@ -401,7 +404,7 @@ class TestEndToEnd:
         backend = _fake_backend()
         _run(_tool(store, backend, exec_timeout_seconds=7), ["main.bicep"])
 
-        assert {t for _, _, t in backend.sandbox.commands} == {7}
+        assert {t for c, _, t in backend.sandbox.commands if not c.startswith("rm -rf ")} == {7}
 
     def test_a_timeout_is_reported_per_phase_rather_than_hanging(self):
         store = InMemoryStore({"main.bicep": "x"})
@@ -545,6 +548,8 @@ class TestConcurrentRounds:
         # Nothing compiled outside the directory it was written into, and both survived to
         # be compiled — a sibling wipe would leave one of these commands with no source.
         for command, working_directory, _ in backend.sandbox.commands:
+            if command.startswith("rm -rf "):
+                continue
             compiled = command.split(" ")[2]
             assert compiled.startswith(f"{working_directory}/")
             assert compiled in backend.sandbox.files
@@ -579,7 +584,9 @@ class TestConcurrentRounds:
 
         (path,) = backend.sandbox.files
         round_dir = path.rsplit("/", 1)[0]
-        assert {wd for _, wd, _ in backend.sandbox.commands} == {round_dir}
+        assert {
+            wd for command, wd, _ in backend.sandbox.commands if not command.startswith("rm -rf ")
+        } == {round_dir}
 
 
 class TestDeployWorkflowStaysOffTheApplication:
@@ -732,7 +739,9 @@ class TestConfigDiscovery:
 
         (path,) = backend.sandbox.files
         round_dir = path.rsplit("/", 1)[0]
-        assert {wd for _, wd, _ in backend.sandbox.commands} == {round_dir}
+        assert {
+            wd for command, wd, _ in backend.sandbox.commands if not command.startswith("rm -rf ")
+        } == {round_dir}
 
 
 class TestEndToEndRefusals:
