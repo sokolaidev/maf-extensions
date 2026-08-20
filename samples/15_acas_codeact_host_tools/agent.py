@@ -37,10 +37,12 @@ route, which the README explains and act 6 disposes of.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import re
 import sys
 import time
 from collections.abc import Iterable
+from contextvars import ContextVar
 from pathlib import Path
 from statistics import median
 from typing import Any
@@ -55,6 +57,7 @@ from maf_sandbox import (
     CALLS_DIRECTORY,
     EntryKind,
     HostToolRegistry,
+    HostToolRun,
     Identity,
     SandboxKey,
     SandboxRouter,
@@ -224,20 +227,36 @@ FROM_THE_TOOL_LIST = (
 )
 
 
-class Ledger:
-    """What the host was asked, and when.
+_current_run: ContextVar[HostToolRun | None] = ContextVar("sample_15_host_tool_run", default=None)
 
-    Timed on both sides of the body, so a gap is a whole trip out and back rather than half of one.
-    """
+
+@contextlib.contextmanager
+def observe_dispatch(run: HostToolRun, _name: object):
+    """Attribute the observed dispatch body to its CodeAct run."""
+    token = _current_run.set(run)
+    try:
+        yield
+    finally:
+        _current_run.reset(token)
+
+
+class Ledger:
+    """What the host was asked, when, and by which guest program."""
 
     def __init__(self) -> None:
         self.asked: list[str] = []
         self._arrived: list[float] = []
         self._answered: list[float] = []
+        self._runs: list[HostToolRun | None] = []
+        self.dispatched_runs: set[HostToolRun] = set()
 
     def arriving(self, what: str) -> None:
         self.asked.append(what)
         self._arrived.append(time.perf_counter())
+        self._runs.append(_current_run.get())
+        run = _current_run.get()
+        if run is not None:
+            self.dispatched_runs.add(run)
 
     def answered(self) -> None:
         self._answered.append(time.perf_counter())
@@ -251,22 +270,20 @@ class Ledger:
         """
         return {asked.split("(", 1)[0] for asked in self.asked}
 
-    def round_trips(self, programs: int) -> tuple[list[float], list[float]]:
-        """The gaps between consecutive calls, split into transport ones and program boundaries.
+    def round_trips(self) -> tuple[list[float], list[float]]:
+        """Split call gaps by the run identity recorded by the host observer.
 
-        *n* calls give *n - 1* gaps, and the `programs - 1` largest are the boundaries — each holds a
-        model turn rather than a file round trip.
-
-        **Which ones they are is inferred from size, not recorded.** Both halves come back so the run
-        can publish the margin and the check can hold them apart instead of trusting the sort.
-        Attributing a call to its program needs the transport to say which run it served (#446).
+        A gap within one run is a transport round trip; a gap across runs is a program boundary.
         """
-        gaps = sorted(
-            self._arrived[index + 1] - self._answered[index]
-            for index in range(len(self._answered) - 1)
-        )
-        kept = len(gaps) - max(0, programs - 1)
-        return gaps[:kept], gaps[kept:]
+        gaps: list[float] = []
+        boundaries: list[float] = []
+        for index in range(len(self._answered) - 1):
+            gap = self._arrived[index + 1] - self._answered[index]
+            if self._runs[index] is self._runs[index + 1]:
+                gaps.append(gap)
+            else:
+                boundaries.append(gap)
+        return gaps, boundaries
 
 
 def build(stamp: Any, ledger: Ledger) -> list[Any]:
@@ -504,7 +521,11 @@ def report(
 def act_one_what_the_host_wired(ledger: Ledger) -> HostToolRegistry:
     """Registration and the seal, in the shortest form that is still honest."""
     print("== 1. What the host wired ==\n")
-    registry = HostToolRegistry(require_declared=True, max_dispatches_per_run=DISPATCH_CAP)
+    registry = HostToolRegistry(
+        require_declared=True,
+        max_dispatches_per_run=DISPATCH_CAP,
+        dispatch_observer=observe_dispatch,
+    )
     for lookup in dispatchable(ledger):
         registry.register(lookup)
     aggregate = registry.aggregate()
@@ -560,24 +581,17 @@ async def one_route(
     # the host process between two model turns, so the same arithmetic yields microseconds, and
     # printing that under the same name would invite a reader to compare two different things.
     if route == DISPATCH_ROUTE:
-        # Programs, not rounds. `calls_per_message` groups by message and one message can ask
-        # for several calls at once, so the number of programs is the sum of the groups rather
-        # than how many groups there are — on this route every call is an `execute_code`, the
-        # lookups being host tools the model never sees. Passing the round count would leave
-        # one boundary per batched message in the sample, timing a model turn as a round trip.
-        trips, boundaries = ledger.round_trips(sum(calls_per_message(response)))
+        trips, boundaries = ledger.round_trips()
+        print(f"{MEASURED}{route}: programs that dispatched: {len(ledger.dispatched_runs)}")
         if trips:
             print(
                 f"{MEASURED}{route}: round trip: {len(trips)} gap(s), min {min(trips):.2f}s, "
                 f"median {median(trips):.2f}s, max {max(trips):.2f}s"
             )
-        if trips and boundaries:
-            # What the line above rests on. The boundaries were chosen by being the largest,
-            # so the smallest of them exceeding the largest kept gap is arithmetic; how far it
-            # exceeds it is the measurement, and it is what says the two are different things.
+        if boundaries:
             print(
-                f"{MEASURED}{route}: program boundaries dropped: {len(boundaries)}, smallest "
-                f"{min(boundaries):.2f}s against a {max(trips):.2f}s largest round trip"
+                f"{MEASURED}{route}: program boundaries observed: {len(boundaries)}, min "
+                f"{min(boundaries):.2f}s, max {max(boundaries):.2f}s"
             )
     print()
     return carried
