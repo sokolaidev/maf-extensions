@@ -157,16 +157,10 @@ def _render_diagram_tool(
     # so without guarding, one call could collect the other's image. This lock serialises the
     # write -> exec -> collect sequence per attached tool.
     #
-    # A per-call directory is the other remedy, and it is open to a FILES_OUT kind too:
-    # `DeclaredOutput.name` is the spelling an artifact lands under, so a guest path
-    # carrying a call id never reaches the host, and `outputs_named_at_call_time` admits a
-    # declaration built per call. That is what the CodeAct kind does, and the framework
-    # reclaims the directory when the call returns.
-    #
-    # This sample keeps the fixed paths anyway. Its one `DeclaredOutput` lives in the spec
-    # where a reader can see the whole contract at attach time, which is what a first custom
-    # kind is here to show; moving it to call time would buy reclamation and cost that.
-    # The lock is the price, and it is the smaller one.
+    # A FILES_OUT kind could instead build its `DeclaredOutput` per call under
+    # `guest_call_path()`, using `name` to keep the landed artifact name stable while the
+    # framework reclaims the call path. This sample keeps the output in the spec so a
+    # first-custom-kind reader sees the contract at attach time; the lock is that choice's price.
     render_lock = asyncio.Lock()
 
     async def render_diagram(dot: str) -> str:
