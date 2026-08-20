@@ -1,13 +1,13 @@
 # 04 — compute an answer in a WSL container
 
-Sample 03 with exactly one thing changed: the backend. Same agent, same tool, same task — a Python interpreter's answer rather than a model's guess at one — but the sandbox is a container on your own machine, created in about half a second, and there is no Azure subscription anywhere in the picture.
+Sample 03 with the CodeAct workload and the task unchanged — same agent, same tool, same task, a Python interpreter's answer rather than a model's guess at one — but the sandbox is a container on your own machine, created in about half a second, and there is no Azure subscription anywhere in the picture. What differs is the configuration around that unchanged workload: the backend (and the isolation floor it forces), the image it pulls, and the model client, which here drops Azure for any OpenAI-compatible endpoint.
 
 ```
 app  ->  maf_sandbox (router)  ->  maf_sandbox_wslc  ->  the container
               ^ maf_sandbox_codeact calls the router
 ```
 
-[`agent.py`](agent.py) is the `app` box, and it is worth diffing against [sample 03's](../03_acas_codeact/agent.py): two import lines, one constructor, and the `min_isolation=` argument. Everything below the router is untouched — the same claim samples 01 and 02 make for `bicep_validate`, shown here for `execute_code` instead.
+[`agent.py`](agent.py) is the `app` box, and it is worth diffing against [sample 03's](../03_acas_codeact/agent.py): the CodeAct workload — the `make_codeact_tools` call, the task, and the check on what `execute_code` returned — is identical to sample 03's, while the backend and its configuration differ: the backend import and constructor, the `min_isolation=` floor, the image reference, and the model client. The untouched workload is the same claim samples 01 and 02 make for `bicep_validate`, shown here for `execute_code` instead.
 
 ## The boundary is weaker, and the refusal is the feature
 
@@ -64,7 +64,7 @@ It printed:
 
 That block is one real run, against a local OpenAI-compatible endpoint. The prose and the formatting around the number are the model's and vary; the number and the disposal line do not.
 
-The same number sample 03 gets from a microVM in Azure, computed by the same program in the same way — only the backend underneath differs. The wording around it is the model's and varies run to run. The block under it does not: it is what `execute_code` returned, printed from the tool result rather than from the reply, which is what separates a number the interpreter produced from one the model recited ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)). `[measured] Disposed 1 sandbox(es).` is what tells you a container was really created and torn down.
+The same number sample 03 gets from a microVM in Azure, computed by the same program in the same way — the interpreter, not the model. The backend and the image it runs in are what differ from sample 03; the method is not. The wording around it is the model's and varies run to run. The block under it does not: it is what `execute_code` returned, printed from the tool result rather than from the reply, which is what separates a number the interpreter produced from one the model recited ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)). `[measured] Disposed 1 sandbox(es).` is what tells you a container was really created and torn down.
 
 ## Troubleshooting
 

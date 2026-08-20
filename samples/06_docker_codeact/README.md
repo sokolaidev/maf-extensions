@@ -1,13 +1,13 @@
 # 06 — compute an answer in a Docker container
 
-Sample 03 with exactly one thing changed: the backend. Same agent, same tool, same task — a Python interpreter's answer rather than a model's guess at one — but the sandbox is a plain Docker container instead of a billable Azure microVM, and it runs on any machine with a Docker-compatible engine.
+Sample 03 with its CodeAct workload and task unchanged — same agent, same tool, same task, a Python interpreter's answer rather than a model's guess at one — but the sandbox is a plain Docker container instead of a billable Azure microVM, and it runs on any machine with a Docker-compatible engine. What differs is the configuration around that unchanged workload: the backend (and the isolation floor it forces) and the image it pulls; the model stays on sample 03's Azure deployment.
 
 ```
 app  ->  maf_sandbox (router)  ->  maf_sandbox_docker  ->  the container
               ^ maf_sandbox_codeact calls the router
 ```
 
-[`agent.py`](agent.py) is the `app` box, and it is worth diffing against [sample 03's](../03_acas_codeact/agent.py): two import lines, one constructor, and the `min_isolation=` argument. That is the tightest diff in the whole set — [sample 04](../04_wslc_codeact/) also swapped sample 03's Azure model for a local one, and this keeps it, because keeping it is exactly what lets this sample be verified in CI.
+[`agent.py`](agent.py) is the `app` box, and it is worth diffing against [sample 03's](../03_acas_codeact/agent.py): the CodeAct workload — the `make_codeact_tools` call, the task, and the check on what `execute_code` returned — is identical to sample 03's, while the backend and its configuration differ: the backend import and constructor, the `min_isolation=` floor, and the image reference. That is the tightest diff in the whole set — [sample 04](../04_wslc_codeact/) also swapped sample 03's Azure model for a local one, and this keeps it, because keeping it is exactly what lets this sample be verified in CI.
 
 ## The first sample CI verifies without a cloud sandbox
 
@@ -68,7 +68,7 @@ The first call pays for pulling the image, if it is not already local, plus crea
 
 That block is one real run. This model answered with the number alone; another will wrap it in a sentence. What does not vary is the block under it. `354224848179261915075` is a constant a model can recite, so the live check reads the copy inside `== Program output as execute_code returned it ==` — the interpreter's own stdout, recorded by the framework beside the call — and not the one in the reply ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)). `[measured] Disposed 1 sandbox(es).` only prints once `execute_code` has actually created and torn down a container; a `Disposed 0` would mean the model answered without running anything, the T0 behaviour this sample exists to contrast with.
 
-The same number sample 03 gets from a microVM in Azure, computed by the same program in the same way — only the backend underneath differs.
+The same number sample 03 gets from a microVM in Azure, computed by the same program in the same way — the interpreter, not the model. The sandbox and the image it runs in are what differ from sample 03; the method is not.
 
 ## Troubleshooting
 
