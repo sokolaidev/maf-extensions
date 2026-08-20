@@ -13,6 +13,8 @@ import sys
 import tomllib
 from pathlib import Path
 
+import pytest
+
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 # packages/*/pyproject.toml, not "maf-sandbox*": a workspace package that does not
 # mirror the sandbox naming is still subject to the length rules. Same discovery as
@@ -21,18 +23,34 @@ _PACKAGES = sorted(_REPO_ROOT.glob("packages/*/pyproject.toml"))
 
 _SELECT = "E501,W505"
 _MAX_DOC = 100
+_LENGTH_RULES = ("E501", "W505")
+
+
+def src_pattern_matches(src: Path, pattern: str) -> bool:
+    """Whether a ruff path pattern could resolve to a ``src/`` file.
+
+    Ruff's ``exclude``/``per-file-ignores`` patterns are globs over the project root
+    (the package dir that holds ``pyproject.toml``), so they match ``src/x.py``, not
+    ``x.py``. A leading ``!`` negates the pattern and is unprovable by fnmatch.
+    """
+    if pattern.startswith("!"):
+        return True
+    return any(
+        fnmatch.fnmatch(path.relative_to(src.parent).as_posix(), pattern)
+        for path in src.rglob("*.py")
+    )
 
 
 def _src_ignores(src: Path, lint: dict) -> list[str]:
     """Per-file-ignore entries that silence ``E501``/``W505`` on ``src/`` files."""
     offenders: list[str] = []
     for pattern, rules in lint.get("per-file-ignores", {}).items():
-        if not any(rule in rules for rule in ("E501", "W505")):
+        if not any(rule in rules for rule in _LENGTH_RULES):
             continue
-        if any(
-            fnmatch.fnmatch(path.relative_to(src.parent).as_posix(), pattern)
-            for path in src.rglob("*.py")
-        ):
+        if pattern.startswith("!") or src_pattern_matches(src, pattern):
+            # A negated pattern ("!tests/**") makes ruff apply the listed rules only
+            # outside the named glob; its effect on src/ cannot be proven, and it
+            # disables them on every other file. Reject it fail-closed.
             offenders.append(f"{pattern} -> {sorted(rules)}")
     return offenders
 
@@ -40,7 +58,7 @@ def _src_ignores(src: Path, lint: dict) -> list[str]:
 def _assert_enforced(pyproject: Path) -> None:
     """The package's own config enables the length rules, or the scan proves nothing.
 
-    A ruff run proves src/ is clean *today*; it cannot prove a dropped select, a missing
+    A ruff run proves src/ is clean today; it cannot prove a dropped select, a missing
     ``max-doc-length`` (which makes ``W505`` a no-op), or an ignore matching the rules out
     of ``src/`` was ever enforced. All of those are rejected here.
     """
@@ -55,11 +73,21 @@ def _assert_enforced(pyproject: Path) -> None:
         f"{package.name} dropped max-doc-length={_MAX_DOC}; W505 is a no-op without it (#454)"
     )
     for key in ("ignore", "extend-ignore"):
-        disabled = [rule for rule in lint.get(key, []) if rule in ("E501", "W505")]
+        disabled = [rule for rule in lint.get(key, []) if rule in _LENGTH_RULES]
         assert not disabled, (
             f"{package.name} {key}={disabled} disables the line-length rules (#454)"
         )
     src = package / "src"
+    # `exclude`/`extend-exclude` are honoured during directory traversal, not for the
+    # explicit `src/` path the scan passes below, so none is exploitable today. A future
+    # switch to a dir-scan would reopen the gate silently; reject fail-closed.
+    for key in ("exclude", "extend-exclude"):
+        for pattern in lint.get(key, []):
+            if src_pattern_matches(src, pattern):
+                raise AssertionError(
+                    f"{package.name} {key}={pattern!r} could exclude src/ files "
+                    f"from the length rules (#454)"
+                )
     ignores = _src_ignores(src, lint)
     assert not ignores, (
         f"{package.name} per-file-ignores {_SELECT} out of src/: {', '.join(ignores)} (#454)"
@@ -89,3 +117,48 @@ class TestSrcDocLineLength:
         for pyproject in _PACKAGES:
             _assert_enforced(pyproject)
             _assert_clean(pyproject)
+
+    def _tree(self, tmp_path: Path) -> Path:
+        src = tmp_path / "pkg" / "src"
+        src.mkdir(parents=True)
+        (src / "x.py").write_text("x = 1\n", encoding="utf-8")
+        return src
+
+    def test_src_pattern_matches_shrinks_src_prefix(self, tmp_path):
+        # `exclude = ["src/**"]` is a glob over the package dir (the scan root's
+        # parent), so it must be caught even though the scan root is itself src/.
+        src = self._tree(tmp_path)
+        assert src_pattern_matches(src, "src/**")
+
+    def test_src_pattern_matches_misses_unrelated(self, tmp_path):
+        src = self._tree(tmp_path)
+        assert not src_pattern_matches(src, "tests/**")
+
+    def test_src_ignores_rejects_negated_length_rule(self):
+        lint = {"per-file-ignores": {"!tests/**": ["E501", "W505"]}}
+        assert _src_ignores(Path("pkg/src"), lint)
+
+    def test_src_ignores_accepts_unrelated_rules(self):
+        lint = {"per-file-ignores": {"src/**": ["F401"]}}
+        assert _src_ignores(Path("pkg/src"), lint) == []
+
+    def test_assert_enforced_rejects_exclude_shadowing_src(self, tmp_path):
+        # `exclude = ["src/**"]` is honoured during directory traversal; a scan that
+        # passes a directory instead of explicit files would let it silence the gate.
+        pkg = tmp_path / "pkg"
+        (pkg / "src").mkdir(parents=True)
+        (pkg / "src" / "x.py").write_text("x = 1\n", encoding="utf-8")
+        pyproject = pkg / "pyproject.toml"
+        pyproject.write_text(
+            """\
+[tool.ruff.lint]
+select = ["E501", "W505"]
+exclude = ["src/**"]
+
+[tool.ruff.lint.pycodestyle]
+max-doc-length = 100
+""",
+            encoding="utf-8",
+        )
+        with pytest.raises(AssertionError, match="could exclude src/ files"):
+            _assert_enforced(pyproject)
