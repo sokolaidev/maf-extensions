@@ -654,14 +654,14 @@ def _reclaiming_body(session: SandboxToolSession):
     return widget_run
 
 
-def _attach_with(build, router, **kw):
+def _attach_with(build, router, *, spec=_SPEC, **kw):
     kw.setdefault("logger", logging.getLogger("test_workload"))
     return sandboxed_tool(
         build,
         router=router,
         context=_context(),
         agent_dir="agent-1",
-        spec=_SPEC,
+        spec=spec,
         name="widget_run",
         **kw,
     )
@@ -951,6 +951,24 @@ class TestASecondBinding:
             return widget_run
 
         assert _call(_reclaiming(InProcessSandboxBackend(), build), target="x") == "refused"
+
+
+class TestAWorkDirTheReclaimCouldNotServe:
+    """Refused at attach, because per call it would be a retention failure nobody could act on."""
+
+    _ROOT_SPEC = dataclasses.replace(_SPEC, work_dir="/")
+
+    def test_a_work_dir_at_the_guest_root_is_refused(self):
+        with pytest.raises(ValueError, match="one component from the guest root"):
+            _attach_with(_reclaiming_body, _router(InProcessSandboxBackend()), spec=self._ROOT_SPEC)
+
+    def test_so_is_one_that_only_spells_the_root(self):
+        spec = dataclasses.replace(_SPEC, work_dir="/./")
+        with pytest.raises(ValueError, match="work_dir"):
+            _attach_with(_reclaiming_body, _router(InProcessSandboxBackend()), spec=spec)
+
+    def test_the_attach_gate_still_wins(self):
+        assert _attach_with(_reclaiming_body, None, spec=self._ROOT_SPEC) == []
 
 
 class TestTheWrapperIsTransparent:

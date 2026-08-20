@@ -32,6 +32,7 @@ import functools
 import inspect
 import logging
 import math
+import posixpath
 from asyncio import CancelledError
 from collections.abc import Awaitable, Callable, Mapping
 from contextvars import ContextVar
@@ -496,6 +497,8 @@ def sandboxed_tool(
        forget a path it never held.
        A body that never asked for one costs nothing.  See ``on_reclaim_failure`` for the
        removal that does not happen, which is a data-retention failure rather than a tidy-up.
+       A ``spec`` whose ``work_dir`` is the guest root is refused here, because a path one
+       component from the root is one this cannot remove.
 
     ``build`` is a callback rather than a decorated function because the session does not
     exist until the attach gate has passed, and the tool body needs it in its closure.  Two
@@ -569,6 +572,13 @@ def sandboxed_tool(
             "the pull surface is what reads those paths back, and without the requirement the "
             "router's capability match never asks whether this backend has one — leaving the "
             "failure to happen inside the sandbox, where the reason is hardest to see."
+        )
+    if not [part for part in posixpath.normpath(spec.work_dir).split("/") if part]:
+        raise ValueError(
+            f"{name}: the {spec.kind!r} workload's work_dir is {spec.work_dir!r}, which leaves "
+            "a call's own path one component from the guest root. Reclaiming one recursively is "
+            "refused at that depth, so every call would keep its files and report a retention "
+            "failure it could do nothing about. Give the workload a directory of its own."
         )
     if not math.isfinite(reclaim_timeout) or reclaim_timeout <= 0:
         raise ValueError(
