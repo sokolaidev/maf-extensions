@@ -489,8 +489,8 @@ class Sandbox(Protocol):
     ``working_directory`` is a parameter on those four exactly as it is on :meth:`exec`,
     because no sandbox object knows the spec's ``work_dir``: it arrives per call or not at all,
     and a pull surface without it would assign the confinement duty to a layer with no way to
-    discharge it.  Their ``path`` is POSIX-shaped and relative to it, and one resolving outside it is
-    refused.
+    discharge it.  Their ``path`` is POSIX-shaped and relative to it, and one resolving outside it
+    is refused.
 
     **Confinement is a duty of all five, and it is not a check on the argument string.**  A
     path whose *parent* is a link satisfies every lexical test and still reads outside: with

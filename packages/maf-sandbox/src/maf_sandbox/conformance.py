@@ -139,7 +139,7 @@ class PosixGuestSubject:
     exec_timeout: float = 60.0
 
     async def plant_file(self, path: str, content: bytes) -> None:
-        """Planting is the guest's move, so use the path's parent as its narrowest root while the walk still runs above it."""
+        """Plant through the path's parent so the guest can plant outside the work directory."""
         await self.sandbox.write_file(
             path, content, working_directory=posixpath.dirname(path) or "/"
         )
@@ -888,7 +888,10 @@ FILES_IN_PROBES: tuple[Probe, ...] = (
     ),
     Probe(
         name="a-path-outside-is-refused",
-        why="an output path escaping its declared work directory would let a workload overwrite host-visible files.",
+        why=(
+            "an output path escaping its declared work directory would let a workload overwrite "
+            "host-visible files."
+        ),
         requires=frozenset({Capability.FILES_IN}),
         run=_probe_a_write_path_outside_is_refused,
     ),
@@ -918,7 +921,10 @@ FILES_IN_PROBES: tuple[Probe, ...] = (
     ),
     Probe(
         name="a-linked-working-directory",
-        why="a linked working directory can redirect every relative output outside its declared root.",
+        why=(
+            "a linked working directory can redirect every relative output outside its declared "
+            "root."
+        ),
         requires=frozenset({Capability.FILES_IN}),
         run=_probe_a_linked_working_directory_refuses_write,
     ),
