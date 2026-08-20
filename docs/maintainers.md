@@ -57,7 +57,8 @@ Setting it up is a one-time job. The variables below all point at Azure resource
 4. **The CodeAct sandbox image imported into the same sandbox group as a disk image**, for [`samples/14_acas_codeact_files`](../samples/14_acas_codeact_files/) and [`samples/15_acas_codeact_host_tools`](../samples/15_acas_codeact_host_tools/) — one import serves both, since they name the same reference: `mcr.microsoft.com/devcontainers/python:3.13-bookworm`. [`samples/03_acas_codeact`](../samples/03_acas_codeact/) no longer needs it: it names the service-provided prebuilt image `python-3.13`, which the group resolves from its catalogue, so nothing is imported for it. No environment variable accompanies this one — the samples name the fully-qualified MCR reference themselves (`CODEACT_IMAGE` in `agent.py`), and it is passed through to the backend untouched rather than qualified against a registry, so there is nothing here for the workflow to set beyond the import having already happened. Same idea as item 3, a public image needing no registry credential:
 
    ```bash
-   aca sandboxgroup disk create --image mcr.microsoft.com/devcontainers/python:3.13-bookworm --name python-3-13
+   export ACA_SUBSCRIPTION=<sub-id> ACA_RESOURCE_GROUP=<sandbox-group-rg> ACA_REGION=<region>
+   aca sandboxgroup disk create --group <group> --image mcr.microsoft.com/devcontainers/python:3.13-bookworm --name python-3-13
    ```
 
    or the portal equivalent, which suits a one-off import the same as above: [sandboxes.azure.com](https://sandboxes.azure.com) → the sandbox group → **Disk Images** → **Create**.
