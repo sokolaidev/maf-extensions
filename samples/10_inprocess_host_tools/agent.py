@@ -38,6 +38,7 @@ from maf_sandbox import (
     SandboxSpec,
 )
 from maf_sandbox.testing import InProcessSandboxBackend
+from _scaffold import installed_versions
 
 #: The kind this host would be attaching. Named once; every act below builds a spec for it.
 KIND = "release-notes"
@@ -250,4 +251,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    print(installed_versions())
     raise SystemExit(main())

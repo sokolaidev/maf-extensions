@@ -22,6 +22,7 @@ wrong — it damages whatever else is running (#445).
 
 from __future__ import annotations
 
+import importlib.metadata
 import os
 import sys
 
@@ -65,6 +66,23 @@ def conversation_id(name: str) -> str:
     run = os.environ.get("GITHUB_RUN_ID") or f"local-{os.getpid()}"
     attempt = os.environ.get("GITHUB_RUN_ATTEMPT") or "1"
     return f"{name}-{run}-{attempt}"
+
+
+def installed_versions() -> str:
+    """Every `maf-sandbox*` distribution this process resolves, in the order it was installed."""
+    pairs: list[str] = []
+    seen: set[str] = set()
+    for distribution in importlib.metadata.distributions():
+        name = distribution.metadata.get("Name")
+        if not name or not name.casefold().startswith("maf-sandbox"):
+            continue
+        version = distribution.version
+        key = name.casefold()
+        if not version or key in seen:
+            continue
+        seen.add(key)
+        pairs.append(f"{name} {version}")
+    return f"{MEASURED}installed: {', '.join(sorted(pairs, key=str.casefold))}"
 
 
 def quoted(text: str) -> str:

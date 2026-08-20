@@ -43,6 +43,7 @@ from _scaffold import (
     quoted,
     require_env_vars,
     tool_results,
+    installed_versions,
 )
 from agent_framework import Agent, InMemoryAgentFileStore
 from agent_framework.openai import OpenAIChatClient
@@ -204,4 +205,5 @@ async def run() -> int:
 
 
 if __name__ == "__main__":
+    print(installed_versions())
     raise SystemExit(asyncio.run(run()))

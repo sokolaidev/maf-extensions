@@ -40,7 +40,7 @@ import os
 import re
 import sys
 
-from _scaffold import MEASURED, evidence, quoted, require_env_vars, tool_results
+from _scaffold import installed_versions, MEASURED, evidence, quoted, require_env_vars, tool_results
 from agent_framework import Agent
 from agent_framework.openai import OpenAIChatCompletionClient
 from maf_sandbox import Isolation, SandboxRouter
@@ -149,4 +149,5 @@ async def run() -> int:
 
 
 if __name__ == "__main__":
+    print(installed_versions())
     raise SystemExit(asyncio.run(run()))
