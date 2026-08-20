@@ -677,9 +677,9 @@ def _assess_what_the_runs_left(output: str) -> list[str]:
         )
     if total < 1:
         failures.append(
-            "no transport files were found in the guest. Nothing deletes them — the protocol "
-            "has no way (#438) — so zero means the enumeration looked somewhere the transport "
-            "does not write"
+            "no transport files were found in the guest for a legacy cleanup report. The "
+            "transport leaves those files behind, so zero means the enumeration looked somewhere "
+            "the transport does not write"
         )
     if answers > total:
         failures.append(f"{answers} answered call(s) among {total} file(s) is not arithmetic")
@@ -701,8 +701,9 @@ def _assess_what_the_runs_left(output: str) -> list[str]:
         failures.append(
             f"the guest holds {answers} answered call(s) against the {dispatched[_DISPATCH]} "
             "lookup(s) the dispatched route recorded. The host answers every call it serves and "
-            "nothing deletes the answer, so fewer answers than lookups is the enumeration "
-            "having missed part of the traffic rather than the run having made less of it"
+            "the legacy transport leaves every answer, so fewer answers than lookups is the "
+            "enumeration having missed part of the traffic rather than the run having made less "
+            "of it"
         )
     return failures
 

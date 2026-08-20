@@ -68,8 +68,9 @@ from maf_sandbox.maf import list_all_files, make_caller_context
 
 #: Whether the installed transport takes its own files back when a run ends. #434 gave it a
 #: cleanup and exported `reclaim_run` in the same release, so the import is the marker for
-#: both: before it, `dispatch_over_exec` left the request and response files in the guest and
-#: nothing in the protocol could remove them (#438); after it, the transport removes the
+#: transport cleanup: before it, `dispatch_over_exec` left the request and response files in the
+#: guest; after it, the transport removes the directory it owns. The framework's call-directory
+#: cleanup is reported separately because it belongs to the CodeAct kind's installed version.
 #: directory it owns on every exit path. A sample runs against whatever is on PyPI, and act 5
 #: asks rather than assumes — the two are different measurements and both are correct.
 try:

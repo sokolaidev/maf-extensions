@@ -1128,9 +1128,10 @@ jobs:
     # is exactly what declaring the capability claims here (#365).
     #
     # **The fourth billable job in this workflow**, and it creates two sandboxes rather than
-    # one: a route each, because nothing deletes a run's transport files and a shared sandbox
-    # would let the direct route's program read the dispatched route's responses off the guest
-    # filesystem (#438). Both are deleted by the sample and checked by the assertion — a
+    # one: a route each, because legacy published combinations can leave a run's transport files
+    # behind and a shared sandbox would let the direct route's program read the dispatched route's
+    # responses off the guest filesystem (#438). Both are deleted by the sample and checked by the
+    # assertion — a
     # dispatched program that hangs is #375, where nothing can dispose the sandbox holding it,
     # so the footer count is the thing that would notice.
     #

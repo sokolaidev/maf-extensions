@@ -86,7 +86,7 @@ A fresh directory per run keeps one run's traffic out of the next one's. On curr
 
 Whether the *traffic* is still there depends on the transport, so act 5 names which one it measured before it counts anything. Where the transport reclaims what it owns ([#434](https://github.com/sokolaidev/maf-extensions/issues/434)), zero transport files is the cleanup working. The call-directory marker separately says whether the framework reclaimed the kind's directory; when it did, the program count comes from the host's own observer rather than the guest. Both are measured; the check grades the behavior the run declares.
 
-Sixty-three transport files survived one run of this sample. That is **three per served call** — the id the caller claimed with an exclusive create, the request, and the answer — so the sample reports the answered subset alongside the total, because a bare file count reads as three times the traffic there was.
+On a legacy transport, sixty-three transport files survived one run of this sample. That is **three per served call** — the id the caller claimed with an exclusive create, the request, and the answer — so the sample reports the answered subset alongside the total. A current transport reports zero instead, because it removes the directory holding that traffic.
 
 Disposing the sandbox is the only thing that removes them, which is what the footer does.
 
