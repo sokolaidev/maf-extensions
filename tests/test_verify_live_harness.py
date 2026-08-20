@@ -16,9 +16,12 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import yaml
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 VERIFY_LIVE = REPO_ROOT / ".github" / "workflows" / "verify-live.yml"
 _TEXT = VERIFY_LIVE.read_text("utf-8")
+_WORKFLOW = yaml.safe_load(_TEXT)
 
 #: Any invocation of a live check, whatever it is prefixed with — the prefix is the assertion.
 _CHECK_CALL = re.compile(r"python3\s+(?P<prefix>\S*?)scripts/(?P<script>check_live_\w+\.py)")
@@ -47,14 +50,21 @@ class TestEveryLiveCheckComesFromTheHarness:
         # that job invokes. The harness is a job-scoped dependency: a single checkout feeds every
         # `python3 "$HARNESS"/scripts/check_live_*.py` call in that job, and a tag run fails if
         # the job reads the ref under test instead.
-        assert _HARNESS_CHECKOUT.search(_TEXT), "no live-check job checks out the harness"
-        assert len(_HARNESS_CHECKOUT.findall(_TEXT)) == len(
-            re.findall(
-                r"^\s*-\s*name:\s*Check out the checks from the default branch\s*$",
-                _TEXT,
-                re.MULTILINE,
-            )
-        )
+        jobs = _WORKFLOW.get("jobs", {})
+        live_jobs = []
+        for job, definition in jobs.items():
+            steps = definition.get("steps", [])
+            if any(
+                'python3 "$HARNESS"/scripts/check_live_' in str(step.get("run", ""))
+                for step in steps
+            ):
+                live_jobs.append(job)
+                assert any(
+                    step.get("with", {}).get("path") == ".harness"
+                    for step in steps
+                    if isinstance(step, dict)
+                ), f"{job} invokes a live check without checking out the harness"
+        assert live_jobs, "verify-live.yml invokes no live checks"
 
 
 class TestTheFallbackKeepsABranchDispatchHonest:

@@ -192,7 +192,7 @@ jobs:
           python3 "$HARNESS"/scripts/check_live_sample.py /tmp/sample-out.txt
 
       - name: Assert the published version the sample resolved
-        if: inputs.version != ''
+        if: ${{ always() && inputs.version != '' }}
         env:
           PACKAGE: ${{ inputs.package }}
           VERSION: ${{ inputs.version }}
@@ -312,7 +312,7 @@ jobs:
           python3 "$HARNESS"/scripts/check_live_codeact_sample.py /tmp/sample03-out.txt
 
       - name: Assert the published version the sample resolved
-        if: inputs.version != ''
+        if: ${{ always() && inputs.version != '' }}
         env:
           PACKAGE: ${{ inputs.package }}
           VERSION: ${{ inputs.version }}
@@ -401,7 +401,7 @@ jobs:
           python3 "$HARNESS"/scripts/check_live_sample.py /tmp/sample05-out.txt
 
       - name: Assert the published version the sample resolved
-        if: inputs.version != ''
+        if: ${{ always() && inputs.version != '' }}
         env:
           PACKAGE: ${{ inputs.package }}
           VERSION: ${{ inputs.version }}
@@ -490,7 +490,7 @@ jobs:
           python3 "$HARNESS"/scripts/check_live_codeact_sample.py /tmp/sample06-out.txt
 
       - name: Assert the published version the sample resolved
-        if: inputs.version != ''
+        if: ${{ always() && inputs.version != '' }}
         env:
           PACKAGE: ${{ inputs.package }}
           VERSION: ${{ inputs.version }}
@@ -579,7 +579,7 @@ jobs:
             /tmp/sample07-out.txt samples/07_docker_diagram/out/diagram.png
 
       - name: Assert the published version the sample resolved
-        if: inputs.version != ''
+        if: ${{ always() && inputs.version != '' }}
         env:
           PACKAGE: ${{ inputs.package }}
           VERSION: ${{ inputs.version }}
@@ -663,7 +663,7 @@ jobs:
             /tmp/sample08-out.txt samples/08_docker_codeact_files/out/summary.md
 
       - name: Assert the published version the sample resolved
-        if: inputs.version != ''
+        if: ${{ always() && inputs.version != '' }}
         env:
           PACKAGE: ${{ inputs.package }}
           VERSION: ${{ inputs.version }}
@@ -763,7 +763,7 @@ jobs:
           python3 "$HARNESS"/scripts/check_live_sample.py /tmp/sample09-out.txt
 
       - name: Assert the published version the sample resolved
-        if: inputs.version != ''
+        if: ${{ always() && inputs.version != '' }}
         env:
           PACKAGE: ${{ inputs.package }}
           VERSION: ${{ inputs.version }}
@@ -816,7 +816,7 @@ jobs:
           python3 "$HARNESS"/scripts/check_live_host_tools_sample.py /tmp/sample10-out.txt
 
       - name: Assert the published version the sample resolved
-        if: inputs.version != ''
+        if: ${{ always() && inputs.version != '' }}
         env:
           PACKAGE: ${{ inputs.package }}
           VERSION: ${{ inputs.version }}
@@ -933,7 +933,7 @@ jobs:
           python3 "$HARNESS"/scripts/check_live_router_sample.py /tmp/sample11-out.txt
 
       - name: Assert the published version the sample resolved
-        if: inputs.version != ''
+        if: ${{ always() && inputs.version != '' }}
         env:
           PACKAGE: ${{ inputs.package }}
           VERSION: ${{ inputs.version }}
@@ -981,7 +981,7 @@ jobs:
           python3 "$HARNESS"/scripts/check_live_purge_sample.py /tmp/sample12-out.txt
 
       - name: Assert the published version the sample resolved
-        if: inputs.version != ''
+        if: ${{ always() && inputs.version != '' }}
         env:
           PACKAGE: ${{ inputs.package }}
           VERSION: ${{ inputs.version }}
@@ -1100,7 +1100,7 @@ jobs:
           exit "$status"
 
       - name: Assert the published version the sample resolved
-        if: inputs.version != ''
+        if: ${{ always() && inputs.version != '' }}
         env:
           PACKAGE: ${{ inputs.package }}
           VERSION: ${{ inputs.version }}
@@ -1213,7 +1213,7 @@ jobs:
             /tmp/sample14-out.txt samples/14_acas_codeact_files/out/summary.md
 
       - name: Assert the published version the sample resolved
-        if: inputs.version != ''
+        if: ${{ always() && inputs.version != '' }}
         env:
           PACKAGE: ${{ inputs.package }}
           VERSION: ${{ inputs.version }}
@@ -1321,7 +1321,7 @@ jobs:
           python3 "$HARNESS"/scripts/check_live_host_tools_dispatch_sample.py /tmp/sample15-out.txt
 
       - name: Assert the published version the sample resolved
-        if: inputs.version != ''
+        if: ${{ always() && inputs.version != '' }}
         env:
           PACKAGE: ${{ inputs.package }}
           VERSION: ${{ inputs.version }}

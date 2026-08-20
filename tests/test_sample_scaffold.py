@@ -346,6 +346,6 @@ class TestCheckLiveVersions:
     def test_it_rejects_multiple_exact_matches(self):
         output = "[measured] installed: maf-sandbox 0.18.1, maf-sandbox 0.18.1"
         assert live_versions.assess(output, "maf-sandbox", "0.18.1") == [
-            "expected exactly one installed match for maf-sandbox 0.18.1, found: "
-            "maf-sandbox 0.18.1, maf-sandbox 0.18.1"
+            "the published set has not caught up: expected exactly one installed match for "
+            "maf-sandbox 0.18.1, found: maf-sandbox 0.18.1, maf-sandbox 0.18.1"
         ]

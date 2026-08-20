@@ -69,20 +69,17 @@ def conversation_id(name: str) -> str:
 
 
 def installed_versions() -> str:
-    """Every `maf-sandbox*` distribution this process resolves, in the order it was installed."""
+    """Every `maf-sandbox*` distribution this process resolves, sorted for deterministic output."""
     pairs: list[str] = []
-    seen: set[str] = set()
     for distribution in importlib.metadata.distributions():
         name = distribution.metadata.get("Name")
         if not name or not name.casefold().startswith("maf-sandbox"):
             continue
         version = distribution.version
-        key = name.casefold()
-        if not version or key in seen:
+        if not version:
             continue
-        seen.add(key)
         pairs.append(f"{name} {version}")
-    return f"{MEASURED}installed: {', '.join(sorted(pairs, key=str.casefold))}"
+    return f"{MEASURED}installed: {', '.join(sorted(pairs, key=lambda text: text.casefold()))}"
 
 
 def quoted(text: str) -> str:
