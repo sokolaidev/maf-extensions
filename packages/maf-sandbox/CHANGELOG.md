@@ -2,6 +2,18 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.18.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.17.0...maf-sandbox-v0.18.0) (2026-08-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* Sandbox.write_file now requires the keyword-only working_directory argument and refuses paths that escape it, pass through symlinked parents, target symlinks, or name the working directory itself.
+
+### Features
+
+* require a working directory for write_file and refuse paths that escape it ([#488](https://github.com/sokolaidev/maf-extensions/issues/488)) ([49795fa](https://github.com/sokolaidev/maf-extensions/commit/49795fa78a968451eef55fe27cd8784106f4ccc3))
+* **sandbox:** a tool call owns a guest path, and the framework reclaims it when the call ends ([#481](https://github.com/sokolaidev/maf-extensions/issues/481)) ([c6748cb](https://github.com/sokolaidev/maf-extensions/commit/c6748cb2a5f8e8a2306986e634bd70ce9721b2e1))
+
 ## [0.17.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.16.0...maf-sandbox-v0.17.0) (2026-08-19)
 
 
