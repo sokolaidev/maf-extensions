@@ -947,6 +947,22 @@ class TestTheBoundariesTheSummaryRestsOn:
             for r in check.assess(_swap("min 5.38s, max 5.38s", "min 0.00s, max 0.00s"))
         )
 
+    def test_a_direct_boundary_line_fails(self):
+        direct = _HEALTHY.replace(
+            "== 4. What the round trips bought ==",
+            "  [measured] direct route: program boundaries observed: 1, min 2.00s, max 2.00s\n"
+            "== 4. What the round trips bought ==",
+        )
+        assert any("direct route" in reason for reason in check.assess(direct))
+
+    def test_duplicate_dispatch_boundary_lines_fail(self):
+        duplicate = _HEALTHY.replace(
+            "== 4. What the round trips bought ==",
+            "  [measured] dispatch route: program boundaries observed: 1, min 5.38s, max 5.38s\n"
+            "== 4. What the round trips bought ==",
+        )
+        assert any("exactly one boundary summary" in reason for reason in check.assess(duplicate))
+
 
 class TestObservedProgramCount:
     def test_a_missing_observer_count_fails(self):

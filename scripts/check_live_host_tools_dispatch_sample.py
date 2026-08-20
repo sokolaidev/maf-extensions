@@ -506,15 +506,16 @@ def _assess_the_round_trips(output: str) -> list[str]:
                 f"the tool-call shape describes {shaped_programs} program(s), but the observer "
                 f"saw {dispatching}; the independent host record and model message shape disagree"
             )
-        if any(int(g) > 1 for g in groups):
-            failures.append(
-                f"the dispatched route asked for {max(int(g) for g in groups)} tool call(s) in one "
-                "message. Those programs can interleave in the ledger, so the observed run-boundary "
-                "measurement would not describe consecutive programs"
-            )
-
-    observed = _BOUNDARIES.findall(output)
-    if observed and dispatching is not None:
+    observed = [match for match in _BOUNDARIES.findall(output) if match[0] == _DISPATCH]
+    direct_boundaries = [match for match in _BOUNDARIES.findall(output) if match[0] == _DIRECT]
+    if direct_boundaries:
+        failures.append("a program-boundary line was printed for the direct route")
+    if len(observed) > 1:
+        failures.append(
+            f"the dispatch route reports program boundaries {len(observed)} times; exactly one "
+            "boundary summary is required"
+        )
+    if len(observed) == 1 and dispatching is not None:
         _, count, smallest, largest = observed[0]
         expected = dispatching - 1
         if int(count) != expected:
