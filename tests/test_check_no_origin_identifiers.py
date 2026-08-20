@@ -7,6 +7,7 @@ leak fixed on disk but still staged is refused, and every path is judged like an
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 from pathlib import Path
 
@@ -122,6 +123,29 @@ class TestCli:
         (tmp_path / "blob.bin").write_bytes(blob)
         subprocess.run(["git", "add", "blob.bin"], cwd=tmp_path, check=True)
         assert _main_in(monkeypatch, tmp_path, "--staged", "blob.bin") == 1
+
+    def test_wide_encodings_are_decoded_too(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        # An identifier can be committed in a wide encoding; the lossy single-encoding decode
+        # used to interleave NULs and let it past both rules.
+        for encoding in ("utf-16-le", "utf-32-le"):
+            blob = ("connect to db.orders." + "internal\n").encode(encoding)
+            _init_repo(tmp_path)
+            (tmp_path / "wide.txt").write_bytes(blob)
+            subprocess.run(["git", "add", "wide.txt"], cwd=tmp_path, check=True)
+            assert _main_in(monkeypatch, tmp_path, "--staged", "wide.txt") == 1
+
+    def test_a_staged_symlink_is_judged(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        # A symlink's staged blob is its stored target — a path, which is content the local
+        # list must reach. pre-commit's `types: [file]` default would keep symlinks away from
+        # the hook; the config sets `types: []`.
+        _init_repo(tmp_path)
+        (tmp_path / guard.LOCAL_LIST_NAME).write_text("origin-repo\n", "utf-8")
+        try:
+            os.symlink("origin-repo" + ".md", tmp_path / "link.md")
+            subprocess.run(["git", "add", "link.md"], cwd=tmp_path, check=True)
+        except OSError:
+            pytest.skip("no symlink support on this platform")
+        assert _main_in(monkeypatch, tmp_path, "--staged", "link.md") == 1
 
     def test_clean_binary_stage_passes(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         _init_repo(tmp_path)

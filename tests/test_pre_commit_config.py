@@ -53,17 +53,26 @@ def test_staged_hooks_match_their_contract() -> None:
         assert by_id[hook_id]["always_run"] is True
         assert by_id[hook_id]["pass_filenames"] is False
     assert by_id["no-origin-identifiers"]["args"] == ["--staged"]
+    # `types: []` keeps staged symlinks in scope: pre-commit's default `types: [file]` would
+    # filter them out, and a symlink's stored target is content the rules must see.
+    assert by_id["no-origin-identifiers"]["types"] == []
     assert by_id["no-origin-identifiers-msg"]["args"] == ["--commit-msg"]
 
 
 def test_ci_exercises_every_non_default_stage() -> None:
     # Each stage a hook is declared for that is not the CI default must be run by a
-    # `--hook-stage` step, or the step's wiring can rot undetected.
-    workflow = (Path(__file__).parent.parent / ".github" / "workflows" / "tests.yml").read_text(
-        encoding="utf-8"
+    # `--hook-stage` step, or the step's wiring can rot undetected. Only the steps' `run`
+    # values count — a comment mentioning the flag must not stand in for the command.
+    workflow_path = Path(__file__).parent.parent / ".github" / "workflows" / "tests.yml"
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+    run_values = " ".join(
+        step.get("run", "")
+        for job in workflow["jobs"].values()
+        for step in job.get("steps", [])
+        if isinstance(step, dict)
     )
     declared = set()
     for hook in _hooks():
         declared.update(stage for stage in hook["stages"] if stage not in ("pre-commit", "manual"))
     for stage in declared:
-        assert f"--hook-stage {stage}" in workflow, f"no CI step runs the {stage} stage"
+        assert f"--hook-stage {stage}" in run_values, f"no CI step runs the {stage} stage"

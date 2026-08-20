@@ -32,14 +32,21 @@ LOCAL_LIST_NAME = ".no-origin-identifiers"
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
+# Every encoding an identifier can be committed in: the rules are ASCII, and none of these
+# views produces an ASCII run when the blob is encoded in a *different* one, so scanning all
+# of them cannot false-fire on a blob in the wrong encoding.
+_DECODINGS = ("utf-8", "utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be")
+
+
 def _staged_blob(path: str) -> str:
-    """The staged content of ``path`` as text; binary blobs are decoded lossily."""
+    """The staged content of ``path`` as text, decoded lossily in every known encoding."""
     result = subprocess.run(
         ["git", "show", f":{path}"], cwd=_REPO_ROOT, capture_output=True, check=False
     )
     if result.returncode != 0:
         return ""
-    return result.stdout.decode("utf-8", errors="ignore")
+    raw = result.stdout
+    return "\n".join(raw.decode(encoding, errors="ignore") for encoding in _DECODINGS)
 
 
 def load_local_names(repo_root: Path) -> tuple[str, ...]:

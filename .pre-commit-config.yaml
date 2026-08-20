@@ -41,6 +41,10 @@ repos:
         entry: uv run python scripts/check_no_origin_identifiers.py
         args: ["--staged"]
         language: system
+        # pre-commit filters by `types` before the hook runs, and a staged symlink is tagged
+        # `symlink`, not `file`, so the default `types: [file]` would keep symlinks away from
+        # both scans. An empty list disables the filter: regular, binary and symlink blobs alike.
+        types: []
         stages: [pre-commit]
       - id: no-origin-identifiers-msg
         name: no origin identifiers (commit message)
