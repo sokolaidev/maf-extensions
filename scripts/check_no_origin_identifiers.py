@@ -1,33 +1,8 @@
 """Refuse a commit that names the private origin this repository was scrubbed from.
 
-The scrub rule (AGENTS.md) forbids naming the origin repository, its issue or PR numbers,
-host paths, internal URLs or infrastructure identifiers in any artifact. CI can catch a leak
-only after the push has made it public, so the only point at which the fix is free is before
-the commit. This is that check, wired as a ``pre-commit`` hook over the staged files and a
-``commit-msg`` hook over the message.
-
-Two invocation forms, matching the two pre-commit hook stages that drive it:
-
-    python scripts/check_no_origin_identifiers.py --staged <path>...
-        The ``pre-commit`` stage. Each path is read from the index (the staged blob), so a
-        leak that is fixed on disk but still in the index is the one that gets caught — the
-        worktree is not what commits.
-
-    python scripts/check_no_origin_identifiers.py --commit-msg <message-file>
-        The ``commit-msg`` stage: scan the message file.
-
-The committed patterns match only what can be matched *anonymously* **without a false
-positive on this tree** — the internal DNS suffixes ``.internal`` and ``.intranet``. The
-other shapes the scrub rule cares about are deliberately *not* committed patterns, for two
-reasons. A generic one collides with public content: a bare "absolute Windows user path"
-matches the legitimate ``C:/Users/…`` fixtures in the path-normalisation tests, and a generic
-``PREFIX-123`` ticket shape matches the retail codes in the samples. And the rest are named
-by definition: the origin repository, a specific internal host, the private registry (this
-suite's public ``*.azurecr.io`` host is *not* it), and an origin ticket prefix. Those belong
-in the untracked local list ``.no-origin-identifiers`` at the repository root: one literal
-per line, ``#`` for a comment, matched case-insensitively as a substring. A committed list of
-such names would publish the very secret it suppresses, and the list is gitignored, so it
-never leaves the machine.
+Wired as a pre-commit hook over the staged blobs and a commit-msg hook over the message.
+The committed rules are the anonymous structural patterns; the names only the origin owner
+knows are read from the untracked local list ``.no-origin-identifiers``.
 """
 
 from __future__ import annotations
@@ -37,13 +12,17 @@ import subprocess
 import sys
 from pathlib import Path
 
-# A DNS label immediately before an internal suffix. The label requirement keeps this from
-# matching a bare word in prose — a real internal host always carries a subdomain label.
-# Only ``.internal`` and ``.intranet`` are committed: they are the unambiguous internal TLDs,
-# with no public domain that could use them as a suffix. (``.corp`` is dropped on purpose —
-# ``x.corp.com`` is a plausible public name the pattern would catch.)
+# A DNS label before the internal suffix — a real internal host always carries a subdomain
+# label — and the match must end the internal name: no DNS character may follow the suffix,
+# nor a dot plus a label, which would make the host a public continuation instead (a name
+# that merely *contains* the suffix, as this file's own test fixtures do, is safe). A sentence
+# or trailing root dot still ends the name. ``.corp`` stays out on purpose; a public name may
+# end in it.
 _HOST_LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?"
-_INTERNAL_DNS = re.compile(rf"{_HOST_LABEL}\.(?:internal|intranet)\b", re.IGNORECASE)
+_INTERNAL_DNS = re.compile(
+    rf"{_HOST_LABEL}\.(?:internal|intranet)(?:-[A-Za-z0-9])?" r"(?![A-Za-z0-9-])(?!\.[A-Za-z0-9])",
+    re.IGNORECASE,
+)
 
 #: The untracked, machine-local list of names only the owner of the origin knows.
 LOCAL_LIST_NAME = ".no-origin-identifiers"
@@ -52,29 +31,15 @@ LOCAL_LIST_NAME = ".no-origin-identifiers"
 # computed inside ``main``) so the tests can point it at a scratch repository.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
-#: The guard's own source and its test carry the rules' fixtures and examples by
-# construction — a test that exercises ``.internal`` has to contain ``.internal`` — so they
-# are exempt from the scan; everything else is judged. Named as pre-commit passes them,
-# repo-relative with forward slashes, so the match never depends on the working directory.
-_EXEMPT = frozenset(
-    {
-        "scripts/check_no_origin_identifiers.py",
-        "tests/test_check_no_origin_identifiers.py",
-    }
-)
-
 
 def _staged_blob(path: str) -> str:
-    """The staged content of ``path`` as text, or empty for a binary blob."""
+    """The staged content of ``path`` as text; binary blobs are decoded lossily."""
     result = subprocess.run(
         ["git", "show", f":{path}"], cwd=_REPO_ROOT, capture_output=True, check=False
     )
     if result.returncode != 0:
         return ""
-    raw = result.stdout
-    if b"\0" in raw:
-        return ""
-    return raw.decode("utf-8", errors="ignore")
+    return result.stdout.decode("utf-8", errors="ignore")
 
 
 def load_local_names(repo_root: Path) -> tuple[str, ...]:
@@ -106,14 +71,6 @@ def scan(text: str, local_names: tuple[str, ...] = ()) -> list[str]:
         if name.casefold() in text.casefold():
             findings.append("matches a name from the local origin list — remove it")
     return findings
-
-
-def _exempt(path: str) -> bool:
-    """Whether ``path`` is the guard's own source or test, exempt from the scan."""
-    normalized = path.replace("\\", "/")
-    while normalized.startswith("./"):
-        normalized = normalized[2:]
-    return normalized in _EXEMPT
 
 
 def main(argv: list[str]) -> int:
@@ -150,8 +107,10 @@ def main(argv: list[str]) -> int:
 
     problems: list[str] = []
     for path in paths:
-        if _exempt(path):
-            continue
+        # The path is part of the tree too: a leak in a file or directory name must be caught
+        # even when the content is clean.
+        for finding in scan(path, local_names):
+            problems.append(f"staged path {path}: {finding}")
         for finding in scan(_staged_blob(path), local_names):
             problems.append(f"staged {path}: {finding}")
     if message_file is not None:

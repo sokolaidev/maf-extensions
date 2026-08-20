@@ -14,6 +14,11 @@
 
 # All three types, so a bare `pre-commit install` (the one line CONTRIBUTING.md asks for)
 # wires the commit, the push and the message guard alike.
+
+# A hook without an explicit `stages` key would inherit *every* stage and re-run on commit,
+# push and message alike; the default keeps the tiers where the tiers put it. A hook whose
+# own manifest declares stages (for example the hygiene hooks' `uv-lock`) keeps those.
+default_stages: [pre-commit]
 default_install_hook_types: [pre-commit, pre-push, commit-msg]
 
 repos:
@@ -52,12 +57,16 @@ repos:
         args: ["pyright-packages"]
         language: system
         pass_filenames: false
+        # Whole-tree passes, so a push that deletes the last changed file still runs them:
+        # with no filenames, pre-commit would skip a hook that does not run unconditionally.
+        always_run: true
         stages: [pre-push]
       - id: pyroot
         name: pyright (scripts, tests & samples)
         entry: uv run pyright
         language: system
         pass_filenames: false
+        always_run: true
         stages: [pre-push]
 
   # Pinned by commit SHA, not tag — this repository publishes to PyPI, and a moving tag is a
@@ -65,8 +74,10 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c # v6.0.0
     hooks:
+      # The branch guard is local: `manual` keeps it runnable from the command line.
       - id: no-commit-to-branch
         args: ["--branch", "main"]
+        stages: [pre-commit, manual]
       - id: check-merge-conflict
       - id: detect-private-key
       - id: check-added-large-files

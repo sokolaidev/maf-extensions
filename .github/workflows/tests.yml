@@ -77,14 +77,28 @@ jobs:
         # The config itself cannot rot while every local copy stays green, so the pre-commit
         # stage of the hooks runs here as the whole tree: ruff, the scrub guard and the
         # hygiene hooks, plus `uv-lock`'s rewriter. No `--hook-stage` filter is passed, so
-        # pre-commit uses its default — the pre-commit stage — and the stage-gated hooks (the
-        # pre-push pyright passes, the commit-msg guard) do not run here; each is covered
-        # separately, the pyright by the explicit passes below and the guard by its own suite.
-        # Running them through the framework is what this step is for: a config whose entry
-        # points, arguments or pins were edited into a non-working shape stays green locally
-        # until the first person to `pre-commit install` hits it. `uv sync --locked` above
-        # installed the dev group, which is where pre-commit lives.
+        # pre-commit uses its default — the pre-commit stage; a hook whose `stages` key were
+        # dropped would inherit all stages and run here, which is how the wiring of the two
+        # non-default stages is caught (on top of the config-level test in the suite). The
+        # non-default stages get their own steps below. `uv sync --locked` above installed
+        # the dev group, which is where pre-commit lives.
+        env:
+          # `main` is checked out as a local branch here, so the branch guard — a local
+          # hook that keeps a commit on the protected branch — would fail the run.
+          SKIP: no-commit-to-branch
         run: uv run pre-commit run --all-files
+
+      - name: Pre-commit (pre-push stage, whole tree)
+        # The pre-push hooks through the framework: the `always_run` pyright passes over the
+        # whole tree plus the hygiene hooks that declare the pre-push stage.
+        run: uv run pre-commit run --hook-stage pre-push --all-files
+
+      - name: Pre-commit (commit-msg stage)
+        # The commit-msg guard against a clean fixture message, so the stage's entry and
+        # arguments are exercised through pre-commit the way an installed hook drives it.
+        run: |
+          printf 'ci: a fixture message for the commit-msg stage\n' > "$RUNNER_TEMP/ci-commit-msg"
+          uv run pre-commit run --hook-stage commit-msg --commit-msg-filename "$RUNNER_TEMP/ci-commit-msg" no-origin-identifiers-msg
 
       - name: Tests
         run: uv run pytest -q

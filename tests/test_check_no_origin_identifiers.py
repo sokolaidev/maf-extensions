@@ -1,10 +1,7 @@
-"""The origin-identifier guard, whose `scan` is a pure function and so is tested in full here.
+"""The origin-identifier guard, whose ``scan`` is a pure function and so is tested in full here.
 
-The two shapes that carry the rest: the committed pattern must fire on an internal hostname
-without touching the public content this tree legitimately carries — the suite's own
-``*.azurecr.io`` registry host, the ``C:/Users/…`` path-normalisation fixtures, and the
-samples' retail codes — and the CLI must judge the *staged* content, not the worktree, or a
-leak that is fixed on disk but still in the index would sail through.
+The CLI tests stage through a real scratch git repository: the index is what is judged, so a
+leak fixed on disk but still staged is refused, and every path is judged like any other.
 """
 
 from __future__ import annotations
@@ -28,10 +25,22 @@ class TestScan:
         assert guard.scan(text) == []
 
     @pytest.mark.parametrize(
-        "host", ["db.orders.internal", "api.corp.intranet", "relay-2.internal"]
+        "host", ["db.orders." + "internal", "api.corp." + "intranet", "relay-2." + "internal"]
     )
     def test_internal_hostnames_fire(self, host: str):
         assert any("internal hostname" in finding for finding in guard.scan(f"see {host}"))
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            "service." + "internal" + ".example.com",  # a public name after the word
+            "host." + "internal" + "-name.example",  # the suffix is not the name's end
+            "relay-2." + "internal" + ".example",  # a public name after the root dot
+            "shop." + "internal" + ".example.com",  # same shape as the registry hosts above
+        ],
+    )
+    def test_public_continuations_do_not_fire(self, host: str):
+        assert guard.scan(f"see {host}") == []
 
     def test_public_content_does_not_fire(self):
         text = (
@@ -66,7 +75,9 @@ def _init_repo(tmp_path: Path) -> None:
 
 
 def _stage(tmp_path: Path, name: str, text: str) -> None:
-    (tmp_path / name).write_text(text, "utf-8")
+    path = tmp_path / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, "utf-8")
     subprocess.run(["git", "add", name], cwd=tmp_path, check=True)
 
 
@@ -79,14 +90,14 @@ def _main_in(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *args: str) -> int
 class TestCli:
     def test_staged_leak_is_refused(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         _init_repo(tmp_path)
-        _stage(tmp_path, "notes.md", "connect to db.orders.internal\n")
+        _stage(tmp_path, "notes.md", "connect to db.orders." + "internal\n")
         assert _main_in(monkeypatch, tmp_path, "--staged", "notes.md") == 1
 
     def test_worktree_fix_does_not_clear_a_staged_leak(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ):
         _init_repo(tmp_path)
-        _stage(tmp_path, "notes.md", "connect to db.orders.internal\n")
+        _stage(tmp_path, "notes.md", "connect to db.orders." + "internal\n")
         # Fixed on disk, but the index still carries the leak — that is what would commit.
         (tmp_path / "notes.md").write_text("connect to the database\n", "utf-8")
         assert _main_in(monkeypatch, tmp_path, "--staged", "notes.md") == 1
@@ -99,19 +110,28 @@ class TestCli:
     def test_several_staged_files(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         _init_repo(tmp_path)
         _stage(tmp_path, "clean.md", "nothing to see\n")
-        _stage(tmp_path, "leak.md", "see relay-2.internal\n")
+        _stage(tmp_path, "leak.md", "see relay-2." + "internal\n")
         assert _main_in(monkeypatch, tmp_path, "--staged", "clean.md", "leak.md") == 1
         assert _main_in(monkeypatch, tmp_path, "--staged", "clean.md") == 0
 
-    def test_binary_stage_is_skipped(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    def test_binary_stage_is_refused_when_it_carries_an_identifier(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
         _init_repo(tmp_path)
-        (tmp_path / "blob.bin").write_bytes(b"\x00\x01db.orders.internal\x02")
+        blob = b"\x00\x01" + b"db.orders." + b"internal" + b"\x02"
+        (tmp_path / "blob.bin").write_bytes(blob)
+        subprocess.run(["git", "add", "blob.bin"], cwd=tmp_path, check=True)
+        assert _main_in(monkeypatch, tmp_path, "--staged", "blob.bin") == 1
+
+    def test_clean_binary_stage_passes(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        _init_repo(tmp_path)
+        (tmp_path / "blob.bin").write_bytes(b"\x00\x01\x02\x03")
         subprocess.run(["git", "add", "blob.bin"], cwd=tmp_path, check=True)
         assert _main_in(monkeypatch, tmp_path, "--staged", "blob.bin") == 0
 
     def test_commit_msg_form(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         bad = tmp_path / "msg.txt"
-        bad.write_text("ci: hook the checks\n\nvia relay-2.internal\n", "utf-8")
+        bad.write_text("ci: hook the checks\n\nvia relay-2." + "internal\n", "utf-8")
         assert _main_in(monkeypatch, tmp_path, "--commit-msg", str(bad)) == 1
         good = tmp_path / "msg2.txt"
         good.write_text("ci: hook the checks before commit and push\n", "utf-8")
@@ -133,21 +153,40 @@ class TestCli:
         _init_repo(tmp_path)
         assert _main_in(monkeypatch, tmp_path, "--bogus") == 2
 
-    def test_the_guards_own_source_is_exempt(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-        # A file at the guard's own paths carries fixtures by construction, so it is never
-        # judged — otherwise a test that proves the rule fires could not itself be committed.
+    def test_a_path_carrying_a_local_name_is_refused(self, monkeypatch, tmp_path: Path):
+        # A file or directory name is part of the tree too: a leak in the name alone is refused.
         _init_repo(tmp_path)
-        (tmp_path / "tests").mkdir()
-        leaky = "tests/test_check_no_origin_identifiers.py"
-        (tmp_path / leaky).write_text("db.orders.internal and api.corp.intranet\n", "utf-8")
-        subprocess.run(["git", "add", leaky], cwd=tmp_path, check=True)
-        assert _main_in(monkeypatch, tmp_path, "--staged", leaky) == 0
+        (tmp_path / guard.LOCAL_LIST_NAME).write_text("origin-repo\n", "utf-8")
+        (tmp_path / "origin-repo").mkdir()
+        _stage(tmp_path, "origin-repo/notes.md", "nothing to see\n")
+        assert _main_in(monkeypatch, tmp_path, "--staged", "origin-repo/notes.md") == 1
 
-    def test_a_different_file_is_not_exempt(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-        # The exemption is exact-path, not a substring: a near name is still judged.
+    def test_the_guards_own_paths_are_judged(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+        # The guard's files are not special: clean content at their own paths passes, so the
+        # suite cannot hide a leak behind the guard's file name.
+        _init_repo(tmp_path)
+        _stage(tmp_path, "scripts/check_no_origin_identifiers.py", "def scan(text):\n    ...\n")
+        _stage(tmp_path, "tests/test_check_no_origin_identifiers.py", "def test_ok():\n    ...\n")
+        assert (
+            _main_in(
+                monkeypatch,
+                tmp_path,
+                "--staged",
+                "scripts/check_no_origin_identifiers.py",
+                "tests/test_check_no_origin_identifiers.py",
+            )
+            == 0
+        )
+
+    def test_a_near_name_at_a_guard_path_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        # Same file name in a different tree: the identifier in the content is caught.
         _init_repo(tmp_path)
         (tmp_path / "other").mkdir()
-        _stage(tmp_path, "other/test_check_no_origin_identifiers.py", "db.orders.internal\n")
+        _stage(
+            tmp_path, "other/test_check_no_origin_identifiers.py", "see db.orders." + "internal\n"
+        )
         assert (
             _main_in(monkeypatch, tmp_path, "--staged", "other/test_check_no_origin_identifiers.py")
             == 1
