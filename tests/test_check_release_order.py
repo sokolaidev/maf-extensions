@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -20,6 +22,45 @@ check = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(check)
 
 _CORE_FILE = "packages/maf-sandbox/src/maf_sandbox/_protocol.py"
+
+
+class _Response:
+    """The slice of an HTTP response ``json.load`` reads: a ``read()`` returning JSON bytes."""
+
+    def __init__(self, payload: object) -> None:
+        self._body = json.dumps(payload).encode()
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self) -> _Response:
+        return self
+
+    def __exit__(self, *_args: object) -> bool:
+        return False
+
+
+def _patch_urlopen(
+    monkeypatch: pytest.MonkeyPatch,
+    routes: dict[str, object],
+) -> None:
+    """Route a URL to a payload dict (success) or an ``HTTPError`` (raise).
+
+    Keys are matched as substrings, longest first, so a per-version segment like
+    ``bicep/0.10.0/json`` is not shadowed by the top-level ``bicep/json``.
+    """
+
+    def fake_urlopen(url: str | urllib.request.Request, timeout: int | None = None) -> _Response:
+        target = url.full_url if isinstance(url, urllib.request.Request) else url
+        for key in sorted(routes, key=len, reverse=True):
+            if key in target:
+                result = routes[key]
+                if isinstance(result, urllib.error.HTTPError):
+                    raise result
+                return _Response(result)
+        raise AssertionError(f"unexpected url {target}")
+
+    monkeypatch.setattr(check.urllib.request, "urlopen", fake_urlopen)
 
 
 def _repo(tmp_path: Path, version: str, ceilings: dict[str, str]) -> Path:
@@ -143,6 +184,31 @@ class TestAssess:
         repo = _repo(tmp_path, "0.6.1", {"maf-sandbox-acas": "0.7"})
         problems = check.assess("feat: a thing", [_CORE_FILE], repo)
         assert "RELEASING.md" in problems[1]
+
+
+class TestPublishedVersionsAreSortedSemantically:
+    """Newest-first, by numeric value, never lexically."""
+
+    def test_0_10_0_sorts_after_0_9_0(self, monkeypatch: pytest.MonkeyPatch):
+        _patch_urlopen(
+            monkeypatch,
+            {"simple/maf-sandbox-bicep/": {"versions": ["0.6.0", "0.10.0", "0.9.0"]}},
+        )
+        assert check.fetch_published_versions("maf-sandbox-bicep") == ["0.10.0", "0.9.0", "0.6.0"]
+
+    def test_an_unsorted_multi_part_order_is_preserved_by_value(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        _patch_urlopen(
+            monkeypatch,
+            {"simple/maf-sandbox-bicep/": {"versions": ["1.2.4", "1.2.10", "1.3.0", "1.2.3"]}},
+        )
+        assert check.fetch_published_versions("maf-sandbox-bicep") == [
+            "1.3.0",
+            "1.2.10",
+            "1.2.4",
+            "1.2.3",
+        ]
 
 
 class TestTheVersionThisTreeDeclaresIsOneEveryDependentAdmits:
