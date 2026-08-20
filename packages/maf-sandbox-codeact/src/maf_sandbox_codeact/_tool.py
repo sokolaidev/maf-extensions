@@ -867,10 +867,11 @@ async def _execute(
         # the host's reason for having none; `output` is empty in the second case, so
         # rebuilding the sentence from that attribute drops the reason silently.
         #
-        # It says what became of the program too — signalled with its process group, signalled
-        # alone with anything it spawned still running, or not signalled at all. Only the last
-        # leaves disposal as the remedy, so a blanket claim added here would contradict the
-        # sentence it is appended to.
+        # It says what was *attempted* on the program too — its process group signalled, the
+        # program signalled alone, or nothing signalled. None of the three is a claim that the
+        # program stopped: the signal reaches the group it starts in, and both numbers come
+        # from files the program can write. A blanket claim added here would contradict a
+        # sentence that is already careful about which of those it is asserting.
         #
         # Surfaced whole rather than quoted from: the transport writes these model-safe, with
         # a backend's own text kept to the log, which is the same rule this kind follows.
