@@ -1227,8 +1227,9 @@ async def _remove_tree(
 ) -> bool:
     """Delete ``directory`` and everything under it — never a raise.
 
-    There is no delete in the protocol and this needs none: on a POSIX guest the ``EXEC`` the
-    dispatch path already requires is one.
+    The protocol's delete is gated by a capability no shipped spec requires, while every
+    dispatch-capable backend already serves ``EXEC``. This path therefore uses the common
+    ``EXEC`` mechanism; choosing a protocol delete for call-owned paths belongs to #477.
 
     ``-f`` is what makes an already-gone directory a success; the status is otherwise the
     guest's own, because a refused removal has to reach the caller as one.

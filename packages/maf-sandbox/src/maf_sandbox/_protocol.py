@@ -481,10 +481,11 @@ class Sandbox(Protocol):
     cannot serve it — so no kind has to feature-detect here.
 
     :meth:`remove` is gated by :data:`Capability.FILES_DELETE` and is **not** covered by that
-    last sentence: no spec field implies a removal, so a kind that cleans up must put the
-    capability in ``requires`` itself.  Omit it and the router may hand back a backend whose
-    ``remove`` raises :class:`NotImplementedError` — from a ``finally``, over whatever the run
-    was already reporting.
+    last sentence. A kind that calls :meth:`remove` directly must put the capability in
+    ``requires`` itself; omit it and the router may hand back a backend whose ``remove`` raises
+    :class:`NotImplementedError` — from a ``finally``, over whatever the run was already
+    reporting. The framework reclaim used by :func:`maf_sandbox.maf.sandboxed_tool` is
+    ``EXEC``-shaped instead and does not make that requirement.
 
     ``working_directory`` is a parameter on those four exactly as it is on :meth:`exec`,
     because no sandbox object knows the spec's ``work_dir``: it arrives per call or not at all,
