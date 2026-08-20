@@ -58,14 +58,18 @@ line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
-extend-select = ["I", "UP", "D100", "D101", "D103", "D104"]
+extend-select = ["I", "UP", "D100", "D101", "D103", "D104", "E501", "W505", "TD", "FIX", "ERA001"]
 
 [tool.ruff.lint.per-file-ignores]
 # ruff resolves [tool.ruff] per file by the NEAREST ancestor pyproject.toml that has one —
 # once this package gained its own [tool.ruff] section, the host application's root
 # pyproject.toml per-file-ignore entry for this package's tests stopped reaching these
-# files, so this package carries its own copy.
-"tests/**" = ["D101", "D103"]
+# files, so this package carries its own. The length rules are excluded for the same
+# reason: test fixtures are hand-shaped strings and calls, not lintable drift.
+"tests/**" = ["D101", "D103", "E501", "W505"]
+
+[tool.ruff.lint.pycodestyle]
+max-doc-length = 100
 
 # Self-contained type checking, scoped to this package — strict, unlike the host
 # application's root config, which runs its own type checker in basic mode. `tests/` stays

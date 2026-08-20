@@ -32,21 +32,28 @@ dev = [
 # section reaches that tree while each package still answers to its own; their self-containment is
 # what it was. Without it these files would fall back to ruff's defaults — the gap #274 closed.
 #
-# The rules mirror every package's: `I`, `UP`, and the `D100`/`D101`/`D103`/`D104` docstring rules,
-# at `line-length = 100`. `tests/**` is ignored for `D101`/`D103` for the same reason each package
-# ignores its own tests — the repo's `tests/` is repository-level wiring, no different in kind
-# from a package's, not API surface. #292 carries the decision and the measurements behind it.
+# The rules mirror every package's: `I`, `UP`, the `D100`/`D101`/`D103`/`D104` docstring rules,
+# the length rules (`E501`, `W505` with `max-doc-length = 100`), and the hygiene pins (`TD`,
+# `FIX`, `ERA001`), at `line-length = 100`. `tests/**` is ignored for `D101`/`D103` for the same
+# reason each package ignores its own tests — the repo's `tests/` is repository-level wiring, no
+# different in kind from a package's, not API surface. #292 and #454 carry the decisions and the
+# measurements behind them.
 [tool.ruff]
 line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
-extend-select = ["I", "UP", "D100", "D101", "D103", "D104"]
+extend-select = ["I", "UP", "D100", "D101", "D103", "D104", "E501", "W505", "TD", "FIX", "ERA001"]
 
-# Mirrors each package's own `tests/**` ignore: the repo-level tests/ is wiring, not API surface,
-# so ruff resolves it from this root section the same way a package's tests resolve from its own.
+# Mirrors each package's tests/** ignore: repo-level tests/ is wiring, not API surface.
+# Length rules join the docstring pair so fixtures that exercise live samples are exempt.
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["D101", "D103"]
+"tests/**" = ["D101", "D103", "E501", "W505"]
+"scripts/**" = ["E501", "W505"]
+"samples/**" = ["E501", "W505"]
+
+[tool.ruff.lint.pycodestyle]
+max-doc-length = 100
 
 # Repo-level pyright for the code the per-package strict configs do not cover: scripts/, the
 # test trees and samples/. Package src/ stays on its own per-package strict config (uv run
