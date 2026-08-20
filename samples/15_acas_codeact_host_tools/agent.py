@@ -613,8 +613,10 @@ def act_four_what_the_round_trips_bought(dispatched: int, direct: int) -> None:
     print("  the context window, and whatever logs either of them reaches — and they stay")
     print("  there, turn after turn, which is a ceiling long before it is a bill.")
     print()
-    print("  Dispatch pays a transport round trip per call instead, serially and with no batching")
-    print("  available at any layer (#439), and the model writes none of the data into code —")
+    print("  Dispatch pays a transport round trip per discovered call instead. The host serves")
+    print("  those calls sequentially; concurrent guest callers can overlap request discovery, but")
+    print("  that does not make host-tool execution concurrent or collapse the wall clock (#439).")
+    print("  The model writes none of the data into code —")
     print("  what comes back to it is the program's finished table. That is the trade:")
     print("  wall clock, which is spent per run, against context, which accumulates.\n")
 
