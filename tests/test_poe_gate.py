@@ -105,11 +105,7 @@ class TestTheMarkdownBlockLinter:
         )
 
     def test_the_decided_documentation_is_covered(self):
-        """`docs/` was outside this linter until the restructure moved the documentation there.
-
-        `docs/sandbox/research/` stays out on purpose: a proposal describes an API that does not
-        exist yet, so linting its snippets against the installed packages would report a design
-        document for being a design document.
+        """Exclude research proposals because they describe APIs absent from installed packages."""
         """
         globs = self._globs(_TASKS["md-blocks"]["cmd"])
         assert "docs/sandbox/*.md" in globs
