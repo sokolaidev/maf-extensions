@@ -49,8 +49,8 @@ class TestAssess:
         after = "def run() -> int:\n    return 2\n"
         problems = check.assess(
             f"{kind}: update implementation",
-            ["scripts/example.py"],
-            {"scripts/example.py": (before, after)},
+            ["packages/example/src/example.py"],
+            {"packages/example/src/example.py": (before, after)},
         )
         assert problems
         assert "non-behavioral" in problems[0]
@@ -80,7 +80,7 @@ class TestAssess:
 
     @pytest.mark.parametrize("path", ["requirements.txt", "constraints.txt"])
     def test_dependency_text_is_executable_metadata(self, path: str):
-        assert check.assess("chore: update dependencies", [path], {})
+        assert check.assess("chore: update dependencies", [f"packages/example/{path}"], {})
 
     def test_docs_title_on_markdown_is_allowed(self):
         assert check.assess("docs: explain the API", ["README.md"], {}) == []
@@ -106,8 +106,8 @@ class TestAssess:
             [("packages/a/src/a.py",), ("packages/b/README.md",)],
         )
 
-    def test_behavior_title_on_global_executable_file_is_allowed(self):
-        assert check.assess("fix: update workflow", [".github/workflows/ci.yml"], {}) == []
+    def test_ci_title_on_global_executable_file_is_allowed(self):
+        assert check.assess("ci: update workflow", [".github/workflows/ci.yml"], {}) == []
 
     def test_cross_package_python_rename_counts_only_non_test_endpoints(self):
         assert check.assess(
@@ -117,11 +117,11 @@ class TestAssess:
             [("packages/a/src/mod.py", "packages/b/tests/test_mod.py")],
         )
 
-    def test_readme_like_tool_name_is_executable(self):
-        assert check.assess("chore: update tool", ["scripts/README-generator.sh"], {})
+    def test_readme_like_tool_name_is_not_documentation(self):
+        assert not check.is_documentation_path("scripts/README-generator.sh")
 
-    def test_fix_with_non_documentation_metadata_change_is_allowed(self):
-        assert check.assess("fix: update dependency", ["pyproject.toml"], {}) == []
+    def test_fix_on_root_metadata_has_no_shipped_behavior(self):
+        assert check.assess("fix: update dependency", ["pyproject.toml"], {})
 
     def test_breaking_behavior_title_is_classified_as_behavior(self):
         assert check.title_type("feat(core)!: change the API") == "feat"
@@ -147,17 +147,17 @@ class TestAssess:
         assert result[str(new_path)] == (source, source)
         assert check.assess(
             "chore: rename the module",
-            [str(new_path)],
+            ["packages/example/src/new_name.py"],
             result,
-            [(old_path, str(new_path))],
+            [("packages/example/src/old_name.py", "packages/example/src/new_name.py")],
         )
 
     def test_python_rename_to_non_python_is_executable(self):
         assert check.assess(
             "docs: reorganize files",
-            ["scripts/example.txt"],
+            ["packages/example/src/example.txt"],
             {},
-            [("scripts/example.py", "scripts/example.txt")],
+            [("packages/example/src/example.py", "packages/example/src/example.txt")],
         )
 
     def test_python_addition_with_empty_content_is_executable(self):
@@ -182,7 +182,7 @@ class TestAssess:
         assert result["scripts/example.py"] == (None, None)
         assert check.assess(
             "docs: add module",
-            ["scripts/example.py"],
-            {"scripts/example.py": (None, source)},
-            [("README.md", "scripts/example.py")],
+            ["packages/example/src/example.py"],
+            {"packages/example/src/example.py": (None, source)},
+            [("packages/example/README.md", "packages/example/src/example.py")],
         )

@@ -145,17 +145,15 @@ def assess(
     executable_packages.update(
         package for path in executable_paths if (package := _package_for(path)) is not None
     )
-    executable = bool(executable_paths)
+    product_executable = bool(executable_packages)
 
-    behavior_present = (
-        bool(touched_packages) and not (touched_packages - executable_packages)
-    ) or (not touched_packages and executable)
+    behavior_present = bool(touched_packages) and not (touched_packages - executable_packages)
     if kind in _BEHAVIOR_TYPES and not behavior_present:
         return [
             f"{kind}: no executable change was found for the changed files",
             "retitle the pull request to match the changed files or include a behavior change",
         ]
-    if kind in _DOCUMENTATION_TYPES and executable:
+    if kind in _DOCUMENTATION_TYPES and product_executable:
         return [
             f"{kind}: this title describes a non-behavioral change, but the diff changes executable code",
             "if the behavior change is intentional, retitle as feat:, fix:, perf:, or revert:; "

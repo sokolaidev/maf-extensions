@@ -57,7 +57,7 @@ docs: explain what the boundary tests protect
 
 `feat:` releases a minor version, and `fix:`, `perf:`, `revert:` and `docs:` release a patch. A `!` after the type, or a `BREAKING CHANGE:` footer, releases a minor whatever the type, since every package is still `0.x`. `refactor`, `test`, `build`, `ci` and `chore` release nothing on their own — they are recorded, and ride along with whatever releases next.
 
-The PR-title workflow also compares the title with the diff. A releasing title must contain executable changes in every touched package; `docs:`, `refactor:`, `test:`, `build:`, `ci:` and `chore:` must not hide executable changes. Test-only and documentation-only edits are not executable for this check, so use the title that matches the changed files rather than retitling a test-only change as `docs:`.
+The PR-title workflow also compares the title with shipped package diffs. A releasing title must contain executable changes in every touched package; `docs:`, `refactor:`, `test:`, `build:`, `ci:` and `chore:` must not hide executable changes in a package. Repository workflows, scripts, tests, and documentation are not shipped product behavior, so use the matching repository title type for those changes. Test-only and documentation-only package edits are not executable for this check.
 
 `docs:` sits in the releasing set deliberately: a package's `README.md` is its PyPI front page, and publishing a version is the only way to change what is shown there. The rule underneath is simply that anything appearing in a changelog cuts a release, which is `changelog-sections` in `release-please-config.json`.
 
