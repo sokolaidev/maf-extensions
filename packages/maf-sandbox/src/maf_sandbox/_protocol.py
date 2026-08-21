@@ -402,9 +402,13 @@ class SandboxSpec:
     the promise in this docstring's first line.  ``image_id`` is an escape hatch for a
     backend-native pinned id that skips resolution entirely.
 
-    ``egress_allow`` is an allowlist of hostnames — **everything not listed is denied**, so
-    an empty tuple means no network at all.  Stating it positively is deliberate: a spec that
-    forgets to mention egress gets the closed configuration, not the open one.
+    ``egress`` is the one network posture the workload runs in — an :class:`Egress` mode,
+    default :data:`Egress.CLOSED` (no network).  The router serves it only on a backend that can
+    enforce that exact mode and refuses otherwise, never substituting another; see
+    ``docs/design/egress-resolution.md``.  ``egress_allow`` is the payload of an
+    :data:`Egress.ALLOWLIST` run — the hostnames reached, **everything not listed denied** — and
+    is consulted only in that mode.  The ``CLOSED`` default keeps the fail-closed property: a
+    spec that says nothing about egress gets no network.
 
     ``work_dir`` is the guest-side directory a workload's paths resolve against, and it is
     **guest-native**: the host states it to suit the image it configured, and nothing rewrites
@@ -465,6 +469,11 @@ class SandboxSpec:
     # argument after it — a caller's `files_in` would silently become this flag.
     outputs_named_at_call_time: bool = False
     identities: frozenset[Identity] = frozenset()
+    # Appended, like the two above, so it cannot rebind a positional caller's argument. The
+    # coherence guard between this and `egress_allow` lands with the kind migration (see
+    # docs/design/egress-resolution.md); until then a non-empty `egress_allow` with a non-
+    # ALLOWLIST mode is tolerated, and simply means the host list is not consulted.
+    egress: Egress = Egress.CLOSED
 
 
 @dataclass(frozen=True)
@@ -637,12 +646,18 @@ class SandboxBackend(Protocol):
     sandboxes running.
 
     A backend may also declare ``capabilities: frozenset[Capability]``, matched by the router
-    against a spec's ``requires``, and ``limits: SandboxLimits``, the transfer ceilings a spec
-    may not ask above.  Neither is a member of this Protocol, deliberately:
+    against a spec's ``requires``; ``limits: SandboxLimits``, the transfer ceilings a spec may
+    not ask above; and its egress — ``egress_modes: frozenset[Egress]``, the set of modes it can
+    enforce, resolved against a spec's :attr:`SandboxSpec.egress` (see
+    ``docs/design/egress-resolution.md``).  None is a member of this Protocol, deliberately:
     :func:`~typing.runtime_checkable` enforces member *presence*, so declaring them here would
-    stop every backend written before them from being a ``SandboxBackend`` at all.  With
-    :attr:`egress` that makes three optional declarations read by ``getattr``; a fourth is the
-    signal to collapse all of them into one declarations object.
+    stop every backend written before them from being a ``SandboxBackend`` at all.  That makes
+    three optional declarations read by ``getattr``; a fourth is the signal to collapse all of
+    them into one declarations object.
+
+    During the egress-mode migration the router also reads a backend's older single ``egress``
+    property where ``egress_modes`` is absent, mapping it to an equivalent set; a backend should
+    declare ``egress_modes``.
     """
 
     @property
@@ -656,16 +671,6 @@ class SandboxBackend(Protocol):
 
         A value outside :class:`Isolation` is refused rather than ranked: the router cannot
         tell whether an unknown boundary is stronger or weaker than the one required.
-        """
-        ...
-
-    @property
-    def egress(self) -> Egress:
-        """One of the :class:`Egress` members, read before a workload's tool is attached.
-
-        Not declaring it is read as :data:`Egress.UNDEFINED`, and refused — the same verdict
-        as :data:`Egress.UNRESTRICTED` and a different sentence, because a backend that said
-        nothing has not claimed it cannot confine.
         """
         ...
 

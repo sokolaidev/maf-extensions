@@ -320,7 +320,7 @@ class _BackendWithoutCapabilities:
 
     name = "legacy"
     isolation = Isolation.MICROVM
-    egress = Egress.ALLOWLIST
+    egress_modes = frozenset({Egress.ALLOWLIST, Egress.CLOSED})
 
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> object:
         return object()
@@ -664,9 +664,10 @@ class TestAMalformedLimitsDeclarationIsRefused:
 
 
 class _BackendWithoutEgress:
-    """A third-party backend that satisfied the protocol as it stood: one property short.
+    """A third-party backend one property short: no `egress_modes` at all.
 
-    Written out rather than subclassed, because the fake now always has the property.
+    Read as the empty set — enforces nothing — so every ask is refused. Written out rather than
+    subclassed, because the fake now always has the property.
     """
 
     name = "legacy"
@@ -683,82 +684,116 @@ class _BackendWithoutEgress:
 
 
 class TestEgressRule:
-    """The security property nothing used to check.
-
-    A backend that reads `egress_allow` and one that ignores it have the same type, the same
-    methods and the same passing tests, so the difference has to be declared — and both
-    directions of missing it pinned, since only one of them is refused.
+    """Egress is resolved, not matched: a workload runs one mode, served iff the backend enforces
+    it, refused otherwise — never a substitute. Refuse, never degrade.
     """
 
-    _ALLOWLIST_SPEC = SandboxSpec(kind="bicep", egress_allow=("example.invalid",))
-    _CLOSED_SPEC = SandboxSpec(kind="bicep")
+    _CLOSED_SPEC = SandboxSpec(kind="bicep")  # egress defaults to CLOSED
+    _ALLOWLIST_SPEC = SandboxSpec(
+        kind="bicep", egress=Egress.ALLOWLIST, egress_allow=("example.invalid",)
+    )
+    _UNRESTRICTED_SPEC = SandboxSpec(kind="bicep", egress=Egress.UNRESTRICTED)
 
-    def _router(self, egress: str) -> SandboxRouter:
-        return SandboxRouter([InProcessSandboxBackend(egress=egress)], min_isolation=Isolation.NONE)
+    def _router(self, *modes: Egress) -> SandboxRouter:
+        return SandboxRouter(
+            [InProcessSandboxBackend(egress_modes=frozenset(modes))], min_isolation=Isolation.NONE
+        )
 
-    @pytest.mark.parametrize("spec", [_ALLOWLIST_SPEC, _CLOSED_SPEC])
-    def test_an_allowlist_backend_serves_any_spec(self, spec: SandboxSpec):
-        self._router(Egress.ALLOWLIST).ensure_can_serve(spec)
+    def test_a_backend_serves_a_mode_it_enforces(self):
+        self._router(Egress.CLOSED, Egress.ALLOWLIST).ensure_can_serve(self._CLOSED_SPEC)
+        self._router(Egress.CLOSED, Egress.ALLOWLIST).ensure_can_serve(self._ALLOWLIST_SPEC)
 
-    def test_a_declaration_still_matches_when_it_is_a_plain_string(self):
+    def test_a_mode_matches_when_declared_as_a_plain_string(self):
         """Backends outside this repository declare strings; `StrEnum` keeps them matching."""
-        assert Egress.ALLOWLIST == "allowlist"
-        self._router("allowlist").ensure_can_serve(self._ALLOWLIST_SPEC)
+        assert Egress.CLOSED == "closed"
+        SandboxRouter(
+            [InProcessSandboxBackend(egress_modes=frozenset({"closed"}))],  # type: ignore[arg-type]
+            min_isolation=Isolation.NONE,
+        ).ensure_can_serve(self._CLOSED_SPEC)
 
-    def test_a_closed_backend_serves_a_spec_that_wants_no_network(self, caplog):
+    def test_a_closed_only_backend_refuses_an_allowlist_workload_never_degrades(self, caplog):
+        """No degrade to CLOSED, and no warning — the ALLOWLIST run is refused outright."""
         with caplog.at_level("WARNING"):
-            self._router(Egress.CLOSED).ensure_can_serve(self._CLOSED_SPEC)
+            with pytest.raises(SandboxEgressNotEnforced, match="cannot enforce the 'allowlist'"):
+                self._router(Egress.CLOSED).ensure_can_serve(self._ALLOWLIST_SPEC)
         assert caplog.records == []
 
-    def test_a_closed_backend_serves_an_allowlist_spec_but_says_so(self, caplog):
-        with caplog.at_level("WARNING"):
-            self._router(Egress.CLOSED).ensure_can_serve(self._ALLOWLIST_SPEC)
-        (record,) = caplog.records
-        # Off the spec, not a literal: the warning is useful only if it names the hosts.
-        assert all(host in record.getMessage() for host in self._ALLOWLIST_SPEC.egress_allow)
+    def test_an_unrestricted_only_backend_refuses_a_closed_workload_not_best_effort(self):
+        """The correction that shapes the rule: CLOSED is not free. A backend that cannot cut the
+        network is refused a CLOSED workload rather than approximating it."""
+        with pytest.raises(SandboxEgressNotEnforced, match="cannot enforce the 'closed'"):
+            self._router(Egress.UNRESTRICTED).ensure_can_serve(self._CLOSED_SPEC)
 
-    @pytest.mark.parametrize("spec", [_ALLOWLIST_SPEC, _CLOSED_SPEC])
-    def test_an_unrestricted_backend_is_refused(self, spec: SandboxSpec):
-        with pytest.raises(SandboxEgressNotEnforced, match="'unrestricted' egress") as raised:
-            self._router(Egress.UNRESTRICTED).ensure_can_serve(spec)
-        # Whichever way it was refused, the reader is told what to declare instead.
-        assert "'allowlist'" in str(raised.value) and "'closed'" in str(raised.value)
+    def test_an_unrestricted_only_backend_serves_an_unrestricted_workload(self):
+        """The honest dev opt-in: run open on a backend that enforces exactly open."""
+        self._router(Egress.UNRESTRICTED).ensure_can_serve(self._UNRESTRICTED_SPEC)
 
-    def test_a_backend_that_declares_nothing_is_refused(self):
-        """Same verdict as `UNRESTRICTED`, and the refusal must not put that claim in its mouth.
+    def test_a_backend_enforcing_nothing_refuses_even_a_closed_workload(self):
+        """An empty enforceable set serves nothing, and the message names what it enforces."""
+        with pytest.raises(SandboxEgressNotEnforced, match="it enforces nothing") as raised:
+            self._router().ensure_can_serve(self._CLOSED_SPEC)
+        assert "cannot enforce the 'closed'" in str(raised.value)
 
-        A backend written before the property existed said nothing; reporting it as having
-        declared `unrestricted` sends its author looking for a declaration to change.
-        """
+    def test_a_backend_without_the_property_enforces_nothing(self):
+        """A backend one property short is the empty set: refused, and told what it enforces."""
         router = SandboxRouter([_BackendWithoutEgress()])
-        with pytest.raises(SandboxEgressNotEnforced, match="declares no egress at all") as raised:
+        with pytest.raises(SandboxEgressNotEnforced, match="it enforces nothing"):
             router.ensure_can_serve(self._ALLOWLIST_SPEC)
-        assert "unrestricted" not in str(raised.value)
-        assert "'allowlist'" in str(raised.value) and "'closed'" in str(raised.value)
-
-    def test_a_backend_declaring_undefined_is_refused_the_same_way(self):
-        """A value a backend may set deliberately: the question is unanswered, not answered badly."""
-        with pytest.raises(SandboxEgressNotEnforced, match="declares no egress at all"):
-            self._router(Egress.UNDEFINED).ensure_can_serve(self._ALLOWLIST_SPEC)
-
-    def test_undefined_is_not_a_rung_that_serves(self):
-        """The two refusals are one verdict, so neither may drift into serving."""
-        for egress in (Egress.UNDEFINED, Egress.UNRESTRICTED):
-            with pytest.raises(SandboxEgressNotEnforced):
-                self._router(egress).ensure_can_serve(self._CLOSED_SPEC)
 
     def test_no_backend_configured_is_not_an_egress_failure(self):
         """Nothing runs, so nothing reaches anything — and no tool is attached either."""
         SandboxRouter([]).ensure_can_serve(self._ALLOWLIST_SPEC)
 
 
+class _LegacyEgressBackend(InProcessSandboxBackend):
+    """A backend that still declares the single `egress` property, not `egress_modes`.
+
+    The transition shim: until every shipped backend declares `egress_modes`, the router reads
+    this legacy property and maps it to an equivalent enforceable set. This fake stands in for an
+    unmigrated backend so that mapping is pinned. Removed with the shim.
+    """
+
+    def __init__(self, egress: Egress) -> None:
+        super().__init__()
+        self._legacy = egress
+
+    @property
+    def egress_modes(self):  # noqa: D102 - overrides the fake's set with the legacy single value
+        raise AttributeError("this legacy backend declares `egress`, not `egress_modes`")
+
+    @property
+    def egress(self) -> Egress:
+        return self._legacy
+
+
+class TestLegacyEgressShim:
+    """A backend that has not migrated declares `egress`; the router maps it to a mode set."""
+
+    def _router(self, egress: Egress) -> SandboxRouter:
+        return SandboxRouter([_LegacyEgressBackend(egress)], min_isolation=Isolation.NONE)
+
+    def test_legacy_allowlist_enforces_allowlist_and_closed(self):
+        self._router(Egress.ALLOWLIST).ensure_can_serve(SandboxSpec(kind="bicep"))  # CLOSED run
+        self._router(Egress.ALLOWLIST).ensure_can_serve(
+            SandboxSpec(kind="bicep", egress=Egress.ALLOWLIST, egress_allow=("h.example",))
+        )
+
+    def test_legacy_closed_refuses_an_allowlist_run(self):
+        with pytest.raises(SandboxEgressNotEnforced, match="cannot enforce the 'allowlist'"):
+            self._router(Egress.CLOSED).ensure_can_serve(
+                SandboxSpec(kind="bicep", egress=Egress.ALLOWLIST, egress_allow=("h.example",))
+            )
+
+    def test_legacy_undefined_enforces_nothing(self):
+        with pytest.raises(SandboxEgressNotEnforced, match="it enforces nothing"):
+            self._router(Egress.UNDEFINED).ensure_can_serve(SandboxSpec(kind="bicep"))
+
+
 class TestAcquireEnforcesPolicy:
-    """`acquire` refuses on the same three grounds as `ensure_can_serve`, minus its warning.
+    """`acquire` refuses on the same grounds as `ensure_can_serve`.
 
     Before this, `acquire` delegated straight to the backend: a caller who never called
-    `ensure_can_serve` first got no floor, capability or egress check at all. The
-    closed-egress-vs-allowlist-spec WARNING stays `ensure_can_serve`-only, because a warm
-    fix-round loop calls `acquire` every iteration and would otherwise log it every time.
+    `ensure_can_serve` first got no floor, capability or egress check at all.
     """
 
     def test_acquire_refuses_a_spec_above_the_backends_rung(self):
@@ -778,26 +813,27 @@ class TestAcquireEnforcesPolicy:
         with pytest.raises(SandboxCapabilityNotSupported, match="run_code"):
             asyncio.run(router.acquire(_KEY, spec))
 
-    def test_acquire_refuses_an_unrestricted_egress_backend(self):
+    def test_acquire_refuses_a_backend_that_cannot_enforce_the_mode(self):
+        # _SPEC runs CLOSED (the default); an unrestricted-only backend cannot enforce it.
         router = SandboxRouter(
-            [InProcessSandboxBackend(egress=Egress.UNRESTRICTED)], min_isolation=Isolation.NONE
+            [InProcessSandboxBackend(egress_modes=frozenset({Egress.UNRESTRICTED}))],
+            min_isolation=Isolation.NONE,
         )
-        with pytest.raises(SandboxEgressNotEnforced):
+        with pytest.raises(SandboxEgressNotEnforced, match="cannot enforce the 'closed'"):
             asyncio.run(router.acquire(_KEY, _SPEC))
 
-    def test_a_closed_backend_warns_on_ensure_can_serve_but_not_on_acquire(self, caplog):
+    def test_acquire_refuses_an_allowlist_run_a_closed_backend_cannot_serve(self, caplog):
+        # Refuse, never degrade — and no warning on either path, since nothing is served.
         router = SandboxRouter(
-            [InProcessSandboxBackend(egress=Egress.CLOSED)], min_isolation=Isolation.NONE
+            [InProcessSandboxBackend(egress_modes=frozenset({Egress.CLOSED}))],
+            min_isolation=Isolation.NONE,
         )
-        spec = SandboxSpec(kind="bicep", egress_allow=("example.invalid",))
-
+        spec = SandboxSpec(kind="bicep", egress=Egress.ALLOWLIST, egress_allow=("example.invalid",))
         with caplog.at_level("WARNING"):
-            router.ensure_can_serve(spec)
-        assert len(caplog.records) == 1
-
-        caplog.clear()
-        with caplog.at_level("WARNING"):
-            asyncio.run(router.acquire(_KEY, spec))
+            with pytest.raises(SandboxEgressNotEnforced):
+                router.ensure_can_serve(spec)
+            with pytest.raises(SandboxEgressNotEnforced):
+                asyncio.run(router.acquire(_KEY, spec))
         assert caplog.records == []
 
 
