@@ -347,6 +347,23 @@ class TestWhatItMustNotReport:
         root = repo({"a.md": r"[x](docs/a_\(draft\).md)", "docs/a_(draft).md": "y"})
         assert check.broken_links(root) == []
 
+    @pytest.mark.parametrize(
+        "definition", [r"[l]: docs/a_\(draft\).md", r"[l]: <docs/a_\(draft\).md>"]
+    )
+    def test_a_reference_definition_is_unescaped_the_same_way(self, repo, definition: str):
+        """Both spellings carry the same escapes, and both are destinations like any other."""
+        root = repo({"a.md": f"[x][l]\n\n{definition}\n", "docs/a_(draft).md": "y"})
+        assert check.broken_links(root) == []
+
+    def test_a_root_relative_destination_is_not_ours_to_resolve(self, repo):
+        """GitHub does not rewrite `/docs/foo` to the repository root.
+
+        A rendered page sends it to the host root — somebody else's account — so resolving it
+        against the tracked tree reports a link this check has no standing to judge.
+        """
+        root = repo({"a.md": "[x](/docs/foo) and [y](/README.md)"})
+        assert check.broken_links(root) == []
+
     def test_a_test_naming_a_path_that_must_not_exist_is_out_of_scope(self, repo):
         """`tests/` constructs paths as data, including ones that are absent on purpose."""
         root = repo({"tests/test_x.py": 'missing = "docs/design/nowhere.md"\n'})
@@ -460,6 +477,19 @@ class TestAnchors:
             # Nothing closes it, so GitHub emphasises nothing and the underscore is literal.
             ("_private", "_private"),
             ("requires_os_family and _egress_", "requires_os_family-and-egress"),
+            # A heading slugs from what renders, so the destination is not in it. Finding where
+            # that destination ends is the same problem the link scanner solves, and a pattern
+            # that stops at the first `)` leaves the tail of the path in the slug.
+            ("[A link](docs/a_(draft).md)", "a-link"),
+            ("[see [details]](docs/a.md)", "see-details"),
+            ("Read [the docs](docs/a.md) first", "read-the-docs-first"),
+            # Every release heading in every CHANGELOG here has this shape.
+            ("[0.12.0](https://example.invalid/compare/v0.11.0...v0.12.0)", "0120"),
+            # An image renders as `<img>`; its alt is an attribute, not words on the page.
+            ("![alt](i.png) alone", "alone"),
+            ("[![alt](i.png)](docs/a.md)", ""),
+            # A bracket that opens no link is ordinary text and stays.
+            ("Notes [draft]", "notes-draft"),
         ],
     )
     def test_the_slug_matches_what_github_derives(self, heading: str, slug: str):

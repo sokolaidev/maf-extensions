@@ -22,6 +22,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from typing import NamedTuple
 from urllib.parse import parse_qs, unquote, urlsplit
 
 #: Whitespace that may sit between a link's `(` and its destination.
@@ -78,10 +79,9 @@ _FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 #: An ATX heading, with any closing `##` run discarded.
 _HEADING = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.*?)[ \t]*#*$", re.MULTILINE)
 
-#: A setext heading: text underlined by `=` or `-`. GitHub renders it as a heading and gives it
-#: the slug the ATX spelling of the same text would get, so a link to one is as ordinary as a
-#: link to the other and refusing it reports a working link.
-#: The underline of a setext heading, and the line above it that it turns into one.
+#: A setext heading: a paragraph underlined by `=` or `-`. GitHub renders it as a heading with
+#: the slug the ATX spelling of that text would get, so a link to one is as ordinary as a link
+#: to the other and refusing it reports a working link.
 _UNDERLINE = re.compile(r"^ {0,3}(?:=+|-+)[ \t]*$")
 _SETEXT_TEXT = re.compile(r"^ {0,3}(\S.*?)[ \t]*$")
 
@@ -99,11 +99,9 @@ _HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
 #: A run of backticks, opening or closing an inline code span.
 _TICKS = re.compile(r"`+")
 
-#: Inline markup that is *not* part of a heading's text: code ticks, emphasis runs, and the
-#: bracket-and-target of a link, whose visible half survives. Underscore is deliberately absent,
-#: though it is an emphasis marker too: it is also a word character GitHub keeps, and the
-#: headings here are full of identifiers.
-_LINK_TEXT = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+#: Inline markup that is *not* part of a heading's text: code ticks and emphasis runs.
+#: Underscore is deliberately absent, though it is an emphasis marker too: it is also a word
+#: character GitHub keeps, and the headings here are full of identifiers.
 _MARKUP = re.compile(r"[`*~]")
 
 #: Underscore emphasis, which the run above cannot strip blindly. An underscore is a word
@@ -115,6 +113,9 @@ _UNDERSCORE_EMPHASIS = re.compile(r"(?<![0-9A-Za-z_])(_{1,3})(?=\S)(.+?)(?<=\S)\
 
 #: `#L42` and `#L42-L60` on a source file are GitHub line references, not headings.
 _LINE_REFERENCE = re.compile(r"^L\d+(?:-L\d+)?$")
+
+#: A URI scheme opening a destination, which puts it off this tree.
+_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 
 
 def tracked(repo_root: Path, *globs: str) -> list[Path]:
@@ -262,15 +263,31 @@ def _destination(text: str, paren: int) -> tuple[str, int, int, int] | None:
     return _unescaped(target), begin, stop, after + 1
 
 
-def inline_links(text: str, offset: int = 0) -> list[tuple[str, int, int]]:
-    """Every inline link and image in ``text`` as its target and the bounds of the whole link.
+class Link(NamedTuple):
+    """One markdown link: what it points at, what it shows, and two spans a later pass needs.
+
+    ``start`` and ``end`` bound the whole link, which is what lets a heading be reduced to the
+    words it renders. ``hidden`` bounds the part the prose scan must not read a second time —
+    an inline link's destination, or a reference definition's whole line, because that line
+    renders nothing at all and its label is not prose a reader ever sees.
+    """
+
+    target: str
+    label: str
+    start: int
+    end: int
+    hidden_start: int
+    hidden_end: int
+
+
+def inline_links(text: str, offset: int = 0) -> list[Link]:
+    """Every inline link and image in ``text``.
 
     Scanned rather than matched, because both halves of `[label](destination)` nest and a flat
-    pattern gets each one wrong in a different direction. The bounds are what lets the prose
-    pass skip a span this one has already resolved; ``offset`` carries them out of a nested
-    scan and back into the coordinates of the document.
+    pattern gets each one wrong in a different direction. ``offset`` carries the bounds out of
+    a nested scan and back into the coordinates of the document.
     """
-    found: list[tuple[str, int, int]] = []
+    found: list[Link] = []
     index = 0
     while (opener := text.find("[", index)) != -1:
         if _escaped(text, opener):
@@ -287,7 +304,16 @@ def inline_links(text: str, offset: int = 0) -> list[tuple[str, int, int]]:
             continue
         target, begin, stop, index = parsed
         if target:
-            found.append((target, offset + begin, offset + stop))
+            found.append(
+                Link(
+                    target,
+                    text[opener + 1 : close],
+                    offset + opener,
+                    offset + index,
+                    offset + begin,
+                    offset + stop,
+                )
+            )
         # The label is scanned too, because a link may wrap an image — `[![alt](i.png)](a.md)`
         # is the shape of every badge in this repository, and it names *two* files. Stepping
         # straight past the label checks the outer target and silently drops the inner one.
@@ -297,15 +323,30 @@ def inline_links(text: str, offset: int = 0) -> list[tuple[str, int, int]]:
 
 def inline_link_targets(text: str) -> list[str]:
     """Every inline link and image target in ``text``."""
-    return [target for target, _start, _end in inline_links(text)]
+    return [link.target for link in inline_links(text)]
 
 
-def reference_links(text: str) -> list[tuple[str, int, int]]:
-    """Every reference-style definition — `[label]: destination` — as target and bounds.
+def outermost(links: list[Link]) -> list[Link]:
+    """``links`` with the ones nested inside another dropped, in document order.
 
-    The label nests the same way an inline one does, so it is scanned the same way.
+    `inline_links` reports a badge's inner image as well as the link around it, so the spans
+    overlap. Splicing text by overlapping spans duplicates or loses characters, and only the
+    outer one is the unit a reader sees.
     """
-    found: list[tuple[str, int, int]] = []
+    kept: list[Link] = []
+    for link in sorted(links, key=lambda one: one.start):
+        if not kept or link.start >= kept[-1].end:
+            kept.append(link)
+    return kept
+
+
+def reference_links(text: str) -> list[Link]:
+    """Every reference-style definition — `[label]: destination` — in ``text``.
+
+    The label nests the same way an inline one does, so it is scanned the same way, and the
+    destination carries the same backslash escapes.
+    """
+    found: list[Link] = []
     offset = 0
     for line in text.splitlines(keepends=True):
         start = offset
@@ -317,21 +358,23 @@ def reference_links(text: str) -> list[tuple[str, int, int]]:
         close = _closing_bracket(line, indent)
         if close is None or line[close + 1 : close + 2] != ":":
             continue
-        rest = line[close + 2 :].strip()
+        label, rest = line[indent + 1 : close], line[close + 2 :].strip()
+        target = ""
         if rest.startswith("<"):
             end = rest.find(">")
             if end != -1:
-                found.append((rest[1:end], start + indent, start + len(line)))
-            continue
-        target = rest.split(maxsplit=1)[0] if rest.split() else ""
+                target = rest[1:end]
+        elif rest.split():
+            target = rest.split(maxsplit=1)[0]
         if target:
-            found.append((target, start + indent, start + len(line)))
+            bounds = (start + indent, start + len(line))
+            found.append(Link(_unescaped(target), label, *bounds, *bounds))
     return found
 
 
 def reference_link_targets(text: str) -> list[str]:
     """Every reference-style definition target — `[label]: destination` — in ``text``."""
-    return [target for target, _start, _end in reference_links(text)]
+    return [link.target for link in reference_links(text)]
 
 
 def without_link_destinations(text: str) -> str:
@@ -347,8 +390,8 @@ def without_link_destinations(text: str) -> str:
     reads it. A reference definition renders nothing at all, so the whole line goes.
     """
     kept = list(text)
-    for _target, start, end in inline_links(text) + reference_links(text):
-        _blank(kept, start, end)
+    for link in inline_links(text) + reference_links(text):
+        _blank(kept, link.hidden_start, link.hidden_end)
     return "".join(kept)
 
 
@@ -363,10 +406,13 @@ def is_local(target: str) -> bool:
     A scheme — `https:`, `mailto:` — points off the tree entirely and is skipped rather than
     resolved. So is the protocol-relative form, `//example.invalid/docs`, which carries no
     scheme to match on and is no more ours for it.
+
+    So is a *root-relative* destination. GitHub does not rewrite one to the repository root:
+    `[x](/docs/foo)` on a rendered page goes to `https://github.com/docs/foo`, which is a page
+    about somebody else's account. Resolving it here against the tracked tree reports a link
+    that is wrong in a way this check has no standing to judge.
     """
-    if not target or target.startswith("//"):
-        return False
-    return not re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", target)
+    return bool(target) and not target.startswith("/") and not _SCHEME.match(target)
 
 
 def resolve(target: str) -> str:
@@ -494,6 +540,29 @@ def without_fenced_blocks(text: str) -> str:
     return "\n".join(kept)
 
 
+def visible_text(text: str) -> str:
+    """``text`` with each link replaced by what it shows a reader, and each image by nothing.
+
+    A heading is slugged from what renders, so `## [A link](docs/a.md)` is `#a-link`. Finding
+    where the link ends is the whole difficulty, and it is the same difficulty the scanner
+    already solves: a pattern that stops at the first `)` leaves `.md)` in the slug of
+    `[A link](docs/a_(draft).md)`, and mangles a nested label worse than that.
+
+    An image contributes no text at all — GitHub renders `<img>`, and its alt is an attribute
+    rather than words on the page — so a link wrapping one slugs to nothing.
+    """
+    out: list[str] = []
+    index = 0
+    for link in outermost(inline_links(text)):
+        image = link.start > 0 and text[link.start - 1] == "!"
+        out.append(text[index : link.start - 1 if image else link.start])
+        if not image:
+            out.append(visible_text(link.label))
+        index = link.end
+    out.append(text[index:])
+    return "".join(out)
+
+
 def slugify(heading: str) -> str:
     """The fragment GitHub derives from a heading's text.
 
@@ -505,7 +574,7 @@ def slugify(heading: str) -> str:
     remove them anyway. Underscores cannot: they survive that strip, so they are removed only
     where they are emphasis and kept everywhere else.
     """
-    text = _LINK_TEXT.sub(r"\1", heading)
+    text = visible_text(heading)
     text = _UNDERSCORE_EMPHASIS.sub(r"\2", text)
     text = _MARKUP.sub("", text)
     text = re.sub(r"[^\w\s-]", "", text, flags=re.UNICODE).strip().lower()
