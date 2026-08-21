@@ -7,12 +7,12 @@ Thanks for looking. These packages are early (`0.x`) and the API may still move,
 ```bash
 uv sync            # one workspace, one lock, every package editable
 uv run pytest -q   # the whole suite, about half a minute
-uv run pre-commit install # the commit, message and push hooks: lint, format, the scrub guard, pyright
+git config core.hooksPath .githooks # the commit, message and push hooks: lint, format, the scrub guard, pyright
 ```
 
 `agent-framework-core` resolves from PyPI at the range each package declares — deliberately the same artifact a consumer of the published wheel gets, not a development pin.
 
-The hooks install into the git common directory, so one `uv run pre-commit install` in the main checkout covers every worktree of it; a worktree you check out on its own needs the install once in itself. The scrub guard's optional owner-only list (`.no-origin-identifiers`) lives in that same shared directory, so one list covers the main checkout and every worktree.
+`core.hooksPath` is per clone and the path is relative, so one `git config` covers the main checkout and every worktree of it — each resolves `.githooks/` against its own root, a worktree you check out on its own included. The scripts there are tracked and delegate to `uv run pre-commit`, which is what makes that true: `uv run pre-commit install` writes the absolute path of the interpreter that installed it into `.git/hooks/`, so hooks installed from a checkout you later move or delete stop working, and say only that `pre-commit` is not on `PATH`. It still works if you prefer it, and `core.hooksPath` wins over whatever it wrote. The scrub guard's optional owner-only list (`.no-origin-identifiers`) lives in the git common directory, so one list covers the main checkout and every worktree.
 
 ## Before opening a PR
 
