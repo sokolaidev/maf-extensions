@@ -81,6 +81,22 @@ class TestAssess:
     def test_docs_title_on_markdown_is_allowed(self):
         assert check.assess("docs: explain the API", ["README.md"], {}) == []
 
+    def test_behavior_title_requires_executable_changes_in_each_package(self):
+        before = "def run() -> int:\n    return 1\n"
+        after = "def run() -> int:\n    return 2\n"
+        assert check.assess(
+            "feat: update both packages",
+            ["packages/a/src/a.py", "packages/b/README.md"],
+            {"packages/a/src/a.py": (before, after)},
+            [("packages/a/src/a.py",), ("packages/b/README.md",)],
+        )
+
+    def test_behavior_title_on_global_executable_file_is_allowed(self):
+        assert check.assess("fix: update workflow", [".github/workflows/ci.yml"], {}) == []
+
+    def test_readme_like_tool_name_is_executable(self):
+        assert check.assess("chore: update tool", ["scripts/README-generator.sh"], {})
+
     def test_fix_with_non_documentation_metadata_change_is_allowed(self):
         assert check.assess("fix: update dependency", ["pyproject.toml"], {}) == []
 
@@ -119,6 +135,13 @@ class TestAssess:
             ["scripts/example.txt"],
             {},
             [("scripts/example.py", "scripts/example.txt")],
+        )
+
+    def test_python_addition_with_empty_content_is_executable(self):
+        assert check.assess(
+            "chore: add package marker",
+            ["packages/a/src/a.py"],
+            {"packages/a/src/a.py": (None, "")},
         )
 
     def test_non_python_rename_to_python_does_not_parse_the_old_file(

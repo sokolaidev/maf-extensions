@@ -86,7 +86,8 @@ def is_documentation_path(path: str) -> bool:
     name = parts[-1]
     return (
         "docs" in parts
-        or name.startswith(("readme", "changelog"))
+        or name in {"readme", "changelog"}
+        or name.startswith(("readme.", "changelog."))
         or Path(name).suffix in _DOCUMENTATION_SUFFIXES
         or name in _DOCUMENTATION_NAMES
     )
@@ -95,6 +96,11 @@ def is_documentation_path(path: str) -> bool:
 def is_non_behavior_path(path: str) -> bool:
     """Whether a changed path is a test or documentation rather than shipped behavior."""
     return is_test_path(path) or is_documentation_path(path)
+
+
+def _package_for(path: str) -> str | None:
+    parts = path.replace("\\", "/").split("/")
+    return parts[1] if len(parts) > 2 and parts[:1] == ["packages"] else None
 
 
 def title_type(title: str) -> str | None:
@@ -108,28 +114,45 @@ def assess(
     changed_paths: list[str],
     changed_python: dict[str, tuple[str | None, str | None]],
     changed_path_pairs: list[tuple[str, ...]] | None = None,
+    copied_sources: set[str] | None = None,
 ) -> list[str]:
     """Return title/diff mismatches, or an empty list when the title matches the diff."""
     kind = title_type(title)
     if kind is None:
         return []
 
-    executable = any(
-        not is_non_behavior_path(path) for path in changed_paths if not path.endswith(".py")
+    pairs = changed_path_pairs or [(path,) for path in changed_paths]
+    executable_paths: set[str] = set()
+    touched_packages: set[str] = set()
+    executable_packages: set[str] = set()
+    for paths in pairs:
+        package_names = {package for path in paths if (package := _package_for(path)) is not None}
+        touched_packages.update(package_names)
+        executable_paths_in_pair = (
+            paths[1:] if copied_sources and paths and paths[0] in copied_sources else paths
+        )
+        if any(
+            not path.endswith(".py") and not is_non_behavior_path(path)
+            for path in executable_paths_in_pair
+        ):
+            executable_paths.update(executable_paths_in_pair)
+        if len(paths) == 2 and paths[0] != paths[1] and any(path.endswith(".py") for path in paths):
+            if not all(is_test_path(path) for path in paths):
+                executable_paths.update(paths)
+    for path, (before, after) in changed_python.items():
+        if not is_test_path(path) and (
+            before is None or after is None or python_changed(before, after)
+        ):
+            executable_paths.add(path)
+    executable_packages.update(
+        package for path in executable_paths if (package := _package_for(path)) is not None
     )
-    executable |= any(
-        not is_test_path(path) and python_changed(before, after)
-        for path, (before, after) in changed_python.items()
-    )
-    executable |= any(
-        len(paths) == 2
-        and paths[0] != paths[1]
-        and any(path.endswith(".py") for path in paths)
-        and not all(is_test_path(path) for path in paths)
-        for paths in changed_path_pairs or []
-    )
+    executable = bool(executable_paths)
 
-    if kind in _BEHAVIOR_TYPES and not executable:
+    behavior_present = (
+        bool(touched_packages) and not (touched_packages - executable_packages)
+    ) or (not touched_packages and executable)
+    if kind in _BEHAVIOR_TYPES and not behavior_present:
         return [
             f"{kind}: titles must include an executable change; this diff is documentation-only",
             "retitle the pull request as docs: or include a behavior change",
@@ -200,8 +223,14 @@ def main(argv: list[str]) -> int:
     base, title = argv[1:]
     status = _git("diff", "--find-renames", "--name-status", f"{base}...HEAD")
     path_pairs = _changed_path_pairs(status)
+    copied_sources = {
+        fields[1]
+        for line in status.splitlines()
+        for fields in [line.split("\t")]
+        if fields[0].startswith("C") and len(fields) == 3
+    }
     paths = [path for pair in path_pairs for path in pair[-1:]]
-    problems = assess(title, paths, _changed_python(base, status), path_pairs)
+    problems = assess(title, paths, _changed_python(base, status), path_pairs, copied_sources)
     for problem in problems:
         print(problem, file=sys.stderr)
     return 1 if problems else 0
