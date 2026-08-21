@@ -13,6 +13,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 ROOT = Path(__file__).parent.parent
@@ -111,11 +112,12 @@ def test_installer_refuses_symlinked_hook(tmp_path: Path) -> None:
     assert "Refusing to replace" in result.stderr
 
 
-def test_installer_refuses_an_existing_hooks_path(tmp_path: Path) -> None:
+@pytest.mark.parametrize("hooks_path", ["custom-hooks", ""])
+def test_installer_refuses_an_existing_hooks_path(tmp_path: Path, hooks_path: str) -> None:
     repo = tmp_path / "repo"
     subprocess.run(["git", "init", "--quiet", str(repo)], check=True)
     shutil.copy2(CONFIG, repo / CONFIG.name)
-    subprocess.run(["git", "config", "core.hooksPath", "custom-hooks"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "core.hooksPath", hooks_path], cwd=repo, check=True)
 
     result = subprocess.run(
         [sys.executable, str(INSTALLER)], cwd=repo, capture_output=True, text=True
