@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 _SUBJECT = re.compile(r"^(?P<type>[a-z]+)(?:\([^)]*\))?(?P<breaking>!)?:")
+_VALID_TYPES = ("feat", "fix", "perf", "revert", "docs", "refactor", "test", "build", "ci", "chore")
 _BEHAVIOR_TYPES = frozenset({"feat", "fix", "perf", "revert"})
 _DOCUMENTATION_TYPES = frozenset({"docs", "chore", "refactor", "test", "build", "ci"})
 _DOCUMENTATION_SUFFIXES = frozenset({".md", ".markdown", ".rst", ".adoc"})
@@ -154,10 +155,18 @@ def assess(
             "retitle the pull request to match the changed files or include a behavior change",
         ]
     if kind in _DOCUMENTATION_TYPES and product_executable:
+        valid_prefixes = ", ".join(
+            f"{title_type}{scope}{breaking}:"
+            for title_type in _VALID_TYPES
+            for scope in ("", "(...)")
+            for breaking in ("", "!")
+        )
         return [
             f"{kind}: this title describes a non-behavioral change, but the diff changes executable code",
-            "if the behavior change is intentional, retitle as feat:, fix:, perf:, or revert:; "
-            "otherwise move the executable changes to a separate pull request",
+            "valid title prefixes are: "
+            + valid_prefixes
+            + "; if the behavior change is intentional, use a behavior type; otherwise move the "
+            "executable changes to a separate pull request",
         ]
     return []
 

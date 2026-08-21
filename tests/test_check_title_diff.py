@@ -54,7 +54,13 @@ class TestAssess:
         )
         assert problems
         assert "non-behavioral" in problems[0]
-        assert "retitle as feat:, fix:, perf:, or revert:" in problems[1]
+        assert "valid title prefixes are:" in problems[1]
+        for title_type in check._VALID_TYPES:
+            assert f"{title_type}:" in problems[1]
+            assert f"{title_type}(...):" in problems[1]
+            assert f"{title_type}!:" in problems[1]
+            assert f"{title_type}(...)!:" in problems[1]
+        assert "use a behavior type" in problems[1]
         assert "separate pull request" in problems[1]
 
     def test_chore_title_on_changed_tests_is_allowed(self):
