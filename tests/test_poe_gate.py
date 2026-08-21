@@ -17,11 +17,11 @@ from gate_tasks import packages_with_pyright  # noqa: E402
 _PYPROJECT = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 _TASKS = _PYPROJECT["tool"]["poe"]["tasks"]
 
-_GATE_MEMBERS = ["test", "lint", "format", "types-packages", "types"]
+_GATE_MEMBERS = ["test", "lint", "format", "types-packages", "types", "doc-paths"]
 
 
 class TestTheGate:
-    def test_the_gate_contains_all_five_checks(self):
+    def test_the_gate_contains_every_check(self):
         assert _TASKS["gate"]["sequence"] == _GATE_MEMBERS, (
             f"poe gate runs {_TASKS['gate']['sequence']}; the pre-PR gate is {_GATE_MEMBERS}. "
             "A check dropped from the sequence is a gate that passes without it."
