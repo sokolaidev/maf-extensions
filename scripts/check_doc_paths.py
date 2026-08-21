@@ -1,22 +1,19 @@
-"""Refuse a documentation reference that no longer resolves.
+"""Refuse a documentation reference that does not resolve.
 
     python scripts/check_doc_paths.py
 
-Two kinds of reference break when a document moves, and until this existed neither was read
-by anything. A restructure that moved `docs/design/` to `docs/sandbox/` left eleven behind and
-passed every check (#556).
+Reads every tracked markdown file, and every shipped source file under ``packages/*/src``, and
+reports three kinds of reference that name something absent: a relative link, the heading
+fragment on one, and a repository path written in prose.
 
-**Relative markdown links** — `](../../docs/sandbox/architecture.md)` — break visibly, on
-GitHub, for anyone who clicks.
+**Resolution is against the tracked tree, never the filesystem.** An untracked or ignored file
+satisfies nothing, because a reference is only worth anything to a reader who cloned the
+repository — and a build artefact sitting in a local checkout would otherwise make a dead link
+pass. A link may also name a *directory*, which git does not track directly; one holding a
+tracked file counts.
 
-**Repo-shaped paths written in prose** — a docstring saying "see
-``docs/sandbox/research/egress-resolution.md``" — break invisibly, and seven of that eleven
-were in `_protocol.py` and `_router.py`, which ship inside the wheel. A reader who follows one
-is reading a released package that points at a directory nobody shipped.
-
-Both halves resolve against the working tree and nothing else: no network, no anchor
-resolution, no external URL. A dead link on the open internet is a different problem with a
-different cadence, and reaching for it here would make the gate slow and flaky.
+Out of scope, deliberately: external URLs, which would put the network in the gate, and the
+heading of a fragment on anything but a markdown file, which has none to check.
 """
 
 from __future__ import annotations
@@ -36,27 +33,32 @@ _REFERENCE_LINK = re.compile(r"^\s{0,3}\[[^\]]+\]:\s*<?([^\s>]+)", re.MULTILINE)
 #: than a phrase — `packages/maf-sandbox` is a directory a sentence may name loosely, and
 #: `docs/sandbox/architecture.md` is a thing a reader is being told to open.
 #:
-#: The lookbehind is what keeps a URL out: every `packages/…` inside
+#: The extension is any length: capping it hid every reference to a `.bicep`, a `.yaml` or a
+#: `.toml`, so the paths most likely to move were the ones this could not see.  It must start
+#: with a letter, which is what keeps a version out — `maf-sandbox/0.19.0` is not a file.
+#:
+#: The lookbehind keeps a URL out: every `packages/…` inside
 #: `https://github.com/…/blob/main/packages/…` is preceded by `/`, and a bare mention never is.
-#: The lookahead stops the match before sentence punctuation, so a path ending a sentence is not
-#: reported with the full stop attached.
 _PROSE_PATH = re.compile(
-    r"(?<![\w./-])((?:docs|packages|samples|scripts|tests)/[\w./-]+\.[A-Za-z]{2,4})(?![\w/])"
+    r"(?<![\w./-])((?:docs|packages|samples|scripts|tests)/[\w./-]+\.[A-Za-z][A-Za-z0-9]*)"
+    r"(?![\w/])"
 )
 
 #: Scanned for prose paths: the two surfaces where a dead reference reaches a reader — markdown,
 #: which renders on GitHub and PyPI, and shipped source, which goes out in the wheel.
 #:
-#: `tests/` and `scripts/` are deliberately absent, and for the same reason rather than as an
-#: oversight: both *construct* paths as data. A test names paths that must not exist, and
-#: `check_live_diagram_sample.py` names `samples/07_docker_diagram/out/diagram.png` — an
-#: artefact a run produces, correctly absent from the tree. A checker that reported those would
-#: be switched off within the week, and a checker that is off finds nothing at all.
+#: `tests/` and `scripts/` are absent for the same reason rather than as an oversight: both
+#: *construct* paths as data, including ones that are correctly absent, and a checker that
+#: reported those would be switched off within the week.
 _PROSE_GLOBS = ("*.md", "packages/*/src/**/*.py")
 
 #: A glob is a pattern, not a path; `packages/*/README.md` names five files and resolves to
 #: none of them.
 _GLOB_CHARACTERS = ("*", "?", "[")
+
+#: A fenced block, opened and closed by the same run of backticks or tildes. Its contents are
+#: not markdown, so an ATX-looking line inside one is a comment in some other language.
+_FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 
 #: An ATX heading, with any closing `##` run discarded.
 _HEADING = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.*?)[ \t]*#*$", re.MULTILINE)
@@ -65,49 +67,14 @@ _HEADING = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.*?)[ \t]*#*$", re.MULTILINE)
 _HTML_ANCHOR = re.compile(r"""<a\s[^>]*\b(?:id|name)\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
 
 #: Inline markup that is *not* part of a heading's text: code ticks, emphasis runs, and the
-#: bracket-and-target of a link, whose visible half survives.
+#: bracket-and-target of a link, whose visible half survives. Underscore is deliberately absent,
+#: though it is an emphasis marker too: it is also a word character GitHub keeps, and the
+#: headings here are full of identifiers.
 _LINK_TEXT = re.compile(r"\[([^\]]*)\]\([^)]*\)")
-#: Underscore is deliberately absent, though it is an emphasis marker too: it is also a word
-#: character GitHub keeps, and the headings here are full of identifiers. Stripping it slugs
-#: ``dispatch_over_exec`` to ``dispatchoverexec`` and reports a working link as broken.
 _MARKUP = re.compile(r"[`*~]")
 
-#: `#L42` and `#L42-L60` on a source file are GitHub line references, not headings. A fragment
-#: on anything but a markdown file has no heading to check at all.
+#: `#L42` and `#L42-L60` on a source file are GitHub line references, not headings.
 _LINE_REFERENCE = re.compile(r"^L\d+(?:-L\d+)?$")
-
-
-def slugify(heading: str) -> str:
-    """The fragment GitHub derives from a heading's text.
-
-    Lowercase, strip everything that is not a word character, whitespace or a hyphen, then
-    turn each remaining whitespace character into a hyphen — *each*, not each run, which is
-    why ``## A — B`` becomes ``a--b`` and matching it any other way reports a working link.
-    """
-    text = _LINK_TEXT.sub(r"\1", heading)
-    text = _MARKUP.sub("", text)
-    text = re.sub(r"[^\w\s-]", "", text, flags=re.UNICODE).strip().lower()
-    return re.sub(r"\s", "-", text)
-
-
-def anchors(text: str) -> set[str]:
-    """Every fragment ``text`` can be linked to: its heading slugs and its explicit anchors.
-
-    Repeated headings are numbered the way GitHub numbers them — the second ``## Notes`` is
-    ``#notes-1`` — because a document with two sections of the same name is exactly where a
-    reader needs the link to be right.
-    """
-    found: set[str] = set()
-    seen: dict[str, int] = {}
-    for _level, heading in _HEADING.findall(text):
-        slug = slugify(heading)
-        if not slug:
-            continue
-        count = seen.get(slug, 0)
-        seen[slug] = count + 1
-        found.add(slug if count == 0 else f"{slug}-{count}")
-    found.update(_HTML_ANCHOR.findall(text))
-    return found
 
 
 def tracked(repo_root: Path, *globs: str) -> list[Path]:
@@ -122,6 +89,21 @@ def tracked(repo_root: Path, *globs: str) -> list[Path]:
     return [repo_root / name for name in listed.stdout.split("\0") if name]
 
 
+def tracked_tree(repo_root: Path) -> tuple[set[str], set[str]]:
+    """Every tracked file, and every directory holding one, as repo-relative POSIX paths.
+
+    Directories are derived rather than listed because git tracks no directory of its own, and
+    a link to one is ordinary — ``README.md`` alone points at seven.
+    """
+    files = {path.relative_to(repo_root).as_posix() for path in tracked(repo_root)}
+    directories: set[str] = set()
+    for name in files:
+        parts = name.split("/")[:-1]
+        for depth in range(1, len(parts) + 1):
+            directories.add("/".join(parts[:depth]))
+    return files, directories
+
+
 def link_targets(text: str) -> list[str]:
     """Every link target in ``text``, both inline and reference-style."""
     return _INLINE_LINK.findall(text) + _REFERENCE_LINK.findall(text)
@@ -130,10 +112,10 @@ def link_targets(text: str) -> list[str]:
 def is_local(target: str) -> bool:
     """Whether ``target`` names something in this repository rather than elsewhere.
 
-    A pure fragment (`#section`) points within the page and has no file to check; a scheme —
-    `https:`, `mailto:` — points off the tree entirely. Both are skipped rather than resolved.
+    A scheme — `https:`, `mailto:` — points off the tree entirely and is skipped rather than
+    resolved.
     """
-    if not target or target.startswith("#"):
+    if not target:
         return False
     return not re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", target)
 
@@ -143,18 +125,80 @@ def resolve(target: str) -> str:
     return target.split("#", 1)[0].split("?", 1)[0]
 
 
+def without_fenced_blocks(text: str) -> str:
+    """``text`` with every fenced block blanked, its line count preserved.
+
+    A fence holds some other language, and a `#` starting a line in one is a comment there.
+    Reading them as headings invents anchors no rendered page has, so a link to a phantom
+    passes: `docs/sandbox/guest-platform-and-commands.md` alone contributes two.
+    """
+    kept: list[str] = []
+    closing: str | None = None
+    for line in text.splitlines():
+        opened = _FENCE.match(line)
+        if closing is None:
+            if opened:
+                closing = opened.group(1)[0] * 3
+                kept.append("")
+                continue
+            kept.append(line)
+            continue
+        kept.append("")
+        if opened and opened.group(1).startswith(closing):
+            closing = None
+    return "\n".join(kept)
+
+
+def slugify(heading: str) -> str:
+    """The fragment GitHub derives from a heading's text.
+
+    Lowercase, strip everything that is not a word character, whitespace or a hyphen, then turn
+    each remaining whitespace character into a hyphen — *each*, not each run, which is why
+    ``## A — B`` becomes ``a--b`` and matching it any other way reports a working link.
+    """
+    text = _LINK_TEXT.sub(r"\1", heading)
+    text = _MARKUP.sub("", text)
+    text = re.sub(r"[^\w\s-]", "", text, flags=re.UNICODE).strip().lower()
+    return re.sub(r"\s", "-", text)
+
+
+def anchors(text: str) -> set[str]:
+    """Every fragment ``text`` can be linked to: its heading slugs and its explicit anchors.
+
+    Repeated headings are numbered the way GitHub numbers them — the second ``## Notes`` is
+    ``#notes-1`` — because a document with two sections of the same name is exactly where a
+    reader needs the link to be right.
+    """
+    prose = without_fenced_blocks(text)
+    found: set[str] = set()
+    seen: dict[str, int] = {}
+    for _level, heading in _HEADING.findall(prose):
+        slug = slugify(heading)
+        if not slug:
+            continue
+        count = seen.get(slug, 0)
+        seen[slug] = count + 1
+        found.add(slug if count == 0 else f"{slug}-{count}")
+    found.update(_HTML_ANCHOR.findall(prose))
+    return found
+
+
+def _repo_relative(destination: Path, repo_root: Path) -> str | None:
+    """``destination`` as a repo-relative POSIX path, or None when it leaves the tree."""
+    try:
+        return destination.resolve().relative_to(repo_root.resolve()).as_posix()
+    except ValueError:
+        return None
+
+
 def _fragment(target: str) -> str:
     """The part after ``#``, which names a place inside a document rather than a document."""
     return target.split("#", 1)[1] if "#" in target else ""
 
 
 def broken_links(repo_root: Path) -> list[str]:
-    """One line per markdown link whose file, or whose heading, is not in the working tree.
-
-    A fragment is resolved only against a markdown target: ``#L42`` on a source file is a line
-    reference GitHub renders and no heading would ever match, and a fragment on anything else
-    has nothing to resolve against.
-    """
+    """One line per markdown link whose file, or whose heading, is not in the tracked tree."""
+    files, directories = tracked_tree(repo_root)
     out: list[str] = []
     for path in tracked(repo_root, "*.md"):
         text = path.read_text("utf-8")
@@ -167,9 +211,11 @@ def broken_links(repo_root: Path) -> list[str]:
                 continue
             # An empty file part means the fragment points within this very page.
             destination = (path.parent / bare) if bare else path
-            if bare and not destination.exists():
-                out.append(f"{here}: link -> {target}")
-                continue
+            if bare:
+                relative = _repo_relative(destination, repo_root)
+                if relative is None or (relative not in files and relative not in directories):
+                    out.append(f"{here}: link -> {target}")
+                    continue
             fragment = _fragment(target)
             if not fragment or destination.suffix.lower() != ".md":
                 continue
@@ -180,34 +226,44 @@ def broken_links(repo_root: Path) -> list[str]:
     return out
 
 
-def names_something(named: str, repo_root: Path, tracked_paths: set[str]) -> bool:
-    """Whether ``named`` points at a file that exists, from the repo root or from a package.
+def package_of(relative_path: str) -> str | None:
+    """The package a repo-relative path sits in, or None when it sits outside every one."""
+    parts = relative_path.split("/")
+    return f"packages/{parts[1]}" if len(parts) >= 2 and parts[0] == "packages" else None
 
-    The suffix half is what keeps this quiet, and it is not laxity. Prose inside a package says
-    ``tests/test_acas_e2e.py`` and means that package's tests; prose in a design document says
-    ``scripts/import_disk_image.py`` and means whichever package ships it. Resolving those from
-    the repository root reports six references that are all perfectly correct.
 
-    It stays strict against the defect it exists for, because a moved document changes a
-    **middle** segment: ``docs/design/architecture.md`` is a suffix of nothing once the file
-    lives at ``docs/sandbox/architecture.md``.
+def names_something(named: str, referrer: str, files: set[str]) -> bool:
+    """Whether ``named``, written in ``referrer``, points at a tracked file.
+
+    Prose inside a package saying ``tests/test_x.py`` means *that package's* tests, so it is
+    resolved against the package and nowhere else — searching the whole repository would let
+    one package's reference be satisfied by another's file, which is the opposite of what the
+    words say.
+
+    A document outside every package has no such home, so ``scripts/import_disk_image.py`` in a
+    design document means whichever package ships it, and only there is a repository-wide
+    search the right reading.
     """
-    if (repo_root / named).exists():
+    if named in files:
         return True
-    return any(candidate.endswith("/" + named) for candidate in tracked_paths)
+    package = package_of(referrer)
+    if package is not None:
+        return f"{package}/{named}" in files
+    return any(candidate.endswith("/" + named) for candidate in files)
 
 
 def broken_prose_paths(repo_root: Path) -> list[str]:
-    """One line per repo-shaped path written in prose that names nothing in the tree."""
-    tracked_paths = {path.relative_to(repo_root).as_posix() for path in tracked(repo_root)}
+    """One line per repo-shaped path written in prose that names nothing tracked."""
+    files, _directories = tracked_tree(repo_root)
     out: list[str] = []
     for path in tracked(repo_root, *_PROSE_GLOBS):
+        here = path.relative_to(repo_root).as_posix()
         for match in _PROSE_PATH.finditer(path.read_text("utf-8")):
             named = match.group(1)
             if any(character in named for character in _GLOB_CHARACTERS):
                 continue
-            if not names_something(named, repo_root, tracked_paths):
-                out.append(f"{path.relative_to(repo_root).as_posix()}: names -> {named}")
+            if not names_something(named, here, files):
+                out.append(f"{here}: names -> {named}")
     return out
 
 
@@ -233,9 +289,8 @@ def main(argv: list[str]) -> int:
     for problem in problems:
         print(problem, file=sys.stderr)
     print(
-        f"\n{len(problems)} reference(s) do not resolve. A moved document leaves these behind "
-        "and nothing else reads them — the ones in packages/*/src ship inside the wheel, so a "
-        "reader follows them out of a released package.",
+        f"\n{len(problems)} reference(s) do not resolve. The ones under packages/*/src ship "
+        "inside the wheel, so a reader follows them out of a released package.",
         file=sys.stderr,
     )
     return 1
