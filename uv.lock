@@ -820,7 +820,7 @@ requires-dist = [
 
 [[package]]
 name = "maf-sandbox-bicep"
-version = "0.8.0"
+version = "0.8.1"
 source = { editable = "packages/maf-sandbox-bicep" }
 dependencies = [
     { name = "agent-framework-core" },
