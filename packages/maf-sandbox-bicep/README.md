@@ -41,6 +41,23 @@ What is Bicep-specific — the command templates, the accepted extensions, the S
 
 Its companion artefacts live outside this package, because a container image and a registry are not Python: a pinned Bicep image on Azure Linux, and the registry and pull identity that serve it. The hard-won behaviours of the pinned CLI — SARIF on stderr for `build` but stdout for `lint`, `build-params` for `.bicepparam`, config discovery only by walking up from the source file — are documented where they bite, in [`_tool.py`](https://github.com/sokolaidev/maf-extensions/blob/main/packages/maf-sandbox-bicep/src/maf_sandbox_bicep/_tool.py).
 
+## Upgrading to 0.9
+
+`0.9.0` requires `maf-sandbox` 0.19, which made the egress mode a thing a workload declares rather than a thing a backend is merely checked against.
+
+**`bicep_sandbox_spec` takes an `egress` argument, and it defaults to `Egress.ALLOWLIST`.** That is the mode the kind has always wanted — the module hosts it fetches from are its reason for having an allowlist at all — but it is now *asked for* rather than implied, and the router refuses a backend that cannot enforce it:
+
+```
+SandboxEgressNotEnforced: sandbox backend 'docker' cannot enforce the 'allowlist'
+egress the 'bicep' workload runs in (it enforces closed).
+```
+
+**A deployment that worked before can hit that on upgrade with nothing else changed**, because until 0.19 a `closed` backend serving an allowlist spec was permitted with a warning and simply failed at whatever it could not fetch.
+
+Two ways out, and which is right depends on what you meant. If validation is supposed to reach the module registry, give the backend a mode that can enforce an allowlist — for `maf-sandbox-docker` that means configuring `egress_proxy_image`. If it is supposed to run offline, say so: `bicep_sandbox_spec(egress=Egress.CLOSED)` drops the host list with it, and restore failures then surface as diagnostics rather than as a refusal at attach.
+
+`Egress.UNRESTRICTED` is accepted too, and is the honest choice for a backend that confines nothing — a no-isolation local backend, say — rather than letting it claim a confinement it does not perform.
+
 ## Upgrading to 0.6
 
 `0.6.0` follows `maf-sandbox` 0.11, which retired the word `workspace` from the vocabulary. It requires that release; there is no version of this package that works against both.
