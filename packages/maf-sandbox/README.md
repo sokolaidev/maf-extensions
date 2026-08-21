@@ -162,7 +162,7 @@ That is the whole migration unless you declare `Capability.RUN_CODE`, in which c
 
 **`Capability.NETWORK` is removed** from the capability enum. No backend declared it and no spec required it; how precisely egress is confined lives in `Egress`.
 
-**New, and additive: a workload can state the guest shape it needs.** `OsFamily` is `posix` or `windows`; a backend declares `os_families: frozenset[OsFamily]` and a spec asks with `requires_os_family`, refused at attach with `SandboxOsFamilyNotSupported` on a mismatch. Nothing existing changes — a spec that asks nothing is refused by nothing, and a backend that declares nothing serves every spec that does not ask. **The axis is path grammar and argv quoting and nothing else**: a spec asking for `posix` and getting it can still meet an image with no shell, because what is *installed* in a guest is a property of the image, and one backend may be handed many. See `docs/design/guest-platform-and-commands.md`.
+**New, and additive: a workload can state the guest shape it needs.** `OsFamily` is `posix` or `windows`; a backend declares `os_families: frozenset[OsFamily]` and a spec asks with `requires_os_family`, refused at attach with `SandboxOsFamilyNotSupported` on a mismatch. Nothing existing changes — a spec that asks nothing is refused by nothing, and a backend that declares nothing serves every spec that does not ask. **The axis is path grammar and argv quoting and nothing else**: a spec asking for `posix` and getting it can still meet an image with no shell, because what is *installed* in a guest is a property of the image, and one backend may be handed many. See `docs/sandbox/guest-platform-and-commands.md`.
 
 ## Upgrading to 0.19
 
