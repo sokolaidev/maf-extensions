@@ -44,10 +44,20 @@ _PROSE_PATH = re.compile(
     r"(?![\w/])"
 )
 
-#: A URL, whose path names somebody else's tree. The scheme is optional because the
-#: protocol-relative form has none — `//example.invalid/x` is as external as `https://` is,
-#: and `is_local` already refuses it for a link destination.
-_URL = re.compile(r"(?:[A-Za-z][A-Za-z0-9+.-]*:)?//[^\s)>\]]+")
+#: A backslash escape: markdown syntax, and the punctuation after it is the literal character.
+_BACKSLASH_ESCAPE = re.compile(r"\\([!-/:-@\[-`{-~])")
+
+#: A URI in prose, whose payload names somebody else's tree. Three shapes: any scheme with
+#: `//`, the protocol-relative form, which has no scheme and is no less external for it, and
+#: the schemes below, which carry a payload without one.
+#:
+#: That last group is a list rather than `[A-Za-z][A-Za-z0-9+.-]*:` on purpose. `is_local` can
+#: use the general form because it judges a whole destination, where everything before the
+#: colon is the scheme by construction. Prose has no such boundary: `:class:`SandboxSpec`` and
+#: `:func:`run`` are the same shape, and this repository's shipped docstrings hold 461 of them.
+#: Blanking on the general rule would swallow whatever followed the colon in every one.
+_URI_SCHEMES = "mailto|data|file|ftp|ftps|tel|sms|news|nntp|urn|git|ssh|irc|ircs|magnet|about"
+_URL = re.compile(rf"(?:[A-Za-z][A-Za-z0-9+.-]*:)?//[^\s)>\]]+|\b(?:{_URI_SCHEMES}):[^\s)>\]]+")
 
 #: Scanned for prose paths: the two surfaces where a dead reference reaches a reader — markdown,
 #: which renders on GitHub and PyPI, and shipped source, which goes out in the wheel.
@@ -193,13 +203,28 @@ def _after_title(text: str, index: int) -> int:
     return index
 
 
-def _destination(text: str, paren: int) -> tuple[str, int] | None:
-    """The destination of the ``(`` at ``paren``, and the index past the ``)``, or None.
+def _unescaped(target: str) -> str:
+    """``target`` with markdown's backslash escapes resolved to the characters they name.
+
+    A backslash before ASCII punctuation is markdown syntax, not part of the path, so
+    `docs/a_\\(draft\\).md` names the tracked `docs/a_(draft).md`. It is undone here rather
+    than in `resolve`, because this is the markdown layer and percent-decoding is the URL one:
+    a `%28` written after an escaped paren must survive this pass to be decoded by that one.
+    """
+    return _BACKSLASH_ESCAPE.sub(r"\1", target)
+
+
+def _destination(text: str, paren: int) -> tuple[str, int, int, int] | None:
+    """The ``(`` at ``paren`` read as a destination: its text, its bounds, and what follows.
 
     Two spellings. In angle brackets it runs to the ``>`` and may hold spaces. Bare, it runs to
     whitespace or to an *unbalanced* ``)`` — balanced pairs belong to the destination, so
     `docs/a_(draft).md` is one path and truncating it at the first ``)`` reports a file that is
     tracked as missing.
+
+    The bounds cover the destination alone, never the label: `[docs/gone.md](docs/live.md)`
+    renders that label as visible prose, and a pass that blanks the whole link stops the prose
+    scan from ever reading it.
 
     None when nothing closes the ``(``. An unclosed one is not a link at all: GitHub renders
     `[x](missing.md` as those literal characters, so resolving the text after the paren reports
@@ -212,7 +237,7 @@ def _destination(text: str, paren: int) -> tuple[str, int] | None:
         end = text.find(">", index + 1)
         if end == -1:
             return None
-        target, index = text[index + 1 : end], end + 1
+        begin, stop, target, index = index + 1, end, text[index + 1 : end], end + 1
     else:
         depth, begin = 0, index
         while index < len(text):
@@ -229,9 +254,12 @@ def _destination(text: str, paren: int) -> tuple[str, int] | None:
                     break
                 depth -= 1
             index += 1
-        target = text[begin:index]
-    index = _after_title(text, index)
-    return (target, index + 1) if text[index : index + 1] == ")" else None
+        stop = min(index, len(text))
+        target = text[begin:stop]
+    after = _after_title(text, index)
+    if text[after : after + 1] != ")":
+        return None
+    return _unescaped(target), begin, stop, after + 1
 
 
 def inline_links(text: str, offset: int = 0) -> list[tuple[str, int, int]]:
@@ -257,9 +285,9 @@ def inline_links(text: str, offset: int = 0) -> list[tuple[str, int, int]]:
             # sentence around a real link. Stepping past the whole label would skip it.
             index = opener + 1
             continue
-        target, index = parsed
+        target, begin, stop, index = parsed
         if target:
-            found.append((target, offset + opener, offset + index))
+            found.append((target, offset + begin, offset + stop))
         # The label is scanned too, because a link may wrap an image — `[![alt](i.png)](a.md)`
         # is the shape of every badge in this repository, and it names *two* files. Stepping
         # straight past the label checks the outer target and silently drops the inner one.
@@ -313,6 +341,10 @@ def without_link_destinations(text: str) -> str:
     holding it*. The prose pass resolves against the repository root instead, so reading the
     same span twice reports one dangling reference as two — and from a nested document the
     second reading resolves a different file than the reader would reach.
+
+    Only the destination is blanked from an inline link, never its label: `[docs/gone.md](x.md)`
+    puts that path on the rendered page as text, and the prose pass is the only thing that
+    reads it. A reference definition renders nothing at all, so the whole line goes.
     """
     kept = list(text)
     for _target, start, end in inline_links(text) + reference_links(text):
@@ -432,9 +464,9 @@ def without_fenced_blocks(text: str) -> str:
     passes: `docs/sandbox/guest-platform-and-commands.md` alone contributes two.
 
     Blockquote markers are stripped before the fence is matched, and the closer must come from
-    the same quote depth as the opener. A fence inside a blockquote is still a fence — every
-    later pass strips the markers, so leaving one intact here hands its contents to readers
-    that *have* learned to see past them.
+    the same quote depth as the opener. Every later pass reads past a `>`, so a quoted fence
+    must be removed here or its contents reach them as markdown; and a closer in a different
+    container is content, or a top-level block ends at the first quoted fence line inside it.
     """
     kept: list[str] = []
     opener: str | None = None
@@ -496,14 +528,22 @@ def headings(prose: str) -> list[str]:
             continue
         if not number or not _UNDERLINE.match(line):
             continue
-        above = lines[number - 1]
-        # An underline turns the line above into a heading only when that line is a paragraph.
-        # After `# Foo` or another underline it is text, and GitHub renders it as such.
-        if _HEADING.match(above) or _UNDERLINE.match(above):
-            continue
-        text = _SETEXT_TEXT.match(above)
-        if text:
-            found.append(text.group(1))
+        # An underline turns the paragraph above it into one heading — the *whole* paragraph,
+        # not its last line, so `First line\nSecond line\n---` is `#first-line-second-line`.
+        # Keeping only the final line rejects that anchor and accepts `#second-line`, which
+        # GitHub never creates: wrong in both directions from the same mistake.
+        paragraph: list[str] = []
+        for previous in reversed(lines[:number]):
+            # A blank line ends the paragraph. An ATX heading or another underline is not part
+            # of one at all, so anything above it belongs to something else.
+            if _HEADING.match(previous) or _UNDERLINE.match(previous):
+                break
+            text = _SETEXT_TEXT.match(previous)
+            if text is None:
+                break
+            paragraph.append(text.group(1))
+        if paragraph:
+            found.append("\n".join(reversed(paragraph)))
     return found
 
 
@@ -634,7 +674,13 @@ def broken_prose_paths(repo_root: Path) -> list[str]:
     out: list[str] = []
     for path in tracked(repo_root, *_PROSE_GLOBS):
         here = path.relative_to(repo_root).as_posix()
-        prose = without_link_destinations(without_urls(path.read_text("utf-8")))
+        text = path.read_text("utf-8")
+        # Only markdown gets markdown preprocessing. An HTML comment renders as nothing, so a
+        # path inside one asks no reader to open it; in a `.py` file `<!--` is just characters,
+        # and treating it as a comment opener would blank shipped source to the next `-->`.
+        if path.suffix.lower() == ".md":
+            text = without_html_comments(text)
+        prose = without_link_destinations(without_urls(text))
         for match in _PROSE_PATH.finditer(prose):
             named = match.group(1)
             if any(character in named for character in _GLOB_CHARACTERS):

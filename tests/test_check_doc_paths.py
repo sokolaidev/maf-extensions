@@ -292,10 +292,60 @@ class TestWhatItMustNotReport:
         root = repo({"a.md": "[label]: docs/gone.md\n"})
         assert check.broken_prose_paths(root) == []
 
+    def test_a_prose_path_inside_an_html_comment_is_not_reported(self, repo):
+        """GitHub renders a comment as nothing, so the path inside one asks nobody to open it."""
+        root = repo({"a.md": "<!-- docs/gone.md -->\n"})
+        assert check.broken_prose_paths(root) == []
+
+    @pytest.mark.parametrize(
+        "uri",
+        ["mailto:someone@example.invalid?body=docs/gone.md", "data:text/plain,docs/gone.md"],
+    )
+    def test_a_scheme_uri_without_a_double_slash_is_still_external(self, repo, uri: str):
+        """A payload after `mailto:` or `data:` is not a path into this repository."""
+        root = repo({"a.md": f"Write to {uri} about it.\n"})
+        assert check.broken_prose_paths(root) == []
+
+    def test_a_sphinx_role_is_not_mistaken_for_a_uri_scheme(self, repo):
+        """`:doc:` is the same shape as a scheme, and shipped docstrings are full of roles.
+
+        The payload has to sit *inside* the span a general `word:payload` rule would blank, or
+        the test passes under that rule too and pins nothing. Here the reference is the role's
+        own argument, so blanking on the general shape swallows it — the false-negative
+        direction, which is why the schemes are a list rather than a pattern.
+        """
+        root = repo({"packages/p/src/m/x.py": '""":doc:`docs/gone.md` explains why."""\n'})
+        assert check.broken_prose_paths(root) == ["packages/p/src/m/x.py: names -> docs/gone.md"]
+
+    def test_markdown_preprocessing_is_not_applied_to_shipped_source(self, repo):
+        """`<!--` in a `.py` file is four characters, not a comment opener.
+
+        Running the markdown pass over source would blank from there to the next `-->`, and
+        every reference in between would stop being checked.
+        """
+        root = repo({"packages/p/src/m/x.py": '"""<!-- see docs/gone.md -->"""\n'})
+        assert check.broken_prose_paths(root) == ["packages/p/src/m/x.py: names -> docs/gone.md"]
+
     def test_a_prose_path_beside_a_link_is_still_reported(self, repo):
         """Blanking the link must not blank the sentence around it."""
         root = repo({"a.md": "[x](docs/here.md) and also docs/gone.md\n", "docs/here.md": "y"})
         assert check.broken_prose_paths(root) == ["a.md: names -> docs/gone.md"]
+
+    def test_a_link_label_is_visible_prose_and_is_still_checked(self, repo):
+        """`[docs/gone.md](docs/live.md)` renders that path as text on the page.
+
+        The destination is `broken_links`' to resolve, but the label is prose like any other
+        and the prose pass is the only thing that reads it. Blanking the whole link to stop
+        the destination being counted twice takes the label with it.
+        """
+        root = repo({"a.md": "[docs/gone.md](docs/live.md)", "docs/live.md": "y"})
+        assert check.broken_links(root) == []
+        assert check.broken_prose_paths(root) == ["a.md: names -> docs/gone.md"]
+
+    def test_a_backslash_escape_is_not_part_of_the_path(self, repo):
+        """`\\(` is markdown syntax for a literal paren, so it never reaches the filesystem."""
+        root = repo({"a.md": r"[x](docs/a_\(draft\).md)", "docs/a_(draft).md": "y"})
+        assert check.broken_links(root) == []
 
     def test_a_test_naming_a_path_that_must_not_exist_is_out_of_scope(self, repo):
         """`tests/` constructs paths as data, including ones that are absent on purpose."""
@@ -455,11 +505,10 @@ class TestAnchors:
 
     @pytest.mark.parametrize("fence", ["```", "~~~"])
     def test_a_fenced_block_inside_a_blockquote_is_still_a_fence(self, repo, fence: str):
-        """The markers are stripped everywhere else, so leaving them here leaks the block.
+        """A quoted fence must be removed before any blockquote-aware reader runs.
 
-        Every later pass reads past a `>`, and once `headings()` learned to, a quoted fence
-        started handing its contents to it — an ATX-looking line inside a sample became an
-        anchor, and a link to that phantom passed.
+        They all read past a `>`, so a fence left intact hands its contents on as markdown:
+        an ATX-looking line in a sample becomes an anchor, and a link to that phantom passes.
         """
         quoted = f"> {fence}\n> # Hidden\n> [x](missing.md)\n> {fence}\n"
         assert check.anchors(quoted) == set()
@@ -482,6 +531,26 @@ class TestAnchors:
             }
         )
         assert check.broken_links(root) == []
+
+    def test_a_setext_heading_is_the_whole_paragraph_above_its_underline(self, repo):
+        """GitHub makes one heading of the paragraph, so two lines give one joined anchor.
+
+        Keeping only the final line is wrong twice over: it rejects the anchor the page has
+        and accepts one it does not, from the same mistake.
+        """
+        two = "First line\nSecond line\n---\n"
+        assert check.headings(two) == ["First line\nSecond line"]
+        assert check.anchors(two) == {"first-line-second-line"}
+
+        root = repo({"a.md": "[x](b.md#first-line-second-line)", "b.md": two})
+        assert check.broken_links(root) == []
+
+        dead = repo({"a.md": "[x](b.md#second-line)", "b.md": two})
+        assert check.broken_links(dead) == ["a.md: heading -> b.md#second-line"]
+
+    def test_a_setext_paragraph_stops_at_a_blank_line(self, repo):
+        """A paragraph two above the underline belongs to itself, not to the heading."""
+        assert check.headings("Elsewhere\n\nHeading text\n===\n") == ["Heading text"]
 
     def test_an_underline_after_a_heading_is_not_a_second_heading(self, repo):
         """`===` under `# Foo` is a paragraph — GitHub renders one heading there, not two."""
