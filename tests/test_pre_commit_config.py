@@ -92,6 +92,25 @@ def test_installer_writes_runtime_resolving_hooks(tmp_path: Path) -> None:
             assert hook.stat().st_mode & 0o111
 
 
+def test_installer_refuses_symlinked_hook(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "--quiet", str(repo)], check=True)
+    shutil.copy2(CONFIG, repo / CONFIG.name)
+    hook_dir = repo / ".git" / "hooks"
+    hook_dir.mkdir(exist_ok=True)
+    try:
+        (hook_dir / "pre-commit").symlink_to(tmp_path / "missing-hook")
+    except OSError:
+        return
+
+    result = subprocess.run(
+        [sys.executable, str(INSTALLER)], cwd=repo, capture_output=True, text=True
+    )
+
+    assert result.returncode != 0
+    assert "Refusing to replace" in result.stderr
+
+
 def test_installer_refuses_an_existing_hooks_path(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     subprocess.run(["git", "init", "--quiet", str(repo)], check=True)

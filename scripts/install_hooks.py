@@ -49,7 +49,9 @@ def main() -> None:
     hook_dir.mkdir(parents=True, exist_ok=True)
     hook_paths = [hook_dir / hook_type for hook_type in HOOK_TYPES]
     for path in hook_paths:
-        if path.exists() and HOOK_MARKER not in path.read_text(encoding="utf-8"):
+        if path.is_symlink() or (
+            path.exists() and HOOK_MARKER not in path.read_text(encoding="utf-8")
+        ):
             raise RuntimeError(f"Refusing to replace an existing hook: {path}")
 
     for hook_type, path in zip(HOOK_TYPES, hook_paths, strict=True):
