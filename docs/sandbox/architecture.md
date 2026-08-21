@@ -171,5 +171,5 @@ Every value the package accepts or emits is a `StrEnum` member or a named consta
 | Calls that share a sandbox are serialised, which unblocks the disposal escalation | open — nothing serialises them today | [#476](https://github.com/sokolaidev/maf-extensions/issues/476) |
 | A backend allocates the storage base and resolves every path against it | open — a spec names `work_dir`, no backend reads or creates it | [#480](https://github.com/sokolaidev/maf-extensions/issues/480) |
 | `SandboxToolSession` is renamed `SandboxToolBinding`, once the semantics settle | open | untracked |
-| A guest-platform axis, so a kind that execs `python3` declares what it needs | open — deliberately unbuilt while every shipped backend runs a Linux guest | [#111](https://github.com/sokolaidev/maf-extensions/issues/111) |
+| A guest-platform axis, so a kind that execs `python3` declares what it needs | open — design settled in [`guest-platform-and-commands.md`](guest-platform-and-commands.md); nothing implemented | [#111](https://github.com/sokolaidev/maf-extensions/issues/111) |
 | A sibling operational package for transport-and-container content | open — deferred at two tenants; tar-out for wslc would be the third | [#125](https://github.com/sokolaidev/maf-extensions/issues/125) |

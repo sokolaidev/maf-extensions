@@ -59,4 +59,4 @@ Refusing a symlink narrows an entry to *not a link and not a directory*. It does
 | ACAS declares `FILES_DELETE` | open — the mechanism refuses a link where the protocol removes it; measured without a verdict in the live suite | untracked |
 | A directory is refused without `recursive` whatever it holds — the service accepted an empty one | shipped | [#474](https://github.com/sokolaidev/maf-extensions/pull/474) merged |
 | The in-sandbox isolation probe suite that would give the micro-VM claim teeth | parked | untracked — nearest adjacent is [#402](https://github.com/sokolaidev/maf-extensions/issues/402) (open), shared egress probes |
-| A guest-platform axis a kind can declare and match | open | [#111](https://github.com/sokolaidev/maf-extensions/issues/111) open |
+| A guest-platform axis a kind can declare and match | open — design settled in [`../guest-platform-and-commands.md`](../guest-platform-and-commands.md), where this backend's "every sandbox is Linux" comment becomes a declared `os_families`; nothing implemented | [#111](https://github.com/sokolaidev/maf-extensions/issues/111) open |

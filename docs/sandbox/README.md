@@ -146,6 +146,7 @@ Two behaviours are worth knowing before the first call, because both are deliber
 - [`capabilities.md`](capabilities.md) — what a sandbox can do, how it is declared and matched, and the whole file surface.
 - [`network.md`](network.md) — the egress axis: what a workload may reach, and what a backend has to enforce before it may say so.
 - [`hosts.md`](hosts.md) — the host boundary: where artifacts land, host tools dispatched outward, identity, and the storage base.
+- [`guest-platform-and-commands.md`](guest-platform-and-commands.md) — the guest-platform axis: what a kind may assume about the far side of the boundary, and how a backend finds out.
 - [`kinds/README.md`](kinds/README.md) — what a kind is, what it owes the protocol, and the two that ship.
 - [`backends/README.md`](backends/README.md) — the shipped backends side by side, and what each one honestly declares.
 - [`research/`](research/) — the records: the explorations and proposals the decisions came out of, kept in the tense they were written, and the pipeline a new one goes through.

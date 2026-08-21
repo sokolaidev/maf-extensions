@@ -72,4 +72,4 @@ Three hard-won facts about the pinned Bicep CLI are documented where they bite, 
 | The `MODULE RESTORE FAILED` banner ahead of a restore-blocked diagnostic list | shipped | — |
 | A fresh call directory per call, reclaimed by the framework | shipped | [#496](https://github.com/sokolaidev/maf-extensions/pull/496), kinds wired in [#500](https://github.com/sokolaidev/maf-extensions/pull/500) |
 | `requires` left at `{EXEC, FILES_IN}`; no `min_isolation` raise | shipped | — |
-| A guest-OS axis — this kind needs a `bicep` binary on the path, and nothing declares it | open — deliberately unbuilt while every shipped backend runs a Linux guest | [#111](https://github.com/sokolaidev/maf-extensions/issues/111) (open) |
+| A guest-OS axis — this kind needs a `bicep` binary on the path, and nothing declares it | open — design settled in [`../guest-platform-and-commands.md`](../guest-platform-and-commands.md), where `bicep` is a workload command that stays with the kind and `requires_os_family` is what the kind declares; nothing implemented | [#111](https://github.com/sokolaidev/maf-extensions/issues/111) (open) |

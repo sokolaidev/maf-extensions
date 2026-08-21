@@ -61,4 +61,4 @@ Names are **derived** from a digest of scope, thread, agent dir, kind and egress
 | The egress proxy is a byte copy of wslc's, pinned by test rather than hoisted into core | shipped, by maintainer ruling | — |
 | Live e2e on every pull request as the repository's acceptance gate | shipped | — |
 | Shared egress probes across backends, so this topology is not the only one ever measured | open | [#402](https://github.com/sokolaidev/maf-extensions/issues/402) open |
-| A guest-platform axis a kind can declare and match | open | [#111](https://github.com/sokolaidev/maf-extensions/issues/111) open |
+| A guest-platform axis a kind can declare and match | open — design settled in [`../guest-platform-and-commands.md`](../guest-platform-and-commands.md), where this backend reads its daemon's `OSType` at construction to declare `os_families`; nothing implemented | [#111](https://github.com/sokolaidev/maf-extensions/issues/111) open |

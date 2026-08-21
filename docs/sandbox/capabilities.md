@@ -220,7 +220,7 @@ Every shipped backend runs a Linux guest today. That is an observation, not a pr
 - **`str` content means UTF-8, always**, independent of host locale. Any path reaching a platform default encoding is a mojibake bug waiting for a Windows host.
 - **No newline translation, in either direction, ever.** A host writes artifact content in binary mode: `open(path, "w")` on Windows turns `\n` into `\r\n` and corrupts a PNG that was byte-exact when it left the sandbox.
 
-That a kind can depend on its guest's OS while no axis declares or matches one is a real gap, kept deliberately additive so a platform axis lands without a breaking change.
+That a kind can depend on its guest's OS while no axis declares or matches one is a real gap, kept deliberately additive so a platform axis lands without a breaking change. The axis is now designed — an `OsFamily` a backend declares and a spec requires, with commands classified rather than declared — in [`guest-platform-and-commands.md`](guest-platform-and-commands.md); nothing of it is built yet.
 
 ## The rest of the vocabulary
 
@@ -257,6 +257,6 @@ Named exceptions under **one base**, `SandboxOutputError`, so backends do not di
 | On ACAS `EntryKind.FILE` means not-a-directory-and-not-a-symlink; a FIFO read is bounded rather than refused | open, upstream — no signal available to close it | upstream [microsoft/azure-container-apps#1807](https://github.com/microsoft/azure-container-apps/issues/1807) open |
 | `NETWORK` becomes matchable — `Egress.UNRESTRICTED` for specs that do not require it | open | [#265](https://github.com/sokolaidev/maf-extensions/issues/265) open |
 | `ATTACHED_IDENTITY` plumbing behind the vocabulary | open | [#395](https://github.com/sokolaidev/maf-extensions/issues/395) (open), [#396](https://github.com/sokolaidev/maf-extensions/issues/396) (open), body in [`hosts.md`](hosts.md) |
-| A guest-OS axis, declared and matched | open | [#111](https://github.com/sokolaidev/maf-extensions/issues/111) open |
+| A guest-OS axis, declared and matched | open — design settled in [`guest-platform-and-commands.md`](guest-platform-and-commands.md); nothing implemented | [#111](https://github.com/sokolaidev/maf-extensions/issues/111) open |
 | Error taxonomy members as types under one base | shipped — settled in code, not by role | untracked |
 | Batch `deliver` granularity instead of one call per artifact | open | untracked |
