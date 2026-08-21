@@ -137,7 +137,9 @@ class TestBackendIdentity:
 
     def test_declares_allowlist_egress(self):
         """A workload's tool attaches because of this; `TestEgressPolicy` pins that it is true."""
-        assert AcasSandboxBackend(_config()).egress == Egress.ALLOWLIST
+        assert AcasSandboxBackend(_config()).egress_modes == frozenset(
+            {Egress.ALLOWLIST, Egress.CLOSED}
+        )
 
     def test_declares_exec_files_in_the_whole_pull_surface_and_host_tools(self):
         """Declares only what it implements today — no ATTACHED_IDENTITY and no SNAPSHOT."""
@@ -1232,7 +1234,11 @@ class TestEgressPolicy:
 
         backend = AcasSandboxBackend(_config())
         policy = backend._egress_policy(
-            SandboxSpec(kind="t", egress_allow=("mcr.microsoft.com", "*.data.mcr.microsoft.com"))
+            SandboxSpec(
+                kind="t",
+                egress=Egress.ALLOWLIST,
+                egress_allow=("mcr.microsoft.com", "*.data.mcr.microsoft.com"),
+            )
         )
 
         assert policy.default_action == "Deny"

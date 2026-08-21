@@ -39,6 +39,7 @@ from maf_sandbox import (
     Isolation,
     SandboxBackendNotPermitted,
     SandboxCapabilityNotSupported,
+    SandboxEgressNotEnforced,
     SandboxKey,
     SandboxRouter,
     SandboxSpec,
@@ -203,40 +204,45 @@ def act_two_the_spec_cannot_pick() -> None:
 
 
 def act_three_the_other_axis() -> None:
-    """Egress, and why confining *more* than a spec asked is allowed while less is refused.
+    """Egress, and why a backend serves the exact mode a workload runs in or refuses it.
 
-    The isolation axis above refuses in one direction only, and so does this one — but the
-    direction is the interesting part, and no other sample shows it. A backend that cannot
-    confine as *precisely* as the spec asked still serves, because denying a host the workload
-    wanted makes the workload fail at the fetch, loudly. A backend that cannot confine *at all*
-    is refused, because silently widening what a workload reaches has no such symptom.
+    The isolation axis above refuses in one direction only; egress does not substitute in either.
+    A workload names the one posture it runs in, and the router serves it only on a backend that
+    *enforces* that exact mode — never a more open one (a silent widening) nor a more isolated
+    one (a quietly different posture called a success). Refuse, never degrade. No other sample
+    shows it.
     """
-    print("== 3. The other axis: what a backend can confine ==\n")
+    print("== 3. The other axis: what a backend can enforce ==\n")
 
     closed = DockerSandboxBackend(DockerSandboxConfig())
-    # A reference that need not resolve: nothing is started here, and `.egress` is read off the
-    # configuration rather than off the image. Act 4 uses one that has to be real.
+    # A reference that need not resolve: nothing is started here, and the modes are read off the
+    # configuration rather than the image. Act 4 uses one that has to be real.
     allowlisting = DockerSandboxBackend(DockerSandboxConfig(egress_proxy_image="maf-egress-proxy"))
-    print(f"  DockerSandboxConfig()                        -> {closed.egress}")
-    print(f"  DockerSandboxConfig(egress_proxy_image=...)   -> {allowlisting.egress}")
-    print("  Same backend class. The declaration is a fact about the deployment's wiring,")
-    print("  not about the workload, which is why it is read off the backend and not the spec.\n")
+    print(f"  DockerSandboxConfig()                        -> {sorted(closed.egress_modes)}")
+    print(f"  DockerSandboxConfig(egress_proxy_image=...)   -> {sorted(allowlisting.egress_modes)}")
+    print("  Same backend class. The set is a fact about the deployment's wiring, and it is what")
+    print("  a workload's chosen mode is matched against.\n")
 
-    wants_a_host = SandboxSpec(kind=KIND, image=IMAGE, egress_allow=("mcr.microsoft.com",))
-    router = SandboxRouter([closed], min_isolation=FLOOR)
-    # Served, not refused — and the router logs a warning naming the hosts that will be
-    # unreachable. Printed here because a warning a reader never sees is the whole hazard.
-    router.ensure_can_serve(wants_a_host)
-    print(f"  A spec allowing {wants_a_host.egress_allow[0]!r} on a {closed.egress} backend:")
-    print("    served. The allowlist is honoured by denying everything, which is more")
-    print("    confinement than was asked for. The router warns; the workload will report")
-    print("    what it could not fetch.\n")
+    wants_a_host = SandboxSpec(
+        kind=KIND, image=IMAGE, egress=Egress.ALLOWLIST, egress_allow=("mcr.microsoft.com",)
+    )
+    try:
+        SandboxRouter([closed], min_isolation=FLOOR).ensure_can_serve(wants_a_host)
+        print("  BUG: a closed-only backend served an ALLOWLIST run.")
+    except SandboxEgressNotEnforced:
+        print(f"  An ALLOWLIST run on a {sorted(closed.egress_modes)} backend: refused, not")
+        print("    degraded. The closed backend does not quietly serve it behind a closed")
+        print("    boundary — the workload asked to reach a host, and this backend cannot.\n")
 
-    print("  The refused direction needs a backend declaring `unrestricted`, and none of the")
-    print("  three shipped ones does — every backend here can at least deny everything. That")
-    print("  asymmetry is the design: `Egress`'s own docstring is where it is written down.")
-    print("  Act 4 is where 'the workload will report what it could not fetch' stops being a")
-    print("  sentence and becomes a compiler error.\n")
+    runs_closed = SandboxSpec(kind=KIND, image=IMAGE)  # egress defaults to CLOSED
+    SandboxRouter([closed], min_isolation=FLOOR).ensure_can_serve(runs_closed)
+    SandboxRouter([allowlisting], min_isolation=FLOOR).ensure_can_serve(runs_closed)
+    print("  A CLOSED run is served on both — both enforce CLOSED. A workload gets the exact")
+    print("  mode it runs in or nothing; no shipped backend enforces `unrestricted`, so one that")
+    print("  must run open needs a backend that offers exactly that. Act 4 is where the mode a")
+    print(
+        "  workload runs in stops being a word and becomes a module that restores, or does not.\n"
+    )
 
 
 async def _validate_under(
@@ -247,18 +253,17 @@ async def _validate_under(
 ) -> tuple[Egress, bool]:
     """Run one agent turn against one egress posture.
 
-    Returns the posture the backend declared and whether the module restored under it. The
-    posture is read off `backend.egress` rather than passed in, so the word printed beside each
-    verdict is the backend's own declaration: a wiring change that stopped producing the
-    posture this act meant to demonstrate shows up as the wrong label, where a caller-supplied
-    string would have gone on saying what the caller intended.
+    Returns the posture the workload ran in and whether the module restored under it. The
+    posture is chosen to match what the backend enforces — `ALLOWLIST` when a proxy image is
+    wired, `CLOSED` when not — because the router serves the exact mode a workload runs in or
+    refuses it, and a mode the backend cannot enforce would not run at all.
 
-    Everything here except `proxy_image` is identical across the two calls — the same file, the
-    same spec, the same instructions, the same model. That is what makes the difference in the
-    output attributable to the deployment's wiring and to nothing else.
+    Everything here except `proxy_image` (and the mode it dictates) is identical across the two
+    calls — the same file, the same instructions, the same model. That is what makes the
+    difference in the output attributable to the deployment's wiring and to nothing else.
     """
     backend = DockerSandboxBackend(DockerSandboxConfig(egress_proxy_image=proxy_image))
-    posture = backend.egress
+    posture = Egress.ALLOWLIST if proxy_image else Egress.CLOSED
     # Above the `NONE` floor the other acts use: a compiler running downloaded code has no
     # business in the host process, and this is the floor sample 05 opts down to as well.
     router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
@@ -271,10 +276,11 @@ async def _validate_under(
     await store.write(BICEP_FILE, source)
     context = make_caller_context(list_all_files, lambda: KEY.scope, lambda: thread)
 
-    # The spec — and with it the allowlist — comes from the kind, not from this file. A
-    # deployment that could widen it could undo the containment the tool is built on.
+    # The allowlist hosts come from the kind, not this file; only the *mode* is chosen here, to
+    # match what the backend enforces. A deployment cannot widen the hosts, only pick CLOSED,
+    # ALLOWLIST or UNRESTRICTED — and here it picks the one the wiring can deliver.
     tools = make_bicep_tools(
-        router, store, BICEP_AGENT_DIR, context, image=env["BICEP_SANDBOX_IMAGE"]
+        router, store, BICEP_AGENT_DIR, context, image=env["BICEP_SANDBOX_IMAGE"], egress=posture
     )
     agent = Agent(
         client=OpenAIChatClient(

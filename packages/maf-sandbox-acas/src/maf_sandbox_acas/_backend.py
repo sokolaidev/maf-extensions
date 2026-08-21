@@ -562,9 +562,11 @@ class AcasSandboxBackend:
         return Isolation.MICROVM
 
     @property
-    def egress(self) -> Egress:
-        # True because `_egress_policy` builds it: Deny default, one Allow per named host.
-        return Egress.ALLOWLIST
+    def egress_modes(self) -> frozenset[Egress]:
+        # `_egress_policy` builds a Deny-default allowlist: named hosts resolve as ALLOWLIST,
+        # an empty allowlist as CLOSED (deny all). Never UNRESTRICTED — the group's policy
+        # denies by default and cannot be told to allow everything.
+        return frozenset({Egress.ALLOWLIST, Egress.CLOSED})
 
     @property
     def capabilities(self) -> frozenset[Capability]:

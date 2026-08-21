@@ -493,12 +493,13 @@ class DockerSandboxBackend:
         return Isolation.CONTAINER
 
     @property
-    def egress(self) -> Egress:
-        # A capability, not a per-spec fact: the backend can enforce an allowlist iff it has a
-        # proxy image to do it with. `acquire` still closes a spec that allows nothing outright.
+    def egress_modes(self) -> frozenset[Egress]:
+        # With a proxy image it can allowlist named hosts or deny all; without one it can only
+        # run `--network none`. Never UNRESTRICTED: a container backend always cuts or proxies,
+        # so it cannot offer a workload that asked to run open.
         if self._config.egress_proxy_image:
-            return Egress.ALLOWLIST
-        return Egress.CLOSED
+            return frozenset({Egress.ALLOWLIST, Egress.CLOSED})
+        return frozenset({Egress.CLOSED})
 
     @property
     def capabilities(self) -> frozenset[Capability]:
