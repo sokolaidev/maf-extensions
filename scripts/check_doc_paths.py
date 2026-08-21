@@ -58,6 +58,57 @@ _PROSE_GLOBS = ("*.md", "packages/*/src/**/*.py")
 #: none of them.
 _GLOB_CHARACTERS = ("*", "?", "[")
 
+#: An ATX heading, with any closing `##` run discarded.
+_HEADING = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.*?)[ \t]*#*$", re.MULTILINE)
+
+#: An explicit anchor a document plants for itself, which no heading slug would produce.
+_HTML_ANCHOR = re.compile(r"""<a\s[^>]*\b(?:id|name)\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
+
+#: Inline markup that is *not* part of a heading's text: code ticks, emphasis runs, and the
+#: bracket-and-target of a link, whose visible half survives.
+_LINK_TEXT = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+#: Underscore is deliberately absent, though it is an emphasis marker too: it is also a word
+#: character GitHub keeps, and the headings here are full of identifiers. Stripping it slugs
+#: ``dispatch_over_exec`` to ``dispatchoverexec`` and reports a working link as broken.
+_MARKUP = re.compile(r"[`*~]")
+
+#: `#L42` and `#L42-L60` on a source file are GitHub line references, not headings. A fragment
+#: on anything but a markdown file has no heading to check at all.
+_LINE_REFERENCE = re.compile(r"^L\d+(?:-L\d+)?$")
+
+
+def slugify(heading: str) -> str:
+    """The fragment GitHub derives from a heading's text.
+
+    Lowercase, strip everything that is not a word character, whitespace or a hyphen, then
+    turn each remaining whitespace character into a hyphen — *each*, not each run, which is
+    why ``## A — B`` becomes ``a--b`` and matching it any other way reports a working link.
+    """
+    text = _LINK_TEXT.sub(r"\1", heading)
+    text = _MARKUP.sub("", text)
+    text = re.sub(r"[^\w\s-]", "", text, flags=re.UNICODE).strip().lower()
+    return re.sub(r"\s", "-", text)
+
+
+def anchors(text: str) -> set[str]:
+    """Every fragment ``text`` can be linked to: its heading slugs and its explicit anchors.
+
+    Repeated headings are numbered the way GitHub numbers them — the second ``## Notes`` is
+    ``#notes-1`` — because a document with two sections of the same name is exactly where a
+    reader needs the link to be right.
+    """
+    found: set[str] = set()
+    seen: dict[str, int] = {}
+    for _level, heading in _HEADING.findall(text):
+        slug = slugify(heading)
+        if not slug:
+            continue
+        count = seen.get(slug, 0)
+        seen[slug] = count + 1
+        found.add(slug if count == 0 else f"{slug}-{count}")
+    found.update(_HTML_ANCHOR.findall(text))
+    return found
+
 
 def tracked(repo_root: Path, *globs: str) -> list[Path]:
     """Files git tracks matching ``globs``, so an untracked scratch file is never scanned."""
@@ -92,19 +143,40 @@ def resolve(target: str) -> str:
     return target.split("#", 1)[0].split("?", 1)[0]
 
 
+def _fragment(target: str) -> str:
+    """The part after ``#``, which names a place inside a document rather than a document."""
+    return target.split("#", 1)[1] if "#" in target else ""
+
+
 def broken_links(repo_root: Path) -> list[str]:
-    """One line per markdown link whose target is not in the working tree."""
+    """One line per markdown link whose file, or whose heading, is not in the working tree.
+
+    A fragment is resolved only against a markdown target: ``#L42`` on a source file is a line
+    reference GitHub renders and no heading would ever match, and a fragment on anything else
+    has nothing to resolve against.
+    """
     out: list[str] = []
     for path in tracked(repo_root, "*.md"):
         text = path.read_text("utf-8")
+        here = path.relative_to(repo_root).as_posix()
         for target in link_targets(text):
-            if not is_local(target):
+            if not is_local(target) and not target.startswith("#"):
                 continue
             bare = resolve(target)
-            if not bare or any(character in bare for character in _GLOB_CHARACTERS):
+            if any(character in bare for character in _GLOB_CHARACTERS):
                 continue
-            if not (path.parent / bare).exists():
-                out.append(f"{path.relative_to(repo_root).as_posix()}: link -> {target}")
+            # An empty file part means the fragment points within this very page.
+            destination = (path.parent / bare) if bare else path
+            if bare and not destination.exists():
+                out.append(f"{here}: link -> {target}")
+                continue
+            fragment = _fragment(target)
+            if not fragment or destination.suffix.lower() != ".md":
+                continue
+            if _LINE_REFERENCE.match(fragment):
+                continue
+            if fragment not in anchors(destination.read_text("utf-8")):
+                out.append(f"{here}: heading -> {target}")
     return out
 
 

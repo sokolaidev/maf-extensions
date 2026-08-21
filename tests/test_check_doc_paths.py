@@ -115,14 +115,13 @@ class TestWhatItMustNotReport:
         )
         assert check.broken_links(root) == []
 
-    def test_a_bare_fragment_points_within_the_page(self, repo):
-        root = repo({"README.md": "[x](#a-heading)"})
+    def test_a_heading_that_exists_resolves(self, repo):
+        root = repo({"a.md": "[x](b.md#the-section)", "b.md": "## The section\n"})
         assert check.broken_links(root) == []
 
-    def test_an_anchor_is_stripped_before_the_file_is_resolved(self, repo):
-        """File existence only. Checking the heading too needs a markdown parse, and the
-        reference still resolves to a real document without it."""
-        root = repo({"a.md": "[x](b.md#section-that-is-not-checked)", "b.md": "x"})
+    def test_a_line_reference_on_a_source_file_is_not_a_heading(self, repo):
+        """`#L42` is what GitHub renders for a line, and no heading would ever match it."""
+        root = repo({"a.md": "[x](s/m.py#L42) [y](s/m.py#L42-L60)", "s/m.py": "x = 1\n"})
         assert check.broken_links(root) == []
 
     def test_an_untracked_file_is_not_scanned(self, repo):
@@ -134,6 +133,51 @@ class TestWhatItMustNotReport:
         """`tests/` constructs paths as data, including ones that are absent on purpose."""
         root = repo({"tests/test_x.py": 'missing = "docs/design/nowhere.md"\n'})
         assert check.broken_prose_paths(root) == []
+
+
+class TestAnchors:
+    """A renamed section is the other half of a moved document, and breaks the same way."""
+
+    def test_a_heading_that_does_not_exist_is_reported(self, repo):
+        root = repo({"a.md": "[x](b.md#the-old-name)", "b.md": "## The new name\n"})
+        assert check.broken_links(root) == ["a.md: heading -> b.md#the-old-name"]
+
+    def test_a_fragment_pointing_within_the_same_page_is_checked_too(self, repo):
+        """A link to your own renamed section is the easiest one to leave behind, because
+        nothing about the file moved."""
+        root = repo({"a.md": "## Here\n\n[up](#gone) and [back](#here)\n"})
+        assert check.broken_links(root) == ["a.md: heading -> #gone"]
+
+    @pytest.mark.parametrize(
+        ("heading", "slug"),
+        [
+            ("Plain words", "plain-words"),
+            ("The `SandboxSpec` field", "the-sandboxspec-field"),
+            ("Upgrading to 0.20", "upgrading-to-020"),
+            ("**Bold** and *italic*", "bold-and-italic"),
+            ("[A link](https://example.invalid)", "a-link"),
+            # Each whitespace character becomes its own hyphen, so a stripped em dash between
+            # two spaces leaves two. Collapsing them reports a working link as broken.
+            ("Host tools — the contract", "host-tools--the-contract"),
+            # `_` is a word character GitHub keeps, and every identifier here has one.
+            ("Reaching it via `dispatch_over_exec`", "reaching-it-via-dispatch_over_exec"),
+        ],
+    )
+    def test_the_slug_matches_what_github_derives(self, heading: str, slug: str):
+        assert check.slugify(heading) == slug
+
+    def test_a_repeated_heading_is_numbered_from_the_second(self, repo):
+        """Two sections of one name is exactly where a reader needs the link to be right."""
+        found = check.anchors("## Notes\n\ntext\n\n## Notes\n\nmore\n")
+        assert found == {"notes", "notes-1"}
+
+    def test_an_explicit_html_anchor_counts(self, repo):
+        root = repo({"a.md": "[x](b.md#planted)", "b.md": '<a id="planted"></a>\n\n# Title\n'})
+        assert check.broken_links(root) == []
+
+    def test_a_closing_hash_run_is_not_part_of_the_heading(self, repo):
+        root = repo({"a.md": "[x](b.md#the-section)", "b.md": "## The section ##\n"})
+        assert check.broken_links(root) == []
 
 
 class TestTheVerdict:
