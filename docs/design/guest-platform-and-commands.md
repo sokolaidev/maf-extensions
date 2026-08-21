@@ -14,11 +14,11 @@
 | The backend serves a disk image an operator imported ahead of time | The operator, per deployment | Before the process starts |
 | The backend ships its own guest module | The backend author | At build time |
 
-In the first row the backend meets its guest for the first time inside `acquire`, having never seen the inside of it. `_protocol.py:388` states the position plainly — the image is *"a reference the **backend** resolves, and nothing here parses it"* — so no layer in this stack knows whether the thing about to boot is Ubuntu, a distroless image, or Windows Server, and none of them can tell whether the commands a kind is about to run exist in it. `sandbox-architecture.md` records the same arrangement from the path side: `work_dir` is *"guest-native, stated by the host to suit its image and rewritten by nobody"*.
+In the first row the backend meets its guest for the first time inside `acquire`, having never seen the inside of it. `SandboxSpec.image`'s docstring states the position plainly — the image is *"a reference the **backend** resolves, and nothing here parses it"* — so no layer in this stack knows whether the thing about to boot is Ubuntu, a distroless image, or Windows Server, and none of them can tell whether the commands a kind is about to run exist in it. `sandbox-architecture.md` records the same arrangement from the path side: `work_dir` is *"guest-native, stated by the host to suit its image and rewritten by nobody"*.
 
 **Not every backend has a guest in the operating-system sense.** A backend whose surface is a language runtime hands out a program environment with no shell, no filesystem layout and no argv. A backend whose surface is a data-plane API has a filesystem but reaches it through calls rather than commands. Both are real guests; neither has an OS to declare, and neither can be asked one of the questions below. This is why the axis is scoped to `EXEC` backends rather than applied to all of them.
 
-**Two senses of "host", kept apart throughout.** The **host application** is the process that wires the router and configures specs — the sense `Identity.APP` carries at `_protocol.py:224`, *"the host application's own authority"*. The **host machine** is the physical machine a backend's boundary is drawn on, which matters only in Decision 5, where which hypervisors exist depends on it. Where the difference matters below, the full phrase is used.
+**Two senses of "host", kept apart throughout.** The **host application** is the process that wires the router and configures specs — the sense `Identity.APP` carries, *"the host application's own authority"*. The **host machine** is the physical machine a backend's boundary is drawn on, which matters only in Decision 5, where which hypervisors exist depends on it. Where the difference matters below, the full phrase is used.
 
 ## The question
 
@@ -52,10 +52,10 @@ Two of the four candidate axes below dissolve under this rule. That is the point
 
 The protocol has been kept deliberately additive on this axis, and the neutrality is pinned rather than assumed.
 
-- **`work_dir` is guest-native and untranslated.** `_protocol.py:445` defaults it to `/maf-sandbox/work`, and the field's docstring records that translating it is *"not possible — a kind derives absolute paths from this field and passes them into `Sandbox.exec`'s argv, and a backend cannot find a path inside an opaque argv without parsing arbitrary command lines. An argv sequence protects against quoting, not against paths within the arguments."* The default is a default, not a requirement.
-- **Nothing infers a guest OS from a path.** `_protocol.py:410` states the rule directly: *"A workload must not read the guest's platform out of this field, and nothing here validates it against one."*
-- **The neutrality is a test, not an intention.** `packages/maf-sandbox/tests/test_sandbox_router.py:883`, `TestWorkDirIsPlatformNeutral`, accepts `C:/agent/maf-sandbox/work` and a backslash-spelled Windows path, and asserts that a backend declaring no platform still serves. That is what makes everything below an additive change rather than a breaking one.
-- **Declared output paths are POSIX-shaped and the names are conservative.** [`files-out.md`](files-out.md) fixes one path grammar for declared outputs, always UTF-8, with no newline translation — and explicitly retracts an earlier claim that backends would translate. `portable_name` (`_outputs.py:354`) composes to NFC (`:289`), refuses case-only collisions, and uses `str.lower` rather than `str.casefold` with the reason recorded at `:476`.
+- **`work_dir` is guest-native and untranslated.** `SandboxSpec.work_dir` defaults to `/maf-sandbox/work`, and its docstring records that translating it is *"not possible — a kind derives absolute paths from this field and passes them into `Sandbox.exec`'s argv, and a backend cannot find a path inside an opaque argv without parsing arbitrary command lines. An argv sequence protects against quoting, not against paths within the arguments."* The default is a default, not a requirement.
+- **Nothing infers a guest OS from a path.** The same docstring states the rule directly: *"A workload must not read the guest's platform out of this field, and nothing here validates it against one."*
+- **The neutrality is a test, not an intention.** `TestWorkDirIsPlatformNeutral`, in `maf-sandbox`'s router tests, accepts `C:/agent/maf-sandbox/work` and a backslash-spelled Windows path, and asserts that a backend declaring no platform still serves. That is what makes everything below an additive change rather than a breaking one.
+- **Declared output paths are POSIX-shaped and the names are conservative.** [`files-out.md`](files-out.md) fixes one path grammar for declared outputs, always UTF-8, with no newline translation — and explicitly retracts an earlier claim that backends would translate. In `_outputs.py`, `portable_name` composes to NFC, and `_collision_key` refuses case-only collisions using `str.lower` rather than `str.casefold`, with the reason recorded beside it.
 - **`EntryKind` was designed for guests that are not POSIX.** A junction or a reparse point maps to `SYMLINK`, so the vocabulary does not have to grow for a Windows guest.
 
 ### What is not neutral
@@ -64,17 +64,17 @@ Everything in this table is a live claim about the guest, made by code that has 
 
 | Where | The claim |
 | --- | --- |
-| `_host_tools_over_exec.py:792` | The guest runs `#!/bin/sh` |
-| `_host_tools_over_exec.py:826` | `command -v setsid`, then `setsid nohup sh -c` — `setsid` optional, `nohup` and `sh` not |
-| `_host_tools_over_exec.py:1263` | `rm -rf` |
-| `_host_tools_over_exec.py:1527` | `kill -KILL … 2>/dev/null` |
-| `_reclaim.py:46-92` | `rm -rf` on every tool call, quoted with `shlex.quote`, resolved with `posixpath.normpath` |
-| `maf-sandbox-docker/_backend.py:340` | `remove` is `rm -rf` / `rm -f`, *"since the engine has no delete primitive"* |
+| `_host_tools_over_exec.py`, `launcher_script` | The guest runs `#!/bin/sh` |
+| `_host_tools_over_exec.py`, `launcher_script` | `command -v setsid`, then `setsid nohup sh -c` — `setsid` optional, `nohup` and `sh` not |
+| `_host_tools_over_exec.py`, `_remove_tree` under `reclaim_run` | `rm -rf` |
+| `_host_tools_over_exec.py`, `_stop_the_program` | `kill -KILL … 2>/dev/null` |
+| `_reclaim.py`, `reclaim_guest_path` | `rm -rf` on every tool call, quoted with `shlex.quote`, resolved with `posixpath.normpath` |
+| `maf-sandbox-docker`, `_backend.py`, `remove` | It is `rm -rf` / `rm -f`, *"since the engine has no delete primitive"* |
 | `maf-sandbox-codeact` | The interpreter is spelled `python3` |
 | `maf-sandbox-bicep` | POSIX command templates |
 | `maf-sandbox-wslc` | The write-path component walk is `test` run inside the guest |
 
-The launcher already concedes the whole problem in its own docstring, at `_host_tools_over_exec.py:721`:
+`launcher_script` already concedes the whole problem in its own docstring:
 
 > POSIX shell, and a guest that has `nohup`. `setsid` is used when present and done without when not. **A Windows guest or a distroless image needs a different launcher; that is a backend's business, and this one is a helper rather than a protocol.**
 
@@ -82,7 +82,7 @@ That sentence is correct and no backend has taken the offer. It is the largest s
 
 ### The one static claim a backend already makes
 
-`maf-sandbox-acas/_backend.py:292`:
+From `exec` in `maf-sandbox-acas`:
 
 > The SDK's own `exec` takes a string only, so a sequence is quoted into one with `shlex.join` first. `shlex.join` produces POSIX quoting, which is correct here **because every sandbox this backend hands out is Linux.**
 
@@ -92,9 +92,9 @@ This is not a defect. It is a true statement a backend can make about itself, wr
 
 The timing constrains every option below, so it is worth stating exactly.
 
-- Backend declarations are read **synchronously**, with `getattr`: `limits` at `_router.py:155`, `egress` at `:340` and `:379`. A declaration must therefore be a plain attribute settled by the time the router asks — never an `async` query.
-- `ensure_can_serve` runs at **attach**, from `maf.py:668`, before any sandbox exists.
-- The same checks run **again** inside `SandboxRouter.acquire`, at `_router.py:411`, immediately before `self._backend.acquire(key, spec)` — its docstring says *"before ever reaching the backend"*, so that a caller skipping `ensure_can_serve` is still refused.
+- Backend declarations are read **synchronously**, with `getattr`: `limits` in `_declared_limits`, `egress` in both `_refuse_unless_backend_can_serve` and `ensure_can_serve`. A declaration must therefore be a plain attribute settled by the time the router asks — never an `async` query.
+- `ensure_can_serve` runs at **attach**, called from `sandboxed_tool` in `maf.py`, before any sandbox exists.
+- The same checks run **again** inside `SandboxRouter.acquire`, immediately before it calls `self._backend.acquire(key, spec)` — its docstring says *"before ever reaching the backend"*, so that a caller skipping `ensure_can_serve` is still refused.
 
 **Consequence, and it is the hinge of Decision 3: a capability set is matched twice before a sandbox with that image exists.** Nothing a backend learns by looking inside a running guest can reach the declaration the router matched.
 
@@ -123,7 +123,7 @@ requires_os_family: OsFamily | None = None
 
 **Why `linux` would be a member that decides nothing.** The reason anyone reaches for `linux` over `posix` is to reason about which commands exist — and `linux` does not answer that either. A distroless image is Linux and has no `sh`, no `rm` and no `python3`. A macOS guest is POSIX and has no `setsid`. A member that feels like it decides something and decides nothing is the failure mode this stack has already met on other axes, and it is worth refusing here rather than deprecating later.
 
-**Why a `frozenset`, not a scalar.** Every backend shipping today serves exactly one guest family, so a scalar would look sufficient. A local hypervisor does not: Hyper-V boots Windows and Linux from the same host, and so does KVM. Widening a scalar to a set later is a redefinition of the field, and this stack has a standing reason to fear those — `_protocol.py:73` keeps `Isolation("process")` raising `ValueError` forever precisely because a declaration crosses into the vocabulary at run time, out of configuration nobody re-reads. Declaring a set from the first release costs nothing and removes that event.
+**Why a `frozenset`, not a scalar.** Every backend shipping today serves exactly one guest family, so a scalar would look sufficient. A local hypervisor does not: Hyper-V boots Windows and Linux from the same host, and so does KVM. Widening a scalar to a set later is a redefinition of the field, and this stack has a standing reason to fear those — `Isolation.PROCESS` keeps its value as `"os_process"`, leaving `Isolation("process")` raising `ValueError` forever, precisely because a declaration crosses into the vocabulary at run time, out of configuration nobody re-reads. Declaring a set from the first release costs nothing and removes that event.
 
 **Why per backend *instance*, not per class.** The set is a property of what this instance was constructed to serve, resolved at construction. A backend over a local hypervisor pins one guest template family per instance; a Docker backend can read its daemon's `OSType` once at construction, which constrains the family absolutely — a Linux daemon cannot run a Windows image whatever reference it is handed. Several instances registered side by side, selected per spec, is how a deployment serves more than one. This is the same discipline that keeps `isolation` a constant, and Decision 5 shows it doing double duty there.
 
@@ -189,7 +189,7 @@ Every candidate field for a `FilesystemTraits` declaration dissolves on inspecti
 
 - **Case sensitivity** — already solved by construction. `portable_name` normalises to NFC, lowercases rather than casefolds, and refuses case-only collisions without ever asking the guest. And it cannot be derived from an OS name anyway, per Decision 1.
 - **Symlink semantics** — already mapped. `EntryKind` folds junctions and reparse points into `SYMLINK`. What is genuinely open is that confinement is checked and not held — a path validated by a parent walk can change before the operation that relied on it — and that is a contract and ordering problem, not a trait a backend could declare.
-- **Whether the working directory exists** — a postcondition, not a declaration. `conformance.py:35` states the current rule outright: *"`working_directory` does not exist after `acquire` — no backend creates `spec.work_dir` and the protocol does not promise it"*, which is why the EXEC suite plants a marker file first and why the dispatch launcher runs its own `mkdir -p`. The rule belongs on `SandboxBackend.acquire` in the protocol. It also comes free once a backend allocates the storage base: a backend that allocates a base creates it.
+- **Whether the working directory exists** — a postcondition, not a declaration. The `conformance` module states the current rule outright in its own docstring: *"`working_directory` does not exist after `acquire` — no backend creates `spec.work_dir` and the protocol does not promise it"*, which is why the EXEC suite plants a marker file first and why the dispatch launcher runs its own `mkdir -p`. The rule belongs on `SandboxBackend.acquire` in the protocol. It also comes free once a backend allocates the storage base: a backend that allocates a base creates it.
 - **Permissions, atomicity, persistence** — nothing in this stack branches on any of them today, so a member for any of them would be decorative on arrival.
 
 **The settled position: filesystem behaviour is expressed as protocol contracts and conservative construction, never as a declared trait set.**
