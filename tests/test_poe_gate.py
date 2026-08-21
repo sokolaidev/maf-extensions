@@ -1,8 +1,7 @@
 """Pin the poe gate's composition: the tasks exist, and `gate` runs every one of them.
 
-The count is deliberately not written down here. It was "all five checks" for exactly as long
-as it took to add a sixth, and a docstring naming a number goes stale on the commit that
-changes it while every assertion below still passes.
+No count is written down. `_GATE_MEMBERS` is the list, and a number repeated in prose here
+would be a second copy that no assertion checks.
 """
 
 from __future__ import annotations

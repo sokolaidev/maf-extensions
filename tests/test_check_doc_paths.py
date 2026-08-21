@@ -277,6 +277,26 @@ class TestWhatItMustNotReport:
         root = repo({"a.md": "[x](docs/a_(draft).md)", "docs/a_(draft).md": "y"})
         assert check.broken_links(root) == []
 
+    def test_a_link_destination_is_not_also_reported_as_a_prose_path(self, repo):
+        """One dangling reference is one finding, and the count the CLI prints says so.
+
+        The two passes resolve differently — `broken_links` relative to the document, prose
+        against the repository root — so reading a destination twice does not just double the
+        noise, it can resolve a nested document's link to a file the reader never reaches.
+        """
+        root = repo({"docs/a.md": "[x](docs/gone.md)"})
+        assert check.broken_links(root) == ["docs/a.md: link -> docs/gone.md"]
+        assert check.broken_prose_paths(root) == []
+
+    def test_a_reference_definition_is_not_reported_as_a_prose_path_either(self, repo):
+        root = repo({"a.md": "[label]: docs/gone.md\n"})
+        assert check.broken_prose_paths(root) == []
+
+    def test_a_prose_path_beside_a_link_is_still_reported(self, repo):
+        """Blanking the link must not blank the sentence around it."""
+        root = repo({"a.md": "[x](docs/here.md) and also docs/gone.md\n", "docs/here.md": "y"})
+        assert check.broken_prose_paths(root) == ["a.md: names -> docs/gone.md"]
+
     def test_a_test_naming_a_path_that_must_not_exist_is_out_of_scope(self, repo):
         """`tests/` constructs paths as data, including ones that are absent on purpose."""
         root = repo({"tests/test_x.py": 'missing = "docs/design/nowhere.md"\n'})
@@ -382,6 +402,14 @@ class TestAnchors:
             ("Host tools — the contract", "host-tools--the-contract"),
             # `_` is a word character GitHub keeps, and every identifier here has one.
             ("Reaching it via `dispatch_over_exec`", "reaching-it-via-dispatch_over_exec"),
+            # It is also an emphasis marker, and the two cannot be told apart by the character.
+            # A *paired* run at a word boundary is markup; anything else is part of the word.
+            ("_Important_", "important"),
+            ("__Important__", "important"),
+            ("_Important_ for dispatch_over_exec", "important-for-dispatch_over_exec"),
+            # Nothing closes it, so GitHub emphasises nothing and the underscore is literal.
+            ("_private", "_private"),
+            ("requires_os_family and _egress_", "requires_os_family-and-egress"),
         ],
     )
     def test_the_slug_matches_what_github_derives(self, heading: str, slug: str):
@@ -424,6 +452,22 @@ class TestAnchors:
 
         other = repo({"a.md": "[x](b.md?rev=2#L42)", "b.md": "## Something\n"})
         assert check.broken_links(other) == ["a.md: heading -> b.md?rev=2#L42"]
+
+    @pytest.mark.parametrize("fence", ["```", "~~~"])
+    def test_a_fenced_block_inside_a_blockquote_is_still_a_fence(self, repo, fence: str):
+        """The markers are stripped everywhere else, so leaving them here leaks the block.
+
+        Every later pass reads past a `>`, and once `headings()` learned to, a quoted fence
+        started handing its contents to it — an ATX-looking line inside a sample became an
+        anchor, and a link to that phantom passed.
+        """
+        quoted = f"> {fence}\n> # Hidden\n> [x](missing.md)\n> {fence}\n"
+        assert check.anchors(quoted) == set()
+        assert check.broken_links(repo({"a.md": quoted})) == []
+
+    def test_a_quoted_fence_does_not_close_a_top_level_one(self, repo):
+        """A closer must sit in the same container as its opener, or the block ends early."""
+        assert check.anchors("```\n> ```\n# Still inside\n```\n") == set()
 
     def test_a_heading_inside_a_blockquote_is_a_heading(self, repo):
         """`> ### Title` renders as a heading with an anchor, and this repository has two.

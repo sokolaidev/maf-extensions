@@ -96,6 +96,13 @@ _TICKS = re.compile(r"`+")
 _LINK_TEXT = re.compile(r"\[([^\]]*)\]\([^)]*\)")
 _MARKUP = re.compile(r"[`*~]")
 
+#: Underscore emphasis, which the run above cannot strip blindly. An underscore is a word
+#: character GitHub keeps, so `## dispatch_over_exec` slugs with it — but `## _Important_` is
+#: emphasis and slugs to `important`. Only a *paired* run at a word boundary is markup: an
+#: unmatched `_private` emphasises nothing and stays, and an intraword `_` is never a
+#: delimiter, which is what keeps the identifiers in these headings intact.
+_UNDERSCORE_EMPHASIS = re.compile(r"(?<![0-9A-Za-z_])(_{1,3})(?=\S)(.+?)(?<=\S)\1(?![0-9A-Za-z_])")
+
 #: `#L42` and `#L42-L60` on a source file are GitHub line references, not headings.
 _LINE_REFERENCE = re.compile(r"^L\d+(?:-L\d+)?$")
 
@@ -227,13 +234,15 @@ def _destination(text: str, paren: int) -> tuple[str, int] | None:
     return (target, index + 1) if text[index : index + 1] == ")" else None
 
 
-def inline_link_targets(text: str) -> list[str]:
-    """Every inline link and image target in ``text``.
+def inline_links(text: str, offset: int = 0) -> list[tuple[str, int, int]]:
+    """Every inline link and image in ``text`` as its target and the bounds of the whole link.
 
     Scanned rather than matched, because both halves of `[label](destination)` nest and a flat
-    pattern gets each one wrong in a different direction.
+    pattern gets each one wrong in a different direction. The bounds are what lets the prose
+    pass skip a span this one has already resolved; ``offset`` carries them out of a nested
+    scan and back into the coordinates of the document.
     """
-    found: list[str] = []
+    found: list[tuple[str, int, int]] = []
     index = 0
     while (opener := text.find("[", index)) != -1:
         if _escaped(text, opener):
@@ -250,21 +259,30 @@ def inline_link_targets(text: str) -> list[str]:
             continue
         target, index = parsed
         if target:
-            found.append(target)
+            found.append((target, offset + opener, offset + index))
         # The label is scanned too, because a link may wrap an image — `[![alt](i.png)](a.md)`
         # is the shape of every badge in this repository, and it names *two* files. Stepping
         # straight past the label checks the outer target and silently drops the inner one.
-        found.extend(inline_link_targets(text[opener + 1 : close]))
+        found.extend(inline_links(text[opener + 1 : close], offset + opener + 1))
     return found
 
 
-def reference_link_targets(text: str) -> list[str]:
-    """Every reference-style definition target — `[label]: destination` — in ``text``.
+def inline_link_targets(text: str) -> list[str]:
+    """Every inline link and image target in ``text``."""
+    return [target for target, _start, _end in inline_links(text)]
+
+
+def reference_links(text: str) -> list[tuple[str, int, int]]:
+    """Every reference-style definition — `[label]: destination` — as target and bounds.
 
     The label nests the same way an inline one does, so it is scanned the same way.
     """
-    found: list[str] = []
-    for line in text.splitlines():
+    found: list[tuple[str, int, int]] = []
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        start = offset
+        offset += len(line)
+        line = line.rstrip("\r\n")
         indent = len(line) - len(line.lstrip(" "))
         if indent > 3 or line[indent : indent + 1] != "[":
             continue
@@ -275,12 +293,31 @@ def reference_link_targets(text: str) -> list[str]:
         if rest.startswith("<"):
             end = rest.find(">")
             if end != -1:
-                found.append(rest[1:end])
+                found.append((rest[1:end], start + indent, start + len(line)))
             continue
         target = rest.split(maxsplit=1)[0] if rest.split() else ""
         if target:
-            found.append(target)
+            found.append((target, start + indent, start + len(line)))
     return found
+
+
+def reference_link_targets(text: str) -> list[str]:
+    """Every reference-style definition target — `[label]: destination` — in ``text``."""
+    return [target for target, _start, _end in reference_links(text)]
+
+
+def without_link_destinations(text: str) -> str:
+    """``text`` with every markdown link blanked, its length and line breaks preserved.
+
+    A destination is `broken_links`' business, and it resolves one *relative to the document
+    holding it*. The prose pass resolves against the repository root instead, so reading the
+    same span twice reports one dangling reference as two — and from a nested document the
+    second reading resolves a different file than the reader would reach.
+    """
+    kept = list(text)
+    for _target, start, end in inline_links(text) + reference_links(text):
+        _blank(kept, start, end)
+    return "".join(kept)
 
 
 def link_targets(text: str) -> list[str]:
@@ -362,10 +399,11 @@ def without_html_comments(text: str) -> str:
 def rendered(text: str) -> str:
     """``text`` reduced to what GitHub renders as markdown: no fenced blocks, no comments.
 
-    Both are read by every pass rather than by one of them, which is the trap this replaced.
-    A comment holds whatever its author stopped publishing, so a heading inside one plants no
-    anchor and a link inside one asks nobody to follow it — read either as live and the check
-    accepts a dead fragment in the first case and reports a working page in the second.
+    Every pass reads through this one, so the two rules hold everywhere rather than wherever
+    they were remembered. A comment holds whatever its author stopped publishing, so a heading
+    inside one plants no anchor and a link inside one asks nobody to follow it — read either as
+    live and the check accepts a dead fragment in the first case and reports a working page in
+    the second.
 
     Code spans are *not* removed here. They are markup to a link and text to a heading, so they
     are stripped by the passes that need it and never by this one.
@@ -392,26 +430,34 @@ def without_fenced_blocks(text: str) -> str:
     A fence holds some other language, and a `#` starting a line in one is a comment there.
     Reading them as headings invents anchors no rendered page has, so a link to a phantom
     passes: `docs/sandbox/guest-platform-and-commands.md` alone contributes two.
+
+    Blockquote markers are stripped before the fence is matched, and the closer must come from
+    the same quote depth as the opener. A fence inside a blockquote is still a fence — every
+    later pass strips the markers, so leaving one intact here hands its contents to readers
+    that *have* learned to see past them.
     """
     kept: list[str] = []
     opener: str | None = None
+    opener_depth = 0
     for line in text.splitlines():
-        found = _FENCE.match(line)
+        bare = _BLOCKQUOTE.sub("", line)
+        depth = line[: len(line) - len(bare)].count(">")
+        found = _FENCE.match(bare)
         run = found.group(1) if found else ""
         if opener is None:
             if found:
-                opener = run
+                opener, opener_depth = run, depth
                 kept.append("")
                 continue
             kept.append(line)
             continue
         kept.append("")
-        # CommonMark: a closer is the same character as the opener, at least as long, and
-        # carries no info string. A line failing any of the three is content — ```python
-        # inside an open block is a line of a sample, not the end of one — and reading it as
-        # the closer hands the rest of the block to the heading and link readers as markdown.
-        if found and run[0] == opener[0] and len(run) >= len(opener):
-            if not line[found.end() :].strip():
+        # CommonMark: a closer is the same character as the opener, at least as long, carries
+        # no info string, and sits in the same container. A line failing any of the four is
+        # content — an info-string line inside an open block is a line of a sample, not the end
+        # of one — and reading it as the closer hands the rest of the block to every reader.
+        if found and depth == opener_depth and run[0] == opener[0] and len(run) >= len(opener):
+            if not bare[found.end() :].strip():
                 opener = None
     return "\n".join(kept)
 
@@ -422,8 +468,13 @@ def slugify(heading: str) -> str:
     Lowercase, strip everything that is not a word character, whitespace or a hyphen, then turn
     each remaining whitespace character into a hyphen — *each*, not each run, which is why
     ``## A — B`` becomes ``a--b`` and matching it any other way reports a working link.
+
+    Backticks, asterisks and tildes go unconditionally, because the punctuation strip would
+    remove them anyway. Underscores cannot: they survive that strip, so they are removed only
+    where they are emphasis and kept everywhere else.
     """
     text = _LINK_TEXT.sub(r"\1", heading)
+    text = _UNDERSCORE_EMPHASIS.sub(r"\2", text)
     text = _MARKUP.sub("", text)
     text = re.sub(r"[^\w\s-]", "", text, flags=re.UNICODE).strip().lower()
     return re.sub(r"\s", "-", text)
@@ -583,7 +634,8 @@ def broken_prose_paths(repo_root: Path) -> list[str]:
     out: list[str] = []
     for path in tracked(repo_root, *_PROSE_GLOBS):
         here = path.relative_to(repo_root).as_posix()
-        for match in _PROSE_PATH.finditer(without_urls(path.read_text("utf-8"))):
+        prose = without_link_destinations(without_urls(path.read_text("utf-8")))
+        for match in _PROSE_PATH.finditer(prose):
             named = match.group(1)
             if any(character in named for character in _GLOB_CHARACTERS):
                 continue
