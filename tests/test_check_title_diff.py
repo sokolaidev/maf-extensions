@@ -47,11 +47,15 @@ class TestAssess:
     def test_non_behavior_title_on_executable_python_is_rejected(self, kind: str):
         before = "def run() -> int:\n    return 1\n"
         after = "def run() -> int:\n    return 2\n"
-        assert check.assess(
+        problems = check.assess(
             f"{kind}: update implementation",
             ["scripts/example.py"],
             {"scripts/example.py": (before, after)},
         )
+        assert problems
+        assert "non-behavioral" in problems[0]
+        assert "retitle as feat:, fix:, perf:, or revert:" in problems[1]
+        assert "separate pull request" in problems[1]
 
     def test_chore_title_on_changed_tests_is_allowed(self):
         before = "def run() -> int:\n    return 1\n"

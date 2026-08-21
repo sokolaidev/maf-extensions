@@ -157,8 +157,9 @@ def assess(
         ]
     if kind in _DOCUMENTATION_TYPES and executable:
         return [
-            f"{kind}: titles must not hide executable changes in the diff",
-            "retitle the pull request to describe the behavior change",
+            f"{kind}: this title describes a non-behavioral change, but the diff changes executable code",
+            "if the behavior change is intentional, retitle as feat:, fix:, perf:, or revert:; "
+            "otherwise move the executable changes to a separate pull request",
         ]
     return []
 
