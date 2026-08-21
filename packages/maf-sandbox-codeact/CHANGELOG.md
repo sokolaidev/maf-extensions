@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.6.0...maf-sandbox-codeact-v0.6.1) (2026-08-21)
+
+
+### Fixes
+
+* **codeact:** a timeout no longer claims the program is still running ([#511](https://github.com/sokolaidev/maf-extensions/issues/511)) ([7bc3cd3](https://github.com/sokolaidev/maf-extensions/commit/7bc3cd322f989ac2c0991043ed97871928324129))
+* **kinds:** wire kinds to framework-owned call directories ([#500](https://github.com/sokolaidev/maf-extensions/issues/500)) ([91fd4d1](https://github.com/sokolaidev/maf-extensions/commit/91fd4d18b3ef9dff5223713d26e78614eb847fb7))
+
 ## [0.6.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.5.1...maf-sandbox-codeact-v0.6.0) (2026-08-20)
 
 
