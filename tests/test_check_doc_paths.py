@@ -83,6 +83,34 @@ class TestTheDefectItExistsFor:
         root = repo({"README.md": "pin packages/maf-sandbox/0.19.0 exactly"})
         assert check.broken_prose_paths(root) == []
 
+    def test_a_nested_link_label_does_not_hide_the_target(self, repo):
+        """A label may hold balanced brackets, so `[see [details]](x)` is a link.
+
+        Stopping at the first `]` finds no `(` after it, reads the whole construct as prose,
+        and lets the destination through unchecked — dead or alive, which is the direction
+        that matters.
+        """
+        root = repo({"a.md": "[see [details]](docs/gone.md)"})
+        assert check.broken_links(root) == ["a.md: link -> docs/gone.md"]
+
+    def test_a_link_wrapping_an_image_names_two_files_and_both_are_checked(self, repo):
+        """Every badge in this repository is `[![alt](image)](link)`.
+
+        Reading only the outer destination drops the image; reading only the inner one drops
+        the link. Either way a moved file passes, and the gate stays green over the miss.
+        """
+        root = repo({"a.md": "[![alt](img/gone.png)](docs/gone.md)"})
+        assert check.broken_links(root) == [
+            "a.md: link -> docs/gone.md",
+            "a.md: link -> img/gone.png",
+        ]
+
+    def test_a_heading_inside_an_html_comment_plants_no_anchor(self, repo):
+        """A commented-out section is exactly how an anchor stops existing, so a link to one
+        must be reported — reading the comment as markdown invents the anchor instead."""
+        root = repo({"a.md": "<!--\n## Gone\n-->\n\n[x](#gone)\n"})
+        assert check.broken_links(root) == ["a.md: heading -> #gone"]
+
 
 class TestResolutionIsAgainstTheTrackedTree:
     """An untracked file satisfies nothing: a reference only works for someone who cloned."""
@@ -209,16 +237,79 @@ class TestWhatItMustNotReport:
         root = repo({"a.md": "[x](docs/a%20file.md)", "docs/a file.md": "y"})
         assert check.broken_links(root) == []
 
+    def test_a_link_inside_an_html_comment_is_not_checked(self, repo):
+        """A comment holds what its author stopped publishing; GitHub renders none of it."""
+        root = repo({"a.md": "<!-- [x](missing.md) -->\n"})
+        assert check.broken_links(root) == []
+
     def test_a_repo_shaped_path_in_a_url_query_is_not_a_local_reference(self, repo):
         """`?file=docs/gone.md` puts a repo-shaped path after `=`, where a bare mention never
         sits — and the character in front is the only thing a lookbehind can judge."""
         root = repo({"a.md": "See https://example.invalid/view?file=docs/gone.md for it.\n"})
         assert check.broken_prose_paths(root) == []
 
+    def test_a_protocol_relative_url_in_prose_is_external_too(self, repo):
+        """`is_local` already refuses `//host/x` for a destination; prose gets the same rule,
+        or a query string on one is read as a local path that names nothing."""
+        root = repo({"a.md": "See //example.invalid/view?file=docs/gone.md for it.\n"})
+        assert check.broken_prose_paths(root) == []
+
+    def test_a_balanced_parenthesis_belongs_to_the_destination(self, repo):
+        """Truncating `docs/a_(draft).md` at the first `)` reports a tracked file as missing."""
+        root = repo({"a.md": "[x](docs/a_(draft).md)", "docs/a_(draft).md": "y"})
+        assert check.broken_links(root) == []
+
     def test_a_test_naming_a_path_that_must_not_exist_is_out_of_scope(self, repo):
         """`tests/` constructs paths as data, including ones that are absent on purpose."""
         root = repo({"tests/test_x.py": 'missing = "docs/design/nowhere.md"\n'})
         assert check.broken_prose_paths(root) == []
+
+
+class TestLinkSyntax:
+    """Both halves of `[label](destination)` nest, and each nests in its own way.
+
+    These pin the extraction directly rather than through `broken_links`, because a scanner
+    that quietly finds *fewer* links leaves the gate green while checking less than it did.
+    """
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("[x](docs/a.md)", ["docs/a.md"]),
+            ("![alt](img/a.png)", ["img/a.png"]),
+            ("[x](<docs/a file.md>)", ["docs/a file.md"]),
+            ('[x](docs/a.md "Title")', ["docs/a.md"]),
+            ("[a](one.md) and [b](two.md)", ["one.md", "two.md"]),
+            ("[x](docs/a_(draft).md)", ["docs/a_(draft).md"]),
+            ("[see [details]](docs/a.md)", ["docs/a.md"]),
+            ("[![alt](i.png)](docs/a.md)", ["docs/a.md", "i.png"]),
+            # A bracketed sentence is not a link, but the link inside it still is.
+            ("[see [x](a.md)]", ["a.md"]),
+            ("[x](#section)", ["#section"]),
+            ("\\[not a link](a.md)", []),
+            ("[dangling (a.md)", []),
+            ("[x]()", []),
+            ("Use [label] here.", []),
+        ],
+    )
+    def test_an_inline_target_is_read_whole(self, text: str, expected: list[str]):
+        assert check.inline_link_targets(text) == expected
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("[label]: docs/a.md\n", ["docs/a.md"]),
+            ("[label]: <docs/a file.md>\n", ["docs/a file.md"]),
+            ('[label]: docs/a.md "Title"\n', ["docs/a.md"]),
+            ("[see [details]]: docs/a.md\n", ["docs/a.md"]),
+            ("   [label]: docs/a.md\n", ["docs/a.md"]),
+            # Four spaces is an indented code block, and a space before the colon is prose.
+            ("     [label]: docs/a.md\n", []),
+            ("  [label] : docs/a.md\n", []),
+        ],
+    )
+    def test_a_reference_definition_is_read_the_same_way(self, text: str, expected: list[str]):
+        assert check.reference_link_targets(text) == expected
 
 
 class TestAnchors:

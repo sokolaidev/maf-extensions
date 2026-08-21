@@ -24,15 +24,8 @@ import sys
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
-#: Markdown inline links and images, capturing the target. Reference-style definitions
-#: (`[label]: target`) are matched separately below; both spellings resolve the same way.
-#:
-#: A destination wrapped in angle brackets runs to the `>`, so `[x](<a file.md>)` is one target
-#: and not the two words it looks like; the bare spelling stops at the first space, which is
-#: what makes the brackets necessary. Both alternatives capture, so a match yields one group
-#: filled and one empty.
-_INLINE_LINK = re.compile(r"!?\[[^\]]*\]\(\s*(?:<([^>\n]*)>|([^)\s]+))")
-_REFERENCE_LINK = re.compile(r"^\s{0,3}\[[^\]]+\]:\s*(?:<([^>\n]*)>|(\S+))", re.MULTILINE)
+#: Whitespace that may sit between a link's `(` and its destination.
+_SPACE = " \t\n"
 
 #: A path into this repository, written in prose. Anchored on a top-level directory and
 #: required to end in an extension, because those two together are what make it a *path* rather
@@ -51,8 +44,10 @@ _PROSE_PATH = re.compile(
     r"(?![\w/])"
 )
 
-#: An absolute URL, whose path names somebody else's tree.
-_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s)>\]]+")
+#: A URL, whose path names somebody else's tree. The scheme is optional because the
+#: protocol-relative form has none — `//example.invalid/x` is as external as `https://` is,
+#: and `is_local` already refuses it for a link destination.
+_URL = re.compile(r"(?:[A-Za-z][A-Za-z0-9+.-]*:)?//[^\s)>\]]+")
 
 #: Scanned for prose paths: the two surfaces where a dead reference reaches a reader — markdown,
 #: which renders on GitHub and PyPI, and shipped source, which goes out in the wheel.
@@ -125,10 +120,122 @@ def tracked_tree(repo_root: Path) -> tuple[set[str], set[str]]:
     return files, directories
 
 
+def _closing_bracket(text: str, opener: int) -> int | None:
+    """Index of the ``]`` closing the ``[`` at ``opener``, or None when nothing closes it.
+
+    Markdown lets a link label hold balanced brackets, so `[see [details]](x.md)` is one link
+    whose label is `see [details]`. Stopping at the first `]` finds no `(` after it, reads the
+    whole construct as not-a-link, and lets the target through unchecked — a *dead* target as
+    readily as a live one, which is the failure this check exists to prevent.
+    """
+    depth = 0
+    index = opener
+    while index < len(text):
+        character = text[index]
+        if character == "\\":
+            index += 2
+            continue
+        if character == "[":
+            depth += 1
+        elif character == "]":
+            depth -= 1
+            if depth == 0:
+                return index
+        index += 1
+    return None
+
+
+def _destination(text: str, paren: int) -> tuple[str, int]:
+    """The destination of the ``(`` at ``paren``, and the index just past what was read.
+
+    Two spellings. In angle brackets it runs to the ``>`` and may hold spaces. Bare, it runs to
+    whitespace or to an *unbalanced* ``)`` — balanced pairs belong to the destination, so
+    `docs/a_(draft).md` is one path and truncating it at the first ``)`` reports a file that is
+    tracked as missing. A title after the destination is separated by whitespace and so is
+    never read as part of it.
+    """
+    index = paren + 1
+    while index < len(text) and text[index] in _SPACE:
+        index += 1
+    if index < len(text) and text[index] == "<":
+        end = text.find(">", index + 1)
+        return ("", index + 1) if end == -1 else (text[index + 1 : end], end + 1)
+    depth, begin = 0, index
+    while index < len(text):
+        character = text[index]
+        if character == "\\":
+            index += 2
+            continue
+        if character in _SPACE:
+            break
+        if character == "(":
+            depth += 1
+        elif character == ")":
+            if depth == 0:
+                break
+            depth -= 1
+        index += 1
+    return text[begin:index], index
+
+
+def inline_link_targets(text: str) -> list[str]:
+    """Every inline link and image target in ``text``.
+
+    Scanned rather than matched, because both halves of `[label](destination)` nest and a flat
+    pattern gets each one wrong in a different direction.
+    """
+    found: list[str] = []
+    index = 0
+    while (opener := text.find("[", index)) != -1:
+        if opener and text[opener - 1] == "\\":
+            index = opener + 1
+            continue
+        close = _closing_bracket(text, opener)
+        if close is None:
+            break
+        if text[close + 1 : close + 2] != "(":
+            # Not a link, but its label may hold one — `[see [x](a.md)]` is a bracketed
+            # sentence around a real link. Stepping past the whole label would skip it.
+            index = opener + 1
+            continue
+        target, index = _destination(text, close + 1)
+        if target:
+            found.append(target)
+        # The label is scanned too, because a link may wrap an image — `[![alt](i.png)](a.md)`
+        # is the shape of every badge in this repository, and it names *two* files. Stepping
+        # straight past the label checks the outer target and silently drops the inner one.
+        found.extend(inline_link_targets(text[opener + 1 : close]))
+    return found
+
+
+def reference_link_targets(text: str) -> list[str]:
+    """Every reference-style definition target — `[label]: destination` — in ``text``.
+
+    The label nests the same way an inline one does, so it is scanned the same way.
+    """
+    found: list[str] = []
+    for line in text.splitlines():
+        indent = len(line) - len(line.lstrip(" "))
+        if indent > 3 or line[indent : indent + 1] != "[":
+            continue
+        close = _closing_bracket(line, indent)
+        if close is None or line[close + 1 : close + 2] != ":":
+            continue
+        rest = line[close + 2 :].strip()
+        if rest.startswith("<"):
+            end = rest.find(">")
+            if end != -1:
+                found.append(rest[1:end])
+            continue
+        target = rest.split(maxsplit=1)[0] if rest.split() else ""
+        if target:
+            found.append(target)
+    return found
+
+
 def link_targets(text: str) -> list[str]:
     """Every link target in ``text``, both inline and reference-style."""
-    found = _INLINE_LINK.findall(text) + _REFERENCE_LINK.findall(text)
-    return [angled or bare for angled, bare in found]
+    return inline_link_targets(text) + reference_link_targets(text)
 
 
 def is_local(target: str) -> bool:
@@ -200,6 +307,20 @@ def without_html_comments(text: str) -> str:
         return re.sub(r"[^\n]", " ", match.group(0))
 
     return _HTML_COMMENT.sub(blank, text)
+
+
+def rendered(text: str) -> str:
+    """``text`` reduced to what GitHub renders as markdown: no fenced blocks, no comments.
+
+    Both are read by every pass rather than by one of them, which is the trap this replaced.
+    A comment holds whatever its author stopped publishing, so a heading inside one plants no
+    anchor and a link inside one asks nobody to follow it — read either as live and the check
+    accepts a dead fragment in the first case and reports a working page in the second.
+
+    Code spans are *not* removed here. They are markup to a link and text to a heading, so they
+    are stripped by the passes that need it and never by this one.
+    """
+    return without_html_comments(without_fenced_blocks(text))
 
 
 def without_urls(text: str) -> str:
@@ -280,7 +401,7 @@ def anchors(text: str) -> set[str]:
     text to the slug. Explicit anchors are read from prose with comments and code spans removed,
     because an `<a id>` in either of those plants nothing a link can reach.
     """
-    prose = without_fenced_blocks(text)
+    prose = rendered(text)
     found: set[str] = set()
     for heading in headings(prose):
         slug = slugify(heading)
@@ -294,7 +415,7 @@ def anchors(text: str) -> set[str]:
             suffix += 1
             candidate = f"{slug}-{suffix}"
         found.add(candidate)
-    found.update(_HTML_ANCHOR.findall(without_code_spans(without_html_comments(prose))))
+    found.update(_HTML_ANCHOR.findall(without_code_spans(prose)))
     return found
 
 
@@ -335,7 +456,7 @@ def broken_links(repo_root: Path) -> list[str]:
         # A link is only read from the parts of the page that render as markdown. A fenced
         # block and a code span both hold text *about* a link rather than a link, and gating on
         # either reds a document for showing its reader what one looks like.
-        text = without_code_spans(without_fenced_blocks(path.read_text("utf-8")))
+        text = without_code_spans(rendered(path.read_text("utf-8")))
         here = path.relative_to(repo_root).as_posix()
         for target in link_targets(text):
             if not is_local(target) and not target.startswith("#"):
