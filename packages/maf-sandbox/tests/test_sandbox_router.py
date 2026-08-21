@@ -745,50 +745,6 @@ class TestEgressRule:
         SandboxRouter([]).ensure_can_serve(self._ALLOWLIST_SPEC)
 
 
-class _LegacyEgressBackend(InProcessSandboxBackend):
-    """A backend that still declares the single `egress` property, not `egress_modes`.
-
-    The transition shim: until every shipped backend declares `egress_modes`, the router reads
-    this legacy property and maps it to an equivalent enforceable set. This fake stands in for an
-    unmigrated backend so that mapping is pinned. Removed with the shim.
-    """
-
-    def __init__(self, egress: Egress) -> None:
-        super().__init__()
-        self._legacy = egress
-
-    @property
-    def egress_modes(self):  # noqa: D102 - overrides the fake's set with the legacy single value
-        raise AttributeError("this legacy backend declares `egress`, not `egress_modes`")
-
-    @property
-    def egress(self) -> Egress:
-        return self._legacy
-
-
-class TestLegacyEgressShim:
-    """A backend that has not migrated declares `egress`; the router maps it to a mode set."""
-
-    def _router(self, egress: Egress) -> SandboxRouter:
-        return SandboxRouter([_LegacyEgressBackend(egress)], min_isolation=Isolation.NONE)
-
-    def test_legacy_allowlist_enforces_allowlist_and_closed(self):
-        self._router(Egress.ALLOWLIST).ensure_can_serve(SandboxSpec(kind="bicep"))  # CLOSED run
-        self._router(Egress.ALLOWLIST).ensure_can_serve(
-            SandboxSpec(kind="bicep", egress=Egress.ALLOWLIST, egress_allow=("h.example",))
-        )
-
-    def test_legacy_closed_refuses_an_allowlist_run(self):
-        with pytest.raises(SandboxEgressNotEnforced, match="cannot enforce the 'allowlist'"):
-            self._router(Egress.CLOSED).ensure_can_serve(
-                SandboxSpec(kind="bicep", egress=Egress.ALLOWLIST, egress_allow=("h.example",))
-            )
-
-    def test_legacy_undefined_enforces_nothing(self):
-        with pytest.raises(SandboxEgressNotEnforced, match="it enforces nothing"):
-            self._router(Egress.UNDEFINED).ensure_can_serve(SandboxSpec(kind="bicep"))
-
-
 class TestAcquireEnforcesPolicy:
     """`acquire` refuses on the same grounds as `ensure_can_serve`.
 

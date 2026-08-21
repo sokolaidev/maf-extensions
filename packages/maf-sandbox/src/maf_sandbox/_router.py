@@ -166,23 +166,6 @@ def _declared_limits(backend: SandboxBackend) -> SandboxLimits:
     )
 
 
-def _legacy_egress_modes(egress: Egress) -> frozenset[Egress]:
-    """The enforceable-mode set implied by a backend that still declares the single ``egress``.
-
-    Transitional. A backend that has migrated declares :attr:`egress_modes` directly and this is
-    never reached for it; one that has not still declares the single :class:`Egress` property,
-    mapped here: ``ALLOWLIST`` can also deny everything, so it implies ``{ALLOWLIST, CLOSED}``;
-    ``CLOSED`` and ``UNRESTRICTED`` imply themselves; ``UNDEFINED`` (or an absent property)
-    implies the empty set — enforces nothing, refused every ask. Removed once every shipped
-    backend declares ``egress_modes`` (see ``docs/design/egress-resolution.md``).
-    """
-    if egress == Egress.ALLOWLIST:
-        return frozenset({Egress.ALLOWLIST, Egress.CLOSED})
-    if egress in (Egress.CLOSED, Egress.UNRESTRICTED):
-        return frozenset({egress})
-    return frozenset()
-
-
 class SandboxRouter:
     """Routes a sandbox request to a backend.
 
@@ -355,15 +338,9 @@ class SandboxRouter:
         # Egress is resolved, not matched: the workload runs in exactly one mode, and the
         # backend must be able to enforce it. Refuse, never degrade — no more-open substitute
         # (a silent widening) and no more-isolated one (a quietly different posture). Silence is
-        # the empty set: a backend that declares neither enforces nothing. See
+        # the empty set: a backend that declares nothing enforces nothing. See
         # docs/design/egress-resolution.md.
-        #
-        # Transition: a migrated backend declares `egress_modes` (the set it enforces); one that
-        # has not still declares the single `egress` property, read here into an equivalent set.
-        # The legacy branch is removed once every backend declares the set.
-        modes = getattr(self._backend, "egress_modes", None)
-        if modes is None:
-            modes = _legacy_egress_modes(getattr(self._backend, "egress", Egress.UNDEFINED))
+        modes: frozenset[Egress] = getattr(self._backend, "egress_modes", frozenset())
         if spec.egress not in modes:
             enforced = ", ".join(sorted(modes)) or "nothing"
             raise SandboxEgressNotEnforced(

@@ -396,13 +396,12 @@ def test_dispose_removes_the_host_directory():
     asyncio.run(body())
 
 
-def test_backend_declares_the_floor_and_temporary_egress():
-    """The declarations the README and docstrings argue: NONE, CLOSED (temporary), no NETWORK."""
+def test_backend_declares_the_floor_and_honest_egress():
+    """The declarations the README and docstrings argue: NONE, and the one mode it can enforce."""
     b = NoIsolationBackend()
     assert b.isolation is Isolation.NONE
-    # CLOSED is the temporary misuse, not enforced; #265 tracks switching back to UNRESTRICTED.
-    assert b.egress is Egress.CLOSED
-    assert "network" not in {c.value for c in b.capabilities}
+    # Honest: a no-boundary backend enforces only UNRESTRICTED, and says so.
+    assert b.egress_modes == frozenset({Egress.UNRESTRICTED})
 
 
 def test_seed_files_reject_a_key_that_escapes_the_root():
