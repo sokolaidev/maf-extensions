@@ -176,7 +176,7 @@ A breach **fails the whole collection with no partial delivery**. A partial arti
 
 A backend declares ceilings as `limits: SandboxLimits` (a `TransferLimits` per direction), read with `getattr` like `capabilities` and `egress`; `ensure_can_serve` refuses a spec asking above them, and the backend enforces the *spec's* cap at runtime.
 
-What an *undeclared* `limits` means is not the rule `capabilities` uses. `Capability` silence is read charitably because it is a functionality claim: a backend that never heard of the vocabulary still honestly does what `Sandbox` obligates. `Egress` silence is read as `UNRESTRICTED` and refused, because it is a safety claim. **Transfer limits are a safety claim**, so silence resolves to `DEFAULT_TRANSFER_LIMITS` and a bigger ask is refused.
+What an *undeclared* `limits` means is not the rule `capabilities` uses. `Capability` silence is read charitably because it is a functionality claim: a backend that never heard of the vocabulary still honestly does what `Sandbox` obligates. `Egress` silence is read as `UNDEFINED` and refused, because it is a safety claim. **Transfer limits are a safety claim**, so silence resolves to `DEFAULT_TRANSFER_LIMITS` and a bigger ask is refused.
 
 This is the third optional backend declaration read with `getattr`. Three is where the pattern stops; a fourth is the signal to collapse all of them into one optional declarations object.
 

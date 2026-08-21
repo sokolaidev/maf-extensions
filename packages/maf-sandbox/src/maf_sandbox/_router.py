@@ -336,13 +336,20 @@ class SandboxRouter:
                 )
 
         # Silence is read as enforcing nothing, not excused: a backend written before this
-        # property existed cannot have been enforcing an allowlist it never read.
-        egress = getattr(self._backend, "egress", Egress.UNRESTRICTED)
+        # property existed cannot have been enforcing an allowlist it never read. It is read as
+        # `UNDEFINED` rather than `UNRESTRICTED` so the refusal reports what happened — the two
+        # are the same verdict and different facts, and only one of them is a claim.
+        egress = getattr(self._backend, "egress", Egress.UNDEFINED)
         if egress in (Egress.ALLOWLIST, Egress.CLOSED):
             return
+        claim = (
+            "declares no egress at all"
+            if egress == Egress.UNDEFINED
+            else f"declares {str(egress)!r} egress"
+        )
         raise SandboxEgressNotEnforced(
-            f"sandbox backend {self._backend.name!r} declares {str(egress)!r} egress, which "
-            f"cannot enforce the {spec.kind!r} workload's allowlist "
+            f"sandbox backend {self._backend.name!r} {claim}, which cannot enforce the "
+            f"{spec.kind!r} workload's allowlist "
             f"({', '.join(spec.egress_allow) or 'no network at all'}). "
             f"A backend must declare one of {str(Egress.ALLOWLIST)!r} or "
             f"{str(Egress.CLOSED)!r} to serve a workload at all — everything a spec does not "
@@ -376,7 +383,7 @@ class SandboxRouter:
         if self._backend is None:
             return
 
-        egress = getattr(self._backend, "egress", Egress.UNRESTRICTED)
+        egress = getattr(self._backend, "egress", Egress.UNDEFINED)
         if egress == Egress.CLOSED and spec.egress_allow:
             logger.warning(
                 "sandbox backend %r cannot allow named hosts, so %s will be unreachable "

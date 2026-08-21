@@ -719,14 +719,33 @@ class TestEgressRule:
 
     @pytest.mark.parametrize("spec", [_ALLOWLIST_SPEC, _CLOSED_SPEC])
     def test_an_unrestricted_backend_is_refused(self, spec: SandboxSpec):
-        with pytest.raises(SandboxEgressNotEnforced):
+        with pytest.raises(SandboxEgressNotEnforced, match="'unrestricted' egress") as raised:
             self._router(Egress.UNRESTRICTED).ensure_can_serve(spec)
+        # Whichever way it was refused, the reader is told what to declare instead.
+        assert "'allowlist'" in str(raised.value) and "'closed'" in str(raised.value)
 
     def test_a_backend_that_declares_nothing_is_refused(self):
-        """Absent and unenforced are the same thing from the outside, so they land the same."""
+        """Same verdict as `UNRESTRICTED`, and the refusal must not put that claim in its mouth.
+
+        A backend written before the property existed said nothing; reporting it as having
+        declared `unrestricted` sends its author looking for a declaration to change.
+        """
         router = SandboxRouter([_BackendWithoutEgress()])
-        with pytest.raises(SandboxEgressNotEnforced):
+        with pytest.raises(SandboxEgressNotEnforced, match="declares no egress at all") as raised:
             router.ensure_can_serve(self._ALLOWLIST_SPEC)
+        assert "unrestricted" not in str(raised.value)
+        assert "'allowlist'" in str(raised.value) and "'closed'" in str(raised.value)
+
+    def test_a_backend_declaring_undefined_is_refused_the_same_way(self):
+        """A value a backend may set deliberately: the question is unanswered, not answered badly."""
+        with pytest.raises(SandboxEgressNotEnforced, match="declares no egress at all"):
+            self._router(Egress.UNDEFINED).ensure_can_serve(self._ALLOWLIST_SPEC)
+
+    def test_undefined_is_not_a_rung_that_serves(self):
+        """The two refusals are one verdict, so neither may drift into serving."""
+        for egress in (Egress.UNDEFINED, Egress.UNRESTRICTED):
+            with pytest.raises(SandboxEgressNotEnforced):
+                self._router(egress).ensure_can_serve(self._CLOSED_SPEC)
 
     def test_no_backend_configured_is_not_an_egress_failure(self):
         """Nothing runs, so nothing reaches anything — and no tool is attached either."""
