@@ -49,6 +49,7 @@ from typing import Any
 import pytest
 from maf_sandbox import (
     Capability,
+    Egress,
     EntryKind,
     SandboxKey,
     SandboxSpec,
@@ -60,6 +61,7 @@ from maf_sandbox.conformance import (
     FILES_DELETE_PROBES,
     FILES_OUT_PROBES,
     PosixGuestSubject,
+    assert_egress_conformance,
     assert_exec_conformance,
     assert_files_in_conformance,
     assert_files_out_conformance,
@@ -84,6 +86,11 @@ _WORK = "/maf-sandbox/work"
 #: default allows, and long enough that a slow control plane is not mistaken for a hang.
 _READ_TIMEOUT = 20.0
 _EXEC_TIMEOUT = 60.0
+
+#: The egress probe's hosts (#402). Allowed is the AVM registry the bicep kind reaches;
+#: denied is any host off the allowlist. The image the group imports must carry `curl`.
+_EGRESS_ALLOWED_HOST = "mcr.microsoft.com"
+_EGRESS_DENIED_URL = "https://pypi.org/simple/"
 
 
 def _config(**overrides: Any) -> AcasSandboxConfig:
@@ -745,3 +752,49 @@ class TestExecAgainstTheRealService:
         assert results, "the EXEC conformance run returned no results"
         skipped = {result.probe.name: result.skipped for result in results if result.skipped}
         assert not skipped, f"probes skipped against a backend that declares EXEC: {skipped}"
+
+
+@pytest.fixture(scope="module")
+def live_allowlist(loop):
+    """A second billable sandbox, acquired with an allowlist, for the egress probe (#402).
+
+    Separate from `live`, which is CLOSED: the egress probe needs a host the guest may reach and
+    one it may not, which only an `ALLOWLIST` sandbox provides. The image the group imports must
+    carry `curl`. Disposed by label in the `finally`, for the reason `live` documents.
+    """
+    if not _IMAGE:
+        pytest.skip("needs MAF_SANDBOX_ACAS_E2E_IMAGE (with curl) for the egress probe")
+    backend = AcasSandboxBackend(_config())
+    scope = f"e2e-egress-{uuid.uuid4()}"
+    key = _key(scope)
+    spec = _spec(egress=Egress.ALLOWLIST, egress_allow=(_EGRESS_ALLOWED_HOST,))
+    try:
+        sandbox = loop.run_until_complete(backend.acquire(key, spec))
+        yield _Live(loop, backend, key, sandbox)
+    finally:
+        loop.run_until_complete(backend.dispose_scope(scope, "thread-1"))
+        loop.run_until_complete(backend.aclose())
+
+
+class TestEgressAgainstTheRealService:
+    """The first evidence this backend *enforces* its allowlist, not merely asks for it (#402).
+
+    Before this, `Egress.ALLOWLIST` here was backed only by the policy object built before it was
+    sent — nothing showed the service applied it. The deny is L7 on this backend (a
+    TLS-terminating proxy answers a denied host rather than the network being severed), so the
+    shared probe asserts only the outcome both an L3 and an L7 backend must share: the guest
+    reaches an allowed host and not a denied one. The proxy's `x-deny-reason` and the method
+    scoping it hints at are this backend's own, and are #377's, not asserted here.
+    """
+
+    def test_the_shared_egress_probe_comes_back_clean(self, live_allowlist):
+        results = live_allowlist.run(
+            assert_egress_conformance(
+                _subject(live_allowlist),
+                allowed_url=f"https://{_EGRESS_ALLOWED_HOST}/v2/",
+                denied_url=_EGRESS_DENIED_URL,
+                exec_timeout=_EXEC_TIMEOUT,
+            )
+        )
+        assert results, "the egress conformance run returned no results"
+        assert all(r.passed for r in results), [r.failure for r in results if r.failure]

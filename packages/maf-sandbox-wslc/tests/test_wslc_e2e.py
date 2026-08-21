@@ -17,9 +17,10 @@ import subprocess
 import uuid
 
 import pytest
-from maf_sandbox import Egress, SandboxKey, SandboxSpec
+from maf_sandbox import Capability, Egress, SandboxKey, SandboxSpec
 from maf_sandbox.conformance import (
     PosixGuestSubject,
+    assert_egress_conformance,
     assert_exec_conformance,
     assert_files_delete_conformance,
     assert_files_in_conformance,
@@ -173,11 +174,18 @@ class TestAllowlistEgress:
         net = sandbox.container_name + "-net"
         try:
             assert _network_present(net)
-            allowed_rc, allowed_status = self._curl_status(sandbox, "https://mcr.microsoft.com/v2/")
+            # The shared outcome contract — the same assert docker and ACAS run.
+            subject = PosixGuestSubject(sandbox, _WORK, frozenset({Capability.EXEC}))
+            asyncio.run(
+                assert_egress_conformance(
+                    subject,
+                    allowed_url="https://mcr.microsoft.com/v2/",
+                    denied_url="https://pypi.org/simple/",
+                )
+            )
+            # wslc-specific, stronger than the shared contract: the deny is L3, so curl cannot
+            # open the tunnel and reports `000`, not an L7 proxy's HTTP answer.
             _, denied_status = self._curl_status(sandbox, "https://pypi.org/simple/")
-
-            assert allowed_rc == 0 and allowed_status.startswith("2"), allowed_status
-            # curl exits non-zero and reports 000 when the proxy refuses the tunnel.
             assert denied_status == "000", denied_status
         finally:
             purged = asyncio.run(backend.dispose_scope(scope, "thread-1"))

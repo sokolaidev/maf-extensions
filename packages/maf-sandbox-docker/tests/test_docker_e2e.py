@@ -47,6 +47,7 @@ from maf_sandbox import (
 )
 from maf_sandbox.conformance import (
     PosixGuestSubject,
+    assert_egress_conformance,
     assert_exec_conformance,
     assert_files_delete_conformance,
     assert_files_in_conformance,
@@ -465,11 +466,19 @@ class TestAllowlistEgress:
         asyncio.run(sandbox.write_file("/maf-sandbox/work/.keep", "", working_directory=_WORK))
         try:
             assert _network_present(net)
-            allowed_rc, allowed_status = self._curl_status(sandbox, "https://mcr.microsoft.com/v2/")
+            # The shared outcome contract — the same assert ACAS and wslc run: an allowed host
+            # answers, a denied one does not.
+            subject = PosixGuestSubject(sandbox, _WORK, frozenset({Capability.EXEC}))
+            asyncio.run(
+                assert_egress_conformance(
+                    subject,
+                    allowed_url="https://mcr.microsoft.com/v2/",
+                    denied_url="https://pypi.org/simple/",
+                )
+            )
+            # Docker-specific, and stronger than the shared contract: the deny is L3, so curl
+            # cannot even open the tunnel and reports `000` — not an L7 proxy's HTTP answer.
             _, denied_status = self._curl_status(sandbox, "https://pypi.org/simple/")
-
-            assert allowed_rc == 0 and allowed_status.startswith("2"), allowed_status
-            # curl exits non-zero and reports 000 when the proxy refuses the tunnel.
             assert denied_status == "000", denied_status
         finally:
             purged = asyncio.run(backend.dispose_scope(scope, "thread-1"))
