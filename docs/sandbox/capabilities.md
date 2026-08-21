@@ -208,7 +208,7 @@ Where each backend answers, stated because the legs are not equal:
 | Leg | Where it runs | What a green means |
 |---|---|---|
 | docker | Against a **real engine**, in the `docker-e2e` job, on every pull request | The provider's real behaviour, on the backend a contributor can also run locally |
-| acas | Against the **real service**, in `verify-live.yml`'s ACAS job — on demand and after a release, since every sandbox is a billable resource — plus a fake on every pull request | The only place the four `FILES_LIST` probes have ever met a real provider; the suite asserts none of them skipped, because a run that skipped them reports the same success as one that ran them |
+| acas | Against the **real service**, in `verify-live.yml`'s ACAS job — on demand and after a release — and nightly in `conformance-live.yml`, which runs the same suite on a schedule; never on a pull request, since every sandbox is a billable resource, and a fake answers there instead | The only place the four `FILES_LIST` probes have ever met a real provider; the suite asserts none of them skipped, because a run that skipped them reports the same success as one that ran them |
 | in-process fake | The core suite | **Shape, not safety.** It runs the shared walk and refuses a seeded link standing where a directory was expected, but a seeded link has no target and nothing reads through one |
 
 ## Cross-platform rules
