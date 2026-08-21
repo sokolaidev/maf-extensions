@@ -19,7 +19,11 @@ jobs:
     name: Conventional commit format
     runs-on: ubuntu-latest
     steps:
-      # Pinned to the commit v5 resolves to: a moving tag is a supply-chain hole.
+      # Every action is pinned to a commit: moving tags are a supply-chain hole.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
       - uses: amannn/action-semantic-pull-request@e32d7e603df1aa1ba07e981f2a23455dee596825 # v5
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -40,3 +44,9 @@ jobs:
           # Scopes are free-form here: release-please attributes a change to a package by the
           # files it touches, not by the scope.
           requireScope: false
+
+      - name: Title matches changed behavior
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: python scripts/check_title_diff.py "$BASE_SHA" "$PR_TITLE"
