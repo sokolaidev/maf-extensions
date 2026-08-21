@@ -50,7 +50,7 @@ Act 5 acquires one sandbox on each backend, with only `docker` serving, and show
 
 Isolation is the axis acts 1 and 2 are about. Egress is the other one the two-axis design names, and acts 3 and 4 are the only place in the sample set where it is shown.
 
-The rule is not symmetrical, and the asymmetry is the idea. A backend that cannot confine as *precisely* as a spec asked still serves: `DockerSandboxConfig()` with no proxy declares `Egress.CLOSED`, so a spec allowing `mcr.microsoft.com` gets a container with no network at all. That is **more** confinement than was asked for, the router logs a warning naming the hosts that will be unreachable, and the workload fails loudly at the fetch. A backend that cannot confine **at all** — `Egress.UNRESTRICTED` — is refused instead, because silently widening what a workload reaches produces no symptom anybody sees. `Egress`'s own docstring is where that is written down; act 3 is where you can watch it.
+Egress is resolved, not matched: a workload runs one mode and the router serves it iff the backend enforces that mode — **refuse, never degrade**. `DockerSandboxConfig()` with no proxy enforces only `{CLOSED}`, so a workload that runs `ALLOWLIST` (naming `mcr.microsoft.com`) is **refused** there at attach, not served behind a closed boundary and left to fail at the fetch. It is not widened to open either — the workload never asked to reach everything. A workload that runs `CLOSED` is served on both backends; one that must run `UNRESTRICTED` needs a backend that enforces exactly that, and none of the three shipped ones does. `Egress`'s own docstring and [`egress-resolution.md`](../../docs/design/egress-resolution.md) are where that is written down; act 3 is where you can watch it.
 
 ## Act 4: the workload that makes egress a real question
 
@@ -79,7 +79,8 @@ Both redirect hops have to be allowed; the redirector alone answers with a `Loca
 
 | | `DockerSandboxConfig()` | `DockerSandboxConfig(egress_proxy_image=…)` |
 |---|---|---|
-| declares | `Egress.CLOSED` | `Egress.ALLOWLIST` |
+| enforces (`egress_modes`) | `{CLOSED}` | `{CLOSED, ALLOWLIST}` |
+| workload runs | `CLOSED` | `ALLOWLIST` |
 | container gets | `--network none` | an internal network and a dual-homed proxy |
 | the compiler says | `BCP192: Unable to restore the artifact … (Resource temporarily unavailable (mcr.microsoft.com:443))` | no diagnostics |
 
@@ -89,7 +90,7 @@ Nothing inside the container was configured to cooperate. `HTTP_PROXY` only tell
 
 What act 4 does **not** try to show is that the proxy denies an unlisted host. That is the backend's own property, pinned by `TestAllowlistEgress` in `maf-sandbox-docker`, and repeating it here with `curl` would have been a unit test wearing a sample's clothes. What only a sample can show is the consequence: real work that succeeds or fails on the deployment's egress posture.
 
-**Two things worth knowing before adapting it.** A kind that needs no network and a kind that was simply never asked both write `egress_allow=()` today, so the empty case is spelled the same way whether it means "deny everything" or "no opinion" — that conflation is [#403](https://github.com/sokolaidev/maf-extensions/issues/403). And pass `egress_proxy_image=None` rather than `""` for the closed posture: an empty string declares `CLOSED` and then fails trying to start a proxy, which is [#407](https://github.com/sokolaidev/maf-extensions/issues/407).
+**Two things worth knowing before adapting it.** A workload states the one mode it runs in (`egress`, default `CLOSED`); the four allowlist hosts are the kind's own, not this deployment's to widen — a deployment picks only the mode. Whether a host could supply its *own* default allowlist for a kind that needs one is [#403](https://github.com/sokolaidev/maf-extensions/issues/403), still open and orthogonal. And pass `egress_proxy_image=None` rather than `""` for the closed posture: an empty string still enforces only `{CLOSED}` and then fails trying to start a proxy, which is [#407](https://github.com/sokolaidev/maf-extensions/issues/407).
 
 ## Run
 

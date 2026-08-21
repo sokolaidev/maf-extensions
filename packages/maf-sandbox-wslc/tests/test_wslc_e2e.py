@@ -17,7 +17,7 @@ import subprocess
 import uuid
 
 import pytest
-from maf_sandbox import SandboxKey, SandboxSpec
+from maf_sandbox import Egress, SandboxKey, SandboxSpec
 from maf_sandbox.conformance import (
     PosixGuestSubject,
     assert_exec_conformance,
@@ -163,7 +163,9 @@ class TestAllowlistEgress:
     def test_an_allowed_host_answers_a_denied_one_does_not_and_teardown_leaves_nothing(self):
         scope = f"e2e-{uuid.uuid4()}"
         backend = WslcSandboxBackend(self._config())
-        spec = SandboxSpec(kind="e2e", image=_IMAGE, egress_allow=("mcr.microsoft.com",))
+        spec = SandboxSpec(
+            kind="e2e", image=_IMAGE, egress=Egress.ALLOWLIST, egress_allow=("mcr.microsoft.com",)
+        )
 
         # Acquire before the try so a failure here surfaces as itself, not as an
         # `UnboundLocalError` from the teardown assertions that follow.

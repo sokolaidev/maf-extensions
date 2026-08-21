@@ -407,8 +407,10 @@ class SandboxSpec:
     enforce that exact mode and refuses otherwise, never substituting another; see
     ``docs/design/egress-resolution.md``.  ``egress_allow`` is the payload of an
     :data:`Egress.ALLOWLIST` run — the hostnames reached, **everything not listed denied** — and
-    is consulted only in that mode.  The ``CLOSED`` default keeps the fail-closed property: a
-    spec that says nothing about egress gets no network.
+    is consulted only in that mode.  A non-empty ``egress_allow`` therefore requires
+    ``egress is Egress.ALLOWLIST``, refused here otherwise: naming hosts with no network to reach
+    them on is incoherent, not resolved into a surprise.  The ``CLOSED`` default keeps the
+    fail-closed property: a spec that says nothing about egress gets no network.
 
     ``work_dir`` is the guest-side directory a workload's paths resolve against, and it is
     **guest-native**: the host states it to suit the image it configured, and nothing rewrites
@@ -469,11 +471,17 @@ class SandboxSpec:
     # argument after it — a caller's `files_in` would silently become this flag.
     outputs_named_at_call_time: bool = False
     identities: frozenset[Identity] = frozenset()
-    # Appended, like the two above, so it cannot rebind a positional caller's argument. The
-    # coherence guard between this and `egress_allow` lands with the kind migration (see
-    # docs/design/egress-resolution.md); until then a non-empty `egress_allow` with a non-
-    # ALLOWLIST mode is tolerated, and simply means the host list is not consulted.
+    # Appended, like the two above, so it cannot rebind a positional caller's argument.
     egress: Egress = Egress.CLOSED
+
+    def __post_init__(self) -> None:
+        if self.egress_allow and self.egress is not Egress.ALLOWLIST:
+            hosts = ", ".join(self.egress_allow)
+            raise ValueError(
+                f"egress_allow names hosts ({hosts}) but egress is {str(self.egress)!r}: a host "
+                f"list is the payload of an {str(Egress.ALLOWLIST)!r} run and has no meaning "
+                "without it. Set egress=Egress.ALLOWLIST, or drop the hosts."
+            )
 
 
 @dataclass(frozen=True)

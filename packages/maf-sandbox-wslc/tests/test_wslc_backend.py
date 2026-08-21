@@ -143,7 +143,7 @@ class TestBackendIdentity:
         assert WslcSandboxBackend(WslcSandboxConfig()).isolation == Isolation.CONTAINER
 
     def test_declares_closed_egress(self):
-        assert WslcSandboxBackend(WslcSandboxConfig()).egress == Egress.CLOSED
+        assert WslcSandboxBackend(WslcSandboxConfig()).egress_modes == frozenset({Egress.CLOSED})
 
     def test_declares_exec_and_files_in_only(self):
         assert WslcSandboxBackend(WslcSandboxConfig()).capabilities == frozenset(
@@ -1106,6 +1106,7 @@ _ALLOW_CONFIG = WslcSandboxConfig(egress_proxy_image="maf-egress-proxy:local")
 _ALLOW_SPEC = SandboxSpec(
     kind="bicep",
     image="bicep-sandbox:local",
+    egress=Egress.ALLOWLIST,
     egress_allow=("mcr.microsoft.com", "*.data.mcr.microsoft.com"),
 )
 # The allowlist folds into the name, so an allowlisted sandbox is a different container from a
@@ -1129,8 +1130,10 @@ class TestAllowlistTopology:
     """With `egress_proxy_image` set, `--network none` becomes an internal net plus a proxy."""
 
     def test_the_declaration_follows_the_configuration(self):
-        assert _backend_with()[0].egress == Egress.CLOSED
-        assert _backend_with(config=_ALLOW_CONFIG)[0].egress == Egress.ALLOWLIST
+        assert _backend_with()[0].egress_modes == frozenset({Egress.CLOSED})
+        assert _backend_with(config=_ALLOW_CONFIG)[0].egress_modes == frozenset(
+            {Egress.ALLOWLIST, Egress.CLOSED}
+        )
 
     def test_create_builds_network_proxy_bridge_then_workload_in_order(self):
         backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)

@@ -41,6 +41,7 @@ from maf_sandbox import (
     CallerContext,
     Capability,
     DeclaredOutput,
+    Egress,
     ExecResult,
     HostToolRun,
     NameNormalization,
@@ -165,7 +166,12 @@ def codeact_sandbox_spec(
     because a deployment able to widen what the *kind itself* requires could undo the
     containment the design rests on.  The spec carries the **union**, because that is what the
     router matches against the backend and what decides whether this tool is declared as
-    carrying something out.
+    carrying something out.  The network **posture** is derived from that union: named hosts run
+    :data:`~maf_sandbox.Egress.ALLOWLIST`, an empty union runs :data:`~maf_sandbox.Egress.CLOSED`.
+    CodeAct never runs :data:`~maf_sandbox.Egress.UNRESTRICTED` — unconfined model-written code
+    reaching anything is the exfiltration case the allowlist exists to prevent — so the open
+    posture is not expressible here, and the router serves the derived mode only on a backend
+    that enforces it.
 
     Naming a host here is a real widening of a sandbox running model-written code: every
     allowed host is a way out for anything the program can read, including files shared into
@@ -481,11 +487,19 @@ def _codeact_spec(
         # reads its request files and the exit marker back over the pull surface, so even a
         # stdout-only program that can call a host function needs one.
         requires |= {Capability.HOST_TOOLS, Capability.FILES_OUT}
+    # CodeAct runs model-written code, so it accepts only two postures and never UNRESTRICTED:
+    # CLOSED to compute offline, ALLOWLIST to reach the deployment's named sources. The mode is
+    # derived from whether any host was named — an allowlist with hosts is ALLOWLIST, an empty
+    # one is CLOSED — so there is no way to express the open posture that would make unconfined
+    # model code an exfiltration surface.
+    effective_egress = _effective_egress(egress_allow)
+    egress = Egress.ALLOWLIST if effective_egress else Egress.CLOSED
     return SandboxSpec(
         kind=CODEACT_KIND,
         image=image,
         image_id=image_id,
-        egress_allow=_effective_egress(egress_allow),
+        egress=egress,
+        egress_allow=effective_egress,
         work_dir=_WORK_DIR,
         requires=frozenset(requires),
         outputs_named_at_call_time=collects,
