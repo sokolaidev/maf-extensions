@@ -37,8 +37,8 @@ This package draws no isolation boundary itself — it is protocol and policy ov
 |---|---|
 | `SandboxKey` | `(scope, thread_id, agent_dir)` — the one sandbox a caller may reach |
 | `SandboxSpec` | what a sandbox of a given *kind* needs: image, egress allowlist, work dir, `requires` capabilities, and an optional `min_isolation` that may raise the host's floor |
-| `Sandbox` | `write_file` + `exec` — all a workload gets |
-| `SandboxBackend` | `acquire` / `dispose` / `dispose_scope`, plus the `isolation`, `egress` and `capabilities` it declares |
+| `Sandbox` | `write_file`, `exec` and `run_code`, the pull surface `stat_file` / `read_file` / `list_dir`, and `remove` — what a workload gets, gated by what the backend declares |
+| `SandboxBackend` | `acquire` / `dispose` / `dispose_scope`, plus the `isolation`, `egress_modes`, `capabilities` and `os_families` it declares |
 | `SandboxRouter` | picks the backend, enforces the minimum-isolation floor, the capability match, and the egress rule |
 | `SandboxPurger` | duck-typed `purge_scoped_thread(scope, thread_id)` for a host's delete path |
 
@@ -146,6 +146,23 @@ The contract says what may be dispatched; it does not say how a dispatch *reache
 **The transport tries not to let its own files outlive the call.** It removes the ones it owns — the program, the shim, the launcher, the captured output, the exit marker, the pid, and every request and response the run exchanged with the host — on *every* exit path, success included, over the same `exec` it uses for everything else — **best-effort, not a retention guarantee**: a guest without `rm`, a removal that times out, or a non-zero exit each leave that traffic readable, logged and nothing more. What it cannot remove is `WORK_DIRECTORY`: artifacts live there and a kind collects them after the transport has returned, so removing it would delete the outputs of every successful run. `reclaim_run(sandbox, layout)` is the other half, **a kind's to call in a `finally` once it has collected**, and it takes the whole run directory. A `False` from it is a data-retention failure rather than a tidiness one: nothing comes back for it — the protocol's delete is capability-gated and this transport does not require it — and `acquire` is get-or-create, so a run directory that survives is readable by every later run in the same sandbox for the life of the conversation. **A kind that takes its place in the guest from `SandboxToolSession.guest_call_path()` does not have to remember any of this**: `sandboxed_tool` removes that path, and everything under it, when the call returns — after a result, a refusal and an exception alike — and hands a removal that did not happen to the host's `on_reclaim_failure` as a `ReclaimFailure`, which is where disposal is decided. A kind that composes its own path keeps `reclaim_run`, and keeps the `finally`. What remains is the host's own disposal — `SandboxRouter.dispose(key)`, which ends every kind's sandbox for that conversation and any concurrent call in it. Blunt, and worth it against data left where the next program can read it; how a kind reaches it is [#435](https://github.com/sokolaidev/maf-extensions/issues/435).
 
 It costs round trips — several backend calls per dispatch, plus polling, plus one on every return to reclaim, and one more to stop the program on a run that overran. It serves one outstanding call at a time. This module's own docstring counts those costs exactly, beside the code that decides them; whether the trade is worth it is a measurement rather than an assumption.
+
+## Upgrading to 0.20
+
+**`Sandbox` gains `run_code`, and `Sandbox` is a `runtime_checkable` Protocol — so a sandbox implementation that does not define it stops satisfying the protocol.** `isinstance(x, Sandbox)` returns `False` and a type checker rejects it wherever a `Sandbox` is expected. Every backend published here answers it already, as of the previous release. **A third-party backend adds one method:**
+
+```python
+async def run_code(self, code: str, *, timeout: float) -> ExecResult:
+    raise NotImplementedError("this backend does not support RUN_CODE")
+```
+
+That is the whole migration unless you declare `Capability.RUN_CODE`, in which case implement it: it is the method that capability names, as `exec` is the method `EXEC` names. `timeout` is **wall-clock from the call**, so a backend that serialises calls on one sandbox spends part of it queued rather than leaving the waiting half unbounded, and a deadline that expires before the program starts raises `SandboxQueuedTimeout` rather than a plain `TimeoutError` — the caller's next move differs, retry unchanged versus make the program smaller.
+
+**The compatibility shim for a backend's old single `egress` property is gone.** 0.19 read `egress` through a shim when `egress_modes` was absent; 0.20 does not, so a backend declaring only `egress` is now refused as undeclared — it enforces nothing the router can see. Declare `egress_modes: frozenset[Egress]`, the set of modes it can actually enforce.
+
+**`Capability.NETWORK` is removed** from the capability enum. No backend declared it and no spec required it; how precisely egress is confined lives in `Egress`.
+
+**New, and additive: a workload can state the guest shape it needs.** `OsFamily` is `posix` or `windows`; a backend declares `os_families: frozenset[OsFamily]` and a spec asks with `requires_os_family`, refused at attach with `SandboxOsFamilyNotSupported` on a mismatch. Nothing existing changes — a spec that asks nothing is refused by nothing, and a backend that declares nothing serves every spec that does not ask. **The axis is path grammar and argv quoting and nothing else**: a spec asking for `posix` and getting it can still meet an image with no shell, because what is *installed* in a guest is a property of the image, and one backend may be handed many. See `docs/design/guest-platform-and-commands.md`.
 
 ## Upgrading to 0.19
 
@@ -256,11 +273,15 @@ Backends need no edit to keep working: one that declares no `capabilities` is re
 
 ## Writing a backend
 
-Implement `name`, `isolation`, `egress`, `acquire`, `dispose`, `dispose_scope`. `capabilities` is optional. Four things worth knowing before you start:
+Implement `name`, `isolation`, `egress_modes`, `acquire`, `dispose`, `dispose_scope`. `capabilities` and `os_families` are optional. Five things worth knowing before you start:
 
-**Declare `egress` honestly.** It is read before any workload's tool is attached, and a backend that omits it is treated as `unrestricted` and refused: one written before the property existed cannot have been enforcing an allowlist it never read, so silence is read as enforcing nothing rather than excused.
+**Declare `egress_modes` honestly.** It is the set of modes you can actually *enforce*, read before any workload's tool is attached, and a backend that omits it enforces nothing the router can see and is refused. List a mode only if you can hold it: a backend that cannot cut the network does not list `closed`, and one that always proxies does not list `unrestricted`. The router serves a workload in exactly the mode it declares or refuses — it never substitutes a stricter one, because a posture the workload was not built for is not a favour.
 
-**`capabilities` is optional, and silence is the opposite of `egress`'s.** Omitting it reads as `DEFAULT_CAPABILITIES = {EXEC, FILES_IN}`, so a backend that has always offered exec and file-write does not need to add the property to keep working — only declare it once you offer more, or less.
+**`capabilities` is optional, and silence is the opposite of `egress_modes`'s.** Omitting it reads as `DEFAULT_CAPABILITIES = {EXEC, FILES_IN}`, so a backend that has always offered exec and file-write does not need to add the property to keep working — only declare it once you offer more, or less.
+
+**Your `Sandbox` implements `run_code` whether or not you serve it.** It is a member of the protocol, so an implementation without it is not a `Sandbox` at all; raise `NotImplementedError` unless you declare `Capability.RUN_CODE`. The same is true of `remove` and `list_dir` — the methods `FILES_DELETE` and `FILES_LIST` name.
+
+**`os_families` is optional and means nothing about what is installed.** Declare the guest shapes this instance hands out — `posix`, `windows` — when your guest has an operating system at all; a backend serving a language runtime has no answer and gives none, which refuses a spec that asks and leaves every other spec untouched. It says nothing about whether the image has a shell.
 
 **`acquire` is get-or-create.** A workload's fix-round loop calls it every iteration; returning a cold sandbox each time turns a seconds-long loop into a minutes-long one.
 
