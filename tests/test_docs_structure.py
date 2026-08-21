@@ -1,4 +1,4 @@
-"""The documentation conventions `docs/README.md` states, checked against the tree.
+"""The documentation conventions `docs/AUTHORING.md` states, checked against the tree.
 
 Offline by construction: every assertion reads files, so a moved document fails here rather
 than surviving as a dead link a reader finds later.
