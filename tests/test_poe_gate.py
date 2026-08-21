@@ -108,5 +108,18 @@ class TestTheMarkdownBlockLinter:
         """Exclude research proposals because they describe APIs absent from installed packages."""
         """
         globs = self._globs(_TASKS["md-blocks"]["cmd"])
-        assert "docs/sandbox/*.md" in globs
-        assert not any(glob.startswith("docs/sandbox/research") for glob in globs)
+        matched = {
+            path.relative_to(REPO_ROOT).as_posix()
+            for pattern in globs
+            for path in REPO_ROOT.glob(pattern)
+        }
+        research = {
+            path.relative_to(REPO_ROOT).as_posix()
+            for path in (REPO_ROOT / "docs" / "sandbox" / "research").glob("**/*.md")
+        }
+        decided = {
+            path.relative_to(REPO_ROOT).as_posix()
+            for path in (REPO_ROOT / "docs").glob("**/*.md")
+        } - research
+        assert decided <= matched
+        assert research.isdisjoint(matched)
