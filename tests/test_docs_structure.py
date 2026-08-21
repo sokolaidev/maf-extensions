@@ -111,14 +111,18 @@ class TestEveryMainDocumentEndsWithATracker:
 
 
 class TestEveryTrackerRowIsPinned:
-    """No empty tracking cell — an issue, a `.md`, the word `untracked`, or an em dash."""
+    """No empty tracking cell — a GitHub link, a `.md`, the word `untracked`, or an em dash."""
 
     @pytest.mark.parametrize("doc", _MAIN_DOCS, ids=_ids(_MAIN_DOCS))
     def test_the_last_cell_says_something(self, doc: Path):
         unpinned = []
         for row in _data_rows(_status_table(doc.read_text("utf-8"))):
             tracking = _cells(row)[-1]
-            pinned = "github.com/" in tracking or "untracked" in tracking or "—" in tracking
+            pinned = (
+                re.search(r"\(https://github\.com/[^)]+\)", tracking) is not None
+                or "untracked" in tracking
+                or "—" in tracking
+            )
             if not pinned and not re.search(r"\]\([^)]+\.md[^)]*\)", tracking):
                 unpinned.append(f"{doc.relative_to(_ROOT).as_posix()}: {row.strip()}")
         assert not unpinned, "tracking cells that pin nothing:\n" + "\n".join(unpinned)
