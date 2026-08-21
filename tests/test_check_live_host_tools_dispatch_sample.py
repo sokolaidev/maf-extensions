@@ -684,6 +684,13 @@ class TestATransportThatReclaimsItsOwn:
     def test_a_reclaimed_run_passes(self):
         assert check.assess(_RECLAIMED) == []
 
+    def test_reclaimed_call_directories_must_not_leave_run_directories(self):
+        broken = _reclaimed(
+            "run directories across both sandboxes: 0",
+            "run directories across both sandboxes: 1",
+        )
+        assert any("survived framework reclamation" in r for r in check.assess(broken))
+
     def test_an_unreported_transport_fails(self):
         """Which transport ran decides what the counts below it mean, so it is not optional."""
         assert any(

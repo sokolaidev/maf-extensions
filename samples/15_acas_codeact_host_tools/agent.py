@@ -43,6 +43,7 @@ import sys
 import time
 from collections.abc import Iterable
 from contextvars import ContextVar
+from importlib.metadata import version
 from pathlib import Path
 from statistics import median
 from typing import Any
@@ -76,10 +77,8 @@ from maf_sandbox.maf import list_all_files, make_caller_context
 #: Whether the installed transport takes its own files back when a run ends. #434 gave it a
 #: cleanup and exported `reclaim_run` in the same release, so the import is the marker for
 #: transport cleanup: before it, `dispatch_over_exec` left the request and response files in the
-#: guest; after it, the transport removes the directory it owns. The framework's call-directory
-#: cleanup is reported separately because it belongs to the CodeAct kind's installed version.
-#: A sample runs against whatever is on PyPI, and act 5 asks rather than assumes — the two are
-#: different measurements and both are correct.
+#: guest; after it, the transport removes the directory it owns. CodeAct 0.6+ requests the
+#: framework-owned call path, so its distribution version is the independent lifecycle marker.
 try:
     from maf_sandbox import reclaim_run as _reclaim_run
 except ImportError:  # the published core before #434
@@ -90,6 +89,7 @@ from maf_sandbox_codeact import codeact_sandbox_spec, make_codeact_tools
 
 TRANSPORT_RECLAIMS = _reclaim_run is not None
 RECLAIMED, KEPT = "reclaimed by the transport", "left for the sandbox (core before 0.17)"
+CALL_RECLAIMS = tuple(int(part) for part in version("maf-sandbox-codeact").split(".")[:2]) >= (0, 6)
 CALL_RECLAIMED = "reclaimed by the framework"
 CALL_KEPT = "left for the sandbox (an older CodeAct or core)"
 
@@ -691,14 +691,13 @@ async def act_five_what_the_runs_left_behind(
     answered = sum(t[3] for t in totals)
 
     print(f"{MEASURED}transport cleanup: {RECLAIMED if TRANSPORT_RECLAIMS else KEPT}")
-    call_reclaims = directories == 0
-    print(f"{MEASURED}call directory cleanup: {CALL_RECLAIMED if call_reclaims else CALL_KEPT}")
+    print(f"{MEASURED}call directory cleanup: {CALL_RECLAIMED if CALL_RECLAIMS else CALL_KEPT}")
     print(f"{MEASURED}run directories across both sandboxes: {directories}")
     print(f"{MEASURED}of those, runs that dispatched: {dispatched_runs}")
     print(f"{MEASURED}transport files left behind: {left}, of which answered calls: {answered}")
     print()
     print("  A fresh directory per run keeps one run's traffic out of the next one's.")
-    if call_reclaims:
+    if CALL_RECLAIMS:
         print("  The framework-owned call directories are gone when act 5 looks.")
     else:
         print("  On older CodeAct kinds, those call directories remain for act 5 to count.")
