@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 580" width="1000" height="580" role="img" aria-labelledby="map-title map-desc" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
   <title id="map-title">Every element of maf-sandbox, and the two directions a call crosses in</title>
-  <desc id="map-desc">A map in four parts. The host application holds the agent and model, the middleware chain drawn as a gate, the sandboxed tool's body, the binding that configures it, and two host-side destinations: the host-tool registry, empty by default, and the sink that receives artifacts. Fill and stroke carry a second channel, authorship: purple is MAF and the application's own code, slate the maf-sandbox family, teal the guest, so family code is drawn running in the host process too — the tool body, the binding and the host-tool registry — while the sink is drawn split, the family's shape around the host's destination. maf_sandbox core, in the same process, holds the spec a kind declares, the router with its checks — host denials, the isolation floor, capabilities, egress and transfer limits — and the key read per call from the caller context, which nothing model-authored ever reaches. Four backends are registered with their isolation rungs: acas at microvm, docker and wslc at container, in-process at none; the router selects one and the others stay registered, because purge asks all of them. Inside the sandbox the guest call path is a directory nested in the work dir — one per call, reclaimed in a finally — and it holds the run's files; the run itself is not a directory but a detached process group, drawn as a process below the tree and tied to the files it owns by a dotted line, at most one per call and only where a guest dispatches. Three arrows carry the traffic: the inward call passes through the middleware gate to the tool body, the router and the backend, arriving as files in and exec that the kind's tool body writes; declared outputs are pulled back out, capped, to the host's sink; and a dashed dispatch runs from the run to the host-tool registry along a route that goes around the middleware gate rather than through it, carried as request and response files the kind's host-side supervisor translates. The sandbox's one egress valve is closed unless the spec allows named hosts.</desc>
+  <desc id="map-desc">A map in four parts. The host application holds the agent and model, the middleware chain drawn as a gate, the sandboxed tool's body, the binding that configures it, and two host-side destinations: the host-tool registry, empty by default, and the sink that receives artifacts. Fill and stroke carry a second channel, authorship: purple is MAF and the application's own code, slate the maf-sandbox family, teal the guest, so family code is drawn running in the host process too — the tool body, the binding and the host-tool registry — while the sink is drawn split, the family's shape around the host's destination. maf_sandbox core, in the same process, holds the spec a kind declares, the router with its checks — host denials, the isolation floor, capabilities, the guest's OS family, egress and transfer limits — and the key read per call from the caller context, which nothing model-authored ever reaches. Four backends are registered with their isolation rungs: acas at microvm, docker and wslc at container, in-process at none; the router selects one and the others stay registered, because purge asks all of them. Inside the sandbox the guest call path is a directory nested in the work dir — one per call, reclaimed in a finally — and it holds the run's files; the run itself is not a directory but a detached process group, drawn as a process below the tree and tied to the files it owns by a dotted line, at most one per call and only where a guest dispatches. Three arrows carry the traffic: the inward call passes through the middleware gate to the tool body, the router and the backend, arriving as files in and exec that the kind's tool body writes; declared outputs are pulled back out, capped, to the host's sink; and a dashed dispatch runs from the run to the host-tool registry along a route that goes around the middleware gate rather than through it, carried as request and response files the kind's host-side supervisor translates. The sandbox's one egress valve is drawn shut because closed is the default: egress is a single mode the spec declares — closed, an allowlist of named hosts, or unrestricted.</desc>
 
   <defs>
     <marker id="map-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
@@ -65,7 +65,7 @@
 
   <rect x="336" y="96" width="224" height="74" rx="8" fill="#9aa1ac" fill-opacity="0.14" stroke="#9aa1ac" stroke-width="1.4"/>
   <text x="448" y="120" text-anchor="middle" font-size="13.5" fill="#7d8694">spec</text>
-  <text x="448" y="140" text-anchor="middle" font-size="12" fill="#9aa1ac">kind · image · egress allow</text>
+  <text x="448" y="140" text-anchor="middle" font-size="12" fill="#9aa1ac">kind · image · egress + allow</text>
   <text x="448" y="157" text-anchor="middle" font-size="12" fill="#9aa1ac">requires · outputs · caps</text>
 
   <line x1="448" y1="174" x2="448" y2="242" stroke="#7d8694" stroke-width="1.4" marker-end="url(#map-slate)"/>
@@ -75,7 +75,7 @@
   <rect x="336" y="248" width="224" height="84" rx="8" fill="#9aa1ac" fill-opacity="0.20" stroke="#7d8694" stroke-width="2"/>
   <text x="448" y="276" text-anchor="middle" font-size="15" fill="#7d8694">router</text>
   <text x="448" y="302" text-anchor="middle" font-size="12" fill="#9aa1ac">denials · floor · capabilities</text>
-  <text x="448" y="319" text-anchor="middle" font-size="12" fill="#9aa1ac">egress · limits</text>
+  <text x="448" y="319" text-anchor="middle" font-size="12" fill="#9aa1ac">os family · egress · limits</text>
 
   <line x1="448" y1="360" x2="448" y2="338" stroke="#7d8694" stroke-width="1.4" marker-end="url(#map-slate)"/>
   <text x="460" y="354" font-size="12" fill="#9aa1ac">read per call</text>
@@ -139,8 +139,8 @@
   <line x1="908" y1="470" x2="976" y2="470" stroke="#7d8694" stroke-width="1.8" marker-end="url(#map-slate)"/>
   <circle cx="920" cy="470" r="7.5" fill="#8b7fd4" fill-opacity="0.15" stroke="#7d8694" stroke-width="1.6"/>
   <line x1="920" y1="460" x2="920" y2="480" stroke="#7d8694" stroke-width="1.6"/>
-  <text x="992" y="512" text-anchor="end" font-size="12" fill="#7d8694">egress: closed unless the spec</text>
-  <text x="992" y="526" text-anchor="end" font-size="12" fill="#7d8694">allows — to named hosts only</text>
+  <text x="992" y="512" text-anchor="end" font-size="12" fill="#7d8694">egress: one mode the spec declares —</text>
+  <text x="992" y="526" text-anchor="end" font-size="12" fill="#7d8694">closed by default, allowlist or unrestricted</text>
 
   <!-- ── inward: the call, gated, down the host and out to the sandbox ─── -->
   <line x1="158" y1="134" x2="158" y2="150" stroke="#c98a2e" stroke-width="2.2" marker-end="url(#map-amber)"/>
