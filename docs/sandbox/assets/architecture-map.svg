@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 580" width="1000" height="580" role="img" aria-labelledby="map-title map-desc" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
   <title id="map-title">Every element of maf-sandbox, and the two directions a call crosses in</title>
-  <desc id="map-desc">A map in four parts. The host application holds the agent and model, the middleware chain drawn as a gate, the sandboxed tool's body, the binding that configures it, and two host-side destinations: the host-tool registry, empty by default, and the sink that receives artifacts. maf_sandbox core, in the same process, holds the spec a kind declares, the router with its checks — host denials, the isolation floor, capabilities, egress and transfer limits — and the key read per call from the caller context, which nothing model-authored ever reaches. Four backends are registered with their isolation rungs: acas at microvm, docker and wslc at container, in-process at none; the router selects one and the others stay registered, because purge asks all of them. Inside the sandbox the guest call path is a directory nested in the work dir — one per call, reclaimed in a finally — and it holds the run's files; the run itself is not a directory but a detached process group, drawn as a process below the tree and tied to the files it owns by a dotted line, at most one per call and only where a guest dispatches. Three arrows carry the traffic: the inward call passes through the middleware gate to the tool body, the router and the backend, arriving as files in and exec that the kind's tool body writes; declared outputs are pulled back out, capped, to the host's sink; and a dashed dispatch runs from the run to the host-tool registry along a route that goes around the middleware gate rather than through it, carried as request and response files the kind's host-side supervisor translates. The sandbox's one egress valve is closed unless the spec allows named hosts.</desc>
+  <desc id="map-desc">A map in four parts. The host application holds the agent and model, the middleware chain drawn as a gate, the sandboxed tool's body, the binding that configures it, and two host-side destinations: the host-tool registry, empty by default, and the sink that receives artifacts. Fill and stroke carry a second channel, authorship: purple is MAF and the application's own code, slate the maf-sandbox family, teal the guest, so family code is drawn running in the host process too — the tool body, the binding and the host-tool registry — while the sink is drawn split, the family's shape around the host's destination. maf_sandbox core, in the same process, holds the spec a kind declares, the router with its checks — host denials, the isolation floor, capabilities, egress and transfer limits — and the key read per call from the caller context, which nothing model-authored ever reaches. Four backends are registered with their isolation rungs: acas at microvm, docker and wslc at container, in-process at none; the router selects one and the others stay registered, because purge asks all of them. Inside the sandbox the guest call path is a directory nested in the work dir — one per call, reclaimed in a finally — and it holds the run's files; the run itself is not a directory but a detached process group, drawn as a process below the tree and tied to the files it owns by a dotted line, at most one per call and only where a guest dispatches. Three arrows carry the traffic: the inward call passes through the middleware gate to the tool body, the router and the backend, arriving as files in and exec that the kind's tool body writes; declared outputs are pulled back out, capped, to the host's sink; and a dashed dispatch runs from the run to the host-tool registry along a route that goes around the middleware gate rather than through it, carried as request and response files the kind's host-side supervisor translates. The sandbox's one egress valve is closed unless the spec allows named hosts.</desc>
 
   <defs>
     <marker id="map-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
@@ -17,6 +17,14 @@
     </marker>
   </defs>
 
+  <!-- ── the legend: the regions are process, the fill and stroke are authorship ─ -->
+  <rect x="20" y="19" width="13" height="13" rx="3" fill="#8b7fd4" fill-opacity="0.28" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="41" y="30" font-size="12" fill="#7d8694">MAF + the application's own</text>
+  <rect x="215" y="19" width="13" height="13" rx="3" fill="#9aa1ac" fill-opacity="0.28" stroke="#9aa1ac" stroke-width="1.4"/>
+  <text x="236" y="30" font-size="12" fill="#7d8694">the maf-sandbox family</text>
+  <rect x="384" y="19" width="13" height="13" rx="3" fill="#2fa8a0" fill-opacity="0.28" stroke="#2fa8a0" stroke-width="1.3"/>
+  <text x="405" y="30" font-size="12" fill="#7d8694">the guest</text>
+
   <!-- ── the host application ──────────────────────────────────────────── -->
   <rect x="20" y="48" width="276" height="432" rx="14" fill="#8b7fd4" fill-opacity="0.10" stroke="#8b7fd4" stroke-width="1.5"/>
   <text x="158" y="70" text-anchor="middle" font-size="15" fill="#7d8694">host application</text>
@@ -30,23 +38,25 @@
   <text x="158" y="176" text-anchor="middle" font-size="13.5" fill="#7d8694">middleware chain</text>
   <text x="158" y="194" text-anchor="middle" font-size="12" fill="#9aa1ac">the gate every call passes</text>
 
-  <rect x="46" y="266" width="224" height="48" rx="8" fill="#8b7fd4" fill-opacity="0.20" stroke="#8b7fd4" stroke-width="1.5"/>
+  <rect x="46" y="266" width="224" height="48" rx="8" fill="#9aa1ac" fill-opacity="0.20" stroke="#9aa1ac" stroke-width="1.4"/>
   <text x="158" y="288" text-anchor="middle" font-size="13.5" fill="#7d8694">tool body</text>
   <text x="158" y="305" text-anchor="middle" font-size="12" fill="#9aa1ac">the kind's code, host-side</text>
 
   <line x1="158" y1="314" x2="158" y2="332" stroke="#7d8694" stroke-width="1.4"/>
-  <rect x="46" y="332" width="224" height="54" rx="8" fill="#8b7fd4" fill-opacity="0.20" stroke="#8b7fd4" stroke-width="1.5"/>
+  <rect x="46" y="332" width="224" height="54" rx="8" fill="#9aa1ac" fill-opacity="0.20" stroke="#9aa1ac" stroke-width="1.4"/>
   <text x="158" y="356" text-anchor="middle" font-size="13.5" fill="#7d8694">binding</text>
   <text x="158" y="374" text-anchor="middle" font-size="12" fill="#9aa1ac">host config, one per tool</text>
 
-  <rect x="46" y="398" width="126" height="60" rx="8" fill="#8b7fd4" fill-opacity="0.20" stroke="#8b7fd4" stroke-width="1.5"/>
+  <rect x="46" y="398" width="126" height="60" rx="8" fill="#9aa1ac" fill-opacity="0.20" stroke="#9aa1ac" stroke-width="1.4"/>
   <text x="109" y="418" text-anchor="middle" font-size="12.5" fill="#7d8694">host-tool</text>
   <text x="109" y="433" text-anchor="middle" font-size="12.5" fill="#7d8694">registry</text>
   <text x="109" y="450" text-anchor="middle" font-size="12" fill="#9aa1ac">empty by default</text>
 
-  <rect x="176" y="398" width="94" height="60" rx="8" fill="#8b7fd4" fill-opacity="0.20" stroke="#8b7fd4" stroke-width="1.5"/>
-  <text x="223" y="422" text-anchor="middle" font-size="13.5" fill="#7d8694">sink</text>
-  <text x="223" y="440" text-anchor="middle" font-size="12" fill="#9aa1ac">host state</text>
+  <!-- the one split box: a slate outline the family owns, a purple fill the host does -->
+  <rect x="176" y="398" width="94" height="60" rx="8" fill="#8b7fd4" fill-opacity="0.24" stroke="#9aa1ac" stroke-width="1.5"/>
+  <text x="223" y="415" text-anchor="middle" font-size="13.5" fill="#7d8694">sink</text>
+  <text x="223" y="432" text-anchor="middle" font-size="12" fill="#9aa1ac">family's shape,</text>
+  <text x="223" y="448" text-anchor="middle" font-size="12" fill="#9aa1ac">host's landing</text>
 
   <!-- ── maf_sandbox core ──────────────────────────────────────────────── -->
   <rect x="316" y="48" width="264" height="432" rx="14" fill="#9aa1ac" fill-opacity="0.08" stroke="#9aa1ac" stroke-width="1.5"/>
