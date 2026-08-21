@@ -13,6 +13,7 @@ import dataclasses
 import logging
 from collections.abc import AsyncGenerator, Iterable, Sequence
 from contextlib import asynccontextmanager
+from typing import cast
 
 from ._protocol import (
     DEFAULT_CAPABILITIES,
@@ -22,6 +23,7 @@ from ._protocol import (
     Egress,
     Identity,
     Isolation,
+    OsFamily,
     Sandbox,
     SandboxBackend,
     SandboxKey,
@@ -40,6 +42,7 @@ __all__ = [
     "SandboxCapabilityNotSupported",
     "SandboxEgressNotEnforced",
     "SandboxIdentityDenied",
+    "SandboxOsFamilyNotSupported",
     "SandboxRouter",
     "SandboxTransferLimitsNotPermitted",
     "ScopeDisposal",
@@ -84,6 +87,17 @@ class SandboxCapabilityNotSupported(RuntimeError):
 
     A functionality mismatch rather than a safety one — register a backend that implements
     the capability, or ask for less.
+    """
+
+
+class SandboxOsFamilyNotSupported(RuntimeError):
+    """The selected backend hands out a guest of a shape the workload was not written for.
+
+    A functionality mismatch, so it sits beside :class:`SandboxCapabilityNotSupported` rather
+    than among the safety refusals: the workload would run, on a backend serving the family it
+    asked for.  What it is *not* is a statement about what the guest has installed — a spec
+    asking for ``POSIX`` and getting it can still meet an image with no shell, which is a
+    different question answered somewhere else entirely.
     """
 
 
@@ -141,6 +155,29 @@ def _declared_isolation(backend: SandboxBackend) -> Isolation:
             f"rung on the ladder ({_LADDER}). Refused rather than ranked: nothing here can "
             "tell whether an unrecognised boundary is stronger or weaker than the floor."
         ) from exc
+
+
+def _declared_os_families(backend: SandboxBackend) -> frozenset[OsFamily]:
+    """The guest shapes ``backend`` claims it hands out, empty when it claims none.
+
+    Silence is neither a functionality default nor a safety one, which is why this reads
+    nothing like :func:`_declared_limits`. It is *absence of an answer*: a backend serving a
+    language runtime has no operating system to name, and a backend written before this axis
+    existed never considered the question. Both are read as ``frozenset()``, which refuses a
+    spec that asks for a family and leaves every spec that does not exactly as it was.
+
+    A declaration that is not a set of :class:`~maf_sandbox.OsFamily` is read as empty rather
+    than refused, deliberately, and this is the one place that choice is made: unlike a
+    mis-shaped ``limits``, a mis-shaped value here cannot widen anything — the worst it does is
+    refuse a workload that would have been served, loudly, with the declaration named.
+    """
+    declared: object = getattr(backend, "os_families", None)
+    if not isinstance(declared, frozenset | set):
+        return frozenset()
+    # `object` throughout rather than a set type: this is an undeclared attribute off an
+    # arbitrary backend, so every element is checked and nothing is assumed about the shape.
+    members = cast("Iterable[object]", declared)
+    return frozenset(family for family in members if isinstance(family, OsFamily))
 
 
 def _declared_limits(backend: SandboxBackend) -> SandboxLimits:
@@ -318,6 +355,23 @@ class SandboxRouter:
                 "see."
             )
 
+        # After the capability match and before the ceilings, because it is the same kind of
+        # question the capability match asks — can this backend serve this workload at all —
+        # and a workload refused for the wrong guest shape was never going to reach a transfer.
+        if spec.requires_os_family is not None:
+            families = _declared_os_families(self._backend)
+            if spec.requires_os_family not in families:
+                served = ", ".join(sorted(str(family) for family in families))
+                raise SandboxOsFamilyNotSupported(
+                    f"sandbox backend {self._backend.name!r} hands out "
+                    f"{served or 'no guest whose shape it states'}, and the {spec.kind!r} "
+                    f"workload is written for a {str(spec.requires_os_family)!r} guest. Its "
+                    "commands, its scripts and the paths it composes assume that shape, so "
+                    "running it here would fail inside the sandbox at the first command "
+                    "rather than here. Register a backend serving that family, or attach a "
+                    "workload written for the one this backend has."
+                )
+
         # Silence is a safety claim here, not a functionality one: an undeclared ceiling is
         # the default ceiling, and a spec asking above it is refused rather than believed.
         limits = _declared_limits(self._backend)
@@ -374,6 +428,8 @@ class SandboxRouter:
             SandboxBackendNotPermitted: when the spec raises the floor above what the backend
                 declares.
             SandboxCapabilityNotSupported: when the backend cannot do what the spec requires.
+            SandboxOsFamilyNotSupported: when the spec asks for a guest shape the backend
+                does not hand out.
             SandboxTransferLimitsNotPermitted: when the spec's caps exceed the backend's,
                 or when the backend declares its ceilings as something other than a
                 ``SandboxLimits``.
@@ -409,6 +465,8 @@ class SandboxRouter:
             SandboxBackendNotPermitted: when the spec raises the floor above what the backend
                 declares.
             SandboxCapabilityNotSupported: when the backend cannot do what the spec requires.
+            SandboxOsFamilyNotSupported: when the spec asks for a guest shape the backend
+                does not hand out.
             SandboxTransferLimitsNotPermitted: when the spec's caps exceed the backend's,
                 or when the backend declares its ceilings as something other than a
                 ``SandboxLimits``.

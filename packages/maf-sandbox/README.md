@@ -48,7 +48,7 @@ This package draws no isolation boundary itself — it is protocol and policy ov
 
 `SandboxSpec.egress_allow` is an allowlist — everything not named is denied, so an empty tuple means no network. Stating it positively means a spec that forgets to mention egress gets the closed configuration rather than the open one.
 
-## Two axes, three checks that are not conveniences
+## Three axes, four checks that are not conveniences
 
 ```python
 router = SandboxRouter(backends)                                   # default floor: Isolation.MICROVM
@@ -65,6 +65,8 @@ It refuses rather than degrades. Falling back to a stronger backend would hide a
 **3. The egress rule**, unchanged in substance. `egress_allow` was a contract nothing checked, so a backend that reads it and one that ignores it have the same type, the same methods and the same passing tests — each one declares an `Egress` level instead: `allowlist` (deny by default, allow the named hosts), `closed` (all or nothing), or `unrestricted` (cannot confine egress at all). `ensure_can_serve(spec)` refuses the last one. Here silence is *not* read charitably: an undeclared `egress` is treated as `unrestricted` and refused, because a backend written before the property existed cannot have been enforcing an allowlist it never read.
 
 Which direction a backend misses egress by decides the outcome, and it is not symmetrical. A backend that confines **less** than the spec asks silently widens what the workload was designed to reach — refused. One that confines **more** is permitted, with a warning: the sandbox reaches nothing it should not, and the workload fails visibly at whatever it could not fetch.
+
+**4. The guest-shape match.** A backend declares `os_families: frozenset[OsFamily]` — the guest shapes it hands out, `posix` or `windows` — and a spec declares `requires_os_family`, the shape its commands and scripts are written for. `ensure_can_serve(spec)` raises `SandboxOsFamilyNotSupported` on a mismatch, so a POSIX workload meets a Windows guest at attach rather than at its first command. **The axis is path grammar and argv quoting, and nothing else**: a spec asking for `posix` and getting it can still meet an image with no shell, because what is *installed* in a guest is a property of the image, and one backend may be handed many. `docs/design/guest-platform-and-commands.md` settles where that separate question is answered. Silence here is neither of the readings above — an undeclared `os_families` is the *absence of an answer*, read as `frozenset()`, which refuses a spec that asks and leaves every spec that does not exactly as it was. A backend with no guest in the operating-system sense, such as one serving a language runtime, has nothing to declare and declares nothing.
 
 Note that the checks answer to different owners. How strong the boundary must be *here* is the *host's* policy, read from `min_isolation` — and a spec may raise that floor for itself, never lower it. What a sandbox may reach, and what it must be able to do, are properties of the *workload*, stated in its spec. Keeping the axes apart is deliberate: merging isolation into a "required capabilities" list would let a workload ask for a weaker boundary than the deployment mandates.
 

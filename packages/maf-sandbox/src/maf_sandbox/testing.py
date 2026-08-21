@@ -32,6 +32,7 @@ from ._protocol import (
     EntryKind,
     ExecResult,
     Isolation,
+    OsFamily,
     Sandbox,
     SandboxBackend,
     SandboxEntry,
@@ -149,6 +150,10 @@ class InProcessSandbox:
             else:
                 self.contents[path] = value
         self.commands: list[tuple[str, str, float]] = []
+        #: Every ``run_code`` call, as ``(code, timeout)``. Separate from :attr:`commands`
+        #: because a test asserting a program was evaluated should not match a shell command
+        #: that happens to contain the same text.
+        self.programs: list[tuple[str, float]] = []
         self._outputs = outputs or {}
         self._raises = raises
         self._default_stdout = default_stdout
@@ -178,6 +183,22 @@ class InProcessSandbox:
             raise self._raises
         for marker, output in self._outputs.items():
             if marker in joined:
+                return ExecResult(stdout=output)
+        return ExecResult(stdout=self._default_stdout)
+
+    async def run_code(self, code: str, *, timeout: float) -> ExecResult:
+        """Record the program and return scripted output, on the same rules as :meth:`exec`.
+
+        Scripted rather than raising, because a fake that refused would make every kind
+        written against ``run_code`` untestable without a real backend — which is the one
+        thing this class exists to avoid. Nothing is evaluated: ``outputs`` is matched against
+        ``code`` as a substring, exactly as it is matched against a command line.
+        """
+        self.programs.append((code, timeout))
+        if self._raises is not None:
+            raise self._raises
+        for marker, output in self._outputs.items():
+            if marker in code:
                 return ExecResult(stdout=output)
         return ExecResult(stdout=self._default_stdout)
 
@@ -328,6 +349,9 @@ class InProcessSandboxBackend:
             :data:`~maf_sandbox.DEFAULT_SANDBOX_LIMITS` — the same constant the router assumes
             for a backend that declares nothing, so leaving this unset and setting it
             explicitly serve one spec identically.
+        os_families: Returned by the :attr:`os_families` property. Defaults to ``frozenset()``
+            — the same thing the router reads from a backend that declares nothing, so an
+            existing test is unaffected and one exercising the axis states a family.
         acquire_error: When set, ``acquire`` raises this instead of returning the sandbox —
             for exercising a kind's "sandbox unavailable" degrade path.
 
@@ -352,6 +376,7 @@ class InProcessSandboxBackend:
         egress: Egress = Egress.ALLOWLIST,
         capabilities: frozenset[Capability] = DEFAULT_CAPABILITIES,
         limits: SandboxLimits = DEFAULT_SANDBOX_LIMITS,
+        os_families: frozenset[OsFamily] = frozenset(),
         acquire_error: BaseException | None = None,
     ) -> None:
         self.sandbox = sandbox if sandbox is not None else InProcessSandbox()
@@ -360,6 +385,7 @@ class InProcessSandboxBackend:
         self._egress = egress
         self._capabilities = capabilities
         self._limits = limits
+        self._os_families = os_families
         self.acquire_error = acquire_error
         self.keys: list[SandboxKey] = []
         self.specs: list[SandboxSpec] = []
@@ -378,6 +404,10 @@ class InProcessSandboxBackend:
     @property
     def egress(self) -> Egress:
         return self._egress
+
+    @property
+    def os_families(self) -> frozenset[OsFamily]:
+        return self._os_families
 
     @property
     def capabilities(self) -> frozenset[Capability]:

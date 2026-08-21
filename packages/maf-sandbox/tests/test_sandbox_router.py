@@ -32,6 +32,7 @@ from maf_sandbox import (
     Identity,
     Isolation,
     NoSandboxBackend,
+    OsFamily,
     OutputDisposition,
     SandboxBackend,
     SandboxBackendNotPermitted,
@@ -42,6 +43,7 @@ from maf_sandbox import (
     SandboxIdentityDenied,
     SandboxKey,
     SandboxLimits,
+    SandboxOsFamilyNotSupported,
     SandboxPurger,
     SandboxRouter,
     SandboxSpec,
@@ -886,6 +888,7 @@ class TestSpecDefaults:
             "files_out",
             "outputs_named_at_call_time",
             "identities",
+            "requires_os_family",
         ]
         assert names[: len(settled)] == settled
 
@@ -899,12 +902,15 @@ class TestSpecDefaults:
         assert SandboxSpec(kind="test").work_dir == "/maf-sandbox/work"
 
 
-class TestWorkDirIsPlatformNeutral:
-    """The door issue #111 asks to keep open: nothing here commits the protocol to a Linux guest.
+class TestWorkDirStaysGuestNative:
+    """A path is not a platform claim — which matters more now that something else is one.
 
-    The invariant: nothing in the protocol infers a guest OS or rejects a `work_dir` for not
-    looking like one, so a platform axis can be added as a new optional field rather than a
-    breaking change. Rationale and the decision to defer live in #111.
+    The door #111 asked to keep open is now used: `SandboxSpec.requires_os_family` states the
+    guest shape a workload needs, and a backend answers with `os_families`. The invariant that
+    made that addition possible is the one still pinned here — nothing infers a guest OS from
+    `work_dir`, or rejects one for not looking like a guest it expected. The host typed that
+    string to suit the image it configured, and reading a platform out of it would invent a
+    fact the field never carried.
     """
 
     @pytest.mark.parametrize(
@@ -920,21 +926,105 @@ class TestWorkDirIsPlatformNeutral:
         infers a guest OS from it, so a future non-Linux-guest backend needs no protocol change."""
         assert SandboxSpec(kind="test", work_dir=work_dir).work_dir == work_dir
 
-    def test_the_spec_has_no_platform_field_yet(self):
-        """The axis is unbuilt: a spec carries no platform requirement. Adding one later is
-        additive (a new optional field), which is the whole point of leaving it out now."""
+    def test_a_spec_asks_for_a_family_and_never_implies_one(self):
+        """The ask is its own field, and it defaults to asking nothing. A spec that says
+        nothing about its guest is what every spec written before the axis is."""
         fields = {f.name for f in dataclasses.fields(SandboxSpec)}
-        assert "platform" not in fields
-        assert "requires_platform" not in fields
+        assert "requires_os_family" in fields
+        assert SandboxSpec(kind="test").requires_os_family is None
 
-    def test_a_backend_declaring_no_platform_is_still_a_backend(self):
-        """The three optional declarations the router reads are all `getattr`-based, so a fourth
-        (a platform) is additive too — a backend that declares none still satisfies the protocol
-        and is served, which is what makes the axis a non-breaking addition."""
+    @pytest.mark.parametrize("work_dir", ["C:/agent/work", r"D:\agent\work"])
+    def test_a_windows_shaped_work_dir_is_not_read_as_asking_for_a_windows_guest(
+        self, work_dir: str
+    ):
+        """The inference the protocol refuses to make, pinned now that it would have somewhere
+        to land: a drive-rooted `work_dir` against a POSIX-only backend is served, because the
+        path was never the ask. A router that guessed here would refuse a working deployment
+        on the strength of a string the host chose for its own reasons."""
+        backend = InProcessSandboxBackend(
+            isolation=Isolation.MICROVM, os_families=frozenset({OsFamily.POSIX})
+        )
+        SandboxRouter([backend]).ensure_can_serve(SandboxSpec(kind="test", work_dir=work_dir))
+
+    def test_a_backend_declaring_no_family_still_serves_a_spec_that_does_not_ask(self):
+        """What makes the axis a non-breaking addition, and the reason it is stated as a
+        refusal rather than a default: a backend written before `os_families` existed declares
+        nothing, and every spec that asks nothing is served by it exactly as before."""
         backend = InProcessSandboxBackend(isolation=Isolation.MICROVM)
-        assert not hasattr(backend, "platform")
-        # It resolves and serves today, so adding a getattr-read platform later breaks nothing.
+        assert backend.os_families == frozenset()
         SandboxRouter([backend]).ensure_can_serve(SandboxSpec(kind="test"))
+
+
+class TestTheGuestShapeMatch:
+    """A spec states the guest shape its commands are written for; the router refuses the rest.
+
+    The axis answers one question and must not be read as answering the other: it says what
+    *shape* a guest is — path grammar, argv quoting — and says nothing about what is installed
+    in it. A spec asking for POSIX and getting it can still meet an image with no shell.
+    """
+
+    def test_a_backend_serving_the_asked_family_serves_the_workload(self):
+        backend = InProcessSandboxBackend(
+            isolation=Isolation.MICROVM, os_families=frozenset({OsFamily.POSIX})
+        )
+        SandboxRouter([backend]).ensure_can_serve(
+            SandboxSpec(kind="test", requires_os_family=OsFamily.POSIX)
+        )
+
+    def test_a_backend_serving_another_family_is_refused(self):
+        backend = InProcessSandboxBackend(
+            isolation=Isolation.MICROVM, os_families=frozenset({OsFamily.WINDOWS})
+        )
+        with pytest.raises(SandboxOsFamilyNotSupported) as caught:
+            SandboxRouter([backend]).ensure_can_serve(
+                SandboxSpec(kind="test", requires_os_family=OsFamily.POSIX)
+            )
+        assert "windows" in str(caught.value)
+        assert "posix" in str(caught.value)
+
+    def test_a_backend_serving_several_families_serves_each_of_them(self):
+        """The reason the declaration is a set: one local-hypervisor backend boots more than
+        one guest family, and a scalar could not say so without a later redefinition."""
+        backend = InProcessSandboxBackend(
+            isolation=Isolation.MICROVM,
+            os_families=frozenset({OsFamily.POSIX, OsFamily.WINDOWS}),
+        )
+        router = SandboxRouter([backend])
+        for family in (OsFamily.POSIX, OsFamily.WINDOWS):
+            router.ensure_can_serve(SandboxSpec(kind="test", requires_os_family=family))
+
+    def test_a_backend_that_declares_nothing_is_refused_only_when_the_spec_asks(self):
+        """Silence is the absence of an answer, not a permissive default. A backend with no
+        guest in the OS sense — a language runtime, a data-plane API — has nothing to say, and
+        a workload that needs a shape must not be served on the strength of that silence."""
+        backend = InProcessSandboxBackend(isolation=Isolation.MICROVM)
+        with pytest.raises(SandboxOsFamilyNotSupported) as caught:
+            SandboxRouter([backend]).ensure_can_serve(
+                SandboxSpec(kind="test", requires_os_family=OsFamily.POSIX)
+            )
+        assert "no guest whose shape it states" in str(caught.value)
+
+    def test_a_declaration_of_the_wrong_shape_refuses_rather_than_admits(self):
+        """A mis-shaped declaration cannot widen anything: it is read as empty, so the ask is
+        refused. The opposite reading would let a typo serve a workload on any guest at all."""
+        backend = InProcessSandboxBackend(isolation=Isolation.MICROVM)
+        backend._os_families = "posix"  # pyright: ignore[reportAttributeAccessIssue]
+        with pytest.raises(SandboxOsFamilyNotSupported):
+            SandboxRouter([backend]).ensure_can_serve(
+                SandboxSpec(kind="test", requires_os_family=OsFamily.POSIX)
+            )
+
+    def test_the_refusal_happens_at_acquire_too_not_only_at_ensure_can_serve(self):
+        """`acquire` runs the same checks, so a caller that skipped the attach gate is refused
+        rather than served behind a guest its commands cannot run on."""
+        backend = InProcessSandboxBackend(
+            isolation=Isolation.MICROVM, os_families=frozenset({OsFamily.WINDOWS})
+        )
+        router = SandboxRouter([backend])
+        with pytest.raises(SandboxOsFamilyNotSupported):
+            asyncio.run(
+                router.acquire(_KEY, SandboxSpec(kind="test", requires_os_family=OsFamily.POSIX))
+            )
 
 
 class TestPolicyVocabularyExports:
@@ -950,10 +1040,13 @@ class TestPolicyVocabularyExports:
             "ISOLATION_RANK",
             "Identity",
             "Isolation",
+            "OsFamily",
             "SandboxCapabilityDenied",
             "SandboxCapabilityNotSupported",
             "SandboxIdentityDenied",
+            "SandboxOsFamilyNotSupported",
             "SandboxProgramTimeout",
+            "SandboxQueuedTimeout",
             "WORK_DIRECTORY",
             "SourceIntegrity",
             "meets_floor",

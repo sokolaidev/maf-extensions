@@ -596,6 +596,15 @@ class TestPullSurfaceRefusal:
         with pytest.raises(NotImplementedError, match="FILES_OUT"):
             asyncio.run(sandbox.list_dir("/maf-sandbox/work", working_directory="/w"))
 
+    def test_run_code_raises_notimplementederror(self):
+        """This backend declares no RUN_CODE, and the reason is not that a guest lacks an
+        interpreter — it is that the backend is handed an image reference it does not parse,
+        so it cannot know which runtime is inside. Declaring it would be a claim about
+        someone else's artefact."""
+        sandbox = self._sandbox()
+        with pytest.raises(NotImplementedError, match="RUN_CODE"):
+            asyncio.run(sandbox.run_code("print(1)", timeout=5.0))
+
 
 # ---------------------------------------------------------------------------
 # dispose / dispose_scope
