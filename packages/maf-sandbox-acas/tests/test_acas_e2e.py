@@ -31,11 +31,12 @@ what this package believes, and #139 and #142 were both the package believing wr
 :class:`TestFilesOutAgainstTheRealService` asserts that none of them skipped here, because a
 suite that quietly skips a third of itself is the shape of a green run that attacked nothing.
 
-**Cost discipline.** Two sandboxes for the whole module. The probes and refusals share one,
+**Cost discipline.** Three sandboxes for the whole module. The probes and refusals share one,
 acquired by a module-scoped fixture and disposed at the end; the lifecycle test needs its own
-because it disposes as the thing under test. Everything runs on one event loop, deliberately:
-the backend caches its group client per loop, so a second loop would build a second transport
-against the same sandbox.
+because it disposes as the thing under test; the egress leg needs its own because only an
+``ALLOWLIST`` sandbox has a host it may reach and a host it may not. Everything runs on one
+event loop, deliberately: the backend caches its group client per loop, so a second loop would
+build a second transport against the same sandbox.
 """
 
 from __future__ import annotations
