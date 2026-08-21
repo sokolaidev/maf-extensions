@@ -337,6 +337,22 @@ class _DockerSandbox:
         await self._refuse_symlinked_parents(guest, working_directory=working_directory)
         return await self._stat_guest(guest, posixpath.normpath(path))
 
+    async def run_code(self, code: str, *, timeout: float) -> ExecResult:
+        """Not supported: this backend declares no :data:`~maf_sandbox.Capability.RUN_CODE`.
+
+        Not for want of an interpreter — the image may well carry one — but because *which*
+        runtime an image carries is a property of the image, and this backend is handed image
+        references it does not parse. Declaring the capability would be a claim about someone
+        else's artefact. A workload that wants a runtime by name invokes it through
+        :meth:`exec` and owns that assumption itself.
+        """
+        raise NotImplementedError(
+            "the docker backend does not support RUN_CODE: evaluating code without a shell "
+            "means knowing which runtime the guest carries, and this backend resolves an "
+            "image reference without looking inside it. Run the interpreter through exec, or "
+            "register a backend that declares RUN_CODE."
+        )
+
     async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
         """Delete ``path`` through ``rm``, since the engine has no delete primitive.
 

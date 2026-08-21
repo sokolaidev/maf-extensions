@@ -559,6 +559,19 @@ class TestExecArgv:
         assert (result.stdout, result.stderr, result.exit_code) == ("out\n", "err\n", 7)
 
 
+class TestRunCode:
+    """This backend declares no RUN_CODE, and says why rather than failing bare."""
+
+    def test_run_code_raises_notimplementederror(self):
+        """The image is a reference this backend hands to the engine without parsing, so which
+        runtime is inside it is not something the backend knows. A workload that wants an
+        interpreter by name invokes it through `exec` and owns that assumption itself."""
+        backend, _fake = _backend_with(_machine(running=[_NAME]))
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        with pytest.raises(NotImplementedError, match="RUN_CODE"):
+            asyncio.run(sandbox.run_code("print(1)", timeout=5.0))
+
+
 class TestRemove:
     """`rm -rf` is irreversible, so the command this builds is pinned rather than trusted."""
 
