@@ -20,6 +20,10 @@ sandbox    one per (scope, thread_id, agent_dir, kind)   conversation
 
 The nesting is real; **the sandbox is not its root.** It sits beside the chain. A binding is built once, before any key exists, and reads scope and thread per call — so one binding reaches as many sandboxes as it serves conversations; and a workload shipping two tools builds two bindings against one sandbox. Neither is "per" the other. They get confused because they coincide in the single-tool, single-conversation case every test exercises.
 
+Four lines is the terse form; the bars below put the same four lifetimes on one time axis, where the coincidence that confuses them comes apart.
+
+![Four lifetimes drawn as bars on one left-to-right time axis. The binding is the topmost bar and spans the whole axis — one per tool, built once before any key exists, holding host configuration only and reading scope and thread per call — while two teal sandbox bars with different spans sit beside it rather than under it, one per conversation, keyed by scope, thread, agent dir and kind. Inside the first conversation's span three amber call bars run in sequence over the one warm sandbox, each ending in a tick, the finally that removes the guest path that call owns; exactly one of them carries a thinner, sharp-cornered run bar — 0..1 per call, dispatch only — and the other two carry none. The second conversation carries a call of its own, because one binding reaches as many sandboxes as it serves conversations. Both sandbox bars outlive every call in them and end only with the conversation, where disposal is best-effort and purge asks every registered backend.](assets/four-lifetimes.svg)
+
 ## The words
 
 **`call`** — one execution of the tool function. The framework's unit, and the boundary a `finally` sits on. Anything else is qualified: `transport call`, `backend call`, `control-plane call`. **`run`** — the transport's unit: one supervised guest program with a `GuestRunLayout`. Published API, so it is not moving; codeact states the relationship exactly, *"a fresh run per call."* Not **`invocation`**, which is already spent on an external `docker` or `wslc` subprocess.
