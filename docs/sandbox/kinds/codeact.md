@@ -52,7 +52,7 @@ Naming a host here is a real widening, and the code treats it as one. This sandb
 
 `acquire` is get-or-create, so the same sandbox serves every call in a conversation. The per-call directory is what keeps that from being a correctness bug: without it a file deleted from the store between rounds is still there for the next program to read as current, and last round's output is collected as this round's — a stale answer presented as a live one, in a kind whose job is transforming files.
 
-The path comes from `session.guest_call_path()`; the framework owns it and reclaims it in a `finally` when the call returns ([`../architecture.md`](../architecture.md) § *The tool call*). The run id is chosen **before** `acquire`, so a declared output name can be judged against the guest path it will actually become — the prefix is 13 bytes of the 255 a name gets.
+The path comes from `session.guest_call_path()`; the framework owns it and reclaims it in a `finally` when the call returns ([`../tool-call.md`](../tool-call.md)). The run id is chosen **before** `acquire`, so a declared output name can be judged against the guest path it will actually become — the prefix is 13 bytes of the 255 a name gets.
 
 The layout inside it depends on dispatch, and the kind derives everything a model can name from one prefix so the three uses cannot disagree about a run's shape:
 

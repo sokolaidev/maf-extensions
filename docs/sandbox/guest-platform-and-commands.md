@@ -40,7 +40,7 @@ This is not a new rule. It is what this stack has already reached three times, i
 
 | Unknown | The answer taken |
 | --- | --- |
-| Which delete mechanism the guest has | **The backend owns it.** [`architecture.md`](architecture.md) rules that reclamation *"must be the backend's, because core can only dispatch to mechanisms core can name: a backend offering a language runtime and no shell deletes through that runtime, which no capability check reaches."* |
+| Which delete mechanism the guest has | **The backend owns it.** [`tool-call.md`](tool-call.md) rules that reclamation *"must be the backend's, because core can only dispatch to mechanisms core can name: a backend offering a language runtime and no shell deletes through that runtime, which no capability check reaches."* |
 | Where a workload's files live | **The backend owns it.** The settled direction is that a backend allocates the storage base and resolves every path against it, and kinds address everything relative to that base instead of composing absolute paths. |
 | Which interpreter exists | **A capability owns it.** `RUN_CODE` means "run this in whatever runtime you have", so a kind stops naming `python3` at all. |
 
@@ -143,7 +143,7 @@ No backend can honestly declare what commands exist in a guest, because that is 
 
 **Runtime commands — `python3` — are a capability, and it already exists.** `RUN_CODE` means "run this code in whatever runtime you have". A backend serves it with no shell, no OS and no interpreter name. This class does not take the `OsFamily` fork at all and should not be reasoned about alongside the others.
 
-**Infrastructure commands — `rm`, `sh`, `test`, `kill`, `mkdir` — are raised into protocol methods.** This is the governing rule applied directly: a mandatory backend method the backend implements with whatever it has, rather than a command core spells. The reclaim surface is the worked example and [`architecture.md`](architecture.md) carries the reasoning, including why such a method can be mandatory when a confining `remove` cannot: *"A path this stack created, under a base, with an unguessable name, has no attacker-chosen component to walk — so the method that removes it needs no confinement and can be mandatory on every backend."* The write-path component walk and the working-directory creation are the same shape and take the same treatment.
+**Infrastructure commands — `rm`, `sh`, `test`, `kill`, `mkdir` — are raised into protocol methods.** This is the governing rule applied directly: a mandatory backend method the backend implements with whatever it has, rather than a command core spells. The reclaim surface is the worked example and [`tool-call.md`](tool-call.md) carries the reasoning, including why such a method can be mandatory when a confining `remove` cannot: *"A path this stack created, under a base, with an unguessable name, has no attacker-chosen component to walk — so the method that removes it needs no confinement and can be mandatory on every backend."* The write-path component walk and the working-directory creation are the same shape and take the same treatment.
 
 What remains after all three classes are placed is a backend that must decide whether a *specific image* can back the capabilities it wants to declare. That is Decision 3.
 

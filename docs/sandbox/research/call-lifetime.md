@@ -1,6 +1,6 @@
 # The tool call: what owns it, what it owns, and what happens when it ends
 
-> The proposal that asked what a tool call is, what it owns, and what has to happen when it ends. It is kept in the tense it was written, as the record of the argument rather than a description of what shipped. The decided content now lives in [`../architecture.md`](../architecture.md), in its call-lifetime section, and in [`../hosts.md`](../hosts.md) for where the storage base comes from.
+> The proposal that asked what a tool call is, what it owns, and what has to happen when it ends. It is kept in the tense it was written, as the record of the argument rather than a description of what shipped. The decided content now lives in [`../tool-call.md`](../tool-call.md), and in [`../hosts.md`](../hosts.md) for where the storage base comes from.
 
 ## The question
 

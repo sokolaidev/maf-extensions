@@ -6,7 +6,7 @@
 
 ## A kind is a workload, never a vendor and never a backend
 
-A kind is one thing: a tool factory that asks a `SandboxRouter` for a sandbox and gets back `write_file`, `exec` and the pull surface. It names no backend, imports no provider SDK, and contains no lifecycle code — acquiring, keying, disposing, confining egress and reclaiming a call's files are all [`../architecture.md`](../architecture.md)'s, written once. What is left over is what is genuinely workload-specific: the command templates, the accepted inputs, the parsing of what comes back, and the hosts this particular work needs to reach.
+A kind is one thing: a tool factory that asks a `SandboxRouter` for a sandbox and gets back `write_file`, `exec` and the pull surface. It names no backend, imports no provider SDK, and contains no lifecycle code — acquiring, keying, disposing and confining egress are all [`../architecture.md`](../architecture.md)'s, and reclaiming a call's files is [`../tool-call.md`](../tool-call.md)'s, written once. What is left over is what is genuinely workload-specific: the command templates, the accepted inputs, the parsing of what comes back, and the hosts this particular work needs to reach.
 
 That division is a portability claim, and it is test-enforced rather than asserted:
 

@@ -141,7 +141,8 @@ Two behaviours are worth knowing before the first call, because both are deliber
 ## Where to read next
 
 - [`samples/`](../../samples/) — the `app` box above, wired end to end, each small enough to read in one sitting.
-- [`architecture.md`](architecture.md) — the layering, the vocabulary, keying and lifecycle, and what a tool call owns.
+- [`architecture.md`](architecture.md) — the layering, the vocabulary, keying and lifecycle, and the two directions a call crosses the boundary in.
+- [`tool-call.md`](tool-call.md) — the life of one call: binding, call and run, what each owns, and the reclaim when it ends.
 - [`policy-isolation.md`](policy-isolation.md) — the isolation ladder, the host's floor, and where known systems sit on it.
 - [`capabilities.md`](capabilities.md) — what a sandbox can do, how it is declared and matched, and the whole file surface.
 - [`network.md`](network.md) — the egress axis: what a workload may reach, and what a backend has to enforce before it may say so.
