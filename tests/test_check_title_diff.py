@@ -115,6 +115,16 @@ class TestAssess:
     def test_ci_title_on_global_executable_file_is_allowed(self):
         assert check.assess("ci: update workflow", [".github/workflows/ci.yml"], {}) == []
 
+    def test_ci_title_on_this_repository_change_is_allowed(self):
+        paths = [
+            ".github/workflows/pr-title.yml",
+            "AGENTS.md",
+            "CONTRIBUTING.md",
+            "scripts/check_title_diff.py",
+            "tests/test_check_title_diff.py",
+        ]
+        assert check.assess("ci: enforce title policy", paths, {}) == []
+
     def test_cross_package_python_rename_counts_only_non_test_endpoints(self):
         assert check.assess(
             "feat: move module",
