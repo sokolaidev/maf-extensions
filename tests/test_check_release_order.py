@@ -137,7 +137,7 @@ class TestWhatCountsAsTouchingTheCore:
         assert check.touches_core([_CORE_FILE.replace("/", "\\")])
 
     @pytest.mark.parametrize(
-        "path", ["docs/design/files-out.md", "samples/07_docker_diagram/agent.py"]
+        "path", ["docs/sandbox/research/files-out.md", "samples/07_docker_diagram/agent.py"]
     )
     def test_a_path_outside_packages_does_not(self, path: str):
         assert not check.touches_core([path])

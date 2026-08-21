@@ -52,7 +52,7 @@ Three more are stdlib-only but still reached by name rather than re-exported, ea
 reaching for it is a foreseeable mistake: :mod:`maf_sandbox.testing` in production code,
 :mod:`maf_sandbox.paths` against a *host* filesystem path, and
 :mod:`maf_sandbox.conformance` anywhere but a backend's own test suite.  The rule is in
-``docs/design/sandbox-architecture.md``, under "Where shared code lives".
+``docs/sandbox/research/sandbox-architecture.md``, under "Where shared code lives".
 """
 
 from __future__ import annotations

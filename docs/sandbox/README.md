@@ -1,6 +1,6 @@
 # maf-sandbox: sandboxed code execution for MAF agents
 
-> An introduction to the suite — the problem it solves, how it relates to everything else in a crowded field, how it attaches to an agent, and what a host gets for wiring it in. It assumes no prior knowledge of Microsoft Agent Framework. [`docs/design/`](design/) carries the depth: [`sandbox-architecture.md`](design/sandbox-architecture.md) for the surface as built, [`two-axis-sandbox-policy.md`](design/two-axis-sandbox-policy.md) and [`files-out.md`](design/files-out.md) for the decisions behind it.
+> An introduction to the suite — the problem it solves, how it relates to everything else in a crowded field, how it attaches to an agent, and what a host gets for wiring it in. It assumes no prior knowledge of Microsoft Agent Framework. [`docs/sandbox/research/`](research/) carries the depth: [`sandbox-architecture.md`](research/sandbox-architecture.md) for the surface as built, [`two-axis-sandbox-policy.md`](research/two-axis-sandbox-policy.md) and [`files-out.md`](research/files-out.md) for the decisions behind it.
 
 ## Microsoft Agent Framework, in a paragraph
 
@@ -140,10 +140,10 @@ Two behaviours are worth knowing before the first call, because both are deliber
 
 ## Where to read next
 
-- [`samples/`](../samples/) — the `app` box above, wired end to end, each small enough to read in one sitting.
-- [`docs/design/sandbox-architecture.md`](design/sandbox-architecture.md) — the surface as built: the vocabulary, the checks the router runs, keying, lifecycle.
-- [`docs/design/two-axis-sandbox-policy.md`](design/two-axis-sandbox-policy.md) — the isolation ladder and the capability axis, and where known systems sit on them.
-- [`docs/design/files-out.md`](design/files-out.md) — getting artifacts back out, and why that is not the mirror image of putting them in.
-- [`docs/design/call-lifetime.md`](design/call-lifetime.md) — what a tool call is, what it owns, and what has to happen when it ends.
+- [`samples/`](../../samples/) — the `app` box above, wired end to end, each small enough to read in one sitting.
+- [`docs/sandbox/research/sandbox-architecture.md`](research/sandbox-architecture.md) — the surface as built: the vocabulary, the checks the router runs, keying, lifecycle.
+- [`docs/sandbox/research/two-axis-sandbox-policy.md`](research/two-axis-sandbox-policy.md) — the isolation ladder and the capability axis, and where known systems sit on them.
+- [`docs/sandbox/research/files-out.md`](research/files-out.md) — getting artifacts back out, and why that is not the mirror image of putting them in.
+- [`docs/sandbox/research/call-lifetime.md`](research/call-lifetime.md) — what a tool call is, what it owns, and what has to happen when it ends.
 - Each package's own README, for its configuration, its guarantees and its limits.
 - [microsoft/agent-framework#7568](https://github.com/microsoft/agent-framework/issues/7568) — the upstream feature request this suite is the reference implementation of.

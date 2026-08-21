@@ -284,7 +284,7 @@ which explicit `(key, kind)` identity replaces.
 And one caveat to write down wherever the adapter ships: nothing stops a host attaching
 `HyperlightCodeActProvider` to an agent *beside* this suite, and doing so bypasses every
 gate above — no attach refusal, no floor, no identity denial, no caps. That is not a flaw
-in either library; it is SANDBOX.md's thesis restated. The other answers become backends
+in either library; it is docs/sandbox/README.md's thesis restated. The other answers become backends
 beneath the contract, not alternatives beside it.
 
 ## Feature parity with the CodeAct library — the ledger
