@@ -1597,17 +1597,13 @@ def _assert_conformance(results: tuple[ProbeResult, ...], suite: str) -> tuple[P
 # EGRESS — that a declared allowlist is enforced, not merely asked for (#402)
 # ---------------------------------------------------------------------------
 #
-# These probes verify the *outcome* an `Egress.ALLOWLIST` sandbox must share whatever the
-# mechanism: a host on the spec's `egress_allow` answers, and one off it does not. They read
-# nothing about *how* the deny lands, on purpose — docker severs the network so a denied host
-# fails to connect at all (curl reports `000`), while ACAS's L7 proxy answers a denied host with
-# its own `403`. Both are correct confinement and both pass here: the guest reaches the allowed
-# host and does not reach the denied one. The stronger, backend-specific properties — docker's
-# network severance and no-DNS-leak, ACAS's `x-deny-reason` — are each backend's own to test;
-# this is only the contract they share. See docs/sandbox/network.md.
+# These probes read the *outcome* an `Egress.ALLOWLIST` sandbox must share whatever the
+# mechanism — a host on the spec's `egress_allow` answers, one off it does not — and nothing
+# about how the deny lands. See docs/sandbox/network.md.
 #
-# `curl` is a requirement of this harness, not of the protocol — the parallel to `ln` for the
-# filesystem probes. A guest without it writes its own request step and runs the same two checks.
+# Two requirements of this harness rather than of the protocol: `curl` in the guest, the parallel
+# to `ln` for the filesystem probes; and a denied URL that answers 2xx when reachable, because one
+# answering 404 on its own passes the deny probe having reached the host.
 
 
 async def _http_reaches(subject: ConformanceSubject, url: str, exec_timeout: float) -> bool:
@@ -1637,7 +1633,10 @@ async def run_egress_probes(
     host that is not. Both are full URLs so the guest's ``curl`` can be run verbatim. The
     subject's sandbox must have been acquired with ``egress=Egress.ALLOWLIST`` and that
     allowlist, or the allowed host would not answer and every run would be a failure of the
-    fixture rather than of the backend.
+    fixture rather than of the backend. Both URLs must name endpoints known to answer 2xx when
+    reached: the allowed probe is that half's positive control, and a ``denied_url`` answering
+    non-2xx on its own would pass the deny probe having reached the host, which is the one thing
+    that probe exists to refute.
     """
 
     async def _allowed(s: ConformanceSubject, _paths: ConformancePaths) -> None:
@@ -1689,7 +1688,8 @@ async def assert_egress_conformance(
     """Run the EGRESS probes and raise :class:`ConformanceFailure` if any failed.
 
     The one enforcement contract every ``Egress.ALLOWLIST`` backend shares (#402): the guest
-    reaches a host on the allowlist and not one off it. See :func:`run_egress_probes`.
+    reaches a host on the allowlist and not one off it. See :func:`run_egress_probes` for what
+    both URLs have to be for the run to mean anything.
     """
     return _assert_conformance(
         await run_egress_probes(
