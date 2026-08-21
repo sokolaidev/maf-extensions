@@ -65,24 +65,6 @@ def ceiling_of(requires_dist: list[str]) -> tuple[int, ...] | None:
     return None
 
 
-def floor_of(requires_dist: list[str]) -> tuple[int, ...] | None:
-    """The `>=X` bound the entry for maf-sandbox declares, or None if it names no lower bound.
-
-    The mirror of :func:`ceiling_of`, and parsed the same way for the same reasons. `>` alone is
-    not a match: it excludes the version it names, which this would misreport as a floor.
-    """
-    for requirement in requires_dist:
-        if _requirement_name(requirement) != _CORE:
-            continue
-        head = requirement.split(";", 1)[0].strip()
-        spec = _LEADING_NAME.sub("", head, count=1)
-        for clause in spec.split(","):
-            clause = clause.strip()
-            if clause.startswith(">="):
-                return version(clause[2:].strip())
-    return None
-
-
 def dependent_distributions(repo_root: Path) -> list[str]:
     """Every package in this repository that depends on maf-sandbox, by distribution name."""
     found: list[str] = []

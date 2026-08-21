@@ -573,9 +573,9 @@ jobs:
   # endpoint, which is cached separately) until the just-published version lists, before the
   # verify call — so verify-live resolves the version that was actually just published. A poll,
   # not a fixed sleep: the propagation lag is not bounded, and a sleep is both slow when the
-  # index is quick and unreliable when it is not. Gated identically to `verify` so it is never
-  # skipped when verify would run, which lets verify simply `needs:` it — keep the two `if:`
-  # blocks the same text. (#271.)
+  # index is quick and unreliable when it is not. Gated identically to `verify` and to
+  # `train-status` so it is never skipped when either would run, which lets both simply `needs:`
+  # it — keep the three `if:` blocks the same text. (#271.)
   wait-for-propagation:
     name: Wait for the index to show the new version
     needs: [build, dispatch]
@@ -604,17 +604,16 @@ jobs:
           echo "::error::${PACKAGE} ${VERSION} did not appear on the Simple index within ten minutes"
           exit 1
 
-  # A live red during a drain is about the order of the train rather than the code. The 0.18.0
-  # train went red on five consecutive publishes on one signature change meeting a half-published
-  # set, and nothing said so. This says it, and changes nothing else. Gating the dispatch instead
-  # is what #337 removed with a worked example, and it would have suppressed one of those five —
-  # the core's own — while costing the check on releases like 0.14.0, where the changelog declared
-  # breaking and no dependent was stranded. The annotation has neither cost (#512).
+  # A live red during a drain is about the order of the train rather than the code, and this
+  # says so in the run summary. It annotates and never gates: gating the dispatch on a coarser
+  # signal is what #337 removed, and #512 carries the case.
   #
-  # Gated exactly as `verify` is: there is no red to explain where no live check runs.
+  # Gated exactly as `verify` is, and waiting on the same propagation job — there is no red to
+  # explain where no live check runs, and an index that has not caught up would misreport which
+  # dependents are behind, in either direction.
   train-status:
     name: Say whether the release train has drained
-    needs: [build, dispatch]
+    needs: [build, dispatch, wait-for-propagation]
     if: >-
       needs.build.outputs.target == 'pypi'
       && needs.dispatch.outputs.live_check != 'skip'
@@ -651,9 +650,9 @@ jobs:
           {
             echo "### The release train is still draining"
             echo
-            echo "\`${PACKAGE}\` ${VERSION} published and the live check runs. At least one published dependent was built against an older core, so the index does not resolve as a set yet — a red in the live check is more likely the order of the train than the code. Re-run it from Actions → **Verify (live)** → **Run workflow** once every dependent has published, and read that run instead. See [#512](https://github.com/sokolaidev/maf-extensions/issues/512)."
+            echo "\`${PACKAGE}\` ${VERSION} published and the live check runs. At least one published dependent has not gone out since this core, so the index does not yet resolve as the set the samples were tested against — a red in the live check is more likely the order of the train than the code. Re-run it from Actions → **Verify (live)** → **Run workflow** once every dependent has published, and read that run instead. See [#512](https://github.com/sokolaidev/maf-extensions/issues/512)."
             echo
-            echo '<details><summary>Which dependents were built against an older core</summary>'
+            echo '<details><summary>Which dependents have not published since the core</summary>'
             echo
             echo '```'
             printf '%s\n' "$output" | tail -n +2

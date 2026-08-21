@@ -103,35 +103,6 @@ class TestReadingTheCeilingOutOfPublishedMetadata:
         assert check.ceiling_of(["azure-identity<2,>=1.25.1", "maf-sandbox<0.8,>=0.6.0"]) == (0, 8)
 
 
-class TestReadingTheFloorOutOfPublishedMetadata:
-    """The mirror of the ceiling, and it answers a different question — see #512."""
-
-    def test_the_shape_pypi_actually_returns(self):
-        assert check.floor_of(["maf-sandbox<0.20,>=0.18.0"]) == (0, 18, 0)
-
-    def test_the_shape_the_tree_writes(self):
-        assert check.floor_of(["maf-sandbox>=0.18.0,<0.20"]) == (0, 18, 0)
-
-    def test_a_marker_does_not_hide_it(self):
-        assert check.floor_of(['maf-sandbox<0.20,>=0.18.0; python_version >= "3.12"']) == (0, 18, 0)
-
-    def test_a_sibling_sharing_the_prefix_is_not_read_as_the_core(self):
-        assert check.floor_of(["maf-sandbox-acas>=0.18.0,<0.20"]) is None
-
-    def test_a_requirement_with_no_lower_bound_has_no_floor(self):
-        assert check.floor_of(["maf-sandbox<0.20"]) is None
-
-    def test_an_exclusive_bound_is_not_mistaken_for_a_floor(self):
-        assert check.floor_of(["maf-sandbox>0.18.0,<0.20"]) is None
-
-    def test_other_requirements_are_ignored(self):
-        assert check.floor_of(["azure-identity<2,>=1.25.1", "maf-sandbox<0.20,>=0.17.0"]) == (
-            0,
-            17,
-            0,
-        )
-
-
 class TestTheVerdict:
     """Refuse only a dependent whose published ceiling excludes the version going out."""
 

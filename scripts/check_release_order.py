@@ -45,15 +45,11 @@ def admits(version: tuple[int, ...], ceiling: tuple[int, ...]) -> bool:
     return padded < ceiling + (0,) * (width - len(ceiling))
 
 
-def fetch_published_versions(distribution: str) -> list[str] | None:
-    """The published versions of ``distribution``, newest-first, or None if never released.
+def fetch_simple(distribution: str) -> dict | None:
+    """``distribution``'s PEP 691 simple document, or None if it was never released.
 
-    Versions come from PyPI's PEP 691 simple index, which is fresher than the CDN-cached
-    top-level JSON document. The ``versions`` array is standardized (PEP 700) but its order
-    carries no meaning, so it is sorted here; it names versions only, and whether a release
-    was yanked or what its ``requires_dist`` excludes lives in the per-version document,
-    which a caller that cares must fetch. A 404 means the distribution was never released;
-    any other HTTP error is fatal.
+    The simple index is fresher than the CDN-cached top-level JSON document, and it is what
+    ``uv`` resolves from. A 404 means never released; any other HTTP error is fatal.
     """
     url = f"https://pypi.org/simple/{distribution}/"
     request = urllib.request.Request(url, headers={"Accept": _SIMPLE_ACCEPT})
@@ -64,7 +60,31 @@ def fetch_published_versions(distribution: str) -> list[str] | None:
         if error.code == 404:
             return None
         raise
+    return payload
+
+
+def fetch_published_versions(distribution: str) -> list[str] | None:
+    """The published versions of ``distribution``, newest-first, or None if never released.
+
+    The ``versions`` array is standardized (PEP 700) but its order carries no meaning, so it is
+    sorted here; it names versions only, and whether a release was yanked or what its
+    ``requires_dist`` excludes lives in the per-version document, which a caller that cares
+    must fetch.
+    """
+    payload = fetch_simple(distribution)
+    if payload is None:
+        return None
     return sorted(payload["versions"], key=version, reverse=True)
+
+
+def newest_upload(payload: dict) -> str | None:
+    """The most recent ``upload-time`` across a simple document's files, or None if it has none.
+
+    PEP 700 made the field mandatory for new uploads and optional for old ones, so a
+    distribution whose files all predate it answers None rather than a wrong minimum.
+    """
+    stamps = [file["upload-time"] for file in payload["files"] if file.get("upload-time")]
+    return max(stamps) if stamps else None
 
 
 def next_version(current: tuple[int, ...], title: str) -> tuple[int, ...] | None:
