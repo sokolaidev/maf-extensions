@@ -108,11 +108,13 @@ class SandboxIdentityDenied(PermissionError):
 
 
 class SandboxEgressNotEnforced(PermissionError):
-    """The selected backend cannot confine egress to what the workload's spec allows.
+    """The selected backend cannot enforce the egress mode the workload runs in.
 
-    Raised rather than degraded, like :class:`SandboxBackendNotPermitted`: a backend that
-    accepts ``egress_allow`` and ignores it turns the containment a workload was designed
-    around into a comment.
+    Refuse, never degrade: the router will not substitute a mode for the one the spec declares
+    — a more open one silently widens what the workload reaches, a more isolated one hands it a
+    posture it was not built for. So a backend that cannot deliver the asked mode turns the
+    workload away rather than serving it behind a different boundary. See
+    ``docs/design/egress-resolution.md``.
     """
 
 
@@ -162,6 +164,23 @@ def _declared_limits(backend: SandboxBackend) -> SandboxLimits:
         f"bare {TransferLimits.__name__} is one direction's caps and says nothing about the "
         "other. Declare nothing at all to accept the default ceilings."
     )
+
+
+def _legacy_egress_modes(egress: Egress) -> frozenset[Egress]:
+    """The enforceable-mode set implied by a backend that still declares the single ``egress``.
+
+    Transitional. A backend that has migrated declares :attr:`egress_modes` directly and this is
+    never reached for it; one that has not still declares the single :class:`Egress` property,
+    mapped here: ``ALLOWLIST`` can also deny everything, so it implies ``{ALLOWLIST, CLOSED}``;
+    ``CLOSED`` and ``UNRESTRICTED`` imply themselves; ``UNDEFINED`` (or an absent property)
+    implies the empty set — enforces nothing, refused every ask. Removed once every shipped
+    backend declares ``egress_modes`` (see ``docs/design/egress-resolution.md``).
+    """
+    if egress == Egress.ALLOWLIST:
+        return frozenset({Egress.ALLOWLIST, Egress.CLOSED})
+    if egress in (Egress.CLOSED, Egress.UNRESTRICTED):
+        return frozenset({egress})
+    return frozenset()
 
 
 class SandboxRouter:
@@ -263,10 +282,8 @@ class SandboxRouter:
         """Raise unless ``spec`` may be served: denials, floor, capabilities, limits, egress.
 
         The REFUSING half of the policy, shared by :meth:`ensure_can_serve` and
-        :meth:`acquire`. It never logs: the closed-egress-vs-allowlist-spec WARNING is
-        :meth:`ensure_can_serve`'s alone, because :meth:`acquire` is called every iteration of
-        a warm fix-round loop and must not repeat it. With no backend configured this returns:
-        nothing runs, so nothing reaches anything.
+        :meth:`acquire`. With no backend configured this returns: nothing runs, so nothing
+        reaches anything.
         """
         if self._backend is None:
             return
@@ -335,26 +352,27 @@ class SandboxRouter:
                     "model cannot tell what it did not get."
                 )
 
-        # Silence is read as enforcing nothing, not excused: a backend written before this
-        # property existed cannot have been enforcing an allowlist it never read. It is read as
-        # `UNDEFINED` rather than `UNRESTRICTED` so the refusal reports what happened — the two
-        # are the same verdict and different facts, and only one of them is a claim.
-        egress = getattr(self._backend, "egress", Egress.UNDEFINED)
-        if egress in (Egress.ALLOWLIST, Egress.CLOSED):
-            return
-        claim = (
-            "declares no egress at all"
-            if egress == Egress.UNDEFINED
-            else f"declares {str(egress)!r} egress"
-        )
-        raise SandboxEgressNotEnforced(
-            f"sandbox backend {self._backend.name!r} {claim}, which cannot enforce the "
-            f"{spec.kind!r} workload's allowlist "
-            f"({', '.join(spec.egress_allow) or 'no network at all'}). "
-            f"A backend must declare one of {str(Egress.ALLOWLIST)!r} or "
-            f"{str(Egress.CLOSED)!r} to serve a workload at all — everything a spec does not "
-            "name is meant to be denied."
-        )
+        # Egress is resolved, not matched: the workload runs in exactly one mode, and the
+        # backend must be able to enforce it. Refuse, never degrade — no more-open substitute
+        # (a silent widening) and no more-isolated one (a quietly different posture). Silence is
+        # the empty set: a backend that declares neither enforces nothing. See
+        # docs/design/egress-resolution.md.
+        #
+        # Transition: a migrated backend declares `egress_modes` (the set it enforces); one that
+        # has not still declares the single `egress` property, read here into an equivalent set.
+        # The legacy branch is removed once every backend declares the set.
+        modes = getattr(self._backend, "egress_modes", None)
+        if modes is None:
+            modes = _legacy_egress_modes(getattr(self._backend, "egress", Egress.UNDEFINED))
+        if spec.egress not in modes:
+            enforced = ", ".join(sorted(modes)) or "nothing"
+            raise SandboxEgressNotEnforced(
+                f"sandbox backend {self._backend.name!r} cannot enforce the {str(spec.egress)!r} "
+                f"egress the {spec.kind!r} workload runs in (it enforces {enforced}). A workload "
+                "is served in exactly the mode it declares or refused — never a different one, "
+                "because a more open mode silently widens what it reaches and a more isolated "
+                "one changes the posture it was built for."
+            )
 
     def ensure_can_serve(self, spec: SandboxSpec) -> None:
         """Raise unless ``spec`` may be served: denials, floor, capabilities, limits, egress.
@@ -364,9 +382,10 @@ class SandboxRouter:
 
             router.ensure_can_serve(bicep_sandbox_spec())
 
-        Confining more egress than the spec asks is permitted and warned about; confining
-        less is refused (see :class:`~maf_sandbox.Egress`).  With no backend configured this
-        returns: nothing runs, so nothing reaches anything.
+        The spec's ``egress`` mode is resolved against the backend: served iff the backend
+        enforces it, refused otherwise — never a different mode (see :class:`~maf_sandbox.Egress`
+        and ``docs/design/egress-resolution.md``).  With no backend configured this returns:
+        nothing runs, so nothing reaches anything.
 
         Raises:
             SandboxCapabilityDenied: when the spec requires a capability this host denies.
@@ -377,29 +396,17 @@ class SandboxRouter:
             SandboxTransferLimitsNotPermitted: when the spec's caps exceed the backend's,
                 or when the backend declares its ceilings as something other than a
                 ``SandboxLimits``.
-            SandboxEgressNotEnforced: when the backend cannot confine egress to this spec.
+            SandboxEgressNotEnforced: when the backend cannot enforce the spec's egress mode.
         """
         self._refuse_unless_backend_can_serve(spec)
-        if self._backend is None:
-            return
-
-        egress = getattr(self._backend, "egress", Egress.UNDEFINED)
-        if egress == Egress.CLOSED and spec.egress_allow:
-            logger.warning(
-                "sandbox backend %r cannot allow named hosts, so %s will be unreachable "
-                "from a %r sandbox; expect the workload to report what it could not fetch",
-                self._backend.name,
-                ", ".join(spec.egress_allow),
-                spec.kind,
-            )
 
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> Sandbox:
         """Return a running sandbox for ``key``, creating one if needed.
 
-        Runs the same floor, capability, limit and egress checks as :meth:`ensure_can_serve` —
-        minus its WARNING, which stays there — before ever reaching the backend, so a caller
-        that skips :meth:`ensure_can_serve` is still refused rather than served behind a
-        boundary or capability set the spec did not agree to.
+        Runs the same floor, capability, limit and egress checks as :meth:`ensure_can_serve`
+        before ever reaching the backend, so a caller that skips :meth:`ensure_can_serve` is
+        still refused rather than served behind a boundary or capability set the spec did not
+        agree to.
 
         Raises:
             NoSandboxBackend: when no backend is configured. Callers that check

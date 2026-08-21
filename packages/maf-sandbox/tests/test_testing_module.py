@@ -141,12 +141,16 @@ class TestInProcessSandboxBackend:
         assert backend.name == "fake"
         assert backend.isolation == Isolation.VM
 
-    def test_egress_defaults_to_allowlist_so_a_workload_attaches(self):
-        """Not `CLOSED`, or every consumer's offline test becomes a test of the refusal."""
-        assert InProcessSandboxBackend().egress == Egress.ALLOWLIST
+    def test_egress_modes_default_to_allowlist_and_closed_so_a_workload_attaches(self):
+        """A proxy-capable live backend's shape: the default CLOSED spec and an ALLOWLIST spec
+        both resolve, rather than every consumer's offline test becoming a test of the refusal."""
+        assert InProcessSandboxBackend().egress_modes == frozenset(
+            {Egress.ALLOWLIST, Egress.CLOSED}
+        )
 
-    def test_egress_is_configurable(self):
-        assert InProcessSandboxBackend(egress=Egress.UNRESTRICTED).egress == Egress.UNRESTRICTED
+    def test_egress_modes_are_configurable(self):
+        backend = InProcessSandboxBackend(egress_modes=frozenset({Egress.UNRESTRICTED}))
+        assert backend.egress_modes == frozenset({Egress.UNRESTRICTED})
 
     def test_capabilities_default_to_what_every_sandbox_owes(self):
         """`write_file` and `exec` — the two the `Sandbox` protocol already obligates."""

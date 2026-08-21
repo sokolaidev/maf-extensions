@@ -313,10 +313,12 @@ class InProcessSandboxBackend:
         isolation: Returned by the :attr:`isolation` property — configurable because the
             router's minimum-isolation floor is exercised against fakes claiming every
             :class:`~maf_sandbox.Isolation` rung, not only ``NONE``.
-        egress: Returned by the :attr:`egress` property. Defaults to
-            :data:`~maf_sandbox.Egress.ALLOWLIST` so a workload under test attaches as it
-            would against a live backend, rather than every offline test becoming a test of
-            the attach refusal.
+        egress_modes: Returned by the :attr:`egress_modes` property — the modes this backend
+            can enforce. Defaults to ``{ALLOWLIST, CLOSED}`` so a workload under test attaches
+            as it would against a proxy-capable live backend: the default ``CLOSED`` spec and an
+            ``ALLOWLIST`` spec both resolve, rather than every offline test becoming a test of
+            the attach refusal. A test of the refusal passes a narrower set (``frozenset()`` for
+            "enforces nothing", ``{UNRESTRICTED}`` for the no-confinement backend).
         capabilities: Returned by the :attr:`capabilities` property. Still defaults to
             :data:`~maf_sandbox.DEFAULT_CAPABILITIES` even though the sandbox now genuinely
             implements the pull surface: widening the default would change what a bare
@@ -349,7 +351,7 @@ class InProcessSandboxBackend:
         *,
         name: str = "in-process",
         isolation: Isolation = Isolation.NONE,
-        egress: Egress = Egress.ALLOWLIST,
+        egress_modes: frozenset[Egress] = frozenset({Egress.ALLOWLIST, Egress.CLOSED}),
         capabilities: frozenset[Capability] = DEFAULT_CAPABILITIES,
         limits: SandboxLimits = DEFAULT_SANDBOX_LIMITS,
         acquire_error: BaseException | None = None,
@@ -357,7 +359,7 @@ class InProcessSandboxBackend:
         self.sandbox = sandbox if sandbox is not None else InProcessSandbox()
         self._name = name
         self._isolation = isolation
-        self._egress = egress
+        self._egress_modes = egress_modes
         self._capabilities = capabilities
         self._limits = limits
         self.acquire_error = acquire_error
@@ -376,8 +378,8 @@ class InProcessSandboxBackend:
         return self._isolation
 
     @property
-    def egress(self) -> Egress:
-        return self._egress
+    def egress_modes(self) -> frozenset[Egress]:
+        return self._egress_modes
 
     @property
     def capabilities(self) -> frozenset[Capability]:
