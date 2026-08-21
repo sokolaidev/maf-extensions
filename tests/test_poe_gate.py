@@ -1,4 +1,9 @@
-"""Pin the poe gate's composition: the tasks exist, and `gate` runs all five checks."""
+"""Pin the poe gate's composition: the tasks exist, and `gate` runs every one of them.
+
+The count is deliberately not written down here. It was "all five checks" for exactly as long
+as it took to add a sixth, and a docstring naming a number goes stale on the commit that
+changes it while every assertion below still passes.
+"""
 
 from __future__ import annotations
 

@@ -113,9 +113,10 @@ def is_local(target: str) -> bool:
     """Whether ``target`` names something in this repository rather than elsewhere.
 
     A scheme — `https:`, `mailto:` — points off the tree entirely and is skipped rather than
-    resolved.
+    resolved. So is the protocol-relative form, `//example.invalid/docs`, which carries no
+    scheme to match on and is no more ours for it.
     """
-    if not target:
+    if not target or target.startswith("//"):
         return False
     return not re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", target)
 
@@ -133,19 +134,23 @@ def without_fenced_blocks(text: str) -> str:
     passes: `docs/sandbox/guest-platform-and-commands.md` alone contributes two.
     """
     kept: list[str] = []
-    closing: str | None = None
+    opener: str | None = None
     for line in text.splitlines():
-        opened = _FENCE.match(line)
-        if closing is None:
-            if opened:
-                closing = opened.group(1)[0] * 3
+        found = _FENCE.match(line)
+        run = found.group(1) if found else ""
+        if opener is None:
+            if found:
+                opener = run
                 kept.append("")
                 continue
             kept.append(line)
             continue
         kept.append("")
-        if opened and opened.group(1).startswith(closing):
-            closing = None
+        # CommonMark: a closer is the same character and at least as long as the opener.
+        # Reducing both to three let a ``` line close a ```` block, exposing everything after
+        # it — which is how a nested markdown sample leaks its own headings.
+        if found and run[0] == opener[0] and len(run) >= len(opener):
+            opener = None
     return "\n".join(kept)
 
 
@@ -171,14 +176,18 @@ def anchors(text: str) -> set[str]:
     """
     prose = without_fenced_blocks(text)
     found: set[str] = set()
-    seen: dict[str, int] = {}
     for _level, heading in _HEADING.findall(prose):
         slug = slugify(heading)
         if not slug:
             continue
-        count = seen.get(slug, 0)
-        seen[slug] = count + 1
-        found.add(slug if count == 0 else f"{slug}-{count}")
+        # The next *free* slug, not a per-base counter. With `## Notes` twice and a literal
+        # `## Notes-1`, a counter yields two anchors where GitHub has three — and the link to
+        # the third is then reported broken, which is the direction that gets a check disabled.
+        candidate, suffix = slug, 0
+        while candidate in found:
+            suffix += 1
+            candidate = f"{slug}-{suffix}"
+        found.add(candidate)
     found.update(_HTML_ANCHOR.findall(prose))
     return found
 
@@ -201,7 +210,10 @@ def broken_links(repo_root: Path) -> list[str]:
     files, directories = tracked_tree(repo_root)
     out: list[str] = []
     for path in tracked(repo_root, "*.md"):
-        text = path.read_text("utf-8")
+        # Fences are stripped for links exactly as they are for headings: a link inside a
+        # markdown sample is text about a link, and gating on it reds a document for showing
+        # its reader what one looks like.
+        text = without_fenced_blocks(path.read_text("utf-8"))
         here = path.relative_to(repo_root).as_posix()
         for target in link_targets(text):
             if not is_local(target) and not target.startswith("#"):
@@ -219,7 +231,11 @@ def broken_links(repo_root: Path) -> list[str]:
             fragment = _fragment(target)
             if not fragment or destination.suffix.lower() != ".md":
                 continue
-            if _LINE_REFERENCE.match(fragment):
+            # A source file was already skipped by the line above, so the only `#L42` left is
+            # one on a *markdown* target — where the rendered page has no such anchor and the
+            # fragment is dead. The exception is the plain view, which does: a query string is
+            # what asks for it, and `resolve()` has already dropped it from `bare`.
+            if _LINE_REFERENCE.match(fragment) and "?" in target:
                 continue
             if fragment not in anchors(destination.read_text("utf-8")):
                 out.append(f"{here}: heading -> {target}")

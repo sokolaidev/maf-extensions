@@ -174,9 +174,23 @@ class TestWhatItMustNotReport:
         root = repo({"a.md": "[x](b.md#the-section)", "b.md": "## The section\n"})
         assert check.broken_links(root) == []
 
-    def test_a_line_reference_on_a_source_file_is_not_a_heading(self, repo):
-        """`#L42` is what GitHub renders for a line, and no heading would ever match it."""
-        root = repo({"a.md": "[x](s/m.py#L42) [y](s/m.py#L42-L60)", "s/m.py": "x = 1\n"})
+    def test_a_fragment_on_a_source_file_is_not_a_heading(self, repo):
+        """A non-markdown target has no headings, so every fragment on one is left alone —
+        `#L42`, and anything else. It is the suffix guard doing this, not the line-reference
+        rule, which is why the two are tested apart."""
+        root = repo({"a.md": "[x](s/m.py#L42) [y](s/m.py#anything)", "s/m.py": "x = 1\n"})
+        assert check.broken_links(root) == []
+
+    def test_a_protocol_relative_url_is_external(self, repo):
+        """No scheme to match on, and no more ours for it — resolving one as a path reports a
+        working external link as a missing file."""
+        root = repo({"README.md": "[x](//example.invalid/docs) [y](//cdn.example.invalid/a.png)"})
+        assert check.broken_links(root) == []
+
+    def test_a_link_inside_a_fenced_sample_is_not_checked(self, repo):
+        """A document showing its reader what a link looks like is not making one. Headings
+        were already stripped from fences; links were not, so a markdown sample red the gate."""
+        root = repo({"a.md": "Example:\n\n```markdown\n[example](missing.md)\n```\n"})
         assert check.broken_links(root) == []
 
     def test_a_test_naming_a_path_that_must_not_exist_is_out_of_scope(self, repo):
@@ -233,6 +247,30 @@ class TestAnchors:
 
     def test_a_repeated_heading_is_numbered_from_the_second(self):
         assert check.anchors("## Notes\n\ntext\n\n## Notes\n\nmore\n") == {"notes", "notes-1"}
+
+    def test_a_literal_numbered_heading_does_not_collide_with_a_generated_one(self):
+        """`## Notes`, `## Notes`, `## Notes-1` is three anchors on GitHub. Counting per base
+        slug produced two, so the link to the third was reported broken."""
+        found = check.anchors("## Notes\n\n## Notes\n\n## Notes-1\n")
+        assert found == {"notes", "notes-1", "notes-1-1"}
+
+    def test_a_longer_fence_is_not_closed_by_a_shorter_one(self, repo):
+        """CommonMark closes a fence with a run at least as long as the opener. Treating any
+        three backticks as the closer exposes the rest of a nested sample to the heading
+        reader, and a link to whatever follows then passes."""
+        nested = "````\n# Not a heading\n```\n# Also not one\n````\n"
+        assert check.anchors(nested) == set()
+
+    def test_a_line_reference_on_a_markdown_target_is_dead_unless_it_asks_for_the_plain_view(
+        self, repo
+    ):
+        """A rendered markdown page has no `L42` anchor, so the fragment goes nowhere. The
+        plain view does have one, and a query string is what asks for it."""
+        root = repo({"a.md": "[x](b.md#L42)", "b.md": "## Something\n"})
+        assert check.broken_links(root) == ["a.md: heading -> b.md#L42"]
+
+        plain = repo({"a.md": "[x](b.md?plain=1#L42)", "b.md": "## Something\n"})
+        assert check.broken_links(plain) == []
 
     def test_an_explicit_html_anchor_counts(self, repo):
         root = repo({"a.md": "[x](b.md#planted)", "b.md": '<a id="planted"></a>\n\n# Title\n'})
