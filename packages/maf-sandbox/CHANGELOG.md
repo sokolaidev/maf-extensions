@@ -2,6 +2,19 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.19.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.18.1...maf-sandbox-v0.19.0) (2026-08-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* backends declare egress_modes and kinds run a chosen egress mode ([#530](https://github.com/sokolaidev/maf-extensions/issues/530))
+
+### Features
+
+* backends declare egress_modes and kinds run a chosen egress mode ([#530](https://github.com/sokolaidev/maf-extensions/issues/530)) ([cc9a85f](https://github.com/sokolaidev/maf-extensions/commit/cc9a85f3155235e7a73fb5a14fcc79b696d37bd5))
+* **sandbox:** a backend that declares no egress is refused as undeclared, not as unrestricted ([#521](https://github.com/sokolaidev/maf-extensions/issues/521)) ([f1adf39](https://github.com/sokolaidev/maf-extensions/commit/f1adf39f4a63ec9e116489d8f47e48fa489507a5))
+* **sandbox:** workload-backend resolution of applicable egress mode ([#528](https://github.com/sokolaidev/maf-extensions/issues/528)) ([7f4d1f6](https://github.com/sokolaidev/maf-extensions/commit/7f4d1f62091f76158151bd2033debb249c449525))
+
 ## [0.18.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.18.0...maf-sandbox-v0.18.1) (2026-08-21)
 
 
