@@ -56,6 +56,10 @@ Those layers are not so much competitors as an unfinished sentence. The boundari
 
 The scattered landscape collapses into one shape. An ACA Sandbox, a Docker container, a container on a developer's laptop, an in-process fake — and, in principle, a containment system like MXC or a service like E2B — is each **one backend class**. A unit of work, whether that is validating a template, running a model-written program or rendering a diagram, is **one kind**, written against the protocol alone and never against a vendor. Between them sits a router, and the host tells it what it is willing to accept. When the backend changes, nothing else in the picture does.
 
+Drawn, that shape is an hourglass.
+
+![An hourglass, read left to right. On the left three chips are the kinds — a unit of work, written once: bicep_validate, execute_code and an open dashed one for a kind you write, each reached as an ordinary tool call; they narrow into one slate box, the contract, holding a spec for what the work needs and a router for what the host accepts. From there the shape widens again into the backends — ACA Sandboxes at micro-VM, Docker and wslc at container, an in-process fake for tests, and an open dashed chip for any sandbox — each named beside the boundary it declares. One line under the shape states what the arrangement buys: when the backend changes, nothing else in the picture does.](assets/suite-shape.svg)
+
 And it is reached, always, as an **ordinary tool call** — the second half of the design and the half that is easy to get wrong. The *work* ships out to the sandbox; the *call* stays in the host process, where the middleware chain still sees it, still gates it, and still classifies what comes back. The tempting alternative, exposing the sandbox as a remote *agent*, leaves that security context altogether, and everything it returns has to be re-treated as untrusted ingress. Tool rather than agent is a security decision, not an ergonomic one.
 
 ### Why this rather than one of the alternatives

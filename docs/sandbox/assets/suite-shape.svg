@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 320" width="1000" height="320" role="img" aria-labelledby="hg-title hg-desc" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title id="hg-title">The hourglass: many kinds, one contract, any sandbox</title>
+  <desc id="hg-desc">An hourglass, read left to right. On the left three chips are the kinds — a unit of work, written once: bicep_validate, execute_code, and an open dashed one for a kind you write; a phrase further left says each is reached as an ordinary tool call. They narrow into one slate box in the middle, the contract, which holds a spec for what the work needs and a router for what the host accepts. From there the shape widens again into the backends: ACA Sandboxes at micro-VM, Docker at container, wslc at container, an in-process fake for tests, and an open dashed chip for any sandbox, each named beside the boundary it declares. Amber arrows carry the flow left to centre to right, and one line under the shape states what the arrangement buys: when the backend changes, nothing else in the picture does.</desc>
+
+  <defs>
+    <marker id="hg-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#c98a2e"/>
+    </marker>
+  </defs>
+
+  <!-- ── where the work is reached from ────────────────────────────────── -->
+  <text x="24" y="144" font-size="12" fill="#7d8694">reached as an</text>
+  <text x="24" y="160" font-size="12" fill="#7d8694">ordinary tool call</text>
+  <line x1="120" y1="150" x2="162" y2="150" stroke="#c98a2e" stroke-width="2.2" marker-end="url(#hg-amber)"/>
+
+  <!-- ── the kinds: written once, against the contract alone ───────────── -->
+  <rect x="170" y="49" width="160" height="46" rx="8" fill="#9aa1ac" fill-opacity="0.14" stroke="#9aa1ac" stroke-width="1.4"/>
+  <text x="250" y="76" text-anchor="middle" font-size="13" fill="#7d8694">bicep_validate</text>
+
+  <rect x="170" y="127" width="160" height="46" rx="8" fill="#9aa1ac" fill-opacity="0.14" stroke="#9aa1ac" stroke-width="1.4"/>
+  <text x="250" y="154" text-anchor="middle" font-size="13" fill="#7d8694">execute_code</text>
+
+  <rect x="170" y="205" width="160" height="46" rx="8" fill="#9aa1ac" fill-opacity="0.06" stroke="#9aa1ac" stroke-width="1" stroke-dasharray="5 4"/>
+  <text x="250" y="232" text-anchor="middle" font-size="13" fill="#9aa1ac">your kind</text>
+
+  <text x="250" y="273" text-anchor="middle" font-size="12" fill="#7d8694">kinds — a unit of work, written once</text>
+
+  <line x1="338" y1="150" x2="390" y2="150" stroke="#c98a2e" stroke-width="2.2" marker-end="url(#hg-amber)"/>
+
+  <!-- ── the waist: the one thing both sides are written against ───────── -->
+  <rect x="396" y="107" width="224" height="86" rx="8" fill="#9aa1ac" fill-opacity="0.20" stroke="#7d8694" stroke-width="2"/>
+  <text x="508" y="134" text-anchor="middle" font-size="14" fill="#7d8694">one contract</text>
+  <text x="508" y="156" text-anchor="middle" font-size="12" fill="#9aa1ac">a spec: what the work needs</text>
+  <text x="508" y="174" text-anchor="middle" font-size="12" fill="#9aa1ac">a router: what the host accepts</text>
+
+  <line x1="628" y1="150" x2="682" y2="150" stroke="#c98a2e" stroke-width="2.2" marker-end="url(#hg-amber)"/>
+
+  <!-- ── the backends: interchangeable, each declaring what it is ──────── -->
+  <rect x="690" y="49" width="270" height="34" rx="8" fill="#2fa8a0" fill-opacity="0.16" stroke="#2fa8a0" stroke-width="1.4"/>
+  <text x="706" y="70" font-size="12.5" fill="#7d8694">ACA Sandboxes</text>
+  <text x="944" y="70" text-anchor="end" font-size="12" fill="#9aa1ac">micro-VM</text>
+
+  <rect x="690" y="91" width="270" height="34" rx="8" fill="#2fa8a0" fill-opacity="0.16" stroke="#2fa8a0" stroke-width="1.4"/>
+  <text x="706" y="112" font-size="12.5" fill="#7d8694">Docker</text>
+  <text x="944" y="112" text-anchor="end" font-size="12" fill="#9aa1ac">container</text>
+
+  <rect x="690" y="133" width="270" height="34" rx="8" fill="#2fa8a0" fill-opacity="0.16" stroke="#2fa8a0" stroke-width="1.4"/>
+  <text x="706" y="154" font-size="12.5" fill="#7d8694">wslc</text>
+  <text x="944" y="154" text-anchor="end" font-size="12" fill="#9aa1ac">container</text>
+
+  <rect x="690" y="175" width="270" height="34" rx="8" fill="#2fa8a0" fill-opacity="0.16" stroke="#2fa8a0" stroke-width="1.4"/>
+  <text x="706" y="196" font-size="12.5" fill="#7d8694">in-process fake</text>
+  <text x="944" y="196" text-anchor="end" font-size="12" fill="#9aa1ac">tests</text>
+
+  <rect x="690" y="217" width="270" height="34" rx="8" fill="#2fa8a0" fill-opacity="0.06" stroke="#2fa8a0" stroke-width="1" stroke-dasharray="5 4"/>
+  <text x="706" y="238" font-size="12.5" fill="#9aa1ac">any sandbox</text>
+
+  <text x="825" y="273" text-anchor="middle" font-size="12" fill="#7d8694">backends — any sandbox, declared honestly</text>
+
+  <!-- ── the claim the shape exists to make ────────────────────────────── -->
+  <text x="500" y="300" text-anchor="middle" font-size="13" fill="#7d8694">when the backend changes, nothing else in the picture does</text>
+</svg>
