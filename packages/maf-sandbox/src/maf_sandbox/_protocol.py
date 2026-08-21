@@ -119,6 +119,9 @@ class Egress(StrEnum):
     miss by is not symmetrical: confining **less** than the spec asks silently widens what the
     workload was designed to reach, while confining **more** only makes the workload fail,
     loudly, at whatever it could not fetch.  So only the first is refused.
+
+    Saying nothing and saying "I confine nothing" are refused alike and named apart: a backend
+    that never declared has made no claim, and the refusal should not put one in its mouth.
     """
 
     #: Deny by default, allow exactly the hosts a spec names.
@@ -127,6 +130,10 @@ class Egress(StrEnum):
     CLOSED = "closed"
     #: Cannot confine egress at all — whatever the host can reach, the sandbox can reach.
     UNRESTRICTED = "unrestricted"
+    #: No declaration: not a rung on the scale above, and what the router reads when a backend
+    #: has no ``egress`` at all. A backend may also set it deliberately, to say the question is
+    #: unanswered rather than answered badly; both are refused.
+    UNDEFINED = "undefined"
 
 
 class Capability(StrEnum):
@@ -656,7 +663,9 @@ class SandboxBackend(Protocol):
     def egress(self) -> Egress:
         """One of the :class:`Egress` members, read before a workload's tool is attached.
 
-        Not declaring it is read as :data:`Egress.UNRESTRICTED`, and refused.
+        Not declaring it is read as :data:`Egress.UNDEFINED`, and refused — the same verdict
+        as :data:`Egress.UNRESTRICTED` and a different sentence, because a backend that said
+        nothing has not claimed it cannot confine.
         """
         ...
 
