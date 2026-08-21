@@ -7,13 +7,17 @@ and that every non-default stage gets an end-to-end run somewhere.
 
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import yaml
 
-CONFIG = Path(__file__).parent.parent / ".pre-commit-config.yaml"
-HOOKS = Path(__file__).parent.parent / ".githooks"
+ROOT = Path(__file__).parent.parent
+CONFIG = ROOT / ".pre-commit-config.yaml"
+INSTALLER = ROOT / "scripts" / "install_hooks.py"
 
 
 def _hooks() -> list[dict]:
@@ -46,33 +50,81 @@ def test_hooks_default_to_pre_commit_only() -> None:
     assert config.get("default_install_hook_types") == ["pre-commit", "pre-push", "commit-msg"]
 
 
-def test_every_installed_hook_type_has_a_tracked_script() -> None:
-    # `core.hooksPath` runs what is tracked and nothing else, so a fourth tier added to the
-    # config without a script here would never fire — no error, and no hook.
+def test_installer_covers_every_installed_hook_type() -> None:
     config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
-    tracked = {path.name for path in HOOKS.iterdir() if path.is_file()}
-    assert tracked == set(config["default_install_hook_types"])
+    assert set(config["default_install_hook_types"]) == {"pre-commit", "pre-push", "commit-msg"}
 
 
-def test_each_script_runs_its_own_tier() -> None:
-    # The copy-paste failure: a script that names another tier's `--hook-type` runs the wrong
-    # checks and passes, which is worse than not running.
-    for path in sorted(HOOKS.iterdir()):
-        assert f"--hook-type={path.name}" in path.read_text(encoding="utf-8"), path.name
+def test_installer_writes_runtime_resolving_hooks(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "--quiet", str(repo)], check=True)
+    shutil.copy2(CONFIG, repo / CONFIG.name)
+
+    subprocess.run([sys.executable, str(INSTALLER)], cwd=repo, check=True)
+
+    hook_dir = Path(
+        subprocess.run(
+            ["git", "config", "--path", "--get", "core.hooksPath"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+    )
+    assert hook_dir == (repo / ".git" / "maf-hooks").resolve()
+    unrelated = hook_dir / "post-commit"
+    unrelated.write_text("user hook\n", encoding="utf-8")
+    subprocess.run([sys.executable, str(INSTALLER)], cwd=repo, check=True)
+    assert unrelated.read_text(encoding="utf-8") == "user hook\n"
+    for hook_type in ("pre-commit", "pre-push", "commit-msg"):
+        hook = hook_dir / hook_type
+        assert hook.is_file()
+        assert f"--hook-type={hook_type}" in hook.read_text(encoding="utf-8")
+        if os.name != "nt":
+            assert hook.stat().st_mode & 0o111
 
 
-def test_the_scripts_are_executable_in_the_index() -> None:
-    # The index mode, not the filesystem's: a checkout on Windows reports 0644 either way, and
-    # the bit that matters is the one a Linux contributor gets from the clone.
-    listed = subprocess.run(
-        ["git", "ls-files", "-s", "--", str(HOOKS)],
+def test_installer_survives_branch_without_tracked_hooks(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "--quiet", str(repo)], check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    shutil.copy2(CONFIG, repo / CONFIG.name)
+    (repo / ".githooks").mkdir()
+    (repo / ".githooks" / "pre-commit").write_text("tracked\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "hooks"], cwd=repo, check=True)
+    subprocess.run([sys.executable, str(INSTALLER)], cwd=repo, check=True)
+
+    subprocess.run(["git", "checkout", "--quiet", "-b", "old"], cwd=repo, check=True)
+    subprocess.run(["git", "rm", "--quiet", ".githooks/pre-commit"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "--quiet", "-m", "old branch"],
+        cwd=repo,
+        env=os.environ | {"SKIP": "no-origin-identifiers-msg"},
+        check=True,
+    )
+
+    configured = subprocess.run(
+        ["git", "config", "--path", "--get", "core.hooksPath"],
+        cwd=repo,
         capture_output=True,
         text=True,
         check=True,
-        cwd=HOOKS.parent,
-    ).stdout.splitlines()
-    assert listed, "no tracked scripts found"
-    assert all(line.startswith("100755 ") for line in listed), listed
+    ).stdout.strip()
+    assert Path(configured).is_dir()
+    assert (Path(configured) / "pre-commit").is_file()
+
+    linked = tmp_path / "linked"
+    subprocess.run(["git", "worktree", "add", "--quiet", str(linked), "HEAD"], cwd=repo, check=True)
+    linked_configured = subprocess.run(
+        ["git", "config", "--path", "--get", "core.hooksPath"],
+        cwd=linked,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    assert Path(linked_configured) == Path(configured)
 
 
 def test_staged_hooks_match_their_contract() -> None:
