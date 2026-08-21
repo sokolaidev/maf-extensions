@@ -7,6 +7,7 @@ table makes every assertion above it agree with a run that did not happen.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import os
 import sys
@@ -45,6 +46,19 @@ def test_importing_the_sample_left_nothing_behind():
         for name, loaded in list(sys.modules.items())
         if (origin := getattr(loaded, "__file__", None)) and Path(origin).parent == _AGENT.parent
     ] == []
+
+
+def test_act_five_reports_version_derived_cleanup_with_surviving_directories(monkeypatch, capsys):
+    async def totals(_router, _thread, _registry):
+        return 3, 2, 75, 25
+
+    monkeypatch.setattr(sample, "_what_one_sandbox_holds", totals)
+    asyncio.run(sample.act_five_what_the_runs_left_behind(object(), object()))
+
+    output = capsys.readouterr().out
+    assert sample.CALL_RECLAIMS
+    assert "call directory cleanup: reclaimed by the framework" in output
+    assert "run directories across both sandboxes: 6" in output
 
 
 def _table(cells: dict[str, dict[str, float]], separator: str = "\t") -> str:
