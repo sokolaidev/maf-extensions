@@ -62,16 +62,24 @@ def test_installer_writes_runtime_resolving_hooks(tmp_path: Path) -> None:
 
     subprocess.run([sys.executable, str(INSTALLER)], cwd=repo, check=True)
 
-    hook_dir = Path(
+    hook_dir = (
+        repo
+        / Path(
+            subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", "--git-path", "hooks"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+        )
+    ).resolve()
+    assert hook_dir == (repo / ".git" / "hooks").resolve()
+    assert (
         subprocess.run(
-            ["git", "config", "--path", "--get", "core.hooksPath"],
-            cwd=repo,
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.strip()
+            ["git", "config", "--get", "core.hooksPath"], cwd=repo, capture_output=True
+        ).returncode
+        != 0
     )
-    assert hook_dir == (repo / ".git" / "maf-hooks").resolve()
     unrelated = hook_dir / "post-commit"
     unrelated.write_text("user hook\n", encoding="utf-8")
     subprocess.run([sys.executable, str(INSTALLER)], cwd=repo, check=True)
@@ -82,6 +90,20 @@ def test_installer_writes_runtime_resolving_hooks(tmp_path: Path) -> None:
         assert f"--hook-type={hook_type}" in hook.read_text(encoding="utf-8")
         if os.name != "nt":
             assert hook.stat().st_mode & 0o111
+
+
+def test_installer_refuses_an_existing_hooks_path(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "--quiet", str(repo)], check=True)
+    shutil.copy2(CONFIG, repo / CONFIG.name)
+    subprocess.run(["git", "config", "core.hooksPath", "custom-hooks"], cwd=repo, check=True)
+
+    result = subprocess.run(
+        [sys.executable, str(INSTALLER)], cwd=repo, capture_output=True, text=True
+    )
+
+    assert result.returncode != 0
+    assert "unset it before installing" in result.stderr
 
 
 def test_installer_survives_branch_without_tracked_hooks(tmp_path: Path) -> None:
@@ -105,26 +127,40 @@ def test_installer_survives_branch_without_tracked_hooks(tmp_path: Path) -> None
         check=True,
     )
 
-    configured = subprocess.run(
-        ["git", "config", "--path", "--get", "core.hooksPath"],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
-    assert Path(configured).is_dir()
-    assert (Path(configured) / "pre-commit").is_file()
+    configured = (
+        repo
+        / Path(
+            subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", "--git-path", "hooks"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+        )
+    ).resolve()
+    assert configured.is_dir()
+    assert (configured / "pre-commit").is_file()
+    assert (
+        subprocess.run(
+            ["git", "config", "--get", "core.hooksPath"], cwd=repo, capture_output=True
+        ).returncode
+        != 0
+    )
 
     linked = tmp_path / "linked"
     subprocess.run(["git", "worktree", "add", "--quiet", str(linked), "HEAD"], cwd=repo, check=True)
-    linked_configured = subprocess.run(
-        ["git", "config", "--path", "--get", "core.hooksPath"],
-        cwd=linked,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
-    assert Path(linked_configured) == Path(configured)
+    linked_configured = (
+        linked
+        / Path(
+            subprocess.run(
+                ["git", "-C", str(linked), "rev-parse", "--git-path", "hooks"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+        )
+    ).resolve()
+    assert linked_configured == configured
 
 
 def test_staged_hooks_match_their_contract() -> None:

@@ -12,7 +12,7 @@ uv run python scripts/install_hooks.py # the commit, message and push hooks: lin
 
 `agent-framework-core` resolves from PyPI at the range each package declares — deliberately the same artifact a consumer of the published wheel gets, not a development pin.
 
-`install_hooks.py` writes runtime-resolving wrappers into a dedicated directory under the Git common directory and configures an absolute `core.hooksPath`, so one setup covers the main checkout and every worktree, including branches that predate this installer. The wrappers delegate to `uv run pre-commit`; unlike `uv run pre-commit install`, they do not bake the installing interpreter's absolute path into the hook. The scrub guard's optional owner-only list (`.no-origin-identifiers`) lives in the Git common directory, so one list covers the main checkout and every worktree.
+`install_hooks.py` writes runtime-resolving wrappers into Git's hooks directory, which is shared by the main checkout and linked worktrees and moves with the clone. It leaves `core.hooksPath` unset, so unrelated hooks already in that directory remain active; it refuses to run when another hooks path is configured. The wrappers delegate to `uv run pre-commit`; unlike `uv run pre-commit install`, they do not bake the installing interpreter's absolute path into the hook. The scrub guard's optional owner-only list (`.no-origin-identifiers`) lives in the Git common directory, so one list covers the main checkout and every worktree.
 
 ## Before opening a PR
 
