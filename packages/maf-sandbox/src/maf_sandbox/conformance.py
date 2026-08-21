@@ -16,9 +16,12 @@ a link still refuses every path here and fails the two probes about *naming* wha
 
 The same shape covers the other capabilities, each as its own suite:
 :func:`assert_files_in_conformance` (:data:`~maf_sandbox.Capability.FILES_IN`),
-:func:`assert_exec_conformance` (:data:`~maf_sandbox.Capability.EXEC`), and
-:func:`assert_files_delete_conformance`
-(:data:`~maf_sandbox.Capability.FILES_DELETE`).  The FILES_IN probes also attack write-path
+:func:`assert_exec_conformance` (:data:`~maf_sandbox.Capability.EXEC`),
+:func:`assert_files_delete_conformance` (:data:`~maf_sandbox.Capability.FILES_DELETE`), and
+:func:`assert_egress_conformance` — that a declared ``Egress.ALLOWLIST`` is *enforced*: the guest
+reaches a host on the allowlist and not one off it (#402).  It takes the allowed and denied URLs
+because a spec's hosts are the deployment's, not this module's, and asserts only the outcome both
+an L3-severing and an L7-proxying backend must share.  The FILES_IN probes also attack write-path
 confinement.  The FILES_IN, EXEC and FILES_DELETE probes
 verify through :meth:`Sandbox.exec` rather than the pull surface, because a backend with no
 pull surface still owes those capabilities.  They need ``cat``, ``test``, ``printf``, ``pwd``,
@@ -45,6 +48,7 @@ Nothing here imports a test framework: this module ships in the wheel.  A failur
 from __future__ import annotations
 
 import posixpath
+import shlex
 import time
 from collections.abc import Awaitable, Callable, Coroutine
 from dataclasses import dataclass
@@ -63,12 +67,14 @@ __all__ = [
     "PosixGuestSubject",
     "Probe",
     "ProbeResult",
+    "assert_egress_conformance",
     "assert_exec_conformance",
     "assert_files_delete_conformance",
     "assert_files_in_conformance",
     "assert_files_out_conformance",
     "measure_files_delete_probes",
     "plant_layout",
+    "run_egress_probes",
     "run_exec_probes",
     "run_files_delete_probes",
     "run_files_in_probes",
@@ -1585,3 +1591,109 @@ def _assert_conformance(results: tuple[ProbeResult, ...], suite: str) -> tuple[P
     if any(result.failure is not None for result in results):
         raise ConformanceFailure(results, suite)
     return results
+
+
+# ---------------------------------------------------------------------------
+# EGRESS — that a declared allowlist is enforced, not merely asked for (#402)
+# ---------------------------------------------------------------------------
+#
+# These probes read the *outcome* an `Egress.ALLOWLIST` sandbox must share whatever the
+# mechanism — a host on the spec's `egress_allow` answers, one off it does not — and nothing
+# about how the deny lands. See docs/sandbox/network.md.
+#
+# Two requirements of this harness rather than of the protocol: `curl` in the guest, the parallel
+# to `ln` for the filesystem probes; and a denied URL that answers 2xx when reachable, because one
+# answering 404 on its own passes the deny probe having reached the host.
+
+
+async def _http_reaches(subject: ConformanceSubject, url: str, exec_timeout: float) -> bool:
+    """Whether the guest reached ``url`` — a 2xx over a completed request.
+
+    Runs ``curl`` in the guest and reads the HTTP status it prints. A refused connection (no
+    tunnel, ``000``), a proxy deny (``403``) or any non-2xx status all mean "did not reach".
+    """
+    result = await subject.sandbox.exec(
+        ["sh", "-c", f"curl -s -o /dev/null -w '%{{http_code}}' --max-time 25 {shlex.quote(url)}"],
+        working_directory=subject.working_directory,
+        timeout=exec_timeout,
+    )
+    return result.exit_code == 0 and result.stdout.strip().startswith("2")
+
+
+async def run_egress_probes(
+    subject: ConformanceSubject,
+    *,
+    allowed_url: str,
+    denied_url: str,
+    exec_timeout: float = 30.0,
+) -> tuple[ProbeResult, ...]:
+    """Run the EGRESS probes: an allowed host is reachable, a denied host is not.
+
+    ``allowed_url`` must name a host in the acquired spec's ``egress_allow``; ``denied_url`` a
+    host that is not. Both are full URLs so the guest's ``curl`` can be run verbatim. The
+    subject's sandbox must have been acquired with ``egress=Egress.ALLOWLIST`` and that
+    allowlist, or the allowed host would not answer and every run would be a failure of the
+    fixture rather than of the backend. Both URLs must name endpoints known to answer 2xx when
+    reached: the allowed probe is that half's positive control, and a ``denied_url`` answering
+    non-2xx on its own would pass the deny probe having reached the host, which is the one thing
+    that probe exists to refute.
+    """
+
+    async def _allowed(s: ConformanceSubject, _paths: ConformancePaths) -> None:
+        if not await _http_reaches(s, allowed_url, exec_timeout):
+            raise AssertionError(
+                f"an allowed host was not reachable: GET {allowed_url} did not return 2xx. A host "
+                "on the spec's egress_allow must be reachable, or the backend is confining more "
+                "than the workload asked for."
+            )
+
+    async def _denied(s: ConformanceSubject, _paths: ConformancePaths) -> None:
+        if await _http_reaches(s, denied_url, exec_timeout):
+            raise AssertionError(
+                f"a denied host was reachable: GET {denied_url} returned 2xx. A host off the "
+                "spec's egress_allow must not be served to the guest — this is the widening the "
+                "allowlist exists to prevent."
+            )
+
+    probes = (
+        Probe(
+            name="an-allowed-host-is-reachable",
+            why=(
+                "the positive control: a backend that severed all network, or confined more than "
+                "asked, would pass the denied-host probe while breaking the workload."
+            ),
+            requires=frozenset({Capability.EXEC}),
+            run=_allowed,
+        ),
+        Probe(
+            name="a-denied-host-is-refused",
+            why=(
+                "the security property the declaration stands for: `ALLOWLIST` is evidence the "
+                "backend was asked to confine, and this is the evidence it did."
+            ),
+            requires=frozenset({Capability.EXEC}),
+            run=_denied,
+        ),
+    )
+    return await _run_suite(subject, Capability.EXEC, _plant_nothing, probes)
+
+
+async def assert_egress_conformance(
+    subject: ConformanceSubject,
+    *,
+    allowed_url: str,
+    denied_url: str,
+    exec_timeout: float = 30.0,
+) -> tuple[ProbeResult, ...]:
+    """Run the EGRESS probes and raise :class:`ConformanceFailure` if any failed.
+
+    The one enforcement contract every ``Egress.ALLOWLIST`` backend shares (#402): the guest
+    reaches a host on the allowlist and not one off it. See :func:`run_egress_probes` for what
+    both URLs have to be for the run to mean anything.
+    """
+    return _assert_conformance(
+        await run_egress_probes(
+            subject, allowed_url=allowed_url, denied_url=denied_url, exec_timeout=exec_timeout
+        ),
+        "EGRESS",
+    )

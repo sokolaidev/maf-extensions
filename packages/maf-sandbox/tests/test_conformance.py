@@ -30,6 +30,7 @@ from maf_sandbox.conformance import (
     ConformanceFailure,
     ConformancePaths,
     PosixGuestSubject,
+    assert_egress_conformance,
     assert_exec_conformance,
     assert_files_delete_conformance,
     assert_files_in_conformance,
@@ -1127,3 +1128,66 @@ def test_assert_files_in_answers_a_conforming_subject():
 def test_assert_exec_answers_a_conforming_subject():
     results = asyncio.run(assert_exec_conformance(_sim_subject()))
     assert all(r.passed for r in results)
+
+
+class _CurlSandbox:
+    """A sandbox whose only method is a scripted `exec` answering the egress probe's curl.
+
+    Keyed by URL substring to `(exit_code, http_code)`, so a test can play docker's shape (a
+    refused connection: non-zero exit, `000`) or ACAS's (an L7 proxy deny: exit 0, `403`) without
+    a network. Anything unmatched is a refused connection.
+    """
+
+    def __init__(self, replies: dict[str, tuple[int, str]]) -> None:
+        self._replies = replies
+
+    async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
+        del path, content, working_directory  # the probes' `.probe-cwd` marker; nothing stored
+
+    async def exec(self, command, *, working_directory: str, timeout: float) -> ExecResult:
+        del working_directory, timeout
+        script = list(command)[-1]  # ["sh", "-c", "curl ... <url>"]
+        for url, (rc, code) in self._replies.items():
+            if url in script:
+                return ExecResult(stdout=code, exit_code=rc)
+        return ExecResult(stdout="000", exit_code=7)
+
+
+class _EgressSubject:
+    """The three attributes the egress probes read: a scripted sandbox, a work dir, EXEC."""
+
+    def __init__(self, sandbox: _CurlSandbox) -> None:
+        self.sandbox = sandbox
+        self.working_directory = _WORK
+        self.capabilities = frozenset({Capability.EXEC})
+
+
+class TestEgressConformance:
+    """The enforcement outcome an `Egress.ALLOWLIST` backend must share, both deny shapes (#402)."""
+
+    _ALLOWED = "https://mcr.example/v2/"
+    _DENIED = "https://pypi.example/simple/"
+
+    def _run(self, *, allowed: tuple[int, str], denied: tuple[int, str]):
+        subject = _EgressSubject(_CurlSandbox({self._ALLOWED: allowed, self._DENIED: denied}))
+        return asyncio.run(
+            assert_egress_conformance(subject, allowed_url=self._ALLOWED, denied_url=self._DENIED)
+        )
+
+    def test_l3_deny_passes(self):
+        """docker's shape: allowed answers 2xx, denied is a refused connection (`000`)."""
+        results = self._run(allowed=(0, "200"), denied=(7, "000"))
+        assert all(r.passed for r in results)
+
+    def test_l7_proxy_deny_passes(self):
+        """ACAS's shape: allowed answers 2xx, denied is an L7 proxy deny (`403`)."""
+        results = self._run(allowed=(0, "200"), denied=(0, "403"))
+        assert all(r.passed for r in results)
+
+    def test_a_reachable_denied_host_fails(self):
+        with pytest.raises(ConformanceFailure, match="a-denied-host-is-refused"):
+            self._run(allowed=(0, "200"), denied=(0, "200"))
+
+    def test_an_unreachable_allowed_host_fails(self):
+        with pytest.raises(ConformanceFailure, match="an-allowed-host-is-reachable"):
+            self._run(allowed=(7, "000"), denied=(7, "000"))
