@@ -2,6 +2,24 @@
 
 > **Status: PROPOSED.** This is the target, written as one; where it and the code disagree, the code is what exists. It extends the capability axis of [`two-axis-sandbox-policy.md`](two-axis-sandbox-policy.md), rests on the path grammar settled in [`files-out.md`](files-out.md), and shares its cleanup reasoning with [`call-lifetime.md`](call-lifetime.md). Backend-side constraints it takes as given come from [`docker-backend-proposal.md`](docker-backend-proposal.md), [`docker-backend-exploration.md`](docker-backend-exploration.md) and [`hyperlight-backend-proposal.md`](hyperlight-backend-proposal.md). The baseline it evolves is [`sandbox-architecture.md`](sandbox-architecture.md).
 
+## The guest, and who supplies it
+
+**The guest is whatever sits on the far side of a backend's boundary — the environment a workload's commands actually execute in.** `Sandbox.exec` runs there, `write_file` writes there, and `work_dir` is a path in its namespace rather than the host's. `Isolation` ranks the boundary; the guest is what that boundary encloses.
+
+**A backend owns the boundary. It does not necessarily author what is inside it.** That distinction is the reason this document exists, and the backends shipping today split three ways on it:
+
+| How the guest arrives | Who chose it | Bound when |
+| --- | --- | --- |
+| The backend resolves an image reference carried in the spec | The host application, per workload | At `acquire` |
+| The backend serves a disk image an operator imported ahead of time | The operator, per deployment | Before the process starts |
+| The backend ships its own guest module | The backend author | At build time |
+
+In the first row the backend meets its guest for the first time inside `acquire`, having never seen the inside of it. `_protocol.py:388` states the position plainly — the image is *"a reference the **backend** resolves, and nothing here parses it"* — so no layer in this stack knows whether the thing about to boot is Ubuntu, a distroless image, or Windows Server, and none of them can tell whether the commands a kind is about to run exist in it. `sandbox-architecture.md` records the same arrangement from the path side: `work_dir` is *"guest-native, stated by the host to suit its image and rewritten by nobody"*.
+
+**Not every backend has a guest in the operating-system sense.** A backend whose surface is a language runtime hands out a program environment with no shell, no filesystem layout and no argv. A backend whose surface is a data-plane API has a filesystem but reaches it through calls rather than commands. Both are real guests; neither has an OS to declare, and neither can be asked one of the questions below. This is why the axis is scoped to `EXEC` backends rather than applied to all of them.
+
+**Two senses of "host", kept apart throughout.** The **host application** is the process that wires the router and configures specs — the sense `Identity.APP` carries at `_protocol.py:224`, *"the host application's own authority"*. The **host machine** is the physical machine a backend's boundary is drawn on, which matters only in Decision 5, where which hypervisors exist depends on it. Where the difference matters below, the full phrase is used.
+
 ## The question
 
 Two questions look like one, and separating them is most of this document.
@@ -10,7 +28,7 @@ Two questions look like one, and separating them is most of this document.
 
 **What is installed in the guest?** `sh`, `rm`, `python3`, `setsid`, a compiler. A host that points a kind at an image without the tool that kind needs gets a failure deep inside a tool call, with no earlier signal.
 
-Every other kind-to-backend fit question in this stack is declared by the backend, required by the spec, and refused by the router before a tool is ever attached. These two are not. The only thing carrying them is the `image` a host happened to configure — a reference `_protocol.py:388` says the backend resolves and *"nothing here parses"*.
+Every other kind-to-backend fit question in this stack is declared by the backend, required by the spec, and refused by the router before a tool is ever attached. These two are not. Nothing declares them and nothing matches them: they ride entirely on the image, which — per the table above — the backend may itself never have looked inside.
 
 The two questions get different answers. The first becomes a declaration. The second does not, and most of the value here is in saying why.
 
