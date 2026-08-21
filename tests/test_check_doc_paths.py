@@ -105,6 +105,15 @@ class TestTheDefectItExistsFor:
             "a.md: link -> img/gone.png",
         ]
 
+    def test_an_escaped_backslash_does_not_escape_the_link_after_it(self, repo):
+        """`\\\\[x](gone.md)` renders a literal backslash and then a live link.
+
+        Escaping is the parity of the backslash run, not the one character in front. Reading
+        an even run as an escape skips a real link and its target is never resolved.
+        """
+        root = repo({"a.md": "\\\\[x](docs/gone.md)\n"})
+        assert check.broken_links(root) == ["a.md: link -> docs/gone.md"]
+
     def test_a_heading_inside_an_html_comment_plants_no_anchor(self, repo):
         """A commented-out section is exactly how an anchor stops existing, so a link to one
         must be reported — reading the comment as markdown invents the anchor instead."""
@@ -242,6 +251,15 @@ class TestWhatItMustNotReport:
         root = repo({"a.md": "<!-- [x](missing.md) -->\n"})
         assert check.broken_links(root) == []
 
+    def test_an_unterminated_destination_is_not_a_link(self, repo):
+        """Nothing closes the `(`, so GitHub renders `[x](missing.md` as those characters.
+
+        Resolving what follows the paren reports prose that points nowhere, and the text most
+        likely to hit it is a document explaining the syntax.
+        """
+        root = repo({"a.md": "The form is [x](missing.md and then nothing.\n"})
+        assert check.broken_links(root) == []
+
     def test_a_repo_shaped_path_in_a_url_query_is_not_a_local_reference(self, repo):
         """`?file=docs/gone.md` puts a repo-shaped path after `=`, where a bare mention never
         sits — and the character in front is the only thing a lookbehind can judge."""
@@ -286,7 +304,18 @@ class TestLinkSyntax:
             # A bracketed sentence is not a link, but the link inside it still is.
             ("[see [x](a.md)]", ["a.md"]),
             ("[x](#section)", ["#section"]),
+            ("[x](docs/a.md 'Title')", ["docs/a.md"]),
+            ("[x](docs/a.md (Title))", ["docs/a.md"]),
+            ("[x](\n  docs/a.md\n)", ["docs/a.md"]),
             ("\\[not a link](a.md)", []),
+            # An even run of backslashes is escaped backslashes, and the `[` stays active:
+            # `\\[x](a.md)` renders a literal backslash *followed by a live link*.
+            ("\\\\[x](a.md)", ["a.md"]),
+            ("\\\\\\[x](a.md)", []),
+            # Nothing closes the `(`, so GitHub renders the characters and there is no link.
+            ("[x](missing.md", []),
+            ("[x](<unclosed.md", []),
+            ('[x](a.md "unclosed', []),
             ("[dangling (a.md)", []),
             ("[x]()", []),
             ("Use [label] here.", []),
@@ -395,6 +424,25 @@ class TestAnchors:
 
         other = repo({"a.md": "[x](b.md?rev=2#L42)", "b.md": "## Something\n"})
         assert check.broken_links(other) == ["a.md: heading -> b.md?rev=2#L42"]
+
+    def test_a_heading_inside_a_blockquote_is_a_heading(self, repo):
+        """`> ### Title` renders as a heading with an anchor, and this repository has two.
+
+        The markers are not indentation, so counting them against the three spaces an ATX
+        heading may carry rejects a link that works.
+        """
+        root = repo(
+            {
+                "a.md": "[x](b.md#refuse-never-degrade) [y](b.md#deeper) [z](b.md#quoted-setext)",
+                "b.md": "> ### Refuse, never degrade.\n\n> > ## Deeper\n\n> Quoted setext\n> ---\n",
+            }
+        )
+        assert check.broken_links(root) == []
+
+    def test_an_underline_after_a_heading_is_not_a_second_heading(self, repo):
+        """`===` under `# Foo` is a paragraph — GitHub renders one heading there, not two."""
+        assert check.headings("# Foo\n===\n") == ["Foo"]
+        assert check.anchors("# Foo\n===\n") == {"foo"}
 
     def test_a_setext_heading_is_a_heading(self, repo):
         """GitHub renders text underlined by `=` or `-` as a heading and slugs it the same."""

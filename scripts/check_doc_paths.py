@@ -71,7 +71,14 @@ _HEADING = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.*?)[ \t]*#*$", re.MULTILINE)
 #: A setext heading: text underlined by `=` or `-`. GitHub renders it as a heading and gives it
 #: the slug the ATX spelling of the same text would get, so a link to one is as ordinary as a
 #: link to the other and refusing it reports a working link.
-_SETEXT = re.compile(r"^ {0,3}(?P<text>\S[^\n]*?)[ \t]*\n {0,3}(?:=+|-+)[ \t]*$", re.MULTILINE)
+#: The underline of a setext heading, and the line above it that it turns into one.
+_UNDERLINE = re.compile(r"^ {0,3}(?:=+|-+)[ \t]*$")
+_SETEXT_TEXT = re.compile(r"^ {0,3}(\S.*?)[ \t]*$")
+
+#: The `>` markers opening a blockquote, however deeply nested. A heading inside one is still a
+#: heading — GitHub renders `> ### Title` with the anchor `#title` — and the markers are not
+#: indentation, so they are removed rather than counted against the three spaces allowed above.
+_BLOCKQUOTE = re.compile(r"^ {0,3}(?:> ?)+")
 
 #: An explicit anchor a document plants for itself, which no heading slug would produce.
 _HTML_ANCHOR = re.compile(r"""<a\s[^>]*\b(?:id|name)\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
@@ -145,37 +152,79 @@ def _closing_bracket(text: str, opener: int) -> int | None:
     return None
 
 
-def _destination(text: str, paren: int) -> tuple[str, int]:
-    """The destination of the ``(`` at ``paren``, and the index just past what was read.
+def _escaped(text: str, index: int) -> bool:
+    """Whether the character at ``index`` is escaped, by the parity of the backslashes before it.
+
+    An odd run escapes; an even run is escaped backslashes and leaves the character active. So
+    `\\[x](a.md)` is literal text, while `\\\\[x](a.md)` renders a backslash *and a live link* —
+    testing only the character in front reads the second as the first and skips a real target.
+    """
+    run = 0
+    while index - run - 1 >= 0 and text[index - run - 1] == "\\":
+        run += 1
+    return run % 2 == 1
+
+
+def _after_title(text: str, index: int) -> int:
+    """The index past any whitespace and optional title sitting between a destination and ``)``."""
+    while index < len(text) and text[index] in _SPACE:
+        index += 1
+    closer = {'"': '"', "'": "'", "(": ")"}.get(text[index : index + 1])
+    if closer is None:
+        return index
+    index += 1
+    while index < len(text):
+        if text[index] == "\\":
+            index += 2
+            continue
+        if text[index] == closer:
+            index += 1
+            break
+        index += 1
+    while index < len(text) and text[index] in _SPACE:
+        index += 1
+    return index
+
+
+def _destination(text: str, paren: int) -> tuple[str, int] | None:
+    """The destination of the ``(`` at ``paren``, and the index past the ``)``, or None.
 
     Two spellings. In angle brackets it runs to the ``>`` and may hold spaces. Bare, it runs to
     whitespace or to an *unbalanced* ``)`` — balanced pairs belong to the destination, so
     `docs/a_(draft).md` is one path and truncating it at the first ``)`` reports a file that is
-    tracked as missing. A title after the destination is separated by whitespace and so is
-    never read as part of it.
+    tracked as missing.
+
+    None when nothing closes the ``(``. An unclosed one is not a link at all: GitHub renders
+    `[x](missing.md` as those literal characters, so resolving the text after the paren reports
+    a page for prose that points nowhere.
     """
     index = paren + 1
     while index < len(text) and text[index] in _SPACE:
         index += 1
     if index < len(text) and text[index] == "<":
         end = text.find(">", index + 1)
-        return ("", index + 1) if end == -1 else (text[index + 1 : end], end + 1)
-    depth, begin = 0, index
-    while index < len(text):
-        character = text[index]
-        if character == "\\":
-            index += 2
-            continue
-        if character in _SPACE:
-            break
-        if character == "(":
-            depth += 1
-        elif character == ")":
-            if depth == 0:
+        if end == -1:
+            return None
+        target, index = text[index + 1 : end], end + 1
+    else:
+        depth, begin = 0, index
+        while index < len(text):
+            character = text[index]
+            if character == "\\":
+                index += 2
+                continue
+            if character in _SPACE:
                 break
-            depth -= 1
-        index += 1
-    return text[begin:index], index
+            if character == "(":
+                depth += 1
+            elif character == ")":
+                if depth == 0:
+                    break
+                depth -= 1
+            index += 1
+        target = text[begin:index]
+    index = _after_title(text, index)
+    return (target, index + 1) if text[index : index + 1] == ")" else None
 
 
 def inline_link_targets(text: str) -> list[str]:
@@ -187,18 +236,19 @@ def inline_link_targets(text: str) -> list[str]:
     found: list[str] = []
     index = 0
     while (opener := text.find("[", index)) != -1:
-        if opener and text[opener - 1] == "\\":
+        if _escaped(text, opener):
             index = opener + 1
             continue
         close = _closing_bracket(text, opener)
         if close is None:
             break
-        if text[close + 1 : close + 2] != "(":
+        parsed = _destination(text, close + 1) if text[close + 1 : close + 2] == "(" else None
+        if parsed is None:
             # Not a link, but its label may hold one — `[see [x](a.md)]` is a bracketed
             # sentence around a real link. Stepping past the whole label would skip it.
             index = opener + 1
             continue
-        target, index = _destination(text, close + 1)
+        target, index = parsed
         if target:
             found.append(target)
         # The label is scanned too, because a link may wrap an image — `[![alt](i.png)](a.md)`
@@ -382,12 +432,28 @@ def slugify(heading: str) -> str:
 def headings(prose: str) -> list[str]:
     """Every heading's text in ``prose``, in document order, in both spellings GitHub renders.
 
-    Order is what the numbering below depends on, so the two patterns are merged by position
-    rather than concatenated — a setext heading between two ATX ones is the second of three.
+    Read line by line, with blockquote markers stripped first, because a heading inside a
+    blockquote renders and carries an anchor like any other. Order is what the numbering above
+    depends on: a setext heading between two ATX ones is the second of three.
     """
-    found = [(match.start(), match.group(2)) for match in _HEADING.finditer(prose)]
-    found += [(match.start(), match.group("text")) for match in _SETEXT.finditer(prose)]
-    return [text for _position, text in sorted(found, key=lambda pair: pair[0])]
+    lines = [_BLOCKQUOTE.sub("", line) for line in prose.splitlines()]
+    found: list[str] = []
+    for number, line in enumerate(lines):
+        atx = _HEADING.match(line)
+        if atx:
+            found.append(atx.group(2))
+            continue
+        if not number or not _UNDERLINE.match(line):
+            continue
+        above = lines[number - 1]
+        # An underline turns the line above into a heading only when that line is a paragraph.
+        # After `# Foo` or another underline it is text, and GitHub renders it as such.
+        if _HEADING.match(above) or _UNDERLINE.match(above):
+            continue
+        text = _SETEXT_TEXT.match(above)
+        if text:
+            found.append(text.group(1))
+    return found
 
 
 def anchors(text: str) -> set[str]:
