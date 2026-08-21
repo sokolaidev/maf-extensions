@@ -1,6 +1,6 @@
 # The maf-sandbox architecture, as built
 
-> **Status: AS BUILT** — describes the surface on `main`. Neither the package versions nor the change that last touched this file are pinned here: both move under it, and a hard-coded footnote silently becomes a lie — read the versions from each `pyproject.toml` and the provenance from `git log`. The proposed evolution of this design is [`two-axis-sandbox-policy.md`](two-axis-sandbox-policy.md) (tracking [#85](https://github.com/sokolaidev/maf-extensions/issues/85)); this document is its baseline, and [`files-out.md`](files-out.md) specifies the part of it that has landed.
+> The architecture as it stood when this was written — the baseline the two-axis proposal ([#85](https://github.com/sokolaidev/maf-extensions/issues/85)) evolves. It is kept in that tense, as the record of the argument rather than a description of the code. Superseded as reference by [`../architecture.md`](../architecture.md), [`../policy-isolation.md`](../policy-isolation.md), [`../kinds/README.md`](../kinds/README.md) and [`../backends/README.md`](../backends/README.md).
 
 ## The problem, and the shape of the answer
 

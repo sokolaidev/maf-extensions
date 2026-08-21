@@ -3,8 +3,7 @@
 ``HOST_TOOLS`` is the one capability where trust crosses *outward*.  A dispatched body runs
 in the **host process**, with the host's authority, driven by model-written code, and its
 call bypasses whatever middleware the host runs — the boundary sees only ``execute_code``'s
-aggregate result.  The layered rationale lives in
-``docs/sandbox/research/two-axis-sandbox-policy.md``.
+aggregate result.  The layered rationale lives in ``docs/sandbox/hosts.md``.
 
 Four things a caller must know:
 

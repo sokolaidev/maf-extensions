@@ -3,7 +3,7 @@
 Apart from :func:`~maf_sandbox.reclaim_run`, which removes a run it can describe with a
 :class:`~maf_sandbox.GuestRunLayout`.  What is removed here has no description but the working
 directory it sits under, and no caller who could supply one.  The lifetimes behind that live
-in ``docs/sandbox/research/call-lifetime.md``.
+in ``docs/sandbox/architecture.md``.
 
 **Guest, not host**, throughout: every path here is addressed the way the sandbox addresses its
 own, which for a store with no filesystem under it is still a path — see :meth:`Sandbox.remove`,
