@@ -346,8 +346,10 @@ def _smoke_maf_sandbox_wslc() -> str:
     if backend.isolation != Isolation.CONTAINER:
         raise SystemExit(f"FAIL: wslc backend declares {backend.isolation!r}, expected container")
     allowlisting = WslcSandboxBackend(WslcSandboxConfig(egress_proxy_image="x:1"))
-    if backend.egress != Egress.CLOSED or allowlisting.egress != Egress.ALLOWLIST:
-        raise SystemExit(f"FAIL: egress {backend.egress!r}/{allowlisting.egress!r}")
+    if backend.egress_modes != frozenset({Egress.CLOSED}) or allowlisting.egress_modes != frozenset(
+        {Egress.ALLOWLIST, Egress.CLOSED}
+    ):
+        raise SystemExit(f"FAIL: egress {backend.egress_modes!r}/{allowlisting.egress_modes!r}")
     # The proxy recipe is data, not code: a wheel that drops it breaks allowlist mode only here.
     dockerfile = proxy_build_context() / "Dockerfile"
     if not dockerfile.is_file():
@@ -379,8 +381,10 @@ def _smoke_maf_sandbox_docker() -> str:
     ):
         raise SystemExit(f"FAIL: docker backend declares {sorted(backend.capabilities)!r}")
     allowlisting = DockerSandboxBackend(DockerSandboxConfig(egress_proxy_image="x:1"))
-    if backend.egress != Egress.CLOSED or allowlisting.egress != Egress.ALLOWLIST:
-        raise SystemExit(f"FAIL: egress {backend.egress!r}/{allowlisting.egress!r}")
+    if backend.egress_modes != frozenset({Egress.CLOSED}) or allowlisting.egress_modes != frozenset(
+        {Egress.ALLOWLIST, Egress.CLOSED}
+    ):
+        raise SystemExit(f"FAIL: egress {backend.egress_modes!r}/{allowlisting.egress_modes!r}")
     # The proxy recipe is data, not code: a wheel that drops it breaks allowlist mode only here.
     dockerfile = proxy_build_context() / "Dockerfile"
     if not dockerfile.is_file():

@@ -141,12 +141,16 @@ class TestInProcessSandboxBackend:
         assert backend.name == "fake"
         assert backend.isolation == Isolation.VM
 
-    def test_egress_defaults_to_allowlist_so_a_workload_attaches(self):
-        """Not `CLOSED`, or every consumer's offline test becomes a test of the refusal."""
-        assert InProcessSandboxBackend().egress == Egress.ALLOWLIST
+    def test_egress_modes_default_to_allowlist_and_closed_so_a_workload_attaches(self):
+        """A proxy-capable live backend's shape: the default CLOSED spec and an ALLOWLIST spec
+        both resolve, rather than every consumer's offline test becoming a test of the refusal."""
+        assert InProcessSandboxBackend().egress_modes == frozenset(
+            {Egress.ALLOWLIST, Egress.CLOSED}
+        )
 
-    def test_egress_is_configurable(self):
-        assert InProcessSandboxBackend(egress=Egress.UNRESTRICTED).egress == Egress.UNRESTRICTED
+    def test_egress_modes_are_configurable(self):
+        backend = InProcessSandboxBackend(egress_modes=frozenset({Egress.UNRESTRICTED}))
+        assert backend.egress_modes == frozenset({Egress.UNRESTRICTED})
 
     def test_capabilities_default_to_what_every_sandbox_owes(self):
         """`write_file` and `exec` — the two the `Sandbox` protocol already obligates."""
@@ -222,6 +226,42 @@ class TestInMemoryStore:
             list_files=InMemoryStore.list,
         )
         assert sorted(asyncio.run(context.list_files(store))) == ["a.bicep", "b.bicep"]
+
+
+class TestInProcessSandboxRunCode:
+    """The fake scripts `run_code` on the same rules as `exec`, and records it separately.
+
+    Scripted rather than raising, because a fake that refused would make every kind written
+    against `run_code` untestable without a real backend — which is the thing this module
+    exists to avoid.
+    """
+
+    def test_it_records_the_program_and_the_timeout(self):
+        sandbox = InProcessSandbox()
+        asyncio.run(sandbox.run_code("print(1)", timeout=12.0))
+        assert sandbox.programs == [("print(1)", 12.0)]
+
+    def test_programs_are_recorded_apart_from_commands(self):
+        """A test asserting a program was evaluated must not match a shell command that
+        happens to carry the same text: different surfaces, different capability gates."""
+        sandbox = InProcessSandbox()
+        asyncio.run(sandbox.run_code("print(1)", timeout=1.0))
+        assert sandbox.commands == []
+
+    def test_a_marker_scripts_the_output(self):
+        sandbox = InProcessSandbox({"import json": "scripted"})
+        result = asyncio.run(sandbox.run_code("import json; print(1)", timeout=1.0))
+        assert result.stdout == "scripted"
+
+    def test_no_marker_falls_back_to_the_default(self):
+        sandbox = InProcessSandbox(default_stdout="nothing matched")
+        assert asyncio.run(sandbox.run_code("x = 1", timeout=1.0)).stdout == "nothing matched"
+
+    def test_raises_applies_here_too(self):
+        """`raises` models a dead sandbox, and a dead sandbox is dead on both surfaces."""
+        sandbox = InProcessSandbox(raises=RuntimeError("gone"))
+        with pytest.raises(RuntimeError, match="gone"):
+            asyncio.run(sandbox.run_code("print(1)", timeout=1.0))
 
 
 class TestInProcessSandboxSatisfiesTheProtocol:

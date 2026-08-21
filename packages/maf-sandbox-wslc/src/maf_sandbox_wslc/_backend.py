@@ -398,6 +398,22 @@ class _WslcSandbox:
             "does, or require only exec and FILES_IN."
         )
 
+    async def run_code(self, code: str, *, timeout: float) -> ExecResult:
+        """Not supported: this backend declares no :data:`~maf_sandbox.Capability.RUN_CODE`.
+
+        Not for want of an interpreter — the image may well carry one — but because *which*
+        runtime an image carries is a property of the image, and this backend is handed image
+        references it does not parse. Declaring the capability would be a claim about someone
+        else's artefact. A workload that wants a runtime by name invokes it through
+        :meth:`exec` and owns that assumption itself.
+        """
+        raise NotImplementedError(
+            "the wslc backend does not support RUN_CODE: evaluating code without a shell "
+            "means knowing which runtime the guest carries, and this backend resolves an "
+            "image reference without looking inside it. Run the interpreter through exec, or "
+            "register a backend that declares RUN_CODE."
+        )
+
     async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
         """Not supported: this backend declares no
         :data:`~maf_sandbox.Capability.FILES_DELETE`.
@@ -439,12 +455,12 @@ class WslcSandboxBackend:
         return Isolation.CONTAINER
 
     @property
-    def egress(self) -> Egress:
-        # A capability, not a per-spec fact: the backend can enforce an allowlist iff it has a
-        # proxy image to do it with. `acquire` still closes a spec that allows nothing outright.
+    def egress_modes(self) -> frozenset[Egress]:
+        # With a proxy image it can allowlist named hosts or deny all; without one it can only
+        # close. Never UNRESTRICTED: a container backend always cuts or proxies.
         if self._config.egress_proxy_image:
-            return Egress.ALLOWLIST
-        return Egress.CLOSED
+            return frozenset({Egress.ALLOWLIST, Egress.CLOSED})
+        return frozenset({Egress.CLOSED})
 
     @property
     def capabilities(self) -> frozenset[Capability]:

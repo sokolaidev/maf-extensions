@@ -54,7 +54,7 @@ Production's floor is only as strong as the weakest backend allowed to claim the
 
 1. **A hardware virtualization boundary.** The guest executes behind a hypervisor — not shared-kernel namespaces, not userspace-kernel syscall interception. The host kernel is out of the attack surface.
 2. **No ambient identity reachable from inside.** No credential material, token store, or cloud metadata endpoint is reachable from the guest — by construction (no network device at all) or by enforced block (a deny-all proxy that blackholes link-local and metadata ranges; a NetworkPolicy on Kata). Precisely: **no identity other than one explicitly attached to this sandbox by declared spec is reachable — the host's above all.**
-3. **Confinable egress**: declared `Egress.ALLOWLIST` or `Egress.CLOSED`. A backend that cannot confine egress is capped below `microvm` outright.
+3. **Confinable egress**: the backend enforces `ALLOWLIST` or `CLOSED` (`egress_modes`), not merely `UNRESTRICTED`. A backend that can enforce nothing tighter than open is capped below `microvm` outright. How a workload's chosen mode resolves against that set is [`egress-resolution.md`](egress-resolution.md).
 4. **An explicit guest↔host surface.** The only channels are the declared ones — files in, results out, declared host tools. No host filesystem mounts beyond declared ones, no host socket passthrough, no shared writable state beyond the backend's own transport.
 
 Consequences: gVisor-class backends cap at `hardened_container` by definition — that is the standard working, not a gap; a runtime-sandboxed interpreter (Monty-class, `runtime`) stays a local-floor backend however honest its no-I/O construction; Kata qualifies **only as configured** (per-pod VM runtime class plus the metadata/link-local block), so conformance is a property of a backend package, never of Kata in the abstract; ACA Sandboxes are the reference conformant backend at `microvm` itself — a hardware virtualization boundary, no ambient identity (the control-plane credential never enters the guest), Deny-default allowlist egress, a declared surface — and remote into the bargain, which is more than the standard asks.
@@ -85,7 +85,8 @@ class Capability(StrEnum):
     HOST_TOOLS = "host_tools" # dispatch host-registered functions from inside the sandbox
     FILES_IN = "files_in"     # write files into the sandbox before execution
     FILES_OUT = "files_out"   # read files back out after execution
-    NETWORK = "network"       # any egress at all — its quality stays in Egress
+    # (No NETWORK capability: whether a workload needs the network is not a fixed property of
+    #  a kind — it is the egress mode it runs in, resolved per deployment; see egress-resolution.md)
     SNAPSHOT = "snapshot"     # snapshot/restore reuse
     ATTACHED_IDENTITY = "attached_identity"  # platform-attached, sandbox-scoped identity
 
@@ -95,6 +96,12 @@ DEFAULT_CAPABILITIES: frozenset[Capability] = frozenset({Capability.EXEC, Capabi
 - A backend declares `capabilities: frozenset[Capability]`; undeclared defaults to `DEFAULT_CAPABILITIES` — exactly what today's `Sandbox` protocol already obligates (`exec` + `write_file`), so existing backends keep working without lying. Unlike egress, silence here is a functionality claim, not a safety one.
 - A spec declares `requires: frozenset[Capability]` (default `DEFAULT_CAPABILITIES`). `ensure_can_serve` refuses when `spec.requires ⊄ backend.capabilities`.
 - Selection becomes real routing: `_resolve` generalizes from "first registered backend" to "first registered backend satisfying floor ∧ capabilities ∧ egress" — one router can hold an in-process `run_code` backend for local CodeAct and a remote VM backend for compiler validation, selected per spec.
+
+## A third axis has since landed — guest shape
+
+This document is named for two axes and there are now three. `OsFamily` (`posix`, `windows`) is declared by a backend as `os_families: frozenset[OsFamily]` and asked for by a spec as `requires_os_family`, matched by `ensure_can_serve` exactly as capabilities are. It is recorded here rather than written up here: [`guest-platform-and-commands.md`](guest-platform-and-commands.md) is where it is settled, along with the question it deliberately does not answer — what a guest has *installed*, which no backend can declare about an image it was handed and never looked inside.
+
+Two differences from Axis 2 are worth carrying, because they are what stopped it being modelled as a capability. Silence is neither of the readings on this page: an undeclared `os_families` is the *absence of an answer*, read as `frozenset()`, refusing a spec that asks and leaving every spec that does not exactly as it was — a backend serving a language runtime has no operating system to name. And the declaration is a **set**, because one local-hypervisor backend hands out more than one guest family; a scalar would have needed redefining rather than widening.
 
 ## `HOST_TOOLS`, layered
 

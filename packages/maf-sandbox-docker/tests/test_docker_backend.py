@@ -223,12 +223,16 @@ class TestBackendIdentity:
         hardened = DockerSandboxConfig(cap_drop_all=True, memory="512m", cpus=2.0)
         assert DockerSandboxBackend(hardened).isolation == Isolation.CONTAINER
 
-    def test_declares_closed_egress_without_a_proxy(self):
-        assert DockerSandboxBackend(DockerSandboxConfig()).egress == Egress.CLOSED
+    def test_declares_closed_only_without_a_proxy(self):
+        assert DockerSandboxBackend(DockerSandboxConfig()).egress_modes == frozenset(
+            {Egress.CLOSED}
+        )
 
-    def test_declares_allowlist_egress_with_a_proxy(self):
+    def test_declares_allowlist_and_closed_with_a_proxy(self):
         config = DockerSandboxConfig(egress_proxy_image="proxy:local")
-        assert DockerSandboxBackend(config).egress == Egress.ALLOWLIST
+        assert DockerSandboxBackend(config).egress_modes == frozenset(
+            {Egress.ALLOWLIST, Egress.CLOSED}
+        )
 
     def test_declares_exec_files_in_files_out_and_host_tools(self):
         caps = DockerSandboxBackend(DockerSandboxConfig()).capabilities
@@ -557,6 +561,19 @@ class TestExecArgv:
         sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
         result = asyncio.run(sandbox.exec(["x"], working_directory=_WORK, timeout=5))
         assert (result.stdout, result.stderr, result.exit_code) == ("out\n", "err\n", 7)
+
+
+class TestRunCode:
+    """This backend declares no RUN_CODE, and says why rather than failing bare."""
+
+    def test_run_code_raises_notimplementederror(self):
+        """The image is a reference this backend hands to the engine without parsing, so which
+        runtime is inside it is not something the backend knows. A workload that wants an
+        interpreter by name invokes it through `exec` and owns that assumption itself."""
+        backend, _fake = _backend_with(_machine(running=[_NAME]))
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        with pytest.raises(NotImplementedError, match="RUN_CODE"):
+            asyncio.run(sandbox.run_code("print(1)", timeout=5.0))
 
 
 class TestRemove:
@@ -1120,6 +1137,7 @@ _ALLOW_CONFIG = DockerSandboxConfig(egress_proxy_image="maf-egress-proxy:local")
 _ALLOW_SPEC = SandboxSpec(
     kind="bicep",
     image="bicep-sandbox:local",
+    egress=Egress.ALLOWLIST,
     egress_allow=("mcr.microsoft.com", "*.data.mcr.microsoft.com"),
 )
 _ALLOW_ID = "allow:" + ",".join(sorted(_ALLOW_SPEC.egress_allow))
@@ -1138,8 +1156,10 @@ def _run_named(fake: _FakeDocker, name: str) -> _Recorded:
 
 class TestAllowlistTopology:
     def test_the_declaration_follows_the_configuration(self):
-        assert _backend_with()[0].egress == Egress.CLOSED
-        assert _backend_with(config=_ALLOW_CONFIG)[0].egress == Egress.ALLOWLIST
+        assert _backend_with()[0].egress_modes == frozenset({Egress.CLOSED})
+        assert _backend_with(config=_ALLOW_CONFIG)[0].egress_modes == frozenset(
+            {Egress.ALLOWLIST, Egress.CLOSED}
+        )
 
     def test_create_builds_network_proxy_connect_then_workload_in_order(self):
         backend, fake = _backend_with(_machine(), config=_ALLOW_CONFIG)
@@ -1211,7 +1231,9 @@ class TestAnEmptyProxyImageIsNoProxyConfigured:
     """
 
     def test_the_declaration_is_closed(self):
-        assert _backend_with(config=_EMPTY_PROXY_CONFIG)[0].egress is Egress.CLOSED
+        assert _backend_with(config=_EMPTY_PROXY_CONFIG)[0].egress_modes == frozenset(
+            {Egress.CLOSED}
+        )
 
     def test_a_spec_with_an_allowlist_is_closed_rather_than_failing(self):
         backend, fake = _backend_with(_machine(), config=_EMPTY_PROXY_CONFIG)

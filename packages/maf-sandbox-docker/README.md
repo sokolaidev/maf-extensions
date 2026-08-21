@@ -39,9 +39,9 @@ Every call spawns the `docker` client, so the host's event loop has to be one th
 
 **`Isolation.CONTAINER`.** A container shares the host kernel, below `SandboxRouter`'s default `min_isolation=Isolation.MICROVM` floor — construct the router with `min_isolation=Isolation.CONTAINER` and it admits this backend; leave the floor at its default and construction raises `SandboxBackendNotPermitted`. A Docker Desktop or Colima VM does not lift the rung: one shared VM kernel serves every container, the same shape `wslc`'s WSL 2 utility VM has, and the ladder classifies that at `container`. The declaration is a **constant** — no configuration raises it, because a security level the backend cannot verify must not become one the router repeats.
 
-**`Egress.CLOSED` by default, `Egress.ALLOWLIST` on request.** With no proxy configured every container is created `--network none`: a network namespace with only loopback, enforced by whichever kernel runs the container, so a spec's allowlist is honoured by denying everything — confining *more* than a workload asked for, which the router permits with a warning precisely because the failure is loud.
+**`egress_modes = {closed}` by default, `{allowlist, closed}` with a proxy configured.** With no proxy configured every container is created `--network none`: a network namespace with only loopback, enforced by whichever kernel runs the container. That serves a workload declaring `Egress.CLOSED`, and **refuses** one declaring `Egress.ALLOWLIST` — the router never substitutes a mode, so denying everything is no longer offered as a stricter stand-in for a host list. Never `UNRESTRICTED`: a container backend always cuts or proxies, so it cannot serve a workload that asked to run open.
 
-Set `egress_proxy_image` and the declaration becomes `ALLOWLIST`: each sandbox gets its own internal network and a dual-homed filtering proxy, and the spec's allowlist is enforced by topology — the container has no route out except the proxy, which opens a CONNECT tunnel only to the hosts the spec names. The `HTTP_PROXY`/`HTTPS_PROXY` variables set on the workload are how ordinary clients find the proxy, not what enforces the allowlist; the topology is. TLS is not decrypted, and the sandbox never resolves an external name itself. The proxy is shipped as source, not as an image you must trust: build it from the packaged recipe, whose only pinned dependency is its Azure Linux base.
+Set `egress_proxy_image` and `ALLOWLIST` joins the set: each sandbox gets its own internal network and a dual-homed filtering proxy, and the spec's allowlist is enforced by topology — the container has no route out except the proxy, which opens a CONNECT tunnel only to the hosts the spec names. The `HTTP_PROXY`/`HTTPS_PROXY` variables set on the workload are how ordinary clients find the proxy, not what enforces the allowlist; the topology is. TLS is not decrypted, and the sandbox never resolves an external name itself. The proxy is shipped as source, not as an image you must trust: build it from the packaged recipe, whose only pinned dependency is its Azure Linux base.
 
 ```python
 from maf_sandbox_docker import proxy_build_context, DockerSandboxConfig
@@ -77,6 +77,21 @@ Container names are derived from the key and kind rather than remembered, so `ac
 No bind mounts, no host paths, and never the Docker socket cross into a sandbox — files go in and out only through `docker cp`. The hardening flags `--security-opt no-new-privileges` and `--pids-limit` go on every container; `--cap-drop ALL`, `--memory` and `--cpus` are opt-in through the config.
 
 `stop` is never used. A container whose init process ignores `SIGTERM` takes ten seconds to stop and a fraction of a second to remove, and there is nothing in a sandbox worth waiting for.
+
+## Upgrading to 0.7
+
+`0.7.0` requires `maf-sandbox` 0.19, which made the egress mode a thing a workload declares and a set a backend enforces.
+
+**`egress` is replaced by `egress_modes: frozenset[Egress]`.** A host that read `backend.egress` gets an `AttributeError`; read `backend.egress_modes` instead. Nothing in the wiring changes — the set is still derived from `egress_proxy_image` exactly as the single value was.
+
+**Without a proxy image this backend now refuses an allowlist workload rather than confining it further.** That is the upgrade's one behavioural break, and it is most likely to reach you through a kind whose default asks for one — `maf-sandbox-bicep` 0.9 does:
+
+```
+SandboxEgressNotEnforced: sandbox backend 'docker' cannot enforce the 'allowlist'
+egress the 'bicep' workload runs in (it enforces closed).
+```
+
+Configure `egress_proxy_image` if the workload is meant to reach the hosts it names, or ask the kind for `Egress.CLOSED` if it is meant to run offline. The old behaviour — serve it anyway, warn, and let the workload fail at the first fetch — is gone deliberately: a fetch failure deep in a tool call is a worse report than a refusal at attach.
 
 ---
 

@@ -154,6 +154,19 @@ class NoIsolationSandbox:
             exit_code=completed.returncode,
         )
 
+    async def run_code(self, code: str, *, timeout: float) -> ExecResult:
+        """Refused: this backend declares no ``RUN_CODE``, and could not honestly declare it.
+
+        There is no boundary here at all — evaluating a model-authored program would run it in
+        this process, with the host's own authority. ``exec`` at least starts a child. A sample
+        showing the no-isolation rung should not also demonstrate the sharpest way to use it.
+        """
+        del code, timeout
+        raise NotImplementedError(
+            "NoIsolationBackend does not support RUN_CODE: there is no boundary here, so "
+            "evaluating a program would run it in the host process with the host's authority."
+        )
+
     def _to_guest(self, text: str) -> str:
         """Rewrite the host root back to the guest ``work_dir``, in every spelling of it.
 
@@ -225,13 +238,12 @@ class NoIsolationBackend:
     the files a container image bakes in. Whether a workload needs such a file is the
     workload's concern; the backend simply places whatever the sample passes.
 
-    The egress declaration is a **temporary misuse**: a backend with no boundary honestly
-    cannot confine egress, which is :data:`~maf_sandbox.Egress.UNRESTRICTED` — and the router
-    refuses ``UNRESTRICTED`` for any workload today. ``CLOSED`` is worn only to pass that
-    gate; it is not enforced, and it cannot be. What that unenforced gap means for a given
-    workload is the workload's concern, not the backend's, and is argued in the sample README.
-    Switch back to ``UNRESTRICTED`` once the core allows it for workloads that don't require
-    :data:`~maf_sandbox.Capability.NETWORK` (#265).
+    The egress declaration is **honest**: a backend with no boundary cannot confine egress, so
+    the one mode it can enforce is :data:`~maf_sandbox.Egress.UNRESTRICTED` — and that is what
+    it declares. It serves a Bicep spec that runs ``UNRESTRICTED`` (see ``agent.py``), and the
+    router refuses it any workload asking for a mode it cannot deliver rather than letting it
+    wear a ``CLOSED`` it could never keep. What running unconfined means for this workload is
+    argued in the sample README; the backend's job is only to state what it enforces.
     """
 
     def __init__(
@@ -254,9 +266,11 @@ class NoIsolationBackend:
         return Isolation.NONE
 
     @property
-    def egress(self) -> Egress:
-        # Temporary misuse — see the class docstring and #265.
-        return Egress.CLOSED
+    def egress_modes(self) -> frozenset[Egress]:
+        # Honest — see the class docstring. No boundary means the only enforceable mode is
+        # UNRESTRICTED; the router refuses any workload that asked for confinement this cannot
+        # deliver, rather than accepting a CLOSED it could not keep.
+        return frozenset({Egress.UNRESTRICTED})
 
     @property
     def capabilities(self) -> frozenset[Capability]:

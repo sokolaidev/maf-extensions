@@ -1,6 +1,6 @@
 [project]
 name = "maf-sandbox-codeact"
-version = "0.6.1"
+version = "0.7.0"
 description = "CodeAct as a Microsoft Agent Framework tool — the model writes a short Python program and it runs inside a sandbox — written against maf-sandbox so it runs on any sandbox backend."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
@@ -34,7 +34,7 @@ dependencies = [
     # published wheel resolves a maf-sandbox base missing those imports. The number itself is
     # below, and `scripts/set_dependents_range.py` moves it — so this says which release the
     # floor is for, never which release that is.
-    "maf-sandbox>=0.18.0,<0.20",
+    "maf-sandbox>=0.19.0,<0.21",
     # The `@tool` decorator. MAF is a genuine dependency of the tool itself, not of the host
     # application.
     "agent-framework-core>=1.13.0,<2",

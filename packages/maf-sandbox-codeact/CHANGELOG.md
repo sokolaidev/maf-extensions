@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.7.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.6.1...maf-sandbox-codeact-v0.7.0) (2026-08-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* backends declare egress_modes and kinds run a chosen egress mode ([#530](https://github.com/sokolaidev/maf-extensions/issues/530))
+
+### Features
+
+* backends declare egress_modes and kinds run a chosen egress mode ([#530](https://github.com/sokolaidev/maf-extensions/issues/530)) ([cc9a85f](https://github.com/sokolaidev/maf-extensions/commit/cc9a85f3155235e7a73fb5a14fcc79b696d37bd5))
+
+
+### Fixes
+
+* require maf-sandbox 0.19.0 in the dependents and 0.19 in the samples, and admit 0.20 ([#540](https://github.com/sokolaidev/maf-extensions/issues/540)) ([ae825c2](https://github.com/sokolaidev/maf-extensions/commit/ae825c2c8fd5e105402470c788b24371a77efa7c))
+
 ## [0.6.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.6.0...maf-sandbox-codeact-v0.6.1) (2026-08-21)
 
 

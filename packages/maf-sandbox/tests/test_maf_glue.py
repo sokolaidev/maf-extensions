@@ -50,7 +50,12 @@ from maf_sandbox.maf import (
 )
 from maf_sandbox.testing import InMemoryStore, InProcessSandbox, InProcessSandboxBackend
 
-_SPEC = SandboxSpec(kind="test", egress_allow=("example.invalid",), work_dir="/maf-sandbox/work")
+_SPEC = SandboxSpec(
+    kind="test",
+    egress=Egress.ALLOWLIST,
+    egress_allow=("example.invalid",),
+    work_dir="/maf-sandbox/work",
+)
 _NO_EGRESS_SPEC = SandboxSpec(kind="test", work_dir="/maf-sandbox/work")
 _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="agent-1")
 
@@ -585,8 +590,10 @@ class TestEgressIsCheckedWhereTheToolAttaches:
     """
 
     def test_a_backend_that_cannot_confine_egress_raises(self):
+        # _SPEC runs ALLOWLIST; an unrestricted-only backend cannot enforce it.
+        modes = frozenset({Egress.UNRESTRICTED})
         with pytest.raises(SandboxEgressNotEnforced):
-            _attach(_router(InProcessSandboxBackend(egress=Egress.UNRESTRICTED)))
+            _attach(_router(InProcessSandboxBackend(egress_modes=modes)))
 
     def test_nothing_configured_still_returns_an_empty_list(self):
         assert _attach(SandboxRouter([])) == []

@@ -18,7 +18,7 @@ import logging
 from time import perf_counter
 from typing import TYPE_CHECKING, Any
 
-from maf_sandbox import CallerContext, SandboxRouter, SandboxSpec, error_detail
+from maf_sandbox import CallerContext, Egress, SandboxRouter, SandboxSpec, error_detail
 from maf_sandbox.maf import SandboxToolSession, sandboxed_tool
 
 from ._paths import resolve_listed_path
@@ -97,6 +97,18 @@ _MCR_DATA_HOST = "*.data.mcr.microsoft.com"
 _MODULE_INDEX_REDIRECT_HOST = "aka.ms"
 _MODULE_INDEX_HOST = "live-data.bicep.azure.com"
 
+#: The AVM module-registry hosts, and the only hosts Bicep ever names. They are the payload of
+#: an `ALLOWLIST` run and are fixed here: a deployment chooses the *mode* Bicep runs in, but
+#: never the hosts, so it can lower to `CLOSED` or (on a backend that cannot confine) raise to
+#: `UNRESTRICTED`, but cannot widen the allowlist to somewhere Bicep has no business reaching.
+_MODULE_HOSTS = (_MCR_HOST, _MCR_DATA_HOST, _MODULE_INDEX_REDIRECT_HOST, _MODULE_INDEX_HOST)
+
+#: The postures Bicep can run in. `ALLOWLIST` restores AVM modules from `_MODULE_HOSTS`;
+#: `CLOSED` skips the restore and reports the shortfall if a template needed one; `UNRESTRICTED`
+#: is for a backend that cannot confine at all (a fixed compiler, not model-written code, so the
+#: open posture is a dev convenience rather than an exfiltration surface).
+_EGRESS_MODES = frozenset({Egress.UNRESTRICTED, Egress.ALLOWLIST, Egress.CLOSED})
+
 #: Root for everything shared with the sandbox: `bicepconfig.json` at the top, and one
 #: subdirectory per validation beneath it.
 #:
@@ -146,19 +158,38 @@ def _build_command_for(name: str) -> str:
     return _BUILD_PARAMS_CMD if name.endswith(_PARAM_SUFFIX) else _BUILD_CMD
 
 
-def bicep_sandbox_spec(image: str | None = None, image_id: str | None = None) -> SandboxSpec:
+def bicep_sandbox_spec(
+    image: str | None = None,
+    image_id: str | None = None,
+    *,
+    egress: Egress = Egress.ALLOWLIST,
+) -> SandboxSpec:
     """The sandbox a Bicep validation needs, in backend-neutral terms.
 
-    Only the image varies by deployment; the egress allowlist and work directory are
-    properties of the workload and are fixed here rather than left to configuration — a
-    deployment that could widen Bicep's egress could undo the containment the tool's whole
-    design rests on.
+    ``egress`` is the network posture the validation runs in, defaulting to
+    :data:`~maf_sandbox.Egress.ALLOWLIST` — Bicep's designed posture, restoring AVM modules
+    from the fixed :data:`_MODULE_HOSTS` and nothing else.  A deployment that will not use
+    modules can lower it to :data:`~maf_sandbox.Egress.CLOSED` (a template that then references
+    one fails at runtime and the validation reports the shortfall); one running on a backend
+    that cannot confine at all — a no-isolation dev backend — raises it to
+    :data:`~maf_sandbox.Egress.UNRESTRICTED`.  Only the *mode* is a deployment's to choose: the
+    allowlist hosts are fixed, so egress can be lowered, raised, or left, but never widened to
+    somewhere Bicep has no business reaching.  The router serves the chosen mode only on a
+    backend that enforces it and refuses otherwise (:class:`~maf_sandbox.SandboxEgressNotEnforced`).
+    Only the image otherwise varies by deployment.
     """
+    if egress not in _EGRESS_MODES:
+        allowed = ", ".join(sorted(_EGRESS_MODES))
+        raise ValueError(
+            f"bicep runs in one of {{{allowed}}}, not {str(egress)!r}: it validates offline "
+            "or against the AVM registry, and nothing it does needs another posture."
+        )
     return SandboxSpec(
         kind=BICEP_KIND,
         image=image,
         image_id=image_id,
-        egress_allow=(_MCR_HOST, _MCR_DATA_HOST, _MODULE_INDEX_REDIRECT_HOST, _MODULE_INDEX_HOST),
+        egress=egress,
+        egress_allow=_MODULE_HOSTS if egress is Egress.ALLOWLIST else (),
         work_dir=_WORK_DIR,
     )
 
@@ -171,6 +202,7 @@ def make_bicep_tools(
     *,
     image: str | None = None,
     image_id: str | None = None,
+    egress: Egress = Egress.ALLOWLIST,
     exec_timeout_seconds: int = 120,
 ) -> list[Any]:
     """Return the ``[bicep_validate]`` tool list, or ``[]`` when no sandbox is available.
@@ -179,10 +211,12 @@ def make_bicep_tools(
     nothing configured gets an empty list rather than a tool that fails at call time, so the
     agent keeps its unvalidated (T0) behaviour with no half-attached error path.
 
-    A backend that *is* configured but cannot confine egress to the two artifact hosts named
-    below raises :class:`~maf_sandbox.SandboxEgressNotEnforced` instead. One that can only run
-    fully closed is permitted, with a warning: module restore then fails, and this tool
-    reports that failure rather than hiding it.
+    ``egress`` is the posture the validation runs in — see :func:`bicep_sandbox_spec`. A
+    backend that cannot enforce the chosen mode raises
+    :class:`~maf_sandbox.SandboxEgressNotEnforced` at attach: refused, never quietly served
+    behind a different boundary. A deployment wiring a backend that can only run fully closed
+    passes ``egress=Egress.CLOSED``; a module restore then does not happen and a template that
+    needed one reports the shortfall at runtime rather than hiding it.
 
     Args:
         router: The sandbox router, or ``None`` when sandboxing is not configured.
@@ -194,6 +228,8 @@ def make_bicep_tools(
             file store.
         image: OCI reference of the Bicep sandbox image.
         image_id: A backend-native disk-image id, skipping resolution.
+        egress: The network posture the validation runs in; see :func:`bicep_sandbox_spec`.
+            Defaults to :data:`~maf_sandbox.Egress.ALLOWLIST` (the AVM registry hosts).
         exec_timeout_seconds: Per-command bound. A sandbox that stops answering must not
             hold the caller's turn open.
     """
@@ -202,7 +238,7 @@ def make_bicep_tools(
         router=router,
         context=context,
         agent_dir=agent_dir,
-        spec=bicep_sandbox_spec(image, image_id),
+        spec=bicep_sandbox_spec(image, image_id, egress=egress),
         name=BICEP_VALIDATE_TOOL_NAME,
         approval_mode="never_require",
         # No `declarations=` and no `outbound_max_confidentiality=`: the default derivation is

@@ -48,7 +48,7 @@ This package draws no isolation boundary itself — it is protocol and policy ov
 
 `SandboxSpec.egress_allow` is an allowlist — everything not named is denied, so an empty tuple means no network. Stating it positively means a spec that forgets to mention egress gets the closed configuration rather than the open one.
 
-## Two axes, three checks that are not conveniences
+## Three axes, four checks that are not conveniences
 
 ```python
 router = SandboxRouter(backends)                                   # default floor: Isolation.MICROVM
@@ -60,11 +60,13 @@ router = SandboxRouter(backends, min_isolation=Isolation.NONE)  # a developer ma
 
 It refuses rather than degrades. Falling back to a stronger backend would hide a misconfiguration; proceeding with the weaker one would break claims the host's security posture makes about every execution surface. Neither is better than an error.
 
-**2. The capability match.** A backend declares `capabilities: frozenset[Capability]` (`EXEC`, `RUN_CODE`, `HOST_TOOLS`, `FILES_IN`, `FILES_OUT`, `FILES_LIST`, `FILES_DELETE`, `NETWORK`, `SNAPSHOT`, `ATTACHED_IDENTITY`) — what it can actually do — and a spec declares `requires`, what its workload cannot run without. `ensure_can_serve(spec)` raises `SandboxCapabilityNotSupported` when the backend is missing something the spec requires. Unlike the floor, silence here is a functionality claim rather than a safety one: an undeclared `capabilities` reads as exactly `DEFAULT_CAPABILITIES = {EXEC, FILES_IN}` — what this package's own `Sandbox` protocol already obligates, so a backend written before `Capability` existed does not have to start lying to keep working.
+**2. The capability match.** A backend declares `capabilities: frozenset[Capability]` (`EXEC`, `RUN_CODE`, `HOST_TOOLS`, `FILES_IN`, `FILES_OUT`, `FILES_LIST`, `FILES_DELETE`, `SNAPSHOT`, `ATTACHED_IDENTITY`) — what it can actually do — and a spec declares `requires`, what its workload cannot run without. `ensure_can_serve(spec)` raises `SandboxCapabilityNotSupported` when the backend is missing something the spec requires. Unlike the floor, silence here is a functionality claim rather than a safety one: an undeclared `capabilities` reads as exactly `DEFAULT_CAPABILITIES = {EXEC, FILES_IN}` — what this package's own `Sandbox` protocol already obligates, so a backend written before `Capability` existed does not have to start lying to keep working.
 
 **3. The egress rule**, unchanged in substance. `egress_allow` was a contract nothing checked, so a backend that reads it and one that ignores it have the same type, the same methods and the same passing tests — each one declares an `Egress` level instead: `allowlist` (deny by default, allow the named hosts), `closed` (all or nothing), or `unrestricted` (cannot confine egress at all). `ensure_can_serve(spec)` refuses the last one. Here silence is *not* read charitably: an undeclared `egress` is treated as `unrestricted` and refused, because a backend written before the property existed cannot have been enforcing an allowlist it never read.
 
 Which direction a backend misses egress by decides the outcome, and it is not symmetrical. A backend that confines **less** than the spec asks silently widens what the workload was designed to reach — refused. One that confines **more** is permitted, with a warning: the sandbox reaches nothing it should not, and the workload fails visibly at whatever it could not fetch.
+
+**4. The guest-shape match.** A backend declares `os_families: frozenset[OsFamily]` — the guest shapes it hands out, `posix` or `windows` — and a spec declares `requires_os_family`, the shape its commands and scripts are written for. `ensure_can_serve(spec)` raises `SandboxOsFamilyNotSupported` on a mismatch, so a POSIX workload meets a Windows guest at attach rather than at its first command. **The axis is path grammar and argv quoting, and nothing else**: a spec asking for `posix` and getting it can still meet an image with no shell, because what is *installed* in a guest is a property of the image, and one backend may be handed many. `docs/design/guest-platform-and-commands.md` settles where that separate question is answered. Silence here is neither of the readings above — an undeclared `os_families` is the *absence of an answer*, read as `frozenset()`, which refuses a spec that asks and leaves every spec that does not exactly as it was. A backend with no guest in the operating-system sense, such as one serving a language runtime, has nothing to declare and declares nothing.
 
 Note that the checks answer to different owners. How strong the boundary must be *here* is the *host's* policy, read from `min_isolation` — and a spec may raise that floor for itself, never lower it. What a sandbox may reach, and what it must be able to do, are properties of the *workload*, stated in its spec. Keeping the axes apart is deliberate: merging isolation into a "required capabilities" list would let a workload ask for a weaker boundary than the deployment mandates.
 
@@ -144,6 +146,25 @@ The contract says what may be dispatched; it does not say how a dispatch *reache
 **The transport tries not to let its own files outlive the call.** It removes the ones it owns — the program, the shim, the launcher, the captured output, the exit marker, the pid, and every request and response the run exchanged with the host — on *every* exit path, success included, over the same `exec` it uses for everything else — **best-effort, not a retention guarantee**: a guest without `rm`, a removal that times out, or a non-zero exit each leave that traffic readable, logged and nothing more. What it cannot remove is `WORK_DIRECTORY`: artifacts live there and a kind collects them after the transport has returned, so removing it would delete the outputs of every successful run. `reclaim_run(sandbox, layout)` is the other half, **a kind's to call in a `finally` once it has collected**, and it takes the whole run directory. A `False` from it is a data-retention failure rather than a tidiness one: nothing comes back for it — the protocol's delete is capability-gated and this transport does not require it — and `acquire` is get-or-create, so a run directory that survives is readable by every later run in the same sandbox for the life of the conversation. **A kind that takes its place in the guest from `SandboxToolSession.guest_call_path()` does not have to remember any of this**: `sandboxed_tool` removes that path, and everything under it, when the call returns — after a result, a refusal and an exception alike — and hands a removal that did not happen to the host's `on_reclaim_failure` as a `ReclaimFailure`, which is where disposal is decided. A kind that composes its own path keeps `reclaim_run`, and keeps the `finally`. What remains is the host's own disposal — `SandboxRouter.dispose(key)`, which ends every kind's sandbox for that conversation and any concurrent call in it. Blunt, and worth it against data left where the next program can read it; how a kind reaches it is [#435](https://github.com/sokolaidev/maf-extensions/issues/435).
 
 It costs round trips — several backend calls per dispatch, plus polling, plus one on every return to reclaim, and one more to stop the program on a run that overran. It serves one outstanding call at a time. This module's own docstring counts those costs exactly, beside the code that decides them; whether the trade is worth it is a measurement rather than an assumption.
+
+## Upgrading to 0.19
+
+**A workload now declares the egress mode it runs in, and the router refuses any backend that cannot enforce exactly that mode.** `SandboxSpec` gains `egress: Egress`, defaulting to `Egress.CLOSED`, and a backend declares `egress_modes: frozenset[Egress]` — the set it can actually enforce — in place of the single `egress` property, which is removed. `ensure_can_serve` serves the workload iff `spec.egress` is in that set.
+
+**The tolerance is gone, and this is the change most likely to break a working deployment.** Until 0.19 a backend that confined *more* than the spec asked was permitted with a warning — a `closed` backend served an allowlist spec, and the workload simply failed at whatever it could not fetch. That is now a refusal:
+
+```
+SandboxEgressNotEnforced: sandbox backend 'docker' cannot enforce the 'allowlist'
+egress the 'bicep' workload runs in (it enforces closed).
+```
+
+Neither direction is substituted any more: confining less silently widens what the workload reaches, and confining more hands it a posture it was not built for. If you see this, either give the backend a mode it can enforce — for `maf-sandbox-docker` that means configuring `egress_proxy_image`, without which it declares `{closed}` alone — or ask the kind for the mode you actually have, e.g. `bicep_sandbox_spec(egress=Egress.CLOSED)`.
+
+**`egress_allow` without `Egress.ALLOWLIST` is refused at construction.** A host list is the payload of an allowlist run, so `SandboxSpec(kind=…, egress_allow=("example.invalid",))` now raises `ValueError` unless `egress=Egress.ALLOWLIST` goes with it. Kinds set both together, so this reaches you only if you build a spec by hand.
+
+**`Capability.NETWORK` is removed.** No backend ever declared it and no spec ever required it; how precisely egress is confined lives in `Egress`, which is where it always was.
+
+**Every shipped backend replaced `egress` with `egress_modes` in the same release.** A host that read `backend.egress` directly gets an `AttributeError`; read `backend.egress_modes` instead. Move core and the backends in the same step — an older backend under a 0.19 router is read through a compatibility shim and still resolves, but a 0.19 backend under an older router declares nothing the old router can see and is refused as undeclared.
 
 ## Upgrading to 0.18
 

@@ -107,6 +107,21 @@ Naming a host is a real widening, and worth naming as such: this sandbox runs mo
 
 **Isolation is the host's call, and a store changes what that call is about.** This kind does not raise `SandboxSpec.min_isolation`, so the router's floor governs — `MICROVM` unless the host opted down. A kind that ran code influenced by untrusted external content would pin the floor itself, and this one cannot know whether it is one: with no store and no allowlist, the program's only input is source the model wrote, and opting down to `CONTAINER` weighs model-written code against a shared kernel. **With a store the program also reads whatever those files contain, and with an allowlist whatever an allowed host returns** — so the floor should be chosen against the provenance of everything the program can read, not against this kind's defaults. Only the host knows that.
 
+## Upgrading to 0.7
+
+`0.7.0` requires `maf-sandbox` 0.19, which made the egress mode a thing a workload declares.
+
+**`codeact_sandbox_spec`'s signature is unchanged** — there is no `egress` parameter to pass, because the mode follows from what you already say: name hosts in `egress_allow` and the spec runs in `Egress.ALLOWLIST`, name none and it runs in `Egress.CLOSED`. Nothing to edit.
+
+**What changed is what the router does with it.** A backend that cannot enforce the resulting mode is refused at attach rather than permitted with a warning, so a host that wired an allowlist against a backend confining everything used to get a program that failed at the fetch and now gets:
+
+```
+SandboxEgressNotEnforced: sandbox backend 'docker' cannot enforce the 'allowlist'
+egress the 'codeact' workload runs in (it enforces closed).
+```
+
+Give the backend a mode it can enforce — for `maf-sandbox-docker`, configure `egress_proxy_image` — or drop `egress_allow` and let the program run closed. The refusal is deliberate: a program that silently could not reach what its host meant to allow is the failure this replaces.
+
 ## Upgrading to 0.3
 
 `0.3.0` follows `maf-sandbox` 0.11, which retired the word `workspace` from the vocabulary. It requires that release.

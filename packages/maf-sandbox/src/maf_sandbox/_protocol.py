@@ -113,27 +113,23 @@ def meets_floor(declared: Isolation, floor: Isolation) -> bool:
 
 
 class Egress(StrEnum):
-    """How precisely a backend can confine what a sandbox reaches. Declared by the backend.
+    """A network posture on one axis, least-isolated to most: ``UNRESTRICTED``, ``ALLOWLIST``,
+    ``CLOSED``.
 
-    Backends differ in how much of a spec's allowlist they can express, and the direction they
-    miss by is not symmetrical: confining **less** than the spec asks silently widens what the
-    workload was designed to reach, while confining **more** only makes the workload fail,
-    loudly, at whatever it could not fetch.  So only the first is refused.
-
-    Saying nothing and saying "I confine nothing" are refused alike and named apart: a backend
-    that never declared has made no claim, and the refusal should not put one in its mouth.
+    It is both what a **workload runs in** (:attr:`SandboxSpec.egress`, one mode, default
+    ``CLOSED``) and what a **backend can enforce** (:attr:`SandboxBackend.egress_modes`, a set).
+    The router serves a workload iff its mode is in the backend's set, and refuses otherwise —
+    never substituting a different mode.  Confining **less** than asked silently widens what the
+    workload reaches; confining **more** hands it a posture it was not built for; so neither is
+    done in place of the other.  See ``docs/design/egress-resolution.md``.
     """
 
-    #: Deny by default, allow exactly the hosts a spec names.
-    ALLOWLIST = "allowlist"
-    #: All or nothing: can deny everything, cannot allow one host and not another.
-    CLOSED = "closed"
-    #: Cannot confine egress at all — whatever the host can reach, the sandbox can reach.
+    #: Reach anything the host can — no confinement. The least isolated.
     UNRESTRICTED = "unrestricted"
-    #: No declaration: not a rung on the scale above, and what the router reads when a backend
-    #: has no ``egress`` at all. A backend may also set it deliberately, to say the question is
-    #: unanswered rather than answered badly; both are refused.
-    UNDEFINED = "undefined"
+    #: Deny by default, allow exactly the hosts a spec names (:attr:`SandboxSpec.egress_allow`).
+    ALLOWLIST = "allowlist"
+    #: No network at all. The most isolated, and the default a spec gets if it says nothing.
+    CLOSED = "closed"
 
 
 class Capability(StrEnum):
@@ -163,8 +159,6 @@ class Capability(StrEnum):
     #: the protocol deleted before this, and a workload that never cleans up is not broken by
     #: a capability it does not require.
     FILES_DELETE = "files_delete"
-    #: Any egress at all — how precisely it is confined stays in :class:`Egress`.
-    NETWORK = "network"
     #: Snapshot and restore a sandbox for reuse.
     SNAPSHOT = "snapshot"
     #: A platform-attached identity scoped to the sandbox itself.
@@ -173,6 +167,29 @@ class Capability(StrEnum):
 
 #: What every :class:`Sandbox` already obligates.
 DEFAULT_CAPABILITIES: frozenset[Capability] = frozenset({Capability.EXEC, Capability.FILES_IN})
+
+
+class OsFamily(StrEnum):
+    """A guest's path grammar and argv quoting. **Not its operating system, and not what is
+    installed in it.**
+
+    Two members rather than three, because only this split decides anything here: argv
+    quoting, the separator and root shape, the reserved device names, and what a junction or
+    reparse point reports as. Nothing in this package branches on Linux against macOS once
+    command availability is set aside, and the one candidate — case sensitivity — is a
+    property of a filesystem rather than of an OS, so no OS name would imply it.
+
+    **Reaching for this to decide whether a command exists is the mistake it cannot catch.**
+    A distroless image is POSIX and has no shell; a macOS guest is POSIX and has no
+    ``setsid``. What a guest has installed is a property of its image, which one backend may
+    be handed many of — see ``docs/design/guest-platform-and-commands.md``, which settles
+    where that question is answered instead.
+    """
+
+    #: A ``/`` root, POSIX quoting: Linux, macOS, the BSDs.
+    POSIX = "posix"
+    #: Drive letters and UNC, Windows argv quoting rules.
+    WINDOWS = "windows"
 
 
 class SourceIntegrity(StrEnum):
@@ -402,9 +419,15 @@ class SandboxSpec:
     the promise in this docstring's first line.  ``image_id`` is an escape hatch for a
     backend-native pinned id that skips resolution entirely.
 
-    ``egress_allow`` is an allowlist of hostnames — **everything not listed is denied**, so
-    an empty tuple means no network at all.  Stating it positively is deliberate: a spec that
-    forgets to mention egress gets the closed configuration, not the open one.
+    ``egress`` is the one network posture the workload runs in — an :class:`Egress` mode,
+    default :data:`Egress.CLOSED` (no network).  The router serves it only on a backend that can
+    enforce that exact mode and refuses otherwise, never substituting another; see
+    ``docs/design/egress-resolution.md``.  ``egress_allow`` is the payload of an
+    :data:`Egress.ALLOWLIST` run — the hostnames reached, **everything not listed denied** — and
+    is consulted only in that mode.  A non-empty ``egress_allow`` therefore requires
+    ``egress is Egress.ALLOWLIST``, refused here otherwise: naming hosts with no network to reach
+    them on is incoherent, not resolved into a surprise.  The ``CLOSED`` default keeps the
+    fail-closed property: a spec that says nothing about egress gets no network.
 
     ``work_dir`` is the guest-side directory a workload's paths resolve against, and it is
     **guest-native**: the host states it to suit the image it configured, and nothing rewrites
@@ -413,10 +436,17 @@ class SandboxSpec:
     and a backend cannot find a path inside an opaque argv without parsing arbitrary command
     lines.  An argv *sequence* protects against quoting, not against paths within the
     arguments.  ``/maf-sandbox/work`` is a default, not a requirement.  A workload must not read the
-    guest's platform *out* of this field, and nothing here validates it against one — that a
-    kind can depend on its guest's OS, and that no axis yet declares or matches it, is a gap
-    kept deliberately additive so a platform axis lands without a breaking change (issue
-    #111).
+    guest's platform *out* of this field, and nothing here validates it against one: the axis
+    that declares and matches a guest's shape is :class:`OsFamily`, stated by a spec in
+    :attr:`requires_os_family` and by a backend in ``os_families``.  Reading it out of a path
+    instead would infer a fact the field never promised — a ``/``-rooted ``work_dir`` says
+    nothing about the guest, because the host typed it.
+
+    ``requires_os_family`` is the shape this workload's commands and scripts are written for,
+    and the router refuses a backend whose ``os_families`` does not hold it.  ``None`` — the
+    default — asks nothing and is refused by nothing, which is what keeps every spec written
+    before this axis existed serving exactly as it did.  It says nothing about what is
+    installed in the guest; :class:`OsFamily` carries why.
 
     ``requires`` names the capabilities the workload cannot run without, and ``min_isolation``
     the weakest boundary it accepts anywhere.  A spec may **raise** the host's floor and never
@@ -465,6 +495,21 @@ class SandboxSpec:
     # argument after it — a caller's `files_in` would silently become this flag.
     outputs_named_at_call_time: bool = False
     identities: frozenset[Identity] = frozenset()
+    # Appended, like the two above, so it cannot rebind a positional caller's argument.
+    egress: Egress = Egress.CLOSED
+    # Appended for the same reason, and *after* ``egress`` because that field was here first.
+    # Which of two defaulted fields comes last is arbitrary to a keyword caller and
+    # load-bearing to a positional one, so the order follows arrival rather than taste.
+    requires_os_family: OsFamily | None = None
+
+    def __post_init__(self) -> None:
+        if self.egress_allow and self.egress is not Egress.ALLOWLIST:
+            hosts = ", ".join(self.egress_allow)
+            raise ValueError(
+                f"egress_allow names hosts ({hosts}) but egress is {str(self.egress)!r}: a host "
+                f"list is the payload of an {str(Egress.ALLOWLIST)!r} run and has no meaning "
+                "without it. Set egress=Egress.ALLOWLIST, or drop the hosts."
+            )
 
 
 @dataclass(frozen=True)
@@ -474,6 +519,16 @@ class ExecResult:
     stdout: str
     stderr: str = ""
     exit_code: int = 0
+
+
+class SandboxQueuedTimeout(TimeoutError):
+    """A :meth:`Sandbox.run_code` deadline expired before the program ever started.
+
+    Its own type because the caller's next move differs: a program that overran should be made
+    smaller, and one that never started should be retried unchanged.  A caller cannot tell
+    those apart from a message, and a kind reporting the wrong one to a model sends it to
+    rewrite working code.
+    """
 
 
 @runtime_checkable
@@ -550,6 +605,38 @@ class Sandbox(Protocol):
           by a shell inside the sandbox. Use it only when the command genuinely needs shell
           features a sequence cannot express — redirection, ``||``, ``&&`` — and every part
           of it is a fixed template with nothing but an already-validated path interpolated.
+        """
+        ...
+
+    async def run_code(self, code: str, *, timeout: float) -> ExecResult:
+        """Evaluate ``code`` in the guest's language runtime, bounded by ``timeout`` seconds.
+
+        The method :data:`Capability.RUN_CODE` names, as :meth:`exec` is the method
+        :data:`Capability.EXEC` names.  A backend declaring that capability implements this;
+        one declaring neither may raise :exc:`NotImplementedError`, because the router refuses
+        a spec requiring it before any caller arrives — no kind feature-detects.
+
+        There is no ``working_directory``: this surface takes a program, not a path, and a
+        backend offering it may have no filesystem to resolve one against.
+
+        **``timeout`` is wall-clock from this call, not from the moment the program starts.**
+        A backend that serialises calls on one sandbox — a warm-reuse backend under concurrent
+        tool calls, a worker actor — spends part of the budget queued, and that time is the
+        caller's just as much as execution is.  The alternative bounds only the running half
+        and leaves the waiting half unbounded, which is the failure a timeout exists to
+        prevent.
+
+        Raises:
+            SandboxQueuedTimeout: the deadline expired while queued; the program never ran.
+                Distinct from :exc:`TimeoutError` on purpose — see that class.
+            TimeoutError: the program started and overran ``timeout``. As on :meth:`exec`,
+                this means that bound expired and nothing else; a backend with a shorter
+                ceiling of its own must not surface it as this.
+
+        What the runtime promises a program is the backend's to state, in the backend's own
+        documentation, because it differs and this protocol cannot make it uniform: whether
+        the value of the last expression comes back or only what the program printed, and what
+        is importable inside.  A kind that assumes one shape works on one backend by accident.
         """
         ...
 
@@ -637,12 +724,27 @@ class SandboxBackend(Protocol):
     sandboxes running.
 
     A backend may also declare ``capabilities: frozenset[Capability]``, matched by the router
-    against a spec's ``requires``, and ``limits: SandboxLimits``, the transfer ceilings a spec
-    may not ask above.  Neither is a member of this Protocol, deliberately:
-    :func:`~typing.runtime_checkable` enforces member *presence*, so declaring them here would
-    stop every backend written before them from being a ``SandboxBackend`` at all.  With
-    :attr:`egress` that makes three optional declarations read by ``getattr``; a fourth is the
-    signal to collapse all of them into one declarations object.
+    against a spec's ``requires``; ``limits: SandboxLimits``, the transfer ceilings a spec may
+    not ask above; its egress — ``egress_modes: frozenset[Egress]``, the set of modes it can
+    enforce, resolved against a spec's :attr:`SandboxSpec.egress` (see
+    ``docs/design/egress-resolution.md``); and ``os_families: frozenset[OsFamily]``, the guest
+    shapes it can hand out, matched against a spec's :attr:`SandboxSpec.requires_os_family`.
+    None is a member of this Protocol, deliberately: :func:`~typing.runtime_checkable` enforces
+    member *presence*, so declaring them here would stop every backend written before them from
+    being a ``SandboxBackend`` at all.
+
+    ``os_families`` is what a backend was *constructed* to serve, not what its package could
+    serve — the router reads it synchronously, before any sandbox exists, so it cannot be a
+    question asked of a running guest.  A backend serving one guest family per instance states
+    one member; a deployment serving two registers two backends.  Saying nothing is read as
+    ``frozenset()``, which refuses a spec that asks and nothing else: a backend with no guest
+    in the operating-system sense — a language runtime, a data-plane API — has no answer to
+    give, and inventing one for it would be a claim it never made.
+
+    That makes **four** optional declarations read by ``getattr``, which is the count this
+    docstring already named as the signal to collapse them into one declarations object.  The
+    collapse is owed and is not this change: it rewrites every backend's declaration surface at
+    once, and the axis that tripped the count is additive by construction.
     """
 
     @property
@@ -656,16 +758,6 @@ class SandboxBackend(Protocol):
 
         A value outside :class:`Isolation` is refused rather than ranked: the router cannot
         tell whether an unknown boundary is stronger or weaker than the one required.
-        """
-        ...
-
-    @property
-    def egress(self) -> Egress:
-        """One of the :class:`Egress` members, read before a workload's tool is attached.
-
-        Not declaring it is read as :data:`Egress.UNDEFINED`, and refused — the same verdict
-        as :data:`Egress.UNRESTRICTED` and a different sentence, because a backend that said
-        nothing has not claimed it cannot confine.
         """
         ...
 

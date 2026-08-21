@@ -29,6 +29,7 @@ import uuid
 import pytest
 from maf_sandbox import (
     Capability,
+    Egress,
     EntryKind,
     HostToolRegistry,
     HostToolRun,
@@ -456,7 +457,7 @@ class TestAllowlistEgress:
     def test_allowed_reachable_denied_not_and_teardown_leaves_nothing(self):
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(self._config())
-        spec = _spec(egress_allow=("mcr.microsoft.com",))
+        spec = _spec(egress=Egress.ALLOWLIST, egress_allow=("mcr.microsoft.com",))
 
         sandbox = asyncio.run(backend.acquire(_key(scope), spec))
         net = sandbox.container_name + "-net"

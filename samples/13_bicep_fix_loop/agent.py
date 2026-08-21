@@ -30,7 +30,7 @@ default. See this directory's README.
 #     "azure-identity",
 #     "maf-sandbox-bicep",
 #     "maf-sandbox-docker",
-#     "maf-sandbox>=0.18",
+#     "maf-sandbox>=0.19",
 # ]
 # ///
 
@@ -46,7 +46,7 @@ from typing import TYPE_CHECKING
 from _scaffold import MEASURED, installed_versions, quoted, require_env_vars, tool_results
 from agent_framework import Agent, FileAccessProvider, InMemoryAgentFileStore
 from agent_framework.openai import OpenAIChatCompletionClient
-from maf_sandbox import Isolation, SandboxRouter
+from maf_sandbox import Egress, Isolation, SandboxRouter
 from maf_sandbox.maf import list_all_files, make_caller_context
 from maf_sandbox_bicep import make_bicep_tools
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
@@ -283,7 +283,9 @@ async def run() -> int:
     backend = DockerSandboxBackend(DockerSandboxConfig())
     router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
     context = make_caller_context(list_all_files, lambda: SCOPE, lambda: THREAD_ID)
-    tools = make_bicep_tools(router, store, AGENT_DIR, context, image=IMAGE)
+    # egress=CLOSED: the Docker backend here has no proxy, so it runs --network none and the
+    # workload runs closed. The fix loop's template uses no modules, so nothing is restored.
+    tools = make_bicep_tools(router, store, AGENT_DIR, context, image=IMAGE, egress=Egress.CLOSED)
     if not tools:
         print("No sandbox backend: bicep_validate was not attached.", file=sys.stderr)
         return 2
