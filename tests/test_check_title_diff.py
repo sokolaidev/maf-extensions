@@ -123,6 +123,13 @@ class TestAssess:
     def test_fix_on_root_metadata_has_no_shipped_behavior(self):
         assert check.assess("fix: update dependency", ["pyproject.toml"], {})
 
+    @pytest.mark.parametrize(
+        "title",
+        ["fix(core): correct the API", "feat(core): add the API", "feat(core)!: replace the API"],
+    )
+    def test_valid_scoped_and_breaking_prefixes_are_classified(self, title: str):
+        assert check.title_type(title) in {"fix", "feat"}
+
     def test_breaking_behavior_title_is_classified_as_behavior(self):
         assert check.title_type("feat(core)!: change the API") == "feat"
 
