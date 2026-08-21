@@ -16,9 +16,12 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import yaml
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 VERIFY_LIVE = REPO_ROOT / ".github" / "workflows" / "verify-live.yml"
 _TEXT = VERIFY_LIVE.read_text("utf-8")
+_WORKFLOW = yaml.safe_load(_TEXT)
 
 #: Any invocation of a live check, whatever it is prefixed with — the prefix is the assertion.
 _CHECK_CALL = re.compile(r"python3\s+(?P<prefix>\S*?)scripts/(?P<script>check_live_\w+\.py)")
@@ -43,10 +46,25 @@ class TestEveryLiveCheckComesFromTheHarness:
         assert not bare, f"invoked from the ref under test rather than $HARNESS: {bare}"
 
     def test_each_invoking_job_checks_the_harness_out(self):
-        # One `path: .harness` per job that runs a check: the variable resolves to that
-        # directory on a tagged run, so a job that reads it without cloning it would fail there
-        # and only there — on a real release, after a real upload.
-        assert len(_HARNESS_CHECKOUT.findall(_TEXT)) == len(_CHECK_CALL.findall(_TEXT))
+        # One `path: .harness` per job that runs a check, regardless of how many live checks
+        # that job invokes. The harness is a job-scoped dependency: a single checkout feeds every
+        # `python3 "$HARNESS"/scripts/check_live_*.py` call in that job, and a tag run fails if
+        # the job reads the ref under test instead.
+        jobs = _WORKFLOW.get("jobs", {})
+        live_jobs = []
+        for job, definition in jobs.items():
+            steps = definition.get("steps", [])
+            if any(
+                'python3 "$HARNESS"/scripts/check_live_' in str(step.get("run", ""))
+                for step in steps
+            ):
+                live_jobs.append(job)
+                assert any(
+                    step.get("with", {}).get("path") == ".harness"
+                    for step in steps
+                    if isinstance(step, dict)
+                ), f"{job} invokes a live check without checking out the harness"
+        assert live_jobs, "verify-live.yml invokes no live checks"
 
 
 class TestTheFallbackKeepsABranchDispatchHonest:

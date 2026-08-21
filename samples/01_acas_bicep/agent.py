@@ -40,6 +40,7 @@ from _scaffold import (
     MEASURED,
     conversation_id,
     evidence,
+    installed_versions,
     quoted,
     require_env_vars,
     tool_results,
@@ -204,4 +205,5 @@ async def run() -> int:
 
 
 if __name__ == "__main__":
+    print(installed_versions())
     raise SystemExit(asyncio.run(run()))

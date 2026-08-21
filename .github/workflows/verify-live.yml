@@ -59,10 +59,20 @@ on:
         required: false
         type: string
         default: ""
+      version:
+        description: "Version of the package just published (empty skips the installed-version assertion)"
+        required: false
+        type: string
+        default: ""
   workflow_call:
     inputs:
       package:
         description: "Package whose release to verify (empty runs every sample)"
+        required: false
+        type: string
+        default: ""
+      version:
+        description: "Version of the package just published (empty skips the installed-version assertion)"
         required: false
         type: string
         default: ""
@@ -181,6 +191,14 @@ jobs:
           # stdlib-only, so the runner's own python3 runs it — uv run's env is not on its path.
           python3 "$HARNESS"/scripts/check_live_sample.py /tmp/sample-out.txt
 
+      - name: Assert the published version the sample resolved
+        if: ${{ always() && inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 "$HARNESS"/scripts/check_live_versions.py /tmp/sample-out.txt "$PACKAGE" "$VERSION"
   sample-03:
     name: samples/03_acas_codeact against a live sandbox
     # No `needs: sample-01` — the two never had a data dependency (each creates its own
@@ -293,6 +311,14 @@ jobs:
           # stdlib-only, so the runner's own python3 runs it — uv run's env is not on its path.
           python3 "$HARNESS"/scripts/check_live_codeact_sample.py /tmp/sample03-out.txt
 
+      - name: Assert the published version the sample resolved
+        if: ${{ always() && inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 "$HARNESS"/scripts/check_live_versions.py /tmp/sample03-out.txt "$PACKAGE" "$VERSION"
   sample-05:
     name: samples/05_docker_bicep against a live container
     # Sample 01's workload and its `main.bicep`, in a Docker container on this runner instead of
@@ -374,6 +400,14 @@ jobs:
           # the same two rule ids, whatever ran it — and both samples print them the same way.
           python3 "$HARNESS"/scripts/check_live_sample.py /tmp/sample05-out.txt
 
+      - name: Assert the published version the sample resolved
+        if: ${{ always() && inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 "$HARNESS"/scripts/check_live_versions.py /tmp/sample05-out.txt "$PACKAGE" "$VERSION"
   sample-06:
     name: samples/06_docker_codeact against a live container
     # The same task and assertion as sample-03, but the sandbox is a Docker container on this
@@ -455,6 +489,14 @@ jobs:
           # The same assertion as sample 03: same task, same one right answer, same printed shape.
           python3 "$HARNESS"/scripts/check_live_codeact_sample.py /tmp/sample06-out.txt
 
+      - name: Assert the published version the sample resolved
+        if: ${{ always() && inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 "$HARNESS"/scripts/check_live_versions.py /tmp/sample06-out.txt "$PACKAGE" "$VERSION"
   sample-07:
     name: samples/07_docker_diagram against a live container
     # The pull surface driven by a kind defined in the sample rather than installed from a
@@ -536,6 +578,14 @@ jobs:
           python3 "$HARNESS"/scripts/check_live_diagram_sample.py \
             /tmp/sample07-out.txt samples/07_docker_diagram/out/diagram.png
 
+      - name: Assert the published version the sample resolved
+        if: ${{ always() && inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 "$HARNESS"/scripts/check_live_versions.py /tmp/sample07-out.txt "$PACKAGE" "$VERSION"
   sample-08:
     name: samples/08_docker_codeact_files against a live container
     # Both of the packaged CodeAct kind's file channels, in one turn: a file store file in and a
@@ -612,6 +662,14 @@ jobs:
           python3 "$HARNESS"/scripts/check_live_codeact_files_sample.py \
             /tmp/sample08-out.txt samples/08_docker_codeact_files/out/summary.md
 
+      - name: Assert the published version the sample resolved
+        if: ${{ always() && inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 "$HARNESS"/scripts/check_live_versions.py /tmp/sample08-out.txt "$PACKAGE" "$VERSION"
   sample-09:
     name: samples/09_inprocess_bicep against the host
     # The one sample whose backend is not a sandbox at all: a backend the sample defines
@@ -704,6 +762,14 @@ jobs:
           # same two rule ids, whatever ran it. stdlib-only, so the runner's own python3 runs it.
           python3 "$HARNESS"/scripts/check_live_sample.py /tmp/sample09-out.txt
 
+      - name: Assert the published version the sample resolved
+        if: ${{ always() && inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 "$HARNESS"/scripts/check_live_versions.py /tmp/sample09-out.txt "$PACKAGE" "$VERSION"
   sample-10:
     name: samples/10_inprocess_host_tools against the published wheels
     # The router's own posture surface — the host-tools registry, the aggregate it folds to,
@@ -749,6 +815,14 @@ jobs:
           # retelling of them. stdlib-only, so the runner's own python3 runs it.
           python3 "$HARNESS"/scripts/check_live_host_tools_sample.py /tmp/sample10-out.txt
 
+      - name: Assert the published version the sample resolved
+        if: ${{ always() && inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 "$HARNESS"/scripts/check_live_versions.py /tmp/sample10-out.txt "$PACKAGE" "$VERSION"
   sample-11:
     name: samples/11_router_two_backends against a live container
     # The router's own job — which backend serves, what it refuses, what it lets a workload
@@ -858,6 +932,14 @@ jobs:
           # nothing. stdlib-only, so the runner's own python3 runs it.
           python3 "$HARNESS"/scripts/check_live_router_sample.py /tmp/sample11-out.txt
 
+      - name: Assert the published version the sample resolved
+        if: ${{ always() && inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 "$HARNESS"/scripts/check_live_versions.py /tmp/sample11-out.txt "$PACKAGE" "$VERSION"
   sample-12:
     name: samples/12_purge_lifecycle against a live container
     # The lifecycle end no other sample reaches: reuse within a turn, `router.scope` at the end
@@ -898,6 +980,14 @@ jobs:
           # own python3 runs it.
           python3 "$HARNESS"/scripts/check_live_purge_sample.py /tmp/sample12-out.txt
 
+      - name: Assert the published version the sample resolved
+        if: ${{ always() && inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 "$HARNESS"/scripts/check_live_versions.py /tmp/sample12-out.txt "$PACKAGE" "$VERSION"
   sample-13:
     name: samples/13_bicep_fix_loop against a live container
     # The only sample that runs more than one turn, and the only one whose store starts empty:
@@ -1009,6 +1099,14 @@ jobs:
           echo "$said" | tee -a "$GITHUB_STEP_SUMMARY"
           exit "$status"
 
+      - name: Assert the published version the sample resolved
+        if: ${{ always() && inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 "$HARNESS"/scripts/check_live_versions.py /tmp/sample13-out.txt "$PACKAGE" "$VERSION"
   sample-14:
     name: samples/14_acas_codeact_files against a live sandbox
     # The pull surface on a second backend, which is the whole reason this job exists (#300).
@@ -1114,6 +1212,14 @@ jobs:
           python3 "$HARNESS"/scripts/check_live_codeact_files_sample.py \
             /tmp/sample14-out.txt samples/14_acas_codeact_files/out/summary.md
 
+      - name: Assert the published version the sample resolved
+        if: ${{ always() && inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 "$HARNESS"/scripts/check_live_versions.py /tmp/sample14-out.txt "$PACKAGE" "$VERSION"
   sample-15:
     name: samples/15_acas_codeact_host_tools against a live sandbox
     # The only live dispatch in the set (#302), and the only place `Capability.HOST_TOOLS` is
@@ -1214,6 +1320,14 @@ jobs:
           # which of them carried the data. stdlib-only, so the runner's own python3 runs it.
           python3 "$HARNESS"/scripts/check_live_host_tools_dispatch_sample.py /tmp/sample15-out.txt
 
+      - name: Assert the published version the sample resolved
+        if: ${{ always() && inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 "$HARNESS"/scripts/check_live_versions.py /tmp/sample15-out.txt "$PACKAGE" "$VERSION"
   acas-e2e:
     name: maf-sandbox-acas conformance against a live sandbox group
     # **The one job here that is not a sample**, and the one that does not install published

@@ -43,7 +43,7 @@ import subprocess
 import sys
 from typing import TYPE_CHECKING
 
-from _scaffold import MEASURED, quoted, require_env_vars, tool_results
+from _scaffold import MEASURED, installed_versions, quoted, require_env_vars, tool_results
 from agent_framework import Agent, FileAccessProvider, InMemoryAgentFileStore
 from agent_framework.openai import OpenAIChatCompletionClient
 from maf_sandbox import Isolation, SandboxRouter
@@ -463,4 +463,5 @@ async def run() -> int:
 
 
 if __name__ == "__main__":
+    print(installed_versions())
     raise SystemExit(asyncio.run(run()))

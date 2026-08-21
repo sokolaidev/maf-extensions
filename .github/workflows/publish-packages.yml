@@ -633,6 +633,7 @@ jobs:
     uses: ./.github/workflows/verify-live.yml
     with:
       package: ${{ needs.build.outputs.package }}
+      version: ${{ needs.build.outputs.version }}
     permissions:
       # Passed down to the called workflow, which mints the Azure OIDC token.
       id-token: write

@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import subprocess
 
+from _scaffold import installed_versions
 from maf_sandbox import Isolation, SandboxKey, SandboxRouter, SandboxSpec
 from maf_sandbox.maf import SandboxPurger
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
@@ -214,4 +215,5 @@ async def main() -> int:
 
 
 if __name__ == "__main__":
+    print(installed_versions())
     raise SystemExit(asyncio.run(main()))

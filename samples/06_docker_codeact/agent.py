@@ -42,7 +42,7 @@ import asyncio
 import re
 import sys
 
-from _scaffold import MEASURED, evidence, quoted, require_env_vars, tool_results
+from _scaffold import MEASURED, evidence, installed_versions, quoted, require_env_vars, tool_results
 from agent_framework import Agent
 from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
@@ -154,4 +154,5 @@ async def run() -> int:
 
 
 if __name__ == "__main__":
+    print(installed_versions())
     raise SystemExit(asyncio.run(run()))

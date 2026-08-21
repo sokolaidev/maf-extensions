@@ -168,6 +168,20 @@ def _load():
 scaffold = _load()
 
 
+def _load_live_versions():
+    spec = importlib.util.spec_from_file_location(
+        "check_live_versions",
+        Path(__file__).resolve().parent.parent / "scripts" / "check_live_versions.py",
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+live_versions = _load_live_versions()
+
+
 def _call(name: str, call_id: str):
     return SimpleNamespace(type="function_call", name=name, call_id=call_id)
 
@@ -317,3 +331,21 @@ class TestEvidenceFencesTheToolSOwnOutput:
         """A turn that called nothing has to be readable as one, not as a missing block."""
         block = scaffold.evidence("What it returned", [], "runs")
         assert block == "== What it returned ==\n\n  [measured] runs: 0"
+
+
+class TestCheckLiveVersions:
+    def test_it_passes_for_one_exact_match(self):
+        output = "[measured] installed: maf-sandbox 0.18.1, maf-sandbox-acas 0.11.0"
+        assert live_versions.assess(output, "maf-sandbox", "0.18.1") == []
+
+    def test_it_rejects_a_missing_measurement(self):
+        assert live_versions.assess("no measured line", "maf-sandbox", "0.18.1") == [
+            "the sample never printed a measured installed: line"
+        ]
+
+    def test_it_rejects_multiple_exact_matches(self):
+        output = "[measured] installed: maf-sandbox 0.18.1, maf-sandbox 0.18.1"
+        assert live_versions.assess(output, "maf-sandbox", "0.18.1") == [
+            "the published set has not caught up: expected exactly one installed match for "
+            "maf-sandbox 0.18.1, found: maf-sandbox 0.18.1, maf-sandbox 0.18.1"
+        ]
