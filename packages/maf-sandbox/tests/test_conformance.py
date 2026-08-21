@@ -165,6 +165,12 @@ class _Leaky:
                 return ExecResult(stdout="")
         return ExecResult(stdout="", stderr="unsupported", exit_code=1)
 
+    async def run_code(self, code: str, *, timeout: float) -> ExecResult:
+        """Refused: this specimen models a POSIX guest reached through `exec`, and the suites
+        that use it plant links with a shell. Present so it is still a `Sandbox`."""
+        del code, timeout
+        raise NotImplementedError("this specimen declares no RUN_CODE")
+
     async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
         guest = self._confined(path, working_directory)
         self._walk(guest, working_directory)
