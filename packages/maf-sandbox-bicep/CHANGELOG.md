@@ -2,6 +2,13 @@
 
 All notable changes to `maf-sandbox-bicep` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.8.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.8.0...maf-sandbox-bicep-v0.8.1) (2026-08-21)
+
+
+### Fixes
+
+* **kinds:** wire kinds to framework-owned call directories ([#500](https://github.com/sokolaidev/maf-extensions/issues/500)) ([91fd4d1](https://github.com/sokolaidev/maf-extensions/commit/91fd4d18b3ef9dff5223713d26e78614eb847fb7))
+
 ## [0.8.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.7.5...maf-sandbox-bicep-v0.8.0) (2026-08-20)
 
 
