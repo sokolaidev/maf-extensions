@@ -21,7 +21,6 @@ def _git(*args: str) -> str:
 def _hook_script(hook_type: str) -> str:
     return f"""#!/bin/sh
 {HOOK_MARKER}
-# Runs the {hook_type} tier of .pre-commit-config.yaml through `uv`, resolved at run time.
 set -e
 root=$(git rev-parse --show-toplevel)
 exec uv run --project "$root" pre-commit hook-impl \\
