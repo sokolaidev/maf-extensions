@@ -466,7 +466,11 @@ class TestAllowlistEgress:
         asyncio.run(sandbox.write_file("/maf-sandbox/work/.keep", "", working_directory=_WORK))
         try:
             assert _network_present(net)
-            subject = PosixGuestSubject(sandbox, _WORK, frozenset({Capability.EXEC}))
+            subject = PosixGuestSubject(
+                sandbox=sandbox,
+                working_directory=_WORK,
+                capabilities=backend.capabilities,
+            )
             asyncio.run(
                 assert_egress_conformance(
                     subject,

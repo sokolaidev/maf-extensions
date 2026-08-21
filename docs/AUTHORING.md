@@ -24,7 +24,7 @@ End it with a `## Status` table, and that is where the tense is paid for:
 | Decision | State | Tracking |
 ```
 
-One row per decision — what it is, whether it is implemented, and a tracking reference: a shipped PR, an open issue, or an explicit `untracked`. A row with an empty tracking cell is the failure this convention exists to prevent, since it is how a document quietly drifts from the code.
+One row per decision — what it is, whether it is implemented, and a tracking reference: a shipped PR, an open issue, or an explicit `untracked`. A row with an empty tracking cell is the failure this convention exists to prevent, since it is how a document quietly drifts from the code. A group's index README — [`sandbox/kinds/README.md`](sandbox/kinds/README.md), [`sandbox/backends/README.md`](sandbox/backends/README.md) — is the exception, and pins through the page that owns the subject rather than through an issue: its State cell carries the fact in prose and its Tracking cell is a relative `.md` link to whichever per-item page or sibling document holds the issue trail, so the index stays self-sufficient for a reader who never leaves the tree. Move the reference into the owning page before you drop it from the index; nothing is deleted on the way.
 
 Decided but unimplemented content goes in the body like everything else, in the same present tense, with an open tracker row saying it has not shipped yet. Do not hedge the prose instead; the row is the honest place for that, and the prose stops being a design the moment it starts qualifying itself.
 
@@ -44,7 +44,7 @@ Hand-author the SVG and commit it to `<family>/assets/`. There is no build step 
 
 - every relative markdown link resolves on disk,
 - every main document ends in a `## Status` heading with a table under it,
-- every tracker row pins something,
+- every tracker row pins something, and the two index READMEs pin through a page rather than an issue,
 - every record under `research/` opens with its banner inside the first five lines,
 - no main document carries the old `Status:` banner grammar — location conveys status now, and the table carries the detail.
 

@@ -19,6 +19,7 @@ _RESEARCH = _SANDBOX / "research"
 _LINK = re.compile(r"\]\(\s*<?([^)>\s]+)>?[^)]*\)")
 _ABSOLUTE = ("http://", "https://", "mailto:")
 _OLD_BANNERS = ("Status: PROPOSED", "Status: AS BUILT", "Status: IMPLEMENTED")
+_ISSUE_LINK = re.compile(r"https://github\.com/[^/\s)]+/[^/\s)]+/(?:issues|pull)/\d+")
 
 
 def _markdown(root: Path) -> list[Path]:
@@ -79,6 +80,7 @@ _MAIN_DOCS = [
     if path != _SANDBOX / "README.md" and _RESEARCH not in path.parents
 ]
 _RECORDS = _markdown(_RESEARCH)
+_INDEX_READMES = [_SANDBOX / "kinds" / "README.md", _SANDBOX / "backends" / "README.md"]
 
 
 class TestEveryRelativeLinkResolves:
@@ -145,4 +147,23 @@ class TestEveryResearchRecordOpensWithABanner:
         assert not found, (
             f"{doc.relative_to(_ROOT).as_posix()} carries {found} — "
             "location conveys status now, and the `## Status` table carries the detail"
+        )
+
+
+class TestTheIndexReadmesAreSelfSufficient:
+    """A group's index README pins through the page that owns the subject, never an issue.
+
+    The per-item pages and the sibling main documents carry the issue trail; the index says what
+    is true and links to whoever tracks it. A reader who cannot reach GitHub loses nothing, and a
+    row cannot go stale against a tracker the README never named.
+    """
+
+    @pytest.mark.parametrize("doc", _INDEX_READMES, ids=_ids(_INDEX_READMES))
+    def test_it_links_no_issue_or_pull_request(self, doc: Path):
+        found = _ISSUE_LINK.findall(doc.read_text("utf-8"))
+        assert not found, (
+            f"{doc.relative_to(_ROOT).as_posix()} links "
+            + ", ".join(found)
+            + " — an index README pins through the owning page, so move the reference into "
+            "that page and link the `.md` instead"
         )

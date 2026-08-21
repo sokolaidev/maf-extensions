@@ -17,7 +17,7 @@ import subprocess
 import uuid
 
 import pytest
-from maf_sandbox import Capability, Egress, SandboxKey, SandboxSpec
+from maf_sandbox import Egress, SandboxKey, SandboxSpec
 from maf_sandbox.conformance import (
     PosixGuestSubject,
     assert_egress_conformance,
@@ -174,7 +174,11 @@ class TestAllowlistEgress:
         net = sandbox.container_name + "-net"
         try:
             assert _network_present(net)
-            subject = PosixGuestSubject(sandbox, _WORK, frozenset({Capability.EXEC}))
+            subject = PosixGuestSubject(
+                sandbox=sandbox,
+                working_directory=_WORK,
+                capabilities=backend.capabilities,
+            )
             asyncio.run(
                 assert_egress_conformance(
                     subject,

@@ -213,14 +213,18 @@ jobs:
     # each package costs is the number of billable jobs its `if` admits: `maf-sandbox` and
     # `maf-sandbox-acas` five (01, 03, 14, 15 and `acas-e2e`), `maf-sandbox-codeact` three (03,
     # 14 and 15), `maf-sandbox-bicep` one (01), everything else none. Count sandboxes rather than
-    # jobs, since `acas-e2e` uses four — one shared by its probes, one the lifecycle test
-    # disposes as the thing under test, one the prebuilt-image test boots from the catalogue, one
-    # the egress leg acquires under an allowlist — and sample-15 two, a sandbox per route. So a
-    # train releasing all four peaks at twenty-three concurrent billable sandboxes for the twenty
-    # minutes the timeout allows, where this note said nineteen before the egress leg and the
-    # prebuilt sandbox it had never counted, thirteen before sample 15, nine before the live
-    # suite and six before sample 14. Total spend is unchanged by the concurrency; only the peak
-    # moved. (#325.)
+    # jobs, and count them twice, because spend and concurrency are different numbers here.
+    # `acas-e2e` **acquires four sandboxes over its run** — one shared by its probes, one the
+    # lifecycle test disposes as the thing under test, one the prebuilt-image test boots from the
+    # catalogue, one the egress leg acquires under an allowlist — but **holds at most two at
+    # once**: the shared one plus whichever of the other three is alive, because the lifecycle
+    # test disposes its own inside the test, the prebuilt one hangs off a *class*-scoped fixture
+    # pytest finalises when that class ends, and the egress one comes from a module-scoped fixture
+    # first requested by the class after it. sample-15 holds two, a sandbox per route. So a train
+    # releasing all four peaks at nineteen concurrent billable sandboxes (7 + 7 + 4 + 1) for the
+    # twenty minutes the timeout allows, where this note said thirteen before sample 15, nine
+    # before the live suite and six before sample 14. Total spend is unchanged by the concurrency;
+    # only the peak moved. (#325.)
     # Empty input (verify-everything) or a package sample-03 actually exercises: the router
     # (maf-sandbox) and the backend it runs on (maf-sandbox-acas) both affect it, and so does
     # its own package (maf-sandbox-codeact); a maf-sandbox-bicep or maf-sandbox-wslc release
@@ -1347,9 +1351,10 @@ jobs:
     # what the difference costs. The suite asserts nothing skipped rather than trusting a green
     # summary, since a skipped listing probe reports exactly like a passing one.
     #
-    # **The fifth billable job**, and the cheapest of them per assertion: four sandboxes for
-    # nineteen tests, no model, no tokens. It needs no model configuration and so reads neither
-    # AZURE_OPENAI variable — the rule stated on the header applies, a job reads what it uses.
+    # **The fifth billable job**, and the cheapest of them per assertion: four sandboxes acquired
+    # over the run — at most two alive at once — for nineteen tests, no model, no tokens. It needs
+    # no model configuration and so reads neither AZURE_OPENAI variable — the rule stated on the
+    # header applies, a job reads what it uses.
     #
     # maf-sandbox and maf-sandbox-acas only: the conformance probes live in the core and the
     # backend under test is the other, and no kind is involved.

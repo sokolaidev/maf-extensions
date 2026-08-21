@@ -15,8 +15,9 @@ name: Conformance (live)
 # Cost: four billable sandboxes per run (the suite's own count — one shared by its probes, one
 # the lifecycle test disposes as the thing under test, one the prebuilt-image test boots from
 # the catalogue, one the egress leg acquires under an allowlist), no model, no tokens beyond
-# the OIDC login. Scheduled runs execute on the default branch, which the live-verify
-# environment's no-deployment-branch-restriction policy already allows.
+# the OIDC login. Four is the spend, not the concurrency: the suite acquires them over its run
+# and never holds more than two at once. Scheduled runs execute on the default branch, which the
+# live-verify environment's no-deployment-branch-restriction policy already allows.
 on:
   schedule:
     # 03:20 UTC: off the top of the hour, off the release-please and publish windows, and
@@ -29,7 +30,8 @@ permissions:
   contents: read
 
 # Its own group, and never cancelled mid-run: teardown reaches the service by label and a
-# cancelled run would leave its four billable sandboxes to the auto-delete timer (#325's rule,
+# cancelled run would leave whatever it was holding to the auto-delete timer — at most two of the
+# four, never all of them, since they are acquired over the run rather than at once (#325's rule,
 # restated). A scheduled run may overlap a post-release verify-live run in the same sandbox
 # group; scopes are per-run (`e2e-<uuid>`), and dispose_scope selects on `(scope, thread)`
 # labels, so neither run can sweep the other's sandboxes.
