@@ -71,6 +71,11 @@ class _Guest:
                 self._issue_next()
         return ExecResult(stdout="", exit_code=0)
 
+    async def run_code(self, code: str, *, timeout: float) -> ExecResult:
+        """Unused: this measurement drives the exec transport. Present so it is a `Sandbox`."""
+        del code, timeout
+        raise NotImplementedError("this guest measures the exec transport only")
+
     async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
         del working_directory
         self.stat_probes += 1

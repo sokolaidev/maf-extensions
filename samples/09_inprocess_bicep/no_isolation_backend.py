@@ -154,6 +154,19 @@ class NoIsolationSandbox:
             exit_code=completed.returncode,
         )
 
+    async def run_code(self, code: str, *, timeout: float) -> ExecResult:
+        """Refused: this backend declares no ``RUN_CODE``, and could not honestly declare it.
+
+        There is no boundary here at all — evaluating a model-authored program would run it in
+        this process, with the host's own authority. ``exec`` at least starts a child. A sample
+        showing the no-isolation rung should not also demonstrate the sharpest way to use it.
+        """
+        del code, timeout
+        raise NotImplementedError(
+            "NoIsolationBackend does not support RUN_CODE: there is no boundary here, so "
+            "evaluating a program would run it in the host process with the host's authority."
+        )
+
     def _to_guest(self, text: str) -> str:
         """Rewrite the host root back to the guest ``work_dir``, in every spelling of it.
 

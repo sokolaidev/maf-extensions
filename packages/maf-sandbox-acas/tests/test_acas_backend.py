@@ -2273,6 +2273,17 @@ class TestOnlyDeclaredDependencies:
         )
 
 
+class TestRunCode:
+    """This backend declares no RUN_CODE, and says why rather than failing bare."""
+
+    def test_run_code_raises_notimplementederror(self):
+        """Not for want of an interpreter: the sandbox group's image may well carry one. The
+        backend resolves an image reference without looking inside it, so declaring the
+        capability would be a claim about an artefact it does not own."""
+        with pytest.raises(NotImplementedError, match="RUN_CODE"):
+            asyncio.run(_sandbox().run_code("print(1)", timeout=5.0))
+
+
 class TestRemove:
     """The data-plane delete: what it sends, what it swallows, and what it refuses."""
 
