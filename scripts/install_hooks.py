@@ -39,6 +39,8 @@ def main() -> None:
         capture_output=True,
         text=True,
     )
+    if configured.returncode not in (0, 1):
+        configured.check_returncode()
     if configured.returncode == 0:
         raise RuntimeError(
             "core.hooksPath is already configured; unset it before installing repository hooks"
