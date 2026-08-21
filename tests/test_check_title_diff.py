@@ -41,7 +41,7 @@ class TestAssess:
             {"packages/maf-sandbox/src/maf_sandbox/_protocol.py": (_DOC_BEFORE, _DOC_AFTER)},
         )
         assert problems
-        assert "documentation-only" in problems[0]
+        assert "no executable change" in problems[0]
 
     @pytest.mark.parametrize("kind", ["docs", "chore", "refactor", "test", "build", "ci"])
     def test_non_behavior_title_on_executable_python_is_rejected(self, kind: str):
@@ -81,6 +81,17 @@ class TestAssess:
     def test_docs_title_on_markdown_is_allowed(self):
         assert check.assess("docs: explain the API", ["README.md"], {}) == []
 
+    def test_behavior_title_diagnostic_is_not_documentation_only_for_tests(self):
+        before = "def run() -> int:\n    return 1\n"
+        after = "def run() -> int:\n    return 2\n"
+        problems = check.assess(
+            "fix: update test",
+            ["tests/test_router.py"],
+            {"tests/test_router.py": (before, after)},
+        )
+        assert "no executable change" in problems[0]
+        assert "documentation-only" not in problems[0]
+
     def test_behavior_title_requires_executable_changes_in_each_package(self):
         before = "def run() -> int:\n    return 1\n"
         after = "def run() -> int:\n    return 2\n"
@@ -93,6 +104,14 @@ class TestAssess:
 
     def test_behavior_title_on_global_executable_file_is_allowed(self):
         assert check.assess("fix: update workflow", [".github/workflows/ci.yml"], {}) == []
+
+    def test_cross_package_python_rename_counts_only_non_test_endpoints(self):
+        assert check.assess(
+            "feat: move module",
+            ["packages/b/tests/test_mod.py"],
+            {},
+            [("packages/a/src/mod.py", "packages/b/tests/test_mod.py")],
+        )
 
     def test_readme_like_tool_name_is_executable(self):
         assert check.assess("chore: update tool", ["scripts/README-generator.sh"], {})

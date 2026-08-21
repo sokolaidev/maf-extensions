@@ -131,14 +131,12 @@ def assess(
         executable_paths_in_pair = (
             paths[1:] if copied_sources and paths and paths[0] in copied_sources else paths
         )
-        if any(
-            not path.endswith(".py") and not is_non_behavior_path(path)
-            for path in executable_paths_in_pair
-        ):
-            executable_paths.update(executable_paths_in_pair)
-        if len(paths) == 2 and paths[0] != paths[1] and any(path.endswith(".py") for path in paths):
-            if not all(is_test_path(path) for path in paths):
-                executable_paths.update(paths)
+        for path in executable_paths_in_pair:
+            if path.endswith(".py"):
+                if len(paths) == 2 and paths[0] != paths[1] and not is_test_path(path):
+                    executable_paths.add(path)
+            elif not is_non_behavior_path(path):
+                executable_paths.add(path)
     for path, (before, after) in changed_python.items():
         if not is_test_path(path) and (
             before is None or after is None or python_changed(before, after)
@@ -154,8 +152,8 @@ def assess(
     ) or (not touched_packages and executable)
     if kind in _BEHAVIOR_TYPES and not behavior_present:
         return [
-            f"{kind}: titles must include an executable change; this diff is documentation-only",
-            "retitle the pull request as docs: or include a behavior change",
+            f"{kind}: no executable change was found for the changed files",
+            "retitle the pull request to match the changed files or include a behavior change",
         ]
     if kind in _DOCUMENTATION_TYPES and executable:
         return [
