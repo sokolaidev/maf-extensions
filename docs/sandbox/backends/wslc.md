@@ -7,9 +7,10 @@
 | Declaration | Value |
 |---|---|
 | `isolation` | `Isolation.CONTAINER` |
-| `capabilities` | `EXEC`, `FILES_IN` |
-| `egress` | `Egress.CLOSED`; `Egress.ALLOWLIST` when an egress proxy image is configured |
+| `capabilities` | `EXEC`, `FILES_IN` — the narrowest set any shipped backend declares, and it has not grown: no `FILES_OUT`, no `FILES_LIST`, no `FILES_DELETE`, no `RUN_CODE` |
+| `egress_modes` | `{Egress.CLOSED}`; `{Egress.CLOSED, Egress.ALLOWLIST}` when an egress proxy image is configured. Never `UNRESTRICTED` |
 | `limits` | **not declared** |
+| `os_families` | **not declared**. Its guests are WSL containers and nothing states the family, so the router reads `frozenset()` and refuses a spec that asks |
 
 `container` is below the router's default floor, so a host opts down explicitly with `min_isolation=Isolation.CONTAINER`; with nothing passed, construction raises. That refusal is the point of the declaration, not a limitation to work around — there is no flag left to forget.
 
@@ -21,6 +22,8 @@
 
 Creates land in **about half a second**, which is what makes this the backend to iterate against. Names are derived from a digest of scope, thread, agent dir, kind and egress identity, so acquire and dispose agree without a registry; get-or-create is serialised per `(loop, key, kind)`, because a create names no container until it returns and two racing acquires would each build a network, a proxy and a sandbox. Labels are written at create and `dispose_scope` selects on them from the CLI's own listing, with values hashed rather than truncated for the reason every backend here hashes them — a shared prefix would let one conversation's purge delete another's containers.
 
+**A spec's mode is enforced or refused, never approximated.** With no proxy image the set is `{CLOSED}` alone, so a workload running `ALLOWLIST` is refused at attach rather than handed the closed run it did not ask for; with one, both modes are enforceable and a spec naming no hosts still resolves to the closed shape. What the modes mean is [`../network.md`](../network.md).
+
 **Egress scaffolding is re-ensured on every acquire, not only on create.** A proxy a host reboot stopped, or one a crashed setup left half-connected, is rebuilt here — the alternative is handing back a sandbox that declares an allowlist and enforces nothing, which is the exact failure the honesty rule exists to prevent. The topology is the internal-network-plus-CONNECT-proxy shape [`docker`](docker.md) copies verbatim; the axis is [`../network.md`](../network.md).
 
 ## Why it serves neither `FILES_OUT` nor `FILES_LIST`
@@ -29,9 +32,11 @@ Creates land in **about half a second**, which is what makes this the backend to
 
 Deferred rather than rejected, in [#125](https://github.com/sokolaidev/maf-extensions/issues/125), and filed upstream as [microsoft/WSL#41309](https://github.com/microsoft/WSL/issues/41309) (the symlink bug) and [microsoft/WSL#41310](https://github.com/microsoft/WSL/issues/41310) (the missing stdout form) — **either of which reopens the question**.
 
-## No `FILES_DELETE`, and no `limits`
+## No `FILES_DELETE`, no `RUN_CODE`, and no `limits`
 
 `remove` raises too, and not for want of `rm`: confining a removal means walking the path's parents, and `stat_file` is the walk this backend has none of. The gap is the same one, tracked in the same place.
+
+`run_code` raises for a different reason, and one this backend shares with [`acas`](acas.md) and [`docker`](docker.md): it is a `Sandbox` method, so it is implemented, but *which* runtime an image carries is a property of the image and this backend does not parse the reference it is handed. Declaring `RUN_CODE` would be a claim about someone else's artefact. A workload wanting an interpreter by name execs it and owns that assumption.
 
 **`limits` is not declared at all**, and that silence is read the way a safety claim's silence is read — as the conservative default, `DEFAULT_SANDBOX_LIMITS`, rather than as "no ceiling". The router refuses a spec asking above it. Since this backend serves no out-door, the direction that matters is `files_in`. See [`../capabilities.md`](../capabilities.md).
 
@@ -40,8 +45,11 @@ Deferred rather than rejected, in [#125](https://github.com/sokolaidev/maf-exten
 | Decision | State | Tracking |
 |---|---|---|
 | The backend, `EXEC` and `FILES_IN`, both egress modes, label purge | shipped | — |
+| `egress_modes = {CLOSED}`, or `{CLOSED, ALLOWLIST}` with a proxy image; a mode outside the set is refused rather than degraded | shipped | [#530](https://github.com/sokolaidev/maf-extensions/pull/530) (merged) under [#265](https://github.com/sokolaidev/maf-extensions/issues/265) (closed) |
+| `run_code` implemented as a refusal, `RUN_CODE` undeclared | shipped — the capability set is still `{EXEC, FILES_IN}` | [#531](https://github.com/sokolaidev/maf-extensions/pull/531) (merged) |
 | wslc serves `FILES_OUT` | deferred — `cp` has no container-to-stdout form, and a symlink source writes a 0-byte file at exit 0 | [#125](https://github.com/sokolaidev/maf-extensions/issues/125) open; upstream [microsoft/WSL#41309](https://github.com/microsoft/WSL/issues/41309) and [microsoft/WSL#41310](https://github.com/microsoft/WSL/issues/41310), both open |
 | wslc serves `FILES_LIST` | deferred — would need an in-image shell, the dependency the split exists to avoid | [#125](https://github.com/sokolaidev/maf-extensions/issues/125) open |
 | wslc declares `FILES_DELETE` | open — confining a removal needs the component walk `stat_file` would provide | [#125](https://github.com/sokolaidev/maf-extensions/issues/125) open |
 | No `limits` declaration; silence resolves to `DEFAULT_SANDBOX_LIMITS` | shipped — deliberate, and the conservative direction | untracked |
 | Shared egress probes — this topology's allowlist has never been measured against a live host in CI | open | [#402](https://github.com/sokolaidev/maf-extensions/issues/402) open |
+| A guest-platform axis a kind can declare and match | shipped in core, unanswered here — `os_families` exists and this backend declares none, so a spec asking for a family is refused rather than served | [#111](https://github.com/sokolaidev/maf-extensions/issues/111) (closed) by [#532](https://github.com/sokolaidev/maf-extensions/pull/532) (merged); the declaration itself untracked |

@@ -11,14 +11,15 @@ One tool. The model writes Bicep into the agent's file store; `bicep_validate` w
 | Kind | `BICEP_KIND = "bicep"` — half of the sandbox's identity, so this workload never shares a sandbox with another |
 | Tool | `BICEP_VALIDATE_TOOL_NAME = "bicep_validate"` |
 | `requires` | left at the protocol default, `{EXEC, FILES_IN}`. The kind writes files in and runs a compiler; it pulls nothing back, so it asks for no pull surface and runs on every shipped backend, wslc included |
-| `egress_allow` | four hosts, fixed in the package — see below |
+| `egress` | one of `{UNRESTRICTED, ALLOWLIST, CLOSED}` — the set `bicep_sandbox_spec` guards at construction, refusing anything else — defaulting to `ALLOWLIST`, Bicep's designed posture. A deployment that will not use modules lowers it to `CLOSED`; one running on a backend that cannot confine at all raises it to `UNRESTRICTED`. **Only the mode is a deployment's to choose** |
+| `egress_allow` | the four hosts below, fixed in the package and carried only on an `ALLOWLIST` run — the payload of the mode, never a second dial |
 | `work_dir` | `/maf-sandbox/work`, a path nothing else owns. Not `/tmp`: a tmpfs mounted over `/tmp` would hide the `bicepconfig.json` baked into the image, and that failure looks completely healthy — SARIF still parses, diagnostics still render, against a weaker rule set than the repo asked for |
 | `min_isolation` | not raised. The host's floor governs ([`../policy-isolation.md`](../policy-isolation.md)) |
 | `declarations` | the library default, exactly `{"source_integrity": "trusted"}`, and no confidentiality cap. Trusted because the result is a compiler's deterministic first-party diagnostics from a sandbox with no ambient identity that can reach nothing but Microsoft-operated restore endpoints; no cap because a host's confidentiality tiers are the host's classification, and declaring one here can activate a policy leg a given host keeps dormant. `TestFidesDeclarations` pins the resulting dict |
 
 ## Four egress hosts, in two pairs
 
-The allowlist is a property of the workload and lives in the package, not in configuration: a deployment able to widen Bicep's egress could undo the containment the whole design rests on. Everything unlisted is denied — ARM above all, which a `ts:` reference would otherwise dial with the host's credentials.
+The allowlist is a property of the workload and lives in the package, not in configuration: a deployment able to widen Bicep's egress could undo the containment the whole design rests on. It is the **payload of an `ALLOWLIST` run** — the mode is the deployment's choice, the hosts are the kind's — and on that run everything unlisted is denied, ARM above all, which a `ts:` reference would otherwise dial with the host's credentials.
 
 | Host | Why |
 |---|---|
@@ -30,6 +31,10 @@ The allowlist is a property of the workload and lives in the package, not in con
 The index fetch belongs to restore rather than to the analyzer — deliberately, so lint rules never download during analysis — so it is attempted on every `build` and every `lint` whatever rules are enabled, and the only switch that stops it, `--no-restore`, is the one that would cost the module types.
 
 **A blocked restore does not go quiet, it goes misleading**, which is why the tool has a banner for it. `use-recent-module-versions` reports "Could not download available module versions" once per file — a warning that reads like a finding about the source while the check it stands for never runs. An agent can, and once did, discount exactly that noise as environment trouble and certify module inputs from READMEs instead of from the compiler. So a run with any BCP190/BCP191/BCP192 returns a `MODULE RESTORE FAILED` header ahead of the diagnostics, saying type checking did not run and the validation is incomplete, rather than a diagnostic list that reads healthy. All four hosts are Microsoft-operated, and the containment posture — no ARM, no ambient identity, nothing reachable that could carry the host's credentials — is unchanged by any of them.
+
+## Running `CLOSED`, on purpose
+
+A deployment that will not use AVM modules builds the spec with `egress=Egress.CLOSED`, and the run is served at `CLOSED` on any backend that can cut the network. [`samples/05_docker_bicep`](../../../samples/05_docker_bicep) is exactly that case: a module-free template compiled on `--network none`, completing fully offline with nothing to report. The posture is **stated rather than inferred from the host list**, which is what the old model could not do: a backend that cut the network entirely confined *more* than the four hosts asked, so the run went through on a warning naming what would be unreachable, and "offline on purpose" and "offline by accident" read identically. A template that then *does* reference a module fails inside the sandbox and the banner above reports the shortfall, which is a template/posture mismatch surfaced loudly at run time rather than a router quietly serving less egress than the spec named.
 
 ## Templates, and the pin that makes them safe
 
@@ -69,7 +74,9 @@ Three hard-won facts about the pinned Bicep CLI are documented where they bite, 
 |---|---|---|
 | `bicep_validate` as the first kind: fixed templates, listing-pinned paths, sanitized surfaces, zero Azure imports | shipped | — |
 | Four AVM egress hosts fixed in the spec rather than in configuration | shipped | — |
+| The factory takes an `egress` mode, guards `{UNRESTRICTED, ALLOWLIST, CLOSED}` at construction and defaults to `ALLOWLIST`; the hosts stay the kind's | shipped | [#525](https://github.com/sokolaidev/maf-extensions/issues/525) (open, the per-kind record) delivered in [#530](https://github.com/sokolaidev/maf-extensions/pull/530) (merged) under [#265](https://github.com/sokolaidev/maf-extensions/issues/265) (closed) |
+| A module-free template compiles on a `CLOSED` run, and the mismatch is reported at run time rather than resolved at attach | shipped — [`samples/05_docker_bicep`](../../../samples/05_docker_bicep) is the worked case | [#534](https://github.com/sokolaidev/maf-extensions/pull/534) (merged) |
 | The `MODULE RESTORE FAILED` banner ahead of a restore-blocked diagnostic list | shipped | — |
 | A fresh call directory per call, reclaimed by the framework | shipped | [#496](https://github.com/sokolaidev/maf-extensions/pull/496), kinds wired in [#500](https://github.com/sokolaidev/maf-extensions/pull/500) |
 | `requires` left at `{EXEC, FILES_IN}`; no `min_isolation` raise | shipped | — |
-| A guest-OS axis — this kind needs a `bicep` binary on the path, and nothing declares it | open — design settled in [`../guest-platform-and-commands.md`](../guest-platform-and-commands.md), where `bicep` is a workload command that stays with the kind and `requires_os_family` is what the kind declares; nothing implemented | [#111](https://github.com/sokolaidev/maf-extensions/issues/111) (open) |
+| A guest-OS axis — this kind needs a `bicep` binary on the path, and nothing declares it | shipped in core, unused here — `requires_os_family` exists and this spec leaves it `None`, which asks nothing and is refused by nothing. The binary itself stays outside the axis: what an image carries is the image's property, not the guest's shape ([`../guest-platform-and-commands.md`](../guest-platform-and-commands.md)) | [#111](https://github.com/sokolaidev/maf-extensions/issues/111) (closed) by [#532](https://github.com/sokolaidev/maf-extensions/pull/532) (merged) |

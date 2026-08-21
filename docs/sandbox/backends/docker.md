@@ -11,9 +11,10 @@ A `docker`-compatible command-line client talking to a Docker-API-compatible soc
 | Declaration | Value |
 |---|---|
 | `isolation` | `Isolation.CONTAINER` |
-| `capabilities` | `EXEC`, `FILES_IN`, `FILES_OUT`, `FILES_DELETE`, `HOST_TOOLS` |
-| `egress` | `Egress.CLOSED`; `Egress.ALLOWLIST` when an egress proxy image is configured |
+| `capabilities` | `EXEC`, `FILES_IN`, `FILES_OUT`, `FILES_DELETE`, `HOST_TOOLS` — never `FILES_LIST`, never `RUN_CODE` |
+| `egress_modes` | `{Egress.CLOSED}`; `{Egress.CLOSED, Egress.ALLOWLIST}` when an egress proxy image is configured. Never `UNRESTRICTED`: a container backend always cuts or proxies |
 | `limits` | 64 MiB per file, 256 MiB total, 256 files — the same `TransferLimits` in each direction |
+| `os_families` | **not declared**. The daemon knows its `OSType` and this backend does not read it, so the router sees `frozenset()` and refuses a spec that asks for a family |
 
 ## `container` is a constant
 
@@ -33,15 +34,19 @@ Docker has **no engine-level primitive for enumerating a directory**. A *named* 
 
 `remove` runs `rm -f` — or `rm -rf` when `recursive` — after confining the path and walking its parents, because the engine has no delete primitive. `rm`'s exit codes are the contract rather than a re-implementation of it: `-f` makes a missing path succeed and refuses a directory without `-r`. The image dependency is the one the `EXEC` declaration already names, so nothing new is being assumed. The working directory itself is refused before the subprocess is built.
 
+## `run_code` answers by refusing
+
+`run_code` is a `Sandbox` method, so this backend implements it — as a raise naming the backend and the reason. Not for want of an interpreter, since the image may well carry one, but because *which* runtime an image carries is a property of the image, and this backend hands an unparsed reference to `docker run`. Declaring `RUN_CODE` would be a claim about someone else's artefact. A workload that wants a runtime by name invokes it through `exec` and owns that assumption itself; the router refuses a spec requiring the capability before any caller arrives, so the `NotImplementedError` is the honest floor under a caller that skipped the check — the same shape `list_dir` already has.
+
 ## `HOST_TOOLS` on a live measurement
 
 As on ACAS, `HOST_TOOLS` has no method behind it and asserts that **`exec` detaches** — a process started by one call outlives it and is observable from the next, because the container *is* the sandbox and it stays up between calls. `test_docker_e2e.py` measures it rather than assuming it. It is not a claim about the image.
 
 ## Egress topology
 
-Closed mode is `--network none`: a network namespace with nothing but loopback, enforced by whichever kernel runs the container. Allowlist mode is an **internal network plus a dual-homed CONNECT proxy** — an `--internal` network so nothing on it has a route off it, a proxy container on that network carrying the spec's allowlist, its outbound leg connected to a second network, and the workload created with `HTTP_PROXY`/`HTTPS_PROXY` pointing at it. The proxy is recreated on every acquire rather than adopted, so a stale or half-connected one is never mistaken for a working one, and a failure to connect the outbound leg fails the acquire — a proxy without it would turn `ALLOWLIST` into `CLOSED` silently. `egress` states what the backend *can enforce*, not what one sandbox got: a backend configured with a proxy image still creates a `--network none` container for a spec that allows nothing, because denying everything for free beats burning a network and a proxy on allowing the same nothing.
+Closed mode is `--network none`: a network namespace with nothing but loopback, enforced by whichever kernel runs the container. Allowlist mode is an **internal network plus a dual-homed CONNECT proxy** — an `--internal` network so nothing on it has a route off it, a proxy container on that network carrying the spec's allowlist, its outbound leg connected to a second network, and the workload created with `HTTP_PROXY`/`HTTPS_PROXY` pointing at it. The proxy is recreated on every acquire rather than adopted, so a stale or half-connected one is never mistaken for a working one, and a failure to connect the outbound leg fails the acquire — a proxy without it would turn `ALLOWLIST` into `CLOSED` silently. `egress_modes` states what the backend *can enforce*, not what one sandbox got: with a proxy image it declares both modes, and a spec running `CLOSED` still gets a `--network none` container, because denying everything for free beats burning a network and a proxy on allowing the same nothing. Without a proxy image the set is `{CLOSED}` alone, and a spec running `ALLOWLIST` is **refused at attach** rather than served the closed run it did not ask for. What the modes *mean*, and who declares what, is [`../network.md`](../network.md); this section is what this engine does to honour them.
 
-What enforces the allowlist is the **topology**, not the environment variables: `HTTP_PROXY` and `HTTPS_PROXY` are advisory conventions a binary can ignore, but the workload sits on a network with no other route off it, so the proxy is not the polite way out — it is the only way out. No TLS is decrypted and no name is resolved inside the sandbox. Host-level `iptables` allowlisting is deliberately not part of the contract and cannot be made so: under rootless Docker the rules land in the wrong namespace, and on macOS and Windows the daemon lives in a VM the host firewall cannot address. The live controls that ship are a CONNECT pair against a real engine — an allowed host reachable, a denied one refused; the engine's embedded DNS resolver forwards external lookups from the daemon, outside the container's namespace, and whether it still does so on a network created `--internal` is engine behaviour this repository has identified rather than closed. The proxy source is a **byte copy** of wslc's, pinned identical by a test rather than hoisted into core — the maintainer ruling that keeps operational content out of a stdlib-only package. The axis is [`../network.md`](../network.md).
+What enforces the allowlist is the **topology**, not the environment variables: `HTTP_PROXY` and `HTTPS_PROXY` are advisory conventions a binary can ignore, but the workload sits on a network with no other route off it, so the proxy is not the polite way out — it is the only way out. No TLS is decrypted and no name is resolved inside the sandbox. Host-level `iptables` allowlisting is deliberately not part of the contract and cannot be made so: under rootless Docker the rules land in the wrong namespace, and on macOS and Windows the daemon lives in a VM the host firewall cannot address. The live controls that ship are a CONNECT pair against a real engine — an allowed host reachable, a denied one refused; the engine's embedded DNS resolver forwards external lookups from the daemon, outside the container's namespace, and whether it still does so on a network created `--internal` is engine behaviour this repository has identified rather than closed. The proxy source is a **byte copy** of wslc's, pinned identical by a test rather than hoisted into core — the maintainer ruling that keeps operational content out of a stdlib-only package.
 
 ## Lifecycle
 
@@ -55,10 +60,12 @@ Names are **derived** from a digest of scope, thread, agent dir, kind and egress
 
 | Decision | State | Tracking |
 |---|---|---|
-| The backend, its four declarations, and `FILES_OUT` from the day the package existed | shipped | [#109](https://github.com/sokolaidev/maf-extensions/issues/109) open as the `FILES_OUT` tracking issue; the docker item landed first, as the gate |
-| No `FILES_LIST` — no engine-level enumeration primitive | by design | — |
+| The backend, its declarations, and `FILES_OUT` from the day the package existed | shipped | [#109](https://github.com/sokolaidev/maf-extensions/issues/109) open as the `FILES_OUT` tracking issue; the docker item landed first, as the gate |
+| No `FILES_LIST` — no engine-level enumeration primitive | by design | [#353](https://github.com/sokolaidev/maf-extensions/issues/353) (open) asks whether the tar stream could carry it after all |
+| `egress_modes = {CLOSED}`, or `{CLOSED, ALLOWLIST}` with a proxy image; a mode outside the set is refused rather than degraded | shipped | [#530](https://github.com/sokolaidev/maf-extensions/pull/530) (merged) under [#265](https://github.com/sokolaidev/maf-extensions/issues/265) (closed) |
+| `run_code` implemented as a refusal, `RUN_CODE` undeclared | shipped — the image's runtime is the image's property, and this backend does not parse the reference | [#531](https://github.com/sokolaidev/maf-extensions/pull/531) (merged) |
 | `FILES_DELETE` over `rm`, held to the ten probes | shipped | — |
 | The egress proxy is a byte copy of wslc's, pinned by test rather than hoisted into core | shipped, by maintainer ruling | — |
 | Live e2e on every pull request as the repository's acceptance gate | shipped | — |
 | Shared egress probes across backends, so this topology is not the only one ever measured | open | [#402](https://github.com/sokolaidev/maf-extensions/issues/402) open |
-| A guest-platform axis a kind can declare and match | open — design settled in [`../guest-platform-and-commands.md`](../guest-platform-and-commands.md), where this backend reads its daemon's `OSType` at construction to declare `os_families`; nothing implemented | [#111](https://github.com/sokolaidev/maf-extensions/issues/111) open |
+| A guest-platform axis a kind can declare and match | shipped in core, unanswered here — the axis exists and this backend declares no family. Reading the daemon's `OSType` at construction is the design ([`../guest-platform-and-commands.md`](../guest-platform-and-commands.md)) and is unbuilt, which matters most on the one shipped backend likeliest to meet a non-Linux guest | [#111](https://github.com/sokolaidev/maf-extensions/issues/111) (closed) by [#532](https://github.com/sokolaidev/maf-extensions/pull/532) (merged); the declaration itself untracked |

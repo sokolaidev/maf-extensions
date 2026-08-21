@@ -7,23 +7,30 @@
 | Declaration | Value |
 |---|---|
 | `isolation` | `Isolation.MICROVM` |
-| `capabilities` | `EXEC`, `FILES_IN`, `FILES_OUT`, `FILES_LIST`, `HOST_TOOLS` |
-| `egress` | `Egress.ALLOWLIST` |
+| `capabilities` | `EXEC`, `FILES_IN`, `FILES_OUT`, `FILES_LIST`, `HOST_TOOLS` — never `RUN_CODE`, and `run_code` refuses |
+| `egress_modes` | `{Egress.ALLOWLIST, Egress.CLOSED}` |
 | `limits` | 32 MiB per file, 128 MiB total, 128 files — the same `TransferLimits` in each direction |
+| `os_families` | **not declared**. Every sandbox this backend hands out is Linux — a fact its own `exec` docstring rests POSIX quoting on — and nothing states it, so the router reads `frozenset()` and refuses a spec that asks for a family |
 
 The byte ceilings sit well under what a streaming backend could offer, because this one cannot stream: the SDK's `read_file` buffers the whole response, so a per-file ceiling bounds **host memory** rather than transfer cost. `max_files` is comparatively high because a `FILES_LIST` kind fetches each file in a round trip of its own.
 
-## The allowlist is built from the spec
+## Two modes, one mechanism, built from the spec
 
-`egress` is `ALLOWLIST` unconditionally, and it is true because the create builds it: `default_action: "Deny"` plus exactly one `Allow` host rule per name in `spec.egress_allow`. Nothing in this backend's configuration widens that list, and a spec that names no hosts gets Deny with nothing allowed — the closed configuration, not the open one. The axis and what a host may state on it are in [`../network.md`](../network.md).
+`egress_modes` is `{ALLOWLIST, CLOSED}`, and the two are the same mechanism at two settings. Every create passes an `EgressPolicy` with `default_action: "Deny"`, full traffic inspection, and exactly one `Allow` host rule per name in `spec.egress_allow`. A spec running `ALLOWLIST` names hosts and gets exactly those; a spec running `CLOSED` names none and gets Deny with nothing allowed. Nothing in this backend's configuration widens the list: the deployment chooses the mode, the spec carries the hosts.
+
+`UNRESTRICTED` is absent and could not be added — the group's policy denies by default and cannot be told to allow everything. A workload that asked to run open is therefore **refused here rather than served something narrower**, which is the resolution rule doing its job: a mode is enforced as asked or not at all. The axis and what a host may state on it are in [`../network.md`](../network.md).
 
 ## The reference conformant backend
 
-This is the backend the micro-VM standard was written against, and it meets all four legs: a hardware virtualization boundary; no ambient identity reachable from inside; confinable egress, declared `ALLOWLIST`; and an explicit guest↔host surface. It is remote into the bargain, which is more than the standard asks. What that role means in practice is that it defines what the file surface should *look* like — it is the only backend that can serve `FILES_LIST` — while [`docker`](docker.md) decides whether the surface actually works, because Docker is the one a pull request can run. Keeping reference and gate apart is what stops the richest backend from quietly setting requirements the portable ones cannot meet. The standard itself is in [`../policy-isolation.md`](../policy-isolation.md).
+This is the backend the micro-VM standard was written against, and it meets all four legs: a hardware virtualization boundary; no ambient identity reachable from inside; confinable egress, and confinable at both settings it declares; and an explicit guest↔host surface. It is remote into the bargain, which is more than the standard asks. What that role means in practice is that it defines what the file surface should *look* like — it is the only backend that can serve `FILES_LIST` — while [`docker`](docker.md) decides whether the surface actually works, because Docker is the one a pull request can run. Keeping reference and gate apart is what stops the richest backend from quietly setting requirements the portable ones cannot meet. The standard itself is in [`../policy-isolation.md`](../policy-isolation.md).
 
 ## `HOST_TOOLS` rests on a live measurement
 
 `HOST_TOOLS` is the one capability with no method behind it. What it asserts is that **`exec` detaches** — a process started by one call outlives it and is observable from the next, because the sandbox is a micro-VM the group keeps between calls rather than a session torn down per dispatch. That is what host-tool dispatch is built on: the launcher returns at once and the exit-code file is the run's only witness. Here it could not be taken on faith, since every call is an HTTP round trip to a remote control plane, so `test_acas_e2e.py` measures detachment against the real service rather than reading it off the SDK. It is **not** a claim about the image: the shipped launcher wants `sh`, `nohup`, `printf`, `mv`, `mkdir`, `rm` and `kill`, and a kind wants whatever interpreter it names — none of which this backend chooses, since the spec's image does.
+
+## `run_code` answers, and what it answers is a refusal
+
+`run_code` is a `Sandbox` method rather than an optional extra, so this backend implements it — as a raise. Not for want of an interpreter, since the image may well carry one, but because *which* runtime an image carries is a property of the image, and this backend resolves an image reference without looking inside it. Declaring `RUN_CODE` would be a claim about someone else's artefact. A workload that wants a runtime by name invokes it through `exec` and owns that assumption itself; the router refuses a spec requiring the capability before any caller arrives, so the `NotImplementedError` is the honest floor under a caller that skipped the check. It is the same asymmetry `remove` sits on the other side of, further down: a mechanism may exist and stay undeclared, and a capability may never be declared without one.
 
 ## The pull surface is read past the SDK
 
@@ -53,10 +60,12 @@ Refusing a symlink narrows an entry to *not a link and not a directory*. It does
 
 | Decision | State | Tracking |
 |---|---|---|
-| The backend, its four declarations, and `FILES_OUT` served natively | shipped | [#109](https://github.com/sokolaidev/maf-extensions/issues/109) open as the `FILES_OUT` tracking issue; the ACAS item landed |
+| The backend, its declarations, and `FILES_OUT` served natively | shipped | [#109](https://github.com/sokolaidev/maf-extensions/issues/109) open as the `FILES_OUT` tracking issue; the ACAS item landed |
+| `egress_modes = {ALLOWLIST, CLOSED}` — one Deny-default policy at two settings, never `UNRESTRICTED` | shipped | [#530](https://github.com/sokolaidev/maf-extensions/pull/530) (merged) under [#265](https://github.com/sokolaidev/maf-extensions/issues/265) (closed) |
+| `run_code` implemented as a refusal, `RUN_CODE` undeclared | shipped — which runtime an image carries is the image's property, and this backend does not parse the reference | [#531](https://github.com/sokolaidev/maf-extensions/pull/531) (merged) |
 | Reads the raw stat payload because the SDK's `FileInfo` drops `isSymlink` | open, upstream | [#136](https://github.com/sokolaidev/maf-extensions/issues/136) open |
 | `EntryKind.FILE` means not-a-directory-and-not-a-symlink; a FIFO read is bounded rather than refused | open, upstream — no signal available to close it | upstream [microsoft/azure-container-apps#1807](https://github.com/microsoft/azure-container-apps/issues/1807) open |
 | ACAS declares `FILES_DELETE` | open — the mechanism refuses a link where the protocol removes it; measured without a verdict in the live suite | untracked |
 | A directory is refused without `recursive` whatever it holds — the service accepted an empty one | shipped | [#474](https://github.com/sokolaidev/maf-extensions/pull/474) merged |
 | The in-sandbox isolation probe suite that would give the micro-VM claim teeth | parked | untracked — nearest adjacent is [#402](https://github.com/sokolaidev/maf-extensions/issues/402) (open), shared egress probes |
-| A guest-platform axis a kind can declare and match | open — design settled in [`../guest-platform-and-commands.md`](../guest-platform-and-commands.md), where this backend's "every sandbox is Linux" comment becomes a declared `os_families`; nothing implemented | [#111](https://github.com/sokolaidev/maf-extensions/issues/111) open |
+| A guest-platform axis a kind can declare and match | shipped in core, unanswered here — `OsFamily`, `requires_os_family` and the `os_families` match all exist; this backend declares no family, so "every sandbox is Linux" is still a comment rather than a checked claim | [#111](https://github.com/sokolaidev/maf-extensions/issues/111) (closed) by [#532](https://github.com/sokolaidev/maf-extensions/pull/532) (merged) |
