@@ -1,6 +1,6 @@
 # maf-sandbox: sandboxed code execution for MAF agents
 
-> An introduction to the suite — the problem it solves, how it relates to everything else in a crowded field, how it attaches to an agent, and what a host gets for wiring it in. It assumes no prior knowledge of Microsoft Agent Framework. [`docs/design/`](design/) carries the depth: [`sandbox-architecture.md`](design/sandbox-architecture.md) for the surface as built, [`two-axis-sandbox-policy.md`](design/two-axis-sandbox-policy.md) and [`files-out.md`](design/files-out.md) for the decisions behind it.
+> An introduction to the suite — the problem it solves, how it relates to everything else in a crowded field, how it attaches to an agent, and what a host gets for wiring it in. It assumes no prior knowledge of Microsoft Agent Framework. The documents beside it carry the depth: [`architecture.md`](architecture.md) for the shape, [`policy-isolation.md`](policy-isolation.md) and [`capabilities.md`](capabilities.md) for the two axes the router matches on, [`network.md`](network.md) and [`hosts.md`](hosts.md) for the two boundaries around them, and [`kinds/`](kinds/README.md) and [`backends/`](backends/README.md) for what plugs into each end.
 
 ## Microsoft Agent Framework, in a paragraph
 
@@ -55,6 +55,10 @@ That the same nouns keep reappearing across all of these — a spec, an allowlis
 Those layers are not so much competitors as an unfinished sentence. The boundaries exist, and several of them are very good; what is missing is a contract that lets an agent's workload be written **once** and run behind **any** of them, with the *host* deciding which ones are acceptable. That contract is what this suite is. It contributes no isolation of its own. It makes the isolation that already exists interchangeable, declarable, and accountable to the deployment rather than to the vendor.
 
 The scattered landscape collapses into one shape. An ACA Sandbox, a Docker container, a container on a developer's laptop, an in-process fake — and, in principle, a containment system like MXC or a service like E2B — is each **one backend class**. A unit of work, whether that is validating a template, running a model-written program or rendering a diagram, is **one kind**, written against the protocol alone and never against a vendor. Between them sits a router, and the host tells it what it is willing to accept. When the backend changes, nothing else in the picture does.
+
+Drawn, that shape is an hourglass.
+
+![An hourglass, read left to right. On the left three chips are the kinds — a unit of work, written once: bicep_validate, execute_code and an open dashed one for a kind you write, each reached as an ordinary tool call; they narrow into one slate box, the contract, holding a spec for what the work needs and a router for what the host accepts. From there the shape widens again into the backends — ACA Sandboxes at micro-VM, Docker and wslc at container, an in-process fake for tests, and an open dashed chip for any sandbox — each named beside the boundary it declares. One line under the shape states what the arrangement buys: when the backend changes, nothing else in the picture does.](assets/suite-shape.svg)
 
 And it is reached, always, as an **ordinary tool call** — the second half of the design and the half that is easy to get wrong. The *work* ships out to the sandbox; the *call* stays in the host process, where the middleware chain still sees it, still gates it, and still classifies what comes back. The tempting alternative, exposing the sandbox as a remote *agent*, leaves that security context altogether, and everything it returns has to be re-treated as untrusted ingress. Tool rather than agent is a security decision, not an ergonomic one.
 
@@ -140,11 +144,16 @@ Two behaviours are worth knowing before the first call, because both are deliber
 
 ## Where to read next
 
-- [`samples/`](../samples/) — the `app` box above, wired end to end, each small enough to read in one sitting.
-- [`docs/design/sandbox-architecture.md`](design/sandbox-architecture.md) — the surface as built: the vocabulary, the checks the router runs, keying, lifecycle.
-- [`docs/design/two-axis-sandbox-policy.md`](design/two-axis-sandbox-policy.md) — the isolation ladder and the capability axis, and where known systems sit on them.
-- [`docs/design/files-out.md`](design/files-out.md) — getting artifacts back out, and why that is not the mirror image of putting them in.
-- [`docs/design/call-lifetime.md`](design/call-lifetime.md) — what a tool call is, what it owns, and what has to happen when it ends.
-- [`docs/design/egress-resolution.md`](design/egress-resolution.md) — egress as a resolved mode a workload runs in, not a property the router matches: refuse, never degrade.
+- [`samples/`](../../samples/) — the `app` box above, wired end to end, each small enough to read in one sitting.
+- [`architecture.md`](architecture.md) — the layering, the vocabulary, keying and lifecycle, and the two directions a call crosses the boundary in.
+- [`tool-call.md`](tool-call.md) — the life of one call: binding, call and run, what each owns, and the reclaim when it ends.
+- [`policy-isolation.md`](policy-isolation.md) — the isolation ladder, the host's floor, and where known systems sit on it.
+- [`capabilities.md`](capabilities.md) — what a sandbox can do, how it is declared and matched, and the whole file surface.
+- [`network.md`](network.md) — the egress axis: what a workload may reach, and what a backend has to enforce before it may say so.
+- [`hosts.md`](hosts.md) — the host boundary: where artifacts land, host tools dispatched outward, identity, and the storage base.
+- [`guest-platform-and-commands.md`](guest-platform-and-commands.md) — the guest-platform axis: what a kind may assume about the far side of the boundary, and how a backend finds out.
+- [`kinds/README.md`](kinds/README.md) — what a kind is, what it owes the protocol, and the two that ship.
+- [`backends/README.md`](backends/README.md) — the shipped backends side by side, and what each one honestly declares.
+- [`research/`](research/) — the records: the explorations and proposals the decisions came out of, kept in the tense they were written; how a new one graduates is [`../AUTHORING.md`](../AUTHORING.md).
 - Each package's own README, for its configuration, its guarantees and its limits.
 - [microsoft/agent-framework#7568](https://github.com/microsoft/agent-framework/issues/7568) — the upstream feature request this suite is the reference implementation of.

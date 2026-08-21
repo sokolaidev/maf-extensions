@@ -38,7 +38,7 @@ The refusals in act 2 are not staged. The two backends declare genuinely differe
 
 So a spec asking for `container` isolation gets `SandboxBackendNotPermitted`, and a spec requiring `FILES_OUT` gets `SandboxCapabilityNotSupported` — while a backend declaring both sits registered beside the one refusing. That pairing is also why this sample uses Docker rather than two in-process backends: with two instances of one class the difference would be something the sample invented, and the lesson would be worth less.
 
-**Selecting per spec is [#328](https://github.com/sokolaidev/maf-extensions/issues/328)**, and `docs/design/two-axis-sandbox-policy.md` describes it as though it had shipped — that mismatch is [#329](https://github.com/sokolaidev/maf-extensions/issues/329). If #328 lands, this sample gains an act rather than needing a rewrite: the refusals become the *opted-out* behaviour and the reroute becomes visible beside them.
+**Selecting per spec is [#328](https://github.com/sokolaidev/maf-extensions/issues/328)**, and `docs/sandbox/capabilities.md` states where it stands: the match refuses rather than reroutes, and the generalization is pinned to that issue. The proposal it was decided from describes it as though it had shipped — that mismatch is [#329](https://github.com/sokolaidev/maf-extensions/issues/329). If #328 lands, this sample gains an act rather than needing a rewrite: the refusals become the *opted-out* behaviour and the reroute becomes visible beside them.
 
 ## Why disposal reaching both matters
 

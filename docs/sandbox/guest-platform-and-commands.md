@@ -1,6 +1,6 @@
 # Guest platform and command availability: what a kind may assume, and how it finds out
 
-> **Status: PROPOSED.** This is the target, written as one; where it and the code disagree, the code is what exists. It extends the capability axis of [`two-axis-sandbox-policy.md`](two-axis-sandbox-policy.md), rests on the path grammar settled in [`files-out.md`](files-out.md), and shares its cleanup reasoning with [`call-lifetime.md`](call-lifetime.md). Backend-side constraints it takes as given come from [`docker-backend-proposal.md`](docker-backend-proposal.md), [`docker-backend-exploration.md`](docker-backend-exploration.md) and [`hyperlight-backend-proposal.md`](hyperlight-backend-proposal.md). The baseline it evolves is [`sandbox-architecture.md`](sandbox-architecture.md).
+> The decided design for the guest-platform axis and for command availability: which guest facts are declared and matched, which are classified away, and which are probed. It extends the capability axis ([`capabilities.md`](capabilities.md)) and the isolation ladder ([`policy-isolation.md`](policy-isolation.md)), and rests on decisions recorded in [`architecture.md`](architecture.md) and in the records under [`research/`](research/).
 
 ## The guest, and who supplies it
 
@@ -14,7 +14,7 @@
 | The backend serves a disk image an operator imported ahead of time | The operator, per deployment | Before the process starts |
 | The backend ships its own guest module | The backend author | At build time |
 
-In the first row the backend meets its guest for the first time inside `acquire`, having never seen the inside of it. `SandboxSpec.image`'s docstring states the position plainly — the image is *"a reference the **backend** resolves, and nothing here parses it"* — so no layer in this stack knows whether the thing about to boot is Ubuntu, a distroless image, or Windows Server, and none of them can tell whether the commands a kind is about to run exist in it. `sandbox-architecture.md` records the same arrangement from the path side: `work_dir` is *"guest-native, stated by the host to suit its image and rewritten by nobody"*.
+In the first row the backend meets its guest for the first time inside `acquire`, having never seen the inside of it. `SandboxSpec.image`'s docstring states the position plainly — the image is *"a reference the **backend** resolves, and nothing here parses it"* — so no layer in this stack knows whether the thing about to boot is Ubuntu, a distroless image, or Windows Server, and none of them can tell whether the commands a kind is about to run exist in it. [`research/sandbox-architecture.md`](research/sandbox-architecture.md) records the same arrangement from the path side: `work_dir` is *"guest-native, stated by the host to suit its image and rewritten by nobody"*.
 
 **Not every backend has a guest in the operating-system sense.** A backend whose surface is a language runtime hands out a program environment with no shell, no filesystem layout and no argv. A backend whose surface is a data-plane API has a filesystem but reaches it through calls rather than commands. Both are real guests; neither has an OS to declare, and neither can be asked one of the questions below. This is why the axis is scoped to `EXEC` backends rather than applied to all of them.
 
@@ -40,7 +40,7 @@ This is not a new rule. It is what this stack has already reached three times, i
 
 | Unknown | The answer taken |
 | --- | --- |
-| Which delete mechanism the guest has | **The backend owns it.** [`call-lifetime.md`](call-lifetime.md) rules that reclamation *"must be the backend's, because core can only dispatch to mechanisms core can name: a backend offering a language runtime and no shell deletes through that runtime, which no capability check reaches."* |
+| Which delete mechanism the guest has | **The backend owns it.** [`tool-call.md`](tool-call.md) rules that reclamation *"must be the backend's, because core can only dispatch to mechanisms core can name: a backend offering a language runtime and no shell deletes through that runtime, which no capability check reaches."* |
 | Where a workload's files live | **The backend owns it.** The settled direction is that a backend allocates the storage base and resolves every path against it, and kinds address everything relative to that base instead of composing absolute paths. |
 | Which interpreter exists | **A capability owns it.** `RUN_CODE` means "run this in whatever runtime you have", so a kind stops naming `python3` at all. |
 
@@ -54,8 +54,8 @@ The protocol has been kept deliberately additive on this axis, and the neutralit
 
 - **`work_dir` is guest-native and untranslated.** `SandboxSpec.work_dir` defaults to `/maf-sandbox/work`, and its docstring records that translating it is *"not possible — a kind derives absolute paths from this field and passes them into `Sandbox.exec`'s argv, and a backend cannot find a path inside an opaque argv without parsing arbitrary command lines. An argv sequence protects against quoting, not against paths within the arguments."* The default is a default, not a requirement.
 - **Nothing infers a guest OS from a path.** The same docstring states the rule directly: *"A workload must not read the guest's platform out of this field, and nothing here validates it against one."*
-- **The neutrality is a test, not an intention.** `TestWorkDirIsPlatformNeutral`, in `maf-sandbox`'s router tests, accepts `C:/agent/maf-sandbox/work` and a backslash-spelled Windows path, and asserts that a backend declaring no platform still serves. That is what makes everything below an additive change rather than a breaking one.
-- **Declared output paths are POSIX-shaped and the names are conservative.** [`files-out.md`](files-out.md) fixes one path grammar for declared outputs, always UTF-8, with no newline translation — and explicitly retracts an earlier claim that backends would translate. In `_outputs.py`, `portable_name` composes to NFC, and `_collision_key` refuses case-only collisions using `str.lower` rather than `str.casefold`, with the reason recorded beside it.
+- **The neutrality is a test, not an intention.** `TestWorkDirStaysGuestNative`, in `maf-sandbox`'s router tests, accepts `C:/agent/maf-sandbox/work` and a backslash-spelled Windows path, and asserts that a backend declaring no platform still serves. It matters more now that something else *is* a platform claim, so it also pins the inference the protocol refuses to make: a drive-rooted `work_dir` against a `POSIX`-only backend is **served**, because the path was never the ask. That is what makes everything below an additive change rather than a breaking one.
+- **Declared output paths are POSIX-shaped and the names are conservative.** [`capabilities.md`](capabilities.md) fixes one path grammar for declared outputs, always UTF-8, with no newline translation — and explicitly retracts an earlier claim that backends would translate. In `_outputs.py`, `portable_name` composes to NFC, and `_collision_key` refuses case-only collisions using `str.lower` rather than `str.casefold`, with the reason recorded beside it.
 - **`EntryKind` was designed for guests that are not POSIX.** A junction or a reparse point maps to `SYMLINK`, so the vocabulary does not have to grow for a Windows guest.
 
 ### What is not neutral
@@ -86,13 +86,13 @@ From `exec` in `maf-sandbox-acas`:
 
 > The SDK's own `exec` takes a string only, so a sequence is quoted into one with `shlex.join` first. `shlex.join` produces POSIX quoting, which is correct here **because every sandbox this backend hands out is Linux.**
 
-This is not a defect. It is a true statement a backend can make about itself, written in a comment because there is no field to write it in. Decision 1 gives it one.
+This is not a defect. It is a true statement a backend can make about itself, written in a comment because there was no field to write it in. Decision 1 gives it one — and the comment is still a comment: the field ships, the ACAS backend declares no `os_families`, and the claim goes on being made in prose that nothing checks. Retiring it is one line in that backend, and the table below carries the row for it.
 
 ### When the router decides, and how
 
 The timing constrains every option below, so it is worth stating exactly.
 
-- Backend declarations are read **synchronously**, with `getattr`: `limits` in `_declared_limits`, `egress` in both `_refuse_unless_backend_can_serve` and `ensure_can_serve`. A declaration must therefore be a plain attribute settled by the time the router asks — never an `async` query.
+- Backend declarations are read **synchronously**, with `getattr`, all of them inside `_refuse_unless_backend_can_serve`: `capabilities`, `limits` in `_declared_limits`, `egress_modes` — the set of modes a backend can enforce, not a single declared posture — and `os_families` in `_declared_os_families`. A declaration must therefore be a plain attribute settled by the time the router asks — never an `async` query.
 - `ensure_can_serve` runs at **attach**, called from `sandboxed_tool` in `maf.py`, before any sandbox exists.
 - The same checks run **again** inside `SandboxRouter.acquire`, immediately before it calls `self._backend.acquire(key, spec)` — its docstring says *"before ever reaching the backend"*, so that a caller skipping `ensure_can_serve` is still refused.
 
@@ -108,7 +108,7 @@ class OsFamily(StrEnum):
     WINDOWS = "windows"
 
 
-# On the backend, read with getattr beside `limits` and `egress`:
+# On the backend, read with getattr beside `capabilities`, `limits` and `egress_modes`:
 os_families: frozenset[OsFamily]
 
 # On SandboxSpec:
@@ -127,7 +127,7 @@ requires_os_family: OsFamily | None = None
 
 **Why per backend *instance*, not per class.** The set is a property of what this instance was constructed to serve, resolved at construction. A backend over a local hypervisor pins one guest template family per instance; a Docker backend can read its daemon's `OSType` once at construction, which constrains the family absolutely — a Linux daemon cannot run a Windows image whatever reference it is handed. Several instances registered side by side, selected per spec, is how a deployment serves more than one. This is the same discipline that keeps `isolation` a constant, and Decision 5 shows it doing double duty there.
 
-**Why `EXEC`-scoped.** [`hyperlight-backend-proposal.md`](hyperlight-backend-proposal.md) already rules that this whole question dissolves on a `run_code` path: *"the program is text, not a file — no interpreter sentence exists to go false"*. A backend whose surface is a runtime rather than a shell has no argv to quote and no script to plant, and simply does not declare the field. Undeclared is meaningful: it means "this question does not apply to me", and a spec that requires a family is refused against it, which is correct.
+**Why `EXEC`-scoped.** [`research/hyperlight-backend-proposal.md`](research/hyperlight-backend-proposal.md) already rules that this whole question dissolves on a `run_code` path: *"the program is text, not a file — no interpreter sentence exists to go false"*. A backend whose surface is a runtime rather than a shell has no argv to quote and no script to plant, and simply does not declare the field. Undeclared is meaningful: it means "this question does not apply to me", and a spec that requires a family is refused against it, which is correct.
 
 **Why the name is `os_family` and not `platform`.** Python has spent the word. `sys.platform` returns `linux`, `platform.system()` returns `Darwin`; a field named `platform` holding `posix` reads as a bug to every Python reader. "Family" is the standard word for the grouping, and the `os_` prefix keeps it clear of this repository's other uses of "family" for exception hierarchies and for the package set.
 
@@ -143,7 +143,7 @@ No backend can honestly declare what commands exist in a guest, because that is 
 
 **Runtime commands — `python3` — are a capability, and it already exists.** `RUN_CODE` means "run this code in whatever runtime you have". A backend serves it with no shell, no OS and no interpreter name. This class does not take the `OsFamily` fork at all and should not be reasoned about alongside the others.
 
-**Infrastructure commands — `rm`, `sh`, `test`, `kill`, `mkdir` — are raised into protocol methods.** This is the governing rule applied directly: a mandatory backend method the backend implements with whatever it has, rather than a command core spells. The reclaim surface is the worked example and [`call-lifetime.md`](call-lifetime.md) carries the reasoning, including why such a method can be mandatory when a confining `remove` cannot: *"A path this stack created, under a base, with an unguessable name, has no attacker-chosen component to walk — so the method that removes it needs no confinement and can be mandatory on every backend."* The write-path component walk and the working-directory creation are the same shape and take the same treatment.
+**Infrastructure commands — `rm`, `sh`, `test`, `kill`, `mkdir` — are raised into protocol methods.** This is the governing rule applied directly: a mandatory backend method the backend implements with whatever it has, rather than a command core spells. The reclaim surface is the worked example and [`tool-call.md`](tool-call.md) carries the reasoning, including why such a method can be mandatory when a confining `remove` cannot: *"A path this stack created, under a base, with an unguessable name, has no attacker-chosen component to walk — so the method that removes it needs no confinement and can be mandatory on every backend."* The write-path component walk and the working-directory creation are the same shape and take the same treatment.
 
 What remains after all three classes are placed is a backend that must decide whether a *specific image* can back the capabilities it wants to declare. That is Decision 3.
 
@@ -196,7 +196,7 @@ Every candidate field for a `FilesystemTraits` declaration dissolves on inspecti
 
 ## Decision 5 — local hypervisors, and what the rungs mean there
 
-[`two-axis-sandbox-policy.md`](two-axis-sandbox-policy.md) defines the top two rungs as `microvm` — a hypervisor boundary with a minimal or absent guest OS — and `vm`, a dedicated full VM. Both have so far meant remote infrastructure. A backend over a *local* hypervisor is the case that makes the whole platform axis load-bearing, because it is the first one where the guest OS is genuinely variable.
+[`policy-isolation.md`](policy-isolation.md) defines the top two rungs as `microvm` — a hypervisor boundary with a minimal or absent guest OS — and `vm`, a dedicated full VM. Both have so far meant remote infrastructure. A backend over a *local* hypervisor is the case that makes the whole platform axis load-bearing, because it is the first one where the guest OS is genuinely variable.
 
 | Host | Hypervisor | Guest families it can serve |
 | --- | --- | --- |
@@ -206,7 +206,7 @@ Every candidate field for a `FilesystemTraits` declaration dissolves on inspecti
 
 Four consequences, all settled here.
 
-**The rung is earned, unlike the one a plain container backend must refuse.** [`docker-backend-exploration.md`](docker-backend-exploration.md) rejects rounding a desktop container up to `microvm` because one VM hosts every container and the boundary between two sandboxes is namespaces. One VM per workload does not have that problem, so a local-hypervisor backend claims a hypervisor rung honestly.
+**The rung is earned, unlike the one a plain container backend must refuse.** [`research/docker-backend-exploration.md`](research/docker-backend-exploration.md) rejects rounding a desktop container up to `microvm` because one VM hosts every container and the boundary between two sandboxes is namespaces. One VM per workload does not have that problem, so a local-hypervisor backend claims a hypervisor rung honestly.
 
 **Which of the two rungs it claims depends on the image, and the standing rule is that a declared rung is a constant no configuration raises.** The same backend booting a stripped Linux image is `microvm`; booting a full Windows Server guest it is `vm`. Under the constant-rung rule one instance must declare the lower of the two, which strands a host that asked for `vm`.
 
@@ -236,12 +236,18 @@ Four consequences, all settled here.
 
 **A `FilesystemTraits` declaration.** Rejected — Decision 4.
 
-**Letting a configured hardened runtime or a booted image raise the declared rung.** Rejected, consistent with the existing ruling in [`docker-backend-proposal.md`](docker-backend-proposal.md). Per-instance backends give a deployment the same expressiveness without a rung that varies.
+**Letting a configured hardened runtime or a booted image raise the declared rung.** Rejected, consistent with the existing ruling in [`backends/docker.md`](backends/docker.md). Per-instance backends give a deployment the same expressiveness without a rung that varies.
 
-## Order of work
+## Status
 
-1. **`OsFamily`, the backend attribute, the spec field, and the `ensure_can_serve` clause.** Additive, pinned as such by the existing neutrality test. Retires the ACAS comment into a checked claim and gives kinds somewhere to state what they support.
-2. **The Docker backend reads its daemon's `OSType` at construction.** Without this the axis declares nothing for the one shipped backend most likely to meet a non-Linux guest, and refuses nothing where refusing matters.
-3. **The static ceiling and the acquire-time probe**, in that order — the ceiling is useful alone, the probe is not useful without it.
-4. **Splitting the guest shim from the supervisor, and negotiating the transport.** The precondition for any Windows guest, and independently valuable.
-5. **A local-hypervisor backend**, which is the consumer that makes every one of the above refuse something real.
+Decision 1 has shipped — merged, on `main`, unreleased — and nothing declares against it yet. The rows are in the order the work should be done, and the umbrella that carried all of them closed with the first, so each remaining row is pinned on its own.
+
+| Decision | State | Tracking |
+|---|---|---|
+| `OsFamily`, the backend attribute, the spec field, and the `ensure_can_serve` clause | shipped exactly as designed — two members, a `frozenset` per backend instance, `requires_os_family` defaulting to `None`, `SandboxOsFamilyNotSupported` raised at attach and again in `acquire`; additive, and the neutrality test now pins a Windows-shaped `work_dir` as served. On `main`, unreleased — `maf-sandbox` 0.19.0 predates it and 0.20.0 is pending | [#111](https://github.com/sokolaidev/maf-extensions/issues/111) (closed) by [#532](https://github.com/sokolaidev/maf-extensions/pull/532) (merged); release [#542](https://github.com/sokolaidev/maf-extensions/pull/542) (open) |
+| The Docker backend reads its daemon's `OSType` at construction | open — no shipped backend declares `os_families` at all, so the axis still refuses nothing on the one most likely to meet a non-Linux guest | untracked |
+| ACAS declares `POSIX` instead of asserting it in a comment | open — the `shlex.join` comment above is unchanged, and the field it was waiting for now exists | untracked |
+| The static ceiling, then the acquire-time probe | open — in that order: the ceiling is useful alone, the probe is not useful without it | untracked |
+| Splitting the guest shim from the supervisor, and negotiating the transport | open — the precondition for any Windows guest whatever this axis declares, and independently valuable | [#357](https://github.com/sokolaidev/maf-extensions/issues/357) (open), negotiation [#369](https://github.com/sokolaidev/maf-extensions/issues/369) (open) |
+| A local-hypervisor backend | open — the consumer that makes every row above refuse something real | untracked; the nearest live candidate, [#382](https://github.com/sokolaidev/maf-extensions/issues/382) (open), is runtime-shaped and takes the branch that declares no family |
+| There is no filesystem axis | settled — nothing to build | — |

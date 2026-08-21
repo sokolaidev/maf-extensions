@@ -1,6 +1,6 @@
 # `FILES_OUT`: getting artifacts out of a sandbox
 
-> **Status: AS BUILT**, except where the rollout at the foot says otherwise — tracking issue [#109](https://github.com/sokolaidev/maf-extensions/issues/109). Items 1 to 5 have landed; item 6 is deferred behind two upstream gaps and records that in place. The baseline is [`sandbox-architecture.md`](sandbox-architecture.md); this document specifies rollout item 4 of [`two-axis-sandbox-policy.md`](two-axis-sandbox-policy.md), whose `FILES_OUT` paragraph is a sketch and is superseded here.
+> The specification that argued the out-door into being — `FILES_OUT`, its caps, and the confinement rules a pull surface owes — tracked by [#109](https://github.com/sokolaidev/maf-extensions/issues/109). It is kept in the tense it was written, as the record of the argument rather than a description of what shipped. The decided content now lives in [`../capabilities.md`](../capabilities.md) and [`../hosts.md`](../hosts.md).
 
 ## What is missing, and why it is not symmetrical with `FILES_IN`
 

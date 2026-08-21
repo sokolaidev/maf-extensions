@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 540" width="1000" height="540" role="img" aria-labelledby="lt-title lt-desc" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title id="lt-title">Four lifetimes drawn as durations: the binding, the sandbox, the call, the run</title>
+  <desc id="lt-desc">Four lifetimes drawn as durations on one left-to-right time axis, not as nested boxes. The topmost bar is the binding, slate because it is family code, and it spans the whole axis: one per tool, built once before any key exists, alive as long as the process, holding host configuration only and reading the scope and the thread from the host's context per call rather than storing them. Below it two teal sandbox bars with different spans overlap in time, conversation A and conversation B, each one sandbox for one key of scope, thread, agent dir and kind; they sit beside the binding rather than under it, because the nesting is real but the sandbox is not its root, and neither bar contains the binding. Inside conversation A's span three amber call bars run in sequence over the one warm sandbox, since acquire is get-or-create, and each ends in a slate tick, the finally that removes the guest path that call owns. Exactly one of the three carries a thinner, sharp-cornered run bar drawn as a process group — 0..1 per call, dispatch only — and the other two carry none, which is what the 0..1 means. Conversation B carries a single call of its own, because one binding reaches as many sandboxes as it serves conversations. Both sandbox bars outlive every call inside them and end only with the conversation, where disposal is best-effort and purge asks every registered backend, and no call bar touches either end. A caption states the relation that runs the other way: a workload shipping two tools builds two bindings against one sandbox.</desc>
+
+  <defs>
+    <marker id="lt-slate" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#9aa1ac"/>
+    </marker>
+  </defs>
+
+  <!-- ── the binding: one per tool, and it lives for the process ────────── -->
+  <rect x="40" y="48" width="920" height="50" rx="6" fill="#9aa1ac" fill-opacity="0.20" stroke="#9aa1ac" stroke-width="1.4"/>
+  <text x="56" y="72" font-size="13.5" fill="#7d8694">binding — one per tool, built once before any key exists, and it lives as long as the process</text>
+  <text x="56" y="90" font-size="12" fill="#9aa1ac">holds host configuration only; the scope and the thread are read from the host's context per call, never stored</text>
+
+  <!-- ── conversation A: one sandbox, beside the chain rather than above it ─ -->
+  <rect x="140" y="124" width="480" height="50" rx="6" fill="#2fa8a0" fill-opacity="0.16" stroke="#2fa8a0" stroke-width="1.6"/>
+  <text x="156" y="148" font-size="13" fill="#7d8694">sandbox A — one conversation: scope · thread · agent dir + kind</text>
+  <text x="156" y="166" font-size="12" fill="#9aa1ac">not the chain's root — it sits beside binding, call and run</text>
+
+  <line x1="620" y1="118" x2="620" y2="180" stroke="#7d8694" stroke-width="1.6"/>
+  <text x="634" y="138" font-size="12" fill="#7d8694">each sandbox ends with the conversation —</text>
+  <text x="634" y="154" font-size="12" fill="#9aa1ac">disposal is best-effort, and purge asks every</text>
+  <text x="634" y="170" font-size="12" fill="#9aa1ac">registered backend, not only the selected one</text>
+
+  <!-- ── the calls: three over one warm sandbox, each ending in its finally ─ -->
+  <rect x="176" y="192" width="96" height="32" rx="4" fill="#c98a2e" fill-opacity="0.20" stroke="#c98a2e" stroke-width="1.6"/>
+  <text x="224" y="213" text-anchor="middle" font-size="13" fill="#7d8694">call 1</text>
+  <rect x="296" y="192" width="134" height="32" rx="4" fill="#c98a2e" fill-opacity="0.20" stroke="#c98a2e" stroke-width="1.6"/>
+  <text x="363" y="213" text-anchor="middle" font-size="13" fill="#7d8694">call 2</text>
+  <rect x="462" y="192" width="110" height="32" rx="4" fill="#c98a2e" fill-opacity="0.20" stroke="#c98a2e" stroke-width="1.6"/>
+  <text x="517" y="213" text-anchor="middle" font-size="13" fill="#7d8694">call 3</text>
+
+  <line x1="272" y1="224" x2="272" y2="238" stroke="#7d8694" stroke-width="2"/>
+  <line x1="430" y1="224" x2="430" y2="238" stroke="#7d8694" stroke-width="2"/>
+  <line x1="572" y1="224" x2="572" y2="238" stroke="#7d8694" stroke-width="2"/>
+
+  <text x="634" y="196" font-size="12" fill="#7d8694">three calls in one conversation —</text>
+  <text x="634" y="212" font-size="12" fill="#9aa1ac">acquire is get-or-create, so all</text>
+  <text x="634" y="228" font-size="12" fill="#9aa1ac">three reuse the one warm sandbox</text>
+
+  <!-- one label for all four ticks, never one apiece -->
+  <text x="176" y="252" font-size="12" fill="#7d8694">each call ends in a tick: the finally</text>
+  <text x="176" y="268" font-size="12" fill="#9aa1ac">that removes the guest path it owns</text>
+
+  <!-- ── the run: 0..1 per call, so two of the three carry none ─────────── -->
+  <rect x="482" y="242" width="70" height="20" fill="#2fa8a0" fill-opacity="0.14" stroke="#2fa8a0" stroke-width="1.6"/>
+  <rect x="482" y="242" width="70" height="8" fill="#2fa8a0" fill-opacity="0.38" stroke="#2fa8a0" stroke-width="1.6"/>
+  <circle cx="490" cy="246" r="1.5" fill="#2fa8a0"/>
+  <circle cx="497" cy="246" r="1.5" fill="#2fa8a0"/>
+
+  <line x1="552" y1="252" x2="628" y2="252" stroke="#9aa1ac" stroke-width="1"/>
+  <text x="634" y="252" font-size="12" fill="#7d8694">run — 0..1 per call, dispatch only:</text>
+  <text x="634" y="268" font-size="12" fill="#9aa1ac">a detached process group; the other two calls have none</text>
+
+  <!-- ── conversation B: a second sandbox the same binding reaches ──────── -->
+  <rect x="430" y="320" width="470" height="50" rx="6" fill="#2fa8a0" fill-opacity="0.16" stroke="#2fa8a0" stroke-width="1.6"/>
+  <text x="446" y="344" font-size="13" fill="#7d8694">sandbox B — a second conversation, a second sandbox</text>
+  <text x="446" y="362" font-size="12" fill="#9aa1ac">the same binding reaches it: scope and thread are read per call</text>
+
+  <line x1="900" y1="314" x2="900" y2="376" stroke="#7d8694" stroke-width="1.6"/>
+
+  <rect x="470" y="390" width="116" height="32" rx="4" fill="#c98a2e" fill-opacity="0.20" stroke="#c98a2e" stroke-width="1.6"/>
+  <text x="528" y="411" text-anchor="middle" font-size="13" fill="#7d8694">call</text>
+  <line x1="586" y1="422" x2="586" y2="436" stroke="#7d8694" stroke-width="2"/>
+
+  <!-- ── the relation that runs the other way ───────────────────────────── -->
+  <text x="40" y="470" font-size="12" fill="#7d8694">a workload shipping two tools builds two bindings against one sandbox — neither is "per" the other</text>
+
+  <!-- ── the axis the whole picture is read against ─────────────────────── -->
+  <line x1="40" y1="502" x2="956" y2="502" stroke="#9aa1ac" stroke-width="1.4" marker-end="url(#lt-slate)"/>
+  <text x="956" y="522" text-anchor="end" font-size="12" fill="#9aa1ac">time</text>
+</svg>

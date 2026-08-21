@@ -1,6 +1,6 @@
 # The tool call: what owns it, what it owns, and what happens when it ends
 
-> **Status: PROPOSED.** This is the target, written as one; where it and the code disagree, the code is what exists. The isolation and capability axes it leans on are [`two-axis-sandbox-policy.md`](two-axis-sandbox-policy.md); the baseline it evolves is [`sandbox-architecture.md`](sandbox-architecture.md).
+> The proposal that asked what a tool call is, what it owns, and what has to happen when it ends. It is kept in the tense it was written, as the record of the argument rather than a description of what shipped. The decided content now lives in [`../tool-call.md`](../tool-call.md), and in [`../hosts.md`](../hosts.md) for where the storage base comes from.
 
 ## The question
 

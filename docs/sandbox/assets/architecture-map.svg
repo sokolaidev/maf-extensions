@@ -1,0 +1,162 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 580" width="1000" height="580" role="img" aria-labelledby="map-title map-desc" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title id="map-title">Every element of maf-sandbox, and the two directions a call crosses in</title>
+  <desc id="map-desc">A map in four parts. The host application holds the agent and model, the middleware chain drawn as a gate, the sandboxed tool's body, the binding that configures it, and two host-side destinations: the host-tool registry, empty by default, and the sink that receives artifacts. Fill and stroke carry a second channel, authorship: purple is MAF and the application's own code, slate the maf-sandbox family, teal the guest, so family code is drawn running in the host process too — the tool body, the binding and the host-tool registry — while the sink is drawn split, the family's shape around the host's destination. maf_sandbox core, in the same process, holds the spec a kind declares, the router with its checks — host denials, the isolation floor, capabilities, the guest's OS family, egress and transfer limits — and the key read per call from the caller context, which nothing model-authored ever reaches. Four backends are registered with their isolation rungs: acas at microvm, docker and wslc at container, in-process at none; the router selects one and the others stay registered, because purge asks all of them. Inside the sandbox the guest call path is a directory nested in the work dir — one per call, reclaimed in a finally — and it holds the run's files; the run itself is not a directory but a detached process group, drawn as a process below the tree and tied to the files it owns by a dotted line, at most one per call and only where a guest dispatches. Three arrows carry the traffic: the inward call passes through the middleware gate to the tool body, the router and the backend, arriving as files in and exec that the kind's tool body writes; declared outputs are pulled back out, capped, to the host's sink; and a dashed dispatch runs from the run to the host-tool registry along a route that goes around the middleware gate rather than through it, carried as request and response files the kind's host-side supervisor translates. The sandbox's one egress valve is drawn shut because closed is the default: egress is a single mode the spec declares — closed, an allowlist of named hosts, or unrestricted.</desc>
+
+  <defs>
+    <marker id="map-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#c98a2e"/>
+    </marker>
+    <marker id="map-slate" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#7d8694"/>
+    </marker>
+    <marker id="map-teal" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2fa8a0"/>
+    </marker>
+    <marker id="map-red" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#cf5a52"/>
+    </marker>
+  </defs>
+
+  <!-- ── the legend: the regions are process, the fill and stroke are authorship ─ -->
+  <rect x="20" y="19" width="13" height="13" rx="3" fill="#8b7fd4" fill-opacity="0.28" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="41" y="30" font-size="12" fill="#7d8694">MAF + the application's own</text>
+  <rect x="215" y="19" width="13" height="13" rx="3" fill="#9aa1ac" fill-opacity="0.28" stroke="#9aa1ac" stroke-width="1.4"/>
+  <text x="236" y="30" font-size="12" fill="#7d8694">the maf-sandbox family</text>
+  <rect x="384" y="19" width="13" height="13" rx="3" fill="#2fa8a0" fill-opacity="0.28" stroke="#2fa8a0" stroke-width="1.3"/>
+  <text x="405" y="30" font-size="12" fill="#7d8694">the guest</text>
+
+  <!-- ── the host application ──────────────────────────────────────────── -->
+  <rect x="20" y="48" width="276" height="432" rx="14" fill="#8b7fd4" fill-opacity="0.10" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="158" y="70" text-anchor="middle" font-size="15" fill="#7d8694">host application</text>
+
+  <rect x="46" y="88" width="224" height="44" rx="8" fill="#8b7fd4" fill-opacity="0.20" stroke="#8b7fd4" stroke-width="1.5"/>
+  <text x="158" y="115" text-anchor="middle" font-size="14" fill="#7d8694">agent + model</text>
+
+  <!-- the middleware chain: the one box on the path with a doubled border — the gate the inward call passes through -->
+  <rect x="46" y="154" width="224" height="52" rx="8" fill="#8b7fd4" fill-opacity="0.28" stroke="#8b7fd4" stroke-width="2.6"/>
+  <rect x="51" y="159" width="214" height="42" rx="5" fill="none" stroke="#8b7fd4" stroke-width="1"/>
+  <text x="158" y="176" text-anchor="middle" font-size="13.5" fill="#7d8694">middleware chain</text>
+  <text x="158" y="194" text-anchor="middle" font-size="12" fill="#9aa1ac">the gate every call passes</text>
+
+  <rect x="46" y="266" width="224" height="48" rx="8" fill="#9aa1ac" fill-opacity="0.20" stroke="#9aa1ac" stroke-width="1.4"/>
+  <text x="158" y="288" text-anchor="middle" font-size="13.5" fill="#7d8694">tool body</text>
+  <text x="158" y="305" text-anchor="middle" font-size="12" fill="#9aa1ac">the kind's code, host-side</text>
+
+  <line x1="158" y1="314" x2="158" y2="332" stroke="#7d8694" stroke-width="1.4"/>
+  <rect x="46" y="332" width="224" height="54" rx="8" fill="#9aa1ac" fill-opacity="0.20" stroke="#9aa1ac" stroke-width="1.4"/>
+  <text x="158" y="356" text-anchor="middle" font-size="13.5" fill="#7d8694">binding</text>
+  <text x="158" y="374" text-anchor="middle" font-size="12" fill="#9aa1ac">host config, one per tool</text>
+
+  <rect x="46" y="398" width="126" height="60" rx="8" fill="#9aa1ac" fill-opacity="0.20" stroke="#9aa1ac" stroke-width="1.4"/>
+  <text x="109" y="418" text-anchor="middle" font-size="12.5" fill="#7d8694">host-tool</text>
+  <text x="109" y="433" text-anchor="middle" font-size="12.5" fill="#7d8694">registry</text>
+  <text x="109" y="450" text-anchor="middle" font-size="12" fill="#9aa1ac">empty by default</text>
+
+  <!-- the one split box: a slate outline the family owns, a purple fill the host does -->
+  <rect x="176" y="398" width="94" height="60" rx="8" fill="#8b7fd4" fill-opacity="0.24" stroke="#9aa1ac" stroke-width="1.5"/>
+  <text x="223" y="415" text-anchor="middle" font-size="13.5" fill="#7d8694">sink</text>
+  <text x="223" y="432" text-anchor="middle" font-size="12" fill="#9aa1ac">family's shape,</text>
+  <text x="223" y="448" text-anchor="middle" font-size="12" fill="#9aa1ac">host's landing</text>
+
+  <!-- ── maf_sandbox core ──────────────────────────────────────────────── -->
+  <rect x="316" y="48" width="264" height="432" rx="14" fill="#9aa1ac" fill-opacity="0.08" stroke="#9aa1ac" stroke-width="1.5"/>
+  <text x="448" y="70" text-anchor="middle" font-size="15" fill="#7d8694">maf_sandbox core</text>
+  <text x="448" y="86" text-anchor="middle" font-size="12" fill="#9aa1ac">in the host process</text>
+
+  <rect x="336" y="96" width="224" height="74" rx="8" fill="#9aa1ac" fill-opacity="0.14" stroke="#9aa1ac" stroke-width="1.4"/>
+  <text x="448" y="120" text-anchor="middle" font-size="13.5" fill="#7d8694">spec</text>
+  <text x="448" y="140" text-anchor="middle" font-size="12" fill="#9aa1ac">kind · image · egress + allow</text>
+  <text x="448" y="157" text-anchor="middle" font-size="12" fill="#9aa1ac">requires · outputs · caps</text>
+
+  <line x1="448" y1="174" x2="448" y2="242" stroke="#7d8694" stroke-width="1.4" marker-end="url(#map-slate)"/>
+  <text x="460" y="198" font-size="12" fill="#9aa1ac">what the kind</text>
+  <text x="460" y="214" font-size="12" fill="#9aa1ac">declares</text>
+
+  <rect x="336" y="248" width="224" height="84" rx="8" fill="#9aa1ac" fill-opacity="0.20" stroke="#7d8694" stroke-width="2"/>
+  <text x="448" y="276" text-anchor="middle" font-size="15" fill="#7d8694">router</text>
+  <text x="448" y="302" text-anchor="middle" font-size="12" fill="#9aa1ac">denials · floor · capabilities</text>
+  <text x="448" y="319" text-anchor="middle" font-size="12" fill="#9aa1ac">os family · egress · limits</text>
+
+  <line x1="448" y1="360" x2="448" y2="338" stroke="#7d8694" stroke-width="1.4" marker-end="url(#map-slate)"/>
+  <text x="460" y="354" font-size="12" fill="#9aa1ac">read per call</text>
+
+  <rect x="336" y="364" width="224" height="66" rx="8" fill="#9aa1ac" fill-opacity="0.14" stroke="#9aa1ac" stroke-width="1.4"/>
+  <text x="448" y="386" text-anchor="middle" font-size="13.5" fill="#7d8694">key</text>
+  <text x="448" y="404" text-anchor="middle" font-size="12" fill="#9aa1ac">scope · thread · agent dir</text>
+  <text x="448" y="420" text-anchor="middle" font-size="12" fill="#9aa1ac">+ kind</text>
+
+  <line x1="530" y1="458" x2="530" y2="436" stroke="#cf5a52" stroke-width="1.4" marker-end="url(#map-red)"/>
+  <text x="436" y="452" text-anchor="middle" font-size="12" fill="#cf5a52">nothing model-authored</text>
+  <text x="436" y="466" text-anchor="middle" font-size="12" fill="#cf5a52">ever reaches the key</text>
+
+  <!-- ── the backends: the router selects one, all stay registered ─────── -->
+  <text x="794" y="70" text-anchor="middle" font-size="14" fill="#7d8694">backends</text>
+  <text x="794" y="90" text-anchor="middle" font-size="12" fill="#9aa1ac">the router selects one — the others stay</text>
+  <text x="794" y="106" text-anchor="middle" font-size="12" fill="#9aa1ac">registered, and purge asks all of them</text>
+
+  <rect x="608" y="120" width="84" height="54" rx="8" fill="#9aa1ac" fill-opacity="0.20" stroke="#7d8694" stroke-width="2"/>
+  <text x="650" y="142" text-anchor="middle" font-size="13" fill="#7d8694">acas</text>
+  <text x="650" y="160" text-anchor="middle" font-size="12" fill="#9aa1ac">microvm</text>
+
+  <rect x="704" y="120" width="84" height="54" rx="8" fill="#9aa1ac" fill-opacity="0.06" stroke="#9aa1ac" stroke-width="1" stroke-dasharray="5 4"/>
+  <text x="746" y="142" text-anchor="middle" font-size="13" fill="#9aa1ac">docker</text>
+  <text x="746" y="160" text-anchor="middle" font-size="12" fill="#9aa1ac">container</text>
+
+  <rect x="800" y="120" width="84" height="54" rx="8" fill="#9aa1ac" fill-opacity="0.06" stroke="#9aa1ac" stroke-width="1" stroke-dasharray="5 4"/>
+  <text x="842" y="142" text-anchor="middle" font-size="13" fill="#9aa1ac">wslc</text>
+  <text x="842" y="160" text-anchor="middle" font-size="12" fill="#9aa1ac">container</text>
+
+  <rect x="896" y="120" width="84" height="54" rx="8" fill="#9aa1ac" fill-opacity="0.06" stroke="#9aa1ac" stroke-width="1" stroke-dasharray="5 4"/>
+  <text x="938" y="142" text-anchor="middle" font-size="13" fill="#9aa1ac">in-process</text>
+  <text x="938" y="160" text-anchor="middle" font-size="12" fill="#9aa1ac">none</text>
+
+  <!-- ── the sandbox: the guest ────────────────────────────────────────── -->
+  <rect x="608" y="218" width="300" height="276" rx="14" fill="#2fa8a0" fill-opacity="0.12" stroke="#2fa8a0" stroke-width="2.4"/>
+  <rect x="615" y="225" width="286" height="262" rx="9" fill="none" stroke="#2fa8a0" stroke-width="1"/>
+  <text x="758" y="248" text-anchor="middle" font-size="15" fill="#7d8694">sandbox — the guest</text>
+
+  <!-- the filesystem: the call path is a directory under the work dir -->
+  <rect x="620" y="264" width="276" height="126" rx="7" fill="#2fa8a0" fill-opacity="0.18" stroke="#2fa8a0" stroke-width="1.3"/>
+  <text x="634" y="284" font-size="13" fill="#7d8694">work dir</text>
+
+  <rect x="634" y="294" width="248" height="84" rx="6" fill="#2fa8a0" fill-opacity="0.26" stroke="#2fa8a0" stroke-width="1.3"/>
+  <text x="646" y="314" font-size="13" fill="#7d8694">guest call path</text>
+  <text x="646" y="331" font-size="12" fill="#9aa1ac">one per call, reclaimed in a finally</text>
+
+  <rect x="646" y="340" width="170" height="28" rx="4" fill="#2fa8a0" fill-opacity="0.34" stroke="#2fa8a0" stroke-width="1.1"/>
+  <text x="731" y="358" text-anchor="middle" font-size="12" fill="#7d8694">the run's files</text>
+
+  <!-- the run is not a directory: a detached process group, drawn as a process -->
+  <line x1="700" y1="402" x2="700" y2="372" stroke="#7d8694" stroke-width="1.2" stroke-dasharray="3 3"/>
+  <rect x="656" y="406" width="240" height="76" fill="#2fa8a0" fill-opacity="0.14" stroke="#2fa8a0" stroke-width="1.6"/>
+  <rect x="656" y="406" width="240" height="14" fill="#2fa8a0" fill-opacity="0.38" stroke="#2fa8a0" stroke-width="1.6"/>
+  <circle cx="667" cy="413" r="2.4" fill="#2fa8a0"/>
+  <circle cx="677" cy="413" r="2.4" fill="#2fa8a0"/>
+  <text x="776" y="446" text-anchor="middle" font-size="13" fill="#7d8694">run — a crafted process group</text>
+  <text x="776" y="466" text-anchor="middle" font-size="12" fill="#9aa1ac">detached · 0..1 per call · dispatch only</text>
+
+  <!-- one valve on the edge, shut -->
+  <line x1="908" y1="470" x2="976" y2="470" stroke="#7d8694" stroke-width="1.8" marker-end="url(#map-slate)"/>
+  <circle cx="920" cy="470" r="7.5" fill="#8b7fd4" fill-opacity="0.15" stroke="#7d8694" stroke-width="1.6"/>
+  <line x1="920" y1="460" x2="920" y2="480" stroke="#7d8694" stroke-width="1.6"/>
+  <text x="992" y="512" text-anchor="end" font-size="12" fill="#7d8694">egress: one mode the spec declares —</text>
+  <text x="992" y="526" text-anchor="end" font-size="12" fill="#7d8694">closed by default, allowlist or unrestricted</text>
+
+  <!-- ── inward: the call, gated, down the host and out to the sandbox ─── -->
+  <line x1="158" y1="134" x2="158" y2="150" stroke="#c98a2e" stroke-width="2.2" marker-end="url(#map-amber)"/>
+  <line x1="158" y1="210" x2="158" y2="262" stroke="#c98a2e" stroke-width="2.2" marker-end="url(#map-amber)"/>
+  <line x1="270" y1="290" x2="332" y2="290" stroke="#c98a2e" stroke-width="2.2" marker-end="url(#map-amber)"/>
+  <path d="M 560 290 H 594 V 147 H 604" fill="none" stroke="#c98a2e" stroke-width="2.2" marker-end="url(#map-amber)"/>
+  <line x1="650" y1="178" x2="650" y2="214" stroke="#c98a2e" stroke-width="2.8" marker-end="url(#map-amber)"/>
+  <text x="663" y="194" font-size="12.5" fill="#c98a2e">files in + exec — written by the kind's tool body</text>
+  <text x="663" y="210" font-size="12" fill="#9aa1ac">the work ships out, the call stays home</text>
+
+  <!-- ── artifacts out: declared outputs, capped, to the host's sink ───── -->
+  <path d="M 640 494 V 514 H 223 V 462" fill="none" stroke="#2fa8a0" stroke-width="2.4" marker-end="url(#map-teal)"/>
+  <text x="420" y="506" text-anchor="middle" font-size="12.5" fill="#2fa8a0">declared outputs, capped — to the sink</text>
+
+  <!-- ── outward: dispatch, routed around the gate ─────────────────────── -->
+  <path d="M 760 482 V 556 H 109 V 462" fill="none" stroke="#cf5a52" stroke-width="2.4" stroke-dasharray="8 5" marker-end="url(#map-red)"/>
+  <text x="470" y="532" text-anchor="middle" font-size="12.5" fill="#cf5a52">dispatched calls bypass the middleware chain</text>
+  <text x="470" y="548" text-anchor="middle" font-size="12" fill="#9aa1ac">carried as request and response files the kind's supervisor translates</text>
+</svg>

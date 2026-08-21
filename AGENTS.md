@@ -84,7 +84,7 @@ Each package is self-contained: its own metadata, `ruff`/`pyright`/`pytest` conf
 
 - Pin every GitHub Action by commit SHA with the version in a trailing comment. This repository publishes to PyPI; a moving tag is a supply-chain hole.
 - Do not wrap lines in Markdown. One paragraph is one line.
-- **Three words, and no fourth.** A **call** is one execution of a tool function — qualify any other kind: `transport call`, `backend call`. A **run** is the host-tools transport's unit, one supervised guest program with a `GuestRunLayout`; there is at most one per call and kinds without host tools have none. A **path** is a place inside the guest, and `guest_` says so, because a bare name reads as host-side. Do not spend `invocation` on any of them — it already means a `docker` or `wslc` subprocess. Two kinds each invented a word for the same thing before this was written down, so reach for one of these before coining. [`docs/design/call-lifetime.md`](docs/design/call-lifetime.md) carries the reasoning.
+- **Three words, and no fourth.** A **call** is one execution of a tool function — qualify any other kind: `transport call`, `backend call`. A **run** is the host-tools transport's unit, one supervised guest program with a `GuestRunLayout`; there is at most one per call and kinds without host tools have none. A **path** is a place inside the guest, and `guest_` says so, because a bare name reads as host-side. Do not spend `invocation` on any of them — it already means a `docker` or `wslc` subprocess. Two kinds each invented a word for the same thing before this was written down, so reach for one of these before coining. [`docs/sandbox/tool-call.md`](docs/sandbox/tool-call.md) carries the reasoning.
 
 ## Comments and docstrings
 

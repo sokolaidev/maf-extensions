@@ -4,12 +4,14 @@
 > fixes the layer boundary, states what `RUN_CODE` has to mean, and answers the six
 > blockers that issue named. The analysis it rests on — the source read of the Hyperlight
 > stack, the fit against the protocol, and the seven live probes with their measured
-> constants — is [`../research/hyperlight-backend-exploration.md`](../research/hyperlight-backend-exploration.md),
+> constants — is [`hyperlight-backend-exploration.md`](hyperlight-backend-exploration.md),
 > and this document does not re-argue any of it. The vocabulary is
 > [`two-axis-sandbox-policy.md`](two-axis-sandbox-policy.md)'s; the transport question it
 > defers is [#369](https://github.com/sokolaidev/maf-extensions/issues/369)'s; the one
 > decision it deliberately leaves open is
-> [#425](https://github.com/sokolaidev/maf-extensions/issues/425)'s.
+> [#425](https://github.com/sokolaidev/maf-extensions/issues/425)'s. That vocabulary is decided
+> now, and it is described in [`../policy-isolation.md`](../policy-isolation.md) and
+> [`../capabilities.md`](../capabilities.md).
 
 We propose a seventh package, `maf-sandbox-hyperlight`, that implements
 `maf_sandbox.SandboxBackend` over the [`hyperlight-sandbox`](https://github.com/hyperlight-dev/hyperlight-sandbox)

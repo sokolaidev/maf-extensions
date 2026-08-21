@@ -1,5 +1,12 @@
 # Hyperlight, read from the source — and whether it can back this suite
 
+> The source read behind the Hyperlight proposal: what the stack actually is, how it fits this
+> suite's backend contract, and seven live probes with their measured constants. It is **open**
+> research — no decision has been taken and no package exists — and the design that rests on it is
+> [`hyperlight-backend-proposal.md`](hyperlight-backend-proposal.md). The vocabulary it reads the
+> stack against is decided, and it is described in [`../policy-isolation.md`](../policy-isolation.md)
+> and [`../capabilities.md`](../capabilities.md).
+
 Issue #371 asked what `agent-framework-hyperlight` actually is, and said nobody could tell
 whether "support Hyperlight" is a week or a quarter until that was settled. This note settles
 the factual half by reading the source, and then maps what was found onto this suite's
@@ -284,7 +291,7 @@ which explicit `(key, kind)` identity replaces.
 And one caveat to write down wherever the adapter ships: nothing stops a host attaching
 `HyperlightCodeActProvider` to an agent *beside* this suite, and doing so bypasses every
 gate above — no attach refusal, no floor, no identity denial, no caps. That is not a flaw
-in either library; it is SANDBOX.md's thesis restated. The other answers become backends
+in either library; it is docs/sandbox/README.md's thesis restated. The other answers become backends
 beneath the contract, not alternatives beside it.
 
 ## Feature parity with the CodeAct library — the ledger

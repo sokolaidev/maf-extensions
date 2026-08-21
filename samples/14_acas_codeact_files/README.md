@@ -13,7 +13,7 @@ app  ->  maf_sandbox (router)  ->  maf_sandbox_acas  ->  the sandbox
 
 Everything that reads a file *back out* of a sandbox has been Docker: sample 07 through a hand-written kind, sample 08 through the packaged one. Docker is the local backend, where landing an artifact is a `docker cp` between two processes on the same machine.
 
-The set makes a careful *"same workload, one line lower"* claim for running a command — samples 01, 02, 05 and 09 are one Bicep workload across four backends — and has had no counterpart for the pull surface. So nothing demonstrated that a workload landing artifacts is portable in the way [`docs/design/files-out.md`](../../docs/design/files-out.md) says it is. This sample is that counterpart ([#300](https://github.com/sokolaidev/maf-extensions/issues/300)).
+The set makes a careful *"same workload, one line lower"* claim for running a command — samples 01, 02, 05 and 09 are one Bicep workload across four backends — and has had no counterpart for the pull surface. So nothing demonstrated that a workload landing artifacts is portable in the way [`docs/sandbox/capabilities.md`](../../docs/sandbox/capabilities.md) says it is. This sample is that counterpart ([#300](https://github.com/sokolaidev/maf-extensions/issues/300)).
 
 The application code is the evidence. `make_recording_sink`'s body is copied from sample 08 line for line, and that is the point rather than laziness: a sink is host-side code that never learns which backend produced the bytes it was handed. If it had to know, the surface would not be portable and this sample would be making the opposite case.
 
