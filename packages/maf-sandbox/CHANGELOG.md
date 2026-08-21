@@ -2,6 +2,24 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.18.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.18.0...maf-sandbox-v0.18.1) (2026-08-21)
+
+
+### Fixes
+
+* **core:** reclaim sandbox call directories after workload calls ([#496](https://github.com/sokolaidev/maf-extensions/issues/496)) ([15a9391](https://github.com/sokolaidev/maf-extensions/commit/15a9391f744740abf4078e12e2fa43927b3e4734))
+
+
+### Performance
+
+* **sandbox:** reduce host-tool transport latency for concurrent guest calls ([#504](https://github.com/sokolaidev/maf-extensions/issues/504)) ([6493081](https://github.com/sokolaidev/maf-extensions/commit/64930819219f14f21260b39ce0f5d56cb1b4ab1d))
+
+
+### Documentation
+
+* **core:** add the missing 0.18 upgrade notes and say which release the call reclaim shipped in ([#508](https://github.com/sokolaidev/maf-extensions/issues/508)) ([deef8aa](https://github.com/sokolaidev/maf-extensions/commit/deef8aa95721ab2895d1ae3d338535aa3c946373))
+* **sandbox:** the protocol's delete is capability-gated, not absent ([#514](https://github.com/sokolaidev/maf-extensions/issues/514)) ([e5853da](https://github.com/sokolaidev/maf-extensions/commit/e5853da0d3d57382571f7290305f45900d3a4870))
+
 ## [0.18.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.17.0...maf-sandbox-v0.18.0) (2026-08-20)
 
 
