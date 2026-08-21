@@ -53,6 +53,31 @@ class TestAssess:
             {"scripts/example.py": (before, after)},
         )
 
+    def test_chore_title_on_changed_tests_is_allowed(self):
+        before = "def run() -> int:\n    return 1\n"
+        after = "def run() -> int:\n    return 2\n"
+        assert (
+            check.assess(
+                "chore: refresh test coverage",
+                ["packages/maf-sandbox/tests/test_router.py"],
+                {"packages/maf-sandbox/tests/test_router.py": (before, after)},
+            )
+            == []
+        )
+
+    def test_behavior_title_on_changed_tests_is_rejected(self):
+        before = "def run() -> int:\n    return 1\n"
+        after = "def run() -> int:\n    return 2\n"
+        assert check.assess(
+            "fix: correct test expectation",
+            ["tests/test_router.py"],
+            {"tests/test_router.py": (before, after)},
+        )
+
+    @pytest.mark.parametrize("path", ["requirements.txt", "constraints.txt"])
+    def test_dependency_text_is_executable_metadata(self, path: str):
+        assert check.assess("chore: update dependencies", [path], {})
+
     def test_docs_title_on_markdown_is_allowed(self):
         assert check.assess("docs: explain the API", ["README.md"], {}) == []
 
@@ -91,7 +116,27 @@ class TestAssess:
     def test_python_rename_to_non_python_is_executable(self):
         assert check.assess(
             "docs: reorganize files",
-            ["README.md"],
+            ["scripts/example.txt"],
             {},
             [("scripts/example.py", "scripts/example.txt")],
+        )
+
+    def test_non_python_rename_to_python_does_not_parse_the_old_file(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        source = "def run() -> int:\n    return 1\n"
+
+        def fake_git(*args: str) -> str:
+            if args[:3] == ("diff", "--find-renames", "--name-status"):
+                return "R100\tREADME.md\tscripts/example.py"
+            raise AssertionError(args)
+
+        monkeypatch.setattr(check, "_git", fake_git)
+        result = check._changed_python("base")
+        assert result["scripts/example.py"] == (None, None)
+        assert check.assess(
+            "docs: add module",
+            ["scripts/example.py"],
+            {"scripts/example.py": (None, source)},
+            [("README.md", "scripts/example.py")],
         )

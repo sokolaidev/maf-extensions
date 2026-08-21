@@ -17,8 +17,9 @@ from pathlib import Path
 _SUBJECT = re.compile(r"^(?P<type>[a-z]+)(?:\([^)]*\))?(?P<breaking>!)?:")
 _BEHAVIOR_TYPES = frozenset({"feat", "fix", "perf", "revert"})
 _DOCUMENTATION_TYPES = frozenset({"docs", "chore", "refactor", "test", "build", "ci"})
-_DOCUMENTATION_SUFFIXES = frozenset({".md", ".markdown", ".rst", ".txt", ".adoc"})
+_DOCUMENTATION_SUFFIXES = frozenset({".md", ".markdown", ".rst", ".adoc"})
 _DOCUMENTATION_NAMES = frozenset({"license", "copying", "notice"})
+_TEST_DIR_NAMES = frozenset({"test", "tests"})
 
 
 class _RemoveDocstrings(ast.NodeTransformer):
@@ -73,11 +74,27 @@ def python_changed(before: str | None, after: str | None) -> bool:
     return before_normalized != after_normalized
 
 
+def is_test_path(path: str) -> bool:
+    """Whether a path belongs to a test directory and does not ship as package behavior."""
+    return any(part.lower() in _TEST_DIR_NAMES for part in path.replace("\\", "/").split("/"))
+
+
 def is_documentation_path(path: str) -> bool:
-    """Whether a changed non-Python path is conventionally documentation-only."""
+    """Whether a changed path is conventionally documentation-only."""
     normalized = path.replace("\\", "/")
-    name = Path(normalized).name.lower()
-    return Path(name).suffix in _DOCUMENTATION_SUFFIXES or name in _DOCUMENTATION_NAMES
+    parts = normalized.lower().split("/")
+    name = parts[-1]
+    return (
+        "docs" in parts
+        or name.startswith(("readme", "changelog"))
+        or Path(name).suffix in _DOCUMENTATION_SUFFIXES
+        or name in _DOCUMENTATION_NAMES
+    )
+
+
+def is_non_behavior_path(path: str) -> bool:
+    """Whether a changed path is a test or documentation rather than shipped behavior."""
+    return is_test_path(path) or is_documentation_path(path)
 
 
 def title_type(title: str) -> str | None:
@@ -98,11 +115,17 @@ def assess(
         return []
 
     executable = any(
-        not is_documentation_path(path) for path in changed_paths if not path.endswith(".py")
+        not is_non_behavior_path(path) for path in changed_paths if not path.endswith(".py")
     )
-    executable |= any(python_changed(before, after) for before, after in changed_python.values())
     executable |= any(
-        len(paths) == 2 and paths[0] != paths[1] and any(path.endswith(".py") for path in paths)
+        not is_test_path(path) and python_changed(before, after)
+        for path, (before, after) in changed_python.items()
+    )
+    executable |= any(
+        len(paths) == 2
+        and paths[0] != paths[1]
+        and any(path.endswith(".py") for path in paths)
+        and not all(is_test_path(path) for path in paths)
         for paths in changed_path_pairs or []
     )
 
@@ -154,7 +177,11 @@ def _changed_python(
         if not after_path.endswith(".py"):
             continue
         try:
-            before = _git("show", f"{base}:{before_path}") if kind[0] != "A" else None
+            before = (
+                _git("show", f"{base}:{before_path}")
+                if kind[0] != "A" and before_path.endswith(".py")
+                else None
+            )
         except subprocess.CalledProcessError:
             before = None
         try:
