@@ -7,12 +7,12 @@ Thanks for looking. These packages are early (`0.x`) and the API may still move,
 ```bash
 uv sync            # one workspace, one lock, every package editable
 uv run pytest -q   # the whole suite, about half a minute
-git config core.hooksPath .githooks # the commit, message and push hooks: lint, format, the scrub guard, pyright
+uv run python scripts/install_hooks.py # the commit, message and push hooks: lint, format, the scrub guard, pyright
 ```
 
 `agent-framework-core` resolves from PyPI at the range each package declares — deliberately the same artifact a consumer of the published wheel gets, not a development pin.
 
-`core.hooksPath` is per clone and the path is relative, so one `git config` covers the main checkout and every worktree of it — each resolves `.githooks/` against its own root, a worktree you check out on its own included. The scripts there are tracked and delegate to `uv run pre-commit`, which is what makes that true: `uv run pre-commit install` writes the absolute path of the interpreter that installed it into `.git/hooks/`, so hooks installed from a checkout you later move or delete stop working, and say only that `pre-commit` is not on `PATH`. It still works if you prefer it, and `core.hooksPath` wins over whatever it wrote. The scrub guard's optional owner-only list (`.no-origin-identifiers`) lives in the git common directory, so one list covers the main checkout and every worktree.
+`install_hooks.py` writes runtime-resolving wrappers into Git's hooks directory, which is shared by the main checkout and linked worktrees and moves with the clone. It leaves `core.hooksPath` unset, so unrelated hooks already in that directory remain active; it refuses to run when another hooks path is configured. For an existing clone, first run `git config --local --unset core.hooksPath` if it still points at `.githooks`, then inspect `.git/hooks/{pre-commit,pre-push,commit-msg}` and preserve or remove any old pre-commit wrappers before running the installer. The wrappers delegate to `uv run pre-commit`; unlike `uv run pre-commit install`, they do not bake the installing interpreter's absolute path into the hook. The scrub guard's optional owner-only list (`.no-origin-identifiers`) lives in the Git common directory, so one list covers the main checkout and every worktree.
 
 ## Before opening a PR
 
