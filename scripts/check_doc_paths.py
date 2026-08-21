@@ -22,27 +22,37 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import parse_qs, unquote, urlsplit
 
 #: Markdown inline links and images, capturing the target. Reference-style definitions
 #: (`[label]: target`) are matched separately below; both spellings resolve the same way.
-_INLINE_LINK = re.compile(r"!?\[[^\]]*\]\(\s*<?([^)>\s]+)")
-_REFERENCE_LINK = re.compile(r"^\s{0,3}\[[^\]]+\]:\s*<?([^\s>]+)", re.MULTILINE)
+#:
+#: A destination wrapped in angle brackets runs to the `>`, so `[x](<a file.md>)` is one target
+#: and not the two words it looks like; the bare spelling stops at the first space, which is
+#: what makes the brackets necessary. Both alternatives capture, so a match yields one group
+#: filled and one empty.
+_INLINE_LINK = re.compile(r"!?\[[^\]]*\]\(\s*(?:<([^>\n]*)>|([^)\s]+))")
+_REFERENCE_LINK = re.compile(r"^\s{0,3}\[[^\]]+\]:\s*(?:<([^>\n]*)>|(\S+))", re.MULTILINE)
 
 #: A path into this repository, written in prose. Anchored on a top-level directory and
 #: required to end in an extension, because those two together are what make it a *path* rather
 #: than a phrase — `packages/maf-sandbox` is a directory a sentence may name loosely, and
 #: `docs/sandbox/architecture.md` is a thing a reader is being told to open.
 #:
-#: The extension is any length: capping it hid every reference to a `.bicep`, a `.yaml` or a
-#: `.toml`, so the paths most likely to move were the ones this could not see.  It must start
-#: with a letter, which is what keeps a version out — `maf-sandbox/0.19.0` is not a file.
+#: The extension is unbounded in length and must start with a letter: `.bicep`, `.yaml` and
+#: `.toml` name files, and `maf-sandbox/0.19.0` names a version.
 #:
-#: The lookbehind keeps a URL out: every `packages/…` inside
-#: `https://github.com/…/blob/main/packages/…` is preceded by `/`, and a bare mention never is.
+#: The lookbehind stops a match starting midway through a longer path, so `vendor/docs/a.md`
+#: is one reference and not also `docs/a.md`. It is not what keeps URLs out — a query string
+#: puts a repo-shaped path after `=`, which no lookbehind on the preceding character can tell
+#: from a bare mention — so `without_urls` removes those spans before this runs at all.
 _PROSE_PATH = re.compile(
     r"(?<![\w./-])((?:docs|packages|samples|scripts|tests)/[\w./-]+\.[A-Za-z][A-Za-z0-9]*)"
     r"(?![\w/])"
 )
+
+#: An absolute URL, whose path names somebody else's tree.
+_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^\s)>\]]+")
 
 #: Scanned for prose paths: the two surfaces where a dead reference reaches a reader — markdown,
 #: which renders on GitHub and PyPI, and shipped source, which goes out in the wheel.
@@ -63,8 +73,19 @@ _FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 #: An ATX heading, with any closing `##` run discarded.
 _HEADING = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.*?)[ \t]*#*$", re.MULTILINE)
 
+#: A setext heading: text underlined by `=` or `-`. GitHub renders it as a heading and gives it
+#: the slug the ATX spelling of the same text would get, so a link to one is as ordinary as a
+#: link to the other and refusing it reports a working link.
+_SETEXT = re.compile(r"^ {0,3}(?P<text>\S[^\n]*?)[ \t]*\n {0,3}(?:=+|-+)[ \t]*$", re.MULTILINE)
+
 #: An explicit anchor a document plants for itself, which no heading slug would produce.
 _HTML_ANCHOR = re.compile(r"""<a\s[^>]*\b(?:id|name)\s*=\s*["']([^"']+)["']""", re.IGNORECASE)
+
+#: An HTML comment, which GitHub renders as nothing whatsoever.
+_HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+
+#: A run of backticks, opening or closing an inline code span.
+_TICKS = re.compile(r"`+")
 
 #: Inline markup that is *not* part of a heading's text: code ticks, emphasis runs, and the
 #: bracket-and-target of a link, whose visible half survives. Underscore is deliberately absent,
@@ -106,7 +127,8 @@ def tracked_tree(repo_root: Path) -> tuple[set[str], set[str]]:
 
 def link_targets(text: str) -> list[str]:
     """Every link target in ``text``, both inline and reference-style."""
-    return _INLINE_LINK.findall(text) + _REFERENCE_LINK.findall(text)
+    found = _INLINE_LINK.findall(text) + _REFERENCE_LINK.findall(text)
+    return [angled or bare for angled, bare in found]
 
 
 def is_local(target: str) -> bool:
@@ -122,8 +144,75 @@ def is_local(target: str) -> bool:
 
 
 def resolve(target: str) -> str:
-    """``target`` without the parts that name a place *inside* a document rather than a file."""
-    return target.split("#", 1)[0].split("?", 1)[0]
+    """``target`` as a path: no fragment, no query, and percent-decoded.
+
+    A link destination is a URL even when it is relative, so `docs/a%20file.md` names the
+    tracked `docs/a file.md`. Comparing the encoded spelling against the tracked tree finds
+    nothing and reports a working link as a missing file.
+    """
+    return unquote(target.split("#", 1)[0].split("?", 1)[0])
+
+
+def _blank(kept: list[str], start: int, end: int) -> None:
+    """Overwrite ``kept[start:end]`` with spaces, leaving line breaks where they were.
+
+    Preserving the breaks is what keeps every later pattern line-anchored: a span blanked into
+    one long run of spaces would join the line after it to the line before.
+    """
+    for index in range(start, end):
+        if kept[index] != "\n":
+            kept[index] = " "
+
+
+def without_code_spans(text: str) -> str:
+    """``text`` with every inline code span blanked, its length and line breaks preserved.
+
+    A code span holds characters rather than markup, so `` `[x](missing.md)` `` is a document
+    showing its reader what a link looks like — the inline half of the rule fenced blocks
+    already get. A backtick run with no matching closer is literal text and is left alone,
+    which is what stops one stray tick blanking the rest of a page.
+    """
+    kept = list(text)
+    position = 0
+    while (opener := _TICKS.search(text, position)) is not None:
+        closer, search = None, opener.end()
+        while (candidate := _TICKS.search(text, search)) is not None:
+            if candidate.group(0) == opener.group(0):
+                closer = candidate
+                break
+            search = candidate.end()
+        if closer is None:
+            position = opener.end()
+            continue
+        _blank(kept, opener.start(), closer.end())
+        position = closer.end()
+    return "".join(kept)
+
+
+def without_html_comments(text: str) -> str:
+    """``text`` with every HTML comment blanked, its line breaks preserved.
+
+    GitHub renders a comment as nothing, so an anchor inside one plants no target and a link
+    to it is dead however complete the markup looks.
+    """
+
+    def blank(match: re.Match[str]) -> str:
+        return re.sub(r"[^\n]", " ", match.group(0))
+
+    return _HTML_COMMENT.sub(blank, text)
+
+
+def without_urls(text: str) -> str:
+    """``text`` with every absolute URL blanked, its length and line breaks preserved.
+
+    A URL's path belongs to another tree, and its query can put a repo-shaped path anywhere —
+    `?file=docs/gone.md` leaves `docs/gone.md` sitting after an `=`, which reads exactly like a
+    bare mention. Removing the span is the only way to tell the two apart.
+    """
+    kept = list(text)
+    for match in _URL.finditer(text):
+        _blank(kept, match.start(), match.end())
+    return "".join(kept)
 
 
 def without_fenced_blocks(text: str) -> str:
@@ -146,11 +235,13 @@ def without_fenced_blocks(text: str) -> str:
             kept.append(line)
             continue
         kept.append("")
-        # CommonMark: a closer is the same character and at least as long as the opener.
-        # Reducing both to three let a ``` line close a ```` block, exposing everything after
-        # it — which is how a nested markdown sample leaks its own headings.
+        # CommonMark: a closer is the same character as the opener, at least as long, and
+        # carries no info string. A line failing any of the three is content — ```python
+        # inside an open block is a line of a sample, not the end of one — and reading it as
+        # the closer hands the rest of the block to the heading and link readers as markdown.
         if found and run[0] == opener[0] and len(run) >= len(opener):
-            opener = None
+            if not line[found.end() :].strip():
+                opener = None
     return "\n".join(kept)
 
 
@@ -167,16 +258,31 @@ def slugify(heading: str) -> str:
     return re.sub(r"\s", "-", text)
 
 
+def headings(prose: str) -> list[str]:
+    """Every heading's text in ``prose``, in document order, in both spellings GitHub renders.
+
+    Order is what the numbering below depends on, so the two patterns are merged by position
+    rather than concatenated — a setext heading between two ATX ones is the second of three.
+    """
+    found = [(match.start(), match.group(2)) for match in _HEADING.finditer(prose)]
+    found += [(match.start(), match.group("text")) for match in _SETEXT.finditer(prose)]
+    return [text for _position, text in sorted(found, key=lambda pair: pair[0])]
+
+
 def anchors(text: str) -> set[str]:
     """Every fragment ``text`` can be linked to: its heading slugs and its explicit anchors.
 
     Repeated headings are numbered the way GitHub numbers them — the second ``## Notes`` is
     ``#notes-1`` — because a document with two sections of the same name is exactly where a
     reader needs the link to be right.
+
+    Headings are read from the prose as written, because a code span inside one contributes its
+    text to the slug. Explicit anchors are read from prose with comments and code spans removed,
+    because an `<a id>` in either of those plants nothing a link can reach.
     """
     prose = without_fenced_blocks(text)
     found: set[str] = set()
-    for _level, heading in _HEADING.findall(prose):
+    for heading in headings(prose):
         slug = slugify(heading)
         if not slug:
             continue
@@ -188,7 +294,7 @@ def anchors(text: str) -> set[str]:
             suffix += 1
             candidate = f"{slug}-{suffix}"
         found.add(candidate)
-    found.update(_HTML_ANCHOR.findall(prose))
+    found.update(_HTML_ANCHOR.findall(without_code_spans(without_html_comments(prose))))
     return found
 
 
@@ -201,8 +307,24 @@ def _repo_relative(destination: Path, repo_root: Path) -> str | None:
 
 
 def _fragment(target: str) -> str:
-    """The part after ``#``, which names a place inside a document rather than a document."""
-    return target.split("#", 1)[1] if "#" in target else ""
+    """The part after ``#``, percent-decoded: a place inside a document rather than a document.
+
+    A fragment is URL-encoded on the wire, so `#caf%C3%A9` is what a browser sends for the
+    heading GitHub slugged as `café`. Matching the encoded spelling against the slug fails and
+    reports a link that works.
+    """
+    return unquote(target.split("#", 1)[1]) if "#" in target else ""
+
+
+def asks_for_the_plain_view(target: str) -> bool:
+    """Whether ``target``'s query asks GitHub to serve the file as source rather than markdown.
+
+    Only `plain=1` does. It matters because that view is a line-numbered source listing and
+    carries the `#L42` anchors the rendered page has not, so it is the one case where a line
+    reference on a markdown file is live.
+    """
+    query = urlsplit(target.split("#", 1)[0]).query
+    return "1" in parse_qs(query).get("plain", [])
 
 
 def broken_links(repo_root: Path) -> list[str]:
@@ -210,10 +332,10 @@ def broken_links(repo_root: Path) -> list[str]:
     files, directories = tracked_tree(repo_root)
     out: list[str] = []
     for path in tracked(repo_root, "*.md"):
-        # Fences are stripped for links exactly as they are for headings: a link inside a
-        # markdown sample is text about a link, and gating on it reds a document for showing
-        # its reader what one looks like.
-        text = without_fenced_blocks(path.read_text("utf-8"))
+        # A link is only read from the parts of the page that render as markdown. A fenced
+        # block and a code span both hold text *about* a link rather than a link, and gating on
+        # either reds a document for showing its reader what one looks like.
+        text = without_code_spans(without_fenced_blocks(path.read_text("utf-8")))
         here = path.relative_to(repo_root).as_posix()
         for target in link_targets(text):
             if not is_local(target) and not target.startswith("#"):
@@ -233,9 +355,9 @@ def broken_links(repo_root: Path) -> list[str]:
                 continue
             # A source file was already skipped by the line above, so the only `#L42` left is
             # one on a *markdown* target — where the rendered page has no such anchor and the
-            # fragment is dead. The exception is the plain view, which does: a query string is
-            # what asks for it, and `resolve()` has already dropped it from `bare`.
-            if _LINE_REFERENCE.match(fragment) and "?" in target:
+            # fragment is dead. `?plain=1` is the exception and the only one: it asks for the
+            # source listing, which is line-numbered. Any other query still renders markdown.
+            if _LINE_REFERENCE.match(fragment) and asks_for_the_plain_view(target):
                 continue
             if fragment not in anchors(destination.read_text("utf-8")):
                 out.append(f"{here}: heading -> {target}")
@@ -274,7 +396,7 @@ def broken_prose_paths(repo_root: Path) -> list[str]:
     out: list[str] = []
     for path in tracked(repo_root, *_PROSE_GLOBS):
         here = path.relative_to(repo_root).as_posix()
-        for match in _PROSE_PATH.finditer(path.read_text("utf-8")):
+        for match in _PROSE_PATH.finditer(without_urls(path.read_text("utf-8"))):
             named = match.group(1)
             if any(character in named for character in _GLOB_CHARACTERS):
                 continue

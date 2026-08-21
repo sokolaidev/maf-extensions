@@ -38,6 +38,17 @@ class TestTheGate:
         assert _TASKS["format"] == "ruff format --check ."
         assert _TASKS["types"] == "pyright"
 
+    def test_the_documentation_check_runs_the_script_it_names(self):
+        """Naming a member in the sequence does not make it exist.
+
+        `doc-paths` is a table rather than a string, so its wiring is a second value nothing
+        above reaches: delete the table or point `cmd` elsewhere and the sequence assertion
+        stays green while `uv run poe gate` checks no documentation at all.
+        """
+        assert _TASKS["doc-paths"]["cmd"] == "python scripts/check_doc_paths.py", _TASKS[
+            "doc-paths"
+        ]
+
     def test_the_enumerated_pass_is_wired_to_the_helper_it_is_pinned_against(self):
         """The task below pins what the helper *finds*; nothing pinned that poe calls it.
 

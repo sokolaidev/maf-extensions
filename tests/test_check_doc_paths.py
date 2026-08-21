@@ -68,15 +68,13 @@ class TestTheDefectItExistsFor:
     @pytest.mark.parametrize(
         "named",
         [
-            # Every one of these was invisible while the extension was capped at four
-            # characters, which is the length of the paths most likely to move.
             "samples/01_acas_bicep/main.bicep",
             "docs/sandbox/config.yaml",
             "packages/p/pyproject.toml",
             "docs/a.markdown",
         ],
     )
-    def test_an_extension_longer_than_four_characters_is_still_a_path(self, repo, named: str):
+    def test_an_extension_of_any_length_is_still_a_path(self, repo, named: str):
         root = repo({"README.md": f"see {named}"})
         assert check.broken_prose_paths(root) == [f"README.md: names -> {named}"]
 
@@ -126,8 +124,7 @@ class TestAPathInsideAPackageMeansThatPackage:
         assert check.broken_prose_paths(root) == []
 
     def test_another_packages_file_does_not_satisfy_it(self, repo):
-        """`packages/p` naming `tests/test_x.py` when only `packages/q` has one is a dead
-        reference, and a repository-wide search reported it as live."""
+        """A package-relative reference is dead when only some other package has that file."""
         root = repo(
             {"packages/p/README.md": "see tests/test_x.py", "packages/q/tests/test_x.py": "x"}
         )
@@ -188,10 +185,35 @@ class TestWhatItMustNotReport:
         assert check.broken_links(root) == []
 
     def test_a_link_inside_a_fenced_sample_is_not_checked(self, repo):
-        """A document showing its reader what a link looks like is not making one. Headings
-        were already stripped from fences; links were not, so a markdown sample red the gate."""
+        """A document showing its reader what a link looks like is not making one."""
         root = repo({"a.md": "Example:\n\n```markdown\n[example](missing.md)\n```\n"})
         assert check.broken_links(root) == []
+
+    def test_a_link_inside_a_code_span_is_not_checked(self, repo):
+        """The inline half of the same rule: a code span holds characters, not markup."""
+        root = repo({"a.md": "Write `[example](missing.md)` to link.\n"})
+        assert check.broken_links(root) == []
+
+    def test_an_unclosed_backtick_does_not_blank_the_rest_of_the_page(self, repo):
+        """A run with no closer is literal text, so the link after it is still a link."""
+        root = repo({"a.md": "A stray ` tick, then [x](missing.md).\n"})
+        assert check.broken_links(root) == ["a.md: link -> missing.md"]
+
+    def test_a_destination_in_angle_brackets_may_hold_a_space(self, repo):
+        """`[x](<a file.md>)` is one target; reading it to the first space invents `a`."""
+        root = repo({"a.md": "[x](<docs/a file.md>)", "docs/a file.md": "y"})
+        assert check.broken_links(root) == []
+
+    def test_a_percent_encoded_destination_names_the_tracked_file(self, repo):
+        """A destination is a URL even when relative, so `%20` is the space in the filename."""
+        root = repo({"a.md": "[x](docs/a%20file.md)", "docs/a file.md": "y"})
+        assert check.broken_links(root) == []
+
+    def test_a_repo_shaped_path_in_a_url_query_is_not_a_local_reference(self, repo):
+        """`?file=docs/gone.md` puts a repo-shaped path after `=`, where a bare mention never
+        sits — and the character in front is the only thing a lookbehind can judge."""
+        root = repo({"a.md": "See https://example.invalid/view?file=docs/gone.md for it.\n"})
+        assert check.broken_prose_paths(root) == []
 
     def test_a_test_naming_a_path_that_must_not_exist_is_out_of_scope(self, repo):
         """`tests/` constructs paths as data, including ones that are absent on purpose."""
@@ -249,28 +271,73 @@ class TestAnchors:
         assert check.anchors("## Notes\n\ntext\n\n## Notes\n\nmore\n") == {"notes", "notes-1"}
 
     def test_a_literal_numbered_heading_does_not_collide_with_a_generated_one(self):
-        """`## Notes`, `## Notes`, `## Notes-1` is three anchors on GitHub. Counting per base
-        slug produced two, so the link to the third was reported broken."""
+        """`## Notes`, `## Notes`, `## Notes-1` is three anchors on GitHub, not two."""
         found = check.anchors("## Notes\n\n## Notes\n\n## Notes-1\n")
         assert found == {"notes", "notes-1", "notes-1-1"}
 
     def test_a_longer_fence_is_not_closed_by_a_shorter_one(self, repo):
-        """CommonMark closes a fence with a run at least as long as the opener. Treating any
-        three backticks as the closer exposes the rest of a nested sample to the heading
-        reader, and a link to whatever follows then passes."""
+        """A run shorter than the opener is content, so the block runs on past it."""
         nested = "````\n# Not a heading\n```\n# Also not one\n````\n"
+        assert check.anchors(nested) == set()
+
+    def test_a_closing_fence_carries_no_info_string(self, repo):
+        """CommonMark gives an info string to the opener only, so ```python inside an open
+        block is a line of the sample. Ending the block there hands the rest of it to the
+        heading reader as markdown."""
+        nested = "```\n# Not a heading\n```python\n# Also not one\n```\n"
         assert check.anchors(nested) == set()
 
     def test_a_line_reference_on_a_markdown_target_is_dead_unless_it_asks_for_the_plain_view(
         self, repo
     ):
-        """A rendered markdown page has no `L42` anchor, so the fragment goes nowhere. The
-        plain view does have one, and a query string is what asks for it."""
+        """A rendered markdown page has no `L42` anchor, so the fragment goes nowhere.
+
+        `?plain=1` is the one exception: it asks for the line-numbered source listing. Any
+        other query still renders markdown, so exempting on the presence of a query rather
+        than on its content accepts a dead link.
+        """
         root = repo({"a.md": "[x](b.md#L42)", "b.md": "## Something\n"})
         assert check.broken_links(root) == ["a.md: heading -> b.md#L42"]
 
         plain = repo({"a.md": "[x](b.md?plain=1#L42)", "b.md": "## Something\n"})
         assert check.broken_links(plain) == []
+
+        other = repo({"a.md": "[x](b.md?rev=2#L42)", "b.md": "## Something\n"})
+        assert check.broken_links(other) == ["a.md: heading -> b.md?rev=2#L42"]
+
+    def test_a_setext_heading_is_a_heading(self, repo):
+        """GitHub renders text underlined by `=` or `-` as a heading and slugs it the same."""
+        root = repo(
+            {"a.md": "[x](b.md#title) [y](b.md#second)", "b.md": "Title\n=====\n\nSecond\n---\n"}
+        )
+        assert check.broken_links(root) == []
+
+    def test_headings_are_numbered_across_both_spellings_in_document_order(self):
+        """The numbering is positional, so a setext heading between two ATX ones is second."""
+        assert check.headings("# One\n\nTwo\n===\n\n## Three\n") == ["One", "Two", "Three"]
+        assert check.anchors("# Notes\n\nNotes\n=====\n") == {"notes", "notes-1"}
+
+    def test_a_code_span_in_a_heading_contributes_its_text(self, repo):
+        """Stripping code spans before reading headings would change the slug GitHub derives."""
+        root = repo(
+            {"a.md": "[x](b.md#the-run_code-contract)", "b.md": "## The `run_code` contract\n"}
+        )
+        assert check.broken_links(root) == []
+
+    def test_an_anchor_inside_an_html_comment_plants_nothing(self, repo):
+        """GitHub renders a comment as nothing, so the markup inside one reaches no reader."""
+        root = repo({"a.md": '<!-- <a id="gone"></a> -->\n\n[x](#gone)\n'})
+        assert check.broken_links(root) == ["a.md: heading -> #gone"]
+
+    def test_an_anchor_inside_a_code_span_plants_nothing(self, repo):
+        """A document showing the markup for an anchor is not planting one."""
+        root = repo({"a.md": 'Write `<a id="gone"></a>` to plant one.\n\n[x](#gone)\n'})
+        assert check.broken_links(root) == ["a.md: heading -> #gone"]
+
+    def test_a_percent_encoded_fragment_matches_the_heading_it_names(self, repo):
+        """A fragment travels URL-encoded, and GitHub slugged the heading decoded."""
+        root = repo({"a.md": "[x](b.md#caf%C3%A9)", "b.md": "## Café\n"})
+        assert check.broken_links(root) == []
 
     def test_an_explicit_html_anchor_counts(self, repo):
         root = repo({"a.md": "[x](b.md#planted)", "b.md": '<a id="planted"></a>\n\n# Title\n'})
