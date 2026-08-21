@@ -87,7 +87,10 @@ def title_type(title: str) -> str | None:
 
 
 def assess(
-    title: str, changed_paths: list[str], changed_python: dict[str, tuple[str | None, str | None]]
+    title: str,
+    changed_paths: list[str],
+    changed_python: dict[str, tuple[str | None, str | None]],
+    changed_path_pairs: list[tuple[str, ...]] | None = None,
 ) -> list[str]:
     """Return title/diff mismatches, or an empty list when the title matches the diff."""
     kind = title_type(title)
@@ -98,6 +101,10 @@ def assess(
         not is_documentation_path(path) for path in changed_paths if not path.endswith(".py")
     )
     executable |= any(python_changed(before, after) for before, after in changed_python.values())
+    executable |= any(
+        len(paths) == 2 and paths[0] != paths[1] and any(path.endswith(".py") for path in paths)
+        for paths in changed_path_pairs or []
+    )
 
     if kind in _BEHAVIOR_TYPES and not executable:
         return [
@@ -116,10 +123,25 @@ def _git(*args: str) -> str:
     return subprocess.check_output(["git", *args], text=True, encoding="utf-8").strip()
 
 
-def _changed_python(base: str) -> dict[str, tuple[str | None, str | None]]:
+def _changed_path_pairs(status: str) -> list[tuple[str, ...]]:
+    """Return the paths represented by each changed-file status entry."""
+    pairs: list[tuple[str, ...]] = []
+    for line in status.splitlines():
+        fields = line.split("\t")
+        kind, paths = fields[0], fields[1:]
+        if kind.startswith(("R", "C")) and len(paths) == 2:
+            pairs.append((paths[0], paths[1]))
+        elif len(paths) == 1:
+            pairs.append((paths[0],))
+    return pairs
+
+
+def _changed_python(
+    base: str, status: str | None = None
+) -> dict[str, tuple[str | None, str | None]]:
     """Read changed Python files, preserving rename sources for the AST comparison."""
     result: dict[str, tuple[str | None, str | None]] = {}
-    status = _git("diff", "--find-renames", "--name-status", f"{base}...HEAD")
+    status = status or _git("diff", "--find-renames", "--name-status", f"{base}...HEAD")
     for line in status.splitlines():
         fields = line.split("\t")
         kind, paths = fields[0], fields[1:]
@@ -149,8 +171,10 @@ def main(argv: list[str]) -> int:
         print(f"usage: {argv[0]} <base-revision> <pull-request-title>", file=sys.stderr)
         return 2
     base, title = argv[1:]
-    paths = _git("diff", "--name-only", f"{base}...HEAD").splitlines()
-    problems = assess(title, paths, _changed_python(base))
+    status = _git("diff", "--find-renames", "--name-status", f"{base}...HEAD")
+    path_pairs = _changed_path_pairs(status)
+    paths = [path for pair in path_pairs for path in pair[-1:]]
+    problems = assess(title, paths, _changed_python(base, status), path_pairs)
     for problem in problems:
         print(problem, file=sys.stderr)
     return 1 if problems else 0

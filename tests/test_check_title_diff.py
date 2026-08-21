@@ -81,3 +81,17 @@ class TestAssess:
         monkeypatch.setattr(check, "_git", fake_git)
         result = check._changed_python("base")
         assert result[str(new_path)] == (source, source)
+        assert check.assess(
+            "chore: rename the module",
+            [str(new_path)],
+            result,
+            [(old_path, str(new_path))],
+        )
+
+    def test_python_rename_to_non_python_is_executable(self):
+        assert check.assess(
+            "docs: reorganize files",
+            ["README.md"],
+            {},
+            [("scripts/example.py", "scripts/example.txt")],
+        )
