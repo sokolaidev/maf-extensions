@@ -54,7 +54,7 @@ The protocol has been kept deliberately additive on this axis, and the neutralit
 
 - **`work_dir` is guest-native and untranslated.** `SandboxSpec.work_dir` defaults to `/maf-sandbox/work`, and its docstring records that translating it is *"not possible — a kind derives absolute paths from this field and passes them into `Sandbox.exec`'s argv, and a backend cannot find a path inside an opaque argv without parsing arbitrary command lines. An argv sequence protects against quoting, not against paths within the arguments."* The default is a default, not a requirement.
 - **Nothing infers a guest OS from a path.** The same docstring states the rule directly: *"A workload must not read the guest's platform out of this field, and nothing here validates it against one."*
-- **The neutrality is a test, not an intention.** `TestWorkDirIsPlatformNeutral`, in `maf-sandbox`'s router tests, accepts `C:/agent/maf-sandbox/work` and a backslash-spelled Windows path, and asserts that a backend declaring no platform still serves. That is what makes everything below an additive change rather than a breaking one.
+- **The neutrality is a test, not an intention.** `TestWorkDirStaysGuestNative`, in `maf-sandbox`'s router tests, accepts `C:/agent/maf-sandbox/work` and a backslash-spelled Windows path, and asserts that a backend declaring no platform still serves. It matters more now that something else *is* a platform claim, so it also pins the inference the protocol refuses to make: a drive-rooted `work_dir` against a `POSIX`-only backend is **served**, because the path was never the ask. That is what makes everything below an additive change rather than a breaking one.
 - **Declared output paths are POSIX-shaped and the names are conservative.** [`capabilities.md`](capabilities.md) fixes one path grammar for declared outputs, always UTF-8, with no newline translation — and explicitly retracts an earlier claim that backends would translate. In `_outputs.py`, `portable_name` composes to NFC, and `_collision_key` refuses case-only collisions using `str.lower` rather than `str.casefold`, with the reason recorded beside it.
 - **`EntryKind` was designed for guests that are not POSIX.** A junction or a reparse point maps to `SYMLINK`, so the vocabulary does not have to grow for a Windows guest.
 
@@ -86,13 +86,13 @@ From `exec` in `maf-sandbox-acas`:
 
 > The SDK's own `exec` takes a string only, so a sequence is quoted into one with `shlex.join` first. `shlex.join` produces POSIX quoting, which is correct here **because every sandbox this backend hands out is Linux.**
 
-This is not a defect. It is a true statement a backend can make about itself, written in a comment because there is no field to write it in. Decision 1 gives it one.
+This is not a defect. It is a true statement a backend can make about itself, written in a comment because there was no field to write it in. Decision 1 gives it one — and the comment is still a comment: the field ships, the ACAS backend declares no `os_families`, and the claim goes on being made in prose that nothing checks. Retiring it is one line in that backend, and the table below carries the row for it.
 
 ### When the router decides, and how
 
 The timing constrains every option below, so it is worth stating exactly.
 
-- Backend declarations are read **synchronously**, with `getattr`: `limits` in `_declared_limits`, `egress` in both `_refuse_unless_backend_can_serve` and `ensure_can_serve`. A declaration must therefore be a plain attribute settled by the time the router asks — never an `async` query.
+- Backend declarations are read **synchronously**, with `getattr`, all of them inside `_refuse_unless_backend_can_serve`: `capabilities`, `limits` in `_declared_limits`, `egress_modes` — the set of modes a backend can enforce, not a single declared posture — and `os_families` in `_declared_os_families`. A declaration must therefore be a plain attribute settled by the time the router asks — never an `async` query.
 - `ensure_can_serve` runs at **attach**, called from `sandboxed_tool` in `maf.py`, before any sandbox exists.
 - The same checks run **again** inside `SandboxRouter.acquire`, immediately before it calls `self._backend.acquire(key, spec)` — its docstring says *"before ever reaching the backend"*, so that a caller skipping `ensure_can_serve` is still refused.
 
@@ -108,7 +108,7 @@ class OsFamily(StrEnum):
     WINDOWS = "windows"
 
 
-# On the backend, read with getattr beside `limits` and `egress`:
+# On the backend, read with getattr beside `capabilities`, `limits` and `egress_modes`:
 os_families: frozenset[OsFamily]
 
 # On SandboxSpec:
@@ -240,13 +240,14 @@ Four consequences, all settled here.
 
 ## Status
 
-Nothing here is implemented. The rows are in the order the work should be done.
+Decision 1 has shipped — merged, on `main`, unreleased — and nothing declares against it yet. The rows are in the order the work should be done, and the umbrella that carried all of them closed with the first, so each remaining row is pinned on its own.
 
 | Decision | State | Tracking |
 |---|---|---|
-| `OsFamily`, the backend attribute, the spec field, and the `ensure_can_serve` clause | open — additive, pinned as such by the existing neutrality test; retires the ACAS comment into a checked claim | [#111](https://github.com/sokolaidev/maf-extensions/issues/111) (open) |
-| The Docker backend reads its daemon's `OSType` at construction | open — until it does, the axis declares nothing for the one shipped backend most likely to meet a non-Linux guest | [#111](https://github.com/sokolaidev/maf-extensions/issues/111) (open) |
-| The static ceiling, then the acquire-time probe | open — in that order: the ceiling is useful alone, the probe is not useful without it | [#111](https://github.com/sokolaidev/maf-extensions/issues/111) (open) |
-| Splitting the guest shim from the supervisor, and negotiating the transport | open — the precondition for any Windows guest whatever this axis declares, and independently valuable | [#111](https://github.com/sokolaidev/maf-extensions/issues/111) (open) |
-| A local-hypervisor backend | open — the consumer that makes every row above refuse something real | [#111](https://github.com/sokolaidev/maf-extensions/issues/111) (open) |
+| `OsFamily`, the backend attribute, the spec field, and the `ensure_can_serve` clause | shipped exactly as designed — two members, a `frozenset` per backend instance, `requires_os_family` defaulting to `None`, `SandboxOsFamilyNotSupported` raised at attach and again in `acquire`; additive, and the neutrality test now pins a Windows-shaped `work_dir` as served. On `main`, unreleased — `maf-sandbox` 0.19.0 predates it and 0.20.0 is pending | [#111](https://github.com/sokolaidev/maf-extensions/issues/111) (closed) by [#532](https://github.com/sokolaidev/maf-extensions/pull/532) (merged); release [#542](https://github.com/sokolaidev/maf-extensions/pull/542) (open) |
+| The Docker backend reads its daemon's `OSType` at construction | open — no shipped backend declares `os_families` at all, so the axis still refuses nothing on the one most likely to meet a non-Linux guest | untracked |
+| ACAS declares `POSIX` instead of asserting it in a comment | open — the `shlex.join` comment above is unchanged, and the field it was waiting for now exists | untracked |
+| The static ceiling, then the acquire-time probe | open — in that order: the ceiling is useful alone, the probe is not useful without it | untracked |
+| Splitting the guest shim from the supervisor, and negotiating the transport | open — the precondition for any Windows guest whatever this axis declares, and independently valuable | [#357](https://github.com/sokolaidev/maf-extensions/issues/357) (open), negotiation [#369](https://github.com/sokolaidev/maf-extensions/issues/369) (open) |
+| A local-hypervisor backend | open — the consumer that makes every row above refuse something real | untracked; the nearest live candidate, [#382](https://github.com/sokolaidev/maf-extensions/issues/382) (open), is runtime-shaped and takes the branch that declares no family |
 | There is no filesystem axis | settled — nothing to build | — |
