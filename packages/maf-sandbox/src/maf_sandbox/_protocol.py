@@ -121,7 +121,7 @@ class Egress(StrEnum):
     The router serves a workload iff its mode is in the backend's set, and refuses otherwise —
     never substituting a different mode.  Confining **less** than asked silently widens what the
     workload reaches; confining **more** hands it a posture it was not built for; so neither is
-    done in place of the other.  See ``docs/design/egress-resolution.md``.
+    done in place of the other.  See ``docs/sandbox/research/egress-resolution.md``.
     """
 
     #: Reach anything the host can — no confinement. The least isolated.
@@ -182,7 +182,7 @@ class OsFamily(StrEnum):
     **Reaching for this to decide whether a command exists is the mistake it cannot catch.**
     A distroless image is POSIX and has no shell; a macOS guest is POSIX and has no
     ``setsid``. What a guest has installed is a property of its image, which one backend may
-    be handed many of — see ``docs/design/guest-platform-and-commands.md``, which settles
+    be handed many of — see ``docs/sandbox/guest-platform-and-commands.md``, which settles
     where that question is answered instead.
     """
 
@@ -422,7 +422,7 @@ class SandboxSpec:
     ``egress`` is the one network posture the workload runs in — an :class:`Egress` mode,
     default :data:`Egress.CLOSED` (no network).  The router serves it only on a backend that can
     enforce that exact mode and refuses otherwise, never substituting another; see
-    ``docs/design/egress-resolution.md``.  ``egress_allow`` is the payload of an
+    ``docs/sandbox/research/egress-resolution.md``.  ``egress_allow`` is the payload of an
     :data:`Egress.ALLOWLIST` run — the hostnames reached, **everything not listed denied** — and
     is consulted only in that mode.  A non-empty ``egress_allow`` therefore requires
     ``egress is Egress.ALLOWLIST``, refused here otherwise: naming hosts with no network to reach
@@ -727,8 +727,9 @@ class SandboxBackend(Protocol):
     against a spec's ``requires``; ``limits: SandboxLimits``, the transfer ceilings a spec may
     not ask above; its egress — ``egress_modes: frozenset[Egress]``, the set of modes it can
     enforce, resolved against a spec's :attr:`SandboxSpec.egress` (see
-    ``docs/design/egress-resolution.md``); and ``os_families: frozenset[OsFamily]``, the guest
-    shapes it can hand out, matched against a spec's :attr:`SandboxSpec.requires_os_family`.
+    ``docs/sandbox/research/egress-resolution.md``); and ``os_families: frozenset[OsFamily]``,
+    the guest shapes it can hand out, matched against a spec's
+    :attr:`SandboxSpec.requires_os_family`.
     None is a member of this Protocol, deliberately: :func:`~typing.runtime_checkable` enforces
     member *presence*, so declaring them here would stop every backend written before them from
     being a ``SandboxBackend`` at all.

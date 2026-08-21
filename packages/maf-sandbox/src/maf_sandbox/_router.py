@@ -128,7 +128,7 @@ class SandboxEgressNotEnforced(PermissionError):
     — a more open one silently widens what the workload reaches, a more isolated one hands it a
     posture it was not built for. So a backend that cannot deliver the asked mode turns the
     workload away rather than serving it behind a different boundary. See
-    ``docs/design/egress-resolution.md``.
+    ``docs/sandbox/research/egress-resolution.md``.
     """
 
 
@@ -393,7 +393,7 @@ class SandboxRouter:
         # backend must be able to enforce it. Refuse, never degrade — no more-open substitute
         # (a silent widening) and no more-isolated one (a quietly different posture). Silence is
         # the empty set: a backend that declares nothing enforces nothing. See
-        # docs/design/egress-resolution.md.
+        # docs/sandbox/research/egress-resolution.md.
         modes: frozenset[Egress] = getattr(self._backend, "egress_modes", frozenset())
         if spec.egress not in modes:
             enforced = ", ".join(sorted(modes)) or "nothing"
@@ -415,8 +415,8 @@ class SandboxRouter:
 
         The spec's ``egress`` mode is resolved against the backend: served iff the backend
         enforces it, refused otherwise — never a different mode (see :class:`~maf_sandbox.Egress`
-        and ``docs/design/egress-resolution.md``).  With no backend configured this returns:
-        nothing runs, so nothing reaches anything.
+        and ``docs/sandbox/research/egress-resolution.md``).  With no backend configured this
+        returns: nothing runs, so nothing reaches anything.
 
         Raises:
             SandboxCapabilityDenied: when the spec requires a capability this host denies.
