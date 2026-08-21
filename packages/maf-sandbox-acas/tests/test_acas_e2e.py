@@ -31,10 +31,11 @@ what this package believes, and #139 and #142 were both the package believing wr
 :class:`TestFilesOutAgainstTheRealService` asserts that none of them skipped here, because a
 suite that quietly skips a third of itself is the shape of a green run that attacked nothing.
 
-**Cost discipline.** Three sandboxes for the whole module. The probes and refusals share one,
+**Cost discipline.** Four sandboxes for the whole module. The probes and refusals share one,
 acquired by a module-scoped fixture and disposed at the end; the lifecycle test needs its own
-because it disposes as the thing under test; the egress leg needs its own because only an
-``ALLOWLIST`` sandbox has a host it may reach and a host it may not. Everything runs on one
+because it disposes as the thing under test; the prebuilt-image test needs its own because a
+bare catalogue name is only evidence if it boots one; the egress leg needs its own because only
+an ``ALLOWLIST`` sandbox has a host it may reach and a host it may not. Everything runs on one
 event loop, deliberately: the backend caches its group client per loop, so a second loop would
 build a second transport against the same sandbox.
 """
@@ -74,7 +75,7 @@ from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
 _ENDPOINT = os.environ.get("ACAS_SANDBOX_ENDPOINT")
 #: A bare `repository:tag` in the configured registry, as the samples pass. Read from the
 #: environment rather than written down here so a local tag never becomes a committed one; any
-#: Linux image with `sh`, `ln`, `cat` and `mkfifo` will do.
+#: Linux image with `sh`, `ln`, `cat`, `mkfifo` and — for the egress leg — `curl` will do.
 _IMAGE = os.environ.get("MAF_SANDBOX_ACAS_E2E_IMAGE")
 
 pytestmark = pytest.mark.skipif(
@@ -740,10 +741,10 @@ class TestBootingAnImageTheServiceProvides:
 class TestExecAgainstTheRealService:
     """The run surface's probes — quoting, exit codes, the working directory, the timeout bound.
 
-    **Last class in the module, on the shared sandbox.** This backend survives the timeout
-    probe (`asyncio.wait_for` bounds the host-side call; the guest keeps sleeping), so unlike
-    docker's the sandbox need not be a fresh one — but the sleeping guest is still in there
-    when the suite returns, and nothing that measures guest state should follow it. Cost
+    **Last class on the shared sandbox, and it must stay last.** This backend survives the
+    timeout probe (`asyncio.wait_for` bounds the host-side call; the guest keeps sleeping), so
+    unlike docker's the sandbox need not be a fresh one — but the sleeping guest is still in
+    there afterwards, so nothing that measures guest state may follow it on `live`. Cost
     discipline stays as it was: one more probe set on the one sandbox the module already pays
     for, disposed by the `live` fixture's teardown as before.
     """
@@ -757,7 +758,7 @@ class TestExecAgainstTheRealService:
 
 @pytest.fixture(scope="module")
 def live_allowlist(loop):
-    """A second billable sandbox, acquired with an allowlist, for the egress probe (#402).
+    """The module's fourth billable sandbox, with an allowlist, for the egress probe (#402).
 
     Separate from `live`, which is CLOSED: the egress probe needs a host the guest may reach and
     one it may not, which only an `ALLOWLIST` sandbox provides. The image the group imports must
@@ -778,14 +779,12 @@ def live_allowlist(loop):
 
 
 class TestEgressAgainstTheRealService:
-    """The first evidence this backend *enforces* its allowlist, not merely asks for it (#402).
+    """Evidence this backend *enforces* its allowlist, not merely asks for it (#402).
 
-    Before this, `Egress.ALLOWLIST` here was backed only by the policy object built before it was
-    sent — nothing showed the service applied it. The deny is L7 on this backend (a
-    TLS-terminating proxy answers a denied host rather than the network being severed), so the
-    shared probe asserts only the outcome both an L3 and an L7 backend must share: the guest
-    reaches an allowed host and not a denied one. The proxy's `x-deny-reason` and the method
-    scoping it hints at are this backend's own, and are #377's, not asserted here.
+    The deny is L7 here — a TLS-terminating proxy answers a denied host rather than the network
+    being severed — so the shared probe asserts only the outcome an L3 and an L7 backend must
+    share: the guest reaches an allowed host and not a denied one. The proxy's `x-deny-reason`
+    and the method scoping it hints at are #377's, not asserted here.
     """
 
     def test_the_shared_egress_probe_comes_back_clean(self, live_allowlist):

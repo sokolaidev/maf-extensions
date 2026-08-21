@@ -466,8 +466,6 @@ class TestAllowlistEgress:
         asyncio.run(sandbox.write_file("/maf-sandbox/work/.keep", "", working_directory=_WORK))
         try:
             assert _network_present(net)
-            # The shared outcome contract — the same assert ACAS and wslc run: an allowed host
-            # answers, a denied one does not.
             subject = PosixGuestSubject(sandbox, _WORK, frozenset({Capability.EXEC}))
             asyncio.run(
                 assert_egress_conformance(

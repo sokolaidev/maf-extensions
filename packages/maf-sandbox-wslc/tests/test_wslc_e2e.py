@@ -174,7 +174,6 @@ class TestAllowlistEgress:
         net = sandbox.container_name + "-net"
         try:
             assert _network_present(net)
-            # The shared outcome contract — the same assert docker and ACAS run.
             subject = PosixGuestSubject(sandbox, _WORK, frozenset({Capability.EXEC}))
             asyncio.run(
                 assert_egress_conformance(
