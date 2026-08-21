@@ -31,7 +31,7 @@ the environment variables, before running this.
 #     "azure-identity",
 #     "maf-sandbox-bicep",
 #     "maf-sandbox-docker",
-#     "maf-sandbox>=0.18",
+#     "maf-sandbox>=0.19",
 # ]
 # ///
 

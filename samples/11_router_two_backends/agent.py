@@ -18,7 +18,7 @@ beside the in-process backend, and what #328 would change.
 #     "azure-identity",
 #     "maf-sandbox-bicep",
 #     "maf-sandbox-docker>=0.4",
-#     "maf-sandbox>=0.18",
+#     "maf-sandbox>=0.19",
 # ]
 # ///
 
