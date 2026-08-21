@@ -81,10 +81,15 @@ class TestTheGate:
 class TestTheMarkdownBlockLinter:
     """The poe task and the CI step must lint the same files.
 
-    The glob list is written twice — once in `pyproject.toml`, once in `tests.yml` — and
+    The glob list is written twice — once in `pyproject.toml`, once in the workflow — and
     nothing but this test stops the two drifting. A contributor's green local run is only
     evidence about CI if both read the same set, and the failure is silent in the direction
     that matters: CI quietly covering *less* than the task a contributor ran.
+
+    The workflow is `docs.yml`, not `tests.yml`: the documentation checks moved there so a
+    change under `docs/` stops paying for the whole suite. This test following them is the
+    point — it reads whichever file actually runs the linter, and a step left behind in
+    `tests.yml` would fail here rather than run twice unnoticed.
     """
 
     @staticmethod
@@ -95,12 +100,17 @@ class TestTheMarkdownBlockLinter:
         return {token.strip("'\"") for token in cleaned.split() if token.strip("'\"")}
 
     def test_the_task_and_the_workflow_lint_the_same_globs(self):
-        workflow = (REPO_ROOT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
-        step = workflow[workflow.index("check_md_code_blocks.py") :]
-        # The invocation ends at the blank line before the next step.
-        invocation = step[: step.index("\n\n")]
+        workflow = (REPO_ROOT / ".github" / "workflows" / "docs.yml").read_text(encoding="utf-8")
+        # Anchored on the *invocation*, not the script name: the name also appears in the
+        # workflow's `paths:` triggers, and matching that reads the trigger list as a glob list.
+        run = "uv run python scripts/check_md_code_blocks.py"
+        step = workflow[workflow.index(run) :]
+        # The invocation ends at the blank line before the next step, or at the end of the file
+        # when it is the last one.
+        end = step.find("\n\n")
+        invocation = step if end == -1 else step[:end]
         assert self._globs(_TASKS["md-blocks"]["cmd"]) == self._globs(invocation), (
-            "poe md-blocks and the tests.yml step lint different files; a local run then says "
+            "poe md-blocks and the docs.yml step lint different files; a local run then says "
             "nothing about what CI checked."
         )
 
