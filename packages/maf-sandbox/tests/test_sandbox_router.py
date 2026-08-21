@@ -880,6 +880,7 @@ class TestSpecDefaults:
             "files_out",
             "outputs_named_at_call_time",
             "identities",
+            "egress",
             "requires_os_family",
         ]
         assert names[: len(settled)] == settled
