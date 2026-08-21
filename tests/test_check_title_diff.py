@@ -1,0 +1,83 @@
+"""Regression tests for the PR title versus diff semantic guard."""
+
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+
+import pytest
+
+_SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "check_title_diff.py"
+_spec = importlib.util.spec_from_file_location("check_title_diff", _SCRIPT)
+assert _spec and _spec.loader
+check = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(check)
+
+
+_DOC_BEFORE = '"""old documentation"""\ndef run(value: int) -> int:\n    """old function docs"""\n    return value\n'
+_DOC_AFTER = '"""new documentation"""\ndef run(value: int) -> int:\n    """new function docs"""\n    return value\n'
+
+
+class TestNormalizedPython:
+    def test_module_and_function_docstrings_do_not_count(self):
+        assert not check.python_changed(_DOC_BEFORE, _DOC_AFTER)
+
+    def test_a_changed_default_counts(self):
+        before = "def run(value: int = 1) -> int:\n    return value\n"
+        after = "def run(value: int = 2) -> int:\n    return value\n"
+        assert check.python_changed(before, after)
+
+    def test_a_comment_and_formatting_change_does_not_count(self):
+        before = "def run(value: int) -> int:\n    return value\n"
+        after = "# explanation\ndef run(value: int) -> int:\n\n    return value\n"
+        assert not check.python_changed(before, after)
+
+
+class TestAssess:
+    def test_fix_on_documentation_only_python_is_rejected(self):
+        problems = check.assess(
+            "fix: clarify the API",
+            ["packages/maf-sandbox/src/maf_sandbox/_protocol.py"],
+            {"packages/maf-sandbox/src/maf_sandbox/_protocol.py": (_DOC_BEFORE, _DOC_AFTER)},
+        )
+        assert problems
+        assert "documentation-only" in problems[0]
+
+    @pytest.mark.parametrize("kind", ["docs", "chore", "refactor", "test", "build", "ci"])
+    def test_non_behavior_title_on_executable_python_is_rejected(self, kind: str):
+        before = "def run() -> int:\n    return 1\n"
+        after = "def run() -> int:\n    return 2\n"
+        assert check.assess(
+            f"{kind}: update implementation",
+            ["scripts/example.py"],
+            {"scripts/example.py": (before, after)},
+        )
+
+    def test_docs_title_on_markdown_is_allowed(self):
+        assert check.assess("docs: explain the API", ["README.md"], {}) == []
+
+    def test_fix_with_non_documentation_metadata_change_is_allowed(self):
+        assert check.assess("fix: update dependency", ["pyproject.toml"], {}) == []
+
+    def test_breaking_behavior_title_is_classified_as_behavior(self):
+        assert check.title_type("feat(core)!: change the API") == "feat"
+
+    def test_renamed_python_file_uses_the_original_path_for_comparison(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        old_path = "scripts/old_name.py"
+        new_path = tmp_path / "new_name.py"
+        source = "def run() -> int:\n    return 1\n"
+        new_path.write_text(source, encoding="utf-8")
+        calls: list[tuple[str, ...]] = []
+
+        def fake_git(*args: str) -> str:
+            calls.append(args)
+            if args[:3] == ("diff", "--find-renames", "--name-status"):
+                return f"R100\t{old_path}\t{new_path}"
+            assert args == ("show", f"base:{old_path}")
+            return source
+
+        monkeypatch.setattr(check, "_git", fake_git)
+        result = check._changed_python("base")
+        assert result[str(new_path)] == (source, source)
