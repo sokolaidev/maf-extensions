@@ -573,9 +573,9 @@ jobs:
   # endpoint, which is cached separately) until the just-published version lists, before the
   # verify call — so verify-live resolves the version that was actually just published. A poll,
   # not a fixed sleep: the propagation lag is not bounded, and a sleep is both slow when the
-  # index is quick and unreliable when it is not. Gated identically to `verify` so it is never
-  # skipped when verify would run, which lets verify simply `needs:` it — keep the two `if:`
-  # blocks the same text. (#271.)
+  # index is quick and unreliable when it is not. Gated identically to `verify` and to
+  # `train-status` so it is never skipped when either would run, which lets both simply `needs:`
+  # it — keep the three `if:` blocks the same text. (#271.)
   wait-for-propagation:
     name: Wait for the index to show the new version
     needs: [build, dispatch]
@@ -603,6 +603,62 @@ jobs:
           done
           echo "::error::${PACKAGE} ${VERSION} did not appear on the Simple index within ten minutes"
           exit 1
+
+  # A live red during a drain is about the order of the train rather than the code, and this
+  # says so in the run summary. It annotates and never gates: gating the dispatch on a coarser
+  # signal is what #337 removed, and #512 carries the case.
+  #
+  # Gated exactly as `verify` is, and waiting on the same propagation job — there is no red to
+  # explain where no live check runs, and an index that has not caught up would misreport which
+  # dependents are behind, in either direction.
+  train-status:
+    name: Say whether the release train has drained
+    needs: [build, dispatch, wait-for-propagation]
+    if: >-
+      needs.build.outputs.target == 'pypi'
+      && needs.dispatch.outputs.live_check != 'skip'
+      && contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-bicep", "maf-sandbox-codeact", "maf-sandbox-docker"]'), needs.build.outputs.package)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          sparse-checkout: |
+            scripts
+            packages/*/pyproject.toml
+          sparse-checkout-cone-mode: false
+
+      # Never fails the run. The upload has already happened by the time this executes, and a
+      # detector that cannot reach the index has nothing to say — colouring a shipped release
+      # over a missing annotation would be worse than the missing annotation.
+      - name: Note whether a live red would be about ordering
+        continue-on-error: true
+        env:
+          PACKAGE: ${{ needs.build.outputs.package }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          if ! output="$(python3 scripts/check_release_train_drained.py)"; then
+            echo "::warning::could not read whether the release train has drained"
+            exit 0
+          fi
+          echo "$output"
+          if [ "$(printf '%s\n' "$output" | head -n1)" != "train=draining" ]; then
+            exit 0
+          fi
+          {
+            echo "### The release train is still draining"
+            echo
+            echo "\`${PACKAGE}\` ${VERSION} published and the live check runs. At least one published dependent has not gone out since this core, so the index does not yet resolve as the set the samples were tested against — a red in the live check is more likely the order of the train than the code. Re-run it from Actions → **Verify (live)** → **Run workflow** once every dependent has published, and read that run instead. See [#512](https://github.com/sokolaidev/maf-extensions/issues/512)."
+            echo
+            echo '<details><summary>Which dependents have not published since the core</summary>'
+            echo
+            echo '```'
+            printf '%s\n' "$output" | tail -n +2
+            echo '```'
+            echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # The happy-path half of issue #33: once a real publish lands, run the samples verify-live.yml
   # covers — 01_acas_bicep, 03_acas_codeact, 06_docker_codeact and 08_docker_codeact_files —
