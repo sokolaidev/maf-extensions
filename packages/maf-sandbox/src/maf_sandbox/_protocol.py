@@ -113,27 +113,23 @@ def meets_floor(declared: Isolation, floor: Isolation) -> bool:
 
 
 class Egress(StrEnum):
-    """How precisely a backend can confine what a sandbox reaches. Declared by the backend.
+    """A network posture on one axis, least-isolated to most: ``UNRESTRICTED``, ``ALLOWLIST``,
+    ``CLOSED``.
 
-    Backends differ in how much of a spec's allowlist they can express, and the direction they
-    miss by is not symmetrical: confining **less** than the spec asks silently widens what the
-    workload was designed to reach, while confining **more** only makes the workload fail,
-    loudly, at whatever it could not fetch.  So only the first is refused.
-
-    Saying nothing and saying "I confine nothing" are refused alike and named apart: a backend
-    that never declared has made no claim, and the refusal should not put one in its mouth.
+    It is both what a **workload runs in** (:attr:`SandboxSpec.egress`, one mode, default
+    ``CLOSED``) and what a **backend can enforce** (:attr:`SandboxBackend.egress_modes`, a set).
+    The router serves a workload iff its mode is in the backend's set, and refuses otherwise —
+    never substituting a different mode.  Confining **less** than asked silently widens what the
+    workload reaches; confining **more** hands it a posture it was not built for; so neither is
+    done in place of the other.  See ``docs/design/egress-resolution.md``.
     """
 
-    #: Deny by default, allow exactly the hosts a spec names.
-    ALLOWLIST = "allowlist"
-    #: All or nothing: can deny everything, cannot allow one host and not another.
-    CLOSED = "closed"
-    #: Cannot confine egress at all — whatever the host can reach, the sandbox can reach.
+    #: Reach anything the host can — no confinement. The least isolated.
     UNRESTRICTED = "unrestricted"
-    #: No declaration: not a rung on the scale above, and what the router reads when a backend
-    #: has no ``egress`` at all. A backend may also set it deliberately, to say the question is
-    #: unanswered rather than answered badly; both are refused.
-    UNDEFINED = "undefined"
+    #: Deny by default, allow exactly the hosts a spec names (:attr:`SandboxSpec.egress_allow`).
+    ALLOWLIST = "allowlist"
+    #: No network at all. The most isolated, and the default a spec gets if it says nothing.
+    CLOSED = "closed"
 
 
 class Capability(StrEnum):
@@ -163,8 +159,6 @@ class Capability(StrEnum):
     #: the protocol deleted before this, and a workload that never cleans up is not broken by
     #: a capability it does not require.
     FILES_DELETE = "files_delete"
-    #: Any egress at all — how precisely it is confined stays in :class:`Egress`.
-    NETWORK = "network"
     #: Snapshot and restore a sandbox for reuse.
     SNAPSHOT = "snapshot"
     #: A platform-attached identity scoped to the sandbox itself.
@@ -662,10 +656,6 @@ class SandboxBackend(Protocol):
     stop every backend written before them from being a ``SandboxBackend`` at all.  That makes
     three optional declarations read by ``getattr``; a fourth is the signal to collapse all of
     them into one declarations object.
-
-    During the egress-mode migration the router also reads a backend's older single ``egress``
-    property where ``egress_modes`` is absent, mapping it to an equivalent set; a backend should
-    declare ``egress_modes``.
     """
 
     @property

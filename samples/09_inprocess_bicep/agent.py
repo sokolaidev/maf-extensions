@@ -4,11 +4,12 @@ Sample 02's ``bicep_validate`` workload unchanged, behind ``NoIsolationBackend``
 ``no_isolation_backend.py``): a host work directory and a real ``bicep`` subprocess — the
 floor of the isolation ladder (:data:`~maf_sandbox.Isolation.NONE`, no boundary at all).
 
-The ``egress`` declaration is a **temporary misuse** — a no-boundary backend cannot confine
-egress and the router refuses the honest ``UNRESTRICTED`` today, so ``CLOSED`` is worn only
-to pass the gate; why it is still safe to ship is argued in ``README.md`` (#265 tracks the
-real fix). One ``OpenAIChatCompletionClient`` serves Azure OpenAI in CI and a local Ollama
-server by default, branched on ``AZURE_OPENAI_ENDPOINT``.
+The egress is **honest**: a no-boundary backend cannot confine egress, so it declares the one
+mode it enforces — ``UNRESTRICTED`` — and the Bicep tool is wired to run in that mode. The
+router serves the pairing because the mode asked and the mode enforced agree; why running
+unconfined is acceptable for this dev workload is argued in ``README.md``. One
+``OpenAIChatCompletionClient`` serves Azure OpenAI in CI and a local Ollama server by default,
+branched on ``AZURE_OPENAI_ENDPOINT``.
 
 The walkthrough and environment variables are in ``README.md``; read it first.
 """
@@ -35,7 +36,7 @@ from pathlib import Path
 from _scaffold import MEASURED, evidence, installed_versions, quoted, require_env_vars, tool_results
 from agent_framework import Agent, InMemoryAgentFileStore
 from agent_framework.openai import OpenAIChatCompletionClient
-from maf_sandbox import Isolation, SandboxRouter
+from maf_sandbox import Egress, Isolation, SandboxRouter
 from maf_sandbox.maf import list_all_files, make_caller_context
 from maf_sandbox_bicep import make_bicep_tools
 from no_isolation_backend import NoIsolationBackend
@@ -91,7 +92,10 @@ async def run() -> int:
     context = make_caller_context(list_all_files, lambda: SCOPE, lambda: THREAD_ID)
 
     # No `image=`: there is no image — the backend runs the bicep binary already on the host.
-    tools = make_bicep_tools(router, store, AGENT_DIR, context)
+    # `egress=UNRESTRICTED` because that is the one mode this no-boundary backend enforces;
+    # asking for anything tighter would be refused, since it cannot deliver a boundary it does
+    # not have. The module restore then runs against the live registry, unconfined.
+    tools = make_bicep_tools(router, store, AGENT_DIR, context, egress=Egress.UNRESTRICTED)
     if not tools:
         print("No sandbox backend: bicep_validate was not attached.", file=sys.stderr)
         return 2

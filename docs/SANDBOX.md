@@ -145,5 +145,6 @@ Two behaviours are worth knowing before the first call, because both are deliber
 - [`docs/design/two-axis-sandbox-policy.md`](design/two-axis-sandbox-policy.md) — the isolation ladder and the capability axis, and where known systems sit on them.
 - [`docs/design/files-out.md`](design/files-out.md) — getting artifacts back out, and why that is not the mirror image of putting them in.
 - [`docs/design/call-lifetime.md`](design/call-lifetime.md) — what a tool call is, what it owns, and what has to happen when it ends.
+- [`docs/design/egress-resolution.md`](design/egress-resolution.md) — egress as a resolved mode a workload runs in, not a property the router matches: refuse, never degrade.
 - Each package's own README, for its configuration, its guarantees and its limits.
 - [microsoft/agent-framework#7568](https://github.com/microsoft/agent-framework/issues/7568) — the upstream feature request this suite is the reference implementation of.

@@ -46,7 +46,7 @@ from _scaffold import MEASURED, evidence, installed_versions, quoted, require_en
 from agent_framework import Agent, InMemoryAgentFileStore
 from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
-from maf_sandbox import Isolation, SandboxRouter
+from maf_sandbox import Egress, Isolation, SandboxRouter
 from maf_sandbox.maf import list_all_files, make_caller_context
 from maf_sandbox_bicep import make_bicep_tools
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
@@ -103,12 +103,16 @@ async def run() -> int:
         lambda: THREAD_ID,
     )
 
+    # egress=CLOSED: this backend runs the container with no network, so the workload runs
+    # closed. A template that referenced an AVM module would report the restore shortfall at
+    # runtime; this sample's template uses none, so it completes fully offline.
     tools = make_bicep_tools(
         router,
         store,
         AGENT_DIR,
         context,
         image=env["BICEP_SANDBOX_IMAGE"],
+        egress=Egress.CLOSED,
     )
     if not tools:
         print("No sandbox backend: bicep_validate was not attached.", file=sys.stderr)
