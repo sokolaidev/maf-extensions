@@ -36,15 +36,19 @@ _TEST_DIR_NAMES = frozenset({"test", "tests"})
 
 #: The three facts that together identify a Release PR, none of which is sufficient alone.
 #:
-#: The branch namespace is deliberately not the *range* pull request's — `chore/maf-sandbox-range-…`
-#: moves dependency bounds, a behavior change RELEASING.md requires be titled `fix:`, and this
-#: check is what holds it there. That pull request is opened by the same bot, so the author is
-#: what the prefix has to separate it from.
+#: The **branch namespace** is what separates a Release PR from the *range* pull request —
+#: `chore/maf-sandbox-range-…`, which moves dependency bounds, a behavior change RELEASING.md
+#: requires be titled `fix:` and this check is what holds it there. The same bot opens both, so
+#: the author cannot tell them apart and only the branch can. It is the full namespace
+#: release-please generates rather than a shorter lead-in: `release-please--anything` is not a
+#: name it produces, and treating one as generated exempts a pull request nobody generated.
 #:
-#: The repository is what a fork cannot forge. A branch name is chosen by whoever pushes it, so
-#: the prefix alone would let any fork exempt itself by naming its branch well — invisibly, since
-#: nothing about it appears in the diff a reviewer reads.
-_RELEASE_BRANCH_PREFIX = "release-please--"
+#: The **repository** is what a fork cannot forge. A branch name is chosen by whoever pushes it,
+#: so the branch alone would let any fork exempt itself by naming its branch well — invisibly,
+#: since nothing about the choice appears in the diff a reviewer reads.
+#:
+#: The **author** is what a collaborator pushing such a branch to this repository cannot supply.
+_RELEASE_BRANCH_PREFIX = "release-please--branches--"
 _RELEASE_AUTHOR = "github-actions[bot]"
 
 
@@ -281,8 +285,12 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--author", default="")
     try:
         options = parser.parse_args(argv[1:])
-    except SystemExit:
-        return 2
+    except SystemExit as requested:
+        # argparse exits 0 for `--help` and 2 for a bad argument, and its code is carried out
+        # rather than flattened: answering "how do I call this" with a failure is a lie about
+        # the thing the caller just asked. A non-integer code is argparse printing a message,
+        # which is the bad-argument case.
+        return requested.code if isinstance(requested.code, int) else 2
     base, title = options.base, options.title
     if is_generated_release(options.head_ref, options.head_repo, options.base_repo, options.author):
         print(f"{options.head_ref}: opened by release-please; its title is not an author's choice")

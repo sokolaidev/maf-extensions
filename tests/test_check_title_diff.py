@@ -302,10 +302,43 @@ class TestTheGeneratedReleasePullRequest:
     def test_an_ordinary_branch_is_not_exempt(self, head_ref: str):
         assert not self._genuine(head_ref=head_ref)
 
+    @pytest.mark.parametrize(
+        "head_ref",
+        ["release-please--manual", "release-please--anything", "release-please--branches"],
+    )
+    def test_a_near_miss_in_the_namespace_is_not_exempt(self, head_ref: str):
+        """The prefix is the whole namespace release-please generates, not a lead-in to it.
+
+        `release-please--anything` is not a name it produces, so treating one as generated
+        exempts a pull request nobody generated — and the bot identity does not catch it,
+        because any workflow in this repository can open a branch under that author.
+        """
+        assert not self._genuine(head_ref=head_ref)
+
     @pytest.mark.parametrize("missing", ["head_ref", "head_repo", "base_repo", "author"])
     def test_every_fact_is_required(self, missing: str):
         """Any one of them empty fails closed, which is what makes the default safe."""
         assert not self._genuine(**{missing: ""})
+
+    @pytest.mark.parametrize(
+        ("argv", "expected"),
+        [
+            (["check", "--help"], 0),
+            (["check", "--not-a-flag"], 2),
+            (["check"], 2),
+            (["check", "BASE"], 2),
+        ],
+    )
+    def test_the_exit_code_argparse_chose_is_the_one_returned(
+        self, argv: list[str], expected: int, capsys
+    ):
+        """`--help` succeeds and a bad argument fails, which are not the same outcome.
+
+        Flattening both to 2 answers "how do I call this" with a failure, and hides a genuine
+        usage error behind the same number a successful help prints.
+        """
+        assert check.main(argv) == expected
+        capsys.readouterr()
 
     def test_an_absent_fact_checks_rather_than_skips(self, monkeypatch):
         """A caller that stops passing them gets the check back, not a free pass.
