@@ -371,14 +371,17 @@ def make_codeact_tools(
     # A single dispatch may exercise the user's delegated authority, and which one does is not
     # knowable before the program runs, so one such tool raises the whole surface.
     approval_gated = surface is not None and surface.requires_approval
-    # A registry can carry something out with no landing artifact to say so — a tool with a
-    # declared sink, or an unstamped one that might have one — the one flow neither
-    # `egress_allow` nor an `output_sink` reveals. `also_carries_out` folds that fact, which
-    # only the kind can see, into `sandbox_tool_declarations`' single rule, so the condition
-    # lives in one place instead of being hand-built here (and a key that rule learns later
-    # reaches this tool too).
-    registry_carries_out = surface is not None and bool(
-        surface.outbound_caps or surface.has_undeclared
+    # A registry can carry something out with no landing artifact to say so, which is the one
+    # flow `sandbox_tool_declarations` cannot see — so the host's cap is written by hand. Only
+    # with no output sink: with one, the spec already lands, the derivation writes the same
+    # cap, and `sandboxed_tool` refuses the two together.
+    declarations = (
+        {"max_allowed_confidentiality": outbound_max_confidentiality}
+        if surface is not None
+        and (surface.outbound_caps or surface.has_undeclared)
+        and outbound_max_confidentiality is not None
+        and output_sink is None
+        else None
     )
     return sandboxed_tool(
         lambda session: _execute_code_tool(
@@ -390,7 +393,7 @@ def make_codeact_tools(
         spec=spec,
         name=EXECUTE_CODE_TOOL_NAME,
         approval_mode="always_require" if approval_gated else "never_require",
-        also_carries_out=registry_carries_out,
+        declarations=declarations,
         # The library's "trusted" default is right for a compiler's diagnostics and wrong here:
         # what comes back is whatever a model-written `print(...)` chose to emit. Undeclared,
         # the tracker's untrusted default applies and the result taints the conversation.
