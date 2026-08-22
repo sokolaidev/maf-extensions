@@ -238,7 +238,7 @@ class TestLedgerRunAttribution:
         trips, boundaries = ledger.round_trips()
         assert trips == [1.0]
         assert boundaries == [7.0]
-        assert ledger.dispatched_runs == {first, second}
+        assert ledger.dispatched_runs == {first.run_id, second.run_id}
 
     def test_an_unobserved_call_does_not_count_as_a_dispatched_run(self):
         ledger = sample.Ledger()
