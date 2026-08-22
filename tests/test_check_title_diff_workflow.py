@@ -16,3 +16,19 @@ def test_pr_title_workflow_runs_the_title_diff_checker_without_shell_interpolati
     assert "BASE_SHA: ${{ github.event.pull_request.base.sha }}" in TEXT
     assert "PR_TITLE: ${{ github.event.pull_request.title }}" in TEXT
     assert 'run: python scripts/check_title_diff.py "${{' not in TEXT
+
+
+def test_pr_title_workflow_passes_every_fact_the_release_exemption_needs():
+    """The exemption fails closed on a missing fact, so a dropped argument stops the train.
+
+    `--head-repo` and `--author` are the two that make it identity rather than a branch name
+    anyone may choose, which is why they are asserted individually rather than as one string.
+    """
+    assert '--head-ref "$HEAD_REF"' in TEXT
+    assert '--head-repo "$HEAD_REPO"' in TEXT
+    assert '--base-repo "$BASE_REPO"' in TEXT
+    assert '--author "$PR_AUTHOR"' in TEXT
+    assert "HEAD_REF: ${{ github.head_ref }}" in TEXT
+    assert "HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}" in TEXT
+    assert "BASE_REPO: ${{ github.repository }}" in TEXT
+    assert "PR_AUTHOR: ${{ github.event.pull_request.user.login }}" in TEXT

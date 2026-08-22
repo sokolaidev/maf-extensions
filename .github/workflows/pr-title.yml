@@ -46,7 +46,29 @@ jobs:
           requireScope: false
 
       - name: Title matches changed behavior
+        # The four pull request facts are passed so release-please's own Release PRs can be
+        # skipped: their title is generated to a fixed format and must not be edited, while
+        # their diff — a version bump in pyproject, uv.lock and the manifest — is executable
+        # to this check. Each fact rules out a different way of claiming to be one, and none
+        # is sufficient alone:
+        #
+        #   branch      the range pull request shares the bot author, so only the
+        #               `release-please--branches--` namespace separates the two
+        #   repository  a fork cannot forge it, and a branch name it can choose freely
+        #               leaves nothing in the diff for a reviewer to notice
+        #   author      a collaborator pushing such a branch here cannot supply it
+        #
+        # Every value is assigned to an environment variable rather than interpolated into the
+        # command. A title, a branch name and a login are attacker-controlled text, and
+        # interpolating any of them here would make it shell source.
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_TITLE: ${{ github.event.pull_request.title }}
-        run: python scripts/check_title_diff.py "$BASE_SHA" "$PR_TITLE"
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          python scripts/check_title_diff.py "$BASE_SHA" "$PR_TITLE" \
+            --head-ref "$HEAD_REF" --head-repo "$HEAD_REPO" \
+            --base-repo "$BASE_REPO" --author "$PR_AUTHOR"

@@ -4,10 +4,22 @@ The check compares changed Python files after removing module, class and functio
 Comments and formatting therefore do not count as behavior, while executable statements, literals,
 annotations and defaults do. Non-documentation paths are treated as executable because this check
 cannot infer behavior from arbitrary formats such as TOML or workflow YAML.
+
+That last rule is why release-please's own pull requests are exempt. A Release PR is a version
+bump and a regenerated changelog — `pyproject.toml`, `uv.lock` and the manifest — which this
+check cannot read as anything but executable, against a `chore(main): release …` title nobody
+chose and nobody may edit.
+
+The exemption is identity, never the shape of the diff: the same diff under the same title,
+pushed by a person, is still refused. Identity is three facts and needs all three — see
+`is_generated_release`. It is not a security boundary and cannot be one, since this workflow
+runs the pull request's own copy of this file; it is there so the exemption cannot be claimed
+by a branch name alone, which would leave nothing in the diff for a reviewer to notice.
 """
 
 from __future__ import annotations
 
+import argparse
 import ast
 import re
 import subprocess
@@ -21,6 +33,23 @@ _DOCUMENTATION_TYPES = frozenset({"docs", "chore", "refactor", "test", "build", 
 _DOCUMENTATION_SUFFIXES = frozenset({".md", ".markdown", ".rst", ".adoc"})
 _DOCUMENTATION_NAMES = frozenset({"license", "copying", "notice"})
 _TEST_DIR_NAMES = frozenset({"test", "tests"})
+
+#: The three facts that together identify a Release PR, none of which is sufficient alone.
+#:
+#: The **branch namespace** is what separates a Release PR from the *range* pull request —
+#: `chore/maf-sandbox-range-…`, which moves dependency bounds, a behavior change RELEASING.md
+#: requires be titled `fix:` and this check is what holds it there. The same bot opens both, so
+#: the author cannot tell them apart and only the branch can. It is the full namespace
+#: release-please generates rather than a shorter lead-in: `release-please--anything` is not a
+#: name it produces, and treating one as generated exempts a pull request nobody generated.
+#:
+#: The **repository** is what a fork cannot forge. A branch name is chosen by whoever pushes it,
+#: so the branch alone would let any fork exempt itself by naming its branch well — invisibly,
+#: since nothing about the choice appears in the diff a reviewer reads.
+#:
+#: The **author** is what a collaborator pushing such a branch to this repository cannot supply.
+_RELEASE_BRANCH_PREFIX = "release-please--branches--"
+_RELEASE_AUTHOR = "github-actions[bot]"
 
 
 class _RemoveDocstrings(ast.NodeTransformer):
@@ -221,12 +250,51 @@ def _changed_python(
     return result
 
 
+def is_generated_release(head_ref: str, head_repo: str, base_repo: str, author: str) -> bool:
+    """Whether these four facts identify a Release PR release-please opened.
+
+    There is no author to hold the title to on one: release-please writes it, and editing it
+    desynchronises the changelog it generates from the version it stamps.
+
+    All four must hold, and each rules out a different way of claiming to be one. Any empty
+    argument therefore fails closed, which is what makes a caller that stops passing them get
+    the check back rather than a blanket exemption.
+    """
+    return bool(
+        head_ref.startswith(_RELEASE_BRANCH_PREFIX)
+        and head_repo
+        and head_repo == base_repo
+        and author == _RELEASE_AUTHOR
+    )
+
+
 def main(argv: list[str]) -> int:
-    """Check the current checkout against ``base`` and ``title``."""
-    if len(argv) != 3:
-        print(f"usage: {argv[0]} <base-revision> <pull-request-title>", file=sys.stderr)
-        return 2
-    base, title = argv[1:]
+    """Check the current checkout against ``base`` and ``title``.
+
+    The four pull request facts are optional and named rather than positional, because each is
+    a security-relevant input and a value silently landing in the wrong slot is the failure a
+    positional list of four invites. Omitting any of them checks rather than skips: a caller
+    that stops passing them gets this check back, which is the safe direction to fail in.
+    """
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    parser.add_argument("base")
+    parser.add_argument("title")
+    parser.add_argument("--head-ref", default="")
+    parser.add_argument("--head-repo", default="")
+    parser.add_argument("--base-repo", default="")
+    parser.add_argument("--author", default="")
+    try:
+        options = parser.parse_args(argv[1:])
+    except SystemExit as requested:
+        # argparse exits 0 for `--help` and 2 for a bad argument, and its code is carried out
+        # rather than flattened: answering "how do I call this" with a failure is a lie about
+        # the thing the caller just asked. A non-integer code is argparse printing a message,
+        # which is the bad-argument case.
+        return requested.code if isinstance(requested.code, int) else 2
+    base, title = options.base, options.title
+    if is_generated_release(options.head_ref, options.head_repo, options.base_repo, options.author):
+        print(f"{options.head_ref}: opened by release-please; its title is not an author's choice")
+        return 0
     status = _git("diff", "--find-renames", "--name-status", f"{base}...HEAD")
     path_pairs = _changed_path_pairs(status)
     copied_sources = {

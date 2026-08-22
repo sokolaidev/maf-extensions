@@ -209,3 +209,143 @@ class TestAssess:
             {"packages/example/src/example.py": (None, source)},
             [("packages/example/README.md", "packages/example/src/example.py")],
         )
+
+
+class TestTheGeneratedReleasePullRequest:
+    """Only a Release PR release-please opened is exempt, and it takes all four facts.
+
+    Its diff is a version bump — `pyproject.toml`, `uv.lock`, the manifest — which this check
+    reads as executable because it cannot read TOML, under a `chore(main): release …` title
+    RELEASING.md forbids editing. Each fact rules out a different way of claiming to be one.
+    """
+
+    _RELEASE_PATHS = [
+        ".release-please-manifest.json",
+        "packages/maf-sandbox-bicep/CHANGELOG.md",
+        "packages/maf-sandbox-bicep/pyproject.toml",
+        "uv.lock",
+    ]
+    #: The same four files as `git diff --name-status` reports them.
+    _STATUS = "\n".join(f"M\t{path}" for path in _RELEASE_PATHS)
+    _REPO = "sokolaidev/maf-extensions"
+    _BRANCH = "release-please--branches--main--components--maf-sandbox"
+    _TITLE = "chore(main): release maf-sandbox 0.20.0"
+
+    def _genuine(self, **overrides: str) -> bool:
+        facts = {
+            "head_ref": self._BRANCH,
+            "head_repo": self._REPO,
+            "base_repo": self._REPO,
+            "author": "github-actions[bot]",
+        } | overrides
+        return check.is_generated_release(**facts)
+
+    def test_the_diff_alone_is_still_refused(self):
+        """The exemption is identity, never the shape of the diff.
+
+        Pinned first because it is what makes the rest of this class mean anything: a person
+        writing that title over that diff is exactly what the check exists to refuse.
+        """
+        assert check.assess("chore(main): release maf-sandbox-bicep 0.9.1", self._RELEASE_PATHS, {})
+
+    def test_a_release_pull_request_is_exempt(self, monkeypatch):
+        """Driven through `main`, so the guard is pinned wired rather than merely present."""
+        monkeypatch.setattr(check, "_git", lambda *_args: self._STATUS)
+        assert self._genuine()
+        assert (
+            check.main(
+                [
+                    "check",
+                    "BASE",
+                    self._TITLE,
+                    "--head-ref",
+                    self._BRANCH,
+                    "--head-repo",
+                    self._REPO,
+                    "--base-repo",
+                    self._REPO,
+                    "--author",
+                    "github-actions[bot]",
+                ]
+            )
+            == 0
+        )
+
+    def test_a_fork_cannot_claim_it_by_naming_its_branch(self):
+        """A branch name is chosen by whoever pushes it, and a fork may push any name.
+
+        Nothing about that choice appears in the diff, so a reviewer reading the change sees
+        no reason it went unchecked. The repository is the fact a fork cannot forge.
+        """
+        assert not self._genuine(head_repo="attacker/maf-extensions")
+
+    def test_a_collaborator_cannot_claim_it_by_naming_a_branch_in_this_repository(self):
+        """Same repository, same branch shape, a person's login — still checked."""
+        assert not self._genuine(author="antsok")
+
+    def test_the_range_pull_request_is_not_exempt(self):
+        """`chore/maf-sandbox-range-…` moves dependency bounds, which is a behavior change.
+
+        RELEASING.md requires it be titled `fix:` — "the type is load-bearing", because a
+        ceiling widened under `chore:` releases nothing and the release sequence stalls with
+        the publication window still open. The same bot opens it, so the branch prefix is the
+        only fact separating the two and it has to keep doing that work.
+        """
+        bounds = ["packages/maf-sandbox-bicep/pyproject.toml"]
+        assert not self._genuine(head_ref="chore/maf-sandbox-range-0.20.0")
+        assert check.assess("chore: widen the ceilings", bounds, {})
+        assert check.assess("fix: widen the ceilings", bounds, {}) == []
+
+    @pytest.mark.parametrize(
+        "head_ref", ["", "feat/something", "main", "my-release-please--branch"]
+    )
+    def test_an_ordinary_branch_is_not_exempt(self, head_ref: str):
+        assert not self._genuine(head_ref=head_ref)
+
+    @pytest.mark.parametrize(
+        "head_ref",
+        ["release-please--manual", "release-please--anything", "release-please--branches"],
+    )
+    def test_a_near_miss_in_the_namespace_is_not_exempt(self, head_ref: str):
+        """The prefix is the whole namespace release-please generates, not a lead-in to it.
+
+        `release-please--anything` is not a name it produces, so treating one as generated
+        exempts a pull request nobody generated — and the bot identity does not catch it,
+        because any workflow in this repository can open a branch under that author.
+        """
+        assert not self._genuine(head_ref=head_ref)
+
+    @pytest.mark.parametrize("missing", ["head_ref", "head_repo", "base_repo", "author"])
+    def test_every_fact_is_required(self, missing: str):
+        """Any one of them empty fails closed, which is what makes the default safe."""
+        assert not self._genuine(**{missing: ""})
+
+    @pytest.mark.parametrize(
+        ("argv", "expected"),
+        [
+            (["check", "--help"], 0),
+            (["check", "--not-a-flag"], 2),
+            (["check"], 2),
+            (["check", "BASE"], 2),
+        ],
+    )
+    def test_the_exit_code_argparse_chose_is_the_one_returned(
+        self, argv: list[str], expected: int, capsys
+    ):
+        """`--help` succeeds and a bad argument fails, which are not the same outcome.
+
+        Flattening both to 2 answers "how do I call this" with a failure, and hides a genuine
+        usage error behind the same number a successful help prints.
+        """
+        assert check.main(argv) == expected
+        capsys.readouterr()
+
+    def test_an_absent_fact_checks_rather_than_skips(self, monkeypatch):
+        """A caller that stops passing them gets the check back, not a free pass.
+
+        The same diff and title as the exempt case above, so the only difference is what was
+        passed — which is what makes the pair mean the exemption rather than the fixture.
+        """
+        monkeypatch.setattr(check, "_git", lambda *_args: self._STATUS)
+        assert check.main(["check", "BASE", self._TITLE]) == 1
+        assert check.main(["check", "BASE", self._TITLE, "--head-ref", self._BRANCH]) == 1
