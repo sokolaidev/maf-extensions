@@ -14,8 +14,8 @@ words are the subject rather than the evidence.
 
 Exits non-zero listing every reason it failed, and says **which half** failed in the
 status: 3 when every failure was the model's own — either turn — and 1 when anything this
-suite owns was wrong too. `verify-live.yml` runs the loop a second time on 3 and on nothing
-else (#421).
+suite owns was wrong too. `verify-live.yml` retries the loop on 3 and on nothing else, up to a
+budget it owns; this file does not name that number, so raising it is one edit there (#421).
 """
 
 from __future__ import annotations
@@ -635,7 +635,7 @@ def main(argv: list[str]) -> int:
             print(
                 "  every failure above is the model's own — the sandbox was reused, both "
                 "turns reached it, the file was written and changed, and nothing was left "
-                f"behind. Exiting {MODEL_DID_NOT_CONVERGE}: the loop is worth one more attempt.",
+                f"behind. Exiting {MODEL_DID_NOT_CONVERGE}: the loop is worth another attempt.",
                 file=sys.stderr,
             )
             return MODEL_DID_NOT_CONVERGE

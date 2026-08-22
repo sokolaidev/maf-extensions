@@ -8,6 +8,7 @@ from __future__ import annotations
 import dataclasses
 import importlib.util
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -38,6 +39,21 @@ def _the_step() -> dict:
     ]
     assert len(steps) == 1, f"expected one step to run sample 13, found {len(steps)}"
     return steps[0]
+
+
+def _budget() -> int:
+    """The attempt ceiling, read off the step rather than repeated here.
+
+    The step assigns it once and reads it three times — the loop bound, the retry notice and
+    the summary line. A test that hardcoded the figure would go red on a deliberate change and
+    stay green on the drift that matters, which is those three disagreeing.
+    """
+    assignment = re.search(r"^\s*allowed=(\d+)$", _the_step()["run"], re.MULTILINE)
+    assert assignment is not None, (
+        "the sample 13 step no longer assigns `allowed=`; the retry budget is meant to be one "
+        "number its loop, its warning and its summary all read"
+    )
+    return int(assignment.group(1))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -105,7 +121,7 @@ needs_bash = pytest.mark.skipif(_BASH is None, reason="the step is a shell block
 
 
 @needs_bash
-class TestTheLoopRunsTwiceForTheModelAndOnceForEverythingElse:
+class TestTheLoopRetriesTheModelAndNothingElse:
     def test_a_first_attempt_that_passes_is_the_whole_job(self, tmp_path: Path):
         finished = _run(tmp_path, [0])
         assert finished.status == 0, finished.stderr
@@ -123,11 +139,19 @@ class TestTheLoopRunsTwiceForTheModelAndOnceForEverythingElse:
         assert finished.status == 1
         assert finished.attempts == 1, "a plumbing failure must not spend a second container"
 
-    def test_two_attempts_is_the_ceiling(self, tmp_path: Path):
-        codes = [check.MODEL_DID_NOT_CONVERGE, check.MODEL_DID_NOT_CONVERGE, 0]
-        finished = _run(tmp_path, codes)
+    def test_the_budget_is_the_ceiling(self, tmp_path: Path):
+        """Every attempt fails, so the loop stops on the budget rather than on a verdict."""
+        allowed = _budget()
+        finished = _run(tmp_path, [check.MODEL_DID_NOT_CONVERGE] * (allowed + 1) + [0])
         assert finished.status == check.MODEL_DID_NOT_CONVERGE
-        assert finished.attempts == 2
+        assert finished.attempts == allowed
+
+    def test_the_budget_is_spent_only_as_far_as_it_has_to_be(self, tmp_path: Path):
+        """A pass on the last allowed attempt is still a pass, and costs no more than it took."""
+        allowed = _budget()
+        finished = _run(tmp_path, [check.MODEL_DID_NOT_CONVERGE] * (allowed - 1) + [0])
+        assert finished.status == 0, finished.stderr
+        assert finished.attempts == allowed
 
 
 @needs_bash
@@ -191,6 +215,54 @@ class TestASampleThatNeverRanIsNotTheModelsHalf:
         """3 from the *sample* is a crash that shares a number, not a verdict about a repair."""
         finished = _run(tmp_path, [0], sample_status=check.MODEL_DID_NOT_CONVERGE)
         assert finished.attempts == 1
+
+
+class TestTheBudgetIsWrittenOnce:
+    """Three readings of one number, and a disagreement between them is silent.
+
+    A loop bounded at one figure while the summary claims another reports a run that never
+    happened — and the run it claims is the reassuring one, since the summary is what a reader
+    checks when a release goes red.
+    """
+
+    def test_the_loop_is_bounded_by_the_variable(self):
+        assert 'while [ "$attempts" -lt "$allowed" ]' in _the_step()["run"]
+
+    def test_the_retry_notice_reads_the_variable(self):
+        """Which attempt of how many, so a reader is not counting warnings to find out."""
+        run = _the_step()["run"]
+        assert 'if [ "$attempts" -lt "$allowed" ]' in run
+        assert "attempt $attempts of $allowed" in run
+
+    def test_the_summary_reads_the_variable(self):
+        assert "after $attempts attempt(s), $allowed allowed." in _the_step()["run"]
+
+    def test_a_budget_of_one_is_the_retry_removed(self):
+        """That is #421 undone rather than tuned, and it would pass every test above."""
+        assert _budget() >= 2
+
+    def test_the_sample_readme_states_the_number_the_workflow_allows(self):
+        """The README is where this is read before anyone opens the YAML.
+
+        Raising one without the other leaves the documented behaviour and the real behaviour
+        disagreeing about a job that only runs after a release.
+        """
+        words = {
+            2: "twice",
+            3: "three times",
+            4: "four times",
+            5: "five times",
+            6: "six times",
+            7: "seven times",
+            8: "eight times",
+        }
+        allowed = _budget()
+        assert allowed in words, f"add {allowed} to this table when raising the budget past 8"
+        readme = (_ROOT / "samples" / "13_bicep_fix_loop" / "README.md").read_text("utf-8")
+        assert f"**{words[allowed]} at most**" in readme, (
+            f"samples/13_bicep_fix_loop/README.md does not say the loop runs {words[allowed]} "
+            f"at most; the workflow allows {allowed}"
+        )
 
 
 class TestTheTwoFilesAgreeOnWhatIsRetryable:
