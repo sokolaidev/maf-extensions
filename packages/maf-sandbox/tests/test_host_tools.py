@@ -29,6 +29,7 @@ from maf_sandbox import (
     INTEGRITY_RANK,
     DispatchResult,
     HostToolDeclaration,
+    HostToolIdentityNotAllowed,
     HostToolNotDeclared,
     HostToolRegistry,
     HostToolRun,
@@ -330,6 +331,42 @@ class TestAggregate:
         registry = HostToolRegistry()
         registry.register(_stamped_pure())
         assert registry.aggregate().identities == frozenset()
+
+    def test_narrowing_to_app_only_refuses_a_user_tool(self):
+        """A host that narrows the set forbids USER authority at registration."""
+        registry = HostToolRegistry(allowed_identities=frozenset({Identity.APP}))
+        with pytest.raises(HostToolIdentityNotAllowed, match="user"):
+            registry.register(
+                sandbox_tool(source=None, sink=None, identity=Identity.USER)(lambda: None),
+                name="as_user",
+            )
+
+    def test_opting_in_allows_a_user_tool(self):
+        registry = HostToolRegistry(allowed_identities=frozenset({Identity.APP, Identity.USER}))
+        registry.register(
+            sandbox_tool(source=None, sink=None, identity=Identity.USER)(lambda: None),
+            name="as_user",
+        )
+        assert "as_user" in registry.names()
+
+    def test_a_none_identity_tool_is_always_allowed_even_with_an_empty_set(self):
+        """No-authority tools carry nothing to gate, so no set forbids them."""
+        registry = HostToolRegistry(allowed_identities=frozenset())
+        registry.register(_stamped_pure())
+        assert len(registry) == 1
+
+    def test_an_unstamped_tool_is_refused_when_app_is_not_allowed(self):
+        """Unstamped reads as APP, so a set without APP refuses it — naming why."""
+        registry = HostToolRegistry(allowed_identities=frozenset({Identity.USER}))
+        with pytest.raises(HostToolIdentityNotAllowed, match="unstamped, read as 'app'"):
+            registry.register(_pure)
+
+    def test_allowed_identities_defaults_to_app_and_user(self):
+        assert HostToolRegistry().allowed_identities == frozenset({Identity.APP, Identity.USER})
+
+    def test_allowed_identities_rejects_non_identity_members(self):
+        with pytest.raises(TypeError, match="Identity"):
+            HostToolRegistry(allowed_identities=frozenset({"app"}))  # type: ignore[arg-type]
 
     def test_an_undeclared_tool_fails_safe_on_every_leg(self):
         """Gate off: untrusted source, the APP authority it factually runs with, flagged."""

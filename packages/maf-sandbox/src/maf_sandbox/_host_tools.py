@@ -103,6 +103,20 @@ class HostToolNotDeclared(ValueError):
     """
 
 
+class HostToolIdentityNotAllowed(ValueError):
+    """A host tool's declared authority is not in the registry's ``allowed_identities``.
+
+    A host configuration error, raised at registration — the offending line, before any
+    sandbox exists and without a router in scope.  A tool exercising an authority the
+    registry does not list — an :data:`~maf_sandbox.Identity.USER` tool, or with the gate off
+    an unstamped one, read as :data:`~maf_sandbox.Identity.APP` — is refused; a tool
+    declaring ``identity=None`` exercises no authority and is always allowed.  This is the
+    earlier, fail-closed layer beside the router's ``denied_identities``, which stays the
+    attach-time authority; the two share one predicate and only ever refuse, so they cannot
+    disagree in the widening direction.
+    """
+
+
 @dataclass(frozen=True)
 class HostToolDeclaration:
     """One dispatched function's information-flow declaration — all three legs, answered.
@@ -290,6 +304,13 @@ class HostToolRegistry:
             default ``False``, in which case an unstamped tool registers and fails safe —
             an untrusted source, an :data:`~maf_sandbox.Identity.APP` identity, and a raised
             flag in the aggregate.
+        allowed_identities: The authorities a registered tool may exercise, refused at
+            registration otherwise (:class:`HostToolIdentityNotAllowed`).  Default
+            ``frozenset({Identity.APP, Identity.USER})`` — both authority-bearing identities;
+            a host that forbids model-orchestrated user authority narrows it to
+            ``frozenset({Identity.APP})``.  A tool declaring ``identity=None`` exercises no
+            authority and is always allowed.  The earlier, fail-closed layer beside the
+            router's ``denied_identities``, which stays the attach-time authority.
         max_dispatches_per_run: How many dispatches one :class:`HostToolRun` may make,
             refusals included — a probe loop burning the cap on unknown names is the cap
             working.  Must be at least 1; a host that wants zero wants an empty registry.
@@ -310,6 +331,7 @@ class HostToolRegistry:
         self,
         *,
         require_declared: bool = False,
+        allowed_identities: frozenset[Identity] = frozenset({Identity.APP, Identity.USER}),
         max_dispatches_per_run: int = DEFAULT_MAX_DISPATCHES_PER_RUN,
         response_limits: TransferLimits = DEFAULT_TRANSFER_LIMITS,
         dispatch_observer: (
@@ -362,7 +384,20 @@ class HostToolRegistry:
                     "called on the dispatching task and must return a context manager to "
                     "enter, not a coroutine to await"
                 )
+        allowed = cast(object, allowed_identities)
+        if not isinstance(allowed, (frozenset, set)):
+            raise TypeError(
+                "allowed_identities must be a set of Identity members, not "
+                f"{type(allowed_identities).__name__}"
+            )
+        for member in cast("frozenset[object]", allowed):
+            if not isinstance(member, Identity):
+                raise TypeError(
+                    "allowed_identities may hold only Identity members, not "
+                    f"{type(member).__name__}: {member!r}"
+                )
         self._require_declared = require_declared
+        self._allowed_identities = frozenset(allowed_identities)
         self._max_dispatches_per_run = max_dispatches_per_run
         self._response_limits = response_limits
         self._dispatch_observer = dispatch_observer
@@ -375,6 +410,17 @@ class HostToolRegistry:
     def require_declared(self) -> bool:
         """Whether unstamped functions are refused rather than degraded."""
         return self._require_declared
+
+    @property
+    def allowed_identities(self) -> frozenset[Identity]:
+        """The authorities a registered tool may exercise.
+
+        A tool declaring ``identity=None`` (no authority) is always registrable; anything
+        else must be in this set or :meth:`register` refuses it with
+        :class:`HostToolIdentityNotAllowed`. ``denied_identities`` on the router stays the
+        attach-time backstop.
+        """
+        return self._allowed_identities
 
     @property
     def max_dispatches_per_run(self) -> int:
@@ -408,7 +454,9 @@ class HostToolRegistry:
         mutate the dispatch surface out from under whatever derived the aggregate from it.
         With ``require_declared`` on, refuses an unstamped function here — at the host's own
         configuration site, where the fix is one decorator away — rather than later at
-        dispatch, where only a sanitized sentence comes back.
+        dispatch, where only a sanitized sentence comes back.  A tool whose authority is
+        outside ``allowed_identities`` is refused here too
+        (:class:`HostToolIdentityNotAllowed`).
         """
         if self._sealed:
             raise ValueError(
@@ -450,6 +498,23 @@ class HostToolRegistry:
                 "this registry requires one. Stamp it with @sandbox_tool(source=..., "
                 "sink=..., identity=...) — every leg answered; None is an answer, an "
                 "omission is not."
+            )
+        # The identity gate. An unstamped tool is read as APP — nobody answered, and its body
+        # runs in the host process with the app's authority; a declared identity=None
+        # exercises none and is always allowed; anything else must be in allowed_identities.
+        # Read from the declaration captured above, so a stamp swapped in afterwards cannot
+        # slip past it — the one-read invariant require_declared already keeps.
+        effective_identity = Identity.APP if declaration is None else declaration.identity
+        if effective_identity is not None and effective_identity not in self._allowed_identities:
+            allowed = ", ".join(sorted(str(i) for i in self._allowed_identities)) or "none"
+            read_as = " (unstamped, read as 'app')" if declaration is None else ""
+            raise HostToolIdentityNotAllowed(
+                f"host tool {tool_name!r} exercises {str(effective_identity)!r} authority"
+                f"{read_as}, which this registry does not allow (allowed_identities: "
+                f"{allowed}). A host that means to run tools under this authority opts in at "
+                "construction with allowed_identities=frozenset({Identity.APP, "
+                "Identity.USER}); a tool declaring identity=None exercises no authority and is "
+                "always allowed. denied_identities on the router stays the attach-time backstop."
             )
         _warn_host_tools_once()
         self._tools[tool_name] = func
