@@ -59,6 +59,15 @@ jobs:
         # the wheel (#556).
         run: uv run python scripts/check_doc_paths.py
 
+      - name: Status trackers still say what the rows say
+        # The structure test holds every row to pinning *something*; nothing held it to pinning
+        # something still open, so a row went stale the day its issue closed and no check failed.
+        # This reads the trackers themselves. Gating: the token is always present here, and a
+        # finding is a sentence in a shipped document that has stopped being true.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: uv run python scripts/check_doc_trackers.py
+
       - name: Markdown code blocks (report-only)
         # Lints the ```python blocks in README/packages/samples/RELEASING and the decided half of
         # docs/ against the installed maf_sandbox* packages — an import the package no longer
