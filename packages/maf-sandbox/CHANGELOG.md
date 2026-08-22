@@ -2,6 +2,19 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.21.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.20.0...maf-sandbox-v0.21.0) (2026-08-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* **host-tools:** a registry is Identity.APP -only by default ([#572](https://github.com/sokolaidev/maf-extensions/issues/572))
+
+### Features
+
+* **host-tools:** a registry can restrict which identities its tools may exercise ([#570](https://github.com/sokolaidev/maf-extensions/issues/570)) ([24361d0](https://github.com/sokolaidev/maf-extensions/commit/24361d0d518775814e550f66def8d3518efdcd24))
+* **host-tools:** a registry is Identity.APP -only by default ([#572](https://github.com/sokolaidev/maf-extensions/issues/572)) ([f7e82d5](https://github.com/sokolaidev/maf-extensions/commit/f7e82d5f36e07a77c3b1ce6eb0c147ac90dc6d74))
+* **sandbox:** sandbox_tool_declarations can be told a workload carries out beyond the spec ([#581](https://github.com/sokolaidev/maf-extensions/issues/581)) ([7c9745d](https://github.com/sokolaidev/maf-extensions/commit/7c9745d49188e909882bb71641e54617264bcbd1))
+
 ## [0.20.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.19.0...maf-sandbox-v0.20.0) (2026-08-22)
 
 
