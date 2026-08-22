@@ -2,6 +2,28 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.20.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.19.0...maf-sandbox-v0.20.0) (2026-08-22)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sandbox:** declare and match the guest's OS family, and give RUN_CODE its method ([#532](https://github.com/sokolaidev/maf-extensions/issues/532))
+* remove the egress shim and Capability.NETWORK, finish samples and docs ([#534](https://github.com/sokolaidev/maf-extensions/issues/534))
+
+### Features
+
+* remove the egress shim and Capability.NETWORK, finish samples and docs ([#534](https://github.com/sokolaidev/maf-extensions/issues/534)) ([f496a48](https://github.com/sokolaidev/maf-extensions/commit/f496a48463799564644e16452506a8659819da12))
+* **sandbox:** a shared egress-enforcement conformance probe ([#547](https://github.com/sokolaidev/maf-extensions/issues/547)) ([783b469](https://github.com/sokolaidev/maf-extensions/commit/783b469ed41d5b04f21887ca101c42d1dcd33c19))
+* **sandbox:** declare and match the guest's OS family, and give RUN_CODE its method ([#532](https://github.com/sokolaidev/maf-extensions/issues/532)) ([f031325](https://github.com/sokolaidev/maf-extensions/commit/f0313251e64d2f1f5f26117d0b400c5a7763686e))
+
+
+### Documentation
+
+* restructure the sandbox documentation into a decided design and a research pipeline ([#527](https://github.com/sokolaidev/maf-extensions/issues/527)) ([4331f9c](https://github.com/sokolaidev/maf-extensions/commit/4331f9c238caa5e1b1f41b35ee29779d6b1ec17a))
+* **sandbox:** repoint the eleven references the docs restructure left dangling ([#555](https://github.com/sokolaidev/maf-extensions/issues/555)) ([361225a](https://github.com/sokolaidev/maf-extensions/commit/361225aa0e43a36410189d4c1eed6271595190e9))
+* say what 0.20 breaks for a backend author, before it publishes rather than after ([#549](https://github.com/sokolaidev/maf-extensions/issues/549)) ([e95b200](https://github.com/sokolaidev/maf-extensions/commit/e95b200cb3c7c6b092650a1cd3bb8826af737124))
+* say what the 0.19 egress change breaks, and what to do about it ([#543](https://github.com/sokolaidev/maf-extensions/issues/543)) ([4b736de](https://github.com/sokolaidev/maf-extensions/commit/4b736de3368feb7fca0ffe36f2b607214d376d44))
+
 ## [0.19.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.18.1...maf-sandbox-v0.19.0) (2026-08-21)
 
 
