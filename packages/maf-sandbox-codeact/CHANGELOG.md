@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.7.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.7.1...maf-sandbox-codeact-v0.7.2) (2026-08-22)
+
+
+### Fixes
+
+* **codeact:** fold the host-tool carries-out flag into sandbox_tool_declarations ([#582](https://github.com/sokolaidev/maf-extensions/issues/582)) ([7a04597](https://github.com/sokolaidev/maf-extensions/commit/7a04597a893a63a2500efb1605025c8a0ed157f6))
+* require maf-sandbox 0.20.0 in the dependents and 0.20 in the samples, and admit 0.21 ([#564](https://github.com/sokolaidev/maf-extensions/issues/564)) ([727af26](https://github.com/sokolaidev/maf-extensions/commit/727af26c6db27a0de11a901d531f7183fda8426d))
+
+
+### Reverts
+
+* **codeact:** fold the host-tool carries-out flag into sandbox_tool_declarations ([#592](https://github.com/sokolaidev/maf-extensions/issues/592)) ([f533fe2](https://github.com/sokolaidev/maf-extensions/commit/f533fe22050a5eeae3e9b894d2fa833dabd6728a))
+
 ## [0.7.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.7.0...maf-sandbox-codeact-v0.7.1) (2026-08-22)
 
 
