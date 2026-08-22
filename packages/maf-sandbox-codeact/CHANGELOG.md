@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.7.0...maf-sandbox-codeact-v0.7.1) (2026-08-22)
+
+
+### Documentation
+
+* restructure the sandbox documentation into a decided design and a research pipeline ([#527](https://github.com/sokolaidev/maf-extensions/issues/527)) ([4331f9c](https://github.com/sokolaidev/maf-extensions/commit/4331f9c238caa5e1b1f41b35ee29779d6b1ec17a))
+* say what the 0.19 egress change breaks, and what to do about it ([#543](https://github.com/sokolaidev/maf-extensions/issues/543)) ([4b736de](https://github.com/sokolaidev/maf-extensions/commit/4b736de3368feb7fca0ffe36f2b607214d376d44))
+
 ## [0.7.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.6.1...maf-sandbox-codeact-v0.7.0) (2026-08-21)
 
 
