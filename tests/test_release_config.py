@@ -21,6 +21,8 @@ import re
 import shutil
 import subprocess
 import tomllib
+import urllib.error
+import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -938,3 +940,212 @@ class TestThePostUploadDispatchGatesTheLiveCheck:
             "the dispatch step must not run inside the publish job"
         )
         assert f"- name: {self._STEP}" in dispatch_block
+
+
+def propagation_source() -> str:
+    """The Python the propagation step runs, lifted out of its heredoc.
+
+    Read from the workflow rather than duplicated here, so a change to the step is a change to
+    what these tests exercise. A copy would go on passing after the step stopped matching it,
+    which is the failure this whole module exists to prevent.
+    """
+    block = run_block(PUBLISH_WORKFLOW, "Poll PyPI until the just-published version is installable")
+    opener = next(line for line in block.splitlines() if line.strip().endswith("<<'PY'"))
+    body = block.split(opener, 1)[1]
+    return body.split("\nPY", 1)[0]
+
+
+class _Response:
+    """The two attributes the step reads off `urlopen`, as a context manager."""
+
+    def __init__(self, status: int, body: bytes) -> None:
+        self.status, self._body = status, body
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self) -> _Response:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        return None
+
+
+def run_propagation(responses, *, package="maf-sandbox", version="0.20.0", settle_ticks=8):
+    """Run the step against scripted responses; return its exit code and what it requested.
+
+    ``responses`` is called with each requested URL and returns a `_Response`, an exception to
+    raise, or bytes to serve as a 200. Time is driven rather than waited on: `sleep` advances a
+    counter `monotonic` reads, so a settle window that takes a minute in the runner takes none
+    here and the deadline is still reachable.
+    """
+    import os
+    import time as real_time
+    import urllib.request
+
+    requested: list[str] = []
+    clock = {"now": 0.0}
+
+    def fake_urlopen(request, timeout=None):  # noqa: ARG001
+        requested.append(request.full_url)
+        answer = responses(request.full_url)
+        if isinstance(answer, BaseException):
+            raise answer
+        if isinstance(answer, _Response):
+            return answer
+        return _Response(200, answer)
+
+    def fake_sleep(seconds: float) -> None:
+        clock["now"] += seconds
+
+    def fake_monotonic() -> float:
+        return clock["now"]
+
+    # Patched on the real modules rather than injected into the namespace: the step's own first
+    # line imports os, time and urllib, which rebinds anything seeded there.
+    namespace: dict[str, object] = {"__name__": "__propagation__"}
+    source = propagation_source()
+    saved = (
+        urllib.request.urlopen,
+        real_time.monotonic,
+        real_time.sleep,
+        os.environ.get("PACKAGE"),
+        os.environ.get("VERSION"),
+    )
+    urllib.request.urlopen = fake_urlopen
+    real_time.monotonic = fake_monotonic
+    real_time.sleep = fake_sleep
+    os.environ["PACKAGE"], os.environ["VERSION"] = package, version
+    try:
+        code = 0
+        try:
+            exec(compile(source, "<propagation>", "exec"), namespace)  # noqa: S102
+        except SystemExit as exit_called:
+            code = exit_called.code if isinstance(exit_called.code, int) else 1
+    finally:
+        urllib.request.urlopen, real_time.monotonic, real_time.sleep = saved[:3]
+        for name, previous in (("PACKAGE", saved[3]), ("VERSION", saved[4])):
+            if previous is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = previous
+    return code, requested
+
+
+def _listing(*filenames: str, version: str = "0.20.0") -> bytes:
+    files = [
+        {"filename": name, "url": f"https://files.pythonhosted.org/x/{name}#sha256=deadbeef"}
+        for name in filenames
+    ]
+    return json.dumps({"versions": [version], "files": files}).encode("utf-8")
+
+
+_WHEEL = "maf_sandbox-0.20.0-py3-none-any.whl"
+_SDIST = "maf_sandbox-0.20.0.tar.gz"
+
+
+class TestThePropagationPoll:
+    """What has to hold before verify is released to resolve the version just published.
+
+    Driven through the step's own source with scripted responses, because every failure here is
+    one that only appears against a real index mid-propagation — the state that is hardest to
+    reproduce at the moment it matters and impossible to reproduce afterwards.
+    """
+
+    def test_a_complete_listing_releases_verify(self):
+        code, _ = run_propagation(lambda url: _listing(_WHEEL, _SDIST))
+        assert code == 0
+
+    def test_the_cache_buster_reaches_the_server_on_an_artifact_url(self):
+        """An artifact URL ends in `#sha256=…`, and a query after it is inside the fragment.
+
+        The client strips the fragment before the request, so the server would see the same
+        URL every poll and answer from this edge's warm cache — the one thing the busting is
+        there to prevent, silently not happening.
+        """
+        _, requested = run_propagation(lambda url: _listing(_WHEEL, _SDIST))
+        artifact = [url for url in requested if ".whl" in url]
+        assert artifact, requested
+        split = urllib.parse.urlsplit(artifact[0])
+        assert "_cb=" in split.query, artifact[0]
+        assert split.fragment.startswith("sha256="), artifact[0]
+        assert "_cb=" not in split.fragment, artifact[0]
+
+    @pytest.mark.parametrize(("present", "missing"), [((_WHEEL,), "sdist"), ((_SDIST,), "wheel")])
+    def test_one_artifact_kind_alone_does_not_pass(self, present, missing):
+        """They upload as one publish and appear independently.
+
+        A resolver that finds only the sdist builds from source where it should have taken the
+        wheel, so counting a non-empty file list passes on whichever landed first.
+        """
+        assert missing in {"wheel", "sdist"}
+        code, _ = run_propagation(lambda url: _listing(*present))
+        assert code == 1
+
+    def test_unparseable_json_resets_the_window_rather_than_ending_the_job(self):
+        """A 200 carrying truncated JSON is an edge mid-write — the state this poll waits out.
+
+        Raising `JSONDecodeError` out of the step would end the release on the symptom it is
+        supposed to tolerate, and the run would report a propagation failure that never had a
+        chance to resolve.
+        """
+        seen = {"n": 0}
+
+        def responses(url):
+            if url.startswith("https://pypi.org/simple/"):
+                seen["n"] += 1
+                if seen["n"] == 1:
+                    return b'{"versions": ["0.20.'  # truncated mid-write
+                return _listing(_WHEEL, _SDIST)
+            return b""
+
+        code, _ = run_propagation(responses)
+        assert code == 0
+        assert seen["n"] > 1, "the poll gave up on the first bad body instead of retrying"
+
+    def test_an_unreachable_index_is_recoverable_too(self):
+        seen = {"n": 0}
+
+        def responses(url):
+            if url.startswith("https://pypi.org/simple/"):
+                seen["n"] += 1
+                if seen["n"] == 1:
+                    return urllib.error.URLError("connection reset")
+                return _listing(_WHEEL, _SDIST)
+            return b""
+
+        code, _ = run_propagation(responses)
+        assert code == 0
+
+    def test_a_flicker_restarts_the_settle_window(self):
+        """A single good poll is not enough: an edge mid-purge answers once and then does not.
+
+        Releasing verify on the first success is what the settle window exists to refuse, so a
+        listing that regresses has to push the deadline out rather than count toward it.
+        """
+        seen = {"n": 0}
+
+        def responses(url):
+            if url.startswith("https://pypi.org/simple/"):
+                seen["n"] += 1
+                return _listing(_WHEEL, _SDIST) if seen["n"] != 2 else _listing(_WHEEL)
+            return b""
+
+        code, _ = run_propagation(responses)
+        assert code == 0
+        # Settling is 60s at 15s a tick, so four clean polls in a row. The regression at poll 2
+        # means it cannot have finished on the four that started before it.
+        assert seen["n"] >= 6, seen["n"]
+
+    def test_a_version_that_never_lists_fails_the_deadline(self):
+        code, _ = run_propagation(lambda url: json.dumps({"versions": [], "files": []}).encode())
+        assert code == 1
+
+    def test_an_artifact_that_never_serves_fails_the_deadline(self):
+        def responses(url):
+            if url.startswith("https://pypi.org/simple/"):
+                return _listing(_WHEEL, _SDIST)
+            return _Response(404, b"")
+
+        code, _ = run_propagation(responses)
+        assert code == 1

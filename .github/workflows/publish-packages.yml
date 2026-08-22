@@ -574,11 +574,11 @@ jobs:
   # but *installable*, before the verify call — so verify-live resolves the version that was
   # actually just published rather than the one before it (#563).
   #
-  # Three things make this stronger than a bare listing check, and each closes a way the old
-  # check passed while a verify runner still resolved the previous version:
+  # Three things it requires, each closing a way a listing check passes while a verify runner
+  # still resolves the previous version:
   #   - it fetches the version's wheel AND sdist, not just reads the version list, so the window
   #     where the listing has updated but the artifact is not yet served at this edge does not
-  #     pass;
+  #     pass, and a resolver cannot find only the sdist and build from source;
   #   - every request is cache-busted (a unique query plus no-cache), so a pass reflects fresh
   #     origin state rather than this edge's own warm 200;
   #   - it requires the version to stay installable *continuously for a settle window* before it
@@ -608,7 +608,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
-          import json, os, sys, time, urllib.error, urllib.request
+          import json, os, sys, time, urllib.error, urllib.parse, urllib.request
 
           PACKAGE = os.environ["PACKAGE"]
           VERSION = os.environ["VERSION"]
@@ -619,11 +619,21 @@ jobs:
           SETTLE = 60                         # must stay installable continuously this long
           INTERVAL = 15
 
+          def cache_busted(url):
+              # The query goes *before* the fragment. A Simple-API artifact URL ends in
+              # `#sha256=…`, so appending the query to the whole string buries it inside the
+              # fragment — which the client strips before the request, leaving the server the
+              # same URL every time and the check reading this edge's warm 200 after all.
+              split = urllib.parse.urlsplit(url)
+              query = f"{split.query}&" if split.query else ""
+              return urllib.parse.urlunsplit(
+                  split._replace(query=f"{query}_cb={int(time.time() * 1000)}")
+              )
+
           def fresh_get(url, *, accept=None, first_byte_only=False):
               # Cache-busting: a unique query and no-cache headers, so a pass reflects fresh
               # origin state rather than this edge's own warm 200.
-              sep = "&" if "?" in url else "?"
-              busted = f"{url}{sep}_cb={int(time.time() * 1000)}"
+              busted = cache_busted(url)
               headers = {"Cache-Control": "no-cache", "Pragma": "no-cache"}
               if accept:
                   headers["Accept"] = accept
@@ -638,22 +648,32 @@ jobs:
               # installs and the sdist beside it, both uploaded in the same publish.
               try:
                   _, body = fresh_get(SIMPLE, accept="application/vnd.pypi.simple.v1+json")
+                  data = json.loads(body)
               except (urllib.error.URLError, TimeoutError, OSError) as error:
                   return False, f"index unreachable: {error}"
-              data = json.loads(body)
+              except json.JSONDecodeError as error:
+                  # A 200 carrying truncated or malformed JSON is an edge mid-write, which is
+                  # the condition this poll exists for. Raising here would end the job on the
+                  # symptom it is meant to wait out; resetting the window is the answer.
+                  return False, f"index returned unparseable JSON: {error}"
               if VERSION not in data.get("versions", []):
                   return False, "version not listed"
               wheel_prefix = f"{MODULE}-{VERSION}-"
               sdist_name = f"{MODULE}-{VERSION}.tar.gz"
+              names = [f.get("filename", "") for f in data.get("files", [])]
+              # Both kinds, not either: they upload as one publish but appear independently, and
+              # a resolver that finds only the sdist builds from source where it should have
+              # taken the wheel. Counting a non-empty list would pass on whichever landed first.
+              wheels = [n for n in names if n.startswith(wheel_prefix) and n.endswith(".whl")]
+              if not wheels:
+                  return False, "no wheel for this version yet"
+              if sdist_name not in names:
+                  return False, f"{sdist_name} not listed yet"
               want = [
                   f
                   for f in data.get("files", [])
-                  if (f.get("filename", "").startswith(wheel_prefix)
-                      and f.get("filename", "").endswith(".whl"))
-                  or f.get("filename", "") == sdist_name
+                  if f.get("filename", "") in {*wheels, sdist_name}
               ]
-              if not want:
-                  return False, "no artifact for this version yet"
               for f in want:
                   try:
                       code, _ = fresh_get(f["url"], first_byte_only=True)
