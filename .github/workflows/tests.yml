@@ -142,7 +142,9 @@ jobs:
 
       - name: Tests
         if: needs.changes.outputs.code == 'true'
-        run: uv run pytest -q
+        # One worker per runner CPU: 74s to 37s here, and eight measured no better than four.
+        # `poe test` stays serial, so an order-dependent test reds here rather than locally.
+        run: uv run pytest -q -n auto
 
       - name: Lint
         if: needs.changes.outputs.code == 'true'
@@ -247,7 +249,7 @@ jobs:
           # Both live suites in one invocation: the backend's, and the CodeAct kind's on top of
           # it (#397). `-ra` because each skips itself when its image variable is empty, which
           # the env block above has already made impossible — a skip here is a bug, and without
-          # the summary it reads exactly like a pass.
+          # the summary it reads exactly like a pass. Serial: one shared Docker daemon.
           uv run pytest -q -ra \
             packages/maf-sandbox-docker/tests/test_docker_e2e.py \
             packages/maf-sandbox-codeact/tests/test_codeact_e2e.py
