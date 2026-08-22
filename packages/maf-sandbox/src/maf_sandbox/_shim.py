@@ -29,7 +29,8 @@ from ._host_tools_over_exec import SHIM_MODULE
 #: guest gives up on a dispatch that then goes on to act. The host's deadline is what actually
 #: ends a run; this is only the guest's patience, and :func:`host_tool_shim` takes it as an
 #: argument for a caller whose runs are longer than this. These are the canonical values the
-#: guest source carries as literals; ``test_shim.py`` pins that file to them so the two cannot
+#: guest source carries as literals (``_TIMEOUT`` as its overridable default); a test pins that
+#: file to them, and its ``_CALLS`` to :data:`~maf_sandbox.CALLS_DIRECTORY`, so the two cannot
 #: drift.
 _GUEST_CALL_TIMEOUT = 300.0
 _GUEST_POLL_SECONDS = 0.05
@@ -97,11 +98,13 @@ def host_tool_shim(
         )
     # The source ships a default `_TIMEOUT`; this override is a later module-level binding, and
     # `call` reads `_TIMEOUT` at call time, so the last assignment wins without the source
-    # needing a placeholder to substitute. The wrappers follow, as they always have.
+    # needing a placeholder to substitute. Rendered with `str` (not `repr`), matching the
+    # `str.format` this replaced: on a stray non-float that still passes the check above — a
+    # `Fraction`, a numpy scalar — `repr` would emit a name the guest cannot resolve
+    # (`Fraction(1, 2)`, `np.float64(300.0)`) where `str` emits a valid literal (`1/2`, `300.0`).
+    # The wrappers follow, as they always have.
     return (
-        _guest_source()
-        + f"\n_TIMEOUT = {call_timeout!r}\n"
-        + (f"\n{wrappers}\n" if wrappers else "")
+        _guest_source() + f"\n_TIMEOUT = {call_timeout}\n" + (f"\n{wrappers}\n" if wrappers else "")
     )
 
 

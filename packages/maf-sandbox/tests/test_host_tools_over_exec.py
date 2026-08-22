@@ -1395,8 +1395,13 @@ class TestTheGuestsPatience:
             host_tool_shim(call_timeout=patience)
 
     def test_the_generated_shim_imports_at_every_allowed_patience(self, tmp_path: Path):
-        """The check above is only worth having if what it admits actually loads."""
-        for index, patience in enumerate((0.001, 1.0, 86_400.0)):
+        """The check above is only worth having if what it admits actually loads.
+
+        The int (``120``) is the real caller's type — the codeact kind passes
+        ``exec_timeout_seconds``, an ``int`` — and it must render as a plain literal the guest
+        can import, which is why the override is rendered with ``str`` rather than ``repr``.
+        """
+        for index, patience in enumerate((0.001, 1.0, 86_400.0, 120)):
             module_path = tmp_path / f"patience_{index}.py"
             module_path.write_text(host_tool_shim(call_timeout=patience), encoding="utf-8")
             spec = importlib.util.spec_from_file_location(f"patience_{index}", module_path)
@@ -1404,6 +1409,24 @@ class TestTheGuestsPatience:
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
             assert module._TIMEOUT == patience
+
+
+class TestTheGuestSourceMatchesTheHost:
+    """The guest file carries `_CALLS`/`_TIMEOUT`/`_POLL` as literals so it is valid Python on its
+    own and can be imported and checked here. These pin those literals to the host's own
+    constants, so a change to one side that forgets the other fails now rather than at a run where
+    the guest writes requests where the supervisor is not looking.
+    """
+
+    def test_the_guest_literals_match_the_host_constants(self):
+        import maf_sandbox._guest.maf_host_tools as guest_shim
+        from maf_sandbox._shim import _GUEST_CALL_TIMEOUT, _GUEST_POLL_SECONDS
+
+        # The guest joins the name onto its own directory; it is the trailing name that has to
+        # agree with the subdirectory the supervisor builds and polls.
+        assert os.path.basename(guest_shim._CALLS) == CALLS_DIRECTORY
+        assert guest_shim._POLL == _GUEST_POLL_SECONDS
+        assert guest_shim._TIMEOUT == _GUEST_CALL_TIMEOUT
 
 
 class TestTheGeneratedShim:
