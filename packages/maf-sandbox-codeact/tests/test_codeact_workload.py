@@ -601,7 +601,13 @@ class TestCodeactSandboxSpec:
 
     def test_the_identities_a_registry_declares_reach_the_spec(self):
         """Which is what the router's `denied_identities` is matched against at attach."""
-        spec = codeact_sandbox_spec(host_tools=_registry(_exchange_rate, _the_callers_calendar))
+        spec = codeact_sandbox_spec(
+            host_tools=_registry(
+                _exchange_rate,
+                _the_callers_calendar,
+                allowed_identities=frozenset({Identity.APP, Identity.USER}),
+            )
+        )
         assert spec.identities == frozenset({Identity.APP, Identity.USER})
 
     def test_reading_a_registry_seals_it(self):
@@ -884,7 +890,12 @@ class TestWhatARegistryDoesBeyondTheSpec:
     def test_a_user_identity_tool_gates_every_call_on_approval(self):
         """A dispatch may exercise the caller's own delegated authority, and which call does
         is not knowable before the program runs — so one such tool raises the whole surface."""
-        tool = _dispatching_tool(_registry(_the_callers_calendar))
+        tool = _dispatching_tool(
+            _registry(
+                _the_callers_calendar,
+                allowed_identities=frozenset({Identity.APP, Identity.USER}),
+            )
+        )
         assert tool.approval_mode == "always_require"
 
     def test_the_applications_own_authority_does_not_gate_it(self):
