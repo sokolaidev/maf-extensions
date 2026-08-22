@@ -10,6 +10,8 @@ members = ["packages/*"]
 [dependency-groups]
 dev = [
     "pytest>=9.0.3,<10",
+    # Distributes the suite across processes; tests.yml runs it with `-n auto`.
+    "pytest-xdist>=3.8,<4",
     # Pinned bands, not floors: an unpinned range resolves to whatever is newest at install
     # time, and a new minor can drift findings across unrelated PRs. Same rationale and the
     # same bands as the application these packages were extracted from.
