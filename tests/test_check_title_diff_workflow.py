@@ -12,20 +12,23 @@ def test_pr_title_workflow_checks_out_the_full_history():
 
 
 def test_pr_title_workflow_runs_the_title_diff_checker_without_shell_interpolation():
-    assert 'python scripts/check_title_diff.py "$BASE_SHA" "$PR_TITLE" "$HEAD_REF"' in TEXT
+    assert 'python scripts/check_title_diff.py "$BASE_SHA" "$PR_TITLE"' in TEXT
     assert "BASE_SHA: ${{ github.event.pull_request.base.sha }}" in TEXT
     assert "PR_TITLE: ${{ github.event.pull_request.title }}" in TEXT
-    assert "HEAD_REF: ${{ github.head_ref }}" in TEXT
     assert 'run: python scripts/check_title_diff.py "${{' not in TEXT
 
 
-def test_pr_title_workflow_passes_the_head_ref_so_release_pull_requests_are_skipped():
-    """The script exempts release-please's branches, and only if it is told the branch.
+def test_pr_title_workflow_passes_every_fact_the_release_exemption_needs():
+    """The exemption fails closed on a missing fact, so a dropped argument stops the train.
 
-    Asserted as its own test rather than folded above, because the two failures differ: the
-    interpolation one is a shell-injection guard, and this one is the difference between the
-    release train moving and every Release PR reporting a failure nobody may fix — the title
-    is generated, so retitling to satisfy the check is not available.
+    `--head-repo` and `--author` are the two that make it identity rather than a branch name
+    anyone may choose, which is why they are asserted individually rather than as one string.
     """
-    assert '"$HEAD_REF"' in TEXT
-    assert "github.head_ref" in TEXT
+    assert '--head-ref "$HEAD_REF"' in TEXT
+    assert '--head-repo "$HEAD_REPO"' in TEXT
+    assert '--base-repo "$BASE_REPO"' in TEXT
+    assert '--author "$PR_AUTHOR"' in TEXT
+    assert "HEAD_REF: ${{ github.head_ref }}" in TEXT
+    assert "HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}" in TEXT
+    assert "BASE_REPO: ${{ github.repository }}" in TEXT
+    assert "PR_AUTHOR: ${{ github.event.pull_request.user.login }}" in TEXT

@@ -46,14 +46,25 @@ jobs:
           requireScope: false
 
       - name: Title matches changed behavior
-        # The head ref is passed so release-please's own Release PRs can be skipped: their
-        # title is generated to a fixed format and must not be edited, while their diff — a
-        # version bump in pyproject, uv.lock and the manifest — is executable to this check.
-        # Both values are assigned to environment variables rather than interpolated into the
-        # command; a title and a branch name are attacker-controlled text, and interpolating
-        # either here would make it shell source.
+        # The four pull request facts are passed so release-please's own Release PRs can be
+        # skipped: their title is generated to a fixed format and must not be edited, while
+        # their diff — a version bump in pyproject, uv.lock and the manifest — is executable
+        # to this check. The branch alone would not do: it is named by whoever pushes it, so
+        # a fork could claim the exemption with nothing about it visible in the diff. The
+        # repository is the fact a fork cannot forge and the author is what separates a
+        # Release PR from the range pull request the same bot opens.
+        #
+        # Every value is assigned to an environment variable rather than interpolated into the
+        # command. A title, a branch name and a login are attacker-controlled text, and
+        # interpolating any of them here would make it shell source.
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_TITLE: ${{ github.event.pull_request.title }}
           HEAD_REF: ${{ github.head_ref }}
-        run: python scripts/check_title_diff.py "$BASE_SHA" "$PR_TITLE" "$HEAD_REF"
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: |
+          python scripts/check_title_diff.py "$BASE_SHA" "$PR_TITLE" \
+            --head-ref "$HEAD_REF" --head-repo "$HEAD_REPO" \
+            --base-repo "$BASE_REPO" --author "$PR_AUTHOR"
