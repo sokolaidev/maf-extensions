@@ -1076,6 +1076,7 @@ _PROTOCOL_MODULES = frozenset(
         "_reclaim",
         "_router",
         "_shim",
+        "_shim_wire_contract",
         "conformance",
         "paths",
         "testing",
