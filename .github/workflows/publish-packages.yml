@@ -570,12 +570,28 @@ jobs:
           fi
 
   # Poll the installer-facing Simple API (what uv resolves through, not the metadata JSON
-  # endpoint, which is cached separately) until the just-published version lists, before the
-  # verify call — so verify-live resolves the version that was actually just published. A poll,
-  # not a fixed sleep: the propagation lag is not bounded, and a sleep is both slow when the
+  # endpoint, which is cached separately) until the just-published version is not merely listed
+  # but *installable*, before the verify call — so verify-live resolves the version that was
+  # actually just published rather than the one before it (#563).
+  #
+  # Three things it requires, each closing a way a listing check passes while a verify runner
+  # still resolves the previous version:
+  #   - it fetches the version's wheel AND sdist, not just reads the version list, so the window
+  #     where the listing has updated but the artifact is not yet served at this edge does not
+  #     pass, and a resolver cannot find only the sdist and build from source;
+  #   - every request is cache-busted (a unique query plus no-cache), so a pass reflects fresh
+  #     origin state rather than this edge's own warm 200;
+  #   - it requires the version to stay installable *continuously for a settle window* before it
+  #     releases downstream, so an edge mid-purge does not pass on a single flicker and the CDN
+  #     has time to converge.
+  #
+  # The residual is honest and is why #563 stays open: this runs on one runner and cannot see
+  # the edge a verify runner will hit, so it lowers the failure rate rather than removing it —
+  # the hard fix is a resolve-retry on each verify runner, deliberately out of scope here. Still
+  # a poll, not a fixed sleep: propagation lag is not bounded, and a sleep is both slow when the
   # index is quick and unreliable when it is not. Gated identically to `verify` and to
   # `train-status` so it is never skipped when either would run, which lets both simply `needs:`
-  # it — keep the three `if:` blocks the same text. (#271.)
+  # it — keep the three `if:` blocks the same text. (#271, #563.)
   wait-for-propagation:
     name: Wait for the index to show the new version
     needs: [build, dispatch]
@@ -585,24 +601,115 @@ jobs:
       && contains(fromJSON('["maf-sandbox", "maf-sandbox-acas", "maf-sandbox-bicep", "maf-sandbox-codeact", "maf-sandbox-docker"]'), needs.build.outputs.package)
     runs-on: ubuntu-latest
     steps:
-      - name: Poll PyPI until the just-published version is visible
+      - name: Poll PyPI until the just-published version is installable
         env:
           PACKAGE: ${{ needs.build.outputs.package }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           set -euo pipefail
-          url="https://pypi.org/simple/${PACKAGE}/"
-          deadline=$((SECONDS + 600))
-          while [ "$SECONDS" -lt "$deadline" ]; do
-            if python3 -c "import json,sys,urllib.request; r=urllib.request.Request('${url}',headers={'Accept':'application/vnd.pypi.simple.v1+json'}); d=json.loads(urllib.request.urlopen(r,timeout=15).read()); sys.exit(0 if '${VERSION}' in d['versions'] else 1)" 2>/dev/null; then
-              echo "${PACKAGE} ${VERSION} is visible on the Simple index"
-              exit 0
-            fi
-            echo "not visible yet; polling..."
-            sleep 15
-          done
-          echo "::error::${PACKAGE} ${VERSION} did not appear on the Simple index within ten minutes"
-          exit 1
+          python3 - <<'PY'
+          import json, os, sys, time, urllib.error, urllib.parse, urllib.request
+
+          PACKAGE = os.environ["PACKAGE"]
+          VERSION = os.environ["VERSION"]
+          MODULE = PACKAGE.replace("-", "_")
+          SIMPLE = f"https://pypi.org/simple/{PACKAGE}/"
+
+          DEADLINE = time.monotonic() + 900  # 15 min, the outer bound on one publish's propagation
+          SETTLE = 60                         # must stay installable continuously this long
+          INTERVAL = 15
+
+          def cache_busted(url):
+              # The query goes *before* the fragment. A Simple-API artifact URL ends in
+              # `#sha256=…`, so appending the query to the whole string buries it inside the
+              # fragment — which the client strips before the request, leaving the server the
+              # same URL every time and the check reading this edge's warm 200 after all.
+              split = urllib.parse.urlsplit(url)
+              query = f"{split.query}&" if split.query else ""
+              return urllib.parse.urlunsplit(
+                  split._replace(query=f"{query}_cb={int(time.time() * 1000)}")
+              )
+
+          def fresh_get(url, *, accept=None, first_byte_only=False):
+              # Cache-busting: a unique query and no-cache headers, so a pass reflects fresh
+              # origin state rather than this edge's own warm 200.
+              busted = cache_busted(url)
+              headers = {"Cache-Control": "no-cache", "Pragma": "no-cache"}
+              if accept:
+                  headers["Accept"] = accept
+              if first_byte_only:
+                  headers["Range"] = "bytes=0-0"
+              req = urllib.request.Request(busted, headers=headers)
+              with urllib.request.urlopen(req, timeout=20) as resp:
+                  return resp.status, resp.read()
+
+          def installable():
+              # Listed AND every artifact for the version fetchable — the wheel a resolver
+              # installs and the sdist beside it, both uploaded in the same publish.
+              try:
+                  _, body = fresh_get(SIMPLE, accept="application/vnd.pypi.simple.v1+json")
+                  data = json.loads(body)
+              except (urllib.error.URLError, TimeoutError, OSError) as error:
+                  return False, f"index unreachable: {error}"
+              except json.JSONDecodeError as error:
+                  # A 200 carrying truncated or malformed JSON is an edge mid-write, which is
+                  # the condition this poll exists for. Raising here would end the job on the
+                  # symptom it is meant to wait out; resetting the window is the answer.
+                  return False, f"index returned unparseable JSON: {error}"
+              if VERSION not in data.get("versions", []):
+                  return False, "version not listed"
+              wheel_prefix = f"{MODULE}-{VERSION}-"
+              sdist_name = f"{MODULE}-{VERSION}.tar.gz"
+              names = [f.get("filename", "") for f in data.get("files", [])]
+              # Both kinds, not either: they upload as one publish but appear independently, and
+              # a resolver that finds only the sdist builds from source where it should have
+              # taken the wheel. Counting a non-empty list would pass on whichever landed first.
+              wheels = [n for n in names if n.startswith(wheel_prefix) and n.endswith(".whl")]
+              if not wheels:
+                  return False, "no wheel for this version yet"
+              if sdist_name not in names:
+                  return False, f"{sdist_name} not listed yet"
+              want = [
+                  f
+                  for f in data.get("files", [])
+                  if f.get("filename", "") in {*wheels, sdist_name}
+              ]
+              for f in want:
+                  try:
+                      code, _ = fresh_get(f["url"], first_byte_only=True)
+                  except (urllib.error.URLError, TimeoutError, OSError) as error:
+                      return False, f"{f['filename']} not fetchable: {error}"
+                  if code not in (200, 206):
+                      return False, f"{f['filename']} returned {code}"
+              return True, ", ".join(sorted(f["filename"] for f in want))
+
+          stable_since = None
+          while time.monotonic() < DEADLINE:
+              ok, detail = installable()
+              now = time.monotonic()
+              if ok:
+                  if stable_since is None:
+                      stable_since = now
+                      print(f"{PACKAGE} {VERSION} installable ({detail}); confirming for {SETTLE}s")
+                  held = int(now - stable_since)
+                  if now - stable_since >= SETTLE:
+                      print(f"{PACKAGE} {VERSION} installable for {held}s straight; releasing verify")
+                      sys.exit(0)
+                  print(f"still installable ({held}s/{SETTLE}s)")
+              else:
+                  if stable_since is not None:
+                      print(f"regressed before settling ({detail}); restarting the window")
+                  else:
+                      print(f"not installable yet: {detail}")
+                  stable_since = None
+              time.sleep(INTERVAL)
+
+          print(
+              f"::error::{PACKAGE} {VERSION} was not continuously installable on PyPI within the deadline",
+              file=sys.stderr,
+          )
+          sys.exit(1)
+          PY
 
   # A live red during a drain is about the order of the train rather than the code, and this
   # says so in the run summary. It annotates and never gates: gating the dispatch on a coarser
