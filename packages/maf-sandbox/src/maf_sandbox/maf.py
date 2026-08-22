@@ -191,6 +191,7 @@ def sandbox_tool_declarations(
     source_integrity: str | None = "trusted",
     outbound_max_confidentiality: str | None = None,
     output_sink: OutputSink | None = None,
+    also_carries_out: bool = False,
 ) -> dict[str, Any]:
     """The information-flow declarations a sandbox workload's tool carries.
 
@@ -243,12 +244,19 @@ def sandbox_tool_declarations(
             vocabulary, or ``None`` (the default) to declare none.
         output_sink: Where this workload's artifacts land, if it lands any. Read together with
             what the spec says it lands, never for its presence alone.
+        also_carries_out: An outward flow the spec cannot show, asserted by a caller that can
+            see it — a wired host-tool registry with a tool that declares a sink, or an
+            unstamped one that might, is the case this exists for, since a registry is neither
+            ``egress_allow`` nor an ``output_sink``. Folded into the same "carries something
+            out" condition, so the caller computes only the fact it alone knows and this one
+            rule still decides whether the cap is written. The caller owns the claim; the
+            library cannot check it.
     """
     declarations: dict[str, Any] = {}
     if source_integrity is not None:
         declarations["source_integrity"] = source_integrity
     lands_artifacts = output_sink is not None and spec_lands_artifacts(spec)
-    carries_something_out = bool(spec.egress_allow) or lands_artifacts
+    carries_something_out = bool(spec.egress_allow) or lands_artifacts or also_carries_out
     if outbound_max_confidentiality is not None and carries_something_out:
         declarations["max_allowed_confidentiality"] = outbound_max_confidentiality
     return declarations
@@ -540,6 +548,7 @@ def sandboxed_tool(
     source_integrity: str | None = "trusted",
     outbound_max_confidentiality: str | None = None,
     output_sink: OutputSink | None = None,
+    also_carries_out: bool = False,
     on_reclaim_failure: Callable[[ReclaimFailure], Awaitable[None]] | None = None,
     reclaim_timeout: float = 30.0,
     logger: logging.Logger | None = None,
@@ -618,6 +627,10 @@ def sandboxed_tool(
         output_sink: Where this workload's landing artifacts go, threaded into the derivation
             above, carried on the session, and passed on to
             :func:`~maf_sandbox.collect_outputs` by the workload itself.
+        also_carries_out: Passed to :func:`sandbox_tool_declarations`; ignored when
+            ``declarations`` is given. For a workload carrying something out through a channel
+            the spec cannot show — a wired host-tool registry, say — so the confidentiality
+            cap is derived by the one rule rather than hand-built into ``declarations=``.
         on_reclaim_failure: Called with a :class:`~maf_sandbox.ReclaimFailure` when a call's
             own guest path could not be removed. Default ``None`` logs it and carries on; a
             host that needs the data provably gone disposes the sandbox from here, which is
@@ -685,6 +698,7 @@ def sandboxed_tool(
             source_integrity=source_integrity,
             outbound_max_confidentiality=outbound_max_confidentiality,
             output_sink=output_sink,
+            also_carries_out=also_carries_out,
         )
     )
 

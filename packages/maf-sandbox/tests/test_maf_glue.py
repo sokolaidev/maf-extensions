@@ -250,6 +250,14 @@ class TestSandboxToolDeclarations:
             _CALL_TIME_SPEC, outbound_max_confidentiality="private", output_sink=_SINK
         ) == {"source_integrity": "trusted", "max_allowed_confidentiality": "private"}
 
+    def test_also_carries_out_writes_the_cap_the_spec_cannot_show(self):
+        """A wired host-tool registry carries something out that neither egress nor a landing
+        sink reveals; the caller asserts it and the one derivation writes the cap — no
+        hand-built declarations dict, and the condition lives in one place."""
+        assert sandbox_tool_declarations(
+            _NO_EGRESS_SPEC, outbound_max_confidentiality="private", also_carries_out=True
+        ) == {"source_integrity": "trusted", "max_allowed_confidentiality": "private"}
+
 
 # ---------------------------------------------------------------------------
 # SandboxToolSession.key — the host keys the sandbox, never the model
