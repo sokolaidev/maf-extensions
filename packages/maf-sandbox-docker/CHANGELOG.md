@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.7.0...maf-sandbox-docker-v0.7.1) (2026-08-22)
+
+
+### Documentation
+
+* say what the 0.19 egress change breaks, and what to do about it ([#543](https://github.com/sokolaidev/maf-extensions/issues/543)) ([4b736de](https://github.com/sokolaidev/maf-extensions/commit/4b736de3368feb7fca0ffe36f2b607214d376d44))
+
 ## [0.7.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-docker-v0.6.0...maf-sandbox-docker-v0.7.0) (2026-08-21)
 
 
