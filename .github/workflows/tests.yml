@@ -135,6 +135,12 @@ jobs:
           uv run python scripts/check_md_code_blocks.py \
             README.md 'packages/*/README.md' 'samples/**/*.md' RELEASING.md
 
+      - name: Documentation references resolve
+        # Gating rather than report-only, unlike the markdown block linter above: this reads
+        # the working tree and nothing else, so it cannot be flaky, and the references it
+        # guards ship inside the wheel (#556).
+        run: uv run python scripts/check_doc_paths.py
+
       - name: Build + metadata check
         # Enumerated: the directory basename is the distribution name — an invariant
         # test_release_config.py pins — so a new package builds on the commit that adds it.

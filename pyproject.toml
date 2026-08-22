@@ -144,6 +144,10 @@ env.PYTHONPATH = "scripts"
 help = "Lint the python blocks in the markdown against the installed packages (report-only in CI)"
 cmd = "python scripts/check_md_code_blocks.py README.md 'packages/*/README.md' 'samples/**/*.md' RELEASING.md"
 
+[tool.poe.tasks.doc-paths]
+help = "Refuse a documentation link or path that no longer resolves"
+cmd = "python scripts/check_doc_paths.py"
+
 [tool.poe.tasks.gate]
-help = "The full pre-PR gate: tests, lint, format, both pyright passes"
-sequence = ["test", "lint", "format", "types-packages", "types"]
+help = "The full pre-PR gate: tests, lint, format, both pyright passes, doc references"
+sequence = ["test", "lint", "format", "types-packages", "types", "doc-paths"]

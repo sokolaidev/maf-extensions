@@ -1,4 +1,8 @@
-"""Pin the poe gate's composition: the tasks exist, and `gate` runs all five checks."""
+"""Pin the poe gate's composition: the tasks exist, and `gate` runs every one of them.
+
+No count is written down. `_GATE_MEMBERS` is the list, and a number repeated in prose here
+would be a second copy that no assertion checks.
+"""
 
 from __future__ import annotations
 
@@ -17,11 +21,11 @@ from gate_tasks import packages_with_pyright  # noqa: E402
 _PYPROJECT = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 _TASKS = _PYPROJECT["tool"]["poe"]["tasks"]
 
-_GATE_MEMBERS = ["test", "lint", "format", "types-packages", "types"]
+_GATE_MEMBERS = ["test", "lint", "format", "types-packages", "types", "doc-paths"]
 
 
 class TestTheGate:
-    def test_the_gate_contains_all_five_checks(self):
+    def test_the_gate_contains_every_check(self):
         assert _TASKS["gate"]["sequence"] == _GATE_MEMBERS, (
             f"poe gate runs {_TASKS['gate']['sequence']}; the pre-PR gate is {_GATE_MEMBERS}. "
             "A check dropped from the sequence is a gate that passes without it."
@@ -32,6 +36,17 @@ class TestTheGate:
         assert _TASKS["lint"] == "ruff check ."
         assert _TASKS["format"] == "ruff format --check ."
         assert _TASKS["types"] == "pyright"
+
+    def test_the_documentation_check_runs_the_script_it_names(self):
+        """Naming a member in the sequence does not make it exist.
+
+        `doc-paths` is a table rather than a string, so its wiring is a second value nothing
+        above reaches: delete the table or point `cmd` elsewhere and the sequence assertion
+        stays green while `uv run poe gate` checks no documentation at all.
+        """
+        assert _TASKS["doc-paths"]["cmd"] == "python scripts/check_doc_paths.py", _TASKS[
+            "doc-paths"
+        ]
 
     def test_the_enumerated_pass_is_wired_to_the_helper_it_is_pinned_against(self):
         """The task below pins what the helper *finds*; nothing pinned that poe calls it.
