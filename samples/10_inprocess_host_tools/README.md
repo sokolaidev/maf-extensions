@@ -29,6 +29,8 @@ Read [`host_tools.py`](host_tools.py) first. Four ordinary functions; three carr
 
 The library default is `require_declared=False`, and the sample turns it on rather than relying on it. With the gate off, an unstamped tool registers and fails safe: read as an `UNTRUSTED` source and an `APP` identity, with `has_undeclared` raised in the aggregate so the degrade is visible.
 
+A second gate sits beside it, and this one is secure by default: `allowed_identities` is `frozenset({Identity.APP})` unless a host says otherwise, so `publish_release_note` — which declares `Identity.USER` — is refused *at registration* against a default registry (`HostToolIdentityNotAllowed`), before any sandbox exists and with no router in scope. The sample shows that refusal, then builds the working registry with `allowed_identities=frozenset({Identity.APP, Identity.USER})` — opting in deliberately, in one place. Declaring the tool as `APP` to dodge the refusal would be the lie the identity leg exists to prevent; a tool declaring `identity=None` (no authority) is always registrable. This is the earlier, fail-closed layer beside the router's `denied_identities` (act 4), which stays the attach-time backstop.
+
 The one-time registration notice is printed rather than suppressed. It says out loud that dispatched calls bypass middleware, and a reader meeting this channel for the first time is who it is for.
 
 **2. What the surface means.** `registry.aggregate()` is not a summary of the three declarations — it is a different statement, about the one model-facing `execute_code` tool, derived per leg over the relevant subset:
@@ -67,6 +69,8 @@ Least privilege here comes from what a host **registers**, never from what it de
 ## `Identity.USER` is declarable and not servable
 
 `publish_release_note` declares `Identity.USER` and could never run. That is deliberate on both sides: declaring it must be possible so a registry can be written honestly and refused loudly, and serving it must not be until per-run token minting, an audience-within-egress check and an ephemeral exec env channel exist.
+
+"Refused loudly" now has three moments, earliest first: a default registry refuses it **at registration** (`allowed_identities` is APP-only), a router with `denied_identities={Identity.USER}` refuses it **at attach** (act 4), and a dispatch would be refused **at call** with those prerequisites named. A host that means to declare user-authority tools opts the registry into `Identity.USER`; the router still has the final say.
 
 Declaring it as `APP` to make the refusal go away is exactly the lie the leg exists to prevent — and `APP` is not the safe option either. It is the application's full authority, every grant the deployed process holds.
 

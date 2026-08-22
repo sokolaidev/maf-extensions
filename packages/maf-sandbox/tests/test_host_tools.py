@@ -318,7 +318,7 @@ class TestAggregate:
         assert registry.aggregate().outbound_caps == frozenset({"internal", "secret"})
 
     def test_a_user_identity_tool_raises_the_surface_to_approval(self):
-        registry = HostToolRegistry()
+        registry = HostToolRegistry(allowed_identities=frozenset({Identity.APP, Identity.USER}))
         registry.register(
             sandbox_tool(source=None, sink=None, identity=Identity.USER)(lambda: None),
             name="as_user",
@@ -332,9 +332,9 @@ class TestAggregate:
         registry.register(_stamped_pure())
         assert registry.aggregate().identities == frozenset()
 
-    def test_narrowing_to_app_only_refuses_a_user_tool(self):
-        """A host that narrows the set forbids USER authority at registration."""
-        registry = HostToolRegistry(allowed_identities=frozenset({Identity.APP}))
+    def test_a_user_tool_is_refused_by_the_default_registry(self):
+        """Secure by default: USER authority is not registrable without an opt-in."""
+        registry = HostToolRegistry()
         with pytest.raises(HostToolIdentityNotAllowed, match="user"):
             registry.register(
                 sandbox_tool(source=None, sink=None, identity=Identity.USER)(lambda: None),
@@ -361,8 +361,8 @@ class TestAggregate:
         with pytest.raises(HostToolIdentityNotAllowed, match="unstamped, read as 'app'"):
             registry.register(_pure)
 
-    def test_allowed_identities_defaults_to_app_and_user(self):
-        assert HostToolRegistry().allowed_identities == frozenset({Identity.APP, Identity.USER})
+    def test_allowed_identities_defaults_to_app_only(self):
+        assert HostToolRegistry().allowed_identities == frozenset({Identity.APP})
 
     def test_allowed_identities_rejects_non_identity_members(self):
         with pytest.raises(TypeError, match="Identity"):
@@ -808,7 +808,7 @@ class TestDispatch:
         def as_user() -> str:
             return "never"
 
-        registry = HostToolRegistry()
+        registry = HostToolRegistry(allowed_identities=frozenset({Identity.APP, Identity.USER}))
         registry.register(as_user)
         result = _dispatch(HostToolRun(registry), "as_user")
         assert not result.ok
