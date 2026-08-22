@@ -4,6 +4,12 @@ The check compares changed Python files after removing module, class and functio
 Comments and formatting therefore do not count as behavior, while executable statements, literals,
 annotations and defaults do. Non-documentation paths are treated as executable because this check
 cannot infer behavior from arbitrary formats such as TOML or workflow YAML.
+
+That last rule is why release-please's own pull requests are exempt. A Release PR is a version
+bump and a regenerated changelog — `pyproject.toml`, `uv.lock` and the manifest — which this
+check cannot read as anything but executable, against a `chore(main): release …` title nobody
+chose and nobody may edit. The exemption is the branch namespace rather than the title, so it
+covers exactly the pull requests a machine opens and none a person writes.
 """
 
 from __future__ import annotations
@@ -21,6 +27,11 @@ _DOCUMENTATION_TYPES = frozenset({"docs", "chore", "refactor", "test", "build", 
 _DOCUMENTATION_SUFFIXES = frozenset({".md", ".markdown", ".rst", ".adoc"})
 _DOCUMENTATION_NAMES = frozenset({"license", "copying", "notice"})
 _TEST_DIR_NAMES = frozenset({"test", "tests"})
+
+#: The branch namespace release-please opens its Release PRs on. Deliberately not the branch the
+#: *range* pull request uses — `chore/maf-sandbox-range-…` moves dependency bounds, which is a
+#: behavior change RELEASING.md requires be titled `fix:`, and this check is what holds it there.
+_RELEASE_BRANCH_PREFIX = "release-please--"
 
 
 class _RemoveDocstrings(ast.NodeTransformer):
@@ -221,12 +232,28 @@ def _changed_python(
     return result
 
 
+def is_generated_release(head_ref: str) -> bool:
+    """Whether ``head_ref`` is a branch release-please opens a Release PR on.
+
+    There is no author to hold to the title on one: release-please writes it, and editing it
+    desynchronises the changelog it generates from the version it stamps.
+    """
+    return head_ref.startswith(_RELEASE_BRANCH_PREFIX)
+
+
 def main(argv: list[str]) -> int:
-    """Check the current checkout against ``base`` and ``title``."""
-    if len(argv) != 3:
-        print(f"usage: {argv[0]} <base-revision> <pull-request-title>", file=sys.stderr)
+    """Check the current checkout against ``base`` and ``title``.
+
+    ``head-ref`` is optional, and its absence checks rather than skips: a workflow that stops
+    passing it gets this check back, which is the safe direction for a guard to fail in.
+    """
+    if not 3 <= len(argv) <= 4:
+        print(f"usage: {argv[0]} <base-revision> <pull-request-title> [head-ref]", file=sys.stderr)
         return 2
-    base, title = argv[1:]
+    base, title = argv[1:3]
+    if is_generated_release(argv[3] if len(argv) == 4 else ""):
+        print(f"{argv[3]}: release-please writes this title; nothing here is an author's choice")
+        return 0
     status = _git("diff", "--find-renames", "--name-status", f"{base}...HEAD")
     path_pairs = _changed_path_pairs(status)
     copied_sources = {

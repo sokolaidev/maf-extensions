@@ -209,3 +209,75 @@ class TestAssess:
             {"packages/example/src/example.py": (None, source)},
             [("packages/example/README.md", "packages/example/src/example.py")],
         )
+
+
+class TestTheGeneratedReleasePullRequest:
+    """release-please's own Release PRs are exempt, and nothing adjacent to them is.
+
+    Their diff is a version bump — `pyproject.toml`, `uv.lock`, the manifest — which this
+    check reads as executable because it cannot read TOML, against a `chore(main): release …`
+    title release-please writes and RELEASING.md forbids editing. Every one of them failed.
+    """
+
+    _RELEASE_PATHS = [
+        ".release-please-manifest.json",
+        "packages/maf-sandbox-bicep/CHANGELOG.md",
+        "packages/maf-sandbox-bicep/pyproject.toml",
+        "uv.lock",
+    ]
+    #: The same four files as `git diff --name-status` reports them.
+    _STATUS = "\n".join(f"M\t{path}" for path in _RELEASE_PATHS)
+
+    def test_the_diff_alone_is_still_refused(self):
+        """The exemption is the branch, not the shape of the diff — so this still fails.
+
+        Pinned first because it is what makes the rest of this class mean anything: a person
+        writing that title on that diff by hand is exactly what the check is for.
+        """
+        assert check.assess("chore(main): release maf-sandbox-bicep 0.9.1", self._RELEASE_PATHS, {})
+
+    @pytest.mark.parametrize(
+        "head_ref",
+        [
+            "release-please--branches--main--components--maf-sandbox",
+            "release-please--branches--main--components--maf-sandbox-bicep",
+        ],
+    )
+    def test_a_release_branch_is_exempt(self, head_ref: str, monkeypatch):
+        """Driven through `main` over the diff a Release PR actually carries.
+
+        Asserting only on `is_generated_release` would pass with the guard unwired, which is
+        the shape of this defect: the check itself was right and nothing called it.
+        """
+        monkeypatch.setattr(check, "_git", lambda *_args: self._STATUS)
+        title = "chore(main): release maf-sandbox 0.20.0"
+        assert check.is_generated_release(head_ref)
+        assert check.main(["check", "BASE", title, head_ref]) == 0
+
+    def test_the_range_pull_request_is_not_exempt(self):
+        """`chore/maf-sandbox-range-…` moves dependency bounds, which is a behavior change.
+
+        RELEASING.md requires it be titled `fix:` — "the type is load-bearing", because a
+        ceiling widened under `chore:` releases nothing and the release sequence stalls with
+        the publication window still open. This check is what holds it there, so the exemption
+        must not reach it.
+        """
+        bounds = ["packages/maf-sandbox-bicep/pyproject.toml"]
+        assert not check.is_generated_release("chore/maf-sandbox-range-0.20.0")
+        assert check.assess("chore: widen the ceilings", bounds, {})
+        assert check.assess("fix: widen the ceilings", bounds, {}) == []
+
+    @pytest.mark.parametrize(
+        "head_ref", ["", "feat/something", "main", "my-release-please--branch"]
+    )
+    def test_an_ordinary_branch_is_not_exempt(self, head_ref: str):
+        assert not check.is_generated_release(head_ref)
+
+    def test_a_missing_head_ref_checks_rather_than_skips(self, monkeypatch):
+        """A workflow that stops passing the branch gets the check back, not a free pass.
+
+        The same diff and the same title as the exempt case above, so the only difference is
+        the argument — which is what makes the pair mean the exemption rather than the fixture.
+        """
+        monkeypatch.setattr(check, "_git", lambda *_args: self._STATUS)
+        assert check.main(["check", "BASE", "chore(main): release maf-sandbox 0.20.0"]) == 1

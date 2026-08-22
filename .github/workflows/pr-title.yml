@@ -46,7 +46,14 @@ jobs:
           requireScope: false
 
       - name: Title matches changed behavior
+        # The head ref is passed so release-please's own Release PRs can be skipped: their
+        # title is generated to a fixed format and must not be edited, while their diff — a
+        # version bump in pyproject, uv.lock and the manifest — is executable to this check.
+        # Both values are assigned to environment variables rather than interpolated into the
+        # command; a title and a branch name are attacker-controlled text, and interpolating
+        # either here would make it shell source.
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_TITLE: ${{ github.event.pull_request.title }}
-        run: python scripts/check_title_diff.py "$BASE_SHA" "$PR_TITLE"
+          HEAD_REF: ${{ github.head_ref }}
+        run: python scripts/check_title_diff.py "$BASE_SHA" "$PR_TITLE" "$HEAD_REF"
