@@ -76,3 +76,64 @@ class TestTheGate:
             "maf-sandbox-docker",
             "maf-sandbox-wslc",
         ], found
+
+
+class TestTheMarkdownBlockLinter:
+    """The poe task and the CI step must lint the same files.
+
+    The glob list is written twice — once in `pyproject.toml`, once in `tests.yml` — and
+    nothing but this test stops the two drifting. A contributor's green local run is only
+    evidence about CI if both read the same set, and the failure is silent in the direction
+    that matters: CI quietly covering *less* than the task a contributor ran.
+    """
+
+    @staticmethod
+    def _globs(command: str) -> set[str]:
+        """The arguments after the script name, with shell quoting and continuations removed."""
+        _before, _, arguments = command.partition("check_md_code_blocks.py")
+        cleaned = arguments.replace("\\", " ").replace("\n", " ")
+        return {token.strip("'\"") for token in cleaned.split() if token.strip("'\"")}
+
+    def test_the_task_and_the_workflow_lint_the_same_globs(self):
+        workflow = (REPO_ROOT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
+        step = workflow[workflow.index("check_md_code_blocks.py") :]
+        # The invocation ends at the blank line before the next step.
+        invocation = step[: step.index("\n\n")]
+        assert self._globs(_TASKS["md-blocks"]["cmd"]) == self._globs(invocation), (
+            "poe md-blocks and the tests.yml step lint different files; a local run then says "
+            "nothing about what CI checked."
+        )
+
+    def test_the_decided_documentation_is_covered(self):
+        """Every decided document is linted, and every research proposal is not.
+
+        `docs/sandbox/research/` stays out on purpose: a proposal describes an API that does
+        not exist yet, so linting its snippets against the installed packages would report a
+        design document for being a design document.
+
+        Resolved to files rather than compared as glob strings, because the two are not the
+        same question. A glob list can name `docs/sandbox/*.md` and still miss a document one
+        directory further down, and the assertion would pass on the spelling.
+        """
+        globs = self._globs(_TASKS["md-blocks"]["cmd"])
+        matched = {
+            path.relative_to(REPO_ROOT).as_posix()
+            for pattern in globs
+            for path in REPO_ROOT.glob(pattern)
+        }
+        research = {
+            path.relative_to(REPO_ROOT).as_posix()
+            for path in (REPO_ROOT / "docs" / "sandbox" / "research").glob("**/*.md")
+        }
+        decided = {
+            path.relative_to(REPO_ROOT).as_posix() for path in (REPO_ROOT / "docs").glob("**/*.md")
+        } - research
+        assert decided <= matched, (
+            f"documentation the linter never reads: {sorted(decided - matched)}. "
+            "A snippet nobody checks is a quickstart that drifted from the API it documents."
+        )
+        assert research.isdisjoint(matched), (
+            f"research proposals pulled into the linter: {sorted(research & matched)}. "
+            "Their snippets name APIs that do not exist yet, so the gate would red a design "
+            "document for being one."
+        )

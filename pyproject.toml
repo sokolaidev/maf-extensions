@@ -142,7 +142,7 @@ env.PYTHONPATH = "scripts"
 
 [tool.poe.tasks.md-blocks]
 help = "Lint the python blocks in the markdown against the installed packages (report-only in CI)"
-cmd = "python scripts/check_md_code_blocks.py README.md 'packages/*/README.md' 'samples/**/*.md' RELEASING.md"
+cmd = "python scripts/check_md_code_blocks.py README.md 'packages/*/README.md' 'samples/**/*.md' RELEASING.md 'docs/*.md' 'docs/sandbox/*.md' 'docs/sandbox/backends/*.md' 'docs/sandbox/kinds/*.md'"
 
 [tool.poe.tasks.doc-paths]
 help = "Refuse a documentation link or path that no longer resolves"

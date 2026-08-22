@@ -123,9 +123,12 @@ jobs:
         run: uv run pyright
 
       - name: Markdown code blocks (report-only)
-        # Lints the ```python blocks in README/packages/samples/RELEASING against the installed
-        # maf_sandbox* packages — an import the package no longer exports, an attribute a class
-        # no longer carries. Wiring-only snippets that import no maf_sandbox* module are skipped,
+        # Lints the ```python blocks in README/packages/samples/RELEASING and the decided half of
+        # docs/ against the installed maf_sandbox* packages — an import the package no longer
+        # exports, an attribute a class no longer carries. `docs/sandbox/research/` is deliberately
+        # out: a proposal describes an API that does not exist yet, so linting its snippets would
+        # report a design document for being one.
+        # Wiring-only snippets that import no maf_sandbox* module are skipped,
         # so undefined router/context and top-level await are tolerated. Report-only for now
         # (continue-on-error): flip the gate on once it has stayed green across a release or two
         # (#289). Each block is its own pyright run, so this costs one cold start per importing
@@ -133,7 +136,8 @@ jobs:
         continue-on-error: true
         run: |
           uv run python scripts/check_md_code_blocks.py \
-            README.md 'packages/*/README.md' 'samples/**/*.md' RELEASING.md
+            README.md 'packages/*/README.md' 'samples/**/*.md' RELEASING.md \
+            'docs/*.md' 'docs/sandbox/*.md' 'docs/sandbox/backends/*.md' 'docs/sandbox/kinds/*.md'
 
       - name: Documentation references resolve
         # Gating rather than report-only, unlike the markdown block linter above: this reads
