@@ -306,11 +306,13 @@ class HostToolRegistry:
             flag in the aggregate.
         allowed_identities: The authorities a registered tool may exercise, refused at
             registration otherwise (:class:`HostToolIdentityNotAllowed`).  Default
-            ``frozenset({Identity.APP, Identity.USER})`` — both authority-bearing identities;
-            a host that forbids model-orchestrated user authority narrows it to
-            ``frozenset({Identity.APP})``.  A tool declaring ``identity=None`` exercises no
-            authority and is always allowed.  The earlier, fail-closed layer beside the
-            router's ``denied_identities``, which stays the attach-time authority.
+            ``frozenset({Identity.APP})`` — secure by default: an
+            :data:`~maf_sandbox.Identity.USER` tool (or, with ``require_declared`` off, an
+            unstamped one, read as :data:`~maf_sandbox.Identity.APP`) is refused until a host
+            opts in with ``frozenset({Identity.APP, Identity.USER})``.  A tool declaring
+            ``identity=None`` exercises no authority and is always allowed.  The earlier,
+            fail-closed layer beside the router's ``denied_identities``, which stays the
+            attach-time authority.
         max_dispatches_per_run: How many dispatches one :class:`HostToolRun` may make,
             refusals included — a probe loop burning the cap on unknown names is the cap
             working.  Must be at least 1; a host that wants zero wants an empty registry.
@@ -331,7 +333,7 @@ class HostToolRegistry:
         self,
         *,
         require_declared: bool = False,
-        allowed_identities: frozenset[Identity] = frozenset({Identity.APP, Identity.USER}),
+        allowed_identities: frozenset[Identity] = frozenset({Identity.APP}),
         max_dispatches_per_run: int = DEFAULT_MAX_DISPATCHES_PER_RUN,
         response_limits: TransferLimits = DEFAULT_TRANSFER_LIMITS,
         dispatch_observer: (

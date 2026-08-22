@@ -29,6 +29,7 @@ from host_tools import (
 from maf_sandbox import (
     DEFAULT_CAPABILITIES,
     Capability,
+    HostToolIdentityNotAllowed,
     HostToolNotDeclared,
     HostToolRegistry,
     Identity,
@@ -45,19 +46,33 @@ KIND = "release-notes"
 
 
 def act_one_registration() -> HostToolRegistry:
-    """Register the surface. The registry is the one door, and the gate is on.
+    """Register the surface. The registry is the one door, and two gates guard it.
 
     `require_declared=True` is the host saying it will not dispatch what nobody classified.
-    It is worth turning on precisely because the library's default is off: a host that has
-    not thought about the question gets the degrading behaviour, and a host that has gets to
-    say so.
+    `allowed_identities` is the host saying which authorities it will run at all: the default
+    is `{Identity.APP}`, so a tool exercising the *user's* authority is refused at
+    registration until the host opts in. Both gates refuse at the configuration site, where
+    the fix is one line away, rather than later at dispatch.
     """
     print("== 1. Registration ==\n")
+
+    # The identity gate, before anything else is built. A default registry is APP-only, so the
+    # tool that acts as the user is refused at registration. Declaring it as APP to dodge this
+    # would be the lie the identity leg exists to prevent — so the host opts in below,
+    # deliberately and in one place, rather than weakening the declaration.
+    app_only = HostToolRegistry(require_declared=True)
+    try:
+        app_only.register(publish_release_note)
+    except HostToolIdentityNotAllowed as refusal:
+        print(f"  refused:    publish_release_note (registry is APP-only) — {refusal}\n")
 
     # The registration notice fires once per process and is informational — it says out loud
     # that dispatched calls bypass middleware. Shown rather than suppressed, because a reader
     # meeting this channel for the first time is exactly who it is written for.
-    registry = HostToolRegistry(require_declared=True)
+    registry = HostToolRegistry(
+        require_declared=True,
+        allowed_identities=frozenset({Identity.APP, Identity.USER}),
+    )
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always", MafSandboxHostToolsWarning)
         for tool in (semver_bump, fetch_changelog, publish_release_note):
@@ -67,7 +82,7 @@ def act_one_registration() -> HostToolRegistry:
 
     print(f"  registered: {', '.join(sorted(registry.names()))}")
 
-    # The gate, doing its job at the configuration site.
+    # The declaration gate, doing its job at the configuration site.
     try:
         registry.register(rerun_failed_jobs)
     except HostToolNotDeclared as refusal:
