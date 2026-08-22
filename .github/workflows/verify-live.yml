@@ -170,6 +170,18 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Wait for this runner's PyPI edge to serve the release
+        if: ${{ inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # This runner's edge, not wait-for-propagation's: that job confirmed the upload
+          # from a different one, and the index is eventually consistent between them, so
+          # the sample below would otherwise resolve the release before this one (#595).
+          python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+
       # Runs the sample as a consumer would, then asserts on the block it prints from what
       # bicep_validate returned. The sample authenticates with DefaultAzureCredential, which
       # the az login above satisfies — the AZURE_CLIENT_ID/TENANT/SUBSCRIPTION values are login
@@ -297,6 +309,18 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Wait for this runner's PyPI edge to serve the release
+        if: ${{ inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # This runner's edge, not wait-for-propagation's: that job confirmed the upload
+          # from a different one, and the index is eventually consistent between them, so
+          # the sample below would otherwise resolve the release before this one (#595).
+          python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+
       # Runs the sample as a consumer would, then asserts on the interpreter's own stdout,
       # which the sample prints from the tool result rather than from the reply. The sample
       # authenticates with DefaultAzureCredential, which the az login above satisfies — the
@@ -394,6 +418,18 @@ jobs:
       - name: Build the sandbox image
         run: docker build -t bicep-sandbox:local images/bicep-sandbox
 
+      - name: Wait for this runner's PyPI edge to serve the release
+        if: ${{ inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # This runner's edge, not wait-for-propagation's: that job confirmed the upload
+          # from a different one, and the index is eventually consistent between them, so
+          # the sample below would otherwise resolve the release before this one (#595).
+          python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+
       - name: Run sample 05 and assert the diagnostics came back
         env:
           BICEP_SANDBOX_IMAGE: bicep-sandbox:local
@@ -480,6 +516,18 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Wait for this runner's PyPI edge to serve the release
+        if: ${{ inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # This runner's edge, not wait-for-propagation's: that job confirmed the upload
+          # from a different one, and the index is eventually consistent between them, so
+          # the sample below would otherwise resolve the release before this one (#595).
+          python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
 
       # ubuntu-latest ships a running Docker daemon, so the sandbox is free and local. The
       # sample authenticates the model with DefaultAzureCredential, which the az login above
@@ -568,6 +616,18 @@ jobs:
       - name: Build the sandbox image
         run: docker build -t diagram-sandbox:local images/diagram-sandbox
 
+      - name: Wait for this runner's PyPI edge to serve the release
+        if: ${{ inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # This runner's edge, not wait-for-propagation's: that job confirmed the upload
+          # from a different one, and the index is eventually consistent between them, so
+          # the sample below would otherwise resolve the release before this one (#595).
+          python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+
       - name: Run sample 07 and assert a rendered PNG came back out
         env:
           DIAGRAM_SANDBOX_IMAGE: diagram-sandbox:local
@@ -651,6 +711,18 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Wait for this runner's PyPI edge to serve the release
+        if: ${{ inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # This runner's edge, not wait-for-propagation's: that job confirmed the upload
+          # from a different one, and the index is eventually consistent between them, so
+          # the sample below would otherwise resolve the release before this one (#595).
+          python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
 
       - name: Run sample 08 and assert a file went in and a file came out
         env:
@@ -752,6 +824,18 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Wait for this runner's PyPI edge to serve the release
+        if: ${{ inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # This runner's edge, not wait-for-propagation's: that job confirmed the upload
+          # from a different one, and the index is eventually consistent between them, so
+          # the sample below would otherwise resolve the release before this one (#595).
+          python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+
       # No container to build and no sandbox to configure — the backend runs the bicep binary on
       # this runner. The sample authenticates the model with DefaultAzureCredential, which the az
       # login above satisfies; the AZURE_CLIENT_ID/TENANT/SUBSCRIPTION values are login inputs
@@ -809,6 +893,18 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Wait for this runner's PyPI edge to serve the release
+        if: ${{ inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # This runner's edge, not wait-for-propagation's: that job confirmed the upload
+          # from a different one, and the index is eventually consistent between them, so
+          # the sample below would otherwise resolve the release before this one (#595).
+          python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
 
       # No configuration check step either: there is no variable to be missing. A sample that
       # cannot be half-configured cannot fail the way the others are guarded against.
@@ -920,6 +1016,18 @@ jobs:
             'from maf_sandbox_docker import proxy_build_context; print(proxy_build_context())')"
           docker build -t maf-egress-proxy:ci "$context"
 
+      - name: Wait for this runner's PyPI edge to serve the release
+        if: ${{ inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # This runner's edge, not wait-for-propagation's: that job confirmed the upload
+          # from a different one, and the index is eventually consistent between them, so
+          # the sample below would otherwise resolve the release before this one (#595).
+          python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+
       - name: Run sample 11 and assert the router chose, refused, confined and disposed
         env:
           BICEP_SANDBOX_IMAGE: bicep-sandbox:local
@@ -975,6 +1083,18 @@ jobs:
 
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Wait for this runner's PyPI edge to serve the release
+        if: ${{ inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # This runner's edge, not wait-for-propagation's: that job confirmed the upload
+          # from a different one, and the index is eventually consistent between them, so
+          # the sample below would otherwise resolve the release before this one (#595).
+          python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
 
       - name: Run sample 12 and assert every sandbox was reclaimed
         run: |
@@ -1064,6 +1184,18 @@ jobs:
       # handed a smaller problem — a run that goes green having tested less than it says.
       - name: Build the sandbox image
         run: docker build -t bicep-sandbox:local images/bicep-sandbox
+
+      - name: Wait for this runner's PyPI edge to serve the release
+        if: ${{ inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # This runner's edge, not wait-for-propagation's: that job confirmed the upload
+          # from a different one, and the index is eventually consistent between them, so
+          # the sample below would otherwise resolve the release before this one (#595).
+          python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
 
       - name: Run sample 13 and assert the file was repaired against one sandbox
         env:
@@ -1203,6 +1335,18 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
+      - name: Wait for this runner's PyPI edge to serve the release
+        if: ${{ inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # This runner's edge, not wait-for-propagation's: that job confirmed the upload
+          # from a different one, and the index is eventually consistent between them, so
+          # the sample below would otherwise resolve the release before this one (#595).
+          python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+
       - name: Run sample 14 and assert a file went in and a file came out
         env:
           ACAS_SANDBOX_ENDPOINT: ${{ vars.ACAS_SANDBOX_ENDPOINT }}
@@ -1314,6 +1458,18 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Wait for this runner's PyPI edge to serve the release
+        if: ${{ inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # This runner's edge, not wait-for-propagation's: that job confirmed the upload
+          # from a different one, and the index is eventually consistent between them, so
+          # the sample below would otherwise resolve the release before this one (#595).
+          python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
 
       - name: Run sample 15 and assert a program really called back out
         env:
