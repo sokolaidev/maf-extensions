@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -58,7 +58,9 @@ def _decoded_object(name: str, body: bytes) -> dict[str, Any]:
     assert isinstance(parsed, dict), (
         f"{name}: the payload is a JSON object, not {type(parsed).__name__}"
     )
-    return parsed
+    # `json.loads` is `Any` and `isinstance` narrows only to `dict[Unknown, Unknown]`; a JSON
+    # object always has string keys, so name the type rather than leave it partially unknown.
+    return cast("dict[str, Any]", parsed)
 
 
 def assert_request_conforms(name: str, body: bytes) -> None:
