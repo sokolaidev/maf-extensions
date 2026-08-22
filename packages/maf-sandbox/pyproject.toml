@@ -69,6 +69,12 @@ extend-select = ["I", "UP", "D100", "D101", "D103", "D104", "E501", "W505", "TD"
 # files, so this package carries its own copy. The length rules join the docstring pair
 # for the same reason: test fixtures are hand-shaped strings and prose, not API drift.
 "tests/**" = ["D101", "D103", "E501", "W505"]
+# `_guest/` is source maf-sandbox copies into a guest image, so it targets whatever old Python
+# the guest has and keeps its `%`-formatting and plain idioms rather than this package's py312
+# style — pyupgrade (UP) would rewrite it into syntax an older guest might not run. Everything
+# else stays on, so an undefined name or a dead import there is still caught, which is the whole
+# point of it being a file rather than a `str.format` template.
+"**/_guest/**" = ["UP"]
 
 [tool.ruff.lint.pycodestyle]
 max-doc-length = 100
@@ -81,6 +87,14 @@ max-doc-length = 100
 [tool.pyright]
 include = ["src"]
 typeCheckingMode = "strict"
+
+# `_guest/` is guest source, deliberately annotation-free so it runs on an old, typing-light
+# guest Python. Checked in basic mode — enough to catch an undefined name or a bad call, which
+# is the point of it being a real file — without strict's demand for the annotations it must not
+# carry.
+[[tool.pyright.executionEnvironments]]
+root = "src/maf_sandbox/_guest"
+typeCheckingMode = "basic"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
