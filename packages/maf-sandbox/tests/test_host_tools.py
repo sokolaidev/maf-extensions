@@ -138,6 +138,34 @@ class TestRegistryConstruction:
             HostToolRegistry(response_limits=SandboxLimits())  # type: ignore[arg-type]
 
 
+class TestTheRunIdentity:
+    """`HostToolRun.run_id` — a documented identity a host attributes a call by (#446)."""
+
+    def test_each_run_gets_a_distinct_identity_by_default(self):
+        first = HostToolRun(HostToolRegistry())
+        second = HostToolRun(HostToolRegistry())
+        assert first.run_id and second.run_id
+        assert first.run_id != second.run_id
+
+    def test_a_caller_supplied_identity_is_kept(self):
+        assert HostToolRun(HostToolRegistry(), run_id="turn-7").run_id == "turn-7"
+
+    def test_the_identity_is_stable_across_dispatches(self):
+        """A ledger keyed on it must see one run as one run, not a fresh id per call."""
+        registry = HostToolRegistry()
+        registry.register(_stamped_pure())
+        run = HostToolRun(registry)
+        before = run.run_id
+        assert _dispatch(run, "doubled", {"x": 1}).ok
+        assert run.run_id == before
+
+    @pytest.mark.parametrize("bad", ["", 0, object()])
+    def test_an_empty_or_non_string_identity_is_refused(self, bad: object):
+        """An identity that cannot tell two runs apart is rejected at construction."""
+        with pytest.raises(ValueError, match="run_id"):
+            HostToolRun(HostToolRegistry(), run_id=bad)  # type: ignore[arg-type]
+
+
 class TestRegistration:
     def test_starts_empty(self):
         """Layer 1: nothing is dispatchable until a developer explicitly registers it."""
@@ -1078,6 +1106,20 @@ class TestTheRegistryObservesEveryDispatch:
             ("exit", False, "doubled"),
         ]
         self._pairing(events)
+
+    def test_the_observer_can_attribute_a_call_by_run_id(self):
+        """#446's point: two programs' calls are told apart by the run's own ``run_id`` — a
+        documented, loggable identity — not by the object the observer happens to be handed."""
+        events: list[tuple[str, object, HostToolRun, object]] = []
+        registry = HostToolRegistry(dispatch_observer=self._recording(events))
+        registry.register(_stamped_pure())
+        run_a = HostToolRun(registry, run_id="prog-a")
+        run_b = HostToolRun(registry)  # a generated identity, distinct from prog-a
+        assert _dispatch(run_a, "doubled", {"x": 1}).ok
+        assert _dispatch(run_b, "doubled", {"x": 2}).ok
+        entered = [run.run_id for kind, _, run, _ in events if kind == "enter"]
+        assert entered == ["prog-a", run_b.run_id]
+        assert run_b.run_id != "prog-a"
 
     def test_a_refused_dispatch_is_observed_too(self):
         """A refusal is a call the host still ran, so it is observed: a cap refusal returns
