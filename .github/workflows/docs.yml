@@ -1,0 +1,80 @@
+name: Docs
+
+# The documentation checks, split out of `tests.yml` so a change to `docs/` pays for what it
+# can actually break rather than for the whole suite, both pyright passes, the wheel builds and
+# the Docker job (#560).
+#
+# This one *is* path-filtered, which `tests.yml` cannot be: its two job names are required
+# status checks, and a workflow that never triggers reports nothing — leaving a required check
+# pending for ever rather than passing. This workflow's context is not required, so filtering
+# it costs nothing and blocks nobody.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "**/*.md"
+      # The reference check resolves against the *whole tracked tree*, so anything that moves
+      # can kill a link or a prose path in a document nobody edited: `docs/maintainers.md`
+      # names `samples/01_acas_bicep/main.bicep`, and renaming that file breaks the reference
+      # without touching a `.md`. Every directory a reference can name is therefore watched.
+      # This is the price of the check being gating while this workflow is path-filtered — a
+      # trigger narrower than what the check reads is a gate with a hole in it.
+      - "docs/**"
+      - "packages/**"
+      - "samples/**"
+      - "scripts/**"
+      - "tests/**"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docs:
+    name: Documentation (references + code blocks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install uv
+        # Pinned to the commit v5 resolves to, as everywhere else here: a moving tag is a
+        # supply-chain hole, since whoever can move it can run code in this workflow.
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Sync workspace
+        # Both checks below need the packages importable: the block linter type-checks each
+        # snippet against them, and `check_doc_paths.py` runs from the same environment.
+        run: uv sync --locked
+
+      - name: Documentation references resolve
+        # Gating rather than report-only, unlike the block linter below: this reads the working
+        # tree and nothing else, so it cannot be flaky, and the references it guards ship inside
+        # the wheel (#556).
+        run: uv run python scripts/check_doc_paths.py
+
+      - name: Markdown code blocks (report-only)
+        # Lints the ```python blocks in README/packages/samples/RELEASING and the decided half of
+        # docs/ against the installed maf_sandbox* packages — an import the package no longer
+        # exports, an attribute a class no longer carries. `docs/sandbox/research/` is deliberately
+        # out: a proposal describes an API that does not exist yet, so linting its snippets would
+        # report a design document for being one. Wiring-only snippets that import no maf_sandbox*
+        # module are skipped, so undefined router/context and top-level await are tolerated.
+        # Report-only for now (continue-on-error): flip the gate on once it has stayed green
+        # across a release or two (#289). Each block is its own pyright run, so this costs one
+        # cold start per importing block; the venv is already synced above and pyright is a dev dep.
+        #
+        # This list is the workflow's copy of the `md-blocks` poe task, and
+        # `TestTheMarkdownBlockLinter` pins the two against each other — reading whichever file
+        # actually runs the linter, which is now this one.
+        continue-on-error: true
+        run: |
+          uv run python scripts/check_md_code_blocks.py \
+            README.md 'packages/*/README.md' 'samples/**/*.md' RELEASING.md \
+            'docs/*.md' 'docs/sandbox/*.md' 'docs/sandbox/backends/*.md' 'docs/sandbox/kinds/*.md'

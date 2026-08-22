@@ -2,9 +2,17 @@ name: Tests
 
 # The gate for every push and PR, in two parallel jobs: `tests` is the hermetic one — the
 # offline suite, lint, format, each package's strict pyright, the wheel builds and their
-# clean-env smoke, with no path filters; `docker-e2e` is the one integration suite, real
-# containers on the runner's Docker daemon, kept separate so its distinct failure surface does
-# not muddy the deterministic checks.
+# clean-env smoke; `docker-e2e` is the one integration suite, real containers on the runner's
+# Docker daemon, kept separate so its distinct failure surface does not muddy the deterministic
+# checks. The documentation checks used to be steps of `tests` and now live in `docs.yml`.
+#
+# **There are still no path filters on these triggers, and that is deliberate.** Both job names
+# are required status checks on `main`. A workflow-level `paths-ignore` does not make a required
+# check pass — it stops the workflow triggering, so the check never reports and the pull request
+# is unmergeable for ever. Instead the `changes` job below classifies the diff and the expensive
+# steps skip on its verdict: the contexts still report, in seconds rather than minutes (#560).
+# For the same reason the jobs are never skipped wholesale with a job-level `if:` — a genuine
+# success is worth more than relying on a skipped job counting as one.
 on:
   push:
     branches: [main]
@@ -31,8 +39,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # One classification, read by both jobs below, so the rule lives in one place and is unit
+  # tested rather than written twice as a shell pattern nobody can check.
+  changes:
+    name: What changed
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.classify.outputs.code }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # The diff below needs the base commit, which a shallow clone does not have.
+          fetch-depth: 0
+
+      - name: Classify the changed paths
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          # Only a pull request has a base to diff against. A push to `main` and a manual
+          # dispatch run everything, which is also what the script does with an empty diff.
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git diff --name-only "$BASE_SHA" HEAD |
+            python3 scripts/changed_paths.py >> "$GITHUB_OUTPUT"
+
   tests:
     name: Python (pytest + ruff + pyright)
+    needs: changes
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -60,11 +99,13 @@ jobs:
             python3 scripts/check_release_order.py "$PR_TITLE"
 
       - name: Install uv
+        if: needs.changes.outputs.code == 'true'
         # Pinned to the commit v5 resolves to: a moving tag is a supply-chain hole, since
         # whoever can move it can run code in this workflow.
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
 
       - name: Sync workspace
+        if: needs.changes.outputs.code == 'true'
         # agent-framework-core resolves from PyPI at the released range — deliberately the
         # same artifact every consumer of the published wheels gets, not a git pin.
         #
@@ -74,6 +115,7 @@ jobs:
         run: uv sync --locked
 
       - name: Pre-commit (whole tree)
+        if: needs.changes.outputs.code == 'true'
         # The pre-commit tier as a whole tree; no `--hook-stage` filter, so pre-commit uses
         # its default stage. A hook whose `stages` were dropped would run here, which is how
         # the wiring is caught (the suite's config test pins it too).
@@ -84,12 +126,14 @@ jobs:
         run: uv run pre-commit run --all-files
 
       - name: Pre-commit (pre-push stage, whole tree)
+        if: needs.changes.outputs.code == 'true'
         # The whole tier through pre-commit, the way a developer's push runs it, so the
         # hooks' entries and arguments are exercised end to end; the Types steps below run
         # the same pyright commands raw, outside the framework.
         run: uv run pre-commit run --hook-stage pre-push --all-files
 
       - name: Pre-commit (commit-msg stage)
+        if: needs.changes.outputs.code == 'true'
         # The commit-msg guard against a clean fixture message, so the stage's entry and
         # arguments are exercised through pre-commit the way an installed hook drives it.
         run: |
@@ -97,15 +141,19 @@ jobs:
           uv run pre-commit run --hook-stage commit-msg --commit-msg-filename "$RUNNER_TEMP/ci-commit-msg" no-origin-identifiers-msg
 
       - name: Tests
+        if: needs.changes.outputs.code == 'true'
         run: uv run pytest -q
 
       - name: Lint
+        if: needs.changes.outputs.code == 'true'
         run: uv run ruff check .
 
       - name: Format
+        if: needs.changes.outputs.code == 'true'
         run: uv run ruff format --check .
 
       - name: Types (per-package strict configs)
+        if: needs.changes.outputs.code == 'true'
         # One discovery implementation: the same `packages_with_pyright()` the local gate and
         # `tests/test_pr_gate_enumerates.py` use, run as a CLI so CI never re-parses the TOML
         # with a grep of its own. Enumerated rather than listed so a seventh package is
@@ -113,6 +161,7 @@ jobs:
         run: uv run python scripts/gate_tasks.py pyright-packages
 
       - name: Types (scripts, tests & samples)
+        if: needs.changes.outputs.code == 'true'
         # scripts/, the test trees and samples/ belong to no package, so the per-package strict
         # pyright above does not see them. The root [tool.pyright] in pyproject.toml drives this
         # pass: scripts/ stays at full standard (it sits under no execution environment), and each
@@ -122,30 +171,8 @@ jobs:
         # nothing and suppresses inline instead — pyproject.toml says why (#334).
         run: uv run pyright
 
-      - name: Markdown code blocks (report-only)
-        # Lints the ```python blocks in README/packages/samples/RELEASING and the decided half of
-        # docs/ against the installed maf_sandbox* packages — an import the package no longer
-        # exports, an attribute a class no longer carries. `docs/sandbox/research/` is deliberately
-        # out: a proposal describes an API that does not exist yet, so linting its snippets would
-        # report a design document for being one.
-        # Wiring-only snippets that import no maf_sandbox* module are skipped,
-        # so undefined router/context and top-level await are tolerated. Report-only for now
-        # (continue-on-error): flip the gate on once it has stayed green across a release or two
-        # (#289). Each block is its own pyright run, so this costs one cold start per importing
-        # block; the venv is already synced above and pyright is already a dev dep.
-        continue-on-error: true
-        run: |
-          uv run python scripts/check_md_code_blocks.py \
-            README.md 'packages/*/README.md' 'samples/**/*.md' RELEASING.md \
-            'docs/*.md' 'docs/sandbox/*.md' 'docs/sandbox/backends/*.md' 'docs/sandbox/kinds/*.md'
-
-      - name: Documentation references resolve
-        # Gating rather than report-only, unlike the markdown block linter above: this reads
-        # the working tree and nothing else, so it cannot be flaky, and the references it
-        # guards ship inside the wheel (#556).
-        run: uv run python scripts/check_doc_paths.py
-
       - name: Build + metadata check
+        if: needs.changes.outputs.code == 'true'
         # Enumerated: the directory basename is the distribution name — an invariant
         # test_release_config.py pins — so a new package builds on the commit that adds it.
         run: |
@@ -158,6 +185,7 @@ jobs:
       # `--find-links dist/` resolves intra-family deps against the wheels just built, not
       # PyPI — deliberately opposite of publish-packages.yml's copy of this gate.
       - name: Install + use each wheel in a clean environment
+        if: needs.changes.outputs.code == 'true'
         run: |
           set -euo pipefail
           for package_dir in packages/*/; do
@@ -182,6 +210,7 @@ jobs:
   # `test_docker_e2e.py` skips there (no env vars) and runs only here.
   docker-e2e:
     name: Docker backend live tests
+    needs: changes
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -199,12 +228,15 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Install uv
+        if: needs.changes.outputs.code == 'true'
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
 
       - name: Sync workspace
+        if: needs.changes.outputs.code == 'true'
         run: uv sync --locked
 
       - name: Run the live suite
+        if: needs.changes.outputs.code == 'true'
         run: |
           set -euo pipefail
           # Build the egress proxy from the package's own shipped context, so the allowlist
