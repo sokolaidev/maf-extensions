@@ -105,7 +105,15 @@ class TestTheMarkdownBlockLinter:
         )
 
     def test_the_decided_documentation_is_covered(self):
-        """Exclude research proposals because they describe APIs absent from installed packages."""
+        """Every decided document is linted, and every research proposal is not.
+
+        `docs/sandbox/research/` stays out on purpose: a proposal describes an API that does
+        not exist yet, so linting its snippets against the installed packages would report a
+        design document for being a design document.
+
+        Resolved to files rather than compared as glob strings, because the two are not the
+        same question. A glob list can name `docs/sandbox/*.md` and still miss a document one
+        directory further down, and the assertion would pass on the spelling.
         """
         globs = self._globs(_TASKS["md-blocks"]["cmd"])
         matched = {
@@ -118,8 +126,14 @@ class TestTheMarkdownBlockLinter:
             for path in (REPO_ROOT / "docs" / "sandbox" / "research").glob("**/*.md")
         }
         decided = {
-            path.relative_to(REPO_ROOT).as_posix()
-            for path in (REPO_ROOT / "docs").glob("**/*.md")
+            path.relative_to(REPO_ROOT).as_posix() for path in (REPO_ROOT / "docs").glob("**/*.md")
         } - research
-        assert decided <= matched
-        assert research.isdisjoint(matched)
+        assert decided <= matched, (
+            f"documentation the linter never reads: {sorted(decided - matched)}. "
+            "A snippet nobody checks is a quickstart that drifted from the API it documents."
+        )
+        assert research.isdisjoint(matched), (
+            f"research proposals pulled into the linter: {sorted(research & matched)}. "
+            "Their snippets name APIs that do not exist yet, so the gate would red a design "
+            "document for being one."
+        )
