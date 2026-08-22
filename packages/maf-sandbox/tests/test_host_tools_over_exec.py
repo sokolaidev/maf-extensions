@@ -57,6 +57,10 @@ from maf_sandbox import (
 )
 from maf_sandbox import _host_tools_over_exec as host_tools_over_exec
 from maf_sandbox._host_tools_over_exec import SESSION_MADE
+from maf_sandbox._shim_wire_contract import (
+    assert_calls_conform,
+    assert_request_conforms,
+)
 from maf_sandbox.paths import confine_guest_path
 
 #: Fast enough for a suite, and still an interval — the API refuses zero, because
@@ -1559,6 +1563,75 @@ class TestTheGeneratedShim:
         caller.join(timeout=5)
 
         assert answered == ["whole"], "a torn read was treated as the answer"
+
+
+class TestTheWireFormatIsOneContract:
+    """One wire format, two producers.
+
+    The generated shim and the `_ScriptedGuest` double the supervisor suite runs against both
+    write requests, independently, and nothing but `_shim_wire_contract` compares them. Driving
+    both through its probes is what stops the double drifting from the shim it stands in for: a
+    key renamed in one and not the other stops satisfying the shared contract, and the check goes
+    red instead of green against a shape nothing in production emits.
+    """
+
+    def test_the_generated_shims_request_conforms(self, tmp_path: Path):
+        """The real shim, run for real: what it writes is what the contract describes."""
+        module = TestTheGeneratedShim._load(tmp_path)
+        answered: list[Any] = []
+
+        def call_it() -> None:
+            answered.append(module.add(left=2, right=3))
+
+        caller = threading.Thread(target=call_it)
+        caller.start()
+        request = tmp_path / CALLS_DIRECTORY / "0001.request.json"
+        deadline = time.monotonic() + 5
+        while not request.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert request.exists(), "the shim wrote no request"
+        assert_request_conforms(request.name, request.read_bytes())
+        (tmp_path / CALLS_DIRECTORY / "0001.response.json").write_text(
+            json.dumps({"value": 5}), encoding="utf-8"
+        )
+        caller.join(timeout=5)
+        assert answered == [5]
+
+    def test_the_doubles_requests_and_responses_conform(self):
+        """The double emits the same request shapes, and the supervisor's real responses match
+        the response half of the same contract."""
+        guest = _ScriptedGuest([("add", {"left": 1, "right": 2}), ("add", {"left": 3, "right": 4})])
+        _run(guest, HostToolRun(_registry()))
+        _, responses = assert_calls_conform(guest.files, expect_requests=2)
+        assert responses >= 1, "the supervisor wrote no response for the double to read"
+
+    def test_the_doubles_abandonment_conforms(self):
+        """The `{id, abandoned}` shape — which the shim writes only on a publish failure — is
+        exercised by the double here, and it is the same shape the contract admits."""
+        guest = _ScriptedGuest([(_ABANDONED, {}), ("add", {"left": 1, "right": 2})])
+        _run(guest, HostToolRun(_registry()))
+        assert_calls_conform(guest.files, expect_requests=2)
+
+    def test_the_probes_reject_a_renamed_key(self):
+        """The teeth: a request with a key renamed — the exact drift this exists to catch —
+        does not pass, so a producer that emitted it would fail rather than go green."""
+        with pytest.raises(AssertionError):
+            assert_request_conforms(
+                "0001.request.json", b'{"id": "0001", "tool": "add", "arguments": {}}'
+            )
+
+    def test_the_probes_reject_an_id_that_does_not_match_the_name(self):
+        """The id inside the payload and the number in the file name are one identifier."""
+        with pytest.raises(AssertionError):
+            assert_request_conforms(
+                "0002.request.json", b'{"id": "0001", "name": "add", "arguments": {}}'
+            )
+
+    def test_the_count_tripwire_refuses_a_vacuous_pass(self):
+        """A producer that wrote nothing must not satisfy the contract by having nothing to
+        check — the expected count is what turns an empty run into a failure."""
+        with pytest.raises(AssertionError):
+            assert_calls_conform({}, expect_requests=1)
 
 
 class TestNamesThatAreNotWhatTheyLookLike:
