@@ -42,12 +42,7 @@ def _the_step() -> dict:
 
 
 def _budget() -> int:
-    """The attempt ceiling, read off the step rather than repeated here.
-
-    The step assigns it once and reads it three times — the loop bound, the retry notice and
-    the summary line. A test that hardcoded the figure would go red on a deliberate change and
-    stay green on the drift that matters, which is those three disagreeing.
-    """
+    """The attempt ceiling, read off the step so a deliberate change does not red these tests."""
     assignment = re.search(r"^\s*allowed=(\d+)$", _the_step()["run"], re.MULTILINE)
     assert assignment is not None, (
         "the sample 13 step no longer assigns `allowed=`; the retry budget is meant to be one "
@@ -218,12 +213,7 @@ class TestASampleThatNeverRanIsNotTheModelsHalf:
 
 
 class TestTheBudgetIsWrittenOnce:
-    """Three readings of one number, and a disagreement between them is silent.
-
-    A loop bounded at one figure while the summary claims another reports a run that never
-    happened — and the run it claims is the reassuring one, since the summary is what a reader
-    checks when a release goes red.
-    """
+    """A loop bounded at one figure while the summary claims another reports a run nobody had."""
 
     def test_the_loop_is_bounded_by_the_variable(self):
         assert 'while [ "$attempts" -lt "$allowed" ]' in _the_step()["run"]
@@ -242,11 +232,7 @@ class TestTheBudgetIsWrittenOnce:
         assert _budget() >= 2
 
     def test_the_sample_readme_states_the_number_the_workflow_allows(self):
-        """The README is where this is read before anyone opens the YAML.
-
-        Raising one without the other leaves the documented behaviour and the real behaviour
-        disagreeing about a job that only runs after a release.
-        """
+        """Raising one without the other leaves the documented behaviour disagreeing here."""
         words = {
             2: "twice",
             3: "three times",

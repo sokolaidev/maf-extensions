@@ -1081,17 +1081,9 @@ jobs:
           # Retry only exit 3, which marks model-only non-convergence; deterministic failures exit.
           # Annotate retries and summarize attempts so intermittent failures remain visible.
           #
-          # The budget is one number read three times below, because three copies of it drift and
-          # the drift is silent: a loop bounded at one figure while the summary claims another
-          # reports a run that never happened. `tests/test_verify_live_retry.py` pins the three
-          # readings against each other.
-          #
-          # Six, from what the attempts actually do. Measured over the 27 runs that reached this
-          # step, a job of two attempts passed 59% of the time, which puts one attempt near 36%
-          # and six near 93% — about one reddened release in fourteen rather than two in five.
-          # It buys a rate, not a fix: the fix turn is a live model, and no budget makes it
-          # converge. Each attempt is one two-turn conversation and one container, ~1 minute
-          # against this job's 25, so the worst case still finishes inside the timeout.
+          # One number, read three times below, because copies drift and the summary is what a
+          # reader trusts. Six from measurement: two attempts passed 59% of 27 runs, so one is
+          # near 36% and six near 93%. A rate, not a fix — the fix turn is a live model.
           allowed=6
           attempts=0
           status=0

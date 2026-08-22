@@ -15,7 +15,7 @@ words are the subject rather than the evidence.
 Exits non-zero listing every reason it failed, and says **which half** failed in the
 status: 3 when every failure was the model's own — either turn — and 1 when anything this
 suite owns was wrong too. `verify-live.yml` retries the loop on 3 and on nothing else, up to a
-budget it owns; this file does not name that number, so raising it is one edit there (#421).
+budget it owns and this file does not name (#421).
 """
 
 from __future__ import annotations
