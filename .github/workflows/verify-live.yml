@@ -1080,9 +1080,14 @@ jobs:
           #
           # Retry only exit 3, which marks model-only non-convergence; deterministic failures exit.
           # Annotate retries and summarize attempts so intermittent failures remain visible.
+          #
+          # One number, read three times below, because copies drift and the summary is what a
+          # reader trusts. Six from measurement: two attempts passed 59% of 27 runs, so one is
+          # near 36% and six near 93%. A rate, not a fix — the fix turn is a live model.
+          allowed=6
           attempts=0
           status=0
-          while [ "$attempts" -lt 2 ]; do
+          while [ "$attempts" -lt "$allowed" ]; do
             attempts=$((attempts + 1))
             # Captured rather than left to `set -e`: a sample that dies here would otherwise
             # take the whole step with it, before the attempt count is written. It is also not
@@ -1095,13 +1100,13 @@ jobs:
             fi
             python3 "$HARNESS"/scripts/check_live_fix_loop_sample.py /tmp/sample13-out.txt || status=$?
             [ "$status" -eq 3 ] || break
-            if [ "$attempts" -lt 2 ]; then
-              note="the model's half did not converge on attempt $attempts and every other"
-              note="$note measurement passed, so the two-turn loop runs once more (#421)"
+            if [ "$attempts" -lt "$allowed" ]; then
+              note="the model's half did not converge on attempt $attempts of $allowed and every"
+              note="$note other measurement passed, so the two-turn loop runs again (#421)"
               echo "::warning title=sample 13 retried::$note"
             fi
           done
-          said="samples/13_bicep_fix_loop: exit $status after $attempts attempt(s), 2 allowed."
+          said="samples/13_bicep_fix_loop: exit $status after $attempts attempt(s), $allowed allowed."
           echo "$said" | tee -a "$GITHUB_STEP_SUMMARY"
           exit "$status"
 
