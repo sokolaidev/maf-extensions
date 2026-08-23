@@ -275,9 +275,18 @@ def _registry(**kwargs: Any) -> HostToolRegistry:
 
 
 def _run(
-    guest: _ScriptedGuest, run: HostToolRun, *, timeout: float = 5.0, poll: float = _FAST
+    guest: _ScriptedGuest,
+    run: HostToolRun,
+    *,
+    timeout: float = 5.0,
+    poll: float = _FAST,
+    output_limit: int | None = None,
 ) -> ExecResult:
-    return asyncio.run(dispatch_over_exec(guest, run, _LAYOUT, timeout=timeout, poll_interval=poll))
+    return asyncio.run(
+        dispatch_over_exec(
+            guest, run, _LAYOUT, timeout=timeout, poll_interval=poll, output_limit=output_limit
+        )
+    )
 
 
 class TestTheHappyPath:
@@ -2432,6 +2441,43 @@ class TestWhatAFinishedRunIsAllowedToSay:
 
         assert result.exit_code == 1
         assert result.stdout == "it ran"
+
+
+class TestTheOutputLimit:
+    """`output_limit` bounds the program's stdout by the caller's own number rather than the run's
+    borrowed host-tool total leg (#354, option A). The default preserves today's behaviour."""
+
+    def test_a_limit_tighter_than_the_borrowed_leg_is_the_one_that_bites(self):
+        """Output over `output_limit` is not returned even when `max_total_bytes` would admit it,
+        so the bound stops being a side effect of unrelated host-tool configuration."""
+        limits = TransferLimits(max_bytes_per_file=64, max_total_bytes=4096, max_files=4)
+        guest = _ScriptedGuest([], output="x" * 100)
+        result = _run(guest, HostToolRun(_registry(response_limits=limits)), output_limit=32)
+        assert result.exit_code == 0
+        assert result.stdout == ""
+        assert "larger than the host will read" in result.stderr
+
+    def test_a_limit_looser_than_the_borrowed_leg_admits_what_it_would_have_dropped(self):
+        """The override raises the ceiling as well as lowering it: 100 bytes come back whole under
+        a 256-byte limit even though the borrowed max_total_bytes of 32 would have dropped them."""
+        limits = TransferLimits(max_bytes_per_file=64, max_total_bytes=32, max_files=4)
+        guest = _ScriptedGuest([], output="x" * 100)
+        result = _run(guest, HostToolRun(_registry(response_limits=limits)), output_limit=256)
+        assert result.stdout == "x" * 100
+        assert result.stderr == ""
+
+    def test_none_borrows_the_response_total_leg(self):
+        """The default is today's behaviour: the run's `max_total_bytes` is the bound."""
+        limits = TransferLimits(max_bytes_per_file=64, max_total_bytes=32, max_files=4)
+        guest = _ScriptedGuest([], output="x" * 100)
+        result = _run(guest, HostToolRun(_registry(response_limits=limits)))
+        assert result.stdout == ""
+        assert "larger than the host will read" in result.stderr
+
+    @pytest.mark.parametrize("bad", [0, -1, True, False, 3.5, "32"])
+    def test_a_limit_that_is_not_a_positive_integer_is_refused(self, bad: object):
+        with pytest.raises(ValueError, match="output_limit"):
+            _run(_ScriptedGuest([]), HostToolRun(_registry()), output_limit=bad)  # type: ignore[arg-type]
 
 
 class TestWhatAnEmptyOutputMeans:

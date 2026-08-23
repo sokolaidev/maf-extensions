@@ -637,6 +637,7 @@ async def dispatch_over_exec(
     timeout: float,
     poll_interval: float = 0.2,
     interpreter: str = "python3",
+    output_limit: int | None = None,
 ) -> ExecResult:
     """Run the guest program detached and serve its host-tool calls until it exits.
 
@@ -656,6 +657,12 @@ async def dispatch_over_exec(
             bound is the one that is wrong.
         poll_interval: How often to look for the next request or the exit marker.
         interpreter: The guest's Python.
+        output_limit: The most of the program's own stdout the host will read back, in bytes.
+            ``None`` borrows the run's ``response_limits`` total leg — today's behaviour, and a
+            number written for tool responses rather than stdout (see :func:`_output_cap`). Output
+            past the limit is not returned and the reason is noted on ``stderr``, exactly as when
+            the borrowed leg is exceeded; passing a limit only stops that number being a side
+            effect of unrelated host-tool configuration. Must be a positive integer when given.
 
     Attempts to remove the transport's own directory before returning, on every exit path.
     A removal the guest refuses is logged and nothing else — the call still returns what it
@@ -708,12 +715,13 @@ async def dispatch_over_exec(
 
     The promise is about this function's own bound and reaches no further. A caller that
     cancels the coroutine — an outer ``asyncio.wait_for``, a cancelled task — cancels
-    whatever is in flight, a dispatch included, and can leave a tool's effect half done with
-    no record written. Shielding it would trade that for a worse one, since a host tool is
-    deliberately unbounded here: cancellation would then take arbitrarily long to be
-    honoured, or never. :meth:`~maf_sandbox.HostToolRun.dispatch` treats the outcome as
-    legitimate rather than impossible, returning the response slot when its call is
-    cancelled.
+    whatever is in flight, a dispatch included, and can leave a tool's effect half done.
+    Shielding it would trade that for a worse one, since a host tool is deliberately unbounded
+    here: cancellation would then take arbitrarily long to be honoured, or never.
+    :meth:`~maf_sandbox.HostToolRun.dispatch` treats the outcome as legitimate rather than
+    impossible — it returns the response slot, logs which tool was cut off, and lets a wired
+    ``dispatch_observer`` see the cancellation (#355), so a half-done effect is recorded even
+    though the response never lands.
     """
     # Both bounds checked before the launcher starts, because a detached program outlives a
     # supervisor that raises. `inf` is the one that matters and the one a range check misses:
@@ -731,6 +739,15 @@ async def dispatch_over_exec(
         raise ValueError(
             f"poll_interval must be a finite positive number of seconds, not {poll_interval}"
         )
+    if output_limit is not None:
+        # A byte count, and a caller's own — so a bad one raises plainly rather than refusing a
+        # guest. `cast` to `object` keeps the runtime check the annotation would let pyright drop;
+        # `bool` is an `int` subclass and `True`/`False` as a byte ceiling is a mistake, excluded.
+        given = cast(object, output_limit)
+        if not isinstance(given, int) or isinstance(given, bool) or given < 1:
+            raise ValueError(
+                f"output_limit must be a positive integer of bytes when given, not {given!r}"
+            )
     # Before `exec`, not after: the bound is on the whole program, and a launcher that takes
     # most of it would otherwise hand supervision a second full timeout to spend.
     # Validated before the wrapper, so a bad argument raises plainly. The run directory is
@@ -747,6 +764,7 @@ async def dispatch_over_exec(
             poll_interval=poll_interval,
             interpreter=interpreter,
             launcher=launcher,
+            output_limit=output_limit,
         )
         handled = True
         return result
@@ -796,6 +814,7 @@ async def _supervise(
     poll_interval: float,
     interpreter: str,
     launcher: _WhatTheLauncherSaid,
+    output_limit: int | None,
 ) -> ExecResult:
     """The body of :func:`dispatch_over_exec`, minus the cleanup that wraps it."""
     deadline = time.monotonic() + timeout
@@ -847,7 +866,7 @@ async def _supervise(
                 "out: %s",
                 error_detail(spent),
             )
-            return await _completed(sandbox, run, layout, landed, deadline)
+            return await _completed(sandbox, run, layout, landed, deadline, output_limit)
         # `exec` was handed this run's remainder, so its expiry is this run's — every
         # `TimeoutError` from it, without re-reading a clock that may be a resolution behind
         # the timer that fired. The backend's own text stays in the log for the same reason it
@@ -894,8 +913,8 @@ async def _supervise(
             giving_up = time.monotonic() + _FINAL_READ_GRACE
             landed = await _marker_if_present(sandbox, layout, giving_up)
             if landed is not None:
-                return await _completed(sandbox, run, layout, landed, deadline)
-            printed, note = await _final_output(sandbox, run, layout, giving_up)
+                return await _completed(sandbox, run, layout, landed, deadline, output_limit)
+            printed, note = await _final_output(sandbox, run, layout, giving_up, output_limit)
             # Output first, so the program's own words are off the guest before it dies — but
             # on a fresh grace, because the reads above can spend `giving_up` entirely and a
             # kill with nothing left to spend is the runaway this path exists to stop.
@@ -923,7 +942,7 @@ async def _supervise(
                 deadline=deadline,
             )
             if finished is not None:
-                return await _completed(sandbox, run, layout, finished, deadline)
+                return await _completed(sandbox, run, layout, finished, deadline, output_limit)
             if request_probes:
                 served, full_prefix = await _serve_request_probes(
                     sandbox, run, layout, served, request_probes, deadline
@@ -952,12 +971,12 @@ async def _supervise(
                     "host tools: the run finished, but a transport call had already run out: %s",
                     error_detail(stalled),
                 )
-                return await _completed(sandbox, run, layout, landed, deadline)
+                return await _completed(sandbox, run, layout, landed, deadline, output_limit)
             # This run's own bound, expiring *inside* an iteration rather than between two of
             # them. Only the transport is bounded that way, so the message says which call ran
             # out while still leading with the failure the caller asked about. A backend's own
             # `TimeoutError` is deliberately not caught here — see `_within`.
-            printed, note = await _final_output(sandbox, run, layout, giving_up)
+            printed, note = await _final_output(sandbox, run, layout, giving_up, output_limit)
             fate, reach = await _stop_the_program(
                 sandbox, layout, until=_a_grace_from_now(), made_a_session=made_a_session
             )
@@ -1391,6 +1410,7 @@ async def _completed(
     layout: GuestRunLayout,
     finished: str | _TooLarge | _NotText,
     deadline: float,
+    output_limit: int | None,
 ) -> ExecResult:
     """What a run whose exit marker has been read returns, output and all.
 
@@ -1405,7 +1425,7 @@ async def _completed(
             sandbox,
             layout,
             layout.output,
-            cap=_output_cap(run),
+            cap=_output_cap(run, output_limit),
             deadline=max(deadline, time.monotonic() + _FINAL_READ_GRACE),
         )
     except TimeoutError as unread:
@@ -1732,7 +1752,11 @@ def _output_clause(printed: str, note: str) -> str:
 
 
 async def _final_output(
-    sandbox: Sandbox, run: HostToolRun, layout: GuestRunLayout, until: float
+    sandbox: Sandbox,
+    run: HostToolRun,
+    layout: GuestRunLayout,
+    until: float,
+    output_limit: int | None,
 ) -> tuple[str, str]:
     """What the program printed, and separately the host's note — on a short allowance.
 
@@ -1757,7 +1781,7 @@ async def _final_output(
             sandbox,
             layout,
             layout.output,
-            cap=_output_cap(run),
+            cap=_output_cap(run, output_limit),
             deadline=until,
         )
         # The note travels beside the text, not instead of it: a timed-out run whose output was
@@ -1786,8 +1810,11 @@ def _why_no_output(value: str | _TooLarge | _NotText | None) -> str:
     that field is the host's: the launcher merges the guest's own stderr into the output file,
     so nothing else ever writes there.
 
-    What the ceiling should be, and whether a large output should be truncated rather than
-    dropped, is #354. This is only the part that must not stay silent either way.
+    #354 settled the two questions this used to leave open. What the ceiling is: the caller's own
+    ``output_limit`` where given, otherwise the borrowed leg (:func:`_output_cap`). And whether to
+    truncate rather than drop: no — the pull surface's ``read_file`` is a refusal, never a
+    truncation, so a partial head cannot be read back, and an empty output marked "truncated"
+    would be a misnomer. Over-cap output is dropped whole and said so here.
     """
     if isinstance(value, _TooLarge):
         return (
@@ -1820,22 +1847,25 @@ def _request_cap(run: HostToolRun) -> int:
     return run.registry.response_limits.max_bytes_per_file
 
 
-def _output_cap(run: HostToolRun) -> int:
+def _output_cap(run: HostToolRun, output_limit: int | None = None) -> int:
     """What the host will read back of the program's own output.
 
-    The **total** leg rather than the per-file one, which is the opposite of :func:`_request_cap`
-    and deliberate. A request file is a host-tool response's counterpart and belongs to that
-    accounting; the program's stdout does not — on any other execution path it comes back
-    through :attr:`ExecResult.stdout` bounded by nothing in this vocabulary at all. Capping it
-    at the per-*response* ceiling would mean a program printing more than one tool call may
-    return loses its whole output to a number chosen for something else, and only under this
-    transport. So the run's total is borrowed as the largest bound this vocabulary sanctions,
-    rather than inventing a second ceiling for one concern.
+    ``output_limit`` is the caller's own bound, passed to :func:`dispatch_over_exec`, and it is
+    the right answer when given: only the caller knows what its program prints and what it will
+    hold. When it is not given the run's **total** response leg is borrowed — the opposite of
+    :func:`_request_cap`'s per-file one, and deliberate. A request file is a host-tool response's
+    counterpart and belongs to that accounting; the program's stdout does not — on any other
+    execution path it comes back through :attr:`ExecResult.stdout` bounded by nothing in this
+    vocabulary at all. Capping it at the per-*response* ceiling would lose a program's whole
+    output to a number chosen for tool values, and only under this transport, so the run's total
+    is borrowed as the largest bound this vocabulary sanctions rather than inventing a second one.
 
-    That is a stretch of ``response_limits`` either way, and it is the one place this transport
-    reaches for a number that was not written for it.
+    That borrowing is a stretch of ``response_limits`` either way, which is why ``output_limit``
+    exists: a caller that passes one stops the bound being a side effect of unrelated config.
     """
-    return run.registry.response_limits.max_total_bytes
+    return (
+        output_limit if output_limit is not None else run.registry.response_limits.max_total_bytes
+    )
 
 
 def _exit_code_from(recorded: str | _TooLarge | _NotText) -> int:
