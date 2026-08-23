@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.7.3](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.7.2...maf-sandbox-codeact-v0.7.3) (2026-08-23)
+
+
+### Fixes
+
+* **codeact:** fold the carries-out flag into sandbox_tool_declarations, now that its core is published ([#604](https://github.com/sokolaidev/maf-extensions/issues/604)) ([86a3e93](https://github.com/sokolaidev/maf-extensions/commit/86a3e93e35d6a1325bf91a014694f4df77248657))
+* **codeact:** require the maf-sandbox release that added also_carries_out ([#583](https://github.com/sokolaidev/maf-extensions/issues/583)) ([2eac114](https://github.com/sokolaidev/maf-extensions/commit/2eac11451ef4653f6a8a4423c36ae7a2f68a1f09))
+* require maf-sandbox 0.21.0 in the dependents and 0.21 in the samples, and admit 0.22 ([#596](https://github.com/sokolaidev/maf-extensions/issues/596)) ([1028a57](https://github.com/sokolaidev/maf-extensions/commit/1028a57e16d2fe5cb3aa0b3b948680e52fce90c3))
+
 ## [0.7.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.7.1...maf-sandbox-codeact-v0.7.2) (2026-08-22)
 
 
