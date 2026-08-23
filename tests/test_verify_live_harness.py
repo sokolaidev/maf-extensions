@@ -87,3 +87,59 @@ class TestTheFallbackKeepsABranchDispatchHonest:
             r"^\s*if:\s*startsWith\(github\.ref,\s*'refs/tags/'\)\s*$", _TEXT, re.MULTILINE
         )
         assert len(conditions) == len(_HARNESS_CHECKOUT.findall(_TEXT))
+
+
+class TestASampleWaitsForItsOwnEdgeBeforeItResolves:
+    """A live run that resolved the previous release measures the wrong thing, quietly (#595).
+
+    `wait-for-propagation` confirms the upload on a different runner, and PyPI's index is
+    eventually consistent between them — so the wait has to happen where the resolving happens.
+    """
+
+    @staticmethod
+    def _sample_jobs() -> dict[str, list]:
+        """Every job that runs a sample, by name, with its steps."""
+        found = {}
+        for job, definition in _WORKFLOW.get("jobs", {}).items():
+            steps = [step for step in definition.get("steps", []) if isinstance(step, dict)]
+            if any("uv run --no-project samples/" in str(s.get("run", "")) for s in steps):
+                found[job] = steps
+        return found
+
+    def test_the_workflow_still_runs_samples(self):
+        # Without this the tests below pass vacuously on a file that stopped running any.
+        assert len(self._sample_jobs()) >= 7
+
+    def test_every_sample_job_waits_first(self):
+        for job, steps in self._sample_jobs().items():
+            assert any("await_live_version.py" in str(step.get("run", "")) for step in steps), (
+                f"{job} resolves a sample without waiting for this runner's edge"
+            )
+
+    def test_the_wait_runs_before_the_sample_rather_than_after_it(self):
+        """Ordered after it, the sample has already resolved and the wait proves nothing."""
+        for job, steps in self._sample_jobs().items():
+            waits = next(
+                i for i, s in enumerate(steps) if "await_live_version.py" in str(s.get("run", ""))
+            )
+            resolves = next(
+                i
+                for i, s in enumerate(steps)
+                if "uv run --no-project samples/" in str(s.get("run", ""))
+            )
+            assert waits < resolves, f"{job} waits for the edge after resolving against it"
+
+    def test_the_wait_comes_from_the_harness(self):
+        """Same reason every check does: a tag's copy cannot be fixed for a release already cut."""
+        for job, steps in self._sample_jobs().items():
+            for step in steps:
+                run = str(step.get("run", ""))
+                if "await_live_version.py" in run:
+                    assert '"$HARNESS"/scripts/await_live_version.py' in run, job
+
+    def test_a_run_with_no_published_version_does_not_wait_for_one(self):
+        """A branch dispatch names no version, and there is nothing on PyPI to wait for."""
+        for job, steps in self._sample_jobs().items():
+            for step in steps:
+                if "await_live_version.py" in str(step.get("run", "")):
+                    assert "inputs.version != ''" in str(step.get("if", "")), job
