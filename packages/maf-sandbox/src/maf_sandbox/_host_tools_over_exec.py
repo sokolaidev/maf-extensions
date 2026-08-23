@@ -352,6 +352,13 @@ _RESPONSE_WRITE_GRACE = 2.0
 #: without turning an idle sequential program into an unbounded stream of speculative calls.
 _MAX_SPECULATIVE_REQUESTS = 4
 
+#: How long the frontier must sit claimed-but-unpublished, with a later request already there,
+#: before the supervisor steps over it as a worker that died mid-publish (#352). Well above any
+#: plausible publish — a ``json.dumps``, one small write and a rename, even over a remote backend
+#: — and trivial against a run's own bound, so a merely slow publisher loses only its own call
+#: rather than stranding every later one. Only spent while the sequence is actually stalled.
+_CLAIM_HOLE_GRACE = 5.0
+
 #: What the supervisor writes around a delivered value, and what that costs. The guest reads
 #: the response as an object so a refusal and a value are told apart by key rather than by
 #: shape. Measured from the framing rather than written down beside it, so the number a run's
@@ -900,6 +907,7 @@ async def _supervise(
     allowance = _serving_bound(run)
     spent = False
     request_window = 1
+    hole_since: float | None = None
     while True:
         if time.monotonic() >= deadline:
             # First in the loop, so an expired run reports *itself*. Every transport call
@@ -944,11 +952,29 @@ async def _supervise(
             if finished is not None:
                 return await _completed(sandbox, run, layout, finished, deadline, output_limit)
             if request_probes:
+                before = served
                 served, full_prefix = await _serve_request_probes(
                     sandbox, run, layout, served, request_probes, deadline
                 )
+                if served != before:
+                    # The frontier moved, so any absence timing was for a number now behind us.
+                    hole_since = None
                 if not full_prefix:
                     request_window = 1
+                    # The frontier's request is absent. Time that here rather than in the probe, so
+                    # a frontier absent only for a poll or two — the ordinary not-arrived-yet case,
+                    # and every fast test — costs nothing. Only once it has stayed absent for the
+                    # whole grace, past any plausible publish, is it worth the stats to tell a
+                    # worker that died mid-publish from a guest merely slow to issue its next call
+                    # and step the dead one over (#352).
+                    now = time.monotonic()
+                    if hole_since is None:
+                        hole_since = now
+                    elif now - hole_since >= _CLAIM_HOLE_GRACE:
+                        served, skipped = await _skip_dead_claim_hole(
+                            sandbox, layout, served, deadline
+                        )
+                        hole_since = None if skipped else now
                 elif request_count == request_window and served < allowance:
                     request_window = min(_MAX_SPECULATIVE_REQUESTS, request_window * 2)
             elif not spent:
@@ -1548,6 +1574,79 @@ async def _serve_request_probes(
         # Later probe failures are not observed before their identifier reaches the frontier.
         # A miss or failure at the frontier discards all speculative outcomes beyond it.
         await _cancel_and_drain(probes)
+
+
+async def _skip_dead_claim_hole(
+    sandbox: Sandbox, layout: GuestRunLayout, served: int, deadline: float
+) -> tuple[int, bool]:
+    """Step over ``served + 1`` when a guest worker claimed it and died before publishing (#352).
+
+    Called only once the frontier has already been absent for :data:`_CLAIM_HOLE_GRACE` — the
+    caller times that, so this stays off the common not-arrived-yet path and does no extra stats
+    on a run that never stalls. The transport serves by name and cannot enumerate
+    (``maf-sandbox-docker`` has no ``FILES_LIST``), so a number claimed and never published would
+    hold the sequence for the rest of the run, stranding every later call from a surviving worker
+    behind a request that never arrives. The evidence is readable by stat alone: the claim file
+    exists (a worker took the number, and claims are never removed), the **next** request
+    (``served + 2``) exists (a survivor moved on), and the frontier's own request still does not.
+    All three make it a hole to step over; anything less — no claim, nothing past it, or a request
+    that has since arrived — is a merely slow guest, left to publish, so the worst a slow publisher
+    costs is its own call.
+
+    The claim is stat-ed first and returns early when absent, so a stalled-but-unclaimed frontier
+    (a guest simply slow to issue its next call) costs one stat and never touches a request path.
+
+    Only ``served + 2`` is examined, so two *adjacent* dead-claim holes are not resolved — if both
+    ``served + 1`` and ``served + 2`` were claimed-and-never-published, the survivor's request sits
+    at ``served + 3`` and this waits. That is rarer than the single hole by another dead-worker
+    coincidence, and still a strict improvement over stalling on the first; a general answer would
+    need the enumeration this transport deliberately does without.
+
+    Returns the frontier — advanced by one when it was a hole — and whether it stepped over one.
+    """
+    claim = await _within(
+        deadline,
+        f"stat {served + 1:04d}.claim",
+        sandbox.stat_file(
+            posixpath.join(layout.calls, f"{served + 1:04d}.claim"),
+            working_directory=layout.directory,
+        ),
+    )
+    if claim is None or claim.kind is not EntryKind.FILE:
+        # Nothing claimed this number: the guest has not reached it yet, not a dead worker.
+        return served, False
+    later = await _within(
+        deadline,
+        f"stat {served + 2:04d}.request.json",
+        sandbox.stat_file(
+            posixpath.join(layout.calls, f"{served + 2:04d}.request.json"),
+            working_directory=layout.directory,
+        ),
+    )
+    if later is None or later.kind is not EntryKind.FILE or not later.size_bytes:
+        # Nothing has moved past the frontier, so nothing is stranded behind it yet: wait.
+        return served, False
+    # Re-read the frontier's own request last, so one that arrived while the stats above ran is
+    # served rather than skipped. Only a definitely-empty (size 0) file counts as not-arrived — a
+    # renamed-into-place writer leaves no empty window; a size the backend could not state (None)
+    # fails closed here, as it does in `_read_if_present`, so an arrived request whose size is
+    # unknown is served or refused rather than silently stepped over.
+    request = await _within(
+        deadline,
+        f"stat {served + 1:04d}.request.json",
+        sandbox.stat_file(
+            posixpath.join(layout.calls, f"{served + 1:04d}.request.json"),
+            working_directory=layout.directory,
+        ),
+    )
+    if request is not None and request.kind is EntryKind.FILE and request.size_bytes != 0:
+        return served, False
+    logger.warning(
+        "host tools: request %04d was claimed but never published and a later call waits behind "
+        "it — its worker most likely died mid-publish; stepping over it",
+        served + 1,
+    )
+    return served + 1, True
 
 
 async def _answer(
