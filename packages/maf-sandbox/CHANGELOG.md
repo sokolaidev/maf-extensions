@@ -2,6 +2,21 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.22.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.21.0...maf-sandbox-v0.22.0) (2026-08-23)
+
+
+### Features
+
+* **sandbox:** give HostToolRun a documented run_id for dispatch attribution ([#593](https://github.com/sokolaidev/maf-extensions/issues/593)) ([99e67a7](https://github.com/sokolaidev/maf-extensions/commit/99e67a7a47cdf2cabd270e10b69f3c633dcbeab5))
+* **sandbox:** let a caller bound the guest program's stdout with output_limit ([#598](https://github.com/sokolaidev/maf-extensions/issues/598)) ([f538856](https://github.com/sokolaidev/maf-extensions/commit/f5388565a71eceee1606725b6e1b5d4b74d5dda5))
+* **sandbox:** make the host-tool wire format a tested contract ([#590](https://github.com/sokolaidev/maf-extensions/issues/590)) ([62644e3](https://github.com/sokolaidev/maf-extensions/commit/62644e34985f96509a66a78c1c8f6aac96d96dec))
+
+
+### Fixes
+
+* **sandbox:** record a host-tool dispatch cancelled mid-effect ([#605](https://github.com/sokolaidev/maf-extensions/issues/605)) ([688e379](https://github.com/sokolaidev/maf-extensions/commit/688e379c84769ffb40eb8b3ea857ec84cdfc71c6))
+* **sandbox:** step over a request number claimed by a worker that died mid-publish ([#613](https://github.com/sokolaidev/maf-extensions/issues/613)) ([c9b3668](https://github.com/sokolaidev/maf-extensions/commit/c9b3668be8e41b6b5b52feeeea9716e6c98b12a8))
+
 ## [0.21.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.20.0...maf-sandbox-v0.21.0) (2026-08-22)
 
 
