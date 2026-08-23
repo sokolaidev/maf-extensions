@@ -82,7 +82,6 @@ from ._host_tools_over_exec import (
     SignalReach,
     dispatch_over_exec,
     guest_run_layout,
-    host_tool_shim,
     launcher_script,
     reclaim_run,
 )
@@ -152,6 +151,7 @@ from ._router import (
     SandboxTransferLimitsNotPermitted,
     ScopeDisposal,
 )
+from ._shim import host_tool_shim
 
 __all__ = [
     "CALLS_DIRECTORY",

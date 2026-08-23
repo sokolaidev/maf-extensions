@@ -1075,9 +1075,16 @@ _PROTOCOL_MODULES = frozenset(
         "_purger",
         "_reclaim",
         "_router",
+        "_shim",
+        "_shim_wire_contract",
         "conformance",
         "paths",
         "testing",
+        # `_guest/` is the source maf-sandbox copies into a guest, kept as real Python. It is
+        # stdlib-only by necessity — a guest carries no third-party packages — so the claim this
+        # set makes is exactly the one that code has to keep.
+        "_guest.__init__",
+        "_guest.maf_host_tools",
     }
 )
 
@@ -1094,13 +1101,22 @@ _MAF_GLUE_MODULE = "maf"
 
 
 def _package_modules():
-    """Every module in the installed `maf_sandbox`, as `{stem: path}`."""
+    """Every module in the installed `maf_sandbox`, as `{dotted_name: path}`.
+
+    Keyed by the name relative to the package root — `_guest.maf_host_tools`, not bare
+    `maf_host_tools` — so a file in a subpackage cannot collide with a top-level one. Two
+    `__init__.py` (the package's own and `_guest/`'s) would otherwise collapse to one `__init__`
+    key, hiding one of them and pointing `_package_modules()["__init__"]` at whichever `rglob`
+    happened to yield last.
+    """
     import pathlib
 
     import maf_sandbox
 
     root = pathlib.Path(maf_sandbox.__file__).parent  # type: ignore[arg-type]
-    return {path.stem: path for path in root.rglob("*.py")}
+    return {
+        ".".join(path.relative_to(root).with_suffix("").parts): path for path in root.rglob("*.py")
+    }
 
 
 def _imported_top_levels(path):

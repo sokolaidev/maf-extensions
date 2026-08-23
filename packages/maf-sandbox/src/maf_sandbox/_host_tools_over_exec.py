@@ -47,13 +47,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-import keyword
 import logging
 import math
 import posixpath
-import symtable
 import time
-import unicodedata
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -334,15 +331,6 @@ class _TheRunsOwnTimeout(SandboxProgramTimeout):
     """
 
 
-#: How long the guest blocks on one call before giving up on the host, and how often it looks.
-#: Bounded on both sides. It has to outlast the host's poll interval by a wide margin or a slow
-#: supervisor reads as a dead one, and it must not be shorter than the run's own bound or the
-#: guest gives up on a dispatch that then goes on to act. The host's deadline is what actually
-#: ends a run; this is only the guest's patience, and :func:`host_tool_shim` takes it as an
-#: argument for a caller whose runs are longer than this.
-_GUEST_CALL_TIMEOUT = 300.0
-_GUEST_POLL_SECONDS = 0.05
-
 #: What reading the last of a run may spend once its own bound is gone: the output a timeout
 #: quotes, a finished run's output, and the last look for an exit marker. Shrinking it narrows
 #: a *returned* result's window, not only a diagnostic's.
@@ -507,205 +495,6 @@ def guest_run_layout(run_directory: str, *, program: str = "program.py") -> Gues
         pid=posixpath.join(served, PID_FILE),
         session=posixpath.join(served, SESSION_FILE),
     )
-
-
-def host_tool_shim(
-    names: frozenset[str] | set[str] | tuple[str, ...] = (),
-    *,
-    call_timeout: float = _GUEST_CALL_TIMEOUT,
-) -> str:
-    """The guest-side module source: ``call(name, **arguments)``, and one function per name.
-
-    Written into the guest by the kind, imported by the program. It blocks on a response file
-    and raises :class:`HostToolError` — defined in the generated source — on a refusal, so a
-    program can catch one call's refusal and carry on, which is what the cap's *finish and
-    report* refusal is for.
-
-    ``call_timeout`` is how long the guest waits for one answer, and **it must not be shorter
-    than the bound the run is given**. Give up first and the guest is wrong twice over: a
-    dispatch the supervisor is still running goes on to act — a sink tool sends its message —
-    while the program has already been told the host never answered, and the answer lands in
-    a file nobody will read. The default suits a run bounded below it; a caller passing a
-    larger ``timeout`` to :func:`dispatch_over_exec` must pass the same number here.
-
-    ``names`` only adds convenience wrappers; it grants nothing. Resolution happens host-side
-    against the registry, so a name omitted here is still callable through :func:`call` and a
-    name invented here still resolves to a refusal. That is what makes the filtering below
-    safe: a name this cannot spell as a function is not a name a guest cannot reach.
-    """
-    # Keyed by the normalised spelling, because that is the name Python will bind. Two tools
-    # whose names normalise together — `lookup` and `ｌｏｏｋｕｐ` — compile to one global, and
-    # emitting both would leave the second silently answering for the first. The one that
-    # loses its wrapper is still reachable through `call`, which is why dropping it is safe.
-    canonical: dict[str, str] = {}
-    for name in sorted(names):
-        if _spellable(name):
-            canonical.setdefault(unicodedata.normalize("NFKC", name), name)
-    wrappers = "\n\n".join(
-        f"def {name}(**arguments):\n"
-        f'    """Dispatch to the host tool {name!r}."""\n'
-        f"    return call({name!r}, **arguments)"
-        for name in canonical.values()
-    )
-    if not math.isfinite(call_timeout) or call_timeout <= 0:
-        # Finite as well as positive: `nan` and `inf` are both `<= 0`-false, and formatting
-        # either into the source emits a bare `nan`/`inf`, which is not a name the guest's
-        # module can resolve. The shim would fail at *import*, before any call is made.
-        raise ValueError(
-            f"call_timeout must be a finite positive number of seconds, not {call_timeout}"
-        )
-    return _SHIM_SOURCE.format(
-        calls=CALLS_DIRECTORY,
-        timeout=call_timeout,
-        poll=_GUEST_POLL_SECONDS,
-        wrappers=f"\n\n{wrappers}\n" if wrappers else "",
-    )
-
-
-def _shim_globals() -> frozenset[str]:
-    """Every name a generated wrapper would take away from the shim, read off the shim itself.
-
-    Derived rather than listed, so a name the shim starts using is reserved without anyone
-    remembering to add it. A wrapper is a module-level ``def``, so what it can take is a
-    module-level binding — ``call``, ``_claim``, ``os`` — or a builtin the shim reaches for
-    from inside one, of which ``open`` is the one that would hurt.
-
-    Scoped rather than walked. Every ``Name`` node in the tree also catches the shim's own
-    parameters and temporaries — ``name``, ``request``, ``payload`` — which no wrapper can
-    reach and which are perfectly good tool names; reserving those costs a tool its
-    convenience function for nothing. :mod:`symtable` answers the question actually being
-    asked, which is what each name is *bound to* in the scope it appears in.
-    """
-    source = _SHIM_SOURCE.format(calls="", timeout=0.0, poll=0.0, wrappers="")
-    scope = symtable.symtable(source, SHIM_MODULE, "exec")
-    # Module scope holds every top-level binding and reference; a nested scope contributes
-    # only what it resolves *outward* — a global or a builtin — never its own locals.
-    reserved = {symbol.get_name() for symbol in scope.get_symbols()}
-    pending = list(scope.get_children())
-    while pending:
-        inner = pending.pop()
-        reserved.update(symbol.get_name() for symbol in inner.get_symbols() if symbol.is_global())
-        pending.extend(inner.get_children())
-    return frozenset(reserved)
-
-
-def _spellable(name: str) -> bool:
-    """Whether ``name`` can be a function in the generated module without breaking it.
-
-    Three ways it cannot. A **keyword**: `def class(...)` is a `SyntaxError`, so one tool named
-    that takes the whole shim down and every other call with it. A name the shim **uses
-    itself**: a wrapper called `open` or `json` replaces machinery every dispatch needs, and
-    the failure reads as a broken tool rather than a name clash. And a name that **normalises
-    onto** one of those: Python NFKC-normalises identifiers at compile time, so `ｃall`
-    is written `call` by the time it is a global.
-
-    Soft keywords (`match`, `case`, `type`) parse as function names and are allowed.
-    """
-    normalised = unicodedata.normalize("NFKC", name)
-    return (
-        name.isidentifier()
-        and not keyword.iskeyword(normalised)
-        and normalised not in _shim_globals()
-    )
-
-
-_SHIM_SOURCE = '''\
-"""Host tools, over files. Generated by maf-sandbox — editing this changes nothing host-side.
-
-Every call is validated, gated and capped in the host process. This module's job is to write a
-request where the supervisor is looking and to wait for the answer.
-"""
-
-import json
-import os
-import time
-
-_HERE = os.path.dirname(os.path.abspath(__file__))
-_CALLS = os.path.join(_HERE, "{calls}")
-_TIMEOUT = {timeout}
-_POLL = {poll}
-
-
-class HostToolError(RuntimeError):
-    """A refusal from the host, or the host never answering. The sentence is the message."""
-
-
-def _claim():
-    """Take the lowest identifier no other caller holds.
-
-    A lock would only cover this process. A program that forks, or uses `multiprocessing`,
-    gets a second copy of this module with its own idea of the next number, and two copies
-    counting privately write one request path: one call overwrites the other, and both
-    callers read one answer as their own. `os.open` with `O_CREAT | O_EXCL` is a single
-    filesystem operation that exactly one caller wins, whichever process or thread it is in.
-
-    A file of its own rather than the request path, so allocation does not depend on the
-    supervisor's rule that an empty file has not arrived yet. Claims are never removed: a
-    number this hands out is published under, as a request or as an abandonment, and from the
-    lowest each time because a process cannot know what the others have already taken.
-    """
-    number = 1
-    while True:
-        claim = os.path.join(_CALLS, "%04d.claim" % number)
-        try:
-            os.close(os.open(claim, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
-        except FileExistsError:
-            number += 1
-            continue
-        return "%04d" % number
-
-
-def _publish(request, payload):
-    """Put `payload` at `request`, whole or not at all.
-
-    Written aside and renamed: `open` creates the file empty, and a supervisor polling in that
-    window would read no JSON and answer a call with a refusal it can never retry.
-    `os.replace` is atomic on every platform this runs on.
-    """
-    staged = request + ".part"
-    with open(staged, "w", encoding="utf-8") as handle:
-        handle.write(payload)
-    os.replace(staged, request)
-
-
-def call(name, **arguments):
-    """Dispatch ``name`` with keyword ``arguments`` and return its value."""
-    os.makedirs(_CALLS, exist_ok=True)
-    identifier = _claim()
-    request = os.path.join(_CALLS, identifier + ".request.json")
-    try:
-        _publish(request, json.dumps({{"id": identifier, "name": name, "arguments": arguments}}))
-    except BaseException:
-        # Published as abandoned rather than released. Giving the number back only helps if
-        # somebody takes it, and the caller who would is often past it already: the supervisor
-        # answers 0001 before it looks at 0002, so a concurrent caller that has published 0002
-        # waits behind a hole that only a *third* call would fill. A marker is a hole the
-        # supervisor can step over, which needs no third call and no shared lock.
-        try:
-            _publish(request, json.dumps({{"id": identifier, "abandoned": True}}))
-        except Exception:
-            # The filesystem is refusing writes, which is very likely why we are here at all.
-            # The original failure is the one worth raising; the run is already lost.
-            pass
-        raise
-    response = os.path.join(_CALLS, identifier + ".response.json")
-    deadline = time.monotonic() + _TIMEOUT
-    while time.monotonic() < deadline:
-        try:
-            with open(response, encoding="utf-8") as handle:
-                answered = json.load(handle)
-        except (OSError, ValueError):
-            # Absent, or caught mid-write: the supervisor writes the whole file in one call,
-            # but a backend is free to make that visible in pieces.
-            time.sleep(_POLL)
-            continue
-        if "value" in answered:
-            return answered["value"]
-        raise HostToolError(answered.get("refusal", "Error: the host refused this call"))
-    raise HostToolError(
-        "Error: the host did not answer this call within %g seconds" % _TIMEOUT
-    )
-{wrappers}'''
 
 
 def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str:
