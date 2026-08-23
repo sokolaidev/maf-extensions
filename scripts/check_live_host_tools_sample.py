@@ -65,10 +65,8 @@ _FOOTER = re.compile(r"Completed\s+(\d+)\s+of\s+4\s+acts\.\s+Acquired\s+(\d+)\s+
 def _line_containing(output: str, needle: str) -> str | None:
     """The first line holding ``needle`` as a key of its own, or ``None``.
 
-    Line-scoped so a name occurring in the sample's prose is not read as a name occurring on
-    the line that lists what registered. The lookbehind is the other half: without it
-    ``identities:`` is answered by the ``allowed_identities:`` a refusal sentence prints
-    first, and `_after` then reads that sentence's `frozenset({...})` as the aggregate's.
+    Line-scoped so a name in the sample's prose is not read as one on the line that lists what
+    registered; the lookbehind stops ``allowed_identities:`` answering for ``identities:``.
     """
     key = re.compile(rf"(?<!\w){re.escape(needle)}")
     for line in output.splitlines():
@@ -136,9 +134,7 @@ def assess(output: str) -> list[str]:
                 "change as one that lost a tool"
             )
 
-    # Every `refused:` line, not the first: the sample refuses the APP-only registry's USER
-    # tool before it reaches the unstamped one, and the first line names neither the gate nor
-    # the tool this asks about.
+    # Any refusal, not the first: the sample refuses an APP-only tool before this one.
     refusals = [line for line in output.splitlines() if "refused:" in line]
     if not any(_UNSTAMPED in line for line in refusals):
         failures.append(

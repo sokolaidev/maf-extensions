@@ -1,10 +1,8 @@
 """The match logic behind `scripts/check_live_host_tools_sample.py`, tested on every PR.
 
 `_HEALTHY` is a real run's output, verbatim but for the three lines the environment
-contributes. It used to be a real run *trimmed*, and the trimming is what went wrong: #572
-added a refusal line the fixture never grew, so every assertion here kept passing while every
-live run of sample 10 failed on it. `TestTheFixtureIsStillWhatTheSamplePrints` runs the sample,
-so a fixture and a sample cannot drift apart quietly again.
+contributes. Trimming it by hand is how it came to be missing the line #572 added, so
+`TestTheFixtureIsStillWhatTheSamplePrints` runs the sample rather than trusting the fixture.
 """
 
 from __future__ import annotations
@@ -107,8 +105,7 @@ class TestHealthyRun:
             .replace("which this host's router denies outright", "refused by this host")
             .replace("this registry was sealed when", "the surface will not widen once")
         )
-        # Every replacement above must have landed. One that matches nothing leaves the fixture
-        # untouched and turns this into a second copy of `test_a_real_run_passes`.
+        # A replacement matching nothing would leave the fixture untouched.
         assert reworded != _HEALTHY
         for gone in (
             "The kind may attach.",
@@ -305,15 +302,10 @@ class TestEmptyOutput:
 
 
 class TestMoreThanOneRefusalIsPrinted:
-    """#572 put an APP-only refusal above the one this check asks about.
-
-    The sample prints two `refused:` lines. Reading only the first found the APP-only refusal,
-    saw no `rerun_failed_jobs` in it, and reported a gate that had in fact fired — so every
-    live run of sample 10 failed from #572 until this was fixed.
-    """
+    """The sample prints two `refused:` lines, and #572's APP-only one comes first."""
 
     def test_the_earlier_refusal_really_does_come_first(self):
-        """Without this ordering the two tests below would pass for the wrong reason."""
+        """Without this ordering the two below would pass for the wrong reason."""
         refusals = [line for line in _HEALTHY.splitlines() if "refused:" in line]
         assert len(refusals) == 2, refusals
         assert "registry is APP-only" in refusals[0]
@@ -334,13 +326,7 @@ class TestMoreThanOneRefusalIsPrinted:
 
 
 class TestAKeyIsNotTheTailOfALongerKey:
-    """`allowed_identities:` ends in `identities:`, and the refusal prints it first.
-
-    Taking the first line merely *containing* `identities:` read that refusal's
-    `allowed_identities=frozenset({Identity.APP, Identity.USER})` as the aggregate's own
-    answer, and reported identities as `['Identity.APP', 'Identity.USER']` — a repr the sample
-    prints nowhere.
-    """
+    """`allowed_identities:` ends in `identities:`, and the refusal prints it first."""
 
     def test_the_trap_line_is_in_the_output_and_comes_first(self):
         lines = _HEALTHY.splitlines()
@@ -361,11 +347,10 @@ class TestAKeyIsNotTheTailOfALongerKey:
 
 
 class TestTheFixtureIsStillWhatTheSamplePrints:
-    """The guard that would have caught #572 on the day it merged.
+    """Runs the sample, because every other assertion here reads the fixture.
 
-    Every other assertion in this file reads `_HEALTHY`, so all of them pass against a fixture
-    that has drifted from the sample — which is what happened. This one runs the sample. It
-    needs no sandbox, no model and no network: sample 10 answers everything at attach.
+    Cheap enough to sit in this suite: sample 10 answers everything at attach, so it needs no
+    sandbox, no model and no network.
     """
 
     def test_a_real_run_passes_the_check(self):
@@ -381,7 +366,7 @@ class TestTheFixtureIsStillWhatTheSamplePrints:
         assert check.assess(completed.stdout) == [], completed.stdout
 
     def test_every_line_the_check_reads_is_in_the_fixture(self):
-        """Names the drift directly, so a failure says which line the fixture is missing."""
+        """Says which line drifted, where the test above only says the check failed."""
         completed = subprocess.run(
             [sys.executable, str(_SAMPLE)],
             capture_output=True,
