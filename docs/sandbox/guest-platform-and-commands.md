@@ -66,13 +66,15 @@ Everything in this table is a live claim about the guest, made by code that has 
 | --- | --- |
 | `_host_tools_over_exec.py`, `launcher_script` | The guest runs `#!/bin/sh` |
 | `_host_tools_over_exec.py`, `launcher_script` | `command -v setsid`, then `setsid nohup sh -c` — `setsid` optional, `nohup` and `sh` not |
-| `_host_tools_over_exec.py`, `_remove_tree` under `reclaim_run` | `rm -rf` |
 | `_host_tools_over_exec.py`, `_stop_the_program` | `kill -KILL … 2>/dev/null` |
-| `_reclaim.py`, `reclaim_guest_path` | `rm -rf` on every tool call, quoted with `shlex.quote`, resolved with `posixpath.normpath` |
-| `maf-sandbox-docker`, `_backend.py`, `remove` | It is `rm -rf` / `rm -f`, *"since the engine has no delete primitive"* |
+| `maf-sandbox-docker`, `_backend.py`, `remove` and `reclaim` | It is `rm -rf` / `rm -f`, *"since the engine has no delete primitive"* |
+| `maf-sandbox-acas`, `_backend.py`, `reclaim` | `rm -rf` over `exec`, on the backend whose `remove` needs no shell at all |
+| `maf-sandbox-wslc`, `_backend.py`, `reclaim` | `rm -rf` over `exec`, the only delete this backend has |
 | `maf-sandbox-codeact` | The interpreter is spelled `python3` |
 | `maf-sandbox-bicep` | POSIX command templates |
 | `maf-sandbox-wslc` | The write-path component walk is `test` run inside the guest |
+
+**Core's two removals are not in the table**, and Decision 2 below is why. `reclaim_guest_path` and `_remove_tree` spell no command at all: both dispatch to `Sandbox.reclaim`, so the claim about the guest lands one layer down, on the backend rows above, where it is a claim the backend is in a position to make.
 
 `launcher_script` already concedes the whole problem in its own docstring:
 
@@ -164,7 +166,7 @@ Does this backend's capability set depend on commands inside the guest?
                             attach. Probe at acquire, narrow, refuse there.
 ```
 
-**The first fork keeps the apparatus off the backends it does not apply to.** The ACAS backend deletes through the data plane's own call with no shell involved, so probing it for `rm` is meaningless; its capability set is a property of an API, not of an image. A `run_code` backend is the same. Only a backend whose capabilities are *backed by guest commands* enters the rest of the tree.
+**The first fork keeps the apparatus off the backends it does not apply to.** The ACAS backend's capability set is a property of an API rather than of an image — its `remove` goes through the data plane's own call with no shell involved — so probing it for `rm` narrows nothing the router matches on. A `run_code` backend is the same. Only a backend whose *declared capabilities* are backed by guest commands enters the rest of the tree; an un-gated member like `reclaim` is narrowed by no probe on any backend, because there is no declaration for a probe to withdraw.
 
 **The second fork is `OsFamily`,** and it decides how to ask, not what is there: `command -v` on a POSIX guest, `Get-Command` on a Windows one.
 
@@ -216,7 +218,7 @@ Four consequences, all settled here.
 
 ## What this does not solve
 
-**The host-tool transport over exec is the largest remaining item, and it is larger than this axis.** It cannot be raised into a protocol method, because it is a launcher and a supervisor rather than a primitive: `#!/bin/sh`, `command -v setsid`, `nohup sh -c`, `rm -rf`, `kill -KILL`. Its own docstring hands the problem to backends and no backend has taken it. Making a second shim possible means first splitting the guest shim from the supervisor and giving the transport a way to be negotiated rather than assumed. **A Windows guest is not reachable until that work is done, whatever this axis declares.** What this axis buys in the meantime is that the mismatch is refused at attach instead of failing in the middle of a tool call.
+**The host-tool transport over exec is the largest remaining item, and it is larger than this axis.** It cannot be raised into a protocol method, because it is a launcher and a supervisor rather than a primitive: `#!/bin/sh`, `command -v setsid`, `nohup sh -c`, `kill -KILL`. Its own docstring hands the problem to backends and no backend has taken it. Its cleanup is the one piece that does come out, as `reclaim`, which is the measure of how little of a launcher a primitive can carry. Making a second shim possible means first splitting the guest shim from the supervisor and giving the transport a way to be negotiated rather than assumed. **A Windows guest is not reachable until that work is done, whatever this axis declares.** What this axis buys in the meantime is that the mismatch is refused at attach instead of failing in the middle of a tool call.
 
 **A probe is a fact at acquire, not a guarantee at exec.** It narrows the window rather than closing it, in the same way the reclaim surface already concedes for removal. A guest can lose a command between acquire and use, and confinement remains checked rather than held.
 
@@ -245,9 +247,10 @@ Decision 1 has shipped — merged, on `main`, unreleased — and nothing declare
 | Decision | State | Tracking |
 |---|---|---|
 | `OsFamily`, the backend attribute, the spec field, and the `ensure_can_serve` clause | shipped exactly as designed — two members, a `frozenset` per backend instance, `requires_os_family` defaulting to `None`, `SandboxOsFamilyNotSupported` raised at attach and again in `acquire`; additive, and the neutrality test now pins a Windows-shaped `work_dir` as served. Released in `maf-sandbox` 0.20.0 | [#111](https://github.com/sokolaidev/maf-extensions/issues/111) (closed) by [#532](https://github.com/sokolaidev/maf-extensions/pull/532) (merged); release [#542](https://github.com/sokolaidev/maf-extensions/pull/542) (merged) |
-| The Docker backend reads its daemon's `OSType` at construction | open — no shipped backend declares `os_families` at all, so the axis still refuses nothing on the one most likely to meet a non-Linux guest | untracked |
-| ACAS declares `POSIX` instead of asserting it in a comment | open — the `shlex.join` comment above is unchanged, and the field it was waiting for now exists | untracked |
-| The static ceiling, then the acquire-time probe | open — in that order: the ceiling is useful alone, the probe is not useful without it | untracked |
+| The Docker backend reads its daemon's `OSType` at construction | open — no shipped backend declares `os_families` at all, so the axis still refuses nothing on the one most likely to meet a non-Linux guest | [#587](https://github.com/sokolaidev/maf-extensions/issues/587) (open) |
+| ACAS declares `POSIX` instead of asserting it in a comment | open — the `shlex.join` comment above is unchanged, and the field it was waiting for now exists | [#588](https://github.com/sokolaidev/maf-extensions/issues/588) (open) |
+| Infrastructure commands raised into protocol methods, `reclaim` first | partial — `Sandbox.reclaim` ships and core spells `rm -rf` in neither place now; the write-path component walk and the working-directory creation are still commands | [#477](https://github.com/sokolaidev/maf-extensions/issues/477) for the reclaim; the walk is [#585](https://github.com/sokolaidev/maf-extensions/issues/585) (open) and the working directory is [#480](https://github.com/sokolaidev/maf-extensions/issues/480) and [#466](https://github.com/sokolaidev/maf-extensions/issues/466) (both open) |
+| The static ceiling, then the acquire-time probe | open — in that order: the ceiling is useful alone, the probe is not useful without it | [#586](https://github.com/sokolaidev/maf-extensions/issues/586) (open) |
 | Splitting the guest shim from the supervisor, and negotiating the transport | open — the precondition for any Windows guest whatever this axis declares, and independently valuable | [#357](https://github.com/sokolaidev/maf-extensions/issues/357) (open), negotiation [#369](https://github.com/sokolaidev/maf-extensions/issues/369) (open) |
 | A local-hypervisor backend | open — the consumer that makes every row above refuse something real | untracked; the nearest live candidate, [#382](https://github.com/sokolaidev/maf-extensions/issues/382) (open), is runtime-shaped and takes the branch that declares no family |
 | There is no filesystem axis | settled — nothing to build | — |
