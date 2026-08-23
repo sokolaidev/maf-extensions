@@ -543,6 +543,144 @@ class TestSpeculativeRequestDiscovery:
         assert "0003.request.json" not in looks
 
 
+class _DeadWorkerGuest(_ScriptedGuest):
+    """A guest state no single-process program produces: a worker claimed ``0001`` and died
+    before publishing it, while a surviving worker published ``0002``. The exit marker lands only
+    once ``0002`` has been answered, so the supervisor cannot finish without first stepping over
+    the ``0001`` hole — which is exactly the reading under test (#352). No dead process required.
+    """
+
+    def __init__(self) -> None:
+        super().__init__([], finish=False)
+
+    async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
+        del command, working_directory, timeout
+        self.started = True
+        self.files[posixpath.join(_LAYOUT.calls, "0001.claim")] = b""
+        self.files[posixpath.join(_LAYOUT.calls, "0002.request.json")] = json.dumps(
+            {"id": "0002", "name": "add", "arguments": {"left": 2, "right": 3}}
+        ).encode()
+        return ExecResult(stdout="", exit_code=0)
+
+    async def stat_file(self, path: str, *, working_directory: str):
+        await asyncio.sleep(0)  # as everywhere: a bound only bites a call that yields
+        resolved = self._resolved(path, working_directory)
+        if (
+            posixpath.join(_LAYOUT.calls, "0002.response.json") in self.files
+            and _LAYOUT.exit_code not in self.files
+        ):
+            self.files[_LAYOUT.output] = b"done"
+            self.files[_LAYOUT.exit_code] = b"0"
+        content = self.files.get(resolved)
+        if content is None:
+            return None
+        return SandboxEntry(path=resolved, kind=EntryKind.FILE, size_bytes=len(content))
+
+
+class _StatTable:
+    """A sandbox that answers ``stat_file`` from a fixed ``basename -> size`` table, for driving
+    :func:`_skip_dead_claim_hole` over each filesystem state directly. ``None`` models a backend
+    that cannot state a size; an absent key is a missing file."""
+
+    def __init__(self, sizes: dict[str, int | None]) -> None:
+        self._sizes = sizes
+
+    async def stat_file(self, path: str, *, working_directory: str):
+        await asyncio.sleep(0)
+        resolved = confine_guest_path(path, working_directory)
+        name = posixpath.basename(resolved)
+        if name not in self._sizes:
+            return None
+        return SandboxEntry(path=resolved, kind=EntryKind.FILE, size_bytes=self._sizes[name])
+
+
+class TestADeadWorkerClaimHole:
+    """A number claimed by a worker that died before publishing must not strand the rest of the
+    run: the supervisor steps over it after the grace and serves the later calls (#352)."""
+
+    @pytest.mark.parametrize(
+        ("sizes", "expected"),
+        [
+            # claim present, a later request present, the frontier's own request absent → skip.
+            pytest.param({"0001.claim": 0, "0002.request.json": 20}, (1, True), id="hole"),
+            # nothing claimed the frontier → not a dead worker, do not skip (the claim guard).
+            pytest.param({"0002.request.json": 20}, (0, False), id="no-claim"),
+            # nothing has moved past the frontier → nothing stranded yet, wait (the later guard).
+            pytest.param({"0001.claim": 0}, (0, False), id="nothing-past-it"),
+            # the frontier's request arrived while the check ran → serve it, never skip it.
+            pytest.param(
+                {"0001.claim": 0, "0001.request.json": 20, "0002.request.json": 20},
+                (0, False),
+                id="frontier-arrived",
+            ),
+            # the frontier is there but its size is unknown → fail closed, do not skip.
+            pytest.param(
+                {"0001.claim": 0, "0001.request.json": None, "0002.request.json": 20},
+                (0, False),
+                id="frontier-size-unknown",
+            ),
+            # a zero-length frontier has not arrived, so it is still a hole.
+            pytest.param(
+                {"0001.claim": 0, "0001.request.json": 0, "0002.request.json": 20},
+                (1, True),
+                id="frontier-size-zero",
+            ),
+        ],
+    )
+    def test_the_hole_check_reads_each_state_correctly(
+        self, sizes: dict[str, int | None], expected: tuple[int, bool]
+    ):
+        """Every guard in `_skip_dead_claim_hole`, pinned directly: the claim, the later request,
+        the frontier re-read (including a size the backend cannot state, which must fail closed)."""
+        result = asyncio.run(
+            host_tools_over_exec._skip_dead_claim_hole(
+                _StatTable(sizes), _LAYOUT, served=0, deadline=time.monotonic() + 1
+            )
+        )
+        assert result == expected
+
+    def test_a_claimed_but_unpublished_number_is_skipped_after_the_grace(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ):
+        monkeypatch.setattr(host_tools_over_exec, "_CLAIM_HOLE_GRACE", 0.0)
+        guest = _DeadWorkerGuest()
+        with caplog.at_level(logging.WARNING):
+            result = _run(guest, HostToolRun(_registry()))
+        assert result.exit_code == 0
+        answered = guest.files.get(posixpath.join(_LAYOUT.calls, "0002.response.json"))
+        assert answered is not None, "the later call was stranded behind the dead-worker hole"
+        assert json.loads(answered)["value"] == 5
+        assert any(
+            "claimed but never published" in record.getMessage() for record in caplog.records
+        )
+
+    def test_a_slow_first_call_is_served_in_order_not_skipped(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A single guest slow to issue its one call: the frontier is absent for longer than the
+        grace, but nothing claimed it and nothing is past it, so the hole check declines to skip
+        (the per-guard reasoning is pinned in `test_the_hole_check_reads_each_state_correctly`;
+        this holds the whole loop to serving the call in order rather than stepping over it)."""
+        monkeypatch.setattr(host_tools_over_exec, "_CLAIM_HOLE_GRACE", 0.0)
+
+        class _SlowFirstCall(_ScriptedGuest):
+            _polls = 0
+
+            async def stat_file(self, path: str, *, working_directory: str):
+                # Withhold 0001 for a few polls past the (zeroed) grace, then let it arrive; the
+                # double writes neither a claim nor a later request, so nothing looks like a hole.
+                if path.endswith("0001.request.json"):
+                    self._polls += 1
+                    if self._polls <= 3:
+                        return None
+                return await super().stat_file(path, working_directory=working_directory)
+
+        guest = _SlowFirstCall([("add", {"left": 1, "right": 1})])
+        result = _run(guest, HostToolRun(_registry()))
+        assert result.exit_code == 0
+        assert [answer["value"] for answer in guest.answers] == [2], "the slow call was served"
+
+
 class TestWhatTheGuestIsAllowedToSee:
     def test_an_unregistered_name_comes_back_as_a_sentence(self):
         guest = _ScriptedGuest([("delete_everything", {})])
