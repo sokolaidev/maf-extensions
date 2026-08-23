@@ -32,6 +32,7 @@ import contextlib
 import inspect
 import json
 import logging
+import uuid
 import warnings
 from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass
@@ -714,14 +715,44 @@ class HostToolRun:
         registry: Where names resolve and whose policy (cap, gate, ceilings) applies.
         logger: Where dispatch failures write their detail. Defaults to this module's logger;
             pass the workload's own so its records keep the workload's logger name.
+        run_id: A stable identifier for this run, carried to :attr:`run_id` and to the
+            ``dispatch_observer`` on every dispatch. Defaults to a fresh random one, so a host
+            that wants to attribute a call to the run that made it — a per-run ledger, a trace —
+            has an identity to key on rather than the object's own, which is neither loggable nor
+            stable across processes. Pass one to tie a run to a meaning of the caller's own (a
+            turn id, the guest's run directory); it must be a non-empty string if given.
     """
 
-    def __init__(self, registry: HostToolRegistry, *, logger: logging.Logger | None = None) -> None:
+    def __init__(
+        self,
+        registry: HostToolRegistry,
+        *,
+        logger: logging.Logger | None = None,
+        run_id: str | None = None,
+    ) -> None:
+        # `cast` to `object` before the check, as the observer argument is: the annotation says
+        # `str | None`, but guest-adjacent code and wrong arguments hand over anything, and an
+        # identity that cannot tell two runs apart — an empty string, a non-string — is rejected
+        # here rather than left to surface as a run every dispatch attributes to one name.
+        given = cast(object, run_id)
+        if given is not None and (not isinstance(given, str) or not given):
+            raise ValueError(f"run_id must be a non-empty string when given, not {given!r}")
         self._registry = registry
         self._logger = logger if logger is not None else _DEFAULT_LOGGER
+        self._run_id = run_id if run_id is not None else uuid.uuid4().hex
         self._dispatched = 0
         self._delivered = 0
         self._delivered_bytes = 0
+
+    @property
+    def run_id(self) -> str:
+        """This run's identifier — the caller's, or a fresh random one if none was given.
+
+        The identity a ``dispatch_observer`` attributes a call by: object identity works within a
+        process but is neither loggable nor stable, and this is. Unique per run unless a caller
+        deliberately reuses one.
+        """
+        return self._run_id
 
     @property
     def registry(self) -> HostToolRegistry:

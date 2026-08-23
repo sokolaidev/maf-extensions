@@ -252,16 +252,18 @@ class Ledger:
         self.asked: list[str] = []
         self._arrived: list[float] = []
         self._answered: list[float] = []
-        self._runs: list[HostToolRun | None] = []
-        self.dispatched_runs: set[HostToolRun] = set()
+        self._runs: list[str | None] = []
+        self.dispatched_runs: set[str] = set()
 
     def arriving(self, what: str) -> None:
         self.asked.append(what)
         self._arrived.append(time.perf_counter())
-        self._runs.append(_current_run.get())
         run = _current_run.get()
+        # Keyed by the run's own `run_id`, not the object: a documented, loggable identity the
+        # host observer carries, rather than this process's `id()` for an internal class.
+        self._runs.append(run.run_id if run is not None else None)
         if run is not None:
-            self.dispatched_runs.add(run)
+            self.dispatched_runs.add(run.run_id)
 
     def answered(self) -> None:
         self._answered.append(time.perf_counter())
@@ -284,7 +286,7 @@ class Ledger:
         boundaries: list[float] = []
         for index in range(len(self._answered) - 1):
             gap = self._arrived[index + 1] - self._answered[index]
-            if self._runs[index] is self._runs[index + 1]:
+            if self._runs[index] == self._runs[index + 1]:
                 gaps.append(gap)
             else:
                 boundaries.append(gap)
