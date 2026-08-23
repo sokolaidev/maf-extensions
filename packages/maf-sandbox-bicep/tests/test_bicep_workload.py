@@ -10,8 +10,8 @@ Also covered: the path-safety guard, SARIF parsing, the command templates, and t
 this package imports nothing from the application that hosts it.
 
 The fakes themselves live in :mod:`maf_sandbox.testing` rather than here — this module
-supplies only what is Bicep-specific: the empty-SARIF default and the per-test recording
-subclass.
+supplies only what is Bicep-specific: the empty-SARIF default, the write ledger a real
+reclaim makes necessary, and the per-test recording subclass.
 """
 
 from __future__ import annotations
@@ -19,6 +19,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Mapping
+from types import MappingProxyType
 
 import pytest
 from maf_sandbox import CallerContext, SandboxRouter
@@ -71,8 +73,37 @@ def _sarif(rule: str = "no-unused-params", message: str = "Parameter 'foo' is un
 _EMPTY_SARIF = json.dumps({"version": "2.1.0", "runs": []})
 
 
+class _RecordingContents(dict[str, bytes]):
+    """A sandbox's ``contents``, copying every write where the removal cannot reach it."""
+
+    def __init__(self, written: dict[str, bytes], seeded: Mapping[str, bytes]) -> None:
+        super().__init__()
+        self._written = written
+        for path, content in seeded.items():
+            self[path] = content
+
+    def __setitem__(self, path: str, content: bytes) -> None:
+        super().__setitem__(path, content)
+        self._written[path] = content
+
+
+class _KeepsWhatItWrote(InProcessSandbox):
+    """A sandbox that still knows what a call wrote after the reclaim removed it."""
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        #: Every path ever written, in bytes. :attr:`written_files` is the decoded view.
+        self.written: dict[str, bytes] = {}
+        self.contents = _RecordingContents(self.written, self.contents)
+
+    @property
+    def written_files(self) -> Mapping[str, str]:
+        """:attr:`written`, UTF-8 decoded — what ``files`` is to ``contents``."""
+        return MappingProxyType({p: c.decode("utf-8") for p, c in self.written.items()})
+
+
 def _fake_backend(
-    sandbox: InProcessSandbox | None = None, acquire_error: BaseException | None = None
+    sandbox: _KeepsWhatItWrote | None = None, acquire_error: BaseException | None = None
 ) -> InProcessSandboxBackend:
     """A backend whose sandbox defaults to returning an empty-but-valid SARIF document.
 
@@ -83,9 +114,30 @@ def _fake_backend(
     exactly what :class:`TestExecutionIsVisible` depends on.
     """
     return InProcessSandboxBackend(
-        sandbox if sandbox is not None else InProcessSandbox(default_stdout=_EMPTY_SARIF),
+        sandbox if sandbox is not None else _KeepsWhatItWrote(default_stdout=_EMPTY_SARIF),
         acquire_error=acquire_error,
     )
+
+
+def _is_core_removal(command: str) -> bool:
+    """Whether ``command`` is core removing a call's directory rather than the workload working.
+
+    Core spells `rm -rf` today and dispatches `Sandbox.reclaim` once that ships, which is no
+    command at all. This suite asserts on what the workload asked for, so it filters either.
+    """
+    return command.startswith("rm -rf ")
+
+
+def _commands(backend: InProcessSandboxBackend) -> list[tuple[str, str, float]]:
+    """The commands the workload asked for, without core's removal."""
+    return [entry for entry in backend.sandbox.commands if not _is_core_removal(entry[0])]
+
+
+def _written(backend: InProcessSandboxBackend) -> Mapping[str, str]:
+    """Every file written into this backend's sandbox, decoded, reclaimed ones included."""
+    sandbox = backend.sandbox
+    assert isinstance(sandbox, _KeepsWhatItWrote), "every sandbox in this module keeps its writes"
+    return sandbox.written_files
 
 
 def _context(store: InMemoryStore, *, thread_id: str | None = "thread-1") -> CallerContext:
@@ -173,8 +225,8 @@ class TestWriteOrdering:
     happens to list it first.
     """
 
-    def _recording_sandbox(self, events: list[tuple[str, str]]) -> InProcessSandbox:
-        class _Recording(InProcessSandbox):
+    def _recording_sandbox(self, events: list[tuple[str, str]]) -> _KeepsWhatItWrote:
+        class _Recording(_KeepsWhatItWrote):
             async def write_file(
                 self, path: str, content: str | bytes, *, working_directory: str
             ) -> None:
@@ -201,9 +253,7 @@ class TestWriteOrdering:
 
         _run(_tool(store, backend), ["main.bicep", "modules/db.bicep"])
 
-        kinds = [
-            kind for kind, detail in events if kind != "exec" or not detail.startswith("rm -rf ")
-        ]
+        kinds = [k for k, c in events if not (k == "exec" and _is_core_removal(c))]
         assert kinds == ["write", "write"] + ["exec"] * 4, events
         assert kinds.index("exec") == 2, (
             f"a file was compiled before every file had been written: {events}"
@@ -361,8 +411,8 @@ class TestEndToEnd:
         backend = _fake_backend()
         out = _run(_tool(store, backend), ["main.bicep"])
 
-        assert list(backend.sandbox.files.values()) == ["param unused string"]
-        (path,) = backend.sandbox.files
+        assert list(_written(backend).values()) == ["param unused string"]
+        (path,) = _written(backend)
         assert path.endswith("/main.bicep")
         assert "build(main.bicep): no diagnostics" in out
         assert "lint(main.bicep): no diagnostics" in out
@@ -372,15 +422,14 @@ class TestEndToEnd:
         backend = _fake_backend()
         _run(_tool(store, backend), ["main.bicep"])
 
-        (path,) = backend.sandbox.files
-        commands = [c for c, _, _ in backend.sandbox.commands if not c.startswith("rm -rf ")]
+        (path,) = _written(backend)
+        commands = [c for c, _, _ in _commands(backend)]
         assert commands == [_BUILD_CMD.format(path=path), _LINT_CMD.format(path=path)]
-        assert f"rm -rf {path.rsplit('/', 1)[0]}" in [c for c, _, _ in backend.sandbox.commands]
 
     def test_renders_diagnostics_from_sarif(self):
         store = InMemoryStore({"main.bicep": "x"})
         backend = _fake_backend(
-            InProcessSandbox(outputs={"bicep lint": _sarif()}, default_stdout=_EMPTY_SARIF)
+            _KeepsWhatItWrote(outputs={"bicep lint": _sarif()}, default_stdout=_EMPTY_SARIF)
         )
         out = _run(_tool(store, backend), ["main.bicep"])
 
@@ -391,7 +440,7 @@ class TestEndToEnd:
         """A broken sandbox must never read as "no diagnostics"."""
         store = InMemoryStore({"main.bicep": "x"})
         backend = _fake_backend(
-            InProcessSandbox(
+            _KeepsWhatItWrote(
                 outputs={"bicep build": "Segmentation fault"}, default_stdout=_EMPTY_SARIF
             )
         )
@@ -404,12 +453,12 @@ class TestEndToEnd:
         backend = _fake_backend()
         _run(_tool(store, backend, exec_timeout_seconds=7), ["main.bicep"])
 
-        assert {t for c, _, t in backend.sandbox.commands if not c.startswith("rm -rf ")} == {7}
+        assert {t for _, _, t in _commands(backend)} == {7}
 
     def test_a_timeout_is_reported_per_phase_rather_than_hanging(self):
         store = InMemoryStore({"main.bicep": "x"})
         backend = _fake_backend(
-            InProcessSandbox(raises=TimeoutError(), default_stdout=_EMPTY_SARIF)
+            _KeepsWhatItWrote(raises=TimeoutError(), default_stdout=_EMPTY_SARIF)
         )
         out = _run(_tool(store, backend, exec_timeout_seconds=3), ["main.bicep"])
 
@@ -423,7 +472,7 @@ class TestEndToEnd:
 
         # Paths are <work dir>/<per-call dir>/<store path>; assert the last part rather
         # than pinning a directory that changes every call (see TestStaleFilesAcrossRounds).
-        assert {_store_part(p) for p in backend.sandbox.files} == {"a.bicep", "b.bicep"}
+        assert {_store_part(p) for p in _written(backend)} == {"a.bicep", "b.bicep"}
         assert out.count("no diagnostics") == 4  # build + lint, per file
 
     def test_the_key_carries_the_hosts_scope_and_thread_not_model_input(self):
@@ -469,12 +518,12 @@ class TestStaleFilesAcrossRounds:
         tool = _tool(store, backend)
 
         _run(tool, ["main.bicep", "modules/storage.bicep"])
-        first = set(backend.sandbox.files)
+        first = set(_written(backend))
 
         # Round two: the module is gone from the file store and is not named.
         store.files.pop("modules/storage.bicep")
         _run(tool, ["main.bicep"])
-        second = set(backend.sandbox.files) - first
+        second = set(_written(backend)) - first
 
         assert len(second) == 1
         (round_two_path,) = second
@@ -495,10 +544,10 @@ class TestStaleFilesAcrossRounds:
         # Whatever directory round two compiled in, the deleted module is not under it.
         build_cmd = [c for c, _, _ in backend.sandbox.commands if "bicep build" in c][-1]
         round_dir = build_cmd.split("bicep build ")[1].split("/main.bicep")[0]
-        assert f"{round_dir}/modules/storage.bicep" not in backend.sandbox.files
+        assert f"{round_dir}/modules/storage.bicep" not in _written(backend)
 
 
-class _YieldingSandbox(InProcessSandbox):
+class _YieldingSandbox(_KeepsWhatItWrote):
     """Suspends on every call, so two gathered tool bodies really do interleave.
 
     The in-process fake awaits nothing, so without this two concurrent calls run one after
@@ -542,17 +591,15 @@ class TestConcurrentRounds:
 
         self._both(tool, ["a.bicep"], ["b.bicep"])
 
-        written = list(backend.sandbox.files)
+        written = list(_written(backend))
         assert sorted(_store_part(p) for p in written) == ["a.bicep", "b.bicep"]
         assert len({p.rsplit("/", 1)[0] for p in written}) == 2
         # Nothing compiled outside the directory it was written into, and both survived to
         # be compiled — a sibling wipe would leave one of these commands with no source.
-        for command, working_directory, _ in backend.sandbox.commands:
-            if command.startswith("rm -rf "):
-                continue
+        for command, working_directory, _ in _commands(backend):
             compiled = command.split(" ")[2]
             assert compiled.startswith(f"{working_directory}/")
-            assert compiled in backend.sandbox.files
+            assert compiled in _written(backend)
 
     def test_both_calls_report_their_own_diagnostics(self):
         store = InMemoryStore({"a.bicep": "x", "b.bicep": "y"})
@@ -572,7 +619,7 @@ class TestConcurrentRounds:
 
         from maf_sandbox_bicep._tool import _WORK_DIR
 
-        (path,) = backend.sandbox.files
+        (path,) = _written(backend)
         assert path.startswith(f"{_WORK_DIR}/")
         # Not the root itself — that is where bicepconfig.json lives.
         assert path != f"{_WORK_DIR}/main.bicep"
@@ -582,11 +629,9 @@ class TestConcurrentRounds:
         backend = _fake_backend()
         _run(_tool(store, backend), ["main.bicep"])
 
-        (path,) = backend.sandbox.files
+        (path,) = _written(backend)
         round_dir = path.rsplit("/", 1)[0]
-        assert {
-            wd for command, wd, _ in backend.sandbox.commands if not command.startswith("rm -rf ")
-        } == {round_dir}
+        assert {wd for _, wd, _ in _commands(backend)} == {round_dir}
 
 
 class TestDeployWorkflowStaysOffTheApplication:
@@ -728,7 +773,7 @@ class TestConfigDiscovery:
 
         from maf_sandbox_bicep._tool import _WORK_DIR
 
-        (path,) = backend.sandbox.files
+        (path,) = _written(backend)
         assert path.startswith(f"{_WORK_DIR}/")
         assert path.count("/") == _WORK_DIR.count("/") + 2  # <root>/<round>/main.bicep
 
@@ -737,11 +782,9 @@ class TestConfigDiscovery:
         backend = _fake_backend()
         _run(_tool(store, backend), ["main.bicep"])
 
-        (path,) = backend.sandbox.files
+        (path,) = _written(backend)
         round_dir = path.rsplit("/", 1)[0]
-        assert {
-            wd for command, wd, _ in backend.sandbox.commands if not command.startswith("rm -rf ")
-        } == {round_dir}
+        assert {wd for _, wd, _ in _commands(backend)} == {round_dir}
 
 
 class TestEndToEndRefusals:
@@ -763,7 +806,7 @@ class TestEndToEndRefusals:
         assert "narrower" in out
         assert "main.bicep" in out, "the listing itself is what makes this self-correcting"
         assert "unsafe" not in out, "a missing file must not be described as a refusal"
-        assert backend.sandbox.files == {}
+        assert _written(backend) == {}
 
     def test_a_dot_slash_name_reads_back_from_the_store(self):
         """Validation normalises the name; the store is not normalised, so it must not.
@@ -777,7 +820,7 @@ class TestEndToEndRefusals:
         out = _run(_tool(store, backend), ["./main.bicep"])
 
         assert "no content" not in out
-        assert backend.sandbox.files, "the file should have reached the sandbox"
+        assert _written(backend), "the file should have reached the sandbox"
 
     def test_a_listing_miss_and_an_unsafe_name_do_not_share_a_message(self):
         """The whole point: a caller must be able to tell these two apart."""
@@ -958,7 +1001,7 @@ class TestRestoreFailureBanner:
     @pytest.mark.parametrize("rule", ["BCP190", "BCP191", "BCP192"])
     def test_a_restore_failure_gets_the_incomplete_validation_banner(self, rule):
         store = InMemoryStore({"main.bicep": "x"})
-        sandbox = InProcessSandbox(
+        sandbox = _KeepsWhatItWrote(
             outputs={"bicep build": _sarif(rule=rule, message="Unable to restore …: 403")},
             default_stdout=_EMPTY_SARIF,
         )
@@ -978,7 +1021,7 @@ class TestRestoreFailureBanner:
     def test_ordinary_errors_do_not_trigger_it(self):
         """Real defects must arrive undecorated — the banner is about absent evidence."""
         store = InMemoryStore({"main.bicep": "x"})
-        sandbox = InProcessSandbox(
+        sandbox = _KeepsWhatItWrote(
             outputs={"bicep build": _sarif(rule="BCP035", message="Missing 'properties'.")},
             default_stdout=_EMPTY_SARIF,
         )
