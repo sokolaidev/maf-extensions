@@ -1,12 +1,14 @@
-# 15 — A program calling back into the host (ACA sandbox)
+# 15 — A program calling back into the host (ACA sandbox, or Docker)
 
-Every other sample sends things *in* to a sandbox and takes results *out*. This one opens the other direction: model-written code, running inside a microVM, calling functions that execute in the host process.
+Every other sample sends things *in* to a sandbox and takes results *out*. This one opens the other direction: model-written code, running inside a microVM — or, with `SAMPLE_BACKEND=docker`, a local container — calling functions that execute in the host process.
 
 ```
-app  ->  maf_sandbox (router)  ->  maf_sandbox_acas  ->  the sandbox
-              ^ maf_sandbox_codeact calls the router        |
-              +------ a host function, dispatched ----------+
+app  ->  maf_sandbox (router)  ->  acas | docker  ->  the sandbox
+              ^ maf_sandbox_codeact calls the router      |
+              +------ a host function, dispatched --------+
 ```
+
+`SAMPLE_BACKEND` picks the backend: `acas` (the default) runs the walk against a remote Azure microVM, `docker` against a local container. The workload, the routes and the measurement are identical — the point ([#519](https://github.com/sokolaidev/maf-extensions/issues/519)) is to read a remote round trip against a local one. The one behaviour that differs is act 5 (see below), which needs `Capability.FILES_LIST` and so runs only on ACAS.
 
 **Read [sample 10's README](../10_inprocess_host_tools/README.md) first.** It is the configuration half — `@sandbox_tool`, the registry gate, the aggregate, the seal, and both ways a router refuses the whole kind — all answered at attach, with no sandbox and no model. This page is the traffic half.
 
@@ -50,6 +52,20 @@ Dispatch resolves the whole walk inside one program and pays a *transport* round
 
 Both answers are correct, so correctness is not what a round trip buys. What it buys is the last row.
 
+### The same walk on Docker
+
+`SAMPLE_BACKEND=docker` runs everything above on a local container instead of the ACAS microVM — same workload, same routes, same measurement — so the local round trip reads against the remote one and you can tell the dispatch pattern apart from the control plane it ran on ([#519](https://github.com/sokolaidev/maf-extensions/issues/519)). From a local run (gpt-5.4):
+
+| | dispatched (docker) | direct (docker) |
+| --- | --- | --- |
+| **tool-calling rounds** | **2** | **5** |
+| tool calls per round | `[1, 1]` | `[2, 2, 5, 3, 1]` |
+| wall clock | 45.62s | 23.10s |
+| **sales figures the model wrote into code** | **0** | **12** |
+| per-dispatch round trip | median **1.31s** (16 gaps) | — |
+
+The structural finding is identical on both backends: the dispatched route writes no figure into code, and pays fewer tool-calling rounds than the direct one. What does *not* transfer cleanly is wall clock — a container started fresh here versus a warm remote microVM, two different runs of a non-deterministic model, one backend billed and one not. So read the docker round trip as a **floor**: the file-based transport polls for each request, and ~1.31s is that poll cadence. A remote backend adds its control plane on top of that floor; it does not remove it. The one act that does *not* travel is act 5 — enumerating the guest filesystem needs `Capability.FILES_LIST`, which Docker does not declare, so on docker act 5 prints a skip note and the check runs with `--docker`.
+
 ## Where the data ends up, which is the real trade
 
 On the direct route every figure arrives as a tool result and the only road into the program is for the model to write it into the source:
@@ -70,21 +86,21 @@ Dispatched, the model writes none of them and *cannot*: the program exists befor
 
 So the sample budgets for it out loud. A call-heavy host has to, and the arithmetic is not the whole story: the *model* writes the program, and a program that looks up a product name per sales row asks twelve times where a caching one asks three.
 
-## What a dispatch proves here, and not on a local backend
+## What a dispatch proves — the launcher detached
 
-ACAS's `exec` is blocking and timeout-bounded. The guest shim publishes a request file and then **blocks**, waiting for a response the host can only write while the program is still running. If the launcher had not detached, the `exec` would own the program, the host would never get to write, and it would sit there until its deadline.
+The CodeAct transport is the same on both backends, and it turns on one thing: the guest shim publishes a request file and then **blocks**, waiting for a response the host can only write while the program is still running. If the launcher had not detached the program from the `exec` that started it, the `exec` would own the program, the host would never get to write, and it would sit there until its deadline.
 
-So a dispatch that is answered at all proves the launcher detached and the supervisor took over — that is the precondition of act 2 producing any number, and the reason `Capability.HOST_TOOLS` is a claim about this backend's `exec` rather than about a method of its own.
+So a dispatch that is answered at all proves the launcher detached and the supervisor took over — that is the precondition of act 2 producing any number, and the reason `Capability.HOST_TOOLS` is a claim about a backend's `exec` rather than about a method of its own. On docker you can watch the container it happens in with `docker ps` while the run is live, which the remote backend does not let you do.
 
 **The other half of that is stated here rather than measured.** The bound itself is there: `dispatch_over_exec` starts its deadline *before* the launcher goes up and spends the one deadline across upload, launch, polling and serving, raising `SandboxProgramTimeout` when it expires. That is a *supervisor* bound rather than an exec bound — the host stops waiting whatever the guest is doing. A wedged guest is signalled too, and the message says which of three things was attempted: the program's process group was sent `SIGKILL`, the program alone was, or nothing was.
 
 **Signalled is not stopped**, and neither the message nor this page claims it is. The signal reaches the process group the program starts in, so a descendant that leaves that group outlives it; and the pid and the session both come from files the program itself can write, so `kill` can return success against a process the guest named. `_stop_the_program` says both in as many words. Disposing the sandbox is the only thing that ends a run for certain, which is what the footer does.
 
-**This sample exercises none of it**, and the reason is cost rather than a missing mechanism: proving a kill needs a third billable sandbox and a program written to overrun on purpose, in a run that already creates two and whose workload was chosen for its round trips.
+**This sample exercises none of it**, and the reason is scope rather than a missing mechanism: proving a kill needs a program written to overrun on purpose and a third sandbox to hold it, in a run whose workload was chosen for its round trips.
 
-## What the runs leave in the guest
+## What the runs leave in the guest (ACAS only)
 
-Act 5 enumerates the work root with `list_dir`, which needs `Capability.FILES_LIST` — ACAS declares it and Docker does not, so this act is one more reason the sample belongs on this backend.
+Act 5 enumerates the work root with `list_dir`, which needs `Capability.FILES_LIST`. ACAS declares it and Docker does not, so on `SAMPLE_BACKEND=docker` act 5 prints a skip note and everything in this section applies only to the ACAS run.
 
 A fresh directory per run keeps one run's traffic out of the next one's. On current CodeAct, the framework owns that call directory and reclaims it when the tool call returns, so act 5 may find no directories at all. Older CodeAct kinds leave those directories for the sandbox, and act 5 reports that behavior too.
 
@@ -102,33 +118,36 @@ Twenty live runs decided this. The lookup count moved between 18 and 29, wall cl
 - **Direct needed more tool-calling rounds than dispatch**, and its shape shows at least four batches — one per stage. The shape and the round count come from one list, so they have to agree.
 - **Who carried the figures**: none dispatched, all of them direct. Both halves are structural — one is impossible, the other is forced.
 - **All four lookup stages ran, on both routes.** A count is not enough: a per-state total is a sum of the sales amounts, so a program can skip `product_name`, print both totals and satisfy a count-and-shape check while never touching the stage the comparison is about. The dispatched route's table must also name all three products, because that model is never handed one — the direct route's model holds them and usually labels the table in its own reply, so that half is recorded rather than required.
-- **The run reports both cleanup layers.** A legacy transport must leave at least three files for every answered call, because a served call leaves the claimed id, the request and the answer. A current transport must leave none; a current CodeAct kind must also report no surviving call directories. The host observer remains the independent count of dispatched programs when framework reclamation removes their directories.
+- **On ACAS, the run reports both cleanup layers** (the docker check is run with `--docker`, which drops this act). A legacy transport must leave at least three files for every answered call, because a served call leaves the claimed id, the request and the answer. A current transport must leave none; a current CodeAct kind must also report no surviving call directories. The host observer remains the independent count of dispatched programs when framework reclamation removes their directories.
 - **The gaps left are the transport's, and the host says how many were not.** *n* calls give *n − 1* intervals between consecutive calls; *p* dispatching programs put *p − 1* boundaries among them, each holding a model turn and a launcher rather than a file round trip; so *n − p* is what is left of the transport. The host's `dispatch_observer` counts the distinct `HostToolRun` instances that actually dispatched, independently of the model's message shape and of whatever files the installed transport leaves in the guest. A mismatch between the observed boundaries and the host count fails.
 
 Wall clock, tokens and lookup counts are **recorded and never bounded**, and what a model *said* is never read. Every line the check reads carries the `[measured]` tag at the left margin; `quoted()` prefixes any tagged line inside a model's reply with `> `, so prose that tries to answer for the host is visibly not the host answering.
 
 ## Prerequisites
 
-- An Azure subscription with the [Container Apps Sandboxes](https://learn.microsoft.com/azure/container-apps/sandboxes) preview enabled, and a sandbox group.
-- `mcr.microsoft.com/devcontainers/python:3.13-bookworm` available to that group — sample 14's image, so a group set up for that one already has it. The launcher is POSIX shell and the shim is Python, so the guest needs **`sh`, `nohup`, `mkdir`, `mv`, `printf`, `rm`, `kill` and `python3`**, and uses `setsid` where it is present — the launcher creates the working directory, redirects output and renames the exit marker into place. A distroless or Windows image cannot serve this whatever it declares.
-- An Azure OpenAI deployment. No key: `az login` is enough.
+`SAMPLE_BACKEND` selects the backend; the model deployment is needed either way (no key — `az login` is enough).
 
-**This creates two billable sandboxes**, one per route, both disposed at the end rather than left to the lifecycle timers — the check fails the run if they were not.
+**On `acas` (default):** an Azure subscription with the [Container Apps Sandboxes](https://learn.microsoft.com/azure/container-apps/sandboxes) preview enabled and a sandbox group, plus `mcr.microsoft.com/devcontainers/python:3.13-bookworm` imported into that group as a disk image (sample 14's, so a group set up for that one already has it). **This creates two billable sandboxes**, one per route, both disposed at the end — the check fails the run if they were not.
 
-Two rather than one because the sample supports published transports and CodeAct kinds with different cleanup behavior. On a legacy combination, sharing a sandbox would leave the dispatched route's responses — every id, store list and sales row — readable on the guest filesystem for the direct route's program, which is a second road to the same data that this sample never measures and the comparison assumes does not exist. Keeping two sandboxes preserves that boundary on every supported release.
+**On `docker` (`SAMPLE_BACKEND=docker`):** Docker with a daemon this process can reach — no cloud subscription and no sandbox group. The same image, which `docker run` pulls on first use (samples 06 and 08 use it too). It creates two local containers, one per route, and bills nothing.
 
-A transport that reclaims its own files closes that leak, since it removes the directory holding those responses when the run ends. It stays two sandboxes anyway: one would be right on the new transport and wrong on the old one, and a sample has to be right on whichever is installed.
+Either way the launcher is POSIX shell and the shim is Python, so the guest needs **`sh`, `nohup`, `mkdir`, `mv`, `printf`, `rm`, `kill` and `python3`**, and uses `setsid` where it is present. A distroless or Windows image cannot serve this whatever it declares.
+
+Two sandboxes rather than one because the routes are two conversations and the dispatched route widens its sandbox's spec with the host-tool channel while the direct route's carries none — sharing one would give the direct route a road to the lookups this sample never measures on it. On ACAS there is a third reason: a legacy transport leaves the dispatched route's responses — every id, store list and sales row — readable on the guest filesystem, and a shared sandbox would let the direct route's program read them.
 
 ## Environment
 
-| Variable | What it is |
-| --- | --- |
-| `ACAS_SANDBOX_ENDPOINT` | The control-plane endpoint for your region |
-| `ACAS_SANDBOX_SUBSCRIPTION_ID` | The subscription holding the sandbox group |
-| `ACAS_SANDBOX_RESOURCE_GROUP` | Its resource group |
-| `ACAS_SANDBOX_GROUP` | The sandbox group name |
-| `AZURE_OPENAI_ENDPOINT` | Your Azure OpenAI resource |
-| `AZURE_OPENAI_CHAT_MODEL` | The chat deployment name |
+The model's two variables are always needed. The four `ACAS_SANDBOX_*` are read only on `acas`; docker reads none of them.
+
+| Variable | What it is | Needed on |
+| --- | --- | --- |
+| `SAMPLE_BACKEND` | `acas` (default) or `docker` | optional |
+| `ACAS_SANDBOX_ENDPOINT` | The control-plane endpoint for your region | acas |
+| `ACAS_SANDBOX_SUBSCRIPTION_ID` | The subscription holding the sandbox group | acas |
+| `ACAS_SANDBOX_RESOURCE_GROUP` | Its resource group | acas |
+| `ACAS_SANDBOX_GROUP` | The sandbox group name | acas |
+| `AZURE_OPENAI_ENDPOINT` | Your Azure OpenAI resource | both |
+| `AZURE_OPENAI_CHAT_MODEL` | The chat deployment name | both |
 
 No `ACAS_SANDBOX_REGISTRY`: the image is named fully qualified in `agent.py`.
 
@@ -136,14 +155,18 @@ No `ACAS_SANDBOX_REGISTRY`: the image is named fully qualified in `agent.py`.
 
 ```bash
 az login
-uv run samples/15_acas_codeact_host_tools/agent.py
+uv run samples/15_acas_codeact_host_tools/agent.py                        # acas (default)
+SAMPLE_BACKEND=docker uv run samples/15_acas_codeact_host_tools/agent.py  # docker
 ```
 
-To run the check the live job runs:
+To run the checks the live jobs run — ACAS without the flag, docker with `--docker` (which drops the act-5 leftover assertions the docker run cannot produce):
 
 ```bash
 uv run samples/15_acas_codeact_host_tools/agent.py | tee out.txt
 uv run python scripts/check_live_host_tools_dispatch_sample.py out.txt
+
+SAMPLE_BACKEND=docker uv run samples/15_acas_codeact_host_tools/agent.py | tee docker-out.txt
+uv run python scripts/check_live_host_tools_dispatch_sample.py --docker docker-out.txt
 ```
 
 ## When it goes wrong
@@ -156,4 +179,6 @@ uv run python scripts/check_live_host_tools_dispatch_sample.py out.txt
 
 **The dispatched route wrote a figure into code.** The check fails on this and it should be impossible: the program is written before any dispatch can answer. Either the model was handed a value somewhere it should not have been, or that line has stopped measuring tool-call arguments only.
 
-**`no such directory: '<run>/host_tools'`.** A run that never dispatched — act 3's, since without a registry the kind uses the flat run directory it always has. Act 5 catches that by its own type; anything else should still be heard.
+**`no such directory: '<run>/host_tools'`.** A run that never dispatched — act 3's, since without a registry the kind uses the flat run directory it always has. Act 5 catches that by its own type; anything else should still be heard. (ACAS only — act 5 does not run on docker.)
+
+**`Cannot connect to the Docker daemon` (on `SAMPLE_BACKEND=docker`).** Docker is not running, or this process cannot reach it. Everything is local, so there is no fallback — start the daemon.

@@ -1,9 +1,14 @@
-"""Assert that a live `samples/15_acas_codeact_host_tools` run really dispatched, and measured.
+"""Assert that a live host-tools dispatch sample really dispatched, and measured.
 
 The live workflow installs the *published* wheels, runs the sample and pipes its output here.
 
     python samples/15_acas_codeact_host_tools/agent.py | tee out.txt
     python scripts/check_live_host_tools_dispatch_sample.py out.txt   # or: ... | python -
+
+Sample 15 runs the same call-heavy walk on either backend: ACAS by default, docker with
+`SAMPLE_BACKEND=docker`. Pass `--docker` to check the docker run — its backend declares no
+`FILES_LIST`, so it prints no act-5 leftover lines and that one act is dropped. Everything else
+the check enforces is backend-agnostic and applies to both.
 
 **What is asserted is chosen so a model's mood cannot decide a release.** Both routes run
 Python in the sandbox and walk the same four stages, so what is enforced is either an
@@ -13,7 +18,8 @@ interpreter's output or a structural property of the two roads:
 - Direct needed more tool-calling rounds than dispatch.
 - The dispatched route's model carried no sales figure into code; the direct route's carried
   all twelve.
-- The runs declare both transport cleanup and framework call-directory cleanup, which act 5 measures.
+- The runs declare both transport cleanup and framework call-directory cleanup, which act 5
+  measures — ACAS only, since `--docker` drops that act.
 - The gaps behind the round-trip summary were the ones the transport made: *n* calls over *p*
   programs leave *n - p*.
 
@@ -708,18 +714,27 @@ def _assess_what_the_runs_left(output: str) -> list[str]:
     return failures
 
 
-def _assess_the_sandbox_went_away(output: str) -> list[str]:
-    """Billable, and there are two — a sandbox per route, both read by act 5 and both gone."""
+def _assess_the_sandbox_went_away(output: str, *, docker: bool = False) -> list[str]:
+    """Two — a sandbox per route — and both gone, whether they bill (ACAS) or not (docker)."""
     match, failures = _once(_DISPOSED.findall(output), "Disposed")
     if match is None:
         return failures
     if int(match) != _SANDBOXES:
-        failures.append(
-            f"{match} sandbox(es) disposed where the sample acquires {_SANDBOXES}, one per "
-            "route so neither can read the other's leftovers — a sandbox this "
-            "sample leaves behind bills until the lifecycle timers reach it, and it is also "
-            "the only thing that removes the files act 5 counted"
-        )
+        if docker:
+            failures.append(
+                f"{match} sandbox(es) disposed where the sample acquires {_SANDBOXES}, one per "
+                "route so neither route's program can reach the other's outward channel — a "
+                "container this sample leaves behind keeps running until it is explicitly removed "
+                "(docker rm, a label-based purge, or the host going away); nothing here reclaims "
+                "it on a timer"
+            )
+        else:
+            failures.append(
+                f"{match} sandbox(es) disposed where the sample acquires {_SANDBOXES}, one per "
+                "route so neither can read the other's leftovers — a sandbox this "
+                "sample leaves behind bills until the lifecycle timers reach it, and it is also "
+                "the only thing that removes the files act 5 counted"
+            )
     return failures
 
 
@@ -747,8 +762,15 @@ def _assess_the_cost_was_measured(output: str) -> list[str]:
     return failures
 
 
-def assess(output: str) -> list[str]:
-    """Every reason the run does not show a real, measured, call-heavy dispatch."""
+def assess(output: str, *, docker: bool = False) -> list[str]:
+    """Every reason the run does not show a real, measured, call-heavy dispatch.
+
+    `docker` drops act 5: the docker backend declares no `FILES_LIST`, so
+    `samples/15_acas_codeact_host_tools` on docker (`SAMPLE_BACKEND=docker`) cannot enumerate the
+    guest filesystem and prints no leftover-traffic lines. Everything above act 5 is
+    backend-agnostic and stays enforced — the
+    dispatch finding itself, the cap, the walk and the round trips are what this sample is for.
+    """
     return [
         *_assess_the_cap_was_budgeted(output),
         *_assess_the_cost_was_measured(output),
@@ -758,23 +780,31 @@ def assess(output: str) -> list[str]:
         *_assess_direct_pays_per_stage(output),
         *_assess_who_carried_the_figures(output),
         *_assess_the_round_trips(output),
-        *_assess_what_the_runs_left(output),
-        *_assess_the_sandbox_went_away(output),
+        *([] if docker else _assess_what_the_runs_left(output)),
+        *_assess_the_sandbox_went_away(output, docker=docker),
     ]
 
 
 def main(argv: list[str]) -> int:
-    """CLI entry: read the sample output from a file or stdin, run ``assess``, print OK or FAIL."""
-    if len(argv) > 2:
-        print(f"usage: {argv[0]} [output-file]  (reads stdin if omitted)", file=sys.stderr)
+    """CLI entry: read the sample output from a file or stdin, run ``assess``, print OK or FAIL.
+
+    ``--docker`` checks sample 15's docker run (``SAMPLE_BACKEND=docker``), whose backend declares
+    no ``FILES_LIST`` and so prints no act-5 leftover lines; without it the ACAS run is checked.
+    """
+    docker = "--docker" in argv
+    rest = [arg for arg in argv if arg != "--docker"]
+    if len(rest) > 2:
+        print(
+            f"usage: {rest[0]} [--docker] [output-file]  (reads stdin if omitted)", file=sys.stderr
+        )
         return 2
     output = (
         sys.stdin.read()
-        if len(argv) == 1 or argv[1] == "-"
-        else Path(argv[1]).read_text(encoding="utf-8")
+        if len(rest) == 1 or rest[1] == "-"
+        else Path(rest[1]).read_text(encoding="utf-8")
     )
 
-    failures = assess(output)
+    failures = assess(output, docker=docker)
     if failures:
         print("FAIL: the dispatch sample did not show a program calling back out:", file=sys.stderr)
         for reason in failures:
