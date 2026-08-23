@@ -715,12 +715,13 @@ async def dispatch_over_exec(
 
     The promise is about this function's own bound and reaches no further. A caller that
     cancels the coroutine — an outer ``asyncio.wait_for``, a cancelled task — cancels
-    whatever is in flight, a dispatch included, and can leave a tool's effect half done with
-    no record written. Shielding it would trade that for a worse one, since a host tool is
-    deliberately unbounded here: cancellation would then take arbitrarily long to be
-    honoured, or never. :meth:`~maf_sandbox.HostToolRun.dispatch` treats the outcome as
-    legitimate rather than impossible, returning the response slot when its call is
-    cancelled.
+    whatever is in flight, a dispatch included, and can leave a tool's effect half done.
+    Shielding it would trade that for a worse one, since a host tool is deliberately unbounded
+    here: cancellation would then take arbitrarily long to be honoured, or never.
+    :meth:`~maf_sandbox.HostToolRun.dispatch` treats the outcome as legitimate rather than
+    impossible — it returns the response slot, logs which tool was cut off, and lets a wired
+    ``dispatch_observer`` see the cancellation (#355), so a half-done effect is recorded even
+    though the response never lands.
     """
     # Both bounds checked before the launcher starts, because a detached program outlives a
     # supervisor that raises. `inf` is the one that matters and the one a range check misses:

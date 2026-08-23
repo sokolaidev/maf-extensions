@@ -774,6 +774,15 @@ class HostToolRun:
         Exhaustion is a refusal rather than an exception so the guest program finishes and
         reports what it has, instead of dying mid-way with the reason lost.
 
+        **Cancellation is prompt, and a cancelled dispatch is recorded** (#355). A cancelled turn
+        raises ``CancelledError`` at the tool's innermost await — inside the body — and this does
+        not shield it: a host tool is unbounded here, so an uncancellable section would honour a
+        caller's cancel only after arbitrary third-party code chose to return. The ledger stays
+        consistent — nothing was delivered, the slot is returned — but a sink tool's outward
+        effect may already have fired, so the interruption is logged rather than left as the one
+        outcome with no trace. A host that needs to *act* on it — retry, compensate — keys on the
+        registry's ``dispatch_observer``, whose context exit receives the same ``CancelledError``.
+
         Args:
             name: The registered tool to call. Guest text — checked, never trusted.
             arguments: Its keyword arguments, as the guest's JSON parsed.
@@ -895,6 +904,20 @@ class HostToolRun:
             outcome = await self._deliver(name, func, provided, limits, framing_bytes)
             delivered = outcome.ok
             return outcome
+        except asyncio.CancelledError:
+            # The one outcome that otherwise leaves no trace (#355). A refusal and a tool that
+            # raises are both logged (below and in `_deliver`); a success is deliberately quiet;
+            # a cancel is neither — the turn was cut off at the body's innermost await. The ledger
+            # is consistent (nothing delivered, the slot returned in `finally`), but that says
+            # nothing was *delivered*, not that nothing was *done*: a sink tool may already have
+            # acted. Say which tool was interrupted, so a host that wired no `dispatch_observer`
+            # still has a record; one that did receives this same error at its context exit.
+            self._logger.warning(
+                "host tools: the dispatch of %r was cancelled mid-effect — nothing was delivered, "
+                "but any outward effect the tool had begun is not recorded and may have completed",
+                name,
+            )
+            raise
         finally:
             # `finally` rather than a check on the outcome, because a cancelled call has no
             # outcome to check: `CancelledError` is a `BaseException` and walks straight past

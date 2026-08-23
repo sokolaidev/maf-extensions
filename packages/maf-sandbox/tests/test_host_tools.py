@@ -531,6 +531,40 @@ class TestConcurrentDispatchesCannotOversubscribeTheLedger:
         result = asyncio.run(scenario())
         assert result.ok, result.refusal
 
+    def test_a_cancelled_dispatch_is_recorded(self, caplog: pytest.LogCaptureFixture):
+        """#355: a cancel is the one outcome that otherwise leaves no trace — a refusal and a
+        failure are logged, a success is deliberately quiet. It is logged, naming the tool, so a
+        host that wired no `dispatch_observer` still learns a sink may have fired; and the ledger
+        stays consistent (the reserved slot goes back, the attempt still counts)."""
+        entered = asyncio.Event()
+
+        @sandbox_tool(source=None, sink="file_store", identity=None)
+        async def never() -> int:
+            entered.set()
+            await asyncio.Event().wait()
+            return 1
+
+        registry = HostToolRegistry()
+        registry.register(never)
+        run = HostToolRun(registry)
+
+        async def scenario() -> None:
+            call = asyncio.create_task(run.dispatch("never"))
+            await entered.wait()
+            call.cancel()
+            await asyncio.wait([call])
+            assert call.cancelled(), "the premise: the call was cancelled mid-body"
+
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox._host_tools"):
+            asyncio.run(scenario())
+
+        assert any(
+            "cancelled mid-effect" in record.getMessage() and "never" in record.getMessage()
+            for record in caplog.records
+        ), "a cancelled dispatch must leave a record naming the tool"
+        assert run._dispatched == 1, "the attempt is counted"
+        assert run._delivered == 0, "the reserved slot was returned"
+
 
 class TestACeilingMustBeAbleToCompare:
     """A non-integer ceiling removes itself, which is the one thing a safety cap must not do."""
