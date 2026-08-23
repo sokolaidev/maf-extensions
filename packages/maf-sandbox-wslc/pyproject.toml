@@ -34,7 +34,7 @@ dependencies = [
     # order to it — see RELEASING.md. This package imports `Capability` at module scope, so a
     # ceiling excluding the in-tree wheel resolves PyPI's older release in the clean-env wheel
     # smoke and dies on ImportError.
-    "maf-sandbox>=0.20.0,<0.22",
+    "maf-sandbox>=0.21.0,<0.23",
 ]
 
 [project.urls]

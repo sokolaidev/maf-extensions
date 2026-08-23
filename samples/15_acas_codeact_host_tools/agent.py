@@ -30,7 +30,7 @@ route, which the README explains and act 6 disposes of.
 #     "azure-identity",
 #     "maf-sandbox-acas>=0.9",
 #     "maf-sandbox-codeact>=0.5",
-#     "maf-sandbox>=0.20",
+#     "maf-sandbox>=0.21",
 # ]
 # ///
 
