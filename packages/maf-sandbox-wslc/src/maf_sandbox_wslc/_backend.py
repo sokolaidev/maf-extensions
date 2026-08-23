@@ -427,6 +427,28 @@ class _WslcSandbox:
             "exec if the workload already requires it, or declare a backend with a pull surface."
         )
 
+    async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
+        """Remove ``directory`` and everything under it via ``rm -rf`` over :meth:`exec`.
+
+        Served honestly even though :meth:`remove` refuses: :meth:`remove` owes confinement for
+        a model-supplied path, which needs the parent walk this backend has no ``stat_file`` to
+        build (#125). ``reclaim`` takes a directory this stack made, with no attacker-chosen
+        component to walk, so it carries none of that duty and needs none of that surface.
+
+        ``working_directory`` says where ``directory`` sits, not where to run the removal from
+        — no backend creates a spec's ``work_dir``, so the exec runs from ``/``, which every
+        container has, rather than a directory that may never have been created.
+        """
+        del working_directory
+        removed = await self.exec(
+            ["rm", "-rf", "--", directory], working_directory="/", timeout=timeout
+        )
+        if removed.exit_code != 0:
+            raise OSError(
+                f"could not reclaim {directory}: rm exited {removed.exit_code}"
+                f"{f' — {removed.stderr.strip()}' if removed.stderr else ''}"
+            )
+
 
 class WslcSandboxBackend:
     """Hands out container-isolated sandboxes from the WSL container CLI (``wslc``)."""

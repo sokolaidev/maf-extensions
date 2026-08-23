@@ -2356,3 +2356,113 @@ class TestRemove:
         sandbox = _sandbox(client)
         with pytest.raises(OSError):
             asyncio.run(sandbox.remove("real.txt", working_directory=_WORK_DIR))
+
+
+class TestReclaim:
+    """`rm -rf` over `exec`, not `remove`'s data-plane delete: see the method's own docstring
+    for why — the service's link semantics on delete are unverified, and `rm -rf` unlinks
+    rather than follows."""
+
+    class _RecordingClient:
+        def __init__(self, exit_code: int = 0, stderr: str = "") -> None:
+            self.calls: list[tuple[str, str]] = []
+            self._exit_code = exit_code
+            self._stderr = stderr
+
+        async def exec(self, command: str, *, working_directory: str):
+            from maf_sandbox import ExecResult
+
+            self.calls.append((command, working_directory))
+            return ExecResult(stdout="", stderr=self._stderr, exit_code=self._exit_code)
+
+    def test_a_directory_is_removed_via_rm_rf(self):
+        import shlex
+
+        from maf_sandbox_acas._backend import _AcasSandbox
+
+        client = self._RecordingClient()
+        sandbox = _AcasSandbox(client, 30.0)
+        asyncio.run(
+            sandbox.reclaim(
+                "/maf-sandbox/work/call-a1b2c3", working_directory=_WORK_DIR, timeout=30
+            )
+        )
+        command, _ = client.calls[0]
+        assert shlex.split(command) == ["rm", "-rf", "--", "/maf-sandbox/work/call-a1b2c3"]
+
+    def test_a_missing_directory_is_success(self):
+        """`rm -rf` exits 0 on a path that is not there; this pins that no raise follows."""
+        from maf_sandbox_acas._backend import _AcasSandbox
+
+        client = self._RecordingClient(exit_code=0)
+        sandbox = _AcasSandbox(client, 30.0)
+        asyncio.run(
+            sandbox.reclaim(
+                "/maf-sandbox/work/never-there", working_directory=_WORK_DIR, timeout=30
+            )
+        )
+
+    def test_a_nonzero_exit_raises_with_the_exit_code_and_what_the_guest_said(self):
+        """The message is the whole diagnosis a host gets: core turns it into
+        `ReclaimFailure.reason` and hands that to `on_reclaim_failure`. A read-only
+        filesystem, a full disk and a permission denial are told apart only by these two.
+        """
+        from maf_sandbox_acas._backend import _AcasSandbox
+
+        client = self._RecordingClient(exit_code=1, stderr="rm: permission denied")
+        sandbox = _AcasSandbox(client, 30.0)
+        with pytest.raises(OSError, match=r"rm exited 1.*rm: permission denied"):
+            asyncio.run(
+                sandbox.reclaim("/maf-sandbox/work/x", working_directory=_WORK_DIR, timeout=30)
+            )
+
+    def test_the_timeout_bounds_the_call(self):
+        """`reclaim`'s `timeout` is read the way `exec`'s is — `asyncio.wait_for`, not a kwarg
+        the SDK client takes — so this proves the value given actually bounds the call."""
+        from maf_sandbox_acas._backend import _AcasSandbox
+
+        class _HangingClient:
+            async def exec(self, command: str, *, working_directory: str):
+                await asyncio.sleep(10)
+                raise AssertionError("should have been cancelled by the timeout")
+
+        sandbox = _AcasSandbox(_HangingClient(), 30.0)
+        with pytest.raises(TimeoutError):
+            asyncio.run(
+                sandbox.reclaim("/maf-sandbox/work/x", working_directory=_WORK_DIR, timeout=0.05)
+            )
+
+    def test_reclaim_execs_from_root_not_the_uncreated_working_directory(self):
+        """`working_directory` says where the directory sits, not where to run the removal
+        from: no backend creates a spec's `work_dir`, so this must run from `/` even when the
+        caller's working directory was never written."""
+        from maf_sandbox_acas._backend import _AcasSandbox
+
+        client = self._RecordingClient()
+        sandbox = _AcasSandbox(client, 30.0)
+        asyncio.run(
+            sandbox.reclaim(
+                "/maf-sandbox/work/never-created/call-a1b2c3",
+                working_directory="/maf-sandbox/work/never-created",
+                timeout=30,
+            )
+        )
+        _, working_directory = client.calls[0]
+        assert working_directory == "/"
+
+    def test_a_name_a_shell_would_read_survives_the_join(self):
+        """Core quoted the target before it dispatched; this backend's `exec` takes a string,
+        so the quoting is a real step here rather than an argv the transport keeps apart. A
+        `work_dir` is host-supplied, so a name holding a space or a `;` is reachable, and one
+        that split would have `rm -rf` delete something else.
+        """
+        import shlex
+
+        from maf_sandbox_acas._backend import _AcasSandbox
+
+        hostile = "/maf-sandbox/work/a b; touch pwned"
+        client = self._RecordingClient()
+        sandbox = _AcasSandbox(client, 30.0)
+        asyncio.run(sandbox.reclaim(hostile, working_directory=_WORK_DIR, timeout=30))
+        command, _ = client.calls[0]
+        assert shlex.split(command) == ["rm", "-rf", "--", hostile]

@@ -67,6 +67,7 @@ from maf_sandbox.conformance import (
     assert_exec_conformance,
     assert_files_in_conformance,
     assert_files_out_conformance,
+    assert_reclaim_conformance,
     measure_files_delete_probes,
 )
 
@@ -736,6 +737,26 @@ class TestBootingAnImageTheServiceProvides:
         )
         assert result.exit_code == 0, result.stderr
         assert result.stdout.strip().startswith("Python 3."), result.stdout
+
+
+@pytest.fixture(scope="module")
+def reclaim_results(live):
+    """One RECLAIM run, shared — mirrors `probe_results` and `files_in_results` above."""
+    return live.run(assert_reclaim_conformance(_subject(live)))
+
+
+class TestReclaimAgainstTheRealService:
+    """The framework's own removal, gated by no capability — every backend owes it.
+
+    Unlike FILES_DELETE above, there is no measurement fallback and no withheld-capability
+    answer: `reclaim` is mandatory, so this asserts rather than measures.
+    """
+
+    def test_the_reclaim_probes_come_back_clean(self, reclaim_results):
+        results = reclaim_results
+        assert results, "the RECLAIM conformance run returned no results"
+        skipped = {result.probe.name: result.skipped for result in results if result.skipped}
+        assert not skipped, f"probes skipped against reclaim, which no capability gates: {skipped}"
 
 
 class TestExecAgainstTheRealService:

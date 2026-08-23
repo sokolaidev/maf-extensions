@@ -19,6 +19,10 @@ import asyncio
 import json
 import pathlib
 import sys
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # never imported at run time: only the named distribution is installed
+    from maf_sandbox.testing import InProcessSandbox
 
 _PACKAGES = {
     "maf-sandbox": "maf_sandbox",
@@ -54,6 +58,32 @@ _SARIF = json.dumps(
     }
 )
 _EMPTY_SARIF = json.dumps({"version": "2.1.0", "runs": []})
+
+
+class _RecordingContents(dict[str, bytes]):
+    """A sandbox's ``contents``, copying every write out where a removal cannot reach it."""
+
+    def __init__(self, written: dict[str, str], seeded: dict[str, bytes]) -> None:
+        super().__init__()
+        self._written = written
+        for path, content in seeded.items():
+            self[path] = content
+
+    def __setitem__(self, path: str, content: bytes) -> None:
+        super().__setitem__(path, content)
+        self._written[path] = content.decode("utf-8")
+
+
+def _recording(sandbox: InProcessSandbox) -> dict[str, str]:
+    """Return a decoded ledger of everything written into ``sandbox``, reclaimed or not.
+
+    A finished call's own directory is really gone by the time the tool returns, so
+    ``files`` no longer answers what the workload put there. Recorded on the way in rather
+    than snapshotted at the removal: a call that wrote nothing still leaves this empty.
+    """
+    written: dict[str, str] = {}
+    sandbox.contents = _RecordingContents(written, sandbox.contents)
+    return written
 
 
 def _check_typing_marker(module) -> None:
@@ -158,14 +188,14 @@ def _smoke_maf_sandbox_bicep() -> str:
 
     # The happy path: the file reaches the sandbox, both phases run, diagnostics render.
     store = InMemoryStore({"main.bicep": "param location string = resourceGroup().location"})
-    backend = InProcessSandboxBackend(
-        InProcessSandbox(outputs={"bicep build": _SARIF}, default_stdout=_EMPTY_SARIF)
-    )
+    sandbox = InProcessSandbox(outputs={"bicep build": _SARIF}, default_stdout=_EMPTY_SARIF)
+    written = _recording(sandbox)
+    backend = InProcessSandboxBackend(sandbox)
     out = asyncio.run(_bicep_tool(store, backend)(files=["main.bicep"]))
     if "BCP035" not in out:
         raise SystemExit(f"FAIL: diagnostics missing from tool output: {out!r}")
-    if not backend.sandbox.files:
-        raise SystemExit("FAIL: the workload never wrote the file into the sandbox")
+    if not any(path.endswith("/main.bicep") for path in written):
+        raise SystemExit(f"FAIL: the workload never wrote the file into the sandbox: {written}")
     if len(backend.keys) != 1:
         raise SystemExit(f"FAIL: the happy path acquired {len(backend.keys)} sandbox(es), not 1")
 
@@ -242,7 +272,9 @@ def _smoke_maf_sandbox_codeact() -> str:
         tool = tools[0]
         return getattr(tool, "func", None) or getattr(tool, "__wrapped__", None) or tool
 
-    backend = InProcessSandboxBackend(InProcessSandbox(default_stdout="7\n"))
+    sandbox = InProcessSandbox(default_stdout="7\n")
+    written = _recording(sandbox)
+    backend = InProcessSandboxBackend(sandbox)
     body = _body(
         make_codeact_tools(
             _router(backend), "data-analyst", context, image="registry.invalid/python:3"
@@ -253,10 +285,10 @@ def _smoke_maf_sandbox_codeact() -> str:
     if out != "stdout:\n7":
         raise SystemExit(f"FAIL: the tool rendered {out!r}")
     # Each call gets a directory of its own under the work dir, so the path is not fixed.
-    written = list(backend.sandbox.files.items())
-    if len(written) != 1 or not written[0][0].startswith("/maf-sandbox/work/"):
-        raise SystemExit(f"FAIL: the program never reached the sandbox: {backend.sandbox.files}")
-    program_path, source = written[0]
+    landed_program = list(written.items())
+    if len(landed_program) != 1 or not landed_program[0][0].startswith("/maf-sandbox/work/"):
+        raise SystemExit(f"FAIL: the program never reached the sandbox: {written}")
+    program_path, source = landed_program[0]
     if not program_path.endswith("/program.py") or source != "print(3 + 4)":
         raise SystemExit(f"FAIL: the program landed at {program_path!r} as {source!r}")
     if backend.sandbox.commands[0][0] != f"python3 {program_path}":
@@ -264,7 +296,9 @@ def _smoke_maf_sandbox_codeact() -> str:
 
     # Files in: the caller's listing is the authority, and it has to travel in the wheel.
     store = InMemoryStore({"data.csv": "a,b\n"})
-    shared = InProcessSandboxBackend(InProcessSandbox(default_stdout="ok\n"))
+    shared_sandbox = InProcessSandbox(default_stdout="ok\n")
+    shared_written = _recording(shared_sandbox)
+    shared = InProcessSandboxBackend(shared_sandbox)
     with_files = _body(
         make_codeact_tools(
             _router(shared),
@@ -276,8 +310,8 @@ def _smoke_maf_sandbox_codeact() -> str:
         )
     )
     asyncio.run(with_files(code="print(1)", files=["data.csv"]))
-    if not any(path.endswith("/data.csv") for path in shared.sandbox.files):
-        raise SystemExit(f"FAIL: the listed file was not shared: {shared.sandbox.files}")
+    if not any(path.endswith("/data.csv") for path in shared_written):
+        raise SystemExit(f"FAIL: the listed file was not shared: {shared_written}")
     refused = asyncio.run(with_files(code="print(1)", files=["absent.csv"]))
     if "not in this tool's file listing" not in refused:
         raise SystemExit(f"FAIL: an unlisted file was not refused: {refused!r}")

@@ -377,6 +377,24 @@ class _DockerSandbox:
                 f"{f' — {removed.stderr.strip()}' if removed.stderr else ''}"
             )
 
+    async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
+        """Remove ``directory`` and everything under it via ``rm -rf`` over :meth:`exec`.
+
+        No confinement check: the caller made ``directory``, with no attacker-chosen component
+        to walk. ``working_directory`` says where ``directory`` sits, not where to run the
+        removal from — no backend creates a spec's ``work_dir``, so the exec runs from ``/``,
+        which every container has, rather than a directory that may never have been created.
+        """
+        del working_directory
+        removed = await self.exec(
+            ["rm", "-rf", "--", directory], working_directory="/", timeout=timeout
+        )
+        if removed.exit_code != 0:
+            raise OSError(
+                f"could not reclaim {directory}: rm exited {removed.exit_code}"
+                f"{f' — {removed.stderr.strip()}' if removed.stderr else ''}"
+            )
+
     async def _stat_guest(self, guest: str, rel: str) -> SandboxEntry | None:
         """Stat an absolute guest path, with no confinement check of its own.
 

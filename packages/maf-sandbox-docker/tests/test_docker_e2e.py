@@ -52,6 +52,7 @@ from maf_sandbox.conformance import (
     assert_files_delete_conformance,
     assert_files_in_conformance,
     assert_files_out_conformance,
+    assert_reclaim_conformance,
 )
 
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
@@ -362,6 +363,31 @@ class TestFilesDeleteAgainstARealEngine:
         async def scenario() -> None:
             sandbox = await backend.acquire(_key(scope), _spec())
             results = await assert_files_delete_conformance(
+                PosixGuestSubject(
+                    sandbox=sandbox,
+                    working_directory=_WORK,
+                    capabilities=backend.capabilities,
+                )
+            )
+            assert not [r for r in results if r.skipped]
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+
+class TestReclaimAgainstARealEngine:
+    """`maf_sandbox.conformance`'s RECLAIM suite — gated by no capability, unlike FILES_DELETE
+    above, so every backend owes the assert directly rather than a measurement."""
+
+    def test_it_answers_the_reclaim_probes(self):
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(_key(scope), _spec())
+            results = await assert_reclaim_conformance(
                 PosixGuestSubject(
                     sandbox=sandbox,
                     working_directory=_WORK,

@@ -223,6 +223,26 @@ class NoIsolationSandbox:
             "removal with, and the paths it would delete are the host's own."
         )
 
+    async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
+        """Really remove ``directory``, unlike :meth:`remove` above.
+
+        Genuinely serving this — the mandatory, ungated member every backend implements — is
+        coherent where refusing :meth:`remove` is not: the caller made ``directory``, so there
+        is no attacker-chosen component to walk, and this sandbox already knows how to map a
+        guest path to its own host root without one. ``working_directory`` says where
+        ``directory`` sits and plays no part in the mapping, which is fixed at construction.
+        """
+        del working_directory
+        host_path = self._host_path(directory)
+
+        def _remove() -> None:
+            try:
+                shutil.rmtree(host_path)
+            except FileNotFoundError:
+                pass  # already gone is success
+
+        await asyncio.wait_for(asyncio.to_thread(_remove), timeout=timeout)
+
 
 class NoIsolationBackend:
     """A :class:`~maf_sandbox.SandboxBackend` that runs workloads on the host with no boundary.

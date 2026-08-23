@@ -24,13 +24,18 @@ PACKAGES = REPO_ROOT / "packages"
 SAMPLES = REPO_ROOT / "samples"
 
 #: The suites a package's tests have to call, and where they come from. FILES_OUT is gated on
-#: implementing the pull surface (`_serving` below); the other three every backend owes — a
-#: backend declaring none of them is not a backend.
+#: implementing the pull surface (`_serving` below); FILES_IN, EXEC and FILES_DELETE are the
+#: three every backend owes regardless of what it declares — a backend declaring none of them
+#: is not a backend. RECLAIM is gated by no `Capability` at all, so unlike FILES_DELETE it has
+#: no withheld-capability answer and no MEASURE escape: every backend owes the assert itself.
+#: Appended rather than inserted — `SUITES[0]` and `SUITES[3]` are indexed positionally below,
+#: and a new member must not shift what those point at.
 SUITES = (
     "assert_files_out_conformance",
     "assert_files_in_conformance",
     "assert_exec_conformance",
     "assert_files_delete_conformance",
+    "assert_reclaim_conformance",
 )
 #: The measurement entry point that stands in for the FILES_DELETE assert when a backend
 #: withholds the capability: same probes, no gate, no verdict — findings rather than promises.
@@ -340,15 +345,16 @@ def test_a_backend_that_serves_the_pull_surface_answers_the_suite(package: Path)
 
 @pytest.mark.parametrize("package", CANDIDATE_BACKEND_PACKAGES, ids=lambda path: path.name)
 def test_every_backend_answers_the_suites_it_cannot_opt_out_of(package: Path):
-    """FILES_IN, EXEC and FILES_DELETE: the capabilities every sandbox backend declares or refuses.
+    """FILES_IN, EXEC, FILES_DELETE and RECLAIM: what every sandbox backend owes regardless.
 
-    FILES_OUT is gated on serving the pull surface; these three are not, because a backend that
-    declares none of them is not a backend. FILES_DELETE admits two answers: the assert for a
-    backend that declares the capability, and `measure_files_delete_probes` for one that
-    withholds it — the measurement is how a withheld capability can ever be evidenced into or
-    out of declaration (#450: a gate nothing can run against an undeclared mechanism is a gate
-    that never opens). The wiring check proves a call is written either way, which is all it
-    can prove; what the call found is each suite's own business.
+    FILES_OUT is gated on serving the pull surface; these four are not. FILES_DELETE admits two
+    answers: the assert for a backend that declares the capability, and
+    `measure_files_delete_probes` for one that withholds it — the measurement is how a withheld
+    capability can ever be evidenced into or out of declaration (#450: a gate nothing can run
+    against an undeclared mechanism is a gate that never opens). RECLAIM has no such escape: it
+    is gated by no capability, so there is nothing to withhold and no measurement stands in —
+    every backend answers the assert directly. The wiring check proves a call is written either
+    way, which is all it can prove; what the call found is each suite's own business.
     """
     for suite in SUITES[1:]:
         assert _calls_the_suite(package / "tests", suite) or (
