@@ -345,3 +345,32 @@ class TestTheFixtureIsStillWhatTheSamplePrints:
             live = [line.strip() for line in completed.stdout.splitlines() if key in line]
             fixture = [line.strip() for line in _HEALTHY.splitlines() if key in line]
             assert live == fixture, (key, live, fixture)
+
+
+class TestALabelIsNotProseOnAnotherLine:
+    """`cannot be registered:` sits mid-sentence on the sealed line, one lookup away."""
+
+    def test_the_sealed_line_holds_the_registered_key(self):
+        """The collision is real; only line order kept it from being read."""
+        holds = [line for line in _HEALTHY.splitlines() if "registered:" in line]
+        assert len(holds) == 2, holds
+        assert holds[0].strip().startswith("registered:")
+        assert "cannot be registered:" in holds[1]
+
+    def test_the_sealed_line_cannot_stand_in_for_a_missing_surface(self):
+        dropped = "\n".join(
+            line for line in _HEALTHY.splitlines() if not line.strip().startswith("registered:")
+        )
+        assert any("cannot be registered:" in line for line in dropped.splitlines())
+        assert any("act 1 did not run" in r for r in check.assess(dropped))
+
+    def test_a_label_printed_twice_is_refused(self):
+        """Two answers, and taking the first would be choosing which to believe."""
+        doubled = _HEALTHY.replace(
+            "  identities:        {app, user}",
+            "  identities:        {app, user}\n  identities:        {app}",
+        )
+        assert any("labels 2 lines" in r for r in check.assess(doubled)), check.assess(doubled)
+
+    def test_every_label_appears_once_in_a_healthy_run(self):
+        assert check._assess_each_label_appears_once(_HEALTHY) == []
