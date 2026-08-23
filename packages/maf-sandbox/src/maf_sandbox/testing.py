@@ -377,10 +377,14 @@ class InProcessSandboxBackend:
             existing test is unaffected and one exercising the axis states a family.
         acquire_error: When set, ``acquire`` raises this instead of returning the sandbox —
             for exercising a kind's "sandbox unavailable" degrade path.
+        dispose_error: When set, ``dispose`` records the key and then raises this — for
+            exercising what a host sees when the framework cannot dispose a sandbox it
+            could not clean.
 
     Every ``acquire`` records ``key`` into :attr:`keys` and ``spec`` into :attr:`specs`
     (skipped when ``acquire_error`` fires — a failed acquire acquired nothing). Every
-    ``dispose`` records ``key`` into :attr:`disposed`. Every ``dispose_scope`` records
+    ``dispose`` records ``key`` into :attr:`disposed` (before ``dispose_error`` fires). Every
+    ``dispose_scope`` records
     ``(scope, thread_id)`` into :attr:`purged` and returns :attr:`purge_count`, settable per
     test to simulate more than one sandbox reclaimed.
 
@@ -401,6 +405,7 @@ class InProcessSandboxBackend:
         limits: SandboxLimits = DEFAULT_SANDBOX_LIMITS,
         os_families: frozenset[OsFamily] = frozenset(),
         acquire_error: BaseException | None = None,
+        dispose_error: BaseException | None = None,
     ) -> None:
         self.sandbox = sandbox if sandbox is not None else InProcessSandbox()
         self._name = name
@@ -410,6 +415,7 @@ class InProcessSandboxBackend:
         self._limits = limits
         self._os_families = os_families
         self.acquire_error = acquire_error
+        self.dispose_error = dispose_error
         self.keys: list[SandboxKey] = []
         self.specs: list[SandboxSpec] = []
         self.disposed: list[SandboxKey] = []
@@ -449,6 +455,8 @@ class InProcessSandboxBackend:
 
     async def dispose(self, key: SandboxKey) -> None:
         self.disposed.append(key)
+        if self.dispose_error is not None:
+            raise self.dispose_error
 
     async def dispose_scope(self, scope: str, thread_id: str) -> int:
         self.purged.append((scope, thread_id))

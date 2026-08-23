@@ -48,6 +48,7 @@ from maf_sandbox import (
     SandboxRouter,
     SandboxSpec,
     SandboxTransferLimitsNotPermitted,
+    SandboxUnclean,
     TransferLimits,
     meets_floor,
 )
@@ -824,6 +825,82 @@ class TestPurge:
         purger = SandboxPurger(SandboxRouter([backend], min_isolation=Isolation.NONE))
         assert asyncio.run(purger.purge_scoped_thread("scope-a", "thread-1")) == 1
         assert backend.purged == [("scope-a", "thread-1")]
+
+
+class TestAKeyTheRouterCouldNotDisposeIsRefused:
+    """Better a failed run than leaked data: a key whose disposal did not land is not served."""
+
+    def _router(self, *backends):
+        return SandboxRouter(list(backends), min_isolation=Isolation.NONE)
+
+    def test_a_landed_disposal_answers_true_and_serves_the_key_again(self):
+        backend = InProcessSandboxBackend()
+        router = self._router(backend)
+        assert asyncio.run(router.dispose_unclean(_KEY, timeout=1.0)) is True
+        assert backend.disposed == [_KEY]
+        asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_a_refused_disposal_answers_false_and_the_key_is_refused(self):
+        router = self._router(InProcessSandboxBackend(dispose_error=RuntimeError("down")))
+        assert asyncio.run(router.dispose_unclean(_KEY, timeout=1.0)) is False
+        with pytest.raises(SandboxUnclean, match="refused until a disposal lands"):
+            asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_another_key_in_the_same_conversation_is_still_served(self):
+        backend = InProcessSandboxBackend(dispose_error=RuntimeError("down"))
+        router = self._router(backend)
+        asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
+        other = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="another-agent")
+        asyncio.run(router.acquire(other, _SPEC))
+
+    def test_a_disposal_that_hangs_is_bounded_and_counts_as_not_landed(self):
+        class _Hangs(InProcessSandboxBackend):
+            async def dispose(self, key):
+                await asyncio.Event().wait()
+
+        router = self._router(_Hangs())
+        assert asyncio.run(router.dispose_unclean(_KEY, timeout=0.05)) is False
+        with pytest.raises(SandboxUnclean):
+            asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_a_later_plain_dispose_that_lands_reopens_it(self):
+        backend = InProcessSandboxBackend(dispose_error=RuntimeError("down"))
+        router = self._router(backend)
+        asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
+        backend.dispose_error = None
+        asyncio.run(router.dispose(_KEY))
+        asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_a_scope_purge_that_lands_reopens_its_keys_and_no_others(self):
+        backend = InProcessSandboxBackend(dispose_error=RuntimeError("down"))
+        router = self._router(backend)
+        elsewhere = SandboxKey(scope="scope-a", thread_id="thread-2", agent_dir="devops-engineer")
+        asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
+        asyncio.run(router.dispose_unclean(elsewhere, timeout=1.0))
+        asyncio.run(router.dispose_scope("scope-a", "thread-1"))
+        asyncio.run(router.acquire(_KEY, _SPEC))
+        with pytest.raises(SandboxUnclean):
+            asyncio.run(router.acquire(elsewhere, _SPEC))
+
+    def test_a_scope_purge_a_backend_refused_reopens_nothing(self):
+        backend = InProcessSandboxBackend(dispose_error=RuntimeError("down"))
+        router = self._router(backend, _ExplodingBackend(name="bad"))
+        asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
+        asyncio.run(router.dispose_scope("scope-a", "thread-1"))
+        with pytest.raises(SandboxUnclean):
+            asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_every_backend_is_asked_and_one_refusal_is_enough(self):
+        good = InProcessSandboxBackend(name="good")
+        router = self._router(good, InProcessSandboxBackend(name="bad", dispose_error=OSError()))
+        assert asyncio.run(router.dispose_unclean(_KEY, timeout=1.0)) is False
+        assert good.disposed == [_KEY]
+
+    def test_the_refusal_is_unknown_to_a_second_router(self):
+        """In-process knowledge only, the same bound `dispose_scope` exists to reach past."""
+        backend = InProcessSandboxBackend(dispose_error=RuntimeError("down"))
+        asyncio.run(self._router(backend).dispose_unclean(_KEY, timeout=1.0))
+        asyncio.run(self._router(backend).acquire(_KEY, _SPEC))
 
 
 class TestSpecDefaults:

@@ -13,22 +13,62 @@ whose contract is likewise ``path`` and everything under it.
 from __future__ import annotations
 
 import posixpath
+from contextvars import ContextVar, Token
 from dataclasses import dataclass
+from typing import Literal
 
 from ._error_detail import error_detail
 from ._protocol import Sandbox, SandboxKey
 from .paths import confine_guest_path
 
-__all__ = ["ReclaimFailure", "reclaim_guest_path"]
+__all__ = ["DisposalOutcome", "ReclaimFailure", "note_unclean", "reclaim_guest_path"]
+
+#: What the framework did about a sandbox it could not clean, as ``ReclaimFailure`` reports
+#: it. ``"disposed"``: the sandbox is gone, and the conversation's next call starts cold.
+#: ``"failed"``: the disposal did not land, and the router refuses that key until one does.
+#: ``"kept"``: the host opted down with ``SandboxRouter(keep_unclean=True)``, so the sandbox
+#: stays warm with the data in it.
+DisposalOutcome = Literal["disposed", "failed", "kept"]
+
+#: The running tool call's notes about its sandbox being unclean in a way no removal can
+#: answer — set by ``sandboxed_tool`` for the call's duration, ``None`` outside one.
+_UNCLEAN: ContextVar[list[str] | None] = ContextVar("maf_sandbox_unclean", default=None)
+
+
+def open_unclean_notes() -> tuple[list[str], Token[list[str] | None]]:
+    """Start a tool call's notes. ``sandboxed_tool`` keeps the list and resets with the token."""
+    notes: list[str] = []
+    return notes, _UNCLEAN.set(notes)
+
+
+def close_unclean_notes(token: Token[list[str] | None]) -> None:
+    """End the call's notes: whatever is noted from here on belongs to no call."""
+    _UNCLEAN.reset(token)
+
+
+def note_unclean(reason: str) -> None:
+    """Record that the running tool call left its sandbox in a state no removal can clean.
+
+    For a transport that stopped a program and cannot say the whole process tree went with
+    it: what survived can write a path back after the call's directory is removed, so the
+    removal alone does not make the sandbox clean. ``sandboxed_tool`` reads the notes when
+    the call ends and disposes the sandbox over them, exactly as it does over a removal that
+    failed. A no-op outside a tool call — a transport driven directly has no call to note.
+    """
+    notes = _UNCLEAN.get()
+    if notes is not None:
+        notes.append(reason)
 
 
 @dataclass(frozen=True)
 class ReclaimFailure:
     """A tool call's own guest path that is still in the sandbox, and why.
 
-    What ``sandboxed_tool``'s ``on_reclaim_failure`` receives.  A data-retention failure rather
-    than a tidiness one: ``acquire`` is get-or-create, so what is left stays readable by every
-    later call in that sandbox, and disposal is the only remedy left.
+    What ``sandboxed_tool``'s ``on_reclaim_failure`` receives, after the framework has acted.
+    A data-retention failure rather than a tidiness one: ``acquire`` is get-or-create, so what
+    is left stays readable by every later call in that sandbox, and disposal is the only
+    remedy. The framework disposes by default and says so in :attr:`disposal`; a host that
+    opted down with ``SandboxRouter(keep_unclean=True)`` is told the sandbox was kept.
     """
 
     #: The tool whose call left it, as the model sees the name.
@@ -38,8 +78,12 @@ class ReclaimFailure:
     key: SandboxKey
     #: The absolute guest path that is still there, with whatever is under it.
     path: str
-    #: Why the removal did not happen, in this stack's own words.
+    #: Why the sandbox is not clean, in this stack's own words: the removal that did not
+    #: happen, or the stop that did not reach everything the program started.
     reason: str
+    #: What the framework did about it before this was reported. ``"disposed"`` unless the
+    #: host opted down or the disposal did not land — see :data:`DisposalOutcome`.
+    disposal: DisposalOutcome = "kept"
 
 
 async def reclaim_guest_path(

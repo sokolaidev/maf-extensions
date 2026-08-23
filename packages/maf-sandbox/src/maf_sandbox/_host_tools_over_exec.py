@@ -57,6 +57,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from ._error_detail import error_detail
 from ._outputs import SandboxTransferCapExceeded
 from ._protocol import EntryKind, ExecResult
+from ._reclaim import note_unclean
 from .paths import confine_guest_path, guest_path_relative_to
 
 if TYPE_CHECKING:
@@ -884,6 +885,7 @@ async def _supervise(
         # A grace of its own, measured after the marker read rather than shared with it.
         fate, reach = await _stop_the_program(sandbox, layout, until=_a_grace_from_now())
         fate = _nothing_is_proven(fate)
+        _note_unclean_stop(fate, reach)
         raise _TheRunsOwnTimeout(
             f"the run's {timeout:g}s were gone while starting the program"
             f"{_clause_while_starting(fate, reach)}",
@@ -930,6 +932,7 @@ async def _supervise(
                 sandbox, layout, until=_a_grace_from_now(), made_a_session=made_a_session
             )
             fate = _started_something(fate)
+            _note_unclean_stop(fate, reach)
             raise _TheRunsOwnTimeout(
                 f"the guest program did not finish within {timeout:g}s"
                 f"{_clause_after_the_launcher_started(fate, reach)}. "
@@ -1007,6 +1010,7 @@ async def _supervise(
                 sandbox, layout, until=_a_grace_from_now(), made_a_session=made_a_session
             )
             fate = _started_something(fate)
+            _note_unclean_stop(fate, reach)
             failure = f"{stalled}{_clause_after_the_launcher_started(fate, reach)}"
             raise _TheRunsOwnTimeout(
                 f"the guest program did not finish within {timeout:g}s — {failure}. "
@@ -1046,6 +1050,22 @@ _SIGNALLED_ALONE = (
     " and was sent SIGKILL, which reaches it alone — anything it spawned is still running"
 )
 _NOT_SIGNALLED = " and could not be signalled, so it may still be running"
+
+
+def _note_unclean_stop(fate: _Fate, reach: _Reach) -> None:
+    """Tell the running tool call when a stop did not provably take the whole program tree.
+
+    Only ``"sent"`` to the process group says what the program spawned went with it. A
+    signal that reached the program alone, one that could not be sent, or a pid that never
+    appeared after the launcher ran, all leave something that can write a path back once
+    the call's directory is removed — so the call's sandbox is not clean, whatever the
+    removal reports. ``"absent"`` is the one proven-clean answer: nothing was started.
+    """
+    if fate == "absent" or (fate == "sent" and reach == "group"):
+        return
+    note_unclean(
+        "the guest program overran" + (_sent_clause(reach) if fate == "sent" else _NOT_SIGNALLED)
+    )
 
 
 def _sent_clause(reach: _Reach) -> str:

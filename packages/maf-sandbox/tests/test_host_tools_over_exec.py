@@ -57,6 +57,7 @@ from maf_sandbox import (
 )
 from maf_sandbox import _host_tools_over_exec as host_tools_over_exec
 from maf_sandbox._host_tools_over_exec import SESSION_MADE
+from maf_sandbox._reclaim import close_unclean_notes, open_unclean_notes
 from maf_sandbox._shim_wire_contract import (
     assert_calls_conform,
     assert_request_conforms,
@@ -3365,6 +3366,52 @@ class TestStoppingTakesTheChildrenWhereItCan:
         assert "$$" not in _branch(script, setsid=False), (
             "the fallback records a session it did not make"
         )
+
+
+class TestAStopThatDidNotReachEverythingNotesTheCall:
+    """The transport tells the running tool call when its sandbox is not clean after a stop.
+
+    Only a signal to the whole process group says what the program spawned went with it.
+    Anything less leaves something that can write a path back once the call's directory is
+    removed, so the framework's cleanup has to dispose the sandbox — and it learns that from
+    this note, not from the message a kind shows the model.
+    """
+
+    def _noted(self, guest) -> list[str]:
+        async def drive() -> list[str]:
+            notes, token = open_unclean_notes()
+            try:
+                with pytest.raises(SandboxProgramTimeout):
+                    await dispatch_over_exec(
+                        guest, HostToolRun(_registry()), _LAYOUT, timeout=0.2, poll_interval=_FAST
+                    )
+            finally:
+                close_unclean_notes(token)
+            return notes
+
+        return asyncio.run(drive())
+
+    def test_a_group_signal_leaves_no_note(self):
+        guest = _GuestThatRecordsTheKill([], finish=False, pid="4242", session="4200")
+        assert self._noted(guest) == []
+
+    def test_a_lone_pid_signal_notes_what_it_left(self):
+        guest = _GuestThatRecordsTheKill([], finish=False, pid="4242", session=None)
+        notes = self._noted(guest)
+        assert len(notes) == 1
+        assert "reaches it alone" in notes[0]
+
+    def test_a_signal_that_could_not_be_sent_notes_it(self):
+        guest = _GuestThatRecordsTheKill([], finish=False, pid=None)
+        notes = self._noted(guest)
+        assert len(notes) == 1
+        assert "could not be signalled" in notes[0]
+
+    def test_outside_a_call_the_note_goes_nowhere(self):
+        """A transport driven directly has no call to note, and must not fail for it."""
+        guest = _GuestThatRecordsTheKill([], finish=False, pid="4242", session=None)
+        with pytest.raises(SandboxProgramTimeout):
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
 
 
 class TestStoppingARunThatOverran:

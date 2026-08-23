@@ -35,7 +35,7 @@ import logging
 import math
 import posixpath
 import sys
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -51,8 +51,14 @@ from ._protocol import (
     SandboxSpec,
 )
 from ._purger import SandboxPurger
-from ._reclaim import ReclaimFailure, reclaim_guest_path
-from ._router import NoSandboxBackend, SandboxRouter
+from ._reclaim import (
+    DisposalOutcome,
+    ReclaimFailure,
+    close_unclean_notes,
+    open_unclean_notes,
+    reclaim_guest_path,
+)
+from ._router import NoSandboxBackend, SandboxRouter, SandboxUnclean
 
 #: Fallback for :func:`sandboxed_tool`'s ``logger`` argument. Named apart from the usual
 #: module-level ``logger`` because that argument is the whole point: a workload passes its
@@ -81,6 +87,10 @@ __all__ = [
 _SDK_NOT_INSTALLED = "Error: the sandbox backend is not installed — degrading to T0"
 _NO_BACKEND_CONFIGURED = "Error: no sandbox backend is configured — degrading to T0"
 _SANDBOX_UNAVAILABLE = "Error: sandbox unavailable — degrading to T0 (LLM self-check only)"
+_SANDBOX_UNCLEAN = (
+    "Error: the sandbox for this conversation is closed: it holds data a previous call could "
+    "not remove, and it could not be disposed. Nothing runs in it until it is."
+)
 
 #: What the removal gets when the body was cancelled, instead of the full ``reclaim_timeout``.
 #:
@@ -444,6 +454,12 @@ class SandboxToolSession:
             # surface, and actionable for whoever is enabling the feature.
             self._logger.warning(f"{self._log_prefix}: %s", exc)
             return f"Error: {exc}"
+        except SandboxUnclean as exc:
+            # The router's own refusal: a sandbox a previous call could not clean and the
+            # framework could not dispose of. Safe to name and actionable for the host, but
+            # the model hears only that the sandbox is closed, not whose files are in it.
+            self._logger.warning(f"{self._log_prefix}: %s", exc)
+            return _SANDBOX_UNCLEAN
         except Exception as exc:  # noqa: BLE001
             # A provider/transport failure — its detail can carry endpoint, subscription and
             # tenant ids, so it goes to the log and never into the model's context.
@@ -460,66 +476,134 @@ class SandboxToolSession:
         return sandbox
 
 
+async def _dispose_the_unclean(
+    router: SandboxRouter,
+    key: SandboxKey,
+    *,
+    prefix: str,
+    logger: logging.Logger,
+    timeout: float,
+) -> DisposalOutcome:
+    """Dispose a sandbox the call could not leave clean, unless the host opted down.
+
+    Before the host is told, not after: the guarantee is the framework's, and it must not
+    wait on a callback's time budget. Cancellation passes through with the key recorded on
+    the router first, so the next call is refused rather than served the leftovers.
+    """
+    if router.keep_unclean:
+        # Every record here carries an argument, so the prefix's doubled `%` interpolates.
+        logger.warning(
+            f"{prefix}: the sandbox for %s is kept with the data in it — this host opted down "
+            "with keep_unclean",
+            key.thread_id,
+        )
+        return "kept"
+    try:
+        landed = await router.dispose_unclean(key, timeout=timeout)
+    except (asyncio.CancelledError, GeneratorExit) as stopped:
+        logger.warning(
+            f"{prefix}: the sandbox could not be disposed: %s during the disposal; the router "
+            "refuses it until a disposal lands",
+            type(stopped).__name__,
+        )
+        raise
+    if landed:
+        logger.warning(
+            f"{prefix}: the sandbox for %s was disposed, so the conversation's next call "
+            "starts cold",
+            key.thread_id,
+        )
+        return "disposed"
+    logger.warning(
+        f"{prefix}: the sandbox for %s could not be disposed; the router refuses it until a "
+        "disposal lands",
+        key.thread_id,
+    )
+    return "failed"
+
+
 async def _reclaim_the_call(
     call: _SandboxToolCall,
     *,
+    router: SandboxRouter,
     spec: SandboxSpec,
     tool: str,
     logger: logging.Logger,
     on_failure: Callable[[ReclaimFailure], Awaitable[None]] | None,
     timeout: float,
+    unclean: Sequence[str],
 ) -> None:
-    """Remove what one tool call owns, and report a removal that did not happen.
+    """Remove what one tool call owns, and act on a sandbox it could not leave clean.
 
     Once per sandbox the call acquired — ordinarily one, and more only for a call that
-    reached a second key. ``timeout`` bounds the removal and, separately, the report, so one
-    sandbox can cost up to twice it.
+    reached a second key. A sandbox is unclean when the removal did not happen, or when
+    ``unclean`` carries a transport's note that a stop did not reach everything the program
+    started: either way what is left stays readable by every later call, so the framework
+    disposes the sandbox — unless the host opted down — and only then tells the host.
+    ``timeout`` bounds the removal, the disposal and the report separately, so one sandbox
+    can cost up to three times it.
 
-    Raises only what the caller asked for. A failed removal, and a host callback that fails with
-    it, are logged and swallowed: this runs in :func:`sandboxed_tool`'s ``finally``, where
-    raising would replace whatever the call was already reporting with a message about cleanup.
-    A :class:`~asyncio.CancelledError` or ``GeneratorExit`` is not such a failure — it is an
-    outer deadline arriving mid-removal, so it is recorded and re-raised, and it *does* replace
-    the body's result.
+    Raises only what the caller asked for. A failed removal, a failed disposal, and a host
+    callback that fails with them, are logged and swallowed: this runs in
+    :func:`sandboxed_tool`'s ``finally``, where raising would replace whatever the call was
+    already reporting with a message about cleanup. A :class:`~asyncio.CancelledError` or
+    ``GeneratorExit`` is not such a failure — it is an outer deadline arriving mid-removal, so
+    it is recorded and re-raised, and it *does* replace the body's result.
     """
-    if call.name is None or not call.acquired:
-        # Nothing was named, or nothing was acquired to write into it — either way there is
-        # nothing there, and no round trip is worth spending to prove it.
+    if not call.acquired:
+        # Nothing was acquired, so nothing was written and nothing ran — there is nothing
+        # there, and no round trip is worth spending to prove it.
         return
     prefix = _prefixed(tool)
-    path = f"{spec.work_dir}/{call.name}"
+    path = f"{spec.work_dir}/{call.name}" if call.name is not None else spec.work_dir
     for key, sandbox in tuple(call.acquired.items()):
-        try:
-            # By name, against the working directory — not as one composed string. A ``work_dir``
-            # the protocol accepts may not be POSIX-shaped, and a composed path would carry its
-            # separators into a grammar that refuses them, failing every call on such a spec.
-            reason = await reclaim_guest_path(
-                sandbox, call.name, working_directory=spec.work_dir, timeout=timeout
-            )
-        except (asyncio.CancelledError, GeneratorExit):
-            # Recorded and then let through, and the rest of the sandboxes are abandoned: the
-            # caller's deadline has passed, and containing this would have the call return the
-            # body's answer past a bound the host thought it had. The leak still has to be
-            # visible, so the line is written before the cancellation goes on.
+        reasons: list[str] = []
+        if call.name is not None:
+            try:
+                # By name, against the working directory — not as one composed string. A
+                # ``work_dir`` the protocol accepts may not be POSIX-shaped, and a composed path
+                # would carry its separators into a grammar that refuses them, failing every
+                # call on such a spec.
+                reason = await reclaim_guest_path(
+                    sandbox, call.name, working_directory=spec.work_dir, timeout=timeout
+                )
+            except (asyncio.CancelledError, GeneratorExit):
+                # Recorded and then let through, and the rest of the sandboxes are abandoned:
+                # the caller's deadline has passed, and containing this would have the call
+                # return the body's answer past a bound the host thought it had. The leak still
+                # has to be visible, so the line is written before the cancellation goes on.
+                logger.warning(
+                    f"{prefix}: %s was not reclaimed: the call was cancelled during the removal",
+                    path,
+                )
+                raise
+            if reason is not None:
+                # Logged whether or not a host is listening: a callback that swallows it would
+                # take the record with it.
+                logger.warning(f"{prefix}: %s was not reclaimed: %s", path, reason)
+                reasons.append(reason)
+        if unclean:
             logger.warning(
-                f"{prefix}: %s was not reclaimed: the call was cancelled during the removal", path
+                f"{prefix}: the sandbox is not clean after this call: %s", "; ".join(unclean)
             )
-            raise
-        if reason is None:
+            reasons.extend(unclean)
+        if not reasons:
             continue
-        # Logged whether or not a host is listening: what is left stays readable by every later
-        # call in that sandbox, and a callback that swallows it would take the record with it.
-        logger.warning(f"{prefix}: %s was not reclaimed: %s", path, reason)
+        disposal = await _dispose_the_unclean(
+            router, key, prefix=prefix, logger=logger, timeout=timeout
+        )
         if on_failure is None:
             continue
+        failure = ReclaimFailure(
+            tool=tool, key=key, path=path, reason="; ".join(reasons), disposal=disposal
+        )
         try:
-            # Bounded like the removal, and separately from it: a host disposes a sandbox in
-            # here, which is a round trip that can hang, and an unbounded one holds the tool
-            # call open for as long as it hangs — on a cancelled call, past a deadline that has
-            # already expired. Separate rather than one shared budget, because a removal that
-            # spent the whole of it is exactly when there is a failure worth reporting.
+            # Bounded like the removal, and separately from it: a host may still reach a
+            # backend in here, which is a round trip that can hang, and an unbounded one holds
+            # the tool call open for as long as it hangs — on a cancelled call, past a deadline
+            # that has already expired.
             async with asyncio.timeout(timeout):
-                await on_failure(ReclaimFailure(tool=tool, key=key, path=path, reason=reason))
+                await on_failure(failure)
         except TimeoutError:
             logger.warning(f"{prefix}: on_reclaim_failure did not finish within %ss", timeout)
         except Exception as raised:  # noqa: BLE001 — a host's callback must not fail the call
@@ -631,15 +715,19 @@ def sandboxed_tool(
             ``declarations`` is given. For a workload carrying something out through a channel
             the spec cannot show — a wired host-tool registry, say — so the confidentiality
             cap is derived by the one rule rather than hand-built into ``declarations=``.
-        on_reclaim_failure: Called with a :class:`~maf_sandbox.ReclaimFailure` when a call's
-            own guest path could not be removed. Default ``None`` logs it and carries on; a
-            host that needs the data provably gone disposes the sandbox from here, which is
-            the only
-            remedy that closes the window rather than narrowing it. Its own failure is logged
-            and swallowed — it runs in a ``finally``, over a call that may already be failing.
+        on_reclaim_failure: Called with a :class:`~maf_sandbox.ReclaimFailure` when the call
+            left its sandbox unclean — its guest path could not be removed, or a program it
+            stopped may have left something running — **after** the framework has disposed
+            that sandbox. The failure says what the disposal did. This is notification: where
+            a host logs, alerts or counts. It is not where safety is wired; that is the
+            router's, and a host opts down from it with ``SandboxRouter(keep_unclean=True)``,
+            never from here. Default ``None`` leaves the log as the record. Its own failure is
+            logged and swallowed — it runs in a ``finally``, over a call that may already be
+            failing.
         reclaim_timeout: Seconds the removal gets, per sandbox the call acquired — ordinarily
-            one — and separately the seconds ``on_reclaim_failure`` gets, so a sandbox whose
-            removal fails can cost twice it. Spent after the body has returned, so it is added
+            one — and separately the seconds the disposal gets, and again the seconds
+            ``on_reclaim_failure`` gets, so a sandbox whose removal fails can cost three times
+            it. Spent after the body has returned, so it is added
             to the call's own latency and an outer deadline should allow for it. A body that
             was **cancelled** gets :data:`_CANCELLED_CALL_GRACE` instead, or this, whichever is
             smaller: its caller's deadline has already passed, and the removal must not extend
@@ -737,10 +825,14 @@ def sandboxed_tool(
     async def reclaiming(*args: Any, **kwargs: Any) -> Any:
         call = _SandboxToolCall(owner=session)
         token = _CALL.set(call)
+        # What a transport notes about the sandbox during the body — a stop that did not
+        # reach everything — read back once the body has returned.
+        unclean, notes = open_unclean_notes()
         try:
             return await body(*args, **kwargs)
         finally:
             _CALL.reset(token)
+            close_unclean_notes(notes)
             # Closed before the removal, not after: a task the body left running would otherwise
             # be handed this path while it is being deleted.
             call.closed = True
@@ -749,11 +841,13 @@ def sandboxed_tool(
                 bound = min(reclaim_timeout, _CANCELLED_CALL_GRACE)
             await _reclaim_the_call(
                 call,
+                router=router,
                 spec=spec,
                 tool=name,
                 logger=records,
                 on_failure=on_reclaim_failure,
                 timeout=bound,
+                unclean=unclean,
             )
 
     return [decorate(reclaiming)]
