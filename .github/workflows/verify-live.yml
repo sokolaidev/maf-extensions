@@ -177,9 +177,9 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          # This runner's edge, not wait-for-propagation's: that job confirmed the upload
-          # from a different one, and the index is eventually consistent between them, so
-          # the sample below would otherwise resolve the release before this one (#595).
+          # uv is the probe rather than a request of our own: a different client reads a
+          # different CDN cache object, and polling the index passed while the sample resolved
+          # the release before this one 0.7s later on the same runner (#595).
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
 
       # Runs the sample as a consumer would, then asserts on the block it prints from what
@@ -316,9 +316,9 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          # This runner's edge, not wait-for-propagation's: that job confirmed the upload
-          # from a different one, and the index is eventually consistent between them, so
-          # the sample below would otherwise resolve the release before this one (#595).
+          # uv is the probe rather than a request of our own: a different client reads a
+          # different CDN cache object, and polling the index passed while the sample resolved
+          # the release before this one 0.7s later on the same runner (#595).
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
 
       # Runs the sample as a consumer would, then asserts on the interpreter's own stdout,
@@ -425,9 +425,9 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          # This runner's edge, not wait-for-propagation's: that job confirmed the upload
-          # from a different one, and the index is eventually consistent between them, so
-          # the sample below would otherwise resolve the release before this one (#595).
+          # uv is the probe rather than a request of our own: a different client reads a
+          # different CDN cache object, and polling the index passed while the sample resolved
+          # the release before this one 0.7s later on the same runner (#595).
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
 
       - name: Run sample 05 and assert the diagnostics came back
@@ -524,9 +524,9 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          # This runner's edge, not wait-for-propagation's: that job confirmed the upload
-          # from a different one, and the index is eventually consistent between them, so
-          # the sample below would otherwise resolve the release before this one (#595).
+          # uv is the probe rather than a request of our own: a different client reads a
+          # different CDN cache object, and polling the index passed while the sample resolved
+          # the release before this one 0.7s later on the same runner (#595).
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
 
       # ubuntu-latest ships a running Docker daemon, so the sandbox is free and local. The
@@ -623,9 +623,9 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          # This runner's edge, not wait-for-propagation's: that job confirmed the upload
-          # from a different one, and the index is eventually consistent between them, so
-          # the sample below would otherwise resolve the release before this one (#595).
+          # uv is the probe rather than a request of our own: a different client reads a
+          # different CDN cache object, and polling the index passed while the sample resolved
+          # the release before this one 0.7s later on the same runner (#595).
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
 
       - name: Run sample 07 and assert a rendered PNG came back out
@@ -719,9 +719,9 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          # This runner's edge, not wait-for-propagation's: that job confirmed the upload
-          # from a different one, and the index is eventually consistent between them, so
-          # the sample below would otherwise resolve the release before this one (#595).
+          # uv is the probe rather than a request of our own: a different client reads a
+          # different CDN cache object, and polling the index passed while the sample resolved
+          # the release before this one 0.7s later on the same runner (#595).
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
 
       - name: Run sample 08 and assert a file went in and a file came out
@@ -831,9 +831,9 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          # This runner's edge, not wait-for-propagation's: that job confirmed the upload
-          # from a different one, and the index is eventually consistent between them, so
-          # the sample below would otherwise resolve the release before this one (#595).
+          # uv is the probe rather than a request of our own: a different client reads a
+          # different CDN cache object, and polling the index passed while the sample resolved
+          # the release before this one 0.7s later on the same runner (#595).
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
 
       # No container to build and no sandbox to configure — the backend runs the bicep binary on
@@ -901,9 +901,9 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          # This runner's edge, not wait-for-propagation's: that job confirmed the upload
-          # from a different one, and the index is eventually consistent between them, so
-          # the sample below would otherwise resolve the release before this one (#595).
+          # uv is the probe rather than a request of our own: a different client reads a
+          # different CDN cache object, and polling the index passed while the sample resolved
+          # the release before this one 0.7s later on the same runner (#595).
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
 
       # No configuration check step either: there is no variable to be missing. A sample that
@@ -1023,9 +1023,9 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          # This runner's edge, not wait-for-propagation's: that job confirmed the upload
-          # from a different one, and the index is eventually consistent between them, so
-          # the sample below would otherwise resolve the release before this one (#595).
+          # uv is the probe rather than a request of our own: a different client reads a
+          # different CDN cache object, and polling the index passed while the sample resolved
+          # the release before this one 0.7s later on the same runner (#595).
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
 
       - name: Run sample 11 and assert the router chose, refused, confined and disposed
@@ -1091,9 +1091,9 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          # This runner's edge, not wait-for-propagation's: that job confirmed the upload
-          # from a different one, and the index is eventually consistent between them, so
-          # the sample below would otherwise resolve the release before this one (#595).
+          # uv is the probe rather than a request of our own: a different client reads a
+          # different CDN cache object, and polling the index passed while the sample resolved
+          # the release before this one 0.7s later on the same runner (#595).
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
 
       - name: Run sample 12 and assert every sandbox was reclaimed
@@ -1192,9 +1192,9 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          # This runner's edge, not wait-for-propagation's: that job confirmed the upload
-          # from a different one, and the index is eventually consistent between them, so
-          # the sample below would otherwise resolve the release before this one (#595).
+          # uv is the probe rather than a request of our own: a different client reads a
+          # different CDN cache object, and polling the index passed while the sample resolved
+          # the release before this one 0.7s later on the same runner (#595).
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
 
       - name: Run sample 13 and assert the file was repaired against one sandbox
@@ -1342,9 +1342,9 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          # This runner's edge, not wait-for-propagation's: that job confirmed the upload
-          # from a different one, and the index is eventually consistent between them, so
-          # the sample below would otherwise resolve the release before this one (#595).
+          # uv is the probe rather than a request of our own: a different client reads a
+          # different CDN cache object, and polling the index passed while the sample resolved
+          # the release before this one 0.7s later on the same runner (#595).
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
 
       - name: Run sample 14 and assert a file went in and a file came out
@@ -1466,9 +1466,9 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          # This runner's edge, not wait-for-propagation's: that job confirmed the upload
-          # from a different one, and the index is eventually consistent between them, so
-          # the sample below would otherwise resolve the release before this one (#595).
+          # uv is the probe rather than a request of our own: a different client reads a
+          # different CDN cache object, and polling the index passed while the sample resolved
+          # the release before this one 0.7s later on the same runner (#595).
           python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
 
       - name: Run sample 15 and assert a program really called back out
