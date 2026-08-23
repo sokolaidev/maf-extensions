@@ -1219,9 +1219,7 @@ class TestTheDockerSampleHasNoActFive:
 
     def test_a_leaked_container_still_fails(self):
         broken = _DOCKER.replace("Disposed 2 sandbox(es).", "Disposed 1 sandbox(es).")
-        assert any(
-            "runs until the lifecycle timers" in r for r in check.assess(broken, docker=True)
-        )
+        assert any("until it is explicitly removed" in r for r in check.assess(broken, docker=True))
 
     def test_the_cli_docker_flag_selects_docker_mode(self, tmp_path: Path, capsys):
         path = tmp_path / "out.txt"

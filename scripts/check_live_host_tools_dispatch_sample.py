@@ -724,7 +724,9 @@ def _assess_the_sandbox_went_away(output: str, *, docker: bool = False) -> list[
             failures.append(
                 f"{match} sandbox(es) disposed where the sample acquires {_SANDBOXES}, one per "
                 "route so neither route's program can reach the other's outward channel — a "
-                "container this sample leaves behind runs until the lifecycle timers reach it"
+                "container this sample leaves behind keeps running until it is explicitly removed "
+                "(docker rm, a label-based purge, or the host going away); nothing here reclaims "
+                "it on a timer"
             )
         else:
             failures.append(

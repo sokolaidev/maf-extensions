@@ -804,9 +804,10 @@ async def run() -> int:
             print("  be enumerated. The dispatch itself needs only HOST_TOOLS and FILES_OUT, both")
             print("  of which it does declare, which is why acts 2-4 ran.\n")
     finally:
-        # Deletes rather than relying on the lifecycle timers — see sample 01's README. It is
-        # also what removes whatever act 5 counted, and the last resort for a program the
-        # transport reported it could not signal.
+        # Deletes rather than leaving the backend to reclaim them later — ACAS's idle timers, or
+        # on docker a label-based purge or nothing at all — see sample 01's README. It is also
+        # what removes whatever act 5 counted, and the last resort for a program the transport
+        # reported it could not signal.
         deleted = sum(
             [
                 await router.dispose_scope(SCOPE, DISPATCH_THREAD),
