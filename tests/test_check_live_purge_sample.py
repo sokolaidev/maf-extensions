@@ -172,3 +172,26 @@ class TestTheFooter:
 class TestEmptyOutput:
     def test_nothing_passes_vacuously(self):
         assert check.assess("") != []
+
+
+class TestALineReportedTwiceIsRefused:
+    """The failure sample 10's check shipped with: a second line, and the first believed."""
+
+    def test_every_line_is_reported_once_in_a_healthy_run(self):
+        assert check._assess_each_line_appears_once(_HEALTHY) == []
+
+    def test_a_second_line_of_the_same_shape_is_named(self):
+        doubled = _HEALTHY.replace(
+            "  block ended -> router reports 1 disposed",
+            "  block ended -> router reports 1 disposed\n  block ended -> router reports 0 disposed",
+        )
+        reasons = check.assess(doubled)
+        assert any("what the scope disposed is reported on 2 lines" in r for r in reasons), reasons
+
+    def test_the_first_of_two_is_not_taken_as_the_answer(self):
+        """Ordered so the first line reads healthy: a checker taking it would pass."""
+        doubled = _HEALTHY.replace(
+            "  and docker agrees -> containers: 0",
+            "  and docker agrees -> containers: 0\n  and docker agrees -> containers: 9",
+        )
+        assert check.assess(doubled) != []

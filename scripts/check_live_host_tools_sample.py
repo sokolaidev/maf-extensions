@@ -62,17 +62,50 @@ _REFUSALS = ("SandboxCapabilityDenied", "SandboxIdentityDenied")
 _FOOTER = re.compile(r"Completed\s+(\d+)\s+of\s+4\s+acts\.\s+Acquired\s+(\d+)\s+sandbox", re.I)
 
 
-def _line_containing(output: str, needle: str) -> str | None:
-    """The first line holding ``needle`` as a key of its own, or ``None``.
+#: The labels the sample prints one line each for. `refused:` is not among them: it labels two
+#: lines by design, and `assess` reads every one of them.
+_LABELS = (
+    "registered:",
+    "result_integrity:",
+    "outbound_caps:",
+    "identities:",
+    "requires_approval:",
+    "has_undeclared:",
+    "sealed:",
+)
 
-    Line-scoped so a name in the sample's prose is not read as one on the line that lists what
-    registered; the lookbehind stops ``allowed_identities:`` answering for ``identities:``.
+
+def _labelled_line(output: str, key: str) -> str | None:
+    """The first line whose own label is ``key``, or ``None``.
+
+    Labelled, not merely holding: `cannot be registered:` sits mid-sentence on the sealed line
+    and `allowed_identities:` mid-sentence on a refusal, and both answered before this.
+    """
+    for line in output.splitlines():
+        if line.strip().startswith(key):
+            return line
+    return None
+
+
+def _line_containing(output: str, needle: str) -> str | None:
+    """The first line holding ``needle`` anywhere, or ``None``.
+
+    For what the sample prints mid-sentence, where there is no label to anchor on.
     """
     key = re.compile(rf"(?<!\w){re.escape(needle)}")
     for line in output.splitlines():
         if key.search(line):
             return line
     return None
+
+
+def _assess_each_label_appears_once(output: str) -> list[str]:
+    """A label on two lines is two answers, and taking the first would pick one to believe."""
+    return [
+        f"{key!r} labels {count} lines, so none of them can be trusted — the sample prints it once"
+        for key in _LABELS
+        if (count := sum(1 for line in output.splitlines() if line.strip().startswith(key))) > 1
+    ]
 
 
 def _after(line: str, key: str) -> str:
@@ -112,7 +145,7 @@ def assess(output: str) -> list[str]:
     """Return every reason ``output`` is not a healthy sample run — empty means it passed."""
     failures: list[str] = []
 
-    registered = _line_containing(output, "registered:")
+    registered = _labelled_line(output, "registered:")
     if registered is None:
         failures.append("no 'registered:' line — act 1 did not run")
     else:
@@ -142,7 +175,7 @@ def assess(output: str) -> list[str]:
         )
 
     for leg, expected in _AGGREGATE.items():
-        line = _line_containing(output, f"{leg}:")
+        line = _labelled_line(output, f"{leg}:")
         if line is None:
             failures.append(f"the aggregate's {leg!r} was not reported — act 2 did not run")
             continue
@@ -153,7 +186,7 @@ def assess(output: str) -> list[str]:
                 "the fold this registry produces changed"
             )
 
-    caps = _line_containing(output, "outbound_caps:")
+    caps = _labelled_line(output, "outbound_caps:")
     if caps is None:
         failures.append("the aggregate's outbound_caps was not reported — act 2 did not run")
     else:
@@ -165,7 +198,7 @@ def assess(output: str) -> list[str]:
                 "cap appearing or disappearing is the surface changing"
             )
 
-    identities = _line_containing(output, "identities:")
+    identities = _labelled_line(output, "identities:")
     if identities is None:
         failures.append("the aggregate's identities were not reported — act 2 did not run")
     else:
@@ -177,7 +210,7 @@ def assess(output: str) -> list[str]:
                 "registered, and nothing else may appear"
             )
 
-    if _line_containing(output, "sealed:") is None:
+    if _labelled_line(output, "sealed:") is None:
         failures.append(
             "no 'sealed:' line — registering after the aggregate was taken was not refused, so "
             "the surface can still widen under a policy already derived from it"
@@ -192,6 +225,7 @@ def assess(output: str) -> list[str]:
                 f"{exception} is not in the output — that deny axis did not refuse the spec"
             )
 
+    failures.extend(_assess_each_label_appears_once(output))
     failures.extend(_assess_narrowing(output))
     failures.extend(_assess_footer(output))
     return failures

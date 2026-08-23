@@ -55,9 +55,34 @@ _FOOTER = re.compile(
 )
 
 
+#: Each pattern with what it answers for, so a repeated line can be named. Every one reports a
+#: single act of a fixed four-act run, and this stream carries no model prose to confuse them.
+_SINGULAR = (
+    ("the reuse count", _REUSE_COUNT),
+    ("the containers kept", _KEPT),
+    ("what the scope disposed", _SCOPE_DISPOSED),
+    ("what docker had left after the scope", _SCOPE_REMAINING),
+    ("what the per-turn purge found", _TIDY),
+    ("the unscoped containers before the purge", _UNSCOPED_BEFORE),
+    ("what the unscoped purge found", _UNSCOPED_FOUND),
+    ("the unscoped containers after the purge", _UNSCOPED_AFTER),
+    ("the footer", _FOOTER),
+)
+
+
 def _one(pattern: re.Pattern[str], output: str) -> str | None:
     match = pattern.search(output)
     return match.group(1) if match else None
+
+
+def _assess_each_line_appears_once(output: str) -> list[str]:
+    """A second line of the same shape is a second answer, and the first is not the truer one."""
+    return [
+        f"{what} is reported on {count} lines, so none of them can be trusted — the sample "
+        "reports it once"
+        for what, pattern in _SINGULAR
+        if (count := len(pattern.findall(output))) > 1
+    ]
 
 
 def assess(output: str) -> list[str]:
@@ -146,6 +171,7 @@ def assess(output: str) -> list[str]:
             "thread before computing it"
         )
 
+    failures.extend(_assess_each_line_appears_once(output))
     failures.extend(_assess_footer(output))
     return failures
 
