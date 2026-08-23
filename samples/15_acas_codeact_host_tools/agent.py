@@ -3,9 +3,16 @@
 Every other sample sends things *in* and takes results *out*.  This one opens the other
 direction::
 
-    app  ->  maf_sandbox (router)  ->  maf_sandbox_acas  ->  the sandbox
-                  ^ maf_sandbox_codeact calls the router        |
-                  +------ a host function, dispatched ----------+
+    app  ->  maf_sandbox (router)  ->  a backend  ->  the sandbox
+                  ^ maf_sandbox_codeact calls the router    |
+                  +------ a host function, dispatched ------+
+
+`SAMPLE_BACKEND` picks the backend: `acas` (the default) runs the walk against a remote Azure
+microVM, `docker` against a local container. The workload, the two routes and the measurement are
+identical — the point (#519) is to read a remote round trip against a local one and tell the
+dispatch pattern apart from the control plane it ran on. The one behaviour that differs is act 5:
+reading the guest filesystem needs `Capability.FILES_LIST`, which ACAS declares and Docker does
+not, so it runs only on ACAS.
 
 Sample 10 is the configuration half and this is the traffic half (#302); read 10 first, since
 the acts below use its vocabulary.  #133 asks for the trade-off to be measured rather than
@@ -14,12 +21,14 @@ cannot be answered without walking them in order.
 
 Acts 2 and 3 answer it twice and **both run Python in the sandbox** — only the place of the
 lookups differs, which is what keeps this a measurement of dispatch rather than of CodeAct.
-Act 4 compares them, act 5 reads the guest filesystem, act 6 takes the sandboxes down.
+Act 4 compares them, act 5 (ACAS only) reads the guest filesystem, and the teardown takes the
+sandboxes down.
 
 The README has the prerequisites, the environment variables and the reasoning behind each act.
 
-Running this needs a real Azure subscription and **creates two billable sandboxes**, one per
-route, which the README explains and act 6 disposes of.
+On `acas` this needs a real Azure subscription and **creates two billable sandboxes**, one per
+route; on `docker` it creates two local containers and bills nothing. Either way the README
+explains it and the teardown disposes them.
 """
 
 # /// script
@@ -30,6 +39,7 @@ route, which the README explains and act 6 disposes of.
 #     "azure-identity",
 #     "maf-sandbox-acas>=0.9",
 #     "maf-sandbox-codeact>=0.5",
+#     "maf-sandbox-docker",
 #     "maf-sandbox>=0.21",
 # ]
 # ///
@@ -38,6 +48,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import re
 import sys
 import time
@@ -63,10 +74,12 @@ from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
 from maf_sandbox import (
     CALLS_DIRECTORY,
+    Capability,
     EntryKind,
     HostToolRegistry,
     HostToolRun,
     Identity,
+    Isolation,
     SandboxKey,
     SandboxRouter,
     SourceIntegrity,
@@ -86,6 +99,7 @@ except ImportError:  # the published core before #434
 
 from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
 from maf_sandbox_codeact import codeact_sandbox_spec, make_codeact_tools
+from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
 
 TRANSPORT_RECLAIMS = _reclaim_run is not None
 RECLAIMED, KEPT = "reclaimed by the transport", "left for the sandbox (core before 0.17)"
@@ -97,21 +111,26 @@ CALL_KEPT = "left for the sandbox (an older CodeAct or core)"
 SCOPE = "samples"
 AGENT_DIR = "analyst"
 
-#: A sandbox each, and the reason is act 5. On a legacy transport, the dispatched route's
-#: responses remain readable on the guest filesystem for anything that runs there afterwards.
-#: Sharing one sandbox would give the direct route's program a second road to the same data that
-#: this sample never measures. Newer transports reclaim their own files, but the sample runs
-#: against whatever is published, so two sandboxes remain correct for both transport behaviors.
-#: And a run in each, not only a route: `conversation_id` says why, and #445 is the rest of
-#: the samples that needed it. The one thing that is this sample's own is that there are two —
-#: a sandbox apiece, so neither route can read the other's leftovers.
+#: Which backend the sample runs against — `acas` (default, a remote Azure microVM) or `docker`
+#: (a local container). The walk is identical on both; #519 is about reading the two round trips
+#: side by side. Any other value is refused in `run()`.
+BACKEND = os.environ.get("SAMPLE_BACKEND", "acas")
+
+#: A sandbox each, for reasons that hold on either backend and one that is ACAS's. The routes are
+#: two conversations (`conversation_id` says why, and #445 is the rest of the samples that needed
+#: it), and the dispatched route widens its sandbox's spec with the host-tool channel while the
+#: direct route's carries none, so sharing one would give the direct route a road to the lookups
+#: this sample never measures on it. The ACAS-only reason is act 5: on a legacy transport the
+#: dispatched route's responses stay readable on the guest filesystem, and a shared sandbox would
+#: let the direct route's program read them. Two threads give two sandboxes regardless.
 DISPATCH_THREAD = conversation_id("15-host-tools-dispatch")
 DIRECT_THREAD = conversation_id("15-host-tools-direct")
 
-#: Sample 14's image, available to the sandbox group as a disk image. The transport's launcher
-#: is POSIX shell and its shim is Python, so the guest needs `sh`, `nohup`, `mkdir`, `mv`,
-#: `printf`, `rm`, `kill` and `python3`, and uses `setsid` when available. A distroless
-#: or Windows image cannot serve this whatever it declares.
+#: The guest image. On `acas` it is imported into the sandbox group as a disk image (sample 14's,
+#: so a group already serving 14 has it); on `docker` it is a public MCR reference `docker run`
+#: pulls (samples 06 and 08 use the same one). The transport's launcher is POSIX shell and its
+#: shim is Python, so the guest needs `sh`, `nohup`, `mkdir`, `mv`, `printf`, `rm`, `kill` and
+#: `python3`, and uses `setsid` when available. A distroless or Windows image cannot serve this.
 CODEACT_IMAGE = "mcr.microsoft.com/devcontainers/python:3.13-bookworm"
 
 #: Three tables in the host process, and the spec below asks for no `egress_allow`, so the
@@ -186,8 +205,8 @@ TASK = (
     + ". One row per state and product, using the product name, and a total line per state."
 )
 
-#: Everything the sandbox backend needs. No `ACAS_SANDBOX_REGISTRY`: `CODEACT_IMAGE` is
-#: already fully-qualified.
+#: Everything the ACAS backend needs, read only when `SAMPLE_BACKEND=acas` (docker reads none).
+#: No `ACAS_SANDBOX_REGISTRY`: `CODEACT_IMAGE` is already fully-qualified.
 SANDBOX_VARS = (
     "ACAS_SANDBOX_ENDPOINT",
     "ACAS_SANDBOX_SUBSCRIPTION_ID",
@@ -720,24 +739,37 @@ async def act_five_what_the_runs_left_behind(
 
 async def run() -> int:
     """Wire the stack, run each route against its own sandbox, and take both down again."""
-    env = require_env_vars(SANDBOX_VARS + MODEL_VARS)
+    if BACKEND not in ("acas", "docker"):
+        print(f"SAMPLE_BACKEND={BACKEND!r} is not 'acas' or 'docker'.", file=sys.stderr)
+        return 2
+    # docker needs no sandbox configuration — a daemon and the model; acas needs the group's four.
+    env = require_env_vars(MODEL_VARS if BACKEND == "docker" else SANDBOX_VARS + MODEL_VARS)
     if env is None:
         return 2
 
     dispatch_ledger, direct_ledger = Ledger(), Ledger()
     registry = act_one_what_the_host_wired(dispatch_ledger)
 
-    backend = AcasSandboxBackend(
-        AcasSandboxConfig(
-            endpoint=env["ACAS_SANDBOX_ENDPOINT"],
-            subscription_id=env["ACAS_SANDBOX_SUBSCRIPTION_ID"],
-            resource_group=env["ACAS_SANDBOX_RESOURCE_GROUP"],
-            sandbox_group=env["ACAS_SANDBOX_GROUP"],
+    if BACKEND == "docker":
+        # A local container per acquire. Docker declares `Isolation.CONTAINER`, one rung below the
+        # router's `MICROVM` default, so the floor is lowered to admit it. The backend still has to
+        # declare HOST_TOOLS and FILES_OUT for the outward channel to open, and this one does.
+        backend: AcasSandboxBackend | DockerSandboxBackend = DockerSandboxBackend(
+            DockerSandboxConfig()
         )
-    )
-    # No `min_isolation`: the default floor is `MICROVM` and this backend meets it, so the
-    # outward channel opens at the highest rung the ladder has rather than an opted-down one.
-    router = SandboxRouter([backend])
+        router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
+    else:
+        backend = AcasSandboxBackend(
+            AcasSandboxConfig(
+                endpoint=env["ACAS_SANDBOX_ENDPOINT"],
+                subscription_id=env["ACAS_SANDBOX_SUBSCRIPTION_ID"],
+                resource_group=env["ACAS_SANDBOX_RESOURCE_GROUP"],
+                sandbox_group=env["ACAS_SANDBOX_GROUP"],
+            )
+        )
+        # No `min_isolation`: the default floor is `MICROVM` and this backend meets it, so the
+        # outward channel opens at the highest rung the ladder has rather than an opted-down one.
+        router = SandboxRouter([backend])
 
     credential = DefaultAzureCredential()
     try:
@@ -760,11 +792,22 @@ async def run() -> int:
             direct_ledger,
         )
         act_four_what_the_round_trips_bought(dispatched, direct)
-        await act_five_what_the_runs_left_behind(router, registry)
+        # Act 5 enumerates the guest filesystem with `list_dir`, which needs FILES_LIST. ACAS
+        # declares it; docker does not (no engine-level directory-listing primitive), so there the
+        # leftover-traffic count cannot be taken and the act is skipped — acts 2-4 above, which is
+        # what #519 measures, ran in full either way.
+        if Capability.FILES_LIST in backend.capabilities:
+            await act_five_what_the_runs_left_behind(router, registry)
+        else:
+            print("== 5. What the runs left in the guest ==\n")
+            print("  Skipped: this backend declares no FILES_LIST, so the guest filesystem cannot")
+            print("  be enumerated. The dispatch itself needs only HOST_TOOLS and FILES_OUT, both")
+            print("  of which it does declare, which is why acts 2-4 ran.\n")
     finally:
-        # Deletes rather than relying on the lifecycle timers — see sample 01's README. It is
-        # also what removes whatever act 5 still counted, and the last resort for a program
-        # the transport reported it could not signal.
+        # Deletes rather than leaving the backend to reclaim them later — ACAS's idle timers, or
+        # on docker a label-based purge or nothing at all — see sample 01's README. It is also
+        # what removes whatever act 5 counted, and the last resort for a program the transport
+        # reported it could not signal.
         deleted = sum(
             [
                 await router.dispose_scope(SCOPE, DISPATCH_THREAD),
@@ -772,9 +815,11 @@ async def run() -> int:
             ]
         )
         print(f"{MEASURED}Disposed {deleted} sandbox(es).")
-        # The backend holds pooled clients of its own, so disposing the sandbox is not the
-        # whole teardown — samples 01, 03 and 14 close it the same way.
-        await backend.aclose()
+        # The ACAS backend holds pooled clients of its own, so disposing the sandbox is not the
+        # whole teardown — samples 01, 03 and 14 close it the same way. The docker backend holds
+        # none (samples 06 and 08 close the same way, without this call).
+        if isinstance(backend, AcasSandboxBackend):
+            await backend.aclose()
         await credential.close()
     return 0
 

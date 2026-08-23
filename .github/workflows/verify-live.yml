@@ -24,8 +24,11 @@ name: Verify (live)
 # Half are paired: one workload against a billable Azure microVM and the same workload against
 # a container, so a red on one side alone names the backend. 01 and 05 report the compiler's
 # diagnostics; 03 and 06 return the 100th Fibonacci number from code run in the sandbox; 08 and
-# 14 land a declared summary on disk and gate on the file, not on the account of it. 07 lands one
-# too, through a kind written in the sample instead of the packaged one, and pairs with 08 on
+# 14 land a declared summary on disk and gate on the file, not on the account of it; 15
+# dispatches a host tool from a program in the sandbox back into the host and gates on which route
+# carried the data, run on either backend via SAMPLE_BACKEND (the `sample-15` and
+# `sample-15-docker` jobs) — its leftover-traffic act the one part docker cannot supply. 07 lands
+# one too, through a kind written in the sample instead of the packaged one, and pairs with 08 on
 # this side of the machine rather than across backends. 09 runs 01's bicep workload against the
 # CLI on the runner itself, so it pairs with nothing and names no backend. 13 is the only job
 # that runs more than one turn: a model writes a file, the compiler reports on it, and a second
@@ -1377,16 +1380,18 @@ jobs:
           python3 "$HARNESS"/scripts/check_live_versions.py /tmp/sample14-out.txt "$PACKAGE" "$VERSION"
   sample-15:
     name: samples/15_acas_codeact_host_tools against a live sandbox
-    # The only live dispatch in the set (#302), and the only place `Capability.HOST_TOOLS` is
-    # exercised as traffic rather than as configuration. Sample 10 is its pair and needs nothing
-    # at all — it decides everything at attach — so a red here while 10 is green is a statement
-    # about the transport and the backend, never about the contract.
+    # The ACAS half of the live host-tools dispatch pair (#302); the `sample-15-docker` job below
+    # runs the SAME sample with SAMPLE_BACKEND=docker (#519). Together they are where
+    # `Capability.HOST_TOOLS` is exercised as traffic rather than as configuration — sample 10 is
+    # the configuration pair and needs nothing at all, deciding everything at attach, so a red here
+    # while 10 is green is a statement about the transport and the backend, never the contract.
     #
-    # It belongs on ACAS rather than Docker for a reason a local backend cannot supply: this
-    # backend's `exec` is blocking and timeout-bounded, and the guest shim blocks on a response
-    # file the host can only write while the program is still running. A dispatch that is
-    # answered at all therefore proves the launcher detached and the supervisor took over, which
-    # is exactly what declaring the capability claims here (#365).
+    # Act 5 is what this half keeps that the docker one drops, not the dispatch: reading the
+    # leftover traffic off the guest filesystem needs `Capability.FILES_LIST`, which ACAS declares
+    # and docker does not. The dispatch itself runs on either — the exec is blocking and
+    # timeout-bounded, and a dispatch answered at all proves the launcher detached and the
+    # supervisor took over, which is what declaring the capability claims (#365); the docker job
+    # shows the same, without act 5.
     #
     # **The fourth billable job in this workflow**, and it creates two sandboxes rather than
     # one: a route each, because legacy published combinations can leave a run's transport files
@@ -1495,6 +1500,102 @@ jobs:
         run: |
           set -euo pipefail
           python3 "$HARNESS"/scripts/check_live_versions.py /tmp/sample15-out.txt "$PACKAGE" "$VERSION"
+  sample-15-docker:
+    name: samples/15_acas_codeact_host_tools on docker against a live container
+    # The docker half of the live host-tools dispatch pair (#519): the SAME sample as sample-15
+    # above, run with SAMPLE_BACKEND=docker so it acquires a local container instead of a billable
+    # ACAS microVM. It bills nothing and needs no sandbox configuration — a container on the runner
+    # and a model reached with a federated credential, the same economics as samples 06 and 08.
+    # Docker declares HOST_TOOLS and FILES_OUT, so the dispatch transport runs; it declares no
+    # FILES_LIST, so the check runs with `--docker`, which drops the act-5 leftover enumeration the
+    # sample takes only on ACAS. Runs for the router (maf-sandbox), the docker backend
+    # (maf-sandbox-docker) and the kind that owns the dispatch wiring (maf-sandbox-codeact).
+    if: >-
+      inputs.package == ''
+      || contains(fromJSON('["maf-sandbox", "maf-sandbox-codeact", "maf-sandbox-docker"]'), inputs.package)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: live-verify
+    permissions:
+      # Mints the OIDC token azure/login exchanges. No secret is involved.
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # Only when `HARNESS` points at it — see the `env` block above for why the checks come
+      # from somewhere other than the samples. Sparse, because `scripts/` is all that is read.
+      - name: Check out the checks from the default branch
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch || 'main' }}
+          path: .harness
+          sparse-checkout: scripts
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      # The model's configuration only: on docker the sample reads no sandbox variable.
+      - name: Check the live configuration is present
+        env:
+          AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in AZURE_CLIENT_ID AZURE_TENANT_ID AZURE_SUBSCRIPTION_ID \
+            AZURE_OPENAI_ENDPOINT AZURE_OPENAI_CHAT_MODEL; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "::error::the live-verify environment is missing variables: ${missing[*]}. See docs/maintainers.md."
+            exit 1
+          fi
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Wait for this runner's PyPI edge to serve the release
+        if: ${{ inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # uv is the probe rather than a request of our own: a different client reads a
+          # different CDN cache object, and polling the index passed while the sample resolved
+          # the release before this one 0.7s later on the same runner (#595).
+          python3 "$HARNESS"/scripts/await_live_version.py "$PACKAGE" "$VERSION"
+
+      - name: Run sample 15 on docker and assert a program really called back out
+        env:
+          SAMPLE_BACKEND: docker
+          AZURE_OPENAI_ENDPOINT: ${{ vars.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_CHAT_MODEL: ${{ vars.AZURE_OPENAI_CHAT_MODEL }}
+        run: |
+          set -euo pipefail
+          uv run --no-project samples/15_acas_codeact_host_tools/agent.py | tee /tmp/sample15-docker-out.txt
+          # The same check as sample-15, with --docker: on docker the backend declares no
+          # FILES_LIST, so the run prints no act-5 leftover lines and that one act is dropped.
+          # stdlib-only, so the runner's own python3 runs it.
+          python3 "$HARNESS"/scripts/check_live_host_tools_dispatch_sample.py --docker /tmp/sample15-docker-out.txt
+
+      - name: Assert the published version the sample resolved
+        if: ${{ always() && inputs.version != '' }}
+        env:
+          PACKAGE: ${{ inputs.package }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          python3 "$HARNESS"/scripts/check_live_versions.py /tmp/sample15-docker-out.txt "$PACKAGE" "$VERSION"
   acas-e2e:
     name: maf-sandbox-acas conformance against a live sandbox group
     # **The one job here that is not a sample**, and the one that does not install published
