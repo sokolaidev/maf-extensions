@@ -1168,3 +1168,69 @@ class TestTheCommandLine:
 def test_every_measured_line_is_load_bearing(line: str):
     """Removing any one of them fails the check, so none is decoration."""
     assert check.assess(_without(line)) != []
+
+
+#: A docker run (sample 15 with `SAMPLE_BACKEND=docker`): the same walk on `maf_sandbox_docker`,
+#: which declares no `FILES_LIST` and so prints no act-5 leftover lines. Derived from `_HEALTHY` by
+#: dropping that act, so the two fixtures cannot drift on anything the docker run shares with ACAS.
+_ACT_FIVE_MARKERS = (
+    "== 5. What the runs left",
+    "transport cleanup:",
+    "call directory cleanup:",
+    "run directories across both sandboxes:",
+    "of those, runs that dispatched:",
+    "transport files left behind:",
+)
+_DOCKER = (
+    "\n".join(row for row in _HEALTHY.splitlines() if not any(m in row for m in _ACT_FIVE_MARKERS))
+    + "\n"
+)
+
+
+class TestTheDockerSampleHasNoActFive:
+    """On docker the backend declares no FILES_LIST, so `--docker` drops act 5, keeps the rest."""
+
+    def test_the_docker_run_passes_in_docker_mode(self):
+        assert check.assess(_DOCKER, docker=True) == []
+
+    def test_the_same_run_fails_in_acas_mode(self):
+        """The five missing leftover lines are five failures, so the flag is load-bearing."""
+        assert check.assess(_DOCKER) != []
+
+    def test_a_stray_leftover_line_is_ignored_in_docker_mode(self):
+        """Docker mode does not read act 5 at all, so one appearing does not change the verdict."""
+        with_line = _DOCKER.replace(
+            "  [measured] Disposed 2 sandbox(es).",
+            "  [measured] transport files left behind: 0, of which answered calls: 0\n"
+            "  [measured] Disposed 2 sandbox(es).",
+        )
+        assert check.assess(with_line, docker=True) == []
+
+    def test_the_dispatch_finding_still_binds(self):
+        """Act 5 is gone; the point of the sample is not. The dispatched route wrote no figure."""
+        broken = _DOCKER.replace(
+            "dispatch route: sales figures the model wrote into code: 0 of 12",
+            "dispatch route: sales figures the model wrote into code: 4 of 12",
+        ).replace(
+            "sales figures the model wrote into code, dispatched: 0 of 12",
+            "sales figures the model wrote into code, dispatched: 4 of 12",
+        )
+        assert any("before any dispatch can answer" in r for r in check.assess(broken, docker=True))
+
+    def test_a_leaked_container_still_fails(self):
+        broken = _DOCKER.replace("Disposed 2 sandbox(es).", "Disposed 1 sandbox(es).")
+        assert any(
+            "runs until the lifecycle timers" in r for r in check.assess(broken, docker=True)
+        )
+
+    def test_the_cli_docker_flag_selects_docker_mode(self, tmp_path: Path, capsys):
+        path = tmp_path / "out.txt"
+        path.write_text(_DOCKER, encoding="utf-8")
+        assert check.main(["check", "--docker", str(path)]) == 0
+        assert "dispatched" in capsys.readouterr().out
+
+    def test_without_the_flag_the_cli_rejects_the_docker_run(self, tmp_path: Path, capsys):
+        path = tmp_path / "out.txt"
+        path.write_text(_DOCKER, encoding="utf-8")
+        assert check.main(["check", str(path)]) == 1
+        assert "FAIL" in capsys.readouterr().err
