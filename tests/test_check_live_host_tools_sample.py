@@ -1,15 +1,23 @@
 """The match logic behind `scripts/check_live_host_tools_sample.py`, tested on every PR.
 
-`_HEALTHY` is a real run's output, trimmed — checked against one rather than written from
-memory, since a fixture that has drifted makes every assertion below pass against a fiction.
+`_HEALTHY` is a real run's output, verbatim but for the three lines the environment
+contributes. It used to be a real run *trimmed*, and the trimming is what went wrong: #572
+added a refusal line the fixture never grew, so every assertion here kept passing while every
+live run of sample 10 failed on it. `TestTheFixtureIsStillWhatTheSamplePrints` runs the sample,
+so a fixture and a sample cannot drift apart quietly again.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import os
+import subprocess
+import sys
 from pathlib import Path
 
-_SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "check_live_host_tools_sample.py"
+_ROOT = Path(__file__).resolve().parent.parent
+_SCRIPT = _ROOT / "scripts" / "check_live_host_tools_sample.py"
+_SAMPLE = _ROOT / "samples" / "10_inprocess_host_tools" / "agent.py"
 _spec = importlib.util.spec_from_file_location("check_live_host_tools_sample", _SCRIPT)
 assert _spec and _spec.loader
 check = importlib.util.module_from_spec(_spec)
@@ -20,37 +28,64 @@ _spec.loader.exec_module(check)
 _HEALTHY = """\
 == 1. Registration ==
 
+  refused:    publish_release_note (registry is APP-only) — host tool 'publish_release_note' exercises 'user' authority, which this registry does not allow (allowed_identities: app). A host that means to run tools under this authority opts in at construction with allowed_identities=frozenset({Identity.APP, Identity.USER}); a tool declaring identity=None exercises no authority and is always allowed. denied_identities on the router stays the attach-time backstop.
+
+  notice: a host tool was registered for sandbox dispatch: dispatched calls run in the host process with the host's authority and bypass the middleware chain — the boundary sees only execute_code's aggregate result. Suppress this notice with warnings.filterwarnings('ignore', category=MafSandboxHostToolsWarning) once read.
+
   registered: fetch_changelog, publish_release_note, semver_bump
-  refused:    rerun_failed_jobs — host tool 'rerun_failed_jobs' has no complete
-              information-flow declaration and this registry requires one.
+  refused:    rerun_failed_jobs — host tool 'rerun_failed_jobs' has no complete information-flow declaration and this registry requires one. Stamp it with @sandbox_tool(source=..., sink=..., identity=...) — every leg answered; None is an answer, an omission is not.
+
+  the dispatchable surface is 3 functions, and nothing else.
+  Least privilege here is what was registered, not what was declared.
 
 == 2. What the surface means ==
 
   result_integrity:  untrusted
+                     the weakest tier over sources only — fetch_changelog drags
+                     the whole result down, and semver_bump cannot drag it up.
   outbound_caps:     {'public'}
+                     verbatim and unfolded: confidentiality is the host's
+                     vocabulary, and this library never guesses at an ordering.
   identities:        {app, user}
   requires_approval: True
+                     because one USER tool is enough — a single dispatch could
+                     exercise the user's delegated authority.
   has_undeclared:    False  (the gate refused the fourth)
 
-  sealed:     host tool 'semver_bump_again' cannot be registered: this registry was sealed.
+  sealed:     host tool 'semver_bump_again' cannot be registered: this registry was sealed when its aggregate was taken, and a host has already derived a spec and a classification from the surface as it stood. Widening it now would dispatch what nothing classified.
 
 == 3. A host that permits it ==
 
   ensure_can_serve('release-notes') returned. The kind may attach.
+  One call is the whole of a host's wiring test — and the whole of this sample's
+  happy path, because a dispatch needs a guest program and this sample runs none.
 
 == 4. The two refusals ==
 
   denied_capabilities={HOST_TOOLS}
-    SandboxCapabilityDenied: the 'release-notes' workload requires host_tools, which this
-    host's router denies outright (denied_capabilities).
+    SandboxCapabilityDenied: the 'release-notes' workload requires host_tools, which this host's router denies outright (denied_capabilities). A hard stop rather than a missing feature: whatever backend is registered, this posture refuses the capability — serve the workload on a host that permits it, or narrow what it requires.
 
   denied_identities={USER}
-    SandboxIdentityDenied: the 'release-notes' workload's dispatched tools exercise user
-    authority, which this host's router denies outright (denied_identities).
+    SandboxIdentityDenied: the 'release-notes' workload's dispatched tools exercise user authority, which this host's router denies outright (denied_identities). Remove the tools declaring that identity from the workload's registry, or serve it on a host whose posture permits them.
+
+  Both are PermissionError, both name the deployment's own setting, and both
+  turn away the whole kind rather than one function — there is no partial
+  attach.
 
   The way past the second refusal is a different registry, not a different call:
     a registry without publish_release_note folds to identities={app}, requires_approval=False,
     and the same denied_identities router serves the spec built from it.
+    Least privilege is what a host registers, and the cost of that is real:
+    the spec is frozen, the registry sealed, and there is no unregister.
+
+== What is not here ==
+
+  A dispatch. The transport a guest sends a request over has landed (#327),
+  maf-sandbox-codeact dispatches over it, and the docker and acas backends
+  declare Capability.HOST_TOOLS — so one would run. It needs a real sandbox,
+  a guest program and a model, and this sample uses none of the three (#302).
+  Everything above is the half a host configures on day one regardless, and it
+  is the half that decides whether the other half ever runs.
 
 Completed 4 of 4 acts. Acquired 0 sandbox(es).
 """
@@ -70,8 +105,18 @@ class TestHealthyRun:
             _HEALTHY.replace("The kind may attach.", "So the kind is allowed to attach.")
             .replace("(the gate refused the fourth)", "(as the gate refused one)")
             .replace("which this host's router denies outright", "refused by this host")
-            .replace("this registry was sealed.", "the surface is sealed and will not widen.")
+            .replace("this registry was sealed when", "the surface will not widen once")
         )
+        # Every replacement above must have landed. One that matches nothing leaves the fixture
+        # untouched and turns this into a second copy of `test_a_real_run_passes`.
+        assert reworded != _HEALTHY
+        for gone in (
+            "The kind may attach.",
+            "(the gate refused the fourth)",
+            "which this host's router denies outright",
+            "this registry was sealed when",
+        ):
+            assert gone not in reworded, gone
         assert check.assess(reworded) == []
 
 
@@ -257,3 +302,97 @@ class TestTheRunCompleted:
 class TestEmptyOutput:
     def test_nothing_passes_vacuously(self):
         assert check.assess("") != []
+
+
+class TestMoreThanOneRefusalIsPrinted:
+    """#572 put an APP-only refusal above the one this check asks about.
+
+    The sample prints two `refused:` lines. Reading only the first found the APP-only refusal,
+    saw no `rerun_failed_jobs` in it, and reported a gate that had in fact fired — so every
+    live run of sample 10 failed from #572 until this was fixed.
+    """
+
+    def test_the_earlier_refusal_really_does_come_first(self):
+        """Without this ordering the two tests below would pass for the wrong reason."""
+        refusals = [line for line in _HEALTHY.splitlines() if "refused:" in line]
+        assert len(refusals) == 2, refusals
+        assert "registry is APP-only" in refusals[0]
+        assert "rerun_failed_jobs" in refusals[1]
+
+    def test_the_gate_is_still_found_behind_it(self):
+        assert check.assess(_HEALTHY) == []
+
+    def test_dropping_only_the_gate_line_is_still_caught(self):
+        """The APP-only line stays, so a check happy with any refusal would pass this."""
+        dropped = "\n".join(
+            line
+            for line in _HEALTHY.splitlines()
+            if not ("refused:" in line and "rerun_failed_jobs" in line)
+        )
+        assert any("registry is APP-only" in line for line in dropped.splitlines())
+        assert any("require_declared gate did not fire" in r for r in check.assess(dropped))
+
+
+class TestAKeyIsNotTheTailOfALongerKey:
+    """`allowed_identities:` ends in `identities:`, and the refusal prints it first.
+
+    Taking the first line merely *containing* `identities:` read that refusal's
+    `allowed_identities=frozenset({Identity.APP, Identity.USER})` as the aggregate's own
+    answer, and reported identities as `['Identity.APP', 'Identity.USER']` — a repr the sample
+    prints nowhere.
+    """
+
+    def test_the_trap_line_is_in_the_output_and_comes_first(self):
+        lines = _HEALTHY.splitlines()
+        trap = next(i for i, line in enumerate(lines) if "allowed_identities:" in line)
+        real = next(i for i, line in enumerate(lines) if line.strip().startswith("identities:"))
+        assert trap < real, (trap, real)
+
+    def test_the_aggregate_line_is_the_one_read(self):
+        assert any("identities" in r for r in check.assess("")), "empty output must still fail"
+        assert check.assess(_HEALTHY) == []
+
+    def test_the_trap_line_cannot_stand_in_for_a_missing_one(self):
+        dropped = "\n".join(
+            line for line in _HEALTHY.splitlines() if not line.strip().startswith("identities:")
+        )
+        assert any("allowed_identities:" in line for line in dropped.splitlines())
+        assert any("identities were not reported" in r for r in check.assess(dropped))
+
+
+class TestTheFixtureIsStillWhatTheSamplePrints:
+    """The guard that would have caught #572 on the day it merged.
+
+    Every other assertion in this file reads `_HEALTHY`, so all of them pass against a fixture
+    that has drifted from the sample — which is what happened. This one runs the sample. It
+    needs no sandbox, no model and no network: sample 10 answers everything at attach.
+    """
+
+    def test_a_real_run_passes_the_check(self):
+        completed = subprocess.run(
+            [sys.executable, str(_SAMPLE)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=180,
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+        )
+        assert completed.returncode == 0, completed.stderr
+        assert check.assess(completed.stdout) == [], completed.stdout
+
+    def test_every_line_the_check_reads_is_in_the_fixture(self):
+        """Names the drift directly, so a failure says which line the fixture is missing."""
+        completed = subprocess.run(
+            [sys.executable, str(_SAMPLE)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=180,
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+        )
+        assert completed.returncode == 0, completed.stderr
+        keys = ("refused:", "registered:", "identities:", "sealed:", "ensure_can_serve")
+        for key in keys:
+            live = [line.strip() for line in completed.stdout.splitlines() if key in line]
+            fixture = [line.strip() for line in _HEALTHY.splitlines() if key in line]
+            assert live == fixture, (key, live, fixture)
