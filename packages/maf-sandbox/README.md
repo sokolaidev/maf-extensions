@@ -147,7 +147,7 @@ The contract says what may be dispatched; it does not say how a dispatch *reache
 
 It costs round trips — several backend calls per dispatch, plus polling, plus one on every return to reclaim, and one more to stop the program on a run that overran. It serves one outstanding call at a time. This module's own docstring counts those costs exactly, beside the code that decides them; whether the trade is worth it is a measurement rather than an assumption.
 
-## Upgrading to 0.21
+## Upgrading to 0.23
 
 **`Sandbox` gains `reclaim`, and there is no declare-or-raise escape for it.** Every other protocol method a backend cannot serve may raise `NotImplementedError` as long as it does not declare the matching `Capability` — the `run_code` note below is that escape, spelled out. `reclaim` is the first member with no capability behind it: there is no spec the router could refuse before a caller arrives, and a sandbox answering with `NotImplementedError` leaks a directory per call out of a `finally` that reports rather than raises. **A third-party backend adds one method, and has to genuinely implement it:**
 
