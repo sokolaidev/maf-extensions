@@ -1,88 +1,125 @@
-"""Wait until *this* runner's PyPI edge serves the version the release just published.
+"""Wait until `uv` on this runner can resolve the version the release just published.
 
 Usage:
     python scripts/await_live_version.py maf-sandbox-docker 0.7.2
 
-`wait-for-propagation` in publish-packages.yml confirms the same thing, and the gap is whose
-edge it confirmed it on: PyPI's Simple index is an eventually-consistent CDN, so a version
-visible to that runner is not a version visible to the one about to resolve. Seven live jobs
-of one release started in the same second and split four to three on which version they got
-(#595, the residual #563 named).
+PyPI's Simple index is served through an eventually-consistent CDN, so a version visible to
+one observer is not a version visible to the next. `wait-for-propagation` in
+publish-packages.yml confirms the upload from its own runner, which is one layer of that; this
+was added for the layer below it, where each sample job resolves on a runner of its own (#595).
 
-Read deliberately **without** cache-busting. The stale answer is a warm edge copy with an
-unexpired TTL, so waiting it out is the whole job; a cache-busted read would go to the origin
-and prove nothing about what `uv` is handed a moment later.
+**The probe has to be `uv`, and that is the whole lesson of this file.** Its first version
+polled the index with `urllib` and a JSON `Accept`, passed, and the sample still resolved the
+previous release *0.7 seconds later* on the same runner: a different client sends a different
+`Accept`, a different `Accept` is a different CDN cache object, and the two go stale
+independently. A pass by one HTTP client says nothing about another.
 
-Runs before the sample rather than retrying after it: a retry would have to run the sample
-again to be honest about what it tested, and that is a live model, a live container and a
-billable sandbox. This costs seconds and fails before any of it is spent.
+So the probe runs the same subcommand the sample does, which buys three things a hand-rolled
+request cannot. It reads whatever representation `uv` reads. It downloads the wheel, so an
+edge listing a version whose artifact it cannot yet serve does not pass. And it leaves `uv`'s
+own cache holding that answer — measured: a `uv run` after this makes zero index requests,
+against eleven without it — so the sample resolves from the bytes this checked rather than
+from a second lookup that could land anywhere.
 """
 
 from __future__ import annotations
 
-import json
+import re
+import subprocess
 import sys
 import time
-import urllib.error
-import urllib.request
 
-#: Long enough for an edge TTL to lapse, short enough to fail inside the job's own timeout.
+#: Long enough for an edge to catch up, short enough to fail inside the job's own timeout.
 DEADLINE_SECONDS = 600
 INTERVAL_SECONDS = 10
-_SIMPLE_JSON = "application/vnd.pypi.simple.v1+json"
+#: One attempt: a resolve and a wheel fetch, a few seconds when the edge is current.
+ATTEMPT_TIMEOUT_SECONDS = 180
 
 
-def serves(payload: dict, package: str, version: str) -> str | None:
-    """Why this index document does not yet offer ``version``, or None when it does.
+def command(package: str, version: str) -> list[str]:
+    """The probe: resolve and install exactly this version, refusing `uv`'s cached answer.
 
-    A wheel, not the sdist beside it: a resolver takes the wheel, and an sdist that landed
-    first would only make this wait for something nothing here needs.
+    `--refresh` so a cached miss cannot make the loop spin forever against its own memory; the
+    attempt that succeeds refreshes too, which is what leaves the cache holding a fresh answer.
     """
-    if version not in payload.get("versions", []):
-        return "version not listed"
-    prefix = f"{package.replace('-', '_')}-{version}-"
-    names = [entry.get("filename", "") for entry in payload.get("files", [])]
-    if not any(name.startswith(prefix) and name.endswith(".whl") for name in names):
-        return "listed, but no wheel for it yet"
-    return None
+    return [
+        "uv",
+        "run",
+        "--no-project",
+        "--refresh",
+        "--with",
+        f"{package}=={version}",
+        "python",
+        "-c",
+        "pass",
+    ]
 
 
-def read_index(package: str) -> dict:
-    """The Simple index document for ``package``, as a resolver on this runner would get it."""
-    request = urllib.request.Request(
-        f"https://pypi.org/simple/{package}/", headers={"Accept": _SIMPLE_JSON}
+#: uv colourises stderr even when it is a pipe, and wraps one sentence over several lines.
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+#: The box-drawing it frames an error with, which carries nothing once the lines are joined.
+_GLYPHS = str.maketrans("", "", "×╰─▶│")
+
+
+def why_not(completed: subprocess.CompletedProcess) -> str:
+    """`uv`'s own complaint, decolourised and folded onto one line.
+
+    Taking the last line instead loses the sentence: uv wraps "Because there is no version of
+    x==1.0 …" across four, and the last of them is the word "unsatisfiable."
+    """
+    plain = _ANSI.sub("", completed.stderr or "").translate(_GLYPHS)
+    said = " ".join(
+        word
+        for line in plain.splitlines()
+        if not line.strip().startswith(("help:", "hint:"))
+        for word in line.split()
     )
-    with urllib.request.urlopen(request, timeout=20) as response:
-        return json.loads(response.read())
+    if not said:
+        return f"uv exited {completed.returncode}"
+    return said if len(said) <= 300 else f"{said[:297]}..."
+
+
+def probe(package: str, version: str, *, run=subprocess.run) -> str | None:
+    """None when `uv` here can resolve and install ``version``, else why it cannot."""
+    try:
+        completed = run(
+            command(package, version),
+            capture_output=True,
+            # `text=True` alone decodes with the *locale* encoding, and uv writes UTF-8: on a
+            # runner whose locale is not UTF-8 the complaint arrives as mojibake, which is how
+            # the box-drawing below survives being stripped. `replace` because a garbled byte
+            # is not worth raising over inside a retry loop.
+            encoding="utf-8",
+            errors="replace",
+            timeout=ATTEMPT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return f"uv did not answer within {ATTEMPT_TIMEOUT_SECONDS}s"
+    except OSError as error:
+        return f"could not run uv: {error}"
+    return None if completed.returncode == 0 else why_not(completed)
 
 
 def await_version(
     package: str,
     version: str,
     *,
-    fetch=read_index,
+    attempt=probe,
     now=time.monotonic,
     sleep=time.sleep,
 ) -> int:
-    """Poll until the edge offers ``version``; 0 when it does, 1 when the deadline passes."""
+    """Poll until `uv` can take ``version``; 0 when it can, 1 when the deadline passes."""
     deadline = now() + DEADLINE_SECONDS
     while True:
-        try:
-            reason = serves(fetch(package), package, version)
-        except (urllib.error.URLError, TimeoutError, OSError) as error:
-            reason = f"index unreachable: {error}"
-        except json.JSONDecodeError as error:
-            # A 200 carrying half a document is an edge mid-write, which is the condition being
-            # waited out rather than one to end on.
-            reason = f"index returned unparseable JSON: {error}"
+        reason = attempt(package, version)
         if reason is None:
-            print(f"{package} {version} is served here; running the sample")
+            print(f"uv here resolves {package} {version}; running the sample")
             return 0
         if now() >= deadline:
             print(
-                f"::error::this runner's PyPI edge still does not serve {package} {version} "
-                f"after {DEADLINE_SECONDS}s ({reason}); the sample would resolve an older "
-                "release and measure the wrong thing",
+                f"::error::uv on this runner still cannot resolve {package} {version} after "
+                f"{DEADLINE_SECONDS}s ({reason}); the sample would resolve an older release "
+                "and measure the wrong thing",
                 file=sys.stderr,
             )
             return 1
@@ -91,7 +128,7 @@ def await_version(
 
 
 def main(argv: list[str]) -> int:
-    """Wait for the runner's own edge to offer the published version before a sample resolves."""
+    """Wait for this runner's uv to see the published version before a sample resolves."""
     if len(argv) != 3:
         print(f"usage: {argv[0]} <package> <version>", file=sys.stderr)
         return 2
