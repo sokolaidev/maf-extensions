@@ -53,10 +53,8 @@ async def reclaim_guest_path(
     removal is the caller's deadline arriving, and it propagates — containing it would let the
     call return past a bound the host thought it had.
 
-    :meth:`Sandbox.reclaim` rather than :meth:`Sandbox.remove`: the protocol's delete is gated
-    by a capability no shipped spec requires, and every backend serves the reclaim. The guards
-    below stay here whichever backend answers — a backend's reclaim is the mechanism, not the
-    policy.
+    Dispatches to :meth:`Sandbox.reclaim`, which every backend serves. The guards stay here:
+    the backend is the mechanism, not the policy.
     """
     try:
         resolved = confine_guest_path(path, working_directory)

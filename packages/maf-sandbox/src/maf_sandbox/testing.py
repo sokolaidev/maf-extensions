@@ -100,9 +100,7 @@ class InProcessSandbox:
     stored is not text — asking for text that was never written is worth an error rather than
     a replacement character. ``exec`` records ``(command, working_directory, timeout)`` tuples
     into :attr:`commands`, and ``reclaim`` records ``(directory, working_directory, timeout)``
-    into :attr:`reclaims` — recorded as well as performed, because the framework's cleanup is
-    dispatched rather than spelled as a command, and a test with nothing to assert on would
-    pass having watched nothing.
+    into :attr:`reclaims` and really removes.
 
     ``stat_file``, ``read_file`` and ``list_dir`` confine every ``path`` to the
     ``working_directory`` a call names: a backslash or a resolved path outside it raises
@@ -153,9 +151,7 @@ class InProcessSandbox:
             else:
                 self.contents[path] = value
         self.commands: list[tuple[str, str, float]] = []
-        #: Every ``reclaim`` call, as ``(directory, working_directory, timeout)``. Separate
-        #: from :attr:`commands` because the framework's cleanup no longer passes through a
-        #: command line, and this is where a test asserting it ran now looks.
+        #: Every ``reclaim`` call, as ``(directory, working_directory, timeout)``.
         self.reclaims: list[tuple[str, str, float]] = []
         #: Every ``run_code`` call, as ``(code, timeout)``. Separate from :attr:`commands`
         #: because a test asserting a program was evaluated should not match a shell command
@@ -306,22 +302,16 @@ class InProcessSandbox:
             self.directories.discard(stored)
 
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
-        """Really remove the directory and everything under it, and record the call.
+        """Remove the directory for real, and record the call.
 
-        No confinement check and no depth guard: the protocol leaves both with the caller, and
-        a fake stricter than the contract refuses what a live backend would do. What is not
-        there is already gone, which is the success the contract asks for.
-
-        ``directory`` is the absolute guest path the contract says it is, so
-        ``working_directory`` takes no part in resolving it — a live backend runs the removal
-        from ``/`` and reads it the same way.
+        No confinement check and no depth guard: the contract leaves both with the caller.
+        ``directory`` is absolute, so ``working_directory`` plays no part.
         """
         self.reclaims.append((directory, working_directory, timeout))
         if self._raises is not None:
             raise self._raises
         full_path = posixpath.normpath(directory)
-        # A link is unlinked, never descended — its children are its target's, and `rm -rf`
-        # leaves that target standing.
+        # A link is unlinked, not followed.
         stored_paths = (full_path,) if full_path in self.symlinks else self._stored()
         for stored in [p for p in stored_paths if guest_path_relative_to(p, full_path) is not None]:
             self.contents.pop(stored, None)

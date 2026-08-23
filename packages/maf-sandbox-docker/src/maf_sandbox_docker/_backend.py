@@ -378,12 +378,10 @@ class _DockerSandbox:
             )
 
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
-        """Remove ``directory`` and everything under it via ``rm -rf`` over :meth:`exec`.
+        """Remove ``directory`` with ``rm -rf`` over :meth:`exec`.
 
-        No confinement check: the caller made ``directory``, with no attacker-chosen component
-        to walk. ``working_directory`` says where ``directory`` sits, not where to run the
-        removal from — no backend creates a spec's ``work_dir``, so the exec runs from ``/``,
-        which every container has, rather than a directory that may never have been created.
+        No confinement check: the caller made ``directory``. Runs from ``/`` because
+        ``working_directory`` may not exist.
         """
         del working_directory
         removed = await self.exec(

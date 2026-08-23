@@ -692,13 +692,7 @@ class TestInProcessSandboxRemove:
 
 
 class TestInProcessSandboxReclaim:
-    """The in-process reading of :meth:`Sandbox.reclaim` — the framework's own removal.
-
-    It really removes, because a fake that only recorded would let a call's files stay
-    readable in every test that goes on to assert what is left. And it records, because the
-    removal no longer passes through a command line and `commands` would answer the same for
-    a cleanup that ran and one that never happened.
-    """
+    """The in-process :meth:`Sandbox.reclaim`: it really removes, and it records the call."""
 
     def _reclaim(self, sandbox, directory, *, working_directory=_WORK, timeout=30.0):
         return asyncio.run(
@@ -733,8 +727,7 @@ class TestInProcessSandboxReclaim:
         self._reclaim(sandbox, f"{_WORK}/never-existed")
 
     def test_a_link_is_unlinked_rather_than_descended(self):
-        """Its children are its target's, and a recursive removal that followed one would take
-        a directory the guest chose."""
+        """A followed link would remove a directory the guest chose."""
         sandbox = InProcessSandbox(
             seed_files={f"{_WORK}/out": EntryKind.SYMLINK, f"{_WORK}/out/passwd": "root:x:0:0"}
         )
@@ -743,9 +736,7 @@ class TestInProcessSandboxReclaim:
         assert f"{_WORK}/out/passwd" in sandbox.contents, "the reclaim followed a link"
 
     def test_a_relative_directory_is_not_joined_onto_the_working_directory(self):
-        """`directory` is absolute. A live backend removes from `/`, where a relative name
-        finds nothing and succeeds, so a fake that joined would report a cleanup no backend
-        performs — and a caller passing one would be told its files went."""
+        """`directory` is absolute; a fake that joined it would report a cleanup no backend does."""
         sandbox = InProcessSandbox(seed_files={f"{_WORK}/abc123/a.txt": "1"})
         self._reclaim(sandbox, "abc123")
         assert set(sandbox.contents) == {f"{_WORK}/abc123/a.txt"}

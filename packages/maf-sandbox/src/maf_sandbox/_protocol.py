@@ -546,9 +546,7 @@ class Sandbox(Protocol):
     last sentence. A kind that calls :meth:`remove` directly must put the capability in
     ``requires`` itself; omit it and the router may hand back a backend whose ``remove`` raises
     :class:`NotImplementedError` — from a ``finally``, over whatever the run was already
-    reporting. :meth:`reclaim` is the framework's own removal and is behind no capability at
-    all, so :func:`maf_sandbox.maf.sandboxed_tool` reaches it whatever the spec requires; a
-    backend implements it or it is not a backend.
+    reporting. :meth:`reclaim` is behind no capability: every backend implements it.
 
     ``working_directory`` is a parameter on those four — the pull surface and :meth:`remove` —
     exactly as it is on :meth:`exec`,
@@ -699,41 +697,21 @@ class Sandbox(Protocol):
         ...
 
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
-        """Remove ``directory`` and everything under it, bounded by ``timeout`` seconds.
+        """Remove ``directory`` and everything under it, within ``timeout`` seconds.
 
-        The framework's own cleanup, and the one member behind no :class:`Capability`: every
-        backend implements it, because a call's guest path has to go away on every backend
-        whatever else that backend can serve.
+        The framework's cleanup. Mandatory, and behind no :class:`Capability`.
 
-        Three rules a caller depends on. **The caller created it** — under
-        ``working_directory``, with an unguessable name — which is what licenses removing it
-        without first walking its parents for a link: there is no attacker-chosen component to
-        walk. That rule is statable and not enforceable, so a backend inherits the statement
-        rather than a check. A directory that is not there is **success**: cleanup runs in a
-        ``finally`` and must not report a second failure over the first. **Anything else
-        raises**, so the caller can escalate.
+        Three rules. The caller created ``directory`` under ``working_directory`` with an
+        unguessable name, so no parent walk is owed — stated, not checked. A directory that
+        is not there is success: this runs in a ``finally``. Anything else raises.
 
-        Not :meth:`remove` under another name. That one takes a model-supplied path, owes
-        confinement, and is gated by :data:`Capability.FILES_DELETE`; this one takes a
-        directory this stack made and owes no confinement, which is why a backend that must
-        refuse ``remove`` can still serve it. Confinement policy stays with the caller either
-        way — a backend's ``reclaim`` is the mechanism, not the policy.
-
-        ``directory`` is an **absolute** POSIX guest path — the one path on this surface that
-        is not relative to ``working_directory``. Every shipped backend removes it from ``/``,
-        where a relative name finds nothing, succeeds, and reports a cleanup over files that
-        are still there. ``working_directory`` says where the directory sits, for a backend
-        whose store is rooted somewhere it has to name, and is **not** a place to run the
-        removal from: no backend creates a spec's ``work_dir``, so a call that wrote nothing
-        leaves it absent, and a removal that moved there first would fail over a directory
-        that is already gone.
+        ``directory`` is absolute. Run the removal from ``/``, not from ``working_directory``,
+        which may not exist. Not :meth:`remove`: that takes a model-supplied path, owes
+        confinement, and sits behind :data:`Capability.FILES_DELETE`.
 
         Raises:
-            OSError: The removal was refused or failed, so the directory may still be there.
-                :class:`TimeoutError` is a subclass, so a caller catching this catches the
-                expired bound with it.
-            TimeoutError: ``timeout`` expired, and nothing else — the bound is read the way
-                :meth:`exec`'s is.
+            OSError: The removal was refused or failed.
+            TimeoutError: ``timeout`` expired. A subclass of :class:`OSError`.
         """
         ...
 

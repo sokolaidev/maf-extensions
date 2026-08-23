@@ -31,9 +31,7 @@ the guest the image ships, which for the suites that run in CI is the image the 
 names.
 
 **One suite belongs to no capability.**  :func:`assert_reclaim_conformance` covers
-:meth:`Sandbox.reclaim`, the framework's removal of a directory this stack created: mandatory,
-behind no :class:`~maf_sandbox.Capability`, and therefore run with no declaration gate at all —
-nothing admits a backend to it and nothing excuses one from a probe in it.
+:meth:`Sandbox.reclaim`, which is mandatory, so it runs with no declaration gate.
 
 **The EXEC suite may not leave the sandbox alive.**  Its last probe asserts the
 ``TimeoutError`` contract, and two backends discard the whole sandbox when a call times out —
@@ -1562,8 +1560,7 @@ async def _probe_a_created_directory_is_gone(
     )
     if result.exit_code == 0:
         raise AssertionError("the reclaimed directory is still there")
-    # A reclaim that took the working directory, or a neighbour, is not a reclaim of this
-    # directory: the method promises that one and nothing else.
+    # The method promises this directory and nothing else.
     await _assert_present(
         subject.sandbox, "reclaim-bystander.txt", subject.working_directory, "a bystander file"
     )
@@ -1588,13 +1585,7 @@ async def _probe_nested_content_goes_with_it(
 async def _probe_a_link_inside_is_unlinked_not_followed(
     subject: ConformanceSubject, paths: ConformancePaths
 ) -> None:
-    """A link *inside* the reclaimed directory is unlinked, never resolved.
-
-    What licenses a removal that walks no parents: the directory is this stack's, so no
-    component of it is attacker-chosen — but its *contents* are, and a mechanism that
-    resolved an interior link would delete a file outside the working directory on every
-    cleanup.
-    """
+    """A link inside the directory is unlinked, never followed: its target is outside."""
     await subject.plant_file(f"{paths.outside}/reclaim-target.txt", b"outside the directory\n")
     await subject.plant_file(f"{paths.work}/reclaim-linked/leaf.txt", b"in the directory\n")
     await subject.plant_symlink(
@@ -1623,8 +1614,7 @@ async def _probe_a_link_inside_is_unlinked_not_followed(
 async def _probe_a_missing_directory_is_success(
     subject: ConformanceSubject, paths: ConformancePaths
 ) -> None:
-    # The two-call shape a finally-based cleanup actually runs: a backend that succeeds on a
-    # never-seen path but raises on the repeat breaks exactly the second call.
+    # Twice, the shape a `finally` cleanup runs: the repeat must not raise.
     await subject.plant_file(f"{paths.work}/reclaim-twice/note.txt", b"gone after the first\n")
     for _ in range(2):
         await subject.sandbox.reclaim(
@@ -1635,9 +1625,8 @@ async def _probe_a_missing_directory_is_success(
 async def _probe_an_absent_working_directory_still_succeeds(
     subject: ConformanceSubject, paths: ConformancePaths
 ) -> None:
-    # No backend creates a spec's work dir, so a call that wrote nothing leaves both it and the
-    # call's own directory absent. A backend that moves to `working_directory` before removing
-    # reports a retention failure here, over a directory that was never there.
+    # A call that wrote nothing leaves the work dir absent. A backend that moves there first
+    # fails here.
     await subject.sandbox.reclaim(
         f"{paths.work}/absent-work/call-a1b2c3",
         working_directory=f"{paths.work}/absent-work",
@@ -1648,46 +1637,36 @@ async def _probe_an_absent_working_directory_still_succeeds(
 RECLAIM_PROBES: tuple[Probe, ...] = (
     Probe(
         name="a-created-directory-is-gone",
-        why="the positive control: a backend whose reclaim did nothing and raised nothing "
-        "would pass every other probe here.",
+        why="the positive control: a reclaim that did nothing would pass every other probe.",
         requires=frozenset(),
         run=_probe_a_created_directory_is_gone,
     ),
     Probe(
         name="nested-content-goes-with-it",
-        why=(
-            "a call's directory holds a tree, not a file — a backend removing only the top "
-            "entry leaves the model's files readable by every later call in that sandbox."
-        ),
+        why="a call's directory is a tree; removing only the top entry leaves the rest readable.",
         requires=frozenset(),
         run=_probe_nested_content_goes_with_it,
     ),
     Probe(
         name="a-link-inside-is-unlinked-not-followed",
         why=(
-            "the escape the tree probe cannot see, and the property that lets this method "
-            "skip the parent walk: the directory is the framework's, but a guest program "
-            "plants what it likes inside it, and a removal resolving an interior link deletes "
-            "a file outside the working directory every time a call cleans up."
+            "a guest plants what it likes inside the directory; a removal that follows a link "
+            "deletes a file outside the working directory on every cleanup."
         ),
         requires=frozenset(),
         run=_probe_a_link_inside_is_unlinked_not_followed,
     ),
     Probe(
         name="a-missing-directory-is-success",
-        why=(
-            "cleanup runs in a finally, after whatever went wrong already went wrong — a "
-            "missing directory raising a second failure over the first buries the real error."
-        ),
+        why="cleanup runs in a finally; a second failure over the first buries the real one.",
         requires=frozenset(),
         run=_probe_a_missing_directory_is_success,
     ),
     Probe(
         name="an-absent-working-directory-still-succeeds",
         why=(
-            "working_directory says where the directory sits, not where to run from. A call "
-            "that wrote nothing leaves the work dir itself absent, and a backend that treats "
-            "it as a place to be reports a leak where there is nothing left."
+            "working_directory says where the directory sits, not where to run from; a call "
+            "that wrote nothing leaves it absent."
         ),
         requires=frozenset(),
         run=_probe_an_absent_working_directory_still_succeeds,
@@ -1696,12 +1675,7 @@ RECLAIM_PROBES: tuple[Probe, ...] = (
 
 
 async def run_reclaim_probes(subject: ConformanceSubject) -> tuple[ProbeResult, ...]:
-    """Run the reclaim probes. Same contract as :func:`run_files_out_probes`, minus the gate.
-
-    There is nothing to gate on: :meth:`~maf_sandbox.Sandbox.reclaim` is behind no
-    :class:`~maf_sandbox.Capability`, so no declaration admits a subject to this suite and none
-    excuses a probe from it. Every backend owes every probe here.
-    """
+    """Run the reclaim probes. No gate: every backend owes every probe here."""
     paths = await _plant_nothing(subject)
     return tuple([await _probe_result(probe, subject, paths) for probe in RECLAIM_PROBES])
 

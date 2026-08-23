@@ -1076,10 +1076,8 @@ async def _remove_tree(
 ) -> bool:
     """Delete ``directory`` and everything under it — never a raise.
 
-    :meth:`Sandbox.reclaim` rather than :meth:`Sandbox.remove`: the protocol's delete is gated
-    by a capability no shipped spec requires, and every backend serves the reclaim. An
-    already-gone directory is a success there, so it is one here; anything the backend raises
-    reaches the caller as a refused removal.
+    Dispatches to :meth:`Sandbox.reclaim`. An already-gone directory is success; anything
+    raised is a refused removal.
     """
     if inside is not None and guest_path_relative_to(directory, inside) is None:
         logger.warning("host tools: refusing to remove %r — it is not inside %r", directory, inside)

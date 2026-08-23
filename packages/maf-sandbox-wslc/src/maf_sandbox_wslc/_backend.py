@@ -428,16 +428,11 @@ class _WslcSandbox:
         )
 
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
-        """Remove ``directory`` and everything under it via ``rm -rf`` over :meth:`exec`.
+        """Remove ``directory`` with ``rm -rf`` over :meth:`exec`.
 
-        Served honestly even though :meth:`remove` refuses: :meth:`remove` owes confinement for
-        a model-supplied path, which needs the parent walk this backend has no ``stat_file`` to
-        build (#125). ``reclaim`` takes a directory this stack made, with no attacker-chosen
-        component to walk, so it carries none of that duty and needs none of that surface.
-
-        ``working_directory`` says where ``directory`` sits, not where to run the removal from
-        — no backend creates a spec's ``work_dir``, so the exec runs from ``/``, which every
-        container has, rather than a directory that may never have been created.
+        Served where :meth:`remove` refuses: the caller made ``directory``, so no parent walk
+        is owed, and that walk is what this backend cannot build (#125). Runs from ``/``
+        because ``working_directory`` may not exist.
         """
         del working_directory
         removed = await self.exec(

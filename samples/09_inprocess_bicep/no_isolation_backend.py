@@ -224,13 +224,10 @@ class NoIsolationSandbox:
         )
 
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
-        """Really remove ``directory``, unlike :meth:`remove` above.
+        """Remove ``directory`` for real, unlike :meth:`remove` above.
 
-        Genuinely serving this — the mandatory, ungated member every backend implements — is
-        coherent where refusing :meth:`remove` is not: the caller made ``directory``, so there
-        is no attacker-chosen component to walk, and this sandbox already knows how to map a
-        guest path to its own host root without one. ``working_directory`` says where
-        ``directory`` sits and plays no part in the mapping, which is fixed at construction.
+        The caller made ``directory``, so there is nothing to confine. ``working_directory``
+        plays no part: the host mapping is fixed at construction.
         """
         del working_directory
         host_path = self._host_path(directory)

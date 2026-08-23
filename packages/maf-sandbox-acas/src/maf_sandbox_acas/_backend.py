@@ -407,18 +407,11 @@ class _AcasSandbox:
             raise OSError(f"could not remove {path}: {type(refused).__name__}") from refused
 
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
-        """Remove ``directory`` and everything under it via ``rm -rf`` over :meth:`exec`.
+        """Remove ``directory`` with ``rm -rf`` over :meth:`exec`.
 
-        Not the data-plane ``delete_file`` :meth:`remove` uses: whether the service unlinks or
-        follows a symlink on delete is unverified — the same open question the ``FILES_DELETE``
-        row in this backend's docs carries — and a guest program can plant a link inside a
-        directory this stack created. ``rm -rf`` unlinks rather than follows, so this ships no
-        unverified recursive delete. The data-plane delete becomes the mechanism here once its
-        link semantics are verified.
-
-        ``working_directory`` says where ``directory`` sits, not where to run the removal from
-        — no backend creates a spec's ``work_dir``, so the exec runs from ``/``, which every
-        sandbox has, rather than a directory that may never have been created.
+        Not the data plane's ``delete_file``: whether it unlinks or follows a link is
+        unverified, and a guest can plant one inside this directory. Runs from ``/``
+        because ``working_directory`` may not exist.
         """
         del working_directory
         removed = await self.exec(

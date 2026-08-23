@@ -531,13 +531,7 @@ class _SimulatedGuest:
             self.directories.discard(stored)
 
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
-        """The framework's own removal: the tree goes, and nothing else does.
-
-        No confinement walk and no refusal for a directory — the reclaim contract leaves the
-        policy with the caller and takes a directory this stack made. ``working_directory``
-        says where that directory sits, so nothing here reads it; a backend using it as a
-        place to move to is what `an-absent-working-directory-still-succeeds` catches.
-        """
+        """The tree goes and nothing else does. ``working_directory`` is not read."""
         del working_directory, timeout
         guest = posixpath.normpath(directory)
         prefix = guest.rstrip("/") + "/"
@@ -1144,13 +1138,7 @@ class TestFilesDeleteConformance:
 
 
 class TestReclaimConformance:
-    """The one suite behind no capability, so the shape of its discriminating case differs.
-
-    Elsewhere the interesting negative is an undeclared subject the gate refuses. Nothing
-    admits a subject here and nothing excuses a probe, so the negatives below are backends
-    that answer the reclaim without doing what it promises — starting with the one that
-    answers and removes nothing, which every probe but the positive control would pass.
-    """
+    """No gate here, so the negatives are backends that answer without doing what they promise."""
 
     def test_the_simulator_answers_every_probe(self):
         assert _sim_results(_sim_subject(), run_reclaim_probes) == dict.fromkeys(
@@ -1213,12 +1201,7 @@ class TestReclaimConformance:
         assert failures["nested-content-goes-with-it"] is None
 
     def test_a_reclaim_that_follows_an_interior_link_fails_the_link_probe(self):
-        """The one component of a framework-made directory the guest chooses: what is inside it.
-
-        Every other probe here plants no link at all, so a mechanism that resolves links under
-        the directory it is removing passes the whole suite while deleting a file outside the
-        working directory on each cleanup.
-        """
+        """The guest chooses what is inside the directory; a followed link deletes outside it."""
 
         class _FollowsInteriorLinks(_SimulatedGuest):
             async def reclaim(self, directory, *, working_directory, timeout):
@@ -1284,11 +1267,7 @@ class TestReclaimConformance:
         assert len({probe.name for probe in RECLAIM_PROBES}) == len(RECLAIM_PROBES)
 
     def test_the_shipped_fake_answers_only_the_probes_that_need_no_guest(self):
-        """Its `exec` is scripted, so `test -e` reports success whatever is really there.
-
-        The probes that verify through a command must not be reported as passing against a
-        specimen that cannot run one — what it cannot answer, it must not pretend to.
-        """
+        """Its `exec` is scripted, so a probe that verifies through a command must not pass."""
         results = asyncio.run(run_reclaim_probes(_FakeSubject(InProcessSandbox(), _EVERYTHING)))
         assert {r.probe.name for r in results if r.failure} == {
             "a-created-directory-is-gone",
@@ -1300,8 +1279,7 @@ class TestReclaimConformance:
 
 
 def test_assert_reclaim_answers_a_conforming_subject():
-    """Called by name — the coverage test reads this module's AST, and an aliased callee is
-    invisible to it, so the package that ships the assert exercises it spelled out."""
+    """Called by name: the coverage test reads this module's AST."""
     results = asyncio.run(assert_reclaim_conformance(_sim_subject()))
     assert all(r.passed for r in results)
 

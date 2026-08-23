@@ -75,12 +75,7 @@ class _RecordingContents(dict[str, bytes]):
 
 
 def _recording(sandbox: InProcessSandbox) -> dict[str, str]:
-    """Return a decoded ledger of everything written into ``sandbox``, reclaimed or not.
-
-    A finished call's own directory is really gone by the time the tool returns, so
-    ``files`` no longer answers what the workload put there. Recorded on the way in rather
-    than snapshotted at the removal: a call that wrote nothing still leaves this empty.
-    """
+    """A decoded ledger of every write into ``sandbox``, kept where the reclaim cannot reach it."""
     written: dict[str, str] = {}
     sandbox.contents = _RecordingContents(written, sandbox.contents)
     return written

@@ -102,10 +102,9 @@ class _Guest:
         del path, working_directory, recursive
 
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
-        """Really drop ``directory`` and everything under it from :attr:`files`.
+        """Drop ``directory`` and everything under it from :attr:`files`.
 
-        No confinement check: the caller made ``directory``. A directory with nothing stored
-        under it is already the success this call promises.
+        No confinement check: the caller made ``directory``.
         """
         del working_directory, timeout
         prefix = directory.rstrip("/") + "/"
