@@ -702,8 +702,13 @@ class Sandbox(Protocol):
         The framework's cleanup. Mandatory, and behind no :class:`Capability`.
 
         Three rules. The caller created ``directory`` under ``working_directory`` with an
-        unguessable name, so no parent walk is owed — stated, not checked. A directory that
-        is not there is success: this runs in a ``finally``. Anything else raises.
+        unguessable name, so no parent walk is owed — stated, not checked. The premise is
+        not stable: a guest that ran can have swapped the path or a parent for a link. So a
+        backend must not remove with more authority than the guest had — in-tree, the
+        removal runs over the same ``exec`` the guest did, and a swap reaches nothing the
+        guest could not already delete. What more the contract promises is #584's question.
+        A directory that is not there is success: this runs in a ``finally``. Anything else
+        raises.
 
         ``directory`` is absolute. Run the removal from ``/``, not from ``working_directory``,
         which may not exist. Not :meth:`remove`: that takes a model-supplied path, owes

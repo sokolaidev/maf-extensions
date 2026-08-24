@@ -160,7 +160,7 @@ Three rules a caller depends on, all in the docstring. **The caller created it**
 
 `working_directory` says where the directory sits; it is **not** a directory to run the removal from. No backend creates a spec's `work_dir`, so a call that wrote nothing leaves it absent, and a removal that moved there first would fail over a directory that is already gone. The target is absolute, so cwd decides nothing.
 
-The in-tree backends implement it as `rm -rf` over their own `exec` — the same mechanism `remove` already uses, minus the confinement duty `remove` owes and `reclaim` does not.
+Docker, wslc and ACAS implement it as `rm -rf` over their own `exec` — for ACAS deliberately **not** the data-plane `delete_file` its `remove` uses, because whether that service follows a link on delete is unverified. The in-process fake removes the entries from its store and records the call, so a test can assert the cleanup ran.
 
 ## Upgrading to 0.20
 
