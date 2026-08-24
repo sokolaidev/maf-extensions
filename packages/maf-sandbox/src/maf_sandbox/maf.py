@@ -88,8 +88,9 @@ _SDK_NOT_INSTALLED = "Error: the sandbox backend is not installed — degrading 
 _NO_BACKEND_CONFIGURED = "Error: no sandbox backend is configured — degrading to T0"
 _SANDBOX_UNAVAILABLE = "Error: sandbox unavailable — degrading to T0 (LLM self-check only)"
 _SANDBOX_UNCLEAN = (
-    "Error: the sandbox for this conversation is closed: it holds data a previous call could "
-    "not remove, and it could not be disposed. Nothing runs in it until it is."
+    "Error: the sandbox for this conversation is closed: a previous call left it unclean — data "
+    "that could not be removed, or a program that may still be running — and it could not be "
+    "disposed. Nothing runs in it until it is."
 )
 
 #: What the removal gets when the body was cancelled, instead of the full ``reclaim_timeout``.
@@ -556,7 +557,8 @@ async def _reclaim_the_call(
         return
     prefix = _prefixed(tool)
     path = f"{spec.work_dir}/{call.name}" if call.name is not None else spec.work_dir
-    for key, sandbox in tuple(call.acquired.items()):
+    acquired = tuple(call.acquired.items())
+    for index, (key, sandbox) in enumerate(acquired):
         reasons: list[str] = []
         if call.name is not None:
             try:
@@ -568,15 +570,15 @@ async def _reclaim_the_call(
                     sandbox, call.name, working_directory=spec.work_dir, timeout=timeout
                 )
             except (asyncio.CancelledError, GeneratorExit):
-                # Recorded and then let through, and the rest of the sandboxes are abandoned:
-                # the caller's deadline has passed, and containing this would have the call
-                # return the body's answer past a bound the host thought it had. The removal did
-                # not finish, so the sandbox may still hold this call's data — refuse the key
-                # (synchronously; awaiting a disposal while cancelled is not reliable) so the next
-                # call cannot reacquire it before a later disposal lands. The leak still has to be
+                # The caller's deadline has passed, and containing this would have the call return
+                # the body's answer past a bound the host thought it had. Neither this sandbox nor
+                # any the loop has not yet reached was reclaimed, so refuse them all (synchronously;
+                # awaiting a disposal while cancelled is not reliable) — otherwise the next call
+                # reacquires one still holding the last call's data. The leak still has to be
                 # visible, so the line is written before the cancellation goes on.
                 if not router.keep_unclean:
-                    router.mark_unclean(key)
+                    for pending, _ in acquired[index:]:
+                        router.mark_unclean(pending)
                 logger.warning(
                     f"{prefix}: %s was not reclaimed: the call was cancelled during the removal",
                     path,

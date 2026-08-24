@@ -787,11 +787,13 @@ async def dispatch_over_exec(
         # raised for reasons of its own. A successful run leaves exactly as much behind as
         # a failed one, and it is the common case.
         #
-        if not handled:
+        if not handled and launcher.executed:
             # `_supervise` reports its own timeouts and stops the program itself. Anything else
             # leaving this function — a backend failing mid-run — leaves a detached program
             # nobody has stopped, and the reclaim below is about to remove the files that would
-            # have identified it.
+            # have identified it. Only once the launcher `exec` was attempted, though: a failure
+            # before that (an upload that raised) started no program, and stopping-and-noting over
+            # it would dispose a clean sandbox — and maybe a sibling — on a write failure.
             if await _marker_if_present(sandbox, layout, _a_grace_from_now()) is None:
                 # Capture and note the stop, as `_supervise` does on its own paths: a backend
                 # that failed mid-run can leave the program stopped only in part, and the
@@ -816,6 +818,10 @@ class _WhatTheLauncherSaid:
     """
 
     made_a_session: bool = False
+    #: Set once the launcher ``exec`` is attempted. Until then a failure (an upload that raised)
+    #: means no program can have started, so the finally must not stop-and-note over it — that
+    #: would dispose a sandbox, and maybe a sibling, on a write failure.
+    executed: bool = False
 
 
 async def _supervise(
@@ -851,6 +857,8 @@ async def _supervise(
             # that nothing was started.
             signal="absent",
         ) from gone
+    # The upload landed; from here a program may exist, so the finally may stop-and-note.
+    launcher.executed = True
     try:
         started = await sandbox.exec(
             f"sh {_quote(layout.launcher)}",

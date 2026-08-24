@@ -1460,6 +1460,26 @@ class TestACallThatReachesTwoSandboxes:
         _call(_reclaiming(backend, build), target="x")
         assert backend.disposed == [_KEY], backend.disposed
 
+    def test_a_cancellation_on_the_first_removal_refuses_every_acquired_key(self):
+        """A call can acquire more than one sandbox; a cancellation while reclaiming the first
+        must refuse the later ones too, or the next call reacquires them still unclean."""
+
+        class _CancelsOnReclaim(InProcessSandbox):
+            async def reclaim(
+                self, directory: str, *, working_directory: str, timeout: float
+            ) -> None:
+                raise asyncio.CancelledError()
+
+        backend = _PerKeyBackend()
+        backend.per_key[_KEY] = _CancelsOnReclaim()
+        router = _router(backend)
+        tool = _attach_with(self._build, router)[0]
+        with pytest.raises(asyncio.CancelledError):
+            _call(tool, target="x")
+        for key in (_KEY, self._OTHER):
+            with pytest.raises(SandboxUnclean):
+                asyncio.run(router.acquire(key, _SPEC))
+
 
 class TestAStragglerDuringTheRemoval:
     """The removal walks what `acquire` writes into, and a task the body left running can reach

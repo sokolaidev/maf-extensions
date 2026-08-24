@@ -3413,6 +3413,35 @@ class TestAStopThatDidNotReachEverythingNotesTheCall:
         with pytest.raises(SandboxProgramTimeout):
             _run(guest, HostToolRun(_registry()), timeout=0.2)
 
+    def test_an_upload_failure_before_the_launcher_ran_notes_nothing(self):
+        """A backend error writing the launcher started no program, so the finally must not
+        stop-and-note over it — noting would dispose a clean sandbox, and maybe a sibling."""
+
+        class _FailsTheUpload(_ScriptedGuest):
+            async def write_file(
+                self, path: str, content: str | bytes, *, working_directory: str
+            ) -> None:
+                if path == _LAYOUT.launcher:
+                    raise RuntimeError("upload boom")
+                await super().write_file(path, content, working_directory=working_directory)
+
+        async def drive() -> list[str]:
+            notes, token = open_unclean_notes()
+            try:
+                with pytest.raises(RuntimeError, match="upload boom"):
+                    await dispatch_over_exec(
+                        _FailsTheUpload([]),
+                        HostToolRun(_registry()),
+                        _LAYOUT,
+                        timeout=0.5,
+                        poll_interval=_FAST,
+                    )
+            finally:
+                close_unclean_notes(token)
+            return [reason for _sandbox, reason in notes]
+
+        assert asyncio.run(drive()) == []
+
 
 class TestStoppingARunThatOverran:
     """A dispatched program that overruns is signalled, and no more than signalled (#375).

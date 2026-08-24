@@ -124,8 +124,9 @@ class SandboxIdentityDenied(PermissionError):
 
 
 class SandboxUnclean(PermissionError):
-    """The sandbox for this key holds data the framework could not remove, and the disposal
-    that would have made it go did not land.
+    """The sandbox for this key was left unclean — data the framework could not remove, or a
+    program a stop did not provably take down — and the disposal that would have made it go
+    did not land.
 
     Raised by :meth:`SandboxRouter.acquire` until a disposal for the key lands — through
     :meth:`~SandboxRouter.dispose`, :meth:`~SandboxRouter.dispose_scope`, or the framework's
@@ -512,10 +513,10 @@ class SandboxRouter:
             raise NoSandboxBackend("no sandbox backend is configured")
         if key in self._unclean:
             raise SandboxUnclean(
-                f"the sandbox for {key.scope}/{key.thread_id}/{key.agent_dir} holds data a "
-                "tool call could not remove, and disposing it did not land. It is refused until a "
-                "disposal lands — dispose(key) or dispose_scope(scope, thread_id) — rather than "
-                "served with the last call's files in it."
+                f"the sandbox for {key.scope}/{key.thread_id}/{key.agent_dir} was left unclean — "
+                "a tool call's data could not be removed, or a program it started may still be "
+                "running — and disposing it did not land. It is refused until a disposal lands — "
+                "dispose(key) or dispose_scope(scope, thread_id) — rather than served unclean."
             )
         self._refuse_unless_backend_can_serve(spec)
         sandbox = await self._backend.acquire(key, spec)
