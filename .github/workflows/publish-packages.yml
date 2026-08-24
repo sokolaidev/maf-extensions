@@ -69,7 +69,12 @@ jobs:
       # time the core is public). See #337 for why the changelog flag is not the gate.
       breaking: ${{ steps.breaking.outputs.breaking }}
     steps:
+      # Full history, because this job runs the whole suite and part of that suite reads the
+      # repository's tags. A shallow checkout makes those tests answer about the checkout
+      # rather than about the code, which is how a green pull request became a failed publish.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
 
       - name: Install uv
         # Pinned to the commit v5 resolves to: a moving tag is a supply-chain hole, and
