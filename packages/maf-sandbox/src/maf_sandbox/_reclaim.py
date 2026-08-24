@@ -30,34 +30,39 @@ __all__ = ["DisposalOutcome", "ReclaimFailure", "note_unclean", "reclaim_guest_p
 #: stays warm with the data in it.
 DisposalOutcome = Literal["disposed", "failed", "kept"]
 
-#: The running tool call's notes about its sandbox being unclean in a way no removal can
-#: answer — set by ``sandboxed_tool`` for the call's duration, ``None`` outside one.
-_UNCLEAN: ContextVar[list[str] | None] = ContextVar("maf_sandbox_unclean", default=None)
+#: One note about a sandbox left unclean in a way no removal can answer: the sandbox it is
+#: about (by identity) and why. Kept per note so a call that acquired more than one disposes
+#: only the sandbox a note names, never a sibling that stayed clean.
+_Note = tuple[object, str]
+
+#: The running call's notes, set by ``sandboxed_tool`` for the call's duration, ``None`` outside.
+_UNCLEAN: ContextVar[list[_Note] | None] = ContextVar("maf_sandbox_unclean", default=None)
 
 
-def open_unclean_notes() -> tuple[list[str], Token[list[str] | None]]:
+def open_unclean_notes() -> tuple[list[_Note], Token[list[_Note] | None]]:
     """Start a tool call's notes. ``sandboxed_tool`` keeps the list and resets with the token."""
-    notes: list[str] = []
+    notes: list[_Note] = []
     return notes, _UNCLEAN.set(notes)
 
 
-def close_unclean_notes(token: Token[list[str] | None]) -> None:
+def close_unclean_notes(token: Token[list[_Note] | None]) -> None:
     """End the call's notes: whatever is noted from here on belongs to no call."""
     _UNCLEAN.reset(token)
 
 
-def note_unclean(reason: str) -> None:
-    """Record that the running tool call left its sandbox in a state no removal can clean.
+def note_unclean(sandbox: object, reason: str) -> None:
+    """Record that the running tool call left ``sandbox`` in a state no removal can clean.
 
     For a transport that stopped a program and cannot say the whole process tree went with
     it: what survived can write a path back after the call's directory is removed, so the
-    removal alone does not make the sandbox clean. ``sandboxed_tool`` reads the notes when
-    the call ends and disposes the sandbox over them, exactly as it does over a removal that
-    failed. A no-op outside a tool call — a transport driven directly has no call to note.
+    removal alone does not make the sandbox clean. ``sandboxed_tool`` reads the notes when the
+    call ends and disposes over the sandbox each names — by identity, so a call that acquired a
+    second sandbox does not dispose it over the first's overrun. A no-op outside a tool call —
+    a transport driven directly has no call to note.
     """
     notes = _UNCLEAN.get()
     if notes is not None:
-        notes.append(reason)
+        notes.append((sandbox, reason))
 
 
 @dataclass(frozen=True)
@@ -76,7 +81,9 @@ class ReclaimFailure:
     #: The sandbox it is in. Always set: nothing is reported for a call that acquired none,
     #: because such a call wrote nothing.
     key: SandboxKey
-    #: The absolute guest path that is still there, with whatever is under it.
+    #: The absolute guest path the call left behind — its *affected* path, not one guaranteed
+    #: to still exist: a landed disposal (``disposal == "disposed"``) took the whole sandbox,
+    #: and a stop-only note names a path a successful reclaim already removed.
     path: str
     #: Why the sandbox is not clean, in this stack's own words: the removal that did not
     #: happen, or the stop that did not reach everything the program started.

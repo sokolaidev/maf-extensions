@@ -531,7 +531,7 @@ async def _reclaim_the_call(
     logger: logging.Logger,
     on_failure: Callable[[ReclaimFailure], Awaitable[None]] | None,
     timeout: float,
-    unclean: Sequence[str],
+    unclean: Sequence[tuple[object, str]],
 ) -> None:
     """Remove what one tool call owns, and act on a sandbox it could not leave clean.
 
@@ -582,11 +582,14 @@ async def _reclaim_the_call(
                 # take the record with it.
                 logger.warning(f"{prefix}: %s was not reclaimed: %s", path, reason)
                 reasons.append(reason)
-        if unclean:
+        # Only this sandbox's notes, matched by identity: a call may acquire more than one, and
+        # a stop that did not take sandbox A's program tree must not dispose a clean sibling B.
+        noted = [reason for owner, reason in unclean if owner is sandbox]
+        if noted:
             logger.warning(
-                f"{prefix}: the sandbox is not clean after this call: %s", "; ".join(unclean)
+                f"{prefix}: the sandbox is not clean after this call: %s", "; ".join(noted)
             )
-            reasons.extend(unclean)
+            reasons.extend(noted)
         if not reasons:
             continue
         disposal = await _dispose_the_unclean(

@@ -3387,7 +3387,7 @@ class TestAStopThatDidNotReachEverythingNotesTheCall:
                     )
             finally:
                 close_unclean_notes(token)
-            return notes
+            return [reason for _sandbox, reason in notes]
 
         return asyncio.run(drive())
 

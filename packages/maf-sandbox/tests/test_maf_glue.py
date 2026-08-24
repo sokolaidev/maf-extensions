@@ -1041,7 +1041,7 @@ class TestTheFrameworkDisposesWhatItCouldNotClean:
                 assert not isinstance(sandbox, str)
                 path = session.guest_call_path()
                 await sandbox.write_file("program.py", target, working_directory=path)
-                note_unclean("the guest program overran and was sent SIGKILL alone")
+                note_unclean(sandbox, "the guest program overran and was sent SIGKILL alone")
                 return path
 
             return widget_run
@@ -1067,7 +1067,7 @@ class TestTheFrameworkDisposesWhatItCouldNotClean:
                 assert not isinstance(sandbox, str)
                 path = session.guest_call_path()
                 await sandbox.write_file("program.py", target, working_directory=path)
-                note_unclean("the guest program overran and could not be signalled")
+                note_unclean(sandbox, "the guest program overran and could not be signalled")
                 return path
 
             return widget_run
@@ -1087,7 +1087,7 @@ class TestTheFrameworkDisposesWhatItCouldNotClean:
         assert any("is not clean after this call" in r.message for r in caplog.records)
 
     def test_a_note_outside_any_call_goes_nowhere(self):
-        note_unclean("nobody is running")  # must not raise, must not leak into the next call
+        note_unclean(object(), "nobody is running")  # must not raise, must not leak to next call
         backend = InProcessSandboxBackend()
         _, tool = self._attach(backend)
         _call(tool, target="x")
@@ -1411,6 +1411,33 @@ class TestACallThatReachesTwoSandboxes:
         backend.per_key[self._OTHER] = _RefusesToRemove()
         _call(_reclaiming(backend, self._build, on_reclaim_failure=on_failure), target="x")
         assert heard == [self._OTHER]
+
+    def test_an_unclean_note_disposes_only_its_own_sandbox(self):
+        """A stop that could not prove it took one sandbox's program tree disposes only that
+        sandbox, never a sibling the same call left clean — the note is scoped by the sandbox it
+        names, so the second key is not disposed over the first's overrun."""
+
+        def build(session: SandboxToolSession):
+            async def widget_run(target: str) -> str:
+                mine = session.key()
+                assert not isinstance(mine, str)
+                path = session.guest_call_path()
+                own: object | None = None
+                for key in (mine, TestACallThatReachesTwoSandboxes._OTHER):
+                    sandbox = await session.acquire(key)
+                    assert not isinstance(sandbox, str)
+                    await sandbox.write_file(f"{path}/program.py", target, working_directory=path)
+                    if key == mine:
+                        own = sandbox
+                assert own is not None
+                note_unclean(own, "the guest program overran and could not be signalled")
+                return path
+
+            return widget_run
+
+        backend = _PerKeyBackend()
+        _call(_reclaiming(backend, build), target="x")
+        assert backend.disposed == [_KEY], backend.disposed
 
 
 class TestAStragglerDuringTheRemoval:

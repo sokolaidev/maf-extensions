@@ -567,11 +567,19 @@ class SandboxRouter:
         that did not reach everything. Bounded by ``timeout`` because it runs after the body
         has returned and adds to the call's latency. ``False`` when any backend refused or the
         bound passed — and from then on :meth:`acquire` raises :class:`SandboxUnclean` for the
-        key until a disposal lands. Cancellation passes through, with the key recorded first.
+        key until a disposal lands.
+
+        The key is refused **before** the first disposal await, not after it lands: calls
+        sharing a key are not serialized, so a disposal that hangs must already have the key
+        refused — otherwise a concurrent :meth:`acquire` passes its ledger check and is handed
+        the dirty sandbox. :meth:`_dispose_each` discards the key on a landed disposal, so a
+        success clears it while a failure, the bound passing, or a cancellation leaves it
+        refused.
         """
+        self._unclean.add(key)
         try:
             async with asyncio.timeout(timeout):
-                landed = await self._dispose_each(key)
+                return await self._dispose_each(key)
         except TimeoutError:
             logger.warning(
                 "sandbox router: disposing %s/%s/%s did not finish within %ss",
@@ -580,13 +588,7 @@ class SandboxRouter:
                 key.agent_dir,
                 timeout,
             )
-            landed = False
-        except (asyncio.CancelledError, GeneratorExit):
-            self._unclean.add(key)
-            raise
-        if not landed:
-            self._unclean.add(key)
-        return landed
+            return False
 
     @asynccontextmanager
     async def scope(self, scope: str, thread_id: str) -> AsyncGenerator[ScopeDisposal, None]:

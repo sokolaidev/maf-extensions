@@ -863,6 +863,33 @@ class TestAKeyTheRouterCouldNotDisposeIsRefused:
         with pytest.raises(SandboxUnclean):
             asyncio.run(router.acquire(_KEY, _SPEC))
 
+    def test_the_key_is_refused_while_a_disposal_is_still_running(self):
+        """Refused from the moment the disposal starts, not only once it fails: calls sharing a
+        key are not serialized, so a concurrent acquire during a hanging disposal must not be
+        handed the dirty sandbox."""
+        started = asyncio.Event()
+
+        class _HangsAfterStarting(InProcessSandboxBackend):
+            async def dispose(self, key: SandboxKey) -> None:
+                started.set()
+                await asyncio.Event().wait()
+
+        async def drive() -> None:
+            router = self._router(_HangsAfterStarting())
+            disposing = asyncio.create_task(router.dispose_unclean(_KEY, timeout=10.0))
+            await started.wait()  # the disposal is in flight and has not yet landed
+            try:
+                with pytest.raises(SandboxUnclean):
+                    await router.acquire(_KEY, _SPEC)
+            finally:
+                disposing.cancel()
+                try:
+                    await disposing
+                except asyncio.CancelledError:
+                    pass
+
+        asyncio.run(drive())
+
     def test_a_later_plain_dispose_that_lands_reopens_it(self):
         backend = InProcessSandboxBackend(dispose_error=RuntimeError("down"))
         router = self._router(backend)
