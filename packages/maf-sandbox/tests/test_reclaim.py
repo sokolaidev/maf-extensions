@@ -145,9 +145,13 @@ class TestABackendThatPredatesReclaim:
         """The lookup runs inside the same `try` as the call: this function must not raise."""
 
         class _BrokenProxy(InProcessSandbox):
-            @property
-            def reclaim(self):
-                raise RuntimeError("resolved through a broken proxy")
+            """Raises at attribute *lookup* — an override that raised when called would
+            exercise the ordinary failure path instead, which has its own test above."""
+
+            def __getattribute__(self, name: str):
+                if name == "reclaim":
+                    raise RuntimeError("resolved through a broken proxy")
+                return super().__getattribute__(name)
 
         reason = _reclaim(_BrokenProxy(), f"{_WORK}/abc123")
         assert reason is not None
