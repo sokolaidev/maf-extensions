@@ -72,3 +72,24 @@ jobs:
           python scripts/check_title_diff.py "$BASE_SHA" "$PR_TITLE" \
             --head-ref "$HEAD_REF" --head-repo "$HEAD_REPO" \
             --base-repo "$BASE_REPO" --author "$PR_AUTHOR"
+
+      - name: Release order (what follows if this core lands outside the ceilings)
+        # Here rather than in `tests.yml` because it reads the pull request *title*, which
+        # `edited` is the only trigger for — and keeping it there meant every retitle re-ran
+        # the whole suite and the Docker e2e for a check that costs a second. This workflow
+        # already triggers on `edited` for the title checks proper.
+        #
+        # It reports rather than refuses since #628: the release it describes is refused, when
+        # it should be, by the gates that measure — publish-packages.yml before an upload, and
+        # the packaging shard of `tests.yml` against the published index.
+        #
+        # The `${{ github.event.pull_request.title }}` expression is assigned to an environment
+        # variable rather than interpolated into this shell script. A pull request title is
+        # attacker-controlled text, and interpolating it here would make it shell source.
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git diff --name-only "$BASE_SHA" HEAD |
+            python3 scripts/check_release_order.py "$PR_TITLE"
