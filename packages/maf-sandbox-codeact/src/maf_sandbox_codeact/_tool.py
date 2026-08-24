@@ -184,16 +184,9 @@ def codeact_sandbox_spec(
     what keeps the attached tool honest about landing artifacts it cannot yet name.
 
     A non-empty ``host_tools`` grows ``requires`` by :data:`~maf_sandbox.Capability.HOST_TOOLS`
-    and :data:`~maf_sandbox.Capability.FILES_OUT` together, carries the registry's ``identities``
-    so a router denying one refuses this spec at attach, and **attaches the sealed surface
-    itself**.  It leaves ``files_in``/``files_out`` exactly as given: the dispatch transport's own
-    traffic — the launcher, every response, the one large output read — is bounded by the
-    registry's ``response_limits``, and the *router* folds that worst case into the transfer-limit
-    match when it serves the spec, transiently, rather than this kind widening the stored caps
-    (#393).  So a spec's own caps stay the ones its runtime tally and output collection enforce
-    against, while a backend that could not serve a dispatch is still refused at attach rather
-    than overrun mid-run.  Reading a registry **seals** it, so ask for the spec once everything
-    is registered.
+    and :data:`~maf_sandbox.Capability.FILES_OUT` together, and carries the registry's
+    ``identities`` so that a router denying one refuses this spec at attach.  Reading a
+    registry **seals** it, so ask for the spec once everything is registered.
 
     Raises:
         ValueError: when an ``egress_allow`` entry is not a single hostname — blank, or holding
@@ -489,11 +482,7 @@ def _codeact_spec(
     if dispatch is not None:
         # FILES_OUT for the transport rather than for this kind's outputs: dispatch stats and
         # reads its request files and the exit marker back over the pull surface, so even a
-        # stdout-only program that can call a host function needs one.  The transport's own byte
-        # footprint is bounded by the registry's response_limits, not by what the workload
-        # declared here; the router folds that worst case into the transfer-limit match when it
-        # serves the spec (#393), so this kind attaches the sealed surface and leaves files_in /
-        # files_out exactly as given.
+        # stdout-only program that can call a host function needs one.
         requires |= {Capability.HOST_TOOLS, Capability.FILES_OUT}
     # CodeAct runs model-written code, so it accepts only two postures and never UNRESTRICTED:
     # CLOSED to compute offline, ALLOWLIST to reach the deployment's named sources. The mode is
@@ -514,7 +503,6 @@ def _codeact_spec(
         files_in=files_in,
         files_out=files_out,
         identities=dispatch.identities if dispatch is not None else frozenset(),
-        host_tools=dispatch,
     )
 
 
