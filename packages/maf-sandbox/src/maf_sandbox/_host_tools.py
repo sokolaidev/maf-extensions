@@ -215,9 +215,11 @@ class HostToolAggregate:
       tool already failed safe into the folds above — an untrusted source, an
       :data:`~maf_sandbox.Identity.APP` identity — and the flag is how a host notices the
       degrade without diffing the folds.
-    - ``response_limits`` is the registry's own byte ceilings, carried verbatim so the router
-      can fold the dispatch transport's worst case into the transfer-limit match when it serves
-      the spec (#393) — reported policy, not a fold this package performs here.
+    - ``response_limits`` and ``max_dispatches_per_run`` are the registry's own ceilings,
+      carried verbatim so the router can fold the dispatch transport's worst case into the
+      transfer-limit match when it serves the spec — reported policy, not a fold this package
+      performs here.  The count is load-bearing there and not only the bytes: it is what turns
+      "one response" into "how many files, and how many refusals nothing debits".
     """
 
     result_integrity: SourceIntegrity | None
@@ -226,6 +228,7 @@ class HostToolAggregate:
     requires_approval: bool
     has_undeclared: bool
     response_limits: TransferLimits
+    max_dispatches_per_run: int
 
 
 @dataclass(frozen=True)
@@ -595,6 +598,7 @@ class HostToolRegistry:
             requires_approval=Identity.USER in identities,
             has_undeclared=bool(undeclared),
             response_limits=self._response_limits,
+            max_dispatches_per_run=self._max_dispatches_per_run,
         )
 
 

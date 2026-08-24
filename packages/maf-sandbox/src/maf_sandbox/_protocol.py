@@ -513,11 +513,7 @@ class SandboxSpec:
     # load-bearing to a positional one, so the order follows arrival rather than taste.
     requires_os_family: OsFamily | None = None
     # Appended last, like the defaulted fields above, so it cannot rebind a positional caller's
-    # argument.  The sealed host-tool surface (``registry.aggregate()``) when the workload wires
-    # a registry, else ``None``.  Attached whole rather than unpacked into loose fields: the
-    # router reads its ``response_limits`` to fold the dispatch transport's footprint into the
-    # transfer-limit match (#393), and because it is the registry's *sealed* answer, no kind can
-    # change a limit it carries between here and the match.
+    # argument.
     host_tools: HostToolAggregate | None = None
 
     def __post_init__(self) -> None:

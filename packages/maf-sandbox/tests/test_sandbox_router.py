@@ -637,9 +637,9 @@ class TestTheRouterFoldsADispatchSurface:
     _RL = TransferLimits(max_bytes_per_file=8_000_000, max_total_bytes=32_000_000, max_files=64)
     _SMALL = TransferLimits(max_bytes_per_file=64 * 1024, max_total_bytes=256 * 1024, max_files=4)
 
-    def _surface(self, response_limits: TransferLimits) -> HostToolAggregate:
-        # The router folds only ``response_limits`` off the surface; the other legs do not enter
-        # the match, so they take their least-opinionated values here.
+    def _surface(self, response_limits: TransferLimits, dispatches: int = 1) -> HostToolAggregate:
+        # The router folds the surface's limits and its dispatch bound; the other legs do not
+        # enter the match, so they take their least-opinionated values here.
         return HostToolAggregate(
             result_integrity=None,
             outbound_caps=frozenset(),
@@ -647,6 +647,7 @@ class TestTheRouterFoldsADispatchSurface:
             requires_approval=False,
             has_undeclared=False,
             response_limits=response_limits,
+            max_dispatches_per_run=dispatches,
         )
 
     def _router(self, ceiling: SandboxLimits) -> SandboxRouter:
@@ -697,6 +698,34 @@ class TestTheRouterFoldsADispatchSurface:
             self._router(ceiling).ensure_can_serve(spec)
         assert spec.files_in == self._SMALL
         assert spec.files_out == self._SMALL
+
+    def test_a_refusal_with_no_surface_does_not_mention_a_fold(self):
+        """The note is decided per direction, by whether *that* direction's number actually grew.
+        A workload refused on caps it typed itself must not be told a transport widened them."""
+        ceiling = SandboxLimits(files_in=self._SMALL, files_out=self._SMALL)
+        big = TransferLimits(max_bytes_per_file=99_000_000, max_total_bytes=99_000_000, max_files=9)
+        bare = SandboxSpec(kind="codeact", files_in=big, files_out=big)
+        with pytest.raises(SandboxTransferLimitsNotPermitted) as excinfo:
+            self._router(ceiling).ensure_can_serve(bare)
+        assert "folded to include" not in str(excinfo.value)
+
+    def test_the_fold_grows_with_the_surfaces_dispatch_bound(self):
+        """The bound rides in the surface because the transport's file counts and its refusal
+        budget both scale with it — a backend sized for a few calls cannot serve many."""
+        ceiling = SandboxLimits(
+            files_in=TransferLimits(64 * 1024 * 1024, 64 * 1024 * 1024, 12),
+            files_out=TransferLimits(64 * 1024 * 1024, 64 * 1024 * 1024, 12),
+        )
+        modest = SandboxSpec(
+            kind="codeact",
+            files_in=self._SMALL,
+            files_out=self._SMALL,
+            host_tools=self._surface(self._RL, dispatches=1),
+        )
+        self._router(ceiling).ensure_can_serve(modest)
+        chatty = dataclasses.replace(modest, host_tools=self._surface(self._RL, dispatches=50))
+        with pytest.raises(SandboxTransferLimitsNotPermitted):
+            self._router(ceiling).ensure_can_serve(chatty)
 
 
 class _BackendDeclaringTheWrongLimits(InProcessSandboxBackend):

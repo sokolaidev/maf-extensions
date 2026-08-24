@@ -428,31 +428,26 @@ class SandboxRouter:
         limits = _declared_limits(self._backend)
         asked_in, asked_out = spec.files_in, spec.files_out
         if spec.host_tools is not None:
-            # A dispatch moves its own files over the transport — request files in, responses and
-            # the exit marker back — bounded by the registry's response_limits, not by what the
-            # workload declared for its own transfers. Fold that worst case into the caps the
-            # match uses, transiently, so a backend that cannot serve a dispatch is refused here
-            # rather than overrun mid-run (#393). The spec's stored caps stay untouched: the
-            # kind's runtime tally and output collection enforce against those, and folding the
-            # stored values would double-count the transport against the workload's own budget.
-            folded = fold_dispatch_transfer_limits(
-                spec.files_in, spec.files_out, spec.host_tools.response_limits
-            )
+            # The transport moves its own files, bounded by the registry rather than by what the
+            # workload declared. Fold that worst case in transiently, so a backend that cannot
+            # serve it is refused here rather than overrun mid-run. The spec's stored caps stay
+            # untouched: the kind's runtime tally enforces against those, and folding the stored
+            # values would double-count the transport against the workload's own budget.
+            folded = fold_dispatch_transfer_limits(spec.files_in, spec.files_out, spec.host_tools)
             asked_in, asked_out = folded.files_in, folded.files_out
-        # When a surface is folded in, the asked value exceeds what the workload alone declared —
-        # name that, so a caller who sees a number they never typed knows where it came from
-        # rather than reading it as their own mistake.
-        folded_note = (
-            " (folded to include the wired host tools' dispatch transport, so above the "
-            "workload's own declaration)"
-            if spec.host_tools is not None
-            else ""
-        )
-        for direction, asked, ceiling in (
-            (Capability.FILES_IN, asked_in, limits.files_in),
-            (Capability.FILES_OUT, asked_out, limits.files_out),
+        for direction, asked, declared, ceiling in (
+            (Capability.FILES_IN, asked_in, spec.files_in, limits.files_in),
+            (Capability.FILES_OUT, asked_out, spec.files_out, limits.files_out),
         ):
             if not asked.within(ceiling):
+                # Only when this direction's number actually grew: a refusal driven by what the
+                # workload itself declared must not be blamed on a fold that left it alone.
+                folded_note = (
+                    " (folded to include the wired host tools' dispatch transport, so above the "
+                    "workload's own declaration)"
+                    if asked != declared
+                    else ""
+                )
                 raise SandboxTransferLimitsNotPermitted(
                     f"the {spec.kind!r} workload declares {str(direction)} limits above what "
                     f"sandbox backend {self._backend.name!r} allows: it asks for {asked}"

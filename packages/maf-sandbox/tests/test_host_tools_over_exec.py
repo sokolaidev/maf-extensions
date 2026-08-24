@@ -4731,56 +4731,99 @@ class TestWhatACallerCanBranchOn:
 
 _TL = TransferLimits
 _fold = host_tools_over_exec.fold_dispatch_transfer_limits
+_LAUNCHER = host_tools_over_exec._LAUNCHER_CEILING
+_MARKER = host_tools_over_exec._MARKER_CEILING
+_MARKERS = host_tools_over_exec._MARKER_FILES
+_REFUSAL = host_tools_over_exec._REFUSAL_CEILING
+
+
+def _surface(response_limits: TransferLimits, dispatches: int = 1) -> Any:
+    """The sealed surface a registry answers with, which is what the fold reads."""
+    registry = HostToolRegistry(response_limits=response_limits, max_dispatches_per_run=dispatches)
+    registry.register(add)
+    return registry.aggregate()
 
 
 class TestFoldDispatchTransferLimits:
-    """#393: fold response_limits into the spec's transfer caps so the router refuses a backend
-    the dispatch transport would overrun.
+    """Fold the dispatch transport's own traffic into a workload's caps, so the router refuses a
+    backend the transport would overrun.
 
-    Only the byte legs move, and the two directions differ: files_in must hold the launcher and
-    every response (guest storage), while files_out need only serve the one big output read —
-    reading out is not a backend cost the running total bounds.
+    Every leg moves. The transport writes the launcher and one answer per request it serves, and
+    reads the program's output, every request and the run markers — none of it declared by the
+    workload, and none of it bounded by a single leg of the registry's own limits.
     """
 
     _WL = _TL(max_bytes_per_file=64 * 1024, max_total_bytes=256 * 1024, max_files=4)
     _RL = _TL(max_bytes_per_file=8_000_000, max_total_bytes=32_000_000, max_files=64)
+    #: `_serving_bound` for the surfaces below: one dispatch plus the refusal past the cap.
+    _SERVES = 2
+
+    def _folded(self, dispatches: int = 1):
+        return _fold(self._WL, self._WL, _surface(self._RL, dispatches))
 
     def test_files_out_per_file_reaches_the_response_total_leg(self):
         # The output is read as ONE file up to response_limits.max_total_bytes, so a small
         # files_out is lifted to cover it — the correction a naive per-leg max misses.
-        assert _fold(self._WL, self._WL, self._RL).files_out.max_bytes_per_file == 32_000_000
-
-    def test_files_out_total_and_count_are_left_alone(self):
-        # Reading out costs the backend nothing cumulative; the running total is host memory,
-        # already bound by response_limits.
-        out = _fold(self._WL, self._WL, self._RL).files_out
-        assert out.max_total_bytes == self._WL.max_total_bytes
-        assert out.max_files == self._WL.max_files
+        assert self._folded().files_out.max_bytes_per_file == 32_000_000
 
     def test_files_in_per_file_covers_one_response(self):
-        assert _fold(self._WL, self._WL, self._RL).files_in.max_bytes_per_file == 8_000_000
+        assert self._folded().files_in.max_bytes_per_file == 8_000_000
 
-    def test_files_in_total_holds_the_launcher_and_every_response(self):
-        inn = _fold(self._WL, self._WL, self._RL).files_in
-        launcher = host_tools_over_exec._LAUNCHER_CEILING
-        assert inn.max_total_bytes == self._WL.max_total_bytes + launcher + self._RL.max_total_bytes
-        assert inn.max_files == self._WL.max_files  # count untouched
+    def test_files_in_total_holds_the_launcher_every_response_and_the_refusals(self):
+        """Refusals are the part no ledger carries: `response_limits` bounds what a tool
+        *delivered*, and a refusal delivered nothing, yet the transport writes one per request."""
+        inn = self._folded().files_in
+        assert inn.max_total_bytes == (
+            self._WL.max_total_bytes
+            + _LAUNCHER
+            + self._RL.max_total_bytes
+            + self._SERVES * _REFUSAL
+        )
+
+    def test_files_in_count_holds_the_launcher_and_every_answer(self):
+        """`max_files` is a transfer ceiling like the byte legs: a backend allowing exactly the
+        workload's count would pass attach and then be handed the transport's own files."""
+        assert self._folded().files_in.max_files == self._WL.max_files + 1 + self._SERVES
+
+    def test_files_out_total_holds_the_output_every_request_and_the_markers(self):
+        """Request bytes are deliberately not charged to the response ledger (`_request_cap`), so
+        cumulative read traffic is bounded by the per-file cap times the serving bound — a number
+        only this fold puts in front of the backend."""
+        out = self._folded().files_out
+        assert out.max_total_bytes == (
+            self._WL.max_total_bytes
+            + self._RL.max_total_bytes
+            + self._SERVES * self._RL.max_bytes_per_file
+            + _MARKERS * _MARKER
+        )
+
+    def test_files_out_count_holds_the_output_every_request_and_the_markers(self):
+        assert self._folded().files_out.max_files == (
+            self._WL.max_files + 1 + self._SERVES + _MARKERS
+        )
+
+    def test_the_counts_follow_the_registrys_dispatch_bound(self):
+        """The bound is carried in the surface for exactly this: a registry serving more calls
+        moves more files, and a fold blind to the count would under-declare every one of them."""
+        few, many = self._folded(dispatches=1), self._folded(dispatches=50)
+        assert many.files_in.max_files - few.files_in.max_files == 49
+        assert many.files_out.max_files - few.files_out.max_files == 49
 
     def test_a_workload_that_already_asks_for_more_keeps_its_own_ceiling(self):
-        # max(), not overwrite.
+        # max(), not overwrite — on the per-file legs, which are a largest-single-transfer.
         big = _TL(max_bytes_per_file=99_000_000, max_total_bytes=99_000_000, max_files=9)
-        folded = _fold(big, big, self._RL)
+        folded = _fold(big, big, _surface(self._RL))
         assert folded.files_in.max_bytes_per_file == 99_000_000
         assert folded.files_out.max_bytes_per_file == 99_000_000  # 99M > the 32M output
 
     def test_the_fold_makes_a_backend_the_bare_spec_would_pass_refused(self):
-        # #393's scenario: a spec small enough to pass attach today no longer fits a backend
-        # permitting 1 MiB per file, because the output read needs the response total.
+        # A spec small enough to pass attach today no longer fits a backend permitting 1 MiB per
+        # file, because the output read needs the response total.
         backend = _TL(
             max_bytes_per_file=1024 * 1024, max_total_bytes=64 * 1024 * 1024, max_files=64
         )
         assert self._WL.within(backend)  # unfolded: admitted
-        assert not _fold(self._WL, self._WL, self._RL).files_out.within(backend)  # folded: refused
+        assert not self._folded().files_out.within(backend)  # folded: refused
 
     def test_files_in_per_file_covers_the_launcher_when_nothing_else_reaches_it(self):
         """The launcher is one file too, not only bytes in the total. A workload and a registry
@@ -4788,20 +4831,28 @@ class TestFoldDispatchTransferLimits:
         upload the transport always makes, and a backend admitted at attach refuses the very
         first write."""
         small = _TL(max_bytes_per_file=1024, max_total_bytes=4096, max_files=4)
-        launcher = host_tools_over_exec._LAUNCHER_CEILING
-        assert _fold(small, small, small).files_in.max_bytes_per_file == launcher
+        assert _fold(small, small, _surface(small)).files_in.max_bytes_per_file == _LAUNCHER
 
     def test_files_out_per_file_covers_a_request_read_that_outgrows_the_output(self):
         """Nothing orders a registry's legs: `max_bytes_per_file` may exceed `max_total_bytes`,
         and then the largest read out is a *request*, not the program's output. Folding only the
         output leg would leave that read over a per-file ceiling the router just approved."""
         lopsided = _TL(max_bytes_per_file=9_000_000, max_total_bytes=1_000_000, max_files=8)
-        assert _fold(self._WL, self._WL, lopsided).files_out.max_bytes_per_file == 9_000_000
+        folded = _fold(self._WL, self._WL, _surface(lopsided))
+        assert folded.files_out.max_bytes_per_file == 9_000_000
 
     def test_files_out_per_file_never_falls_below_a_marker_read(self):
         """Every leg is validated only as positive, so a registry may sit below the handful of
         bytes the pid, session and exit markers are read with — reads the transport makes on
         every run, whatever the registry says."""
         tiny = _TL(max_bytes_per_file=1, max_total_bytes=2, max_files=1)
-        marker = host_tools_over_exec._MARKER_CEILING
-        assert _fold(tiny, tiny, tiny).files_out.max_bytes_per_file == marker
+        assert _fold(tiny, tiny, _surface(tiny)).files_out.max_bytes_per_file == _MARKER
+
+    def test_files_in_per_file_never_falls_below_a_refusal(self):
+        """A refusal is a fixed sentence plus bounded quoted text, so it can outgrow a registry
+        whose own per-response cap is a byte."""
+        tiny = _TL(max_bytes_per_file=1, max_total_bytes=2, max_files=1)
+        small = _TL(max_bytes_per_file=8, max_total_bytes=16, max_files=1)
+        folded = _fold(small, small, _surface(tiny))
+        assert folded.files_in.max_bytes_per_file == _LAUNCHER  # launcher still the largest
+        assert folded.files_in.max_total_bytes >= 2 * _REFUSAL  # and refusals are budgeted

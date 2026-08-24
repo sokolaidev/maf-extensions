@@ -63,7 +63,7 @@ from .paths import confine_guest_path, guest_path_relative_to
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Mapping
 
-    from ._host_tools import HostToolRun
+    from ._host_tools import HostToolAggregate, HostToolRun
     from ._protocol import Sandbox
 
 logger = logging.getLogger(__name__)
@@ -80,51 +80,53 @@ _LAUNCHER_CEILING = 64 * 1024
 #: refuses a read the transport always makes, however small a registry's own limits are.
 _MARKER_CEILING = 32
 
+#: How many marker files a run leaves for the host to read: the pid, the session id and the exit
+#: code.
+_MARKER_FILES = 3
+
+#: A generous ceiling on one refusal envelope. A refusal is a fixed sentence plus at most
+#: ``_MAX_ECHOED_CHARS`` of quoted guest text, and it spends no part of ``response_limits`` —
+#: that ledger bounds what a tool *delivered*, and a refusal delivered nothing — so the fold
+#: budgets for it separately or a run of refusals moves bytes nothing accounted for.
+_REFUSAL_CEILING = 1024
+
 
 def fold_dispatch_transfer_limits(
-    files_in: TransferLimits, files_out: TransferLimits, response_limits: TransferLimits
+    files_in: TransferLimits, files_out: TransferLimits, surface: HostToolAggregate
 ) -> SandboxLimits:
-    """Widen a kind's transfer caps to cover the dispatch transport's own traffic (#393).
+    """Widen a workload's transfer caps to cover the dispatch transport's own traffic.
 
-    The router matches only the spec's ``files_in``/``files_out`` against the backend, so a
-    registry's ``response_limits`` — what actually bounds what the transport moves — must be
-    folded into those caps, or a backend that cannot serve a dispatch is admitted at attach and
-    fails mid-run inside the sandbox. Only the byte legs move; the file counts stay the
-    workload's.
+    The router matches only the spec's caps against the backend, so traffic the workload never
+    declared — the launcher and answers written in, the output, requests and markers read back —
+    has to be added here or a backend that cannot serve it is admitted and overrun mid-run.
 
-    **Every per-file leg is the largest single transfer in that direction**, and the traps are
-    that a registry's legs are validated only as positive — nothing orders
-    ``max_bytes_per_file`` against ``max_total_bytes``, and nothing keeps either above the
-    handful of bytes a marker needs — so a per-file requirement must name each transfer it
-    covers rather than assume one dominates.
+    Two traps. A registry's legs are validated only as positive, so no leg may be assumed to
+    dominate another and every per-file requirement names each transfer it covers. And a refusal
+    is written like any answer while spending no part of ``response_limits``, which bounds only
+    what a tool delivered — so refusals are budgeted by count, not by that ledger.
 
-    Into the guest the transport writes exactly two things: the launcher, one file up to
-    :data:`_LAUNCHER_CEILING`, and each response, one file up to
-    ``response_limits.max_bytes_per_file``. So ``files_in``'s per-file leg must reach the larger
-    of those and the workload's own, and its total leg grows by the launcher plus the responses'
-    own total, because all of it has to fit the guest's storage at once.
-
-    Out of the guest it reads three shapes: the program's **output** as one file up to
-    ``response_limits.max_total_bytes`` (that *total* leg borrowed as an output's size, not the
-    per-file one), each **request** up to ``response_limits.max_bytes_per_file``, and the pid,
-    session and exit **markers** up to :data:`_MARKER_CEILING`. ``files_out``'s per-file leg must
-    reach whichever is largest — the output usually is, but a registry with
-    ``max_bytes_per_file`` above its total, or with every leg below a marker's few bytes, makes
-    one of the others the peak. The cumulative bytes read out are host memory — already bounded
-    by ``response_limits`` and freed per transfer — not a backend cost, so ``files_out``'s total
-    leg is left alone.
+    An explicit ``output_limit`` to :func:`dispatch_over_exec` is *not* folded: it is the
+    caller's own number for its own program's output, so it belongs in the workload's
+    ``files_out.max_bytes_per_file`` the way any other declared transfer does. Only the cap the
+    transport borrows when none is given is covered here.
     """
+    serves = surface.max_dispatches_per_run + 1  # `_serving_bound`: the refusal past the cap.
+    response_limits = surface.response_limits
     return SandboxLimits(
         files_in=TransferLimits(
             max_bytes_per_file=max(
                 files_in.max_bytes_per_file,
                 response_limits.max_bytes_per_file,
                 _LAUNCHER_CEILING,
+                _REFUSAL_CEILING,
             ),
             max_total_bytes=(
-                files_in.max_total_bytes + _LAUNCHER_CEILING + response_limits.max_total_bytes
+                files_in.max_total_bytes
+                + _LAUNCHER_CEILING
+                + response_limits.max_total_bytes
+                + serves * _REFUSAL_CEILING
             ),
-            max_files=files_in.max_files,
+            max_files=files_in.max_files + 1 + serves,
         ),
         files_out=TransferLimits(
             max_bytes_per_file=max(
@@ -133,8 +135,13 @@ def fold_dispatch_transfer_limits(
                 response_limits.max_bytes_per_file,
                 _MARKER_CEILING,
             ),
-            max_total_bytes=files_out.max_total_bytes,
-            max_files=files_out.max_files,
+            max_total_bytes=(
+                files_out.max_total_bytes
+                + response_limits.max_total_bytes
+                + serves * response_limits.max_bytes_per_file
+                + _MARKER_FILES * _MARKER_CEILING
+            ),
+            max_files=files_out.max_files + 1 + serves + _MARKER_FILES,
         ),
     )
 
@@ -742,6 +749,9 @@ async def dispatch_over_exec(
             past the limit is not returned and the reason is noted on ``stderr``, exactly as when
             the borrowed leg is exceeded; passing a limit only stops that number being a side
             effect of unrelated host-tool configuration. Must be a positive integer when given.
+            A caller that passes one owes it to its own spec: only the borrowed cap is folded
+            into the router's transfer match (:func:`fold_dispatch_transfer_limits`), so a limit
+            above ``files_out.max_bytes_per_file`` is a read the backend never agreed to.
 
     Attempts to remove the transport's own directory before returning, on every exit path.
     A removal the guest refuses is logged and nothing else — the call still returns what it
