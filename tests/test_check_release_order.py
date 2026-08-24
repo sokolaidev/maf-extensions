@@ -189,26 +189,61 @@ class TestConsequences:
         assert "the live samples" in notices[1]
 
 
-class TestItNoLongerRefuses:
-    """The inversion itself: a version outside every ceiling is permitted, and sometimes wanted.
+class TestItFailsSoTheConsequenceIsRead:
+    """A consequence nobody opens is not delivered: this exits non-zero to force the read.
 
-    Refusing here is what forced a widening pull request ahead of every core release, and the
-    widening was granted on schedule without anyone asking whether the release broke anything.
-    What asks now is `check_core_against_dependents.py`, at the moment of release (#628).
+    Not a verdict on the release — a version outside every ceiling is permitted, and for a
+    breaking release it is the point. Merging over the red is the expected move, and the
+    override is what records that the consequence was read. What asks whether the release is
+    *sound* is `check_core_against_dependents.py` at the moment of release (#628); this asks
+    only that somebody looked (#657).
+
+    The reporting-and-exiting-zero era was #628 to #657, and it put the notice in the log of a
+    green job — which is where the release train got stuck without anyone reading it.
     """
 
-    def test_a_release_past_every_ceiling_still_exits_zero(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    def test_a_release_past_every_ceiling_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
         repo = _repo(tmp_path, "0.6.1", {"maf-sandbox-acas": "0.7"})
         monkeypatch.setattr(check.sys, "stdin", io.StringIO(_CORE_FILE))
         monkeypatch.setattr(check.Path, "resolve", lambda self: repo / "scripts" / "x.py")
+        assert check.main(["prog", "feat: a thing"]) == 1
+
+    def test_a_release_every_ceiling_admits_still_passes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The other half, and the one that keeps this from failing every core pull request."""
+        repo = _repo(tmp_path, "0.6.1", {"maf-sandbox-acas": "0.8"})
+        monkeypatch.setattr(check.sys, "stdin", io.StringIO(_CORE_FILE))
+        monkeypatch.setattr(check.Path, "resolve", lambda self: repo / "scripts" / "x.py")
         assert check.main(["prog", "feat: a thing"]) == 0
+
+    def test_a_change_that_releases_no_core_passes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """Most pull requests. A non-releasing title reaches no ceiling, so there is nothing
+        to read and nothing to override."""
+        repo = _repo(tmp_path, "0.6.1", {"maf-sandbox-acas": "0.7"})
+        monkeypatch.setattr(check.sys, "stdin", io.StringIO(_CORE_FILE))
+        monkeypatch.setattr(check.Path, "resolve", lambda self: repo / "scripts" / "x.py")
+        assert check.main(["prog", "ci: a workflow tweak"]) == 0
+
+    def test_it_says_that_merging_over_it_is_the_move(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        """A red with no instruction reads as "you did something wrong", which this is not."""
+        repo = _repo(tmp_path, "0.6.1", {"maf-sandbox-acas": "0.7"})
+        monkeypatch.setattr(check.sys, "stdin", io.StringIO(_CORE_FILE))
+        monkeypatch.setattr(check.Path, "resolve", lambda self: repo / "scripts" / "x.py")
+        check.main(["prog", "feat: a thing"])
+        assert "merge over this" in capsys.readouterr().out
 
     def test_what_it_printed_went_to_stdout_not_stderr(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ):
-        """A notice belongs in the log beside the run, not in the stream that reads as a fault."""
+        """The exit code carries the failure; the text is a consequence to read, and the log
+        shows both streams anyway. Keeping it on stdout keeps a local run readable."""
         repo = _repo(tmp_path, "0.6.1", {"maf-sandbox-acas": "0.7"})
         monkeypatch.setattr(check.sys, "stdin", io.StringIO(_CORE_FILE))
         monkeypatch.setattr(check.Path, "resolve", lambda self: repo / "scripts" / "x.py")
