@@ -24,8 +24,14 @@ from maf_sandbox.conformance import (
     assert_exec_conformance,
     assert_files_delete_conformance,
     assert_files_in_conformance,
-    assert_reclaim_conformance,
 )
+
+# Feature-detected, not floored: the published-cores gate runs this suite against every
+# core the range admits, and cores before 0.23 have no Sandbox.reclaim to conform to.
+try:
+    from maf_sandbox.conformance import assert_reclaim_conformance
+except ImportError:
+    assert_reclaim_conformance = None
 
 from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
 
@@ -263,11 +269,16 @@ class TestTheSharedConformanceSuites:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
     def test_it_answers_the_reclaim_probes(self):
+        if assert_reclaim_conformance is None:
+            pytest.skip("this maf-sandbox predates Sandbox.reclaim (< 0.23)")
         scope = f"e2e-{uuid.uuid4()}"
         backend = WslcSandboxBackend(WslcSandboxConfig())
 
         async def scenario() -> None:
             sandbox = await backend.acquire(_key(scope), _spec())
+            # The narrowing does not cross into this closure; the assert re-establishes it,
+            # and the coverage check wants the suite called by name.
+            assert assert_reclaim_conformance is not None
             results = await assert_reclaim_conformance(
                 PosixGuestSubject(
                     sandbox=sandbox,

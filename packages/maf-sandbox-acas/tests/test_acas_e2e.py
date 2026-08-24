@@ -67,9 +67,15 @@ from maf_sandbox.conformance import (
     assert_exec_conformance,
     assert_files_in_conformance,
     assert_files_out_conformance,
-    assert_reclaim_conformance,
     measure_files_delete_probes,
 )
+
+# Feature-detected, not floored: the published-cores gate runs this suite against every
+# core the range admits, and cores before 0.23 have no Sandbox.reclaim to conform to.
+try:
+    from maf_sandbox.conformance import assert_reclaim_conformance
+except ImportError:
+    assert_reclaim_conformance = None
 
 from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
 
@@ -742,6 +748,8 @@ class TestBootingAnImageTheServiceProvides:
 @pytest.fixture(scope="module")
 def reclaim_results(live):
     """One RECLAIM run, shared — mirrors `probe_results` and `files_in_results` above."""
+    if assert_reclaim_conformance is None:
+        pytest.skip("this maf-sandbox predates Sandbox.reclaim (< 0.23)")
     return live.run(assert_reclaim_conformance(_subject(live)))
 
 
