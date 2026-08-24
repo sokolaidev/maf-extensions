@@ -215,6 +215,9 @@ class HostToolAggregate:
       tool already failed safe into the folds above — an untrusted source, an
       :data:`~maf_sandbox.Identity.APP` identity — and the flag is how a host notices the
       degrade without diffing the folds.
+    - ``response_limits`` is the registry's own byte ceilings, carried verbatim so the router
+      can fold the dispatch transport's worst case into the transfer-limit match when it serves
+      the spec (#393) — reported policy, not a fold this package performs here.
     """
 
     result_integrity: SourceIntegrity | None
@@ -222,6 +225,7 @@ class HostToolAggregate:
     identities: frozenset[Identity]
     requires_approval: bool
     has_undeclared: bool
+    response_limits: TransferLimits
 
 
 @dataclass(frozen=True)
@@ -590,6 +594,7 @@ class HostToolRegistry:
             identities=identities,
             requires_approval=Identity.USER in identities,
             has_undeclared=bool(undeclared),
+            response_limits=self._response_limits,
         )
 
 

@@ -29,6 +29,7 @@ from maf_sandbox import (
     DeclaredOutput,
     Egress,
     EntryKind,
+    HostToolAggregate,
     Identity,
     Isolation,
     NoSandboxBackend,
@@ -620,6 +621,80 @@ class TestTransferLimitMatch:
         )
         with pytest.raises(SandboxTransferLimitsNotPermitted, match="files_out"):
             asyncio.run(router.acquire(_KEY, spec))
+
+
+class TestTheRouterFoldsADispatchSurface:
+    """#393: a spec carrying a host-tool surface has the registry's ``response_limits`` folded
+    into the transfer-limit match, transiently.  The transport's own footprint — request files
+    in, responses and the exit marker back — is bounded by ``response_limits``, not by what the
+    workload declared for its own I/O, so a backend that could serve the bare caps but not the
+    dispatch is refused at attach rather than overrun mid-run.  The fold never touches the spec's
+    stored caps: the kind's runtime tally and output collection still enforce against those.
+    """
+
+    _RL = TransferLimits(max_bytes_per_file=8_000_000, max_total_bytes=32_000_000, max_files=64)
+    _SMALL = TransferLimits(max_bytes_per_file=64 * 1024, max_total_bytes=256 * 1024, max_files=4)
+
+    def _surface(self, response_limits: TransferLimits) -> HostToolAggregate:
+        # The router folds only ``response_limits`` off the surface; the other legs do not enter
+        # the match, so they take their least-opinionated values here.
+        return HostToolAggregate(
+            result_integrity=None,
+            outbound_caps=frozenset(),
+            identities=frozenset(),
+            requires_approval=False,
+            has_undeclared=False,
+            response_limits=response_limits,
+        )
+
+    def _router(self, ceiling: SandboxLimits) -> SandboxRouter:
+        return SandboxRouter(
+            [InProcessSandboxBackend(limits=ceiling)], min_isolation=Isolation.NONE
+        )
+
+    def test_a_backend_the_bare_spec_passes_is_refused_once_a_surface_is_attached(self):
+        # Wide enough for the workload's own 64 KiB files_out, but under the 32 MB the folded
+        # output read needs: the bare spec attaches, the dispatching one does not.
+        ceiling = SandboxLimits(
+            files_in=TransferLimits(64 * 1024 * 1024, 64 * 1024 * 1024, 64),
+            files_out=TransferLimits(1024 * 1024, 64 * 1024 * 1024, 64),
+        )
+        bare = SandboxSpec(kind="codeact", files_in=self._SMALL, files_out=self._SMALL)
+        self._router(ceiling).ensure_can_serve(bare)
+        dispatching = dataclasses.replace(bare, host_tools=self._surface(self._RL))
+        with pytest.raises(SandboxTransferLimitsNotPermitted, match="files_out") as excinfo:
+            self._router(ceiling).ensure_can_serve(dispatching)
+        # The refusal names the fold, so the requirement the caller never typed is not read as
+        # their own mistake.
+        assert "folded to include" in str(excinfo.value)
+
+    def test_a_backend_wide_enough_for_the_fold_serves_the_surface(self):
+        ceiling = SandboxLimits(
+            files_in=TransferLimits(64 * 1024 * 1024, 64 * 1024 * 1024, 64),
+            files_out=TransferLimits(64 * 1024 * 1024, 64 * 1024 * 1024, 64),
+        )
+        spec = SandboxSpec(
+            kind="codeact",
+            files_in=self._SMALL,
+            files_out=self._SMALL,
+            host_tools=self._surface(self._RL),
+        )
+        self._router(ceiling).ensure_can_serve(spec)
+
+    def test_the_fold_is_transient_and_leaves_the_specs_own_caps(self):
+        # A backend too small even for the bare caps, so the match fails; the point is that after
+        # the match the stored caps are unchanged — the fold existed only inside the comparison.
+        ceiling = SandboxLimits(files_in=self._SMALL, files_out=self._SMALL)
+        spec = SandboxSpec(
+            kind="codeact",
+            files_in=self._SMALL,
+            files_out=self._SMALL,
+            host_tools=self._surface(self._RL),
+        )
+        with pytest.raises(SandboxTransferLimitsNotPermitted):
+            self._router(ceiling).ensure_can_serve(spec)
+        assert spec.files_in == self._SMALL
+        assert spec.files_out == self._SMALL
 
 
 class _BackendDeclaringTheWrongLimits(InProcessSandboxBackend):

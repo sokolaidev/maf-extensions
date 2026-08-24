@@ -42,8 +42,10 @@ from maf_sandbox import (
     OutputSink,
     SandboxCapabilityNotSupported,
     SandboxEntry,
+    SandboxLimits,
     SandboxOutputSinkRequired,
     SandboxRouter,
+    SandboxTransferLimitsNotPermitted,
     SourceIntegrity,
     TransferLimits,
     guest_run_layout,
@@ -318,16 +320,37 @@ class _ListedButGoneStore:
         return [self._name]
 
 
+#: A dispatch-capable backend has to declare transfer limits the router accepts for a *folded*
+#: spec (#393): files_in holds the workload plus the launcher and every response, files_out serves
+#: the one large output read. Generous on purpose, so the dispatch tests exercise mechanics rather
+#: than the limit match — `TestFoldDispatchTransferLimits` and `TestHostToolsFoldTheTransferCaps`
+#: cover the match itself. A test that wants a specific ceiling passes `limits=` explicitly.
+_MiB = 1024 * 1024
+_DISPATCH_LIMITS = SandboxLimits(
+    files_in=TransferLimits(
+        max_bytes_per_file=64 * _MiB, max_total_bytes=256 * _MiB, max_files=1024
+    ),
+    files_out=TransferLimits(
+        max_bytes_per_file=64 * _MiB, max_total_bytes=256 * _MiB, max_files=1024
+    ),
+)
+
+
 def _backend(
     sandbox: InProcessSandbox | None = None,
     *,
     acquire_error: BaseException | None = None,
     capabilities: frozenset[Capability] | None = None,
+    limits: SandboxLimits | None = None,
 ) -> InProcessSandboxBackend:
+    # A backend that arms dispatch declares limits that can serve it, unless a test pins its own.
+    if limits is None and capabilities is not None and Capability.HOST_TOOLS in capabilities:
+        limits = _DISPATCH_LIMITS
     return InProcessSandboxBackend(
         sandbox if sandbox is not None else _ScriptedSandbox(),
         acquire_error=acquire_error,
         **({} if capabilities is None else {"capabilities": capabilities}),
+        **({} if limits is None else {"limits": limits}),
     )
 
 
@@ -2691,7 +2714,8 @@ class TestTheShimIsAnInboundFileToo:
 
     def test_it_counts_against_the_inbound_byte_ceilings(self):
         """Kilobytes of generated source, against a total with room for the module alone and
-        not for the program beside it."""
+        not for the program beside it.  The kind's runtime tally enforces against the workload's
+        own files_in — the router's dispatch fold is transient and never reaches here (#393)."""
         module = len(host_tool_shim(frozenset({"_round_half_up"}), call_timeout=97).encode())
         limits = replace(DEFAULT_TRANSFER_LIMITS, max_total_bytes=module + 5)
 
@@ -2885,3 +2909,47 @@ class TestNoDirectAzureImport:
             f"the codeact workload imports Azure directly: {offenders}. "
             "It must reach a sandbox through maf_sandbox, or it stops being portable."
         )
+
+
+class TestHostToolsAttachTheSealedSurface:
+    """#393 lands the dispatch fold in the router, not the kind: wiring a registry attaches the
+    sealed surface and leaves the workload's own transfer caps untouched, so the kind's runtime
+    tally and output collection enforce against exactly what the workload declared.  The router
+    then folds ``response_limits`` into the transfer-limit match transiently, refusing a backend
+    that could not serve a dispatch at attach — end to end below, and by leg in maf_sandbox's own
+    router tests."""
+
+    _RL = TransferLimits(max_bytes_per_file=8_000_000, max_total_bytes=32_000_000, max_files=64)
+    _SMALL = TransferLimits(max_bytes_per_file=64 * 1024, max_total_bytes=256 * 1024, max_files=4)
+
+    def test_no_registry_leaves_the_caps_untouched_and_attaches_nothing(self):
+        spec = codeact_sandbox_spec(files_out=self._SMALL)
+        assert spec.files_out == self._SMALL
+        assert spec.host_tools is None
+
+    def test_a_registry_attaches_the_surface_and_leaves_the_workloads_caps(self):
+        reg = _registry(_exchange_rate, response_limits=self._RL)
+        spec = codeact_sandbox_spec(files_in=self._SMALL, files_out=self._SMALL, host_tools=reg)
+        # The kind authors no limits: the stored caps are exactly the workload's own, both legs.
+        assert spec.files_in == self._SMALL
+        assert spec.files_out == self._SMALL
+        # The sealed surface rides on the spec, carrying the registry's response_limits verbatim
+        # for the router to fold — not recomputed here.
+        assert spec.host_tools is not None
+        assert spec.host_tools.response_limits == self._RL
+
+    def test_the_router_refuses_a_backend_the_bare_spec_would_pass(self):
+        # End to end: a backend wide for the workload's own small files_out but under the folded
+        # output read serves the bare spec and refuses the dispatching one — at attach, from the
+        # surface this kind attached, not from any cap the kind rewrote.
+        ceiling = SandboxLimits(
+            files_in=TransferLimits(128 * _MiB, 128 * _MiB, 128),
+            files_out=TransferLimits(_MiB, 128 * _MiB, 128),
+        )
+        backend = _backend(_ScriptedSandbox(), capabilities=_DISPATCHES, limits=ceiling)
+        router = SandboxRouter([backend], min_isolation=backend.isolation)
+        router.ensure_can_serve(codeact_sandbox_spec(files_out=self._SMALL))
+        reg = _registry(_exchange_rate, response_limits=self._RL)
+        dispatching = codeact_sandbox_spec(files_out=self._SMALL, host_tools=reg)
+        with pytest.raises(SandboxTransferLimitsNotPermitted, match="files_out"):
+            router.ensure_can_serve(dispatching)

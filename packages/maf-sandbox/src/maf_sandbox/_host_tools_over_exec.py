@@ -56,7 +56,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from ._error_detail import error_detail
 from ._outputs import SandboxTransferCapExceeded
-from ._protocol import EntryKind, ExecResult
+from ._protocol import EntryKind, ExecResult, SandboxLimits, TransferLimits
 from .paths import confine_guest_path, guest_path_relative_to
 
 if TYPE_CHECKING:
@@ -66,6 +66,50 @@ if TYPE_CHECKING:
     from ._protocol import Sandbox
 
 logger = logging.getLogger(__name__)
+
+
+#: A generous ceiling on the transport's own launcher script (`run_program.sh`): a fixed POSIX
+#: shell template plus the run's paths, kept well above any real one so the fold need not rebuild
+#: it, and negligible beside a response's byte cap.
+_LAUNCHER_CEILING = 64 * 1024
+
+
+def fold_dispatch_transfer_limits(
+    files_in: TransferLimits, files_out: TransferLimits, response_limits: TransferLimits
+) -> SandboxLimits:
+    """Widen a kind's transfer caps to cover the dispatch transport's own traffic (#393).
+
+    The router matches only the spec's ``files_in``/``files_out`` against the backend, so a
+    registry's ``response_limits`` — what actually bounds what the transport moves — must be
+    folded into those caps, or a backend that cannot serve a dispatch is admitted at attach and
+    fails mid-run inside the sandbox. Only the byte legs move; the file counts stay the
+    workload's.
+
+    Two traps this encodes. The guest **output** is read as one file up to
+    ``response_limits.max_total_bytes`` (its *total* leg borrowed as an output's size, not the
+    per-file one), and that is the largest single read out, so ``files_out.max_bytes_per_file``
+    must reach it. And the cumulative bytes read out are host memory — already bounded by
+    ``response_limits`` and freed per transfer — not a backend cost, so ``files_out``'s total leg
+    is left alone. Into the guest, one response is a single copy up to
+    ``response_limits.max_bytes_per_file``, and the launcher plus every response must fit the
+    guest's storage, so ``files_in``'s total leg grows by the launcher and the responses' own
+    total.
+    """
+    return SandboxLimits(
+        files_in=TransferLimits(
+            max_bytes_per_file=max(files_in.max_bytes_per_file, response_limits.max_bytes_per_file),
+            max_total_bytes=(
+                files_in.max_total_bytes + _LAUNCHER_CEILING + response_limits.max_total_bytes
+            ),
+            max_files=files_in.max_files,
+        ),
+        files_out=TransferLimits(
+            max_bytes_per_file=max(files_out.max_bytes_per_file, response_limits.max_total_bytes),
+            max_total_bytes=files_out.max_total_bytes,
+            max_files=files_out.max_files,
+        ),
+    )
+
 
 #: The subdirectory a run's request and response files live in, under the run directory.
 CALLS_DIRECTORY = "host_tool_calls"

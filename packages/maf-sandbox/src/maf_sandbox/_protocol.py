@@ -15,7 +15,10 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from ._host_tools import HostToolAggregate
 
 __all__ = [
     "DEFAULT_CAPABILITIES",
@@ -473,6 +476,14 @@ class SandboxSpec:
     refuse it at attach
     (``denied_identities``), the same moment every other posture question is answered; a
     workload that dispatches nothing declares nothing.
+
+    ``host_tools`` is the sealed surface a wired registry answers with
+    (:meth:`~maf_sandbox.HostToolRegistry.aggregate`), or ``None`` when nothing is dispatchable.
+    The router reads its ``response_limits`` to fold the dispatch transport's worst case into the
+    transfer-limit match, so a backend that could not serve a dispatch is refused at attach
+    rather than overrun mid-run (#393); nothing here mutates it, and it rides alongside
+    ``identities`` rather than replacing that field, so a spec may still declare an identity set
+    without wiring a registry.
     """
 
     kind: str
@@ -501,6 +512,13 @@ class SandboxSpec:
     # Which of two defaulted fields comes last is arbitrary to a keyword caller and
     # load-bearing to a positional one, so the order follows arrival rather than taste.
     requires_os_family: OsFamily | None = None
+    # Appended last, like the defaulted fields above, so it cannot rebind a positional caller's
+    # argument.  The sealed host-tool surface (``registry.aggregate()``) when the workload wires
+    # a registry, else ``None``.  Attached whole rather than unpacked into loose fields: the
+    # router reads its ``response_limits`` to fold the dispatch transport's footprint into the
+    # transfer-limit match (#393), and because it is the registry's *sealed* answer, no kind can
+    # change a limit it carries between here and the match.
+    host_tools: HostToolAggregate | None = None
 
     def __post_init__(self) -> None:
         if self.egress_allow and self.egress is not Egress.ALLOWLIST:

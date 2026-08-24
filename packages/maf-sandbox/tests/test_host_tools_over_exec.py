@@ -4678,3 +4678,57 @@ class TestWhatACallerCanBranchOn:
             _run(guest, HostToolRun(_registry()), timeout=0.2)
         assert expired.value.signal == "refused"
         assert host_tools_over_exec._NOT_SIGNALLED in str(expired.value)
+
+
+_TL = TransferLimits
+_fold = host_tools_over_exec.fold_dispatch_transfer_limits
+
+
+class TestFoldDispatchTransferLimits:
+    """#393: fold response_limits into the spec's transfer caps so the router refuses a backend
+    the dispatch transport would overrun.
+
+    Only the byte legs move, and the two directions differ: files_in must hold the launcher and
+    every response (guest storage), while files_out need only serve the one big output read —
+    reading out is not a backend cost the running total bounds.
+    """
+
+    _WL = _TL(max_bytes_per_file=64 * 1024, max_total_bytes=256 * 1024, max_files=4)
+    _RL = _TL(max_bytes_per_file=8_000_000, max_total_bytes=32_000_000, max_files=64)
+
+    def test_files_out_per_file_reaches_the_response_total_leg(self):
+        # The output is read as ONE file up to response_limits.max_total_bytes, so a small
+        # files_out is lifted to cover it — the correction a naive per-leg max misses.
+        assert _fold(self._WL, self._WL, self._RL).files_out.max_bytes_per_file == 32_000_000
+
+    def test_files_out_total_and_count_are_left_alone(self):
+        # Reading out costs the backend nothing cumulative; the running total is host memory,
+        # already bound by response_limits.
+        out = _fold(self._WL, self._WL, self._RL).files_out
+        assert out.max_total_bytes == self._WL.max_total_bytes
+        assert out.max_files == self._WL.max_files
+
+    def test_files_in_per_file_covers_one_response(self):
+        assert _fold(self._WL, self._WL, self._RL).files_in.max_bytes_per_file == 8_000_000
+
+    def test_files_in_total_holds_the_launcher_and_every_response(self):
+        inn = _fold(self._WL, self._WL, self._RL).files_in
+        launcher = host_tools_over_exec._LAUNCHER_CEILING
+        assert inn.max_total_bytes == self._WL.max_total_bytes + launcher + self._RL.max_total_bytes
+        assert inn.max_files == self._WL.max_files  # count untouched
+
+    def test_a_workload_that_already_asks_for_more_keeps_its_own_ceiling(self):
+        # max(), not overwrite.
+        big = _TL(max_bytes_per_file=99_000_000, max_total_bytes=99_000_000, max_files=9)
+        folded = _fold(big, big, self._RL)
+        assert folded.files_in.max_bytes_per_file == 99_000_000
+        assert folded.files_out.max_bytes_per_file == 99_000_000  # 99M > the 32M output
+
+    def test_the_fold_makes_a_backend_the_bare_spec_would_pass_refused(self):
+        # #393's scenario: a spec small enough to pass attach today no longer fits a backend
+        # permitting 1 MiB per file, because the output read needs the response total.
+        backend = _TL(
+            max_bytes_per_file=1024 * 1024, max_total_bytes=64 * 1024 * 1024, max_files=64
+        )
+        assert self._WL.within(backend)  # unfolded: admitted
+        assert not _fold(self._WL, self._WL, self._RL).files_out.within(backend)  # folded: refused
