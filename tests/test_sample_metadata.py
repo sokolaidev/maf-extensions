@@ -93,20 +93,33 @@ def test_every_library_import_is_declared(sample: Path):
 _CHANGELOG_HEADING = re.compile(r"(?m)^## \[(\d+(?:\.\d+)*)\]")
 
 
-def _previous_release(changelog: str) -> tuple[int, int]:
-    """The `(major, minor)` of the release before the newest one, read rather than computed.
-
-    `(major, minor - 1)` is the obvious way to name the predecessor and it is wrong at a major
-    boundary: at 1.0.0 it is `(1, -1)`, which every 0.x floor sorts below. The 1.0.0 Release PR
-    would then fail with no legal move available — the samples cannot name 1.0.0 before it
-    exists, and the pull request that would move them is not open yet. A changelog records what
-    the predecessor actually was, and release-please writes it in the same commit that bumps
-    the version, so the two cannot disagree.
-    """
-    headings = _CHANGELOG_HEADING.findall(changelog)
-    assert len(headings) >= 2, "the changelog names fewer than two releases"
-    major, minor = headings[1].split(".")[:2]
+def _minor(version: str) -> tuple[int, int]:
+    """A version's `(major, minor)`. Both sides of the window comparison parse through here."""
+    major, minor = version.split(".")[:2]
     return int(major), int(minor)
+
+
+def _previous_release(changelog: str) -> tuple[int, int]:
+    """The `(major, minor)` of the newest release of an earlier minor, read rather than computed.
+
+    Not the second heading. A sample's floor is a minor — `scripts/set_dependents_range.py`
+    drops the patch, so that a patch release is a no-op for the samples — and the window has to
+    be a window over the same thing. Read as the previous *release*, a core patch names the
+    current minor straight back, the window holds one value, and the Release PR fails with the
+    samples sitting correctly at the minor before it.
+
+    Not `(major, minor - 1)` either. At 1.0.0 that is `(1, -1)`, which every 0.x floor sorts
+    below, so the 1.0.0 Release PR would fail with no legal move available. On a history that
+    skipped a minor it names a version that never shipped, and AGENTS.md forbids a floor that
+    does. The changelog records what actually shipped, and release-please writes it in the same
+    commit that bumps the version, so the two cannot disagree.
+    """
+    minors = [_minor(version) for version in _CHANGELOG_HEADING.findall(changelog)]
+    assert minors, "the changelog names no release"
+    for minor in minors[1:]:
+        if minor != minors[0]:
+            return minor
+    raise AssertionError(f"the changelog names no release before {minors[0]}")
 
 
 def _floors_outside_the_window(
@@ -136,16 +149,35 @@ class TestTheWindowRule:
             for version in versions
         )
 
-    def test_the_predecessor_is_the_second_heading(self):
+    def test_the_predecessor_is_the_previous_minor(self):
         assert _previous_release(self._changelog("0.16.0", "0.15.0", "0.14.0")) == (0, 15)
 
     def test_a_patch_predecessor_keeps_its_minor(self):
         assert _previous_release(self._changelog("0.16.0", "0.15.1", "0.15.0")) == (0, 15)
 
+    def test_a_patch_release_does_not_collapse_the_window(self):
+        # maf-sandbox 0.23.1 on 0.23.0, with the samples correctly at 0.22. Read as the previous
+        # release the answer is (0, 23) — the current minor back — so the only floor the window
+        # then permits is one the samples cannot hold until the patch is on PyPI.
+        assert _previous_release(self._changelog("0.23.1", "0.23.0", "0.22.0")) == (0, 22)
+
     def test_across_a_major_the_predecessor_is_the_last_release_of_the_old_one(self):
         # The case the arithmetic could not express: `(1, 0 - 1)` is `(1, -1)`, and every 0.x
         # floor sorts below it, so the 1.0.0 Release PR failed with no legal floor to move to.
         assert _previous_release(self._changelog("1.0.0", "0.16.0")) == (0, 16)
+
+    def test_a_patch_just_after_a_major_reaches_back_past_it(self):
+        # Both halves at once: skipping the current minor is what carries this over the
+        # boundary, where subtracting one cannot go.
+        assert _previous_release(self._changelog("1.0.1", "1.0.0", "0.16.0")) == (0, 16)
+
+    def test_a_skipped_minor_is_not_invented(self):
+        # `minor - 1` would answer (0, 22) here, and no such release exists.
+        assert _previous_release(self._changelog("0.23.0", "0.21.0", "0.20.0")) == (0, 21)
+
+    def test_a_changelog_of_one_minor_has_no_predecessor(self):
+        with pytest.raises(AssertionError, match="no release before"):
+            _previous_release(self._changelog("0.1.1", "0.1.0"))
 
     def test_a_floor_at_either_end_of_the_window_is_permitted(self):
         assert _floors_outside_the_window({(0, 16), (0, 15)}, (0, 16), (0, 15)) == []
@@ -188,8 +220,7 @@ class TestTheDeclaredCoreFloor:
 
     def _core_minor(self) -> tuple[int, int]:
         text = (self._PACKAGE / "pyproject.toml").read_text(encoding="utf-8")
-        major, minor = tomllib.loads(text)["project"]["version"].split(".")[:2]
-        return int(major), int(minor)
+        return _minor(tomllib.loads(text)["project"]["version"])
 
     def _previous_minor(self) -> tuple[int, int]:
         return _previous_release((self._PACKAGE / "CHANGELOG.md").read_text(encoding="utf-8"))

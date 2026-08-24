@@ -72,3 +72,43 @@ jobs:
           python scripts/check_title_diff.py "$BASE_SHA" "$PR_TITLE" \
             --head-ref "$HEAD_REF" --head-repo "$HEAD_REPO" \
             --base-repo "$BASE_REPO" --author "$PR_AUTHOR"
+
+  # Its own job, so the red names this check rather than hiding under the title job's — the
+  # point of failing at all is that the consequence gets read, and "Conventional commit format
+  # failed" would send the reader to the wrong place.
+  #
+  # In this workflow rather than `tests.yml` because it reads the pull request *title*, which
+  # `edited` is the only trigger for — and keeping it there meant every retitle re-ran the whole
+  # suite and the Docker e2e for a check that costs a second.
+  release-order:
+    name: Release order
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # The check diffs against the base commit, which a shallow clone does not have.
+          fetch-depth: 0
+
+      - name: What follows if this core lands outside the ceilings
+        # **A failure here is not a verdict on the release.** A core version outside the
+        # dependents' ceilings is permitted, and for a breaking release it is the point.
+        # Merging over this is the expected move — the override is what records that the
+        # consequence was read. What decides whether the release is *sound* is
+        # `check_core_against_dependents.py` at release time, and the publish gate before an
+        # upload; neither is this.
+        #
+        # It exited zero between #628 and #657, which left the notice in the log of a green
+        # job. A notice nobody opens is not delivered, and this is the one channel a pull
+        # request cannot scroll past.
+        #
+        # The `${{ github.event.pull_request.title }}` expression is assigned to an environment
+        # variable rather than interpolated into this shell script. A pull request title is
+        # attacker-controlled text, and interpolating it here would make it shell source.
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git diff --name-only "$BASE_SHA" HEAD |
+            python3 scripts/check_release_order.py "$PR_TITLE"

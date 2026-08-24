@@ -83,3 +83,72 @@ class TestTheCli:
     ):
         assert check.main(["prog", "--dist-dir", str(tmp_path)]) == 2
         assert "build them first" in capsys.readouterr().err
+
+
+def _wheel_declaring(directory: Path, name: str, requirement: str) -> Path:
+    """A wheel carrying one `Requires-Dist`, which is what `declared_range` reads."""
+    path = directory / name
+    distribution, release = name.split("-")[:2]
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(
+            f"{distribution}-{release}.dist-info/METADATA",
+            f"Metadata-Version: 2.1\nName: {distribution}\nRequires-Dist: {requirement}\n",
+        )
+    return path
+
+
+class TestWhyItDoesNotCombine:
+    """The table that replaced the resolver's own account of a core-range conflict.
+
+    uv answers this by walking every historical version of every sibling — hundreds of wrapped
+    lines whose decisive fact is two constraints. These read those two directly.
+    """
+
+    _CANDIDATE = "maf_sandbox_wslc-0.11.1-py3-none-any.whl"
+
+    def test_the_core_entry_is_not_a_dependents(self):
+        # `maf-sandbox-acas` starts with the core's own name, so a prefix match reports a bound
+        # the core never declared — as the thing that decided the conflict.
+        entries = ["maf-sandbox-acas<0.2", "maf-sandbox<0.23,>=0.21.0"]
+        assert check._core_requirement(entries) == "maf-sandbox<0.23,>=0.21.0"
+
+    def test_an_environment_marker_is_dropped(self):
+        entry = 'maf-sandbox>=0.23.1,<0.25; python_version >= "3.12"'
+        assert check._core_requirement([entry]) == "maf-sandbox>=0.23.1,<0.25"
+
+    def test_a_dependent_only_list_names_no_core_requirement(self):
+        assert check._core_requirement(["maf-sandbox-acas<0.2", "pytest"]) is None
+
+    def test_a_sibling_whose_ceiling_excludes_the_floor_is_named(self, tmp_path: Path):
+        wheel = _wheel_declaring(tmp_path, self._CANDIDATE, "maf-sandbox>=0.23.1,<0.25")
+        published = {"maf-sandbox-acas": "maf-sandbox<0.23,>=0.21.0"}
+        lines, explained = check.constraints("maf-sandbox-wslc", wheel, published)
+        assert explained, "a ceiling below the candidate's floor is the whole explanation"
+        assert "maf-sandbox>=0.23.1,<0.25" in lines[0]
+        assert "excludes 0.23.1" in lines[1]
+
+    def test_the_candidate_is_not_listed_against_itself(self, tmp_path: Path):
+        wheel = _wheel_declaring(tmp_path, self._CANDIDATE, "maf-sandbox>=0.23.1,<0.25")
+        published = {"maf-sandbox-wslc": "maf-sandbox<0.23,>=0.21.0"}
+        lines, explained = check.constraints("maf-sandbox-wslc", wheel, published)
+        assert len(lines) == 1, "the published self is an older version, not a sibling"
+        assert not explained
+
+    def test_overlapping_ranges_leave_it_unexplained(self, tmp_path: Path):
+        """The honest half: agree on the core and the collision is somewhere else entirely.
+
+        These packages also carry agent-framework and the Azure libraries. When the table
+        explains nothing the caller prints the resolver's own account instead, so a `True` here
+        would swallow the only account there is.
+        """
+        wheel = _wheel_declaring(tmp_path, self._CANDIDATE, "maf-sandbox>=0.23.1,<0.25")
+        published = {"maf-sandbox-acas": "maf-sandbox>=0.22.0,<0.25"}
+        lines, explained = check.constraints("maf-sandbox-wslc", wheel, published)
+        assert not explained
+        assert "excludes" not in lines[1]
+
+    def test_a_sibling_with_no_ceiling_does_not_explain_anything(self, tmp_path: Path):
+        wheel = _wheel_declaring(tmp_path, self._CANDIDATE, "maf-sandbox>=0.23.1,<0.25")
+        published = {"maf-sandbox-acas": "maf-sandbox>=0.21.0"}
+        _, explained = check.constraints("maf-sandbox-wslc", wheel, published)
+        assert not explained

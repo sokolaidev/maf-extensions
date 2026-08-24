@@ -1,26 +1,34 @@
 name: Tests
 
-# The gate for every push and PR, in two parallel jobs: `tests` is the hermetic one — the
-# offline suite, lint, format, each package's strict pyright, the wheel builds and their
-# clean-env smoke; `docker-e2e` is the one integration suite, real containers on the runner's
+# The gate for every push and PR. The hermetic work is sharded across five jobs that run at
+# once — fast gates, the offline suite, the pre-commit tiers, the type checks, and packaging —
+# and `Python (pytest + ruff + pyright)` is now the join that reports their verdict as one
+# required check. `docker-e2e` is the one integration suite, real containers on the runner's
 # Docker daemon, kept separate so its distinct failure surface does not muddy the deterministic
-# checks. The documentation checks used to be steps of `tests` and now live in `docs.yml`.
+# checks. The documentation checks live in `docs.yml`.
 #
-# **There are still no path filters on these triggers, and that is deliberate.** Both job names
-# are required status checks on `main`. A workflow-level `paths-ignore` does not make a required
-# check pass — it stops the workflow triggering, so the check never reports and the pull request
-# is unmergeable for ever. Instead the `changes` job below classifies the diff and the expensive
-# steps skip on its verdict: the contexts still report, in seconds rather than minutes (#560).
-# For the same reason the jobs are never skipped wholesale with a job-level `if:` — a genuine
-# success is worth more than relying on a skipped job counting as one.
+# **The shards are an implementation detail; the two required contexts are not.** `main`
+# requires exactly `Python (pytest + ruff + pyright)` and `Docker backend live tests`. Keeping
+# the join's name identical to the old single job is what lets the shards be renamed, split
+# further or merged again without touching the branch ruleset — and what stops a rename here
+# from making every open pull request unmergeable against a context that no longer reports.
+#
+# **There are still no path filters on these triggers, and that is deliberate.** A
+# workflow-level `paths-ignore` does not make a required check pass — it stops the workflow
+# triggering, so the check never reports and the pull request is unmergeable for ever. Instead
+# the `changes` job classifies the diff and the expensive steps skip on its verdict: the
+# contexts still report, in seconds rather than minutes (#560). For the same reason no shard is
+# skipped wholesale with a job-level `if:` — a genuine success is worth more than relying on a
+# skipped job counting as one, and the join below refuses a shard that did not run.
 on:
   push:
     branches: [main]
   pull_request:
-    # `edited` is not a default activity type, and the release-order gate below reads the
-    # pull request title. Without it a pull request goes green as `ci:`, is retitled to
-    # `feat:`, and keeps the passing check: same head SHA, no re-run, gate bypassed.
-    types: [opened, synchronize, reopened, edited]
+    # `edited` is deliberately absent. It used to be here for one step — the release-order
+    # report, which reads the pull request title — and every retitle then re-ran the whole
+    # suite and the Docker e2e for a check that takes a second. That step lives in
+    # `pr-title.yml` now, which already triggers on `edited` for the title checks proper.
+    types: [opened, synchronize, reopened]
   # A bot-opened pull request does start this — and then stops at `action_required`, the
   # "Approve and run" gate, so the required check never reports until someone clears it.
   # Clearing it by hand is the only thing that does. Dispatching a second run here reports
@@ -39,8 +47,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # One classification, read by both jobs below, so the rule lives in one place and is unit
-  # tested rather than written twice as a shell pattern nobody can check.
+  # One classification, read by every job below, so the rule lives in one place and is unit
+  # tested rather than written six times as a shell pattern nobody can check.
   changes:
     name: What changed
     runs-on: ubuntu-latest
@@ -69,36 +77,15 @@ jobs:
           git diff --name-only "$BASE_SHA" HEAD |
             python3 scripts/changed_paths.py >> "$GITHUB_OUTPUT"
 
-  tests:
-    name: Python (pytest + ruff + pyright)
+  # The offline suite. The long pole of the gate, so it shares its runner with nothing:
+  # `-n auto` already saturates the CPUs, and a second workload here would slow it down.
+  suite:
+    name: Offline suite
     needs: changes
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          # The release-order check below diffs against the base commit, which a shallow
-          # clone does not have.
-          fetch-depth: 0
-
-      - name: Release order (what follows if this core lands outside the ceilings)
-        # First, because it costs a second. It used to be the one *failure* here whose fix
-        # was a different pull request; since #628 it reports rather than refuses, and the
-        # release it describes is refused — when it should be — by the gates that measure.
-        # Only a pull request carries the title release-please turns into a version, so it is
-        # the only event this reads.
-        #
-        # The `${{ }}` expression is assigned to an environment variable rather than
-        # interpolated into this shell script. A pull request title is attacker-controlled
-        # text, and interpolating it here would make it shell source; keep it out.
-        if: github.event_name == 'pull_request'
-        env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          set -euo pipefail
-          git diff --name-only "$BASE_SHA" HEAD |
-            python3 scripts/check_release_order.py "$PR_TITLE"
 
       - name: Install uv
         if: needs.changes.outputs.code == 'true'
@@ -116,6 +103,66 @@ jobs:
         # tree on their first sync instead.
         run: uv sync --locked
 
+      - name: Tests
+        if: needs.changes.outputs.code == 'true'
+        # One worker per runner CPU: 74s to 37s here, and eight measured no better than four.
+        # `poe test` stays serial, so an order-dependent test reds here rather than locally.
+        run: uv run pytest -q -n auto
+
+  # Lint, format and the commit-msg tier: seconds in total, and a first answer while the
+  # heavier shards are still installing.
+  fast:
+    name: Lint, format & commit-msg
+    needs: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install uv
+        if: needs.changes.outputs.code == 'true'
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Sync workspace
+        if: needs.changes.outputs.code == 'true'
+        run: uv sync --locked
+
+      - name: Lint
+        if: needs.changes.outputs.code == 'true'
+        run: uv run ruff check .
+
+      - name: Format
+        if: needs.changes.outputs.code == 'true'
+        run: uv run ruff format --check .
+
+      - name: Pre-commit (commit-msg stage)
+        if: needs.changes.outputs.code == 'true'
+        # The commit-msg guard against a clean fixture message, so the stage's entry and
+        # arguments are exercised through pre-commit the way an installed hook drives it.
+        run: |
+          printf 'ci: a fixture message for the commit-msg stage\n' > "$RUNNER_TEMP/ci-commit-msg"
+          uv run pre-commit run --hook-stage commit-msg --commit-msg-filename "$RUNNER_TEMP/ci-commit-msg" no-origin-identifiers-msg
+
+  # Both pre-commit tiers, driven through the framework the way a developer's commit and push
+  # drive them. The pre-push tier runs the same pyright commands the `types` shard runs raw;
+  # that duplication is the wiring guard (a hook whose entry rotted passes there and fails
+  # here), and running the two shards side by side is what makes it cost no wall-clock.
+  pre-commit:
+    name: Pre-commit tiers
+    needs: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install uv
+        if: needs.changes.outputs.code == 'true'
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Sync workspace
+        if: needs.changes.outputs.code == 'true'
+        run: uv sync --locked
+
       - name: Pre-commit (whole tree)
         if: needs.changes.outputs.code == 'true'
         # The pre-commit tier as a whole tree; no `--hook-stage` filter, so pre-commit uses
@@ -130,31 +177,26 @@ jobs:
       - name: Pre-commit (pre-push stage, whole tree)
         if: needs.changes.outputs.code == 'true'
         # The whole tier through pre-commit, the way a developer's push runs it, so the
-        # hooks' entries and arguments are exercised end to end; the Types steps below run
-        # the same pyright commands raw, outside the framework.
+        # hooks' entries and arguments are exercised end to end; the `types` shard runs the
+        # same pyright commands raw, outside the framework.
         run: uv run pre-commit run --hook-stage pre-push --all-files
 
-      - name: Pre-commit (commit-msg stage)
-        if: needs.changes.outputs.code == 'true'
-        # The commit-msg guard against a clean fixture message, so the stage's entry and
-        # arguments are exercised through pre-commit the way an installed hook drives it.
-        run: |
-          printf 'ci: a fixture message for the commit-msg stage\n' > "$RUNNER_TEMP/ci-commit-msg"
-          uv run pre-commit run --hook-stage commit-msg --commit-msg-filename "$RUNNER_TEMP/ci-commit-msg" no-origin-identifiers-msg
+  # The two raw pyright passes, outside pre-commit.
+  types:
+    name: Types (pyright)
+    needs: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - name: Tests
+      - name: Install uv
         if: needs.changes.outputs.code == 'true'
-        # One worker per runner CPU: 74s to 37s here, and eight measured no better than four.
-        # `poe test` stays serial, so an order-dependent test reds here rather than locally.
-        run: uv run pytest -q -n auto
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
 
-      - name: Lint
+      - name: Sync workspace
         if: needs.changes.outputs.code == 'true'
-        run: uv run ruff check .
-
-      - name: Format
-        if: needs.changes.outputs.code == 'true'
-        run: uv run ruff format --check .
+        run: uv sync --locked
 
       - name: Types (per-package strict configs)
         if: needs.changes.outputs.code == 'true'
@@ -174,6 +216,30 @@ jobs:
         # suppressed inline; everything outside those four rules is real drift. samples/ relaxes
         # nothing and suppresses inline instead — pyproject.toml says why (#334).
         run: uv run pyright
+
+  # Everything that builds a wheel or reads the index. Its own shard because its failures are
+  # a different class from the rest of this workflow: the last two steps read PyPI, so a red
+  # here can be the *index's* state rather than this diff's — the same reasoning that keeps
+  # `docker-e2e` separate. A packaging red should not read as "pytest failed".
+  packaging:
+    name: Packaging & published-index checks
+    needs: changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # `check_core_against_dependents` recovers a published version's tests from its
+          # release tag, which a shallow clone does not carry.
+          fetch-depth: 0
+
+      - name: Install uv
+        if: needs.changes.outputs.code == 'true'
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - name: Sync workspace
+        if: needs.changes.outputs.code == 'true'
+        run: uv sync --locked
 
       - name: Build + metadata check
         if: needs.changes.outputs.code == 'true'
@@ -201,27 +267,26 @@ jobs:
             "$venv/bin/python" scripts/smoke_install.py "$package"
           done
 
-      # The gate publish-packages.yml runs before an upload, brought forward to the pull
-      # request. It reads each range off the wheel `dist/` already holds and runs that
-      # package's suite against every published core the range admits — the pairing a consumer
-      # gets, and the one the suite above never exercises because `[tool.uv.sources]` points
-      # `maf-sandbox` at the workspace (#628).
-      #
-      # On every code pull request rather than only on a Release PR, and for the reason the
-      # release-order step above gives about itself: a Release PR is generated from commits
-      # already merged, so a failure there is one whose fix is a *different* pull request. Run
-      # here, the same failure is an edit to the pull request that caused it. A Release PR
-      # changes a dependent's version and so reaches this too, which is where it is the last
-      # word before a merge that publishes.
-      # Every wheel the build step produced, installed into one environment. The samples
-      # take several of these together, so a range that moved past a *sibling* rather than past
-      # the index leaves the family unresolvable — which no per-package check can see (#628).
+      # Every wheel the build step produced, installed into one environment. The samples take
+      # several of these together, so a range that moved past a *sibling* rather than past the
+      # index leaves the family unresolvable — which no per-package check can see (#628).
       - name: The suite installs as a set
         if: needs.changes.outputs.code == 'true'
         run: |
           set -euo pipefail
           python3 scripts/check_suite_installs_together.py --whole-set
 
+      # The gate publish-packages.yml runs before an upload, brought forward to the pull
+      # request. It reads each range off the wheel `dist/` already holds and runs that
+      # package's suite against every published core the range admits — the pairing a consumer
+      # gets, and the one the offline suite never exercises because `[tool.uv.sources]` points
+      # `maf-sandbox` at the workspace (#628).
+      #
+      # On every code pull request rather than only on a Release PR: a Release PR is generated
+      # from commits already merged, so a failure there is one whose fix is a *different* pull
+      # request. Run here, the same failure is an edit to the pull request that caused it. A
+      # Release PR changes a dependent's version and so reaches this too, which is where it is
+      # the last word before a merge that publishes.
       - name: Each dependent against the published cores it admits
         if: needs.changes.outputs.code == 'true'
         run: |
@@ -234,16 +299,46 @@ jobs:
             fi
           done
 
+  # The required context, and the only job here whose name `main`'s ruleset knows. It runs no
+  # checks of its own: it fails unless every shard above succeeded, so the shards stay free to
+  # be renamed or resharded without a ruleset edit.
+  #
+  # `always()` so this reports on a shard that failed or was cancelled — without it the join is
+  # skipped, and a skipped required check never reports, which is the unmergeable-for-ever
+  # state the trigger comment above describes. `success` is the only result accepted: a
+  # `skipped` shard is refused too, because the shards skip *steps* on the `changes` verdict
+  # and never themselves, so a skipped shard means something went wrong with the graph.
+  tests:
+    name: Python (pytest + ruff + pyright)
+    needs: [changes, suite, fast, pre-commit, types, packaging]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every shard passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          set -euo pipefail
+          echo "shard results: $RESULTS"
+          for result in $RESULTS; do
+            if [ "$result" != "success" ]; then
+              echo "::error::a shard of this gate did not succeed: $RESULTS"
+              exit 1
+            fi
+          done
+          echo "every shard succeeded"
+
   # A real Docker daemon on ubuntu-latest makes this the one place a live suite can run on a
   # pull request — wslc needs Windows, acas needs a billable Azure sandbox. Two suites run here
   # now: the docker backend's, and the CodeAct kind's against a real interpreter (#397), which
   # is where `CodeactOutputs.MANIFEST` and the collection's budget arithmetic are exercised —
   # every other live run of that kind is a sample with a model in the loop. It is an
-  # integration test, so it lives in its own job rather than as a step of the hermetic
-  # unit/lint/type job above: it depends on the daemon, a network and an image registry, a
-  # different failure class, and isolating it keeps a daemon or registry blip from reding the
-  # deterministic checks — a red here names Docker, not pytest. It runs in parallel with the job
-  # above, so it adds no wall-clock to the gate. The offline docker suite still runs in `tests`;
+  # integration test, so it lives in its own job rather than as a shard of the hermetic gate
+  # above: it depends on the daemon, a network and an image registry, a different failure
+  # class, and isolating it keeps a daemon or registry blip from reding the deterministic
+  # checks — a red here names Docker, not pytest. It is a required context in its own right,
+  # so it stays outside the join. The offline docker suite still runs in `suite`;
   # `test_docker_e2e.py` skips there (no env vars) and runs only here.
   docker-e2e:
     name: Docker backend live tests

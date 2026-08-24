@@ -1,6 +1,6 @@
 [project]
 name = "maf-sandbox-docker"
-version = "0.7.3"
+version = "0.8.1"
 description = "Plain Docker containers as a local and CI sandbox backend for Microsoft Agent Framework agents — any Docker-compatible engine, zero dependencies beyond maf-sandbox."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
@@ -34,7 +34,7 @@ dependencies = [
     # it here would only go stale; upper-bounded because maf-sandbox has not yet reached a stable
     # API, so every release before 1.0.0 may include breaking changes (see its CHANGELOG);
     # moving either end of this range has an order to it — see RELEASING.md.
-    "maf-sandbox>=0.22.0,<0.24",
+    "maf-sandbox>=0.23.1,<0.25",
 ]
 
 [project.urls]
