@@ -1,6 +1,6 @@
 [project]
 name = "maf-sandbox-bicep"
-version = "0.9.3"
+version = "0.9.4"
 description = "Sandboxed Bicep validation (bicep build + bicep lint) as a Microsoft Agent Framework tool — reference implementation of agent-framework#7568 — written against maf-sandbox so it runs on any sandbox backend."
 readme = "README.md"
 requires-python = ">=3.12,<3.15"
