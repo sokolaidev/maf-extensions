@@ -114,10 +114,16 @@ class _SandboxToolCall:
 
     owner: object
     name: str | None = None
-    #: Every sandbox this call acquired, by key. A mapping rather than the last one: `acquire`
-    #: takes a key, so one call can reach two sandboxes and write its name into both, and
-    #: keeping only the newest would reclaim one of them and say nothing about the other.
-    acquired: dict[SandboxKey, Sandbox] = field(default_factory=dict[SandboxKey, Sandbox])
+    #: Every sandbox this call acquired, keyed, and *every* wrapper per key rather than the last.
+    #: `acquire` takes a key, so one call can reach two sandboxes and write its name into both —
+    #: keeping only the newest would reclaim one of them and say nothing about the other. And a
+    #: call that reacquires one key (a transport timeout caught and retried) gets a fresh wrapper
+    #: each time from Docker/WSLC/ACAS: the removal runs once per key on the live wrapper, but an
+    #: unclean note names whichever wrapper ran the stop, so all of them have to be kept to match
+    #: it — dropping an earlier one reuses a sandbox whose program a stop may not have taken down.
+    acquired: dict[SandboxKey, list[Sandbox]] = field(
+        default_factory=dict[SandboxKey, list[Sandbox]]
+    )
     closed: bool = False
 
 
@@ -473,7 +479,7 @@ class SandboxToolSession:
             # once the call is closed: the removal is already walking this, and a task the body
             # left running would otherwise add to it mid-walk — and nothing would reclaim what
             # it wrote anyway.
-            call.acquired[key] = sandbox
+            call.acquired.setdefault(key, []).append(sandbox)
         return sandbox
 
 
@@ -523,6 +529,22 @@ async def _dispose_the_unclean(
     return "failed"
 
 
+def _refuse_not_yet_reclaimed(
+    router: SandboxRouter, acquired: Sequence[tuple[SandboxKey, object]], start: int
+) -> None:
+    """Refuse every key from ``start`` on, so the next call is not served a sandbox this one did
+    not finish reclaiming.
+
+    Called synchronously while a cancellation is propagating out of the cleanup, where awaiting a
+    disposal is not reliable. A no-op when the host opted down with ``keep_unclean``: it asked to
+    keep the data, so refusing the key would contradict that.
+    """
+    if router.keep_unclean:
+        return
+    for key, _ in acquired[start:]:
+        router.mark_unclean(key)
+
+
 async def _reclaim_the_call(
     call: _SandboxToolCall,
     *,
@@ -558,27 +580,25 @@ async def _reclaim_the_call(
     prefix = _prefixed(tool)
     path = f"{spec.work_dir}/{call.name}" if call.name is not None else spec.work_dir
     acquired = tuple(call.acquired.items())
-    for index, (key, sandbox) in enumerate(acquired):
+    for index, (key, sandboxes) in enumerate(acquired):
         reasons: list[str] = []
         if call.name is not None:
             try:
                 # By name, against the working directory — not as one composed string. A
                 # ``work_dir`` the protocol accepts may not be POSIX-shaped, and a composed path
                 # would carry its separators into a grammar that refuses them, failing every
-                # call on such a spec.
+                # call on such a spec. Through the live wrapper: the guest path is the same
+                # whichever acquire returned it, and the newest is the one still connected.
                 reason = await reclaim_guest_path(
-                    sandbox, call.name, working_directory=spec.work_dir, timeout=timeout
+                    sandboxes[-1], call.name, working_directory=spec.work_dir, timeout=timeout
                 )
             except (asyncio.CancelledError, GeneratorExit):
                 # The caller's deadline has passed, and containing this would have the call return
                 # the body's answer past a bound the host thought it had. Neither this sandbox nor
-                # any the loop has not yet reached was reclaimed, so refuse them all (synchronously;
-                # awaiting a disposal while cancelled is not reliable) — otherwise the next call
-                # reacquires one still holding the last call's data. The leak still has to be
-                # visible, so the line is written before the cancellation goes on.
-                if not router.keep_unclean:
-                    for pending, _ in acquired[index:]:
-                        router.mark_unclean(pending)
+                # any the loop has not yet reached was reclaimed, so refuse them all — otherwise the
+                # next call reacquires one still holding the last call's data. The leak still has to
+                # be visible, so the line is written before the cancellation goes on.
+                _refuse_not_yet_reclaimed(router, acquired, index)
                 logger.warning(
                     f"{prefix}: %s was not reclaimed: the call was cancelled during the removal",
                     path,
@@ -589,9 +609,11 @@ async def _reclaim_the_call(
                 # take the record with it.
                 logger.warning(f"{prefix}: %s was not reclaimed: %s", path, reason)
                 reasons.append(reason)
-        # Only this sandbox's notes, matched by identity: a call may acquire more than one, and
-        # a stop that did not take sandbox A's program tree must not dispose a clean sibling B.
-        noted = [reason for owner, reason in unclean if owner is sandbox]
+        # Only this sandbox's notes, matched by identity against every wrapper acquired for the
+        # key: a call may acquire more than one, and a stop that did not take sandbox A's program
+        # tree must not dispose a clean sibling B. Every wrapper, not the last: a note names the
+        # one that ran the stop, which a reacquire may have replaced in the map.
+        noted = [reason for owner, reason in unclean if any(owner is held for held in sandboxes)]
         if noted:
             logger.warning(
                 f"{prefix}: the sandbox is not clean after this call: %s", "; ".join(noted)
@@ -599,33 +621,42 @@ async def _reclaim_the_call(
             reasons.extend(noted)
         if not reasons:
             continue
-        disposal = await _dispose_the_unclean(
-            router, key, prefix=prefix, logger=logger, timeout=timeout
-        )
-        if on_failure is None:
-            continue
-        failure = ReclaimFailure(
-            tool=tool, key=key, path=path, reason="; ".join(reasons), disposal=disposal
-        )
         try:
-            # Bounded like the removal, and separately from it: a host may still reach a
-            # backend in here, which is a round trip that can hang, and an unbounded one holds
-            # the tool call open for as long as it hangs — on a cancelled call, past a deadline
-            # that has already expired.
-            async with asyncio.timeout(timeout):
-                await on_failure(failure)
-        except TimeoutError:
-            logger.warning(f"{prefix}: on_reclaim_failure did not finish within %ss", timeout)
-        except Exception as raised:  # noqa: BLE001 — a host's callback must not fail the call
-            logger.warning(f"{prefix}: on_reclaim_failure raised: %s", error_detail(raised))
-        except (asyncio.CancelledError, GeneratorExit) as stopped:
-            # Not contained, for the reason above: the callback awaits, so this is the caller's
-            # cancellation arriving inside it and not a failure of the callback's own.
-            # Named rather than stated, so this line interpolates: `prefix` has its `%` doubled
-            # for exactly that, and `logging` leaves the doubling alone with no args.
-            logger.warning(
-                f"{prefix}: on_reclaim_failure did not finish: %s", type(stopped).__name__
+            disposal = await _dispose_the_unclean(
+                router, key, prefix=prefix, logger=logger, timeout=timeout
             )
+            if on_failure is None:
+                continue
+            failure = ReclaimFailure(
+                tool=tool, key=key, path=path, reason="; ".join(reasons), disposal=disposal
+            )
+            try:
+                # Bounded like the removal, and separately from it: a host may still reach a
+                # backend in here, which is a round trip that can hang, and an unbounded one holds
+                # the tool call open for as long as it hangs — on a cancelled call, past a deadline
+                # that has already expired.
+                async with asyncio.timeout(timeout):
+                    await on_failure(failure)
+            except TimeoutError:
+                logger.warning(f"{prefix}: on_reclaim_failure did not finish within %ss", timeout)
+            except Exception as raised:  # noqa: BLE001 — a host's callback must not fail the call
+                logger.warning(f"{prefix}: on_reclaim_failure raised: %s", error_detail(raised))
+            except (asyncio.CancelledError, GeneratorExit) as stopped:
+                # The callback awaits, so this is the caller's cancellation arriving inside it, not
+                # a failure of the callback's own — logged, then re-raised for the handler below.
+                # Named rather than stated, so this line interpolates: `prefix` has its `%` doubled
+                # for exactly that, and `logging` leaves the doubling alone with no args.
+                logger.warning(
+                    f"{prefix}: on_reclaim_failure did not finish: %s", type(stopped).__name__
+                )
+                raise
+        except (asyncio.CancelledError, GeneratorExit):
+            # Cancellation during the disposal or the host callback, not the removal above. This
+            # key is already accounted for — dispose_unclean refuses it before its first await, and
+            # a landed disposal cleared it clean — so mark only the keys the loop has not reached,
+            # never re-refusing one just disposed. Same reason as the removal handler: the next call
+            # must not reacquire a sandbox still holding this call's data.
+            _refuse_not_yet_reclaimed(router, acquired, index + 1)
             raise
 
 

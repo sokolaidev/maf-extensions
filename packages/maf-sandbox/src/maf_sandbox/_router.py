@@ -493,6 +493,10 @@ class SandboxRouter:
         Raises:
             NoSandboxBackend: when no backend is configured. Callers that check
                 :attr:`enabled` before attaching a tool never reach this.
+            SandboxUnclean: when a previous call left this key's sandbox unclean and no disposal
+                has since landed. An expected outcome for a direct consumer, not a backend
+                failure: the refusal persists until :meth:`dispose_unclean` or
+                :meth:`dispose_scope` succeeds for the key.
             SandboxCapabilityDenied: when the spec requires a capability this host denies.
             SandboxIdentityDenied: when the spec's ``identities`` carry one this host denies.
             SandboxBackendNotPermitted: when the spec raises the floor above what the backend

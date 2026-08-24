@@ -1480,6 +1480,82 @@ class TestACallThatReachesTwoSandboxes:
             with pytest.raises(SandboxUnclean):
                 asyncio.run(router.acquire(key, _SPEC))
 
+    def test_a_cancellation_during_the_disposal_refuses_the_later_keys(self):
+        """The removal is not the only place a cancellation can land. The first sandbox is left
+        unclean, so its removal reaches the disposal; a cancellation *there* must still refuse the
+        keys the loop has not yet reached — not only the one being disposed, which the router
+        already refuses before its first await."""
+
+        class _CancelsOnDispose(_PerKeyBackend):
+            async def dispose(self, key: SandboxKey) -> None:
+                raise asyncio.CancelledError()
+
+        def build(session: SandboxToolSession):
+            async def widget_run(target: str) -> str:
+                mine = session.key()
+                assert not isinstance(mine, str)
+                path = session.guest_call_path()
+                own: object | None = None
+                for key in (mine, TestACallThatReachesTwoSandboxes._OTHER):
+                    sandbox = await session.acquire(key)
+                    assert not isinstance(sandbox, str)
+                    await sandbox.write_file(f"{path}/program.py", target, working_directory=path)
+                    if key == mine:
+                        own = sandbox
+                assert own is not None
+                note_unclean(own, "the guest program overran and could not be signalled")
+                return path
+
+            return widget_run
+
+        backend = _CancelsOnDispose()
+        router = _router(backend)
+        tool = _attach_with(build, router)[0]
+        with pytest.raises(asyncio.CancelledError):
+            _call(tool, target="x")
+        for key in (_KEY, self._OTHER):
+            with pytest.raises(SandboxUnclean):
+                asyncio.run(router.acquire(key, _SPEC))
+
+    def test_a_note_left_by_a_wrapper_a_reacquire_replaced_still_disposes(self):
+        """A key reacquired mid-call gets a fresh wrapper — a real backend hands out a new one —
+        and the map keeps only the newest. A stop that could not take the *first* wrapper's program
+        tree names that wrapper; matching notes against the last one alone would drop it and reuse a
+        sandbox with a live process in it. The note must still dispose the key."""
+
+        class _FreshWrapperPerAcquire(InProcessSandboxBackend):
+            def __init__(self):
+                super().__init__()
+                self.handed: list[InProcessSandbox] = []
+
+            async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> InProcessSandbox:
+                await super().acquire(key, spec)
+                sandbox = InProcessSandbox()
+                self.handed.append(sandbox)
+                return sandbox
+
+        def build(session: SandboxToolSession):
+            async def widget_run(target: str) -> str:
+                key = session.key()
+                assert not isinstance(key, str)
+                path = session.guest_call_path()
+                first = await session.acquire(key)
+                assert not isinstance(first, str)
+                # The first wrapper ran the stop that could not be proven complete...
+                note_unclean(first, "the guest program overran and could not be signalled")
+                # ...then a transport hiccup is caught and the same key reacquired: a new wrapper,
+                # and the map now holds only it.
+                again = await session.acquire(key)
+                assert not isinstance(again, str)
+                assert again is not first
+                return path
+
+            return widget_run
+
+        backend = _FreshWrapperPerAcquire()
+        _call(_reclaiming(backend, build), target="x")
+        assert backend.disposed == [_KEY], backend.disposed
+
 
 class TestAStragglerDuringTheRemoval:
     """The removal walks what `acquire` writes into, and a task the body left running can reach
