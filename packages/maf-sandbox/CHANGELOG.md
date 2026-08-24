@@ -2,6 +2,13 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.23.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.23.0...maf-sandbox-v0.23.1) (2026-08-24)
+
+
+### Documentation
+
+* the four versions tagged on 24 August never reached PyPI ([#646](https://github.com/sokolaidev/maf-extensions/issues/646)) ([2d35b50](https://github.com/sokolaidev/maf-extensions/commit/2d35b504c9b3e6f84943ef8fba4a9dd92a2c303c))
+
 ## [0.23.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.22.0...maf-sandbox-v0.23.0) (2026-08-24)
 
 > **Correction, added after the release.** This version was tagged and a GitHub Release was created for it, but **it never reached PyPI** — so there is no `maf-sandbox` 0.23.0 to install. The publish run failed before the upload, on a repository test that read the tags of a shallow checkout ([#645](https://github.com/sokolaidev/maf-extensions/pull/645)); the tag records the right commit and no artifact was ever built from it.
