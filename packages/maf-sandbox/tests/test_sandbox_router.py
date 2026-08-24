@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import math
 
 import pytest
 
@@ -862,6 +863,20 @@ class TestAKeyTheRouterCouldNotDisposeIsRefused:
         assert asyncio.run(router.dispose_unclean(_KEY, timeout=0.05)) is False
         with pytest.raises(SandboxUnclean):
             asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_a_non_finite_or_non_positive_timeout_is_refused_before_the_key_is_marked(self):
+        """`asyncio.timeout(math.inf)` never expires, so an infinite bound would let a hanging
+        backend hang the caller past the bound this method documents. Rejected like the other
+        timeout-taking helpers — and before the key is marked, so a rejected call leaves the
+        ledger untouched and the key still servable."""
+        backend = InProcessSandboxBackend()
+        router = self._router(backend)
+        for bad in (math.inf, math.nan, 0.0, -1.0):
+            with pytest.raises(ValueError, match="finite positive"):
+                asyncio.run(router.dispose_unclean(_KEY, timeout=bad))
+        # Nothing was marked or disposed by the rejected calls: the key is still served.
+        asyncio.run(router.acquire(_KEY, _SPEC))
+        assert backend.disposed == []
 
     def test_the_key_is_refused_while_a_disposal_is_still_running(self):
         """Refused from the moment the disposal starts, not only once it fails: calls sharing a

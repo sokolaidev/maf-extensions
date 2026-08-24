@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import logging
+import math
 from collections.abc import AsyncGenerator, Iterable, Sequence
 from contextlib import asynccontextmanager
 from typing import cast
@@ -580,7 +581,15 @@ class SandboxRouter:
         the dirty sandbox. :meth:`_dispose_each` discards the key on a landed disposal, so a
         success clears it while a failure, the bound passing, or a cancellation leaves it
         refused.
+
+        Raises:
+            ValueError: when ``timeout`` is not a finite positive number of seconds. ``math.inf``
+                would leave ``asyncio.timeout`` unable to expire, so the documented bound would
+                not hold and a hanging backend would hang the caller. Checked before the key is
+                marked, so a rejected call has no lingering effect on the ledger.
         """
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError(f"timeout must be a finite positive number of seconds, not {timeout}")
         self._unclean.add(key)
         try:
             async with asyncio.timeout(timeout):
