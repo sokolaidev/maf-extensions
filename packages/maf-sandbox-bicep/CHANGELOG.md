@@ -2,6 +2,13 @@
 
 All notable changes to `maf-sandbox-bicep` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.9.6](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.9.5...maf-sandbox-bicep-v0.9.6) (2026-08-24)
+
+
+### Documentation
+
+* wslc 0.11.1 and bicep 0.9.5 never reached PyPI either, and where their code ships ([#654](https://github.com/sokolaidev/maf-extensions/issues/654)) ([e198594](https://github.com/sokolaidev/maf-extensions/commit/e19859405ed78bdc2c356d5d8f2ceb727e44441c))
+
 ## [0.9.5](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-bicep-v0.9.4...maf-sandbox-bicep-v0.9.5) (2026-08-24)
 
 > **Correction, added after the release.** This version was tagged and a GitHub Release was created for it, but **it never reached PyPI** — so there is no `maf-sandbox-bicep` 0.9.5 to install. The publish run failed before the upload, on a check that refused a state no publishing order can reach around: every published sibling still capped below the core this version requires, and the first package to move can only ever be alone there ([#653](https://github.com/sokolaidev/maf-extensions/pull/653)). The tag records the right commit and no artifact was ever built from it.
