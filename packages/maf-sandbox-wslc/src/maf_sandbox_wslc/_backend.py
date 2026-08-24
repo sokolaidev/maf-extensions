@@ -427,6 +427,23 @@ class _WslcSandbox:
             "exec if the workload already requires it, or declare a backend with a pull surface."
         )
 
+    async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
+        """Remove ``directory`` with ``rm -rf`` over :meth:`exec`.
+
+        Served where :meth:`remove` refuses: the caller made ``directory``, so no parent walk
+        is owed, and that walk is what this backend cannot build (#125). Runs from ``/``
+        because ``working_directory`` may not exist.
+        """
+        del working_directory
+        removed = await self.exec(
+            ["rm", "-rf", "--", directory], working_directory="/", timeout=timeout
+        )
+        if removed.exit_code != 0:
+            raise OSError(
+                f"could not reclaim {directory}: rm exited {removed.exit_code}"
+                f"{f' — {removed.stderr.strip()}' if removed.stderr else ''}"
+            )
+
 
 class WslcSandboxBackend:
     """Hands out container-isolated sandboxes from the WSL container CLI (``wslc``)."""

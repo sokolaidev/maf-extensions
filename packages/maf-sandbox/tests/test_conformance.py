@@ -27,6 +27,7 @@ from maf_sandbox.conformance import (
     FILES_DELETE_PROBES,
     FILES_IN_PROBES,
     FILES_OUT_PROBES,
+    RECLAIM_PROBES,
     ConformanceFailure,
     ConformancePaths,
     PosixGuestSubject,
@@ -35,11 +36,13 @@ from maf_sandbox.conformance import (
     assert_files_delete_conformance,
     assert_files_in_conformance,
     assert_files_out_conformance,
+    assert_reclaim_conformance,
     measure_files_delete_probes,
     run_exec_probes,
     run_files_delete_probes,
     run_files_in_probes,
     run_files_out_probes,
+    run_reclaim_probes,
 )
 from maf_sandbox.testing import InProcessSandbox
 
@@ -207,6 +210,16 @@ class _Leaky:
         if under and not recursive:
             raise OSError(f"refusing to remove a non-empty directory without recursive: {path}")
         for stored in (*under, resolved):
+            self.contents.pop(stored, None)
+            self.links.pop(stored, None)
+
+    async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
+        """A plain recursive removal. This specimen's leak is the pull surface, not this one."""
+        del working_directory, timeout
+        prefix = directory.rstrip("/") + "/"
+        for stored in [
+            p for p in (*self.contents, *self.links) if p == directory or p.startswith(prefix)
+        ]:
             self.contents.pop(stored, None)
             self.links.pop(stored, None)
 
@@ -517,6 +530,20 @@ class _SimulatedGuest:
             self.symlinks.pop(stored, None)
             self.directories.discard(stored)
 
+    async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
+        """The tree goes and nothing else does. ``working_directory`` is not read."""
+        del working_directory, timeout
+        guest = posixpath.normpath(directory)
+        prefix = guest.rstrip("/") + "/"
+        for stored in [p for p in self._everything() if p == guest or p.startswith(prefix)]:
+            self.contents.pop(stored, None)
+            self.symlinks.pop(stored, None)
+            self.directories.discard(stored)
+
+    def _everything(self) -> tuple[str, ...]:
+        """Every path this simulator holds, whatever kind it is."""
+        return (*self.contents, *self.symlinks, *self.directories)
+
     def _resolve(self, guest: str) -> str:
         """Where a `cat`/`test` actually lands: the guest's own resolution, links followed.
 
@@ -582,6 +609,10 @@ class _SimulatedGuest:
                     operand in self.contents
                     or operand in self.symlinks
                     or operand in self.directories
+                    # A directory a write implied, which a guest's `mkdir -p` made real. Without
+                    # it a probe asking whether a removed directory is gone answers "gone" for a
+                    # backend that removed nothing at all.
+                    or any(p.startswith(operand + "/") for p in self._everything())
                 )
             return ExecResult(stdout="", exit_code=0 if hits else 1)
         if argv[0:1] == ["cat"]:
@@ -1106,12 +1137,170 @@ class TestFilesDeleteConformance:
             asyncio.run(assert_files_delete_conformance(subject))
 
 
+class TestReclaimConformance:
+    """No gate here, so the negatives are backends that answer without doing what they promise."""
+
+    def test_the_simulator_answers_every_probe(self):
+        assert _sim_results(_sim_subject(), run_reclaim_probes) == dict.fromkeys(
+            [p.name for p in RECLAIM_PROBES], None
+        )
+
+    def _failures(self, sandbox: _SimulatedGuest) -> dict[str, str | None]:
+        return _sim_results(
+            _SimSubject(sandbox=sandbox, working_directory=_WORK, capabilities=_EVERYTHING),
+            run_reclaim_probes,
+        )
+
+    def test_a_reclaim_that_removes_nothing_fails_the_positive_control(self):
+        """Answering and doing nothing: every other probe here asks what did *not* happen."""
+
+        class _Inert(_SimulatedGuest):
+            async def reclaim(self, directory, *, working_directory, timeout):
+                del directory, working_directory, timeout
+
+        failures = self._failures(_Inert())
+        assert failures["a-created-directory-is-gone"] is not None
+        assert failures["nested-content-goes-with-it"] is not None
+        assert failures["a-missing-directory-is-success"] is None
+
+    def test_a_reclaim_that_takes_only_the_top_level_fails_the_tree_probe(self):
+        """A call's directory holds a tree, and the flat removal empties one level of it."""
+
+        class _OnlyTheTopLevel(_SimulatedGuest):
+            async def reclaim(self, directory, *, working_directory, timeout):
+                del working_directory, timeout
+                prefix = posixpath.normpath(directory).rstrip("/") + "/"
+                for stored in [
+                    p
+                    for p in self._everything()
+                    if p.startswith(prefix) and "/" not in p[len(prefix) :]
+                ]:
+                    self.contents.pop(stored, None)
+                    self.symlinks.pop(stored, None)
+                    self.directories.discard(stored)
+
+        failures = self._failures(_OnlyTheTopLevel())
+        assert failures["nested-content-goes-with-it"] is not None
+        assert failures["a-created-directory-is-gone"] is None
+
+    def test_a_reclaim_that_clears_the_working_directory_fails_the_bystander_check(self):
+        """The tree probe cannot see this one: everything it planted was meant to go."""
+
+        class _TakesTheWorkDirWhole(_SimulatedGuest):
+            async def reclaim(self, directory, *, working_directory, timeout):
+                del directory, timeout
+                prefix = posixpath.normpath(working_directory).rstrip("/") + "/"
+                for stored in [p for p in self._everything() if p.startswith(prefix)]:
+                    self.contents.pop(stored, None)
+                    self.symlinks.pop(stored, None)
+                    self.directories.discard(stored)
+
+        failures = self._failures(_TakesTheWorkDirWhole())
+        assert failures["a-created-directory-is-gone"] is not None
+        assert "a bystander file" in failures["a-created-directory-is-gone"]
+        assert failures["nested-content-goes-with-it"] is None
+
+    def test_a_reclaim_that_follows_an_interior_link_fails_the_link_probe(self):
+        """The guest chooses what is inside the directory; a followed link deletes outside it."""
+
+        class _FollowsInteriorLinks(_SimulatedGuest):
+            async def reclaim(self, directory, *, working_directory, timeout):
+                del working_directory, timeout
+                guest = posixpath.normpath(directory)
+                prefix = guest.rstrip("/") + "/"
+                for stored in sorted(p for p in self._everything() if p.startswith(prefix)):
+                    resolved = stored
+                    while resolved in self.symlinks:
+                        resolved = self.symlinks[resolved]
+                    self.contents.pop(stored, None)
+                    self.symlinks.pop(stored, None)
+                    self.directories.discard(stored)
+                    self.contents.pop(resolved, None)  # the escape: the target goes too
+                self.contents.pop(guest, None)
+                self.symlinks.pop(guest, None)
+                self.directories.discard(guest)
+
+        failures = self._failures(_FollowsInteriorLinks())
+        assert [name for name, failure in failures.items() if failure is not None] == [
+            "a-link-inside-is-unlinked-not-followed"
+        ]
+
+    def test_a_reclaim_that_raises_on_a_missing_directory_fails_the_finally_probe(self):
+        """Succeeds on a directory it can see, raises on the repeat — the finally-breaker."""
+
+        class _StrictAboutMissing(_SimulatedGuest):
+            async def reclaim(self, directory, *, working_directory, timeout):
+                guest = posixpath.normpath(directory)
+                prefix = guest.rstrip("/") + "/"
+                if not any(p == guest or p.startswith(prefix) for p in self._everything()):
+                    raise FileNotFoundError(directory)
+                await super().reclaim(
+                    directory, working_directory=working_directory, timeout=timeout
+                )
+
+        failures = self._failures(_StrictAboutMissing())
+        assert failures["a-missing-directory-is-success"] is not None
+        assert failures["a-created-directory-is-gone"] is None
+        assert failures["nested-content-goes-with-it"] is None
+
+    def test_a_reclaim_that_moves_to_the_working_directory_first_fails_the_absent_probe(self):
+        """`cd` then remove: it reports a leak over a directory that was never there."""
+
+        class _MovesThereFirst(_SimulatedGuest):
+            async def reclaim(self, directory, *, working_directory, timeout):
+                base = posixpath.normpath(working_directory)
+                prefix = base.rstrip("/") + "/"
+                if not any(p == base or p.startswith(prefix) for p in self._everything()):
+                    raise FileNotFoundError(f"cd: {working_directory}: no such directory")
+                await super().reclaim(
+                    directory, working_directory=working_directory, timeout=timeout
+                )
+
+        failures = self._failures(_MovesThereFirst())
+        assert failures["an-absent-working-directory-still-succeeds"] is not None
+        assert [name for name, failure in failures.items() if failure is not None] == [
+            "an-absent-working-directory-still-succeeds"
+        ]
+
+    def test_every_probe_says_why_it_is_in_the_suite(self):
+        assert all(len(probe.why) > 40 for probe in RECLAIM_PROBES)
+        assert len({probe.name for probe in RECLAIM_PROBES}) == len(RECLAIM_PROBES)
+
+    def test_the_shipped_fake_answers_only_the_probes_that_need_no_guest(self):
+        """Its `exec` is scripted, so a probe that verifies through a command must not pass."""
+        results = asyncio.run(run_reclaim_probes(_FakeSubject(InProcessSandbox(), _EVERYTHING)))
+        assert {r.probe.name for r in results if r.failure} == {
+            "a-created-directory-is-gone",
+            "nested-content-goes-with-it",
+            "a-link-inside-is-unlinked-not-followed",
+        }
+        with pytest.raises(ConformanceFailure):
+            asyncio.run(assert_reclaim_conformance(_FakeSubject(InProcessSandbox(), _EVERYTHING)))
+
+
+def test_assert_reclaim_answers_a_conforming_subject():
+    """Called by name: the coverage test reads this module's AST."""
+    results = asyncio.run(assert_reclaim_conformance(_sim_subject()))
+    assert all(r.passed for r in results)
+
+
+def test_assert_reclaim_names_the_probe_a_subject_failed():
+    class _Inert(_SimulatedGuest):
+        async def reclaim(self, directory, *, working_directory, timeout):
+            del directory, working_directory, timeout
+
+    subject = _SimSubject(sandbox=_Inert(), working_directory=_WORK, capabilities=_EVERYTHING)
+    with pytest.raises(ConformanceFailure, match="a-created-directory-is-gone"):
+        asyncio.run(assert_reclaim_conformance(subject))
+
+
 def test_the_assert_functions_return_the_results():
     """Each entry point returns its results so a caller can assert on what was skipped."""
     for probes, assert_ in (
         (FILES_IN_PROBES, assert_files_in_conformance),
         (EXEC_PROBES, assert_exec_conformance),
         (FILES_DELETE_PROBES, assert_files_delete_conformance),
+        (RECLAIM_PROBES, assert_reclaim_conformance),
     ):
         results = asyncio.run(assert_(_sim_subject()))
         assert [r.probe.name for r in results] == [p.name for p in probes]

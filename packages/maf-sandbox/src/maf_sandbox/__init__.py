@@ -139,7 +139,7 @@ from ._protocol import (
     meets_floor,
 )
 from ._purger import SandboxPurger
-from ._reclaim import ReclaimFailure
+from ._reclaim import DisposalOutcome, ReclaimFailure
 from ._router import (
     NoSandboxBackend,
     SandboxBackendNotPermitted,
@@ -150,6 +150,7 @@ from ._router import (
     SandboxOsFamilyNotSupported,
     SandboxRouter,
     SandboxTransferLimitsNotPermitted,
+    SandboxUnclean,
     ScopeDisposal,
 )
 from ._shim import host_tool_shim
@@ -190,6 +191,7 @@ __all__ = [
     "NoSandboxBackend",
     "OutputDisposition",
     "OutputSink",
+    "DisposalOutcome",
     "ReclaimFailure",
     "Sandbox",
     "SandboxArtifactNameCollision",
@@ -221,6 +223,7 @@ __all__ = [
     "SandboxSpec",
     "SandboxTransferCapExceeded",
     "SandboxTransferLimitsNotPermitted",
+    "SandboxUnclean",
     "ScopeDisposal",
     "SourceIntegrity",
     "TransferLimits",

@@ -2505,7 +2505,13 @@ class TestATimeoutSaysWhoseItWas:
         with caplog.at_level(logging.WARNING, logger="maf_sandbox_codeact._tool"):
             out = _run(_dispatching(sandbox, _round_half_up, exec_timeout_seconds=1), "print('x')")
 
-        logged = [r.getMessage() for r in caplog.records if r.getMessage().startswith("execute_")]
+        # The kind's own records only: the framework logs what it did about the sandbox
+        # through the same logger, and that is its claim to make, not this kind's.
+        logged = [
+            r.getMessage()
+            for r in caplog.records
+            if r.getMessage().startswith("execute_") and r.filename == "_tool.py"
+        ]
         assert logged == [f"execute_code: {out.removeprefix('Error: ')}"], logged
 
     def test_the_plain_path_still_reads_a_timeout_as_the_programs_own(self):

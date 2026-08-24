@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import math
 
 import pytest
 
@@ -49,10 +50,11 @@ from maf_sandbox import (
     SandboxRouter,
     SandboxSpec,
     SandboxTransferLimitsNotPermitted,
+    SandboxUnclean,
     TransferLimits,
     meets_floor,
 )
-from maf_sandbox.testing import InProcessSandboxBackend
+from maf_sandbox.testing import InProcessSandbox, InProcessSandboxBackend
 
 _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
 _SPEC = SandboxSpec(kind="test")
@@ -901,6 +903,124 @@ class TestPurge:
         assert backend.purged == [("scope-a", "thread-1")]
 
 
+class TestAKeyTheRouterCouldNotDisposeIsRefused:
+    """Better a failed run than leaked data: a key whose disposal did not land is not served."""
+
+    def _router(self, *backends):
+        return SandboxRouter(list(backends), min_isolation=Isolation.NONE)
+
+    def test_a_landed_disposal_answers_true_and_serves_the_key_again(self):
+        backend = InProcessSandboxBackend()
+        router = self._router(backend)
+        assert asyncio.run(router.dispose_unclean(_KEY, timeout=1.0)) is True
+        assert backend.disposed == [_KEY]
+        asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_a_refused_disposal_answers_false_and_the_key_is_refused(self):
+        router = self._router(InProcessSandboxBackend(dispose_error=RuntimeError("down")))
+        assert asyncio.run(router.dispose_unclean(_KEY, timeout=1.0)) is False
+        with pytest.raises(SandboxUnclean, match="refused until a disposal lands"):
+            asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_another_key_in_the_same_conversation_is_still_served(self):
+        backend = InProcessSandboxBackend(dispose_error=RuntimeError("down"))
+        router = self._router(backend)
+        asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
+        other = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="another-agent")
+        asyncio.run(router.acquire(other, _SPEC))
+
+    def test_a_disposal_that_hangs_is_bounded_and_counts_as_not_landed(self):
+        class _Hangs(InProcessSandboxBackend):
+            async def dispose(self, key):
+                await asyncio.Event().wait()
+
+        router = self._router(_Hangs())
+        assert asyncio.run(router.dispose_unclean(_KEY, timeout=0.05)) is False
+        with pytest.raises(SandboxUnclean):
+            asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_a_non_finite_or_non_positive_timeout_is_refused_before_the_key_is_marked(self):
+        """`asyncio.timeout(math.inf)` never expires, so an infinite bound would let a hanging
+        backend hang the caller past the bound this method documents. Rejected like the other
+        timeout-taking helpers — and before the key is marked, so a rejected call leaves the
+        ledger untouched and the key still servable."""
+        backend = InProcessSandboxBackend()
+        router = self._router(backend)
+        for bad in (math.inf, math.nan, 0.0, -1.0):
+            with pytest.raises(ValueError, match="finite positive"):
+                asyncio.run(router.dispose_unclean(_KEY, timeout=bad))
+        # Nothing was marked or disposed by the rejected calls: the key is still served.
+        asyncio.run(router.acquire(_KEY, _SPEC))
+        assert backend.disposed == []
+
+    def test_the_key_is_refused_while_a_disposal_is_still_running(self):
+        """Refused from the moment the disposal starts, not only once it fails: calls sharing a
+        key are not serialized, so a concurrent acquire during a hanging disposal must not be
+        handed the dirty sandbox."""
+        started = asyncio.Event()
+
+        class _HangsAfterStarting(InProcessSandboxBackend):
+            async def dispose(self, key: SandboxKey) -> None:
+                started.set()
+                await asyncio.Event().wait()
+
+        async def drive() -> None:
+            router = self._router(_HangsAfterStarting())
+            disposing = asyncio.create_task(router.dispose_unclean(_KEY, timeout=10.0))
+            await started.wait()  # the disposal is in flight and has not yet landed
+            try:
+                with pytest.raises(SandboxUnclean):
+                    await router.acquire(_KEY, _SPEC)
+            finally:
+                disposing.cancel()
+                try:
+                    await disposing
+                except asyncio.CancelledError:
+                    # `disposing` is the task we just cancelled; its CancelledError is expected.
+                    pass
+
+        asyncio.run(drive())
+
+    def test_a_later_plain_dispose_that_lands_reopens_it(self):
+        backend = InProcessSandboxBackend(dispose_error=RuntimeError("down"))
+        router = self._router(backend)
+        asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
+        backend.dispose_error = None
+        asyncio.run(router.dispose(_KEY))
+        asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_a_scope_purge_that_lands_reopens_its_keys_and_no_others(self):
+        backend = InProcessSandboxBackend(dispose_error=RuntimeError("down"))
+        router = self._router(backend)
+        elsewhere = SandboxKey(scope="scope-a", thread_id="thread-2", agent_dir="devops-engineer")
+        asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
+        asyncio.run(router.dispose_unclean(elsewhere, timeout=1.0))
+        asyncio.run(router.dispose_scope("scope-a", "thread-1"))
+        asyncio.run(router.acquire(_KEY, _SPEC))
+        with pytest.raises(SandboxUnclean):
+            asyncio.run(router.acquire(elsewhere, _SPEC))
+
+    def test_a_scope_purge_a_backend_refused_reopens_nothing(self):
+        backend = InProcessSandboxBackend(dispose_error=RuntimeError("down"))
+        router = self._router(backend, _ExplodingBackend(name="bad"))
+        asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
+        asyncio.run(router.dispose_scope("scope-a", "thread-1"))
+        with pytest.raises(SandboxUnclean):
+            asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_every_backend_is_asked_and_one_refusal_is_enough(self):
+        good = InProcessSandboxBackend(name="good")
+        router = self._router(good, InProcessSandboxBackend(name="bad", dispose_error=OSError()))
+        assert asyncio.run(router.dispose_unclean(_KEY, timeout=1.0)) is False
+        assert good.disposed == [_KEY]
+
+    def test_the_refusal_is_unknown_to_a_second_router(self):
+        """In-process knowledge only, the same bound `dispose_scope` exists to reach past."""
+        backend = InProcessSandboxBackend(dispose_error=RuntimeError("down"))
+        asyncio.run(self._router(backend).dispose_unclean(_KEY, timeout=1.0))
+        asyncio.run(self._router(backend).acquire(_KEY, _SPEC))
+
+
 class TestSpecDefaults:
     def test_egress_defaults_to_denying_everything(self):
         """A spec that forgets to mention egress must get the closed configuration."""
@@ -1476,3 +1596,49 @@ class TestScope:
             return disposal
 
         assert asyncio.run(scenario()).disposed == 0
+
+
+class TestASandboxThatCannotBeReclaimed:
+    """What gates `reclaim`, since no capability does.
+
+    Without this a stale backend acquires cleanly and the loss is reported once per call, for
+    the life of the process, as a removal that failed.
+    """
+
+    class _Stale(InProcessSandbox):
+        reclaim = None  # type: ignore[assignment]
+
+    def _router(self) -> SandboxRouter:
+        return SandboxRouter([InProcessSandboxBackend(self._Stale())], min_isolation=Isolation.NONE)
+
+    def test_acquire_refuses_and_names_the_member(self):
+        with pytest.raises(TypeError, match="does not implement `Sandbox.reclaim`"):
+            asyncio.run(self._router().acquire(_KEY, _SPEC))
+
+    def test_the_refused_sandbox_is_disposed_not_left_running(self):
+        """The backend acquired before the check could refuse, and a refused acquire must
+        not leave a billable sandbox running — nothing else would ever clean it."""
+        backend = InProcessSandboxBackend(self._Stale())
+        with pytest.raises(TypeError):
+            asyncio.run(SandboxRouter([backend], min_isolation=Isolation.NONE).acquire(_KEY, _SPEC))
+        assert backend.disposed == [_KEY]
+
+    def test_a_disposal_that_fails_does_not_replace_the_refusal(self):
+        class _KeepsItsSandboxes(InProcessSandboxBackend):
+            async def dispose(self, key):
+                await super().dispose(key)
+                raise RuntimeError("the control plane is down")
+
+        backend = _KeepsItsSandboxes(self._Stale())
+        with pytest.raises(TypeError, match="does not implement"):
+            asyncio.run(SandboxRouter([backend], min_isolation=Isolation.NONE).acquire(_KEY, _SPEC))
+        assert backend.disposed == [_KEY], "the disposal was not even attempted"
+
+    def test_the_refusal_says_what_proves_an_implementation(self):
+        with pytest.raises(TypeError, match="assert_reclaim_conformance"):
+            asyncio.run(self._router().acquire(_KEY, _SPEC))
+
+    def test_an_ordinary_sandbox_still_acquires(self):
+        """A guard that refuses everything is an outage, not a guard."""
+        router = SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE)
+        assert asyncio.run(router.acquire(_KEY, _SPEC)) is not None

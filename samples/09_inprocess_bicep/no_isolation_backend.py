@@ -223,6 +223,23 @@ class NoIsolationSandbox:
             "removal with, and the paths it would delete are the host's own."
         )
 
+    async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
+        """Remove ``directory`` for real, unlike :meth:`remove` above.
+
+        The caller made ``directory``, so there is nothing to confine. ``working_directory``
+        plays no part: the host mapping is fixed at construction.
+        """
+        del working_directory
+        host_path = self._host_path(directory)
+
+        def _remove() -> None:
+            try:
+                shutil.rmtree(host_path)
+            except FileNotFoundError:
+                pass  # already gone is success
+
+        await asyncio.wait_for(asyncio.to_thread(_remove), timeout=timeout)
+
 
 class NoIsolationBackend:
     """A :class:`~maf_sandbox.SandboxBackend` that runs workloads on the host with no boundary.

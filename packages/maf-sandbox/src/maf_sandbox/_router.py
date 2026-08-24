@@ -9,8 +9,10 @@ refuses whatever the backend could do).
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import logging
+import math
 from collections.abc import AsyncGenerator, Iterable, Sequence
 from contextlib import asynccontextmanager
 from typing import cast
@@ -46,6 +48,7 @@ __all__ = [
     "SandboxOsFamilyNotSupported",
     "SandboxRouter",
     "SandboxTransferLimitsNotPermitted",
+    "SandboxUnclean",
     "ScopeDisposal",
 ]
 
@@ -122,6 +125,20 @@ class SandboxIdentityDenied(PermissionError):
     """
 
 
+class SandboxUnclean(PermissionError):
+    """The sandbox for this key was left unclean — data the framework could not remove, or a
+    program a stop did not provably take down — and the disposal that would have made it go
+    did not land.
+
+    Raised by :meth:`SandboxRouter.acquire` until a disposal for the key lands — through
+    :meth:`~SandboxRouter.dispose`, :meth:`~SandboxRouter.dispose_scope`, or the framework's
+    own next attempt. Refused rather than served: ``acquire`` is get-or-create, so serving
+    the key would hand the next call everything the last one could not take back. Better a
+    failed run than leaked data. This is in-process knowledge only — another replica holds
+    no such record, which is the same bound ``dispose_scope`` exists to reach past.
+    """
+
+
 class SandboxEgressNotEnforced(PermissionError):
     """The selected backend cannot enforce the egress mode the workload runs in.
 
@@ -141,6 +158,22 @@ class SandboxTransferLimitsNotPermitted(PermissionError):
     undeclared ``capabilities`` is read charitably.  Also raised for a ``limits`` this package
     cannot read at all — a declaration nobody can compare against is refused, not guessed at.
     """
+
+
+def _refuse_a_sandbox_that_cannot_be_reclaimed(sandbox: Sandbox) -> None:
+    """Refuse a sandbox missing :meth:`Sandbox.reclaim`, naming the member rather than leaking.
+
+    No capability gates ``reclaim``, so no other check notices a backend without it — every
+    call would leak its directory instead. A :class:`TypeError` because an absent protocol
+    member is exactly that: read by a person and fixed in code, never caught to recover.
+    """
+    if not callable(getattr(sandbox, "reclaim", None)):
+        raise TypeError(
+            f"{type(sandbox).__name__} does not implement `Sandbox.reclaim`, which every backend "
+            "serves and no capability gates. Add it — a directory this stack created under the "
+            "working directory, removed recursively, where a missing directory is success — and "
+            "`maf_sandbox.conformance.assert_reclaim_conformance` proves the implementation."
+        )
 
 
 def _declared_isolation(backend: SandboxBackend) -> Isolation:
@@ -222,6 +255,13 @@ class SandboxRouter:
             spec whose ``identities`` carries one is refused at attach.
             ``denied_identities={Identity.USER}`` is how a host forbids model-orchestrated
             user authority in one statement instead of auditing each registration.
+        keep_unclean: Opt down from the framework disposing a sandbox it could not clean.
+            ``False`` by default, the way ``min_isolation`` defaults to the production
+            posture: when a tool call's directory could not be removed, or a program it
+            stopped may have left something running, ``sandboxed_tool`` disposes that
+            sandbox before the next call can reuse it. ``True`` keeps it warm with the data
+            in it, and the host's ``on_reclaim_failure`` is told so. A kind cannot set this:
+            it is the host's call to loosen, never a workload's.
 
     Raises:
         SandboxBackendNotPermitted: at construction, when the selected backend declares a
@@ -244,8 +284,13 @@ class SandboxRouter:
         selected: str | None = None,
         denied_capabilities: Iterable[Capability] = (),
         denied_identities: Iterable[Identity] = (),
+        keep_unclean: bool = False,
     ) -> None:
         self._backends = list(backends)
+        self._keep_unclean = bool(keep_unclean)
+        # Keys whose sandbox holds data the framework could not remove and could not dispose
+        # of. An entry leaves when a disposal lands; a key that keeps failing stays refused.
+        self._unclean: set[SandboxKey] = set()
         self._min_isolation = Isolation(str(min_isolation))
         self._selected_name = selected
         self._denied_capabilities = frozenset(
@@ -292,6 +337,11 @@ class SandboxRouter:
     def enabled(self) -> bool:
         """Whether any backend is available. A host should attach no tools when ``False``."""
         return self._backend is not None
+
+    @property
+    def keep_unclean(self) -> bool:
+        """Whether this host opted down from disposing a sandbox the framework could not clean."""
+        return self._keep_unclean
 
     def _effective_floor(self, spec: SandboxSpec) -> Isolation:
         """The stricter of the host's floor and the spec's — a spec may raise, never lower."""
@@ -467,6 +517,10 @@ class SandboxRouter:
         Raises:
             NoSandboxBackend: when no backend is configured. Callers that check
                 :attr:`enabled` before attaching a tool never reach this.
+            SandboxUnclean: when a previous call left this key's sandbox unclean and no disposal
+                has since landed. An expected outcome for a direct consumer, not a backend
+                failure: the refusal persists until :meth:`dispose_unclean` or
+                :meth:`dispose_scope` succeeds for the key.
             SandboxCapabilityDenied: when the spec requires a capability this host denies.
             SandboxIdentityDenied: when the spec's ``identities`` carry one this host denies.
             SandboxBackendNotPermitted: when the spec raises the floor above what the backend
@@ -478,21 +532,110 @@ class SandboxRouter:
                 or when the backend declares its ceilings as something other than a
                 ``SandboxLimits``.
             SandboxEgressNotEnforced: when the backend cannot confine egress to this spec.
+            TypeError: when the backend hands back a sandbox without :meth:`Sandbox.reclaim`.
+                That sandbox is disposed (this backend, best effort) before the refusal
+                reaches the caller: a backend that cannot reclaim can never clean it, and a
+                refused acquire must not leave a billable sandbox running.
         """
         if self._backend is None:
             raise NoSandboxBackend("no sandbox backend is configured")
+        if key in self._unclean:
+            raise SandboxUnclean(
+                f"the sandbox for {key.scope}/{key.thread_id}/{key.agent_dir} was left unclean — "
+                "a tool call's data could not be removed, or a program it started may still be "
+                "running — and disposing it did not land. It is refused until a disposal lands — "
+                "dispose(key) or dispose_scope(scope, thread_id) — rather than served unclean."
+            )
         self._refuse_unless_backend_can_serve(spec)
-        return await self._backend.acquire(key, spec)
+        sandbox = await self._backend.acquire(key, spec)
+        try:
+            _refuse_a_sandbox_that_cannot_be_reclaimed(sandbox)
+        except TypeError:
+            # The sandbox already exists, and this backend can never clean it — the rule in
+            # `docs/sandbox/tool-call.md` § Cleanup. Disposed on this backend alone: its other
+            # sandboxes for the key are equally unreclaimable, and no other backend's are
+            # touched. Its own failure is logged, never allowed to replace the refusal.
+            try:
+                await self._backend.dispose(key)
+            except Exception as undisposed:  # noqa: BLE001 — the refusal must reach the caller
+                logger.warning(
+                    "sandbox router: backend %s failed to dispose after a reclaim refusal: %s",
+                    self._backend.name,
+                    undisposed,
+                )
+            raise
+        return sandbox
 
     async def dispose(self, key: SandboxKey) -> None:
         """Delete every kind's sandbox for ``key``. Best-effort across every registered backend."""
+        await self._dispose_each(key)
+
+    async def _dispose_each(self, key: SandboxKey) -> bool:
+        """Ask every backend to dispose ``key``; ``True`` when none refused.
+
+        A landed disposal clears the key from the unclean set: whatever was in that sandbox
+        went with it.
+        """
+        landed = True
         for backend in self._backends:
             try:
                 await backend.dispose(key)
             except Exception as exc:  # noqa: BLE001 - disposal must not fail a caller
+                landed = False
                 logger.warning(
                     "sandbox router: backend %s failed to dispose: %s", backend.name, exc
                 )
+        if landed:
+            self._unclean.discard(key)
+        return landed
+
+    async def dispose_unclean(self, key: SandboxKey, *, timeout: float) -> bool:
+        """Dispose a sandbox the framework could not clean, and refuse the key until one lands.
+
+        What ``sandboxed_tool`` calls from its ``finally`` over a removal that failed or a stop
+        that did not reach everything. Bounded by ``timeout`` because it runs after the body
+        has returned and adds to the call's latency. ``False`` when any backend refused or the
+        bound passed — and from then on :meth:`acquire` raises :class:`SandboxUnclean` for the
+        key until a disposal lands.
+
+        The key is refused **before** the first disposal await, not after it lands: calls
+        sharing a key are not serialized, so a disposal that hangs must already have the key
+        refused — otherwise a concurrent :meth:`acquire` passes its ledger check and is handed
+        the dirty sandbox. :meth:`_dispose_each` discards the key on a landed disposal, so a
+        success clears it while a failure, the bound passing, or a cancellation leaves it
+        refused.
+
+        Raises:
+            ValueError: when ``timeout`` is not a finite positive number of seconds. ``math.inf``
+                would leave ``asyncio.timeout`` unable to expire, so the documented bound would
+                not hold and a hanging backend would hang the caller. Checked before the key is
+                marked, so a rejected call has no lingering effect on the ledger.
+        """
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError(f"timeout must be a finite positive number of seconds, not {timeout}")
+        self._unclean.add(key)
+        try:
+            async with asyncio.timeout(timeout):
+                return await self._dispose_each(key)
+        except TimeoutError:
+            logger.warning(
+                "sandbox router: disposing %s/%s/%s did not finish within %ss",
+                key.scope,
+                key.thread_id,
+                key.agent_dir,
+                timeout,
+            )
+            return False
+
+    def mark_unclean(self, key: SandboxKey) -> None:
+        """Refuse ``key`` without disposing — for a cleanup cancelled before it could dispose.
+
+        Synchronous, because it is called while a :class:`~asyncio.CancelledError` is propagating
+        out of a tool call's cleanup, where awaiting a disposal is not reliable.  The sandbox is
+        left refused (:meth:`acquire` raises :class:`SandboxUnclean`) until a later disposal — a
+        subsequent :meth:`dispose_unclean`, or :meth:`dispose_scope` — lands.
+        """
+        self._unclean.add(key)
 
     @asynccontextmanager
     async def scope(self, scope: str, thread_id: str) -> AsyncGenerator[ScopeDisposal, None]:
@@ -523,14 +666,21 @@ class SandboxRouter:
         is a sandbox somebody pays for.
         """
         total = 0
+        landed = True
         for backend in self._backends:
             try:
                 total += await backend.dispose_scope(scope, thread_id)
             except Exception as exc:  # noqa: BLE001 - purge must never fail
+                landed = False
                 logger.warning(
                     "sandbox router: backend %s failed to purge thread %s: %s",
                     backend.name,
                     thread_id,
                     exc,
                 )
+        if landed:
+            # The conversation's sandboxes are gone, so nothing under it holds data any more.
+            self._unclean = {
+                key for key in self._unclean if (key.scope, key.thread_id) != (scope, thread_id)
+            }
         return total

@@ -26,6 +26,13 @@ from maf_sandbox.conformance import (
     assert_files_in_conformance,
 )
 
+# Feature-detected, not floored: the published-cores gate runs this suite against every
+# core the range admits, and cores before 0.23 have no Sandbox.reclaim to conform to.
+try:
+    from maf_sandbox.conformance import assert_reclaim_conformance
+except ImportError:
+    assert_reclaim_conformance = None
+
 from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
 
 _IMAGE = os.environ.get("MAF_SANDBOX_WSLC_E2E_IMAGE")
@@ -198,7 +205,8 @@ class TestAllowlistEgress:
 
 
 class TestTheSharedConformanceSuites:
-    """`maf_sandbox.conformance`'s FILES_IN, EXEC and FILES_DELETE suites, against a real guest.
+    """`maf_sandbox.conformance`'s FILES_IN, EXEC, FILES_DELETE and RECLAIM suites, against a
+    real guest.
 
     This is the backend the FILES_IN and EXEC suites exist for: it declares exactly those two
     and no pull surface, so before them nothing held it to anything (#450). The suites verify
@@ -208,6 +216,11 @@ class TestTheSharedConformanceSuites:
     because this backend declares no such capability — confining a removal needs the component
     walk its absent pull surface cannot provide (#125 carries the pull surface). The call is
     the wiring; the refusal is the answer, and there are no results to skip.
+
+    RECLAIM is answered in full, unlike FILES_DELETE: it is gated by no capability, so this is
+    the backend `reclaim` exists to prove — a mandatory removal served honestly beside a
+    `remove` that keeps refusing (see `test_wslc_backend.py`'s `TestReclaim` for that refusal
+    pinned offline).
     """
 
     def test_it_answers_the_files_in_probes(self):
@@ -242,6 +255,31 @@ class TestTheSharedConformanceSuites:
         async def scenario() -> None:
             sandbox = await backend.acquire(_key(scope), _spec())
             results = await assert_exec_conformance(
+                PosixGuestSubject(
+                    sandbox=sandbox,
+                    working_directory=_WORK,
+                    capabilities=backend.capabilities,
+                )
+            )
+            assert not [r for r in results if r.skipped]
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+    def test_it_answers_the_reclaim_probes(self):
+        if assert_reclaim_conformance is None:
+            pytest.skip("this maf-sandbox predates Sandbox.reclaim (< 0.23)")
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = WslcSandboxBackend(WslcSandboxConfig())
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(_key(scope), _spec())
+            # The narrowing does not cross into this closure; the assert re-establishes it,
+            # and the coverage check wants the suite called by name.
+            assert assert_reclaim_conformance is not None
+            results = await assert_reclaim_conformance(
                 PosixGuestSubject(
                     sandbox=sandbox,
                     working_directory=_WORK,

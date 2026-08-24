@@ -564,10 +564,10 @@ class Sandbox(Protocol):
     last sentence. A kind that calls :meth:`remove` directly must put the capability in
     ``requires`` itself; omit it and the router may hand back a backend whose ``remove`` raises
     :class:`NotImplementedError` — from a ``finally``, over whatever the run was already
-    reporting. The framework reclaim used by :func:`maf_sandbox.maf.sandboxed_tool` is
-    ``EXEC``-shaped instead and does not make that requirement.
+    reporting. :meth:`reclaim` is behind no capability: every backend implements it.
 
-    ``working_directory`` is a parameter on those four exactly as it is on :meth:`exec`,
+    ``working_directory`` is a parameter on those four — the pull surface and :meth:`remove` —
+    exactly as it is on :meth:`exec`,
     because no sandbox object knows the spec's ``work_dir``: it arrives per call or not at all,
     and a pull surface without it would assign the confinement duty to a layer with no way to
     discharge it.  Their ``path`` is POSIX-shaped and relative to it, and one resolving outside it
@@ -579,7 +579,8 @@ class Sandbox(Protocol):
     :func:`~maf_sandbox.paths.refuse_symlinked_parents` rather than by writing the walk again —
     it is where the two refusals a caller must be able to tell apart are defined, and
     :mod:`maf_sandbox.conformance` is the same duty as probes, for holding a backend that
-    writes its own.
+    writes its own.  The five are :meth:`write_file`, the pull surface and :meth:`remove`;
+    :meth:`reclaim` is outside the count, for the reason its own docstring gives.
     """
 
     async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
@@ -701,12 +702,39 @@ class Sandbox(Protocol):
         boundary. A *directory* is refused without ``recursive``, empty or not: a backend with
         no enumeration primitive cannot tell an empty one from a full one.
 
+        ``path`` is **model-supplied**, which is what buys the confinement duty and the
+        capability gate. :meth:`reclaim` is the other half of that split and is neither.
+
         Raises:
             ValueError: A path outside ``working_directory``, one reached through a link, or
                 the working directory itself — the confinement refusal the pull surface makes.
             OSError: A directory without ``recursive``, or a removal the guest refused.
             NotImplementedError: The backend does not declare
                 :data:`Capability.FILES_DELETE`. Require it rather than catching this.
+        """
+        ...
+
+    async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
+        """Remove ``directory`` and everything under it, within ``timeout`` seconds.
+
+        The framework's cleanup. Mandatory, and behind no :class:`Capability`.
+
+        Three rules. The caller created ``directory`` under ``working_directory`` with an
+        unguessable name, so no parent walk is owed — stated, not checked. The premise is
+        not stable: a guest that ran can have swapped the path or a parent for a link. So a
+        backend must not remove with more authority than the guest had — in-tree, the
+        removal runs over the same ``exec`` the guest did, and a swap reaches nothing the
+        guest could not already delete. What more the contract promises is #584's question.
+        A directory that is not there is success: this runs in a ``finally``. Anything else
+        raises.
+
+        ``directory`` is absolute. Run the removal from ``/``, not from ``working_directory``,
+        which may not exist. Not :meth:`remove`: that takes a model-supplied path, owes
+        confinement, and sits behind :data:`Capability.FILES_DELETE`.
+
+        Raises:
+            OSError: The removal was refused or failed.
+            TimeoutError: ``timeout`` expired. A subclass of :class:`OSError`.
         """
         ...
 

@@ -34,6 +34,7 @@ from maf_sandbox.testing import InMemoryStore, InProcessSandbox, InProcessSandbo
 
 _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
 _SPEC = SandboxSpec(kind="test")
+_WORK = "/maf-sandbox/work"
 
 #: A read bound far above anything these fixtures store — for the calls where the bound is not
 #: what is under test. `TestInProcessSandboxReadBound` is where it is.
@@ -688,6 +689,83 @@ class TestInProcessSandboxRemove:
         )
         asyncio.run(sandbox.remove("sub", working_directory="/maf-sandbox/work", recursive=True))
         assert "/maf-sandbox/work/sub-2/b.txt" in sandbox.contents, "a sibling was removed"
+
+
+class TestInProcessSandboxReclaim:
+    """The in-process :meth:`Sandbox.reclaim`: it really removes, and it records the call."""
+
+    def _reclaim(self, sandbox, directory, *, working_directory=_WORK, timeout=30.0):
+        return asyncio.run(
+            sandbox.reclaim(directory, working_directory=working_directory, timeout=timeout)
+        )
+
+    def test_the_directory_and_every_descendant_go(self):
+        sandbox = InProcessSandbox(
+            seed_files={
+                f"{_WORK}/abc123/program.py": "1",
+                f"{_WORK}/abc123/deep/nested/out.txt": "2",
+                f"{_WORK}/abc123/empty": EntryKind.DIRECTORY,
+                f"{_WORK}/sibling.txt": "3",
+            }
+        )
+        self._reclaim(sandbox, f"{_WORK}/abc123")
+        assert set(sandbox.contents) == {f"{_WORK}/sibling.txt"}
+        assert sandbox.directories == set(), "a seeded directory survived the reclaim"
+
+    def test_a_sibling_sharing_a_prefix_survives(self):
+        """`abc123` and `abc123-2` are two directories, and a prefix comparison reads them as one."""
+        sandbox = InProcessSandbox(
+            seed_files={f"{_WORK}/abc123/a.txt": "1", f"{_WORK}/abc123-2/b.txt": "2"}
+        )
+        self._reclaim(sandbox, f"{_WORK}/abc123")
+        assert set(sandbox.contents) == {f"{_WORK}/abc123-2/b.txt"}
+
+    def test_a_directory_that_is_not_there_is_success(self):
+        """Cleanup runs in a `finally`, so a second failure over the first buries the real one."""
+        sandbox = InProcessSandbox()
+        self._reclaim(sandbox, f"{_WORK}/never-existed")
+        self._reclaim(sandbox, f"{_WORK}/never-existed")
+
+    def test_a_link_is_unlinked_rather_than_descended(self):
+        """A followed link would remove a directory the guest chose."""
+        sandbox = InProcessSandbox(
+            seed_files={f"{_WORK}/out": EntryKind.SYMLINK, f"{_WORK}/out/passwd": "root:x:0:0"}
+        )
+        self._reclaim(sandbox, f"{_WORK}/out")
+        assert f"{_WORK}/out" not in sandbox.symlinks, "the link itself survived"
+        assert f"{_WORK}/out/passwd" in sandbox.contents, "the reclaim followed a link"
+
+    def test_a_relative_directory_is_not_joined_onto_the_working_directory(self):
+        """`directory` is absolute; a fake that joined it would report a cleanup no backend does."""
+        sandbox = InProcessSandbox(seed_files={f"{_WORK}/abc123/a.txt": "1"})
+        self._reclaim(sandbox, "abc123")
+        assert set(sandbox.contents) == {f"{_WORK}/abc123/a.txt"}
+
+    def test_the_call_is_recorded_exactly_as_it_was_made(self):
+        """A test asserting the bound that reached the backend reads the third element."""
+        sandbox = InProcessSandbox()
+        self._reclaim(sandbox, "abc123", working_directory="/elsewhere", timeout=2.0)
+        assert sandbox.reclaims == [("abc123", "/elsewhere", 2.0)]
+
+    def test_reclaims_are_recorded_apart_from_commands(self):
+        """A test asserting a cleanup ran must not match a command that names the same path."""
+        sandbox = InProcessSandbox()
+        self._reclaim(sandbox, f"{_WORK}/abc123")
+        assert sandbox.commands == []
+
+    def test_raises_applies_here_too(self):
+        """`raises` models a dead sandbox, and a dead sandbox cannot clean up either."""
+        sandbox = InProcessSandbox(raises=RuntimeError("gone"), seed_files={f"{_WORK}/a/b": "1"})
+        with pytest.raises(RuntimeError, match="gone"):
+            self._reclaim(sandbox, f"{_WORK}/a")
+        assert f"{_WORK}/a/b" in sandbox.contents, "a refused reclaim removed something anyway"
+
+    def test_a_reclaim_that_raises_is_still_recorded(self):
+        """The attempt is what a caller asserts on; `exec` records on the same rule."""
+        sandbox = InProcessSandbox(raises=RuntimeError("gone"))
+        with pytest.raises(RuntimeError):
+            self._reclaim(sandbox, f"{_WORK}/abc123")
+        assert sandbox.reclaims == [(f"{_WORK}/abc123", _WORK, 30.0)]
 
 
 class TestInProcessSandboxConfinement:

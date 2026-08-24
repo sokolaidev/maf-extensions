@@ -57,11 +57,12 @@ from maf_sandbox import (
 )
 from maf_sandbox import _host_tools_over_exec as host_tools_over_exec
 from maf_sandbox._host_tools_over_exec import SESSION_MADE
+from maf_sandbox._reclaim import close_unclean_notes, open_unclean_notes
 from maf_sandbox._shim_wire_contract import (
     assert_calls_conform,
     assert_request_conforms,
 )
-from maf_sandbox.paths import confine_guest_path
+from maf_sandbox.paths import confine_guest_path, guest_path_relative_to
 
 #: Fast enough for a suite, and still an interval — the API refuses zero, because
 #: `sleep(0)` is not a throttle.
@@ -114,10 +115,14 @@ class _ScriptedGuest:
         request_bytes: int | None = None,
         raw_request: bytes | None = None,
         replay_after_answer: bool = False,
+        reclaim_error: Exception | None = None,
     ) -> None:
         self.files: dict[str, bytes] = {}
         self.calls = calls
         self.answers: list[Any] = []
+        #: Every directory `reclaim` was asked for, in order.
+        self.reclaimed: list[str] = []
+        self._reclaim_error = reclaim_error
         self.started = False
         self._exit_code = exit_code
         self._output = output
@@ -183,6 +188,23 @@ class _ScriptedGuest:
     async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
         """Not what this double is for; the protocol needs it present, not useful."""
         raise NotImplementedError
+
+    async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
+        """Record the directory, and refuse when the test asked for a refusal.
+
+        Records rather than deletes, for the reason `TestRemovalAgainstARealFilesystem` gives:
+        what these tests answer is which directory the transport named, and a double that
+        emptied its own store would take the evidence of everything else with it. The
+        refusal is configurable because a double without one makes every test about a
+        *reported* cleanup failure pass on whatever the double happened to raise instead.
+        """
+        del working_directory
+        # After the budget check, for the reason the kill is: a removal the transport had no
+        # time to run is not a removal, and recording it on entry hid exactly that.
+        await _spend(timeout, f"the reclaim of {directory}")
+        self.reclaimed.append(directory)
+        if self._reclaim_error is not None:
+            raise self._reclaim_error
 
     async def list_dir(self, path: str, *, working_directory: str) -> tuple[SandboxEntry, ...]:
         raise NotImplementedError("this transport must not need FILES_LIST")
@@ -3346,6 +3368,81 @@ class TestStoppingTakesTheChildrenWhereItCan:
         )
 
 
+class TestAStopThatDidNotReachEverythingNotesTheCall:
+    """The transport tells the running tool call when its sandbox is not clean after a stop.
+
+    Only a signal to the whole process group says what the program spawned went with it.
+    Anything less leaves something that can write a path back once the call's directory is
+    removed, so the framework's cleanup has to dispose the sandbox — and it learns that from
+    this note, not from the message a kind shows the model.
+    """
+
+    def _noted(self, guest) -> list[str]:
+        async def drive() -> list[str]:
+            notes, token = open_unclean_notes()
+            try:
+                with pytest.raises(SandboxProgramTimeout):
+                    await dispatch_over_exec(
+                        guest, HostToolRun(_registry()), _LAYOUT, timeout=0.2, poll_interval=_FAST
+                    )
+            finally:
+                close_unclean_notes(token)
+            return [reason for _sandbox, reason in notes]
+
+        return asyncio.run(drive())
+
+    def test_a_group_signal_leaves_no_note(self):
+        guest = _GuestThatRecordsTheKill([], finish=False, pid="4242", session="4200")
+        assert self._noted(guest) == []
+
+    def test_a_lone_pid_signal_notes_what_it_left(self):
+        guest = _GuestThatRecordsTheKill([], finish=False, pid="4242", session=None)
+        notes = self._noted(guest)
+        assert len(notes) == 1
+        assert "reaches it alone" in notes[0]
+
+    def test_a_signal_that_could_not_be_sent_notes_it(self):
+        guest = _GuestThatRecordsTheKill([], finish=False, pid=None)
+        notes = self._noted(guest)
+        assert len(notes) == 1
+        assert "could not be signalled" in notes[0]
+
+    def test_outside_a_call_the_note_goes_nowhere(self):
+        """A transport driven directly has no call to note, and must not fail for it."""
+        guest = _GuestThatRecordsTheKill([], finish=False, pid="4242", session=None)
+        with pytest.raises(SandboxProgramTimeout):
+            _run(guest, HostToolRun(_registry()), timeout=0.2)
+
+    def test_an_upload_failure_before_the_launcher_ran_notes_nothing(self):
+        """A backend error writing the launcher started no program, so the finally must not
+        stop-and-note over it — noting would dispose a clean sandbox, and maybe a sibling."""
+
+        class _FailsTheUpload(_ScriptedGuest):
+            async def write_file(
+                self, path: str, content: str | bytes, *, working_directory: str
+            ) -> None:
+                if path == _LAYOUT.launcher:
+                    raise RuntimeError("upload boom")
+                await super().write_file(path, content, working_directory=working_directory)
+
+        async def drive() -> list[str]:
+            notes, token = open_unclean_notes()
+            try:
+                with pytest.raises(RuntimeError, match="upload boom"):
+                    await dispatch_over_exec(
+                        _FailsTheUpload([]),
+                        HostToolRun(_registry()),
+                        _LAYOUT,
+                        timeout=0.5,
+                        poll_interval=_FAST,
+                    )
+            finally:
+                close_unclean_notes(token)
+            return [reason for _sandbox, reason in notes]
+
+        assert asyncio.run(drive()) == []
+
+
 class TestStoppingARunThatOverran:
     """A dispatched program that overruns is signalled, and no more than signalled (#375).
 
@@ -3813,33 +3910,16 @@ class TestStoppingOnTheOtherTwoLegs:
 
 
 class _GuestThatRecordsRemovals(_GuestThatRecordsTheKill):
-    """Records `rm` as well as `kill`, and can refuse either."""
-
-    def __init__(self, *args: Any, remove_exit_code: int = 0, **kwargs: Any) -> None:
-        super().__init__(*args, **kwargs)
-        self._remove_exit_code = remove_exit_code
-
-    async def exec(
-        self, command: str | Any, *, working_directory: str, timeout: float
-    ) -> ExecResult:
-        if str(command).startswith("rm "):
-            # After the budget check, for the reason the kill is: a removal the transport had
-            # no time to run is not a removal, and recording it on entry hid exactly that.
-            await _spend(timeout, str(command))
-            self.commands.append(str(command))
-            return ExecResult(stdout="", exit_code=self._remove_exit_code)
-        return await super().exec(command, working_directory=working_directory, timeout=timeout)
+    """Names the base's reclaim record beside the kill record, for the tests about cleanup."""
 
     @property
     def removals(self) -> list[str]:
-        return [command for command in self.commands if command.startswith("rm ")]
+        return self.reclaimed
 
 
 class TestTheTransportReclaimsItsOwnFiles:
-    """The protocol's delete is capability-gated, so the transport uses the `exec` it has.
-
-    Requiring `FILES_DELETE` would cut off a backend that serves dispatch and withholds it,
-    which is why the framework reclaim is `EXEC`-shaped too.
+    """`Sandbox.reclaim`, not `Sandbox.remove`: requiring `FILES_DELETE` would cut off a
+    backend that serves dispatch and withholds it, and the reclaim is behind no capability.
 
     The files it writes carry a run's host-tool traffic — every argument a program passed to a
     host tool and every value it got back — plus the program a model wrote. Left behind, they
@@ -3851,8 +3931,7 @@ class TestTheTransportReclaimsItsOwnFiles:
         guest = _GuestThatRecordsRemovals([], finish=True)
         result = _run(guest, HostToolRun(_registry()), timeout=5.0)
         assert result.exit_code == 0
-        assert len(guest.removals) == 1, guest.commands
-        assert posixpath.dirname(_LAYOUT.shim) in guest.removals[0]
+        assert guest.removals == [posixpath.dirname(_LAYOUT.shim)], guest.commands
 
     def test_a_run_that_timed_out_does_not_leave_its_files_behind(self):
         guest = _GuestThatRecordsRemovals([], finish=False)
@@ -3889,30 +3968,28 @@ class TestTheTransportReclaimsItsOwnFiles:
         """
         guest = _GuestThatRecordsRemovals([], finish=True)
         _run(guest, HostToolRun(_registry()), timeout=5.0)
-        removed = guest.removals[0]
-        assert posixpath.dirname(_LAYOUT.shim) in removed
-        assert _LAYOUT.work not in removed
-        assert f"rm -rf '{_LAYOUT.directory}'" not in removed
+        (removed,) = guest.removals
+        assert removed == posixpath.dirname(_LAYOUT.shim)
+        # What that equality stands for: neither the run nor the model's files went with it.
+        assert removed != _LAYOUT.directory
+        assert guest_path_relative_to(_LAYOUT.work, removed) is None
 
     def test_a_refused_removal_says_what_is_left_readable(self, caplog):
-        guest = _GuestThatRecordsRemovals([], finish=True, remove_exit_code=1)
+        guest = _GuestThatRecordsRemovals(
+            [], finish=True, reclaim_error=PermissionError("the daemon said no")
+        )
         with caplog.at_level(logging.WARNING, logger="maf_sandbox"):
             _run(guest, HostToolRun(_registry()), timeout=5.0)
+        assert guest.removals == [posixpath.dirname(_LAYOUT.shim)], "no removal was attempted"
         assert "readable by the next run" in caplog.text, caplog.text
 
     def test_a_backend_that_refuses_the_removal_does_not_fail_the_run(self):
         """A run that worked must not be reported as failed because its cleanup did not."""
-
-        class _RefusesToRemove(_GuestThatRecordsRemovals):
-            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
-                if str(command).startswith("rm "):
-                    raise PermissionError("the daemon said no")
-                return await super().exec(
-                    command, working_directory=working_directory, timeout=timeout
-                )
-
-        result = _run(_RefusesToRemove([], finish=True), HostToolRun(_registry()), timeout=5.0)
-        assert result.exit_code == 0
+        guest = _GuestThatRecordsRemovals(
+            [], finish=True, reclaim_error=PermissionError("the daemon said no")
+        )
+        assert _run(guest, HostToolRun(_registry()), timeout=5.0).exit_code == 0
+        assert guest.removals == [posixpath.dirname(_LAYOUT.shim)], "no removal was attempted"
 
 
 class TestReclaimingTheWholeRun:
@@ -3921,16 +3998,21 @@ class TestReclaimingTheWholeRun:
     def test_it_removes_the_run_directory(self):
         guest = _GuestThatRecordsRemovals([], finish=True)
         assert asyncio.run(reclaim_run(guest, _LAYOUT, timeout=5.0)) is True
-        assert guest.removals == [f"rm -rf '{_LAYOUT.directory}'"]
+        assert guest.removals == [_LAYOUT.directory]
 
     def test_a_refusal_is_reported_rather_than_raised(self):
-        guest = _GuestThatRecordsRemovals([], finish=True, remove_exit_code=1)
+        guest = _GuestThatRecordsRemovals(
+            [], finish=True, reclaim_error=PermissionError("the daemon said no")
+        )
         assert asyncio.run(reclaim_run(guest, _LAYOUT, timeout=5.0)) is False
+        assert guest.removals == [_LAYOUT.directory], "no removal was attempted"
 
     def test_a_backend_failure_is_reported_rather_than_raised(self):
+        """A sandbox too dead to answer at all, rather than one refusing this removal."""
+
         class _Refuses(_GuestThatRecordsRemovals):
-            async def exec(self, command: str | Any, *, working_directory: str, timeout: float):
-                raise PermissionError("the daemon said no")
+            async def reclaim(self, directory: str, *, working_directory: str, timeout: float):
+                raise ConnectionError("the daemon is gone")
 
         assert asyncio.run(reclaim_run(_Refuses([], finish=True), _LAYOUT, timeout=5.0)) is False
 
@@ -3962,7 +4044,7 @@ class TestWhatIsTooBroadToDelete:
 
         assert _removable("/maf-sandbox/work/run-1")
 
-    def test_nothing_is_exec_d_for_a_path_it_refuses(self):
+    def test_nothing_is_removed_for_a_path_it_refuses(self):
         broken = GuestRunLayout(
             directory="/",
             work="/work",
@@ -3976,7 +4058,7 @@ class TestWhatIsTooBroadToDelete:
         )
         guest = _GuestThatRecordsRemovals([], finish=True)
         assert asyncio.run(reclaim_run(guest, broken, timeout=5.0)) is False
-        assert guest.removals == [], f"a refused path still reached a command: {guest.commands}"
+        assert guest.removals == [], f"a refused path still reached the backend: {guest.removals}"
 
     def test_a_session_outside_the_run_is_refused_like_every_other_stray(self):
         """The newest path in the layout gets the check the older ones have.
@@ -3998,16 +4080,19 @@ class TestWhatIsTooBroadToDelete:
         )
         guest = _GuestThatRecordsRemovals([], finish=True)
         assert asyncio.run(reclaim_run(guest, astray, timeout=5.0)) is False
-        assert guest.removals == [], f"a stray session still reached a command: {guest.commands}"
+        assert guest.removals == [], f"a stray session still reached the backend: {guest.removals}"
 
 
-class TestRemovalAgainstARealShell:
-    """A fake proves a command was issued; only a filesystem proves it removed anything."""
+class TestRemovalAgainstARealFilesystem:
+    """A fake proves a directory was named; only a filesystem proves what removing it takes."""
 
-    @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
     @pytest.mark.skipif(os.pathsep != ":", reason="the guest paths here are POSIX")
-    def test_the_command_the_transport_sends_removes_the_tree(self, tmp_path: Path):
-        """The command is taken from a dispatch, not hand-built, so the two cannot diverge."""
+    def test_the_directory_the_transport_names_is_the_one_that_should_go(self, tmp_path: Path):
+        """The directory comes from a dispatch, not hand-built, so the two cannot diverge.
+
+        How a backend removes it is the backend's; what this pins is that a real recursive
+        removal of the directory core hands over takes the transport's files and no more.
+        """
         directory = (tmp_path / "run-1").as_posix()
         served = f"{directory}/host_tools"
         pathlib.Path(served).mkdir(parents=True, exist_ok=True)
@@ -4024,20 +4109,24 @@ class TestRemovalAgainstARealShell:
                 guest, layout, until=time.monotonic() + 5.0
             )
         )
-        (command,) = guest.removals
+        (named,) = guest.removals
 
-        done = subprocess.run(
-            ["sh", "-c", command], cwd=tmp_path.as_posix(), capture_output=True, timeout=60
-        )
+        shutil.rmtree(named)
 
-        assert done.returncode == 0, done.stderr
         assert not pathlib.Path(served).exists(), "the transport's files survived the removal"
         assert pathlib.Path(directory).exists(), "the run directory went with them"
 
+
+class TestQuotingAgainstARealShell:
+    """`_quote` is what keeps a hostile directory name one word in the commands still built
+    from one — the launcher's `cd` and `sh`, and the kill. Asked of a shell, because that is
+    whose grammar it has to survive; a destructive command is used because the consequence of
+    getting it wrong is easiest to see there."""
+
     @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
     @pytest.mark.skipif(os.pathsep != ":", reason="the guest paths here are POSIX")
-    def test_a_run_directory_holding_shell_metacharacters_removes_only_itself(self, tmp_path: Path):
-        """Quoting, asked of a shell: an unquoted `*` would take the sibling with it."""
+    def test_a_directory_holding_shell_metacharacters_reaches_only_itself(self, tmp_path: Path):
+        """An unquoted `*` would take the sibling with it, and `;` would run what follows."""
         from maf_sandbox._host_tools_over_exec import _quote
 
         awkward = (tmp_path / "run *; touch pwned").as_posix()
@@ -4091,46 +4180,6 @@ class TestTheCommandsKeepTheGuestsAnswer:
             f"{command!r} reported success against a pid that is not there, so a program that "
             "could not be stopped would be reported as stopped"
         )
-
-    @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
-    @pytest.mark.skipif(os.pathsep != ":", reason="the guest paths here are POSIX")
-    def test_removing_a_directory_that_was_never_there_succeeds(self, tmp_path: Path):
-        """`-f` is what covers the already-gone case, which is why no `exit 0` is needed."""
-        from maf_sandbox._host_tools_over_exec import _quote
-
-        missing = (tmp_path / "never-existed").as_posix()
-        done = subprocess.run(
-            ["sh", "-c", f"rm -rf {_quote(missing)}"],
-            cwd=tmp_path.as_posix(),
-            capture_output=True,
-            timeout=60,
-        )
-        assert done.returncode == 0, done.stderr
-
-    @pytest.mark.skipif(shutil.which("sh") is None, reason="needs a POSIX shell")
-    @pytest.mark.skipif(os.pathsep != ":", reason="the guest paths here are POSIX")
-    @pytest.mark.skipif(_RUNNING_AS_ROOT, reason="root is refused nothing")
-    def test_a_removal_the_guest_refuses_reports_a_failure(self, tmp_path: Path):
-        from maf_sandbox._host_tools_over_exec import _quote
-
-        parent = tmp_path / "locked"
-        parent.mkdir()
-        (parent / "run-1").mkdir()
-        (parent / "run-1" / "kept").write_text("x", encoding="utf-8")
-        parent.chmod(0o500)  # readable and traversable, not writable: the unlink is refused
-        try:
-            done = subprocess.run(
-                ["sh", "-c", f"rm -rf {_quote((parent / 'run-1').as_posix())}"],
-                cwd=tmp_path.as_posix(),
-                capture_output=True,
-                timeout=60,
-            )
-            assert done.returncode != 0, (
-                "a refused removal reported success, so a run's files would be left behind "
-                "with nothing said about it"
-            )
-        finally:
-            parent.chmod(0o700)
 
 
 class TestWhatIsNotAPidWorthSignalling:
@@ -4222,7 +4271,7 @@ class TestWhatTheTransportWillNotDelete:
                 guest, stray, until=time.monotonic() + 5.0
             )
         )
-        assert guest.removals == [], f"a directory outside the run was removed: {guest.commands}"
+        assert guest.removals == [], f"a directory outside the run was removed: {guest.removals}"
 
     @pytest.mark.parametrize(
         "spelling",
@@ -4254,7 +4303,7 @@ class TestWhatTheTransportWillNotDelete:
                 guest, directly_in_the_run, until=time.monotonic() + 5.0
             )
         )
-        assert guest.removals == [], f"the run itself was removed: {guest.commands}"
+        assert guest.removals == [], f"the run itself was removed: {guest.removals}"
 
     def test_the_run_s_own_transport_directory_is_not(self):
         guest = _GuestThatRecordsRemovals([], finish=True)
@@ -4407,7 +4456,7 @@ class TestWhatEveryExitPathOwesTheRun:
                 guest, nested, until=time.monotonic() + 5.0
             )
         )
-        assert guest.removals == [], f"the model's directory went with it: {guest.commands}"
+        assert guest.removals == [], f"the model's directory went with it: {guest.removals}"
 
     def test_the_transport_will_not_remove_the_model_s_own_directory(self):
         """Confinement to the run is not enough, because `work` is inside the run.
@@ -4434,7 +4483,7 @@ class TestWhatEveryExitPathOwesTheRun:
                 guest, collapsed, until=time.monotonic() + 5.0
             )
         )
-        assert guest.removals == [], f"the model's directory was removed: {guest.commands}"
+        assert guest.removals == [], f"the model's directory was removed: {guest.removals}"
 
 
 class TestAPidAndALayoutThatCannotBeUsed:
@@ -4487,7 +4536,7 @@ class TestAPidAndALayoutThatCannotBeUsed:
                 guest, scattered, until=time.monotonic() + 5.0
             )
         )
-        assert guest.removals == [], f"a scattered layout was still removed: {guest.commands}"
+        assert guest.removals == [], f"a scattered layout was still removed: {guest.removals}"
 
     def test_a_layout_the_factory_built_is_not_refused(self):
         """The guard above must not reject the shape every kind actually uses."""
@@ -4519,7 +4568,7 @@ class TestAPidAndALayoutThatCannotBeUsed:
         )
         guest = _GuestThatRecordsRemovals([], finish=True)
         assert asyncio.run(reclaim_run(guest, elsewhere, timeout=5.0)) is False
-        assert guest.removals == [], f"a run with files outside it was removed: {guest.commands}"
+        assert guest.removals == [], f"a run with files outside it was removed: {guest.removals}"
 
     def test_an_empty_pid_file_hedges_rather_than_going_quiet(self):
         """A zero-length entry is a pid that was recorded and cannot be used.

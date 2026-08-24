@@ -489,6 +489,95 @@ class TestExecDiscardsATimedOutSandbox:
 
 
 # ---------------------------------------------------------------------------
+# reclaim
+# ---------------------------------------------------------------------------
+
+
+class TestReclaim:
+    """The backend this change exists for: `reclaim` is served honestly while `remove` refuses.
+
+    `reclaim` owes no confinement — the caller made the directory, with no attacker-chosen
+    component to walk — so it needs none of the `stat_file` this backend does not have (#125).
+    """
+
+    def _sandbox(self, overrides=None):
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        return asyncio.run(backend.acquire(_KEY, _SPEC)), fake
+
+    def test_a_directory_is_removed_via_rm_rf_behind_a_double_dash(self):
+        sandbox, fake = self._sandbox()
+        asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
+        assert fake.only("container", "exec").args == (
+            "container",
+            "exec",
+            "-w",
+            "/",
+            _NAME,
+            "rm",
+            "-rf",
+            "--",
+            f"{_WORK}/call-a1b2c3",
+        )
+
+    def test_a_missing_directory_is_success(self):
+        """`rm -rf` already exits 0 on a path that is not there; this pins that no raise follows."""
+        sandbox, fake = self._sandbox()
+        asyncio.run(sandbox.reclaim(f"{_WORK}/never-there", working_directory=_WORK, timeout=30))
+
+    def test_a_nonzero_exit_raises_with_the_exit_code_and_what_the_guest_said(self):
+        """The message is the whole diagnosis a host gets: core turns it into
+        `ReclaimFailure.reason` and hands that to `on_reclaim_failure`. A read-only
+        filesystem, a full disk and a permission denial are told apart only by these two.
+        """
+        overrides = {("container", "exec"): _WslcResult(1, b"", b"rm: permission denied")}
+        sandbox, fake = self._sandbox(overrides)
+        with pytest.raises(OSError, match=r"rm exited 1.*rm: permission denied"):
+            asyncio.run(sandbox.reclaim(f"{_WORK}/x", working_directory=_WORK, timeout=30))
+
+    def test_the_timeout_reaches_the_transport(self):
+        sandbox, fake = self._sandbox()
+        asyncio.run(sandbox.reclaim(f"{_WORK}/x", working_directory=_WORK, timeout=42))
+        assert fake.only("container", "exec").timeout == 42
+
+    def test_the_removal_runs_from_root_not_the_uncreated_working_directory(self):
+        """`working_directory` says where the directory sits, not where to run the removal
+        from: no backend creates a spec's `work_dir`, so a call whose work dir was never
+        written must still reclaim cleanly, which it can only do by execing from `/` rather
+        than a directory that is not there.
+        """
+        sandbox, fake = self._sandbox()
+        asyncio.run(
+            sandbox.reclaim(
+                f"{_WORK}/never-created/call-a1b2c3",
+                working_directory=f"{_WORK}/never-created",
+                timeout=30,
+            )
+        )
+        assert fake.only("container", "exec").args[:4] == ("container", "exec", "-w", "/")
+
+    def test_a_name_a_shell_would_read_stays_one_argument(self):
+        """Core dispatches the path unaltered; this backend's argv `exec` is what keeps the
+        name one argument. A `work_dir` is host-supplied, so a name holding a space or a `;`
+        is reachable, and one that split would have `rm -rf` delete something else.
+        """
+        hostile = f"{_WORK}/a b; touch pwned"
+        sandbox, fake = self._sandbox()
+        asyncio.run(sandbox.reclaim(hostile, working_directory=_WORK, timeout=30))
+        assert fake.only("container", "exec").args[-1] == hostile
+
+    def test_remove_still_refuses_beside_a_served_reclaim(self):
+        """Serving `reclaim` must not open a delete surface for `remove` by a side door.
+
+        The two share a mechanism (`rm -rf` over `exec`) but not a duty: `remove` takes a
+        model-supplied path and owes the confinement walk this backend has no `stat_file` to
+        build, so it must keep refusing exactly as it did before `reclaim` existed.
+        """
+        sandbox, _ = self._sandbox()
+        with pytest.raises(NotImplementedError, match="FILES_DELETE"):
+            asyncio.run(sandbox.remove(f"{_WORK}/x", working_directory=_WORK))
+
+
+# ---------------------------------------------------------------------------
 # write_file
 # ---------------------------------------------------------------------------
 
