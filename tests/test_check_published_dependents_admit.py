@@ -103,35 +103,84 @@ class TestReadingTheCeilingOutOfPublishedMetadata:
         assert check.ceiling_of(["azure-identity<2,>=1.25.1", "maf-sandbox<0.8,>=0.6.0"]) == (0, 8)
 
 
-class TestTheVerdict:
-    """Refuse only a dependent whose published ceiling excludes the version going out."""
+class TestWhatItReports:
+    """Name a dependent whose published ceiling excludes the version going out — and only it."""
 
-    def test_a_stale_ceiling_is_refused(self):
+    def test_a_stale_ceiling_is_named(self):
         published = {"maf-sandbox-acas": ["maf-sandbox<0.7,>=0.6.0"]}
-        problems = check.refusals(published, (0, 7, 0))
-        assert len(problems) == 1
-        assert "maf-sandbox-acas" in problems[0] and "0.7.0" in problems[0]
+        excluded = check.exclusions(published, (0, 7, 0))
+        assert len(excluded) == 1
+        assert "maf-sandbox-acas" in excluded[0] and "0.7.0" in excluded[0]
 
-    def test_a_widened_ceiling_passes(self):
+    def test_a_widened_ceiling_has_nothing_to_report(self):
         published = {"maf-sandbox-acas": ["maf-sandbox<0.8,>=0.6.0"]}
-        assert check.refusals(published, (0, 7, 0)) == []
+        assert check.exclusions(published, (0, 7, 0)) == []
 
-    def test_a_patch_under_the_old_ceiling_passes(self):
+    def test_a_patch_under_the_old_ceiling_has_nothing_to_report(self):
         published = {"maf-sandbox-acas": ["maf-sandbox<0.7,>=0.6.0"]}
-        assert check.refusals(published, (0, 6, 2)) == []
+        assert check.exclusions(published, (0, 6, 2)) == []
 
     def test_an_unpublished_dependent_is_skipped(self):
-        assert check.refusals({"maf-sandbox-new": None}, (0, 7, 0)) == []
+        assert check.exclusions({"maf-sandbox-new": None}, (0, 7, 0)) == []
 
-    def test_every_offender_is_named_not_just_the_first(self):
+    def test_every_one_is_named_not_just_the_first(self):
         published = {
             "maf-sandbox-acas": ["maf-sandbox<0.7,>=0.6.0"],
             "maf-sandbox-wslc": ["maf-sandbox<0.7,>=0.6.0"],
             "maf-sandbox-docker": ["maf-sandbox<0.8,>=0.6.0"],
         }
-        problems = check.refusals(published, (0, 7, 0))
-        assert len(problems) == 2
-        assert not any("docker" in p for p in problems)
+        excluded = check.exclusions(published, (0, 7, 0))
+        assert len(excluded) == 2
+        assert not any("docker" in line for line in excluded)
+
+
+class TestItNoLongerRefuses:
+    """The inversion #633 made to this check's pull-request-time twin, made here too.
+
+    Refusing is what ordered every core release behind its dependents': a core the ceilings
+    excluded could not go out until all five shipped again, whether or not anything was broken.
+    A ceiling that excludes the candidate puts that dependent *out of reach* of it, which for a
+    breaking release is the point. What refuses on evidence is `check_core_against_dependents`,
+    which runs the admitting dependents' own suites (#628).
+    """
+
+    @staticmethod
+    def _stale(monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(check, "dependent_distributions", lambda _: ["maf-sandbox-acas"])
+        monkeypatch.setattr(check, "fetch_requires_dist", lambda _: ["maf-sandbox<0.7,>=0.6.0"])
+
+    def test_an_excluded_version_still_exits_zero(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        self._stale(monkeypatch)
+        assert check.main(["prog", "0.7.0"]) == 0
+
+    def test_what_it_prints_goes_to_stdout_not_stderr(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        """A notice in the stream that reads as a fault is a refusal with extra steps."""
+        self._stale(monkeypatch)
+        check.main(["prog", "0.7.0"])
+        captured = capsys.readouterr()
+        assert "maf-sandbox-acas" in captured.out
+        assert captured.err == ""
+
+    def test_it_names_what_follows_rather_than_a_thing_to_do_first(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        self._stale(monkeypatch)
+        check.main(["prog", "0.7.0"])
+        printed = capsys.readouterr().out
+        assert "the live samples" in printed
+        assert "unsatisfiable set" in printed
+
+    def test_a_version_every_ceiling_admits_still_says_so(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        monkeypatch.setattr(check, "dependent_distributions", lambda _: ["maf-sandbox-acas"])
+        monkeypatch.setattr(check, "fetch_requires_dist", lambda _: ["maf-sandbox<0.9,>=0.6.0"])
+        assert check.main(["prog", "0.7.0"]) == 0
+        assert "every published dependent admits" in capsys.readouterr().out
 
 
 class TestTheDependentsItLooksUp:
