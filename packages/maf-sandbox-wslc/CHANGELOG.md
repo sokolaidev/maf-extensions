@@ -2,6 +2,12 @@
 
 ## [0.11.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.11.0...maf-sandbox-wslc-v0.11.1) (2026-08-24)
 
+> **Correction, added after the release.** This version was tagged and a GitHub Release was created for it, but **it never reached PyPI** — so there is no `maf-sandbox-wslc` 0.11.1 to install. The publish run failed before the upload, on a check that refused a state no publishing order can reach around: every published sibling still capped below the core this version requires, and the first package to move can only ever be alone there ([#653](https://github.com/sokolaidev/maf-extensions/pull/653)). The tag records the right commit and no artifact was ever built from it.
+>
+> The run cannot simply be repeated. Release tags here cannot be moved, anything under `scripts/` binds at the ref being published — so the tag carries the check that refused it, not the fix — and the `pypi` environment admits tag refs only, so a dispatch from a branch that does carry the fix cannot mint a publishing credential. This version number is spent rather than reused. **The code these entries describe ships in 0.11.2**, whose own section says so and is otherwise the same tree.
+>
+> The entries below are left in place: they are accurate about the commit, and deleting them would hide why this version exists at all.
+
 
 ### Fixes
 
@@ -16,7 +22,7 @@
 
 > **Correction, added after the release.** This version was tagged and a GitHub Release was created for it, but **it never reached PyPI** — so there is no `maf-sandbox-wslc` 0.11.0 to install. The publish run failed before the upload, on a repository test that read the tags of a shallow checkout ([#645](https://github.com/sokolaidev/maf-extensions/pull/645)); the tag records the right commit and no artifact was ever built from it.
 >
-> Release tags here cannot be moved, so this version number is spent rather than reused. **The code these entries describe ships in 0.11.1**, whose own section says so and is otherwise the same tree.
+> Release tags here cannot be moved, so this version number is spent rather than reused. **The code these entries describe ships in 0.11.2**, whose own section says so and is otherwise the same tree.
 >
 > The entries below are left in place: they are accurate about the commit, and deleting them would hide why this version exists at all.
 
