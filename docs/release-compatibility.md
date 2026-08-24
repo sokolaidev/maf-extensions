@@ -12,14 +12,16 @@ A release involves two moving parts, each of which exists as source in this repo
 | --- | --- | --- |
 | dependent **source** × core **source** | `tests.yml`, every pull request | the code works together. `[tool.uv.sources]` points `maf-sandbox` at the workspace, so this is always the in-tree core |
 | dependent **wheel** × core **published** | `published-cores`, at publish and on every pull request | the wheel works with the cores its range admits — the pairing a consumer installs |
-| core **wheel** × dependent **published** | `check_published_dependents_work.py`, at publish | every admitting published dependent still *imports* the candidate core |
-| core **wheel** × dependent **source** | not directly; see below | that a core release does not break dependent code already adapted but not yet shipped |
+| core **wheel** × dependent **published** | `check_core_against_dependents.py`, at publish | every admitting published dependent's own suite, recovered from its release tag, against the candidate core. `check_published_dependents_work.py` runs beside it and proves the weaker thing: that the dependent still *imports* |
+| core **wheel** × dependent **source** | `check_core_against_dependents.py`, at publish | the dependents as this checkout has them, built and run against the same core — code already adapted but not yet shipped |
 
 The first is comprehensive and has always existed. The second is the one this repository lacked until recently: a dependent's suite had never been run against a core resolved from the index, only against the workspace core, and a range said what it liked without being asked to prove it.
 
-The third is real and blocking, and it is import-only by design — `python -c "import maf_sandbox_<x>"`. A name that still exists but changed its signature, a moved default, a renamed keyword: all import clean and ship.
+The third and fourth are one job, and the difference between them is the point. A breaking core makes them disagree: the published half fails because those artifacts predate the adaptation, while the branch half passes because the adaptation is already merged. That reads as *the break is real and already handled — those packages simply have to publish*, which is a different instruction from *nothing has handled this yet*, and the published half alone cannot tell them apart.
 
-The fourth is covered incidentally rather than by design. A core Release PR touches `packages/`, so the path classifier calls it code and the full suite runs — which is the first pairing, at the moment of the core release. Nothing states that as a requirement, and a change to the classifier would remove it silently.
+The import check stays beside them rather than being replaced. It is cheap, it runs over the same set, and a failure there is a stronger statement than a failing suite: the module would not even load.
+
+A fifth question is not a pairing at all. The dependents are installed **together** — `samples/03` takes acas and codeact beside the core, `samples/11` takes bicep and docker — so a range that moved past a *sibling* rather than past the index leaves the family unresolvable while every per-package check passes. `check_suite_installs_together.py` asks the resolver, per candidate against the published others and as a whole set, and reports what it picked: latest-of-everything and had-to-go-back are both installable, and the difference is drift worth seeing early.
 
 ## What each gate refuses
 
@@ -37,15 +39,15 @@ The whole suite runs, not a subset — the same tests are collected as in an ord
 
 That is the argument for making these gates strong enough to carry the weight the ceiling is pretending to. A guard that is always relaxed on schedule is not guarding, and the thing that could check runs at every publish. Widening the headroom is only honest once something verifies the promise at the moment of release rather than a cycle earlier. The full argument, the measurements behind it and the order the pieces have to land in are in [#628](https://github.com/sokolaidev/maf-extensions/issues/628).
 
-## Two windows that remain open
+## The window that remains open
 
-Both come from the same shape: a gate's verdict is a function of what is published *at the moment it runs*, and the upload happens later — the `publish` job waits on the `pypi` environment's required reviewer, which is a human, so the gap is hours or days rather than seconds.
+Two were named when this was written and one is now closed. Both came from the same shape: a gate's verdict is a function of what is published *at the moment it runs*, and the upload happens later — the `publish` job waits on the `pypi` environment's required reviewer, which is a human, so the gap is hours or days rather than seconds.
 
 **A core published during a dependent's approval wait.** The dependent's gate enumerates published cores, passes, and the run halts for approval. A core is released in that gap that the dependent's ceiling admits. The wheel then uploads, and its published range admits a core its suite was never run against. `check_published_dependents_work.py` solves the mirror-image problem by taking its verdict three times — a build-time pass recording what it tested, a pre-upload re-check of only what newly admits, and a post-upload run for the dispatch verdict — and that is the pattern to copy here.
 
-**A core published while adapted-but-unpublished dependent code exists.** The core's gate tests published dependents, which by definition predate the adaptation, so it sees failures that are expected rather than informative. Testing the branch's dependents alongside is what separates *"this break is real and nothing has handled it"* from *"this break is already handled on main and those packages simply need to publish"* — and the second is the sentence a maintainer needs before deciding whether to widen a ceiling.
+**A core published while adapted-but-unpublished dependent code exists.** This one is closed: the core gate runs the branch half beside the published half, so the adaptation on `main` is tested against the candidate core at the moment of release rather than only whenever the classifier last happened to run the ordinary suite.
 
-Neither window is closed today. Both are named in #628 rather than left to be rediscovered.
+The first window is still open, and is named in [#628](https://github.com/sokolaidev/maf-extensions/issues/628) rather than left to be rediscovered. The fix is the shape `check_published_dependents_work.py` already uses for its own version of the problem, and it is worth building once for both gates rather than twice.
 
 ## Where the rules live
 

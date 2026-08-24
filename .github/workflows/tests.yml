@@ -211,6 +211,15 @@ jobs:
       # here, the same failure is an edit to the pull request that caused it. A Release PR
       # changes a dependent's version and so reaches this too, which is where it is the last
       # word before a merge that publishes.
+      # Every wheel the build step produced, installed into one environment. The samples
+      # take several of these together, so a range that moved past a *sibling* rather than past
+      # the index leaves the family unresolvable — which no per-package check can see (#628).
+      - name: The suite installs as a set
+        if: needs.changes.outputs.code == 'true'
+        run: |
+          set -euo pipefail
+          python3 scripts/check_suite_installs_together.py --whole-set
+
       - name: Each dependent against the published cores it admits
         if: needs.changes.outputs.code == 'true'
         run: |
