@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.11.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.10.2...maf-sandbox-wslc-v0.11.0) (2026-08-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* every backend serves reclaim, so a call's directory goes away without a shell ([#609](https://github.com/sokolaidev/maf-extensions/issues/609))
+
+### Features
+
+* every backend serves reclaim, so a call's directory goes away without a shell ([#609](https://github.com/sokolaidev/maf-extensions/issues/609)) ([6fcfcf6](https://github.com/sokolaidev/maf-extensions/commit/6fcfcf6259874bbcb4f02ac23bddcc92ae6d8550))
+
+
+### Fixes
+
+* require maf-sandbox 0.22.0 in the dependents and 0.22 in the samples, and admit 0.23 ([#619](https://github.com/sokolaidev/maf-extensions/issues/619)) ([d8e122a](https://github.com/sokolaidev/maf-extensions/commit/d8e122a8f67e710704a4ffa0c11fdbebdaefb84e))
+
 ## [0.10.2](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.10.1...maf-sandbox-wslc-v0.10.2) (2026-08-23)
 
 
