@@ -158,12 +158,13 @@ jobs:
             exit 1
           fi
 
-      # The published dependents cannot be edited after the fact, so a core release they
-      # exclude leaves the index unresolvable as a set until every one of them ships again.
-      # RELEASING.md orders the releases so that never happens; this is what enforces it.
-      # Only for maf-sandbox — a dependent's own release is what closes such a window — and
-      # only for the real index, so a TestPyPI rehearsal stays frictionless.
-      - name: Check the published dependents admit this version
+      # Reports which published dependents exclude this version; it does not refuse one.
+      # A ceiling that excludes the candidate puts that dependent out of reach of it, which
+      # for a breaking release is the point — and refusing here is what ordered every core
+      # release behind its dependents'. What refuses on evidence is `core-against-dependents`
+      # below, which runs the admitting dependents' own suites (#628). Only for maf-sandbox,
+      # and only for the real index, so a TestPyPI rehearsal stays frictionless.
+      - name: Report which published dependents exclude this version
         if: >-
           steps.resolve.outputs.package == 'maf-sandbox'
           && steps.resolve.outputs.target == 'pypi'
@@ -458,10 +459,10 @@ jobs:
           name: admitting-snapshot
           path: .
 
-      # The build job ran this too, to fail before a human is asked to approve. This is the
-      # one that decides: the `pypi` environment holds here for as long as a reviewer takes,
-      # and the index can move under a verdict reached before the wait.
-      - name: Re-check the published dependents at upload time
+      # The build job ran this too. Re-read here because the `pypi` environment holds for as
+      # long as a reviewer takes and the index moves under a verdict reached before the wait —
+      # so the line printed beside the upload describes the index as it is at the upload.
+      - name: Re-report which published dependents exclude this, at upload time
         if: >-
           needs.build.outputs.package == 'maf-sandbox'
           && needs.build.outputs.target == 'pypi'

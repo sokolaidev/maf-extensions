@@ -1,13 +1,26 @@
-"""Refuse to publish a maf-sandbox the already-published dependents would exclude.
+"""Say which published dependents exclude the maf-sandbox about to go out.
 
     python scripts/check_published_dependents_admit.py <version>
 
 Resolves each dependent's newest version from PyPI's simple index, reads its `requires_dist`
-from the per-version document, and refuses if its ceiling excludes the version about to go
-out. That state is the publication window: PyPI metadata is immutable, so a widened ceiling
-only reaches a user when that dependent is *published*, and until then the index does not
-resolve as a set. RELEASING.md orders the releases so this never happens; this is what makes
-the order enforced rather than remembered.
+from the per-version document, and reports every ceiling that excludes the version about to
+be released.
+
+**It used to refuse that, and no longer does** — the same inversion #633 made to
+`check_release_order.py`, which is this check at pull-request time rather than at publish.
+Refusing here is what ordered every core release behind its dependents': a core the ceilings
+exclude could not go out until all five had shipped again, whether or not anything was
+actually broken. A dependent whose ceiling excludes the candidate *cannot reach it*, which for
+a breaking release is the point rather than the problem.
+
+What refuses on evidence is `check_core_against_dependents.py`, which runs every admitting
+published dependent's own suite against the candidate. A ceiling that excludes it takes that
+dependent out of reach; an unbounded ceiling is treated as at-risk and tested. Either way the
+question is answered by running something rather than by reading a bound.
+
+The consequence is still worth printing, because it is not obvious: nothing published resolves
+the new core until each dependent widens and republishes, so the live samples exercise the core
+below it and the dispatch reports a skip. See `docs/release-compatibility.md`.
 
 A dependent that is not on PyPI yet is skipped — a first release has nothing to contradict.
 A network failure is fatal rather than skipped: passing because PyPI could not be reached is
@@ -78,7 +91,7 @@ def dependent_distributions(repo_root: Path) -> list[str]:
     return found
 
 
-def refusals(published: dict[str, list[str] | None], released: tuple[int, ...]) -> list[str]:
+def exclusions(published: dict[str, list[str] | None], released: tuple[int, ...]) -> list[str]:
     """One line per published dependent whose ceiling excludes `released`."""
     shown = ".".join(str(part) for part in released)
     out: list[str] = []
@@ -128,7 +141,12 @@ def fetch_requires_dist(distribution: str) -> list[str] | None:
 
 
 def main(argv: list[str]) -> int:
-    """CLI entry: parse the candidate version, fetch each dependent's published ``requires-dist``, and exit 1 if any ceiling excludes it."""
+    """CLI entry: report which published dependents exclude the candidate. Always zero.
+
+    A ceiling that excludes the candidate is a statement about reach, not a fault: it puts that
+    dependent beyond the release rather than breaking it. What refuses is the gate that runs the
+    dependents' suites against the candidate.
+    """
     if len(argv) != 2:
         print(f"usage: {argv[0]} <version>", file=sys.stderr)
         return 2
@@ -138,19 +156,22 @@ def main(argv: list[str]) -> int:
         distribution: fetch_requires_dist(distribution)
         for distribution in dependent_distributions(repo_root)
     }
-    problems = refusals(published, released)
-    if not problems:
+    excluded = exclusions(published, released)
+    if not excluded:
         print(f"every published dependent admits maf-sandbox {argv[1]}")
         return 0
-    for problem in problems:
-        print(problem, file=sys.stderr)
+    for line in excluded:
+        print(line)
     print(
-        "\nPublishing now leaves the index unresolvable as a set until every one of those "
-        "ships again. Release the dependents with the widened ceiling first: RELEASING.md, "
-        "Release order.",
-        file=sys.stderr,
+        "\nNothing already published reaches this version, which for a breaking release is the "
+        "point: each dependent adopts when its own ceiling widens and it republishes. What "
+        "follows meanwhile — the live samples resolve their dependents from PyPI, so they "
+        "exercise the core below this one and the dispatch reports a skip; and a caller pinning "
+        "this version beside a dependent gets an unsatisfiable set, where an unpinned install "
+        "resolves to the core below it and works. To make it reachable now, publish the "
+        "dependents' widened ceilings first: RELEASING.md, Release order."
     )
-    return 1
+    return 0
 
 
 if __name__ == "__main__":

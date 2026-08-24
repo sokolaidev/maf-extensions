@@ -108,7 +108,7 @@ def at_risk(
 ) -> list[tuple[str, str]]:
     """Published ``(distribution, version)`` pairs whose maf-sandbox ceiling admits ``released``.
 
-    The inverse of ``check_published_dependents_admit.refusals``: a version is at-risk when its
+    The inverse of ``check_published_dependents_admit.exclusions``: a version is at-risk when its
     ceiling is None (unbounded) or admits the released version. A dependent not yet on PyPI
     (None) is absent — it has nothing to contradict. A version whose ceiling excludes the release
     is the admit check's domain and is absent here. Pairs are sorted by distribution name then by
