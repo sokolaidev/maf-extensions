@@ -298,12 +298,121 @@ jobs:
       - name: Use it
         run: /tmp/smoke/bin/python scripts/smoke_install.py ${{ needs.build.outputs.package }}
 
+  # Runs the dependent's own suite against every *published* core its range admits. `tests.yml`
+  # runs the same suite against the workspace core, which is not a pairing anybody installs —
+  # the consumer gets this wheel beside a core from the index. Nothing checked that combination
+  # before the upload, and the range said so without ever being asked to prove it (#628).
+  #
+  # Every step is gated on the package rather than the job, because a job that skips takes
+  # `publish` with it: `needs:` treats a skipped dependency as a reason not to run.
+  published-cores:
+    name: Run its suite against the published cores it admits
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: ${{ needs.build.outputs.package != 'maf-sandbox' }}
+
+      - name: Install uv
+        if: ${{ needs.build.outputs.package != 'maf-sandbox' }}
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: ${{ needs.build.outputs.package != 'maf-sandbox' }}
+        with:
+          name: dist-${{ needs.build.outputs.package }}
+          path: dist/
+
+      # The siblings are this repository's code, not published artifacts, so they are built here:
+      # `maf-sandbox-codeact`'s e2e module imports `maf_sandbox_docker`, and
+      # `maf-sandbox-docker`'s parity test asserts `maf-sandbox-wslc` is importable rather than
+      # skipping. The package under test keeps the artifact that will actually be uploaded.
+      - name: Build the sibling wheels
+        if: ${{ needs.build.outputs.package != 'maf-sandbox' }}
+        env:
+          PACKAGE: ${{ needs.build.outputs.package }}
+        run: |
+          set -euo pipefail
+          for sibling in maf-sandbox-acas maf-sandbox-bicep maf-sandbox-codeact \
+                         maf-sandbox-docker maf-sandbox-wslc; do
+            if [ "$sibling" != "$PACKAGE" ]; then
+              uv build --package "$sibling" --out-dir dist/
+            fi
+          done
+
+      - name: Run the suite against every published core the wheel admits
+        if: ${{ needs.build.outputs.package != 'maf-sandbox' }}
+        env:
+          PACKAGE: ${{ needs.build.outputs.package }}
+        run: |
+          set -euo pipefail
+          wheel="$(ls dist/"${PACKAGE//-/_}"-*.whl)"
+          python3 scripts/check_dependent_works_with_published_cores.py "$PACKAGE" "$wheel"
+
+      # The other half of the same question: this candidate has to be installable *beside* the
+      # rest of the family, which is how the samples use it. Asked of the resolver rather than
+      # by intersecting ranges, because these packages also carry agent-framework and the Azure
+      # libraries and can collide there while their core ranges agree (#628).
+      - name: The candidate installs beside the published suite
+        if: ${{ needs.build.outputs.package != 'maf-sandbox' }}
+        run: |
+          set -euo pipefail
+          python3 scripts/check_suite_installs_together.py --dist-dir dist
+
+  # A core release runs the dependents' suites rather than importing them. The import check
+  # beside it proves a name still resolves; this proves the behaviour behind the name, which is
+  # the half a changed signature or a moved default walks straight through (#541, #628).
+  #
+  # Two halves, and their disagreement is the signal: `published` is what is installed today,
+  # recovered from each version's release tag because no sdist ships tests; `branch` is what is
+  # about to be. Published failing while branch passes says the break is real and already
+  # handled — those packages have to publish. Both failing says nothing has handled it yet.
+  core-against-dependents:
+    name: Run the dependents' suites against this core
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      # Full history and tags: the published half recovers each version's suite with
+      # `git archive <tag>`, and a shallow clone carries no tags to archive from.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        if: ${{ needs.build.outputs.package == 'maf-sandbox' }}
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        if: ${{ needs.build.outputs.package == 'maf-sandbox' }}
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: ${{ needs.build.outputs.package == 'maf-sandbox' }}
+        with:
+          name: dist-${{ needs.build.outputs.package }}
+          path: dist/
+
+      - name: Build the dependents' wheels
+        if: ${{ needs.build.outputs.package == 'maf-sandbox' }}
+        run: |
+          set -euo pipefail
+          for dependent in maf-sandbox-acas maf-sandbox-bicep maf-sandbox-codeact \
+                           maf-sandbox-docker maf-sandbox-wslc; do
+            uv build --package "$dependent" --out-dir dist/
+          done
+
+      - name: Run every dependent's suite against this core
+        if: ${{ needs.build.outputs.package == 'maf-sandbox' }}
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 scripts/check_core_against_dependents.py \
+            "$VERSION" dist/maf_sandbox-"$VERSION"-py3-none-any.whl
+
   publish:
     # The row a reviewer approves, so it names the resolved package and version rather than
     # the requested one: these come from the build's own outputs, which is what will actually
     # be uploaded, and an upload is immutable.
     name: Publish ${{ needs.build.outputs.package }} ${{ needs.build.outputs.version }} to ${{ needs.build.outputs.target }}
-    needs: [build, smoke]
+    needs: [build, smoke, published-cores, core-against-dependents]
     runs-on: ubuntu-latest
     # Half of the trusted-publisher identity PyPI checks; must match what's registered
     # there. Also where a required reviewer can be configured.

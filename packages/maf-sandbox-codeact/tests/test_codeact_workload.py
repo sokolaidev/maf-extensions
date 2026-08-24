@@ -17,8 +17,9 @@ import inspect
 import json
 import logging
 import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
+from types import MappingProxyType
 from typing import Any
 
 import pytest
@@ -78,27 +79,64 @@ _PULLS = DEFAULT_CAPABILITIES | {Capability.FILES_OUT}
 _DISPATCHES = _PULLS | {Capability.HOST_TOOLS}
 
 # ---------------------------------------------------------------------------
-# Fakes: a sandbox that keeps the command it was handed, unjoined
+# Fakes: a sandbox that keeps the command it was handed, unjoined, and what it was written
 # ---------------------------------------------------------------------------
 
 
+def _is_core_removal(command: str | Sequence[str]) -> bool:
+    """Whether ``command`` is core removing a call's directory rather than the program running.
+
+    Core spells `rm -rf` today and dispatches `Sandbox.reclaim` once that ships, which is no
+    command at all. This suite asserts on what the kind ran, so it keeps either out of the
+    ledger below.
+    """
+    return isinstance(command, str) and command.startswith("rm -rf ")
+
+
+class _RecordingContents(dict[str, bytes]):
+    """A sandbox's ``contents``, copying every write where the reclaim cannot reach it."""
+
+    def __init__(self, written: dict[str, bytes], seeded: Mapping[str, bytes]) -> None:
+        super().__init__()
+        self._written = written
+        for path, content in seeded.items():
+            self[path] = content
+
+    def __setitem__(self, path: str, content: bytes) -> None:
+        super().__setitem__(path, content)
+        self._written[path] = content
+
+
 class _ScriptedSandbox(InProcessSandbox):
-    """Records the raw ``command`` argument, and answers with a whole :class:`ExecResult`.
+    """Records the raw ``command``, answers with a whole :class:`ExecResult`, and its writes.
 
     :class:`~maf_sandbox.testing.InProcessSandbox` joins an argv sequence with
     :func:`shlex.join` before recording it, and scripts stdout alone. This kind's tests need
     the command *unjoined* — that it is a sequence at all is the property under test, and a
     joined string cannot be told apart from a shell line — and need stderr and exit codes
     alongside stdout to exercise the result format.
+
+    :attr:`written` is what they read in place of ``contents``: a call's own directory is
+    genuinely gone once the call returns, and what the call wrote into it is the property
+    under test. Every write lands there, whether it arrives through ``write_file`` or is
+    put straight into ``contents`` the way the fakes below stand in for a program's output.
     """
 
     def __init__(self, result: ExecResult | None = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self.result = result
         self.raw_commands: list[str | Sequence[str]] = []
+        #: Every path ever written, in bytes. :attr:`written_files` is the decoded view.
+        self.written: dict[str, bytes] = {}
+        self.contents = _RecordingContents(self.written, self.contents)
+
+    @property
+    def written_files(self) -> Mapping[str, str]:
+        """:attr:`written`, UTF-8 decoded — what ``files`` is to ``contents``."""
+        return MappingProxyType({p: c.decode("utf-8") for p, c in self.written.items()})
 
     async def exec(self, command, *, working_directory, timeout):
-        if not str(command).startswith("rm -rf "):
+        if not _is_core_removal(command):
             self.raw_commands.append(command)
         answer = await super().exec(command, working_directory=working_directory, timeout=timeout)
         return self.result if self.result is not None else answer
@@ -127,8 +165,6 @@ class _ProducingSandbox(_ScriptedSandbox):
 
     async def exec(self, command, *, working_directory, timeout):
         result = await super().exec(command, working_directory=working_directory, timeout=timeout)
-        if str(command).startswith("rm -rf "):
-            return result
         cwd = self._program_cwd(working_directory)
         for name, content in self.produces.items():
             self.contents[f"{cwd}/{name}"] = content
@@ -178,7 +214,7 @@ class _CallingSandbox(_ScriptedSandbox):
 
     async def exec(self, command, *, working_directory, timeout):
         result = await super().exec(command, working_directory=working_directory, timeout=timeout)
-        if str(command).startswith(("kill", "rm ")):
+        if str(command).startswith("kill") or _is_core_removal(command):
             # Neither starts a program, so neither is a run this fake should record.
             return result
         layout = guest_run_layout(working_directory, program=_PROGRAM_FILENAME)
@@ -223,7 +259,7 @@ class _FinishingSandbox(_ProducingSandbox):
 
     async def exec(self, command, *, working_directory, timeout):
         result = await super().exec(command, working_directory=working_directory, timeout=timeout)
-        if str(command).startswith(("kill", "rm ")):
+        if str(command).startswith("kill") or _is_core_removal(command):
             # Neither starts a program, so neither is a run this fake should record.
             return result
         layout = guest_run_layout(working_directory, program=_PROGRAM_FILENAME)
@@ -646,19 +682,10 @@ class TestCodeactSandboxSpec:
 # ---------------------------------------------------------------------------
 
 
-def _reclaimed_dirs(sandbox: InProcessSandbox) -> list[str]:
-    """The call directories passed to the framework's reclaim command."""
-    return [
-        command.removeprefix("rm -rf ")
-        for command, _, _ in sandbox.commands
-        if command.startswith("rm -rf ")
-    ]
-
-
-def _run_dirs(sandbox: InProcessSandbox) -> list[str]:
+def _run_dirs(sandbox: _ScriptedSandbox) -> list[str]:
     """The distinct run directories this sandbox was written into, in first-seen order."""
     seen: list[str] = []
-    for path in sandbox.contents:
+    for path in sandbox.written:
         if not path.startswith(f"{_WORK_DIR}/"):
             continue
         parent = path.removeprefix(f"{_WORK_DIR}/").split("/", 1)[0]
@@ -674,8 +701,7 @@ class TestTheProgramIsWrittenThenRun:
 
         (run_dir,) = _run_dirs(sandbox)
         assert run_dir.startswith(f"{_WORK_DIR}/")
-        assert sandbox.files == {f"{run_dir}/{_PROGRAM_FILENAME}": "print('hi')"}
-        assert _reclaimed_dirs(sandbox) == [run_dir]
+        assert sandbox.written_files == {f"{run_dir}/{_PROGRAM_FILENAME}": "print('hi')"}
 
     def test_the_interpreter_is_run_with_an_argv_sequence(self):
         """A sequence, not a string: a shell never sees any of this.
@@ -700,7 +726,7 @@ class TestTheProgramIsWrittenThenRun:
 
         argv = sandbox.raw_commands[0]
         assert all(part == "python3" or part.endswith(_PROGRAM_FILENAME) for part in argv)
-        assert list(sandbox.files.values()) == [code]
+        assert list(sandbox.written_files.values()) == [code]
 
     def test_the_program_runs_in_its_own_directory(self):
         """So a program addresses everything it was given, and everything it produces, by a
@@ -729,7 +755,7 @@ class TestTheProgramIsWrittenThenRun:
 
         first, second = _run_dirs(sandbox)
         assert first != second
-        assert sandbox.files == {
+        assert sandbox.written_files == {
             f"{first}/{_PROGRAM_FILENAME}": "print(1)",
             f"{second}/{_PROGRAM_FILENAME}": "print(2)",
         }
@@ -1161,7 +1187,7 @@ class TestFilesIn:
         run_dir = _run_dirs(sandbox)[0]
         return {
             path.removeprefix(f"{run_dir}/"): content
-            for path, content in sandbox.files.items()
+            for path, content in sandbox.written_files.items()
             if path != f"{run_dir}/{_PROGRAM_FILENAME}"
         }
 
@@ -1183,7 +1209,7 @@ class TestFilesIn:
         out = _run(tool, "print('hi')", files=["data/secrets.csv"])
         assert "not in this tool's file listing" in out
         assert "data/sales.csv" in out
-        assert sandbox.files == {}
+        assert sandbox.written_files == {}
 
     @pytest.mark.parametrize("name", ["../../etc/passwd", "/etc/passwd", "a/../../b"])
     def test_a_traversing_name_is_refused_without_echoing_the_listing(self, name: str):
@@ -1195,7 +1221,7 @@ class TestFilesIn:
         out = _run(tool, "print('hi')", files=[name])
         assert "cannot be shared" in out
         assert "data/sales.csv" not in out
-        assert sandbox.files == {}
+        assert sandbox.written_files == {}
 
     @pytest.mark.parametrize(
         ("name", "reason"),
@@ -1210,7 +1236,7 @@ class TestFilesIn:
 
         out = _run(tool, "print('hi')", files=[name])
         assert reason in out
-        assert sandbox.files == {}
+        assert sandbox.written_files == {}
 
     def test_a_traversing_name_under_a_reserved_one_gets_the_validators_sentence(self):
         """`program.py/../x` climbs back out, so nothing is living inside anything and the
@@ -1222,7 +1248,7 @@ class TestFilesIn:
         out = _run(tool, "print('hi')", files=[name])
         assert "cannot be shared" in out
         assert "nothing can live inside it" not in out, out
-        assert sandbox.files == {}
+        assert sandbox.written_files == {}
 
     @pytest.mark.parametrize(
         "nested",
@@ -1243,7 +1269,7 @@ class TestFilesIn:
             f"Error: {nested!r} cannot be shared — {_PROGRAM_FILENAME!r} is a file name this "
             f"tool reserves in every run's directory, so nothing can live inside it."
         ), out
-        assert sandbox.contents == {}
+        assert sandbox.written == {}
 
     @pytest.mark.parametrize(
         ("name", "sentence", "wrong"),
@@ -1280,7 +1306,7 @@ class TestFilesIn:
 
         out = _run(tool, "print('hi')", files=[name])
         assert "cannot be shared" not in out, out
-        assert f"{_run_dirs(sandbox)[0]}/{name}" in sandbox.files
+        assert f"{_run_dirs(sandbox)[0]}/{name}" in sandbox.written_files
 
     def test_the_two_reserved_names_are_refused_for_their_own_reasons(self):
         """One sentence for both would be false about one of them. This tool writes
@@ -1321,7 +1347,7 @@ class TestFilesIn:
 
         _run(tool, "print('hi')", files=[f"{_PROGRAM_FILENAME}.bak"])
         run_dir = _run_dirs(sandbox)[0]
-        assert f"{run_dir}/{_PROGRAM_FILENAME}.bak" in sandbox.files
+        assert f"{run_dir}/{_PROGRAM_FILENAME}.bak" in sandbox.written_files
 
     def test_the_program_file_cannot_be_shadowed_by_a_shared_file(self):
         sandbox = _ScriptedSandbox()
@@ -1330,7 +1356,7 @@ class TestFilesIn:
 
         out = _run(tool, "print('mine')", files=[_PROGRAM_FILENAME])
         assert "cannot be shared" in out
-        assert sandbox.files == {}
+        assert sandbox.written_files == {}
 
     def test_a_file_deleted_between_rounds_does_not_survive_in_the_guest(self):
         """The reason each call gets its own directory: the sandbox is reused, so a stale
@@ -1344,8 +1370,8 @@ class TestFilesIn:
         _run(tool, "print(2)", files=["b.csv"])
 
         second = _run_dirs(sandbox)[1]
-        assert f"{second}/a.csv" not in sandbox.files
-        assert f"{second}/b.csv" in sandbox.files
+        assert f"{second}/a.csv" not in sandbox.written_files
+        assert f"{second}/b.csv" in sandbox.written_files
 
     def test_a_listed_file_with_no_content_is_reported_rather_than_written_as_none(self):
         """A store read can miss without raising — the file was listed, then removed. Writing
@@ -1355,7 +1381,7 @@ class TestFilesIn:
 
         out = _run(tool, "print('hi')", files=["gone.csv"])
         assert "no content" in out
-        assert sandbox.contents == {}
+        assert sandbox.written == {}
 
     def test_no_files_parameter_exists_without_a_store(self):
         assert "files" not in inspect.signature(_callable(_tool(_backend()))).parameters
@@ -1378,7 +1404,7 @@ class TestTheInboundCapsAreEnforcedHere:
         assert "your program and 3 shared" in out
         # Unqualified: with nothing dispatchable that list is everything that would cross.
         assert "writes at most 2 per call" in out
-        assert sandbox.contents == {}
+        assert sandbox.written == {}
 
     def test_a_file_over_the_per_file_ceiling_is_refused(self):
         sandbox = _ScriptedSandbox()
@@ -1389,7 +1415,7 @@ class TestTheInboundCapsAreEnforcedHere:
 
         out = _run(tool, "print(1)", files=["big.csv"])
         assert "at most 10 bytes per file" in out
-        assert sandbox.contents == {}
+        assert sandbox.written == {}
 
     def test_a_set_over_the_total_is_refused_before_any_of_it_is_written(self):
         """Half an input set is worse than none: the program computes a confident wrong answer
@@ -1402,7 +1428,7 @@ class TestTheInboundCapsAreEnforcedHere:
 
         out = _run(tool, "print(1)", files=["a.csv", "b.csv"])
         assert "at most 10 per call" in out
-        assert sandbox.contents == {}
+        assert sandbox.written == {}
 
     def test_the_count_is_of_encoded_bytes_not_characters(self):
         """A character ceiling would be a different, larger bound for every non-ASCII file."""
@@ -1434,7 +1460,7 @@ class TestTheInboundCapsAreEnforcedHere:
 
         _run(tool, "print(1)", files=["a.csv", "b.csv"])
         run_dir = _run_dirs(sandbox)[0]
-        assert {f"{run_dir}/a.csv", f"{run_dir}/b.csv"} <= set(sandbox.files)
+        assert {f"{run_dir}/a.csv", f"{run_dir}/b.csv"} <= set(sandbox.written_files)
 
     def test_the_program_itself_counts_against_the_file_count(self):
         """The spec requires `FILES_IN` even with no store, because `program.py` crosses this
@@ -1445,7 +1471,7 @@ class TestTheInboundCapsAreEnforcedHere:
 
         out = _run(tool, "print(1)", files=["a.csv"])
         assert "at most 1" in out
-        assert sandbox.contents == {}
+        assert sandbox.written == {}
 
     def test_an_over_count_call_reads_nothing_from_the_store(self):
         """A count cap that answers only once every requested file is in memory has already
@@ -1457,7 +1483,7 @@ class TestTheInboundCapsAreEnforcedHere:
         out = _run(tool, "print(1)", files=sorted(store.files))
         assert "at most 3" in out
         assert store.reads == []
-        assert sandbox.contents == {}
+        assert sandbox.written == {}
 
     def test_a_file_over_the_per_file_ceiling_stops_the_next_read(self):
         """A tally applied to the finished set bounds what crosses into the sandbox and nothing
@@ -1510,7 +1536,7 @@ class TestTheInboundCapsAreEnforcedHere:
             files=["a.csv"],
         )
         assert "not valid UTF-8" in out
-        assert sandbox.contents == {}
+        assert sandbox.written == {}
 
     def test_a_name_listed_twice_is_refused(self):
         """One read and one write per name; repeating one only multiplies both."""
@@ -1530,7 +1556,7 @@ class TestTheInboundCapsAreEnforcedHere:
 
         out = _run(tool, "print('" + "x" * 100 + "')")
         assert "at most 10 bytes per file" in out
-        assert sandbox.contents == {}
+        assert sandbox.written == {}
 
     def test_the_spec_carries_the_caps_the_host_chose(self):
         limits = replace(DEFAULT_TRANSFER_LIMITS, max_files=3)
@@ -1914,7 +1940,7 @@ class TestManifestOutputs:
         )
 
         (run_dir,) = _run_dirs(sandbox)
-        assert f"{run_dir}/{WORK_DIRECTORY}/{_MANIFEST_FILENAME}" in sandbox.contents
+        assert f"{run_dir}/{WORK_DIRECTORY}/{_MANIFEST_FILENAME}" in sandbox.written
         assert sink.names == ["r.csv"], out
         assert "saved r.csv" in out
 
@@ -2042,7 +2068,7 @@ class TestManifestOutputs:
         out = _run(tool, "print('hi')", files=[name])
         assert "cannot be shared" in out, out
         assert sentence in out, out
-        assert sandbox.contents == {}
+        assert sandbox.written == {}
 
     def test_a_manifest_over_the_file_cap_lands_nothing(self):
         """`max_files=2` leaves room for the manifest and one artifact, so listing two is over."""
@@ -2344,10 +2370,11 @@ class TestAProgramThatCallsOut:
         _run(_dispatching(sandbox, _round_half_up), "print('hi')")
 
         (layout,) = sandbox.layouts
-        assert sandbox.files.get(layout.program) == "print('hi')", sorted(sandbox.files)
-        assert f"{layout.directory}/{_PROGRAM_FILENAME}" not in sandbox.files
-        assert f"{layout.work}/{_PROGRAM_FILENAME}" not in sandbox.files
-        assert layout.directory in _reclaimed_dirs(sandbox)
+        assert sandbox.written_files.get(layout.program) == "print('hi')", sorted(
+            sandbox.written_files
+        )
+        assert f"{layout.directory}/{_PROGRAM_FILENAME}" not in sandbox.written_files
+        assert f"{layout.work}/{_PROGRAM_FILENAME}" not in sandbox.written_files
 
     def test_the_shim_is_written_beside_the_program_with_the_runs_own_patience(self):
         """A guest that gives up before the supervisor does is wrong twice over: the dispatch
@@ -2356,7 +2383,7 @@ class TestAProgramThatCallsOut:
         _run(_dispatching(sandbox, _round_half_up, exec_timeout_seconds=97), "print(1)")
 
         (layout,) = sandbox.layouts
-        assert sandbox.files[layout.shim] == host_tool_shim(
+        assert sandbox.written_files[layout.shim] == host_tool_shim(
             frozenset({"_round_half_up"}), call_timeout=97
         )
 
@@ -2375,8 +2402,8 @@ class TestAProgramThatCallsOut:
         _run(_dispatching(sandbox, _round_half_up), "print(1)")
 
         (layout,) = sandbox.layouts
-        assert "pypy3" in sandbox.files[layout.launcher]
-        assert "python3" not in sandbox.files[layout.launcher]
+        assert "pypy3" in sandbox.written_files[layout.launcher]
+        assert "python3" not in sandbox.written_files[layout.launcher]
 
 
 class _StallingSandbox(_ScriptedSandbox):
@@ -2392,7 +2419,7 @@ class _StallingSandbox(_ScriptedSandbox):
 
     async def exec(self, command, *, working_directory, timeout):
         result = await super().exec(command, working_directory=working_directory, timeout=timeout)
-        if str(command).startswith(("kill", "rm ")):
+        if str(command).startswith("kill") or _is_core_removal(command):
             # Neither starts a program, so neither is a run this fake should record.
             return result
         layout = guest_run_layout(working_directory, program=_PROGRAM_FILENAME)
@@ -2538,7 +2565,9 @@ class TestWhatTheTwoDirectoriesMakeHarmless:
 
         assert "cannot be shared" not in out, out
         (run_dir,) = _run_dirs(sandbox)
-        assert f"{run_dir}/{WORK_DIRECTORY}/{name}" in sandbox.files, sorted(sandbox.files)
+        assert f"{run_dir}/{WORK_DIRECTORY}/{name}" in sandbox.written_files, sorted(
+            sandbox.written_files
+        )
 
     @pytest.mark.parametrize("name", _TRANSPORT_NAMES)
     def test_a_declared_output_may_take_a_name_the_transport_uses(self, name: str):
@@ -2568,7 +2597,7 @@ class TestWhatTheTwoDirectoriesMakeHarmless:
         _run(tool, "print(1)", files=["data.csv"])
 
         (layout,) = sandbox.layouts
-        written = set(sandbox.files) | set(sandbox.contents)
+        written = set(sandbox.written)
         under_work = {p for p in written if p.startswith(f"{layout.work}/")}
 
         assert under_work == {f"{layout.work}/data.csv"}, (
@@ -2614,7 +2643,7 @@ def _neighbouring(dispatch: bool, **kw: Any):
     return tool, sandbox
 
 
-def _model_dir(sandbox: InProcessSandbox, dispatch: bool) -> str:
+def _model_dir(sandbox: _ScriptedSandbox, dispatch: bool) -> str:
     """Where this run put the files a model named: the work subdirectory, or the run directory.
 
     Derived from `dispatch` rather than from what the sandbox happens to contain, so a
@@ -2637,7 +2666,7 @@ class TestANeighbourOfTheProgramsNameIsNotTheProgram:
 
         out = _run(tool, "print('hi')", files=["program.csv"])
         assert "cannot be shared" not in out
-        assert f"{_model_dir(sandbox, dispatch)}/program.csv" in sandbox.files
+        assert f"{_model_dir(sandbox, dispatch)}/program.csv" in sandbox.written_files
 
     def test_a_nested_input_under_the_programs_name_is_shared(self, dispatch: bool):
         store = InMemoryStore({"program/train.py": "x = 1\n"})
@@ -2645,7 +2674,7 @@ class TestANeighbourOfTheProgramsNameIsNotTheProgram:
 
         out = _run(tool, "print('hi')", files=["program/train.py"])
         assert "cannot be shared" not in out
-        assert f"{_model_dir(sandbox, dispatch)}/program/train.py" in sandbox.files
+        assert f"{_model_dir(sandbox, dispatch)}/program/train.py" in sandbox.written_files
 
     @pytest.mark.parametrize("name", ["Program.py", "Program.py/x.csv"])
     def test_a_case_variant_of_the_programs_name_is_shared(self, dispatch: bool, name: str):
@@ -2655,7 +2684,7 @@ class TestANeighbourOfTheProgramsNameIsNotTheProgram:
 
         out = _run(tool, "print('hi')", files=[name])
         assert "cannot be shared" not in out, out
-        assert f"{_model_dir(sandbox, dispatch)}/{name}" in sandbox.files
+        assert f"{_model_dir(sandbox, dispatch)}/{name}" in sandbox.written_files
 
     @pytest.mark.parametrize("name", ["Program.py", "Program.py/x.csv"])
     def test_a_case_variant_of_the_programs_name_is_saved(self, dispatch: bool, name: str):
@@ -2674,7 +2703,7 @@ class TestANeighbourOfTheProgramsNameIsNotTheProgram:
 
         out = _run(tool, "print('hi')", files=["data/program.py/notes.txt"])
         assert "cannot be shared" not in out, out
-        assert f"{_model_dir(sandbox, dispatch)}/data/program.py/notes.txt" in sandbox.files
+        assert f"{_model_dir(sandbox, dispatch)}/data/program.py/notes.txt" in sandbox.written_files
 
     def test_a_nested_output_under_it_is_saved(self, dispatch: bool):
         sink = _RecordingSink()
@@ -2696,7 +2725,7 @@ class TestTheShimIsAnInboundFileToo:
 
         plain = _ScriptedSandbox()
         _run(_tool(_backend(plain), file_store=store, files_in=limits), "print(1)", files=["a.csv"])
-        assert f"{_run_dirs(plain)[0]}/a.csv" in plain.files
+        assert f"{_run_dirs(plain)[0]}/a.csv" in plain.written_files
 
         sandbox = _ScriptedSandbox()
         tool = _tool(
@@ -2710,7 +2739,7 @@ class TestTheShimIsAnInboundFileToo:
         assert "your program, the host-tool module beside it, and 1 shared" in out
         # Qualified here and nowhere else: the launcher crosses too and is not in that list.
         assert "writes at most 2 of those per call" in out
-        assert sandbox.contents == {}
+        assert sandbox.written == {}
 
     def test_it_counts_against_the_inbound_byte_ceilings(self):
         """Kilobytes of generated source, against a total with room for the module alone and
@@ -2721,7 +2750,7 @@ class TestTheShimIsAnInboundFileToo:
 
         plain = _ScriptedSandbox()
         _run(_tool(_backend(plain), files_in=limits), "print(1)")
-        assert plain.files, "the same program did not fit without a registry"
+        assert plain.written_files, "the same program did not fit without a registry"
 
         sandbox = _ScriptedSandbox()
         tool = _tool(
@@ -2731,7 +2760,7 @@ class TestTheShimIsAnInboundFileToo:
             exec_timeout_seconds=97,
         )
         assert f"at most {module + 5} per call" in _run(tool, "print(1)")
-        assert sandbox.contents == {}
+        assert sandbox.written == {}
 
     def test_room_for_one_inbound_file_is_refused_at_the_factory(self):
         """Two files cross on every call, so a cap of one could never serve a single call — and
@@ -2770,7 +2799,7 @@ class TestWithoutARegistry:
         (argv,) = sandbox.raw_commands
         assert not isinstance(argv, str)
         assert list(argv) == ["python3", f"{run_dir}/{_PROGRAM_FILENAME}"]
-        assert set(sandbox.contents) == {f"{run_dir}/{_PROGRAM_FILENAME}"}
+        assert set(sandbox.written) == {f"{run_dir}/{_PROGRAM_FILENAME}"}
 
 
 # ---------------------------------------------------------------------------
