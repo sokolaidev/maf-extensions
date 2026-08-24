@@ -146,7 +146,12 @@ class TestABackendThatPredatesReclaim:
 
         class _BrokenProxy(InProcessSandbox):
             """Raises at attribute *lookup* — an override that raised when called would
-            exercise the ordinary failure path instead, which has its own test above."""
+            exercise the ordinary failure path instead, which has its own test above.
+
+            `RuntimeError` deliberately, not `AttributeError`: the lookup runs through
+            `getattr(..., None)`, which swallows an `AttributeError` into the
+            stale-backend answer. The escape under test is everything else.
+            """
 
             def __getattribute__(self, name: str):
                 if name == "reclaim":
