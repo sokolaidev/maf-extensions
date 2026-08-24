@@ -2,6 +2,12 @@
 
 ## [0.11.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.10.2...maf-sandbox-wslc-v0.11.0) (2026-08-24)
 
+> **Correction, added after the release.** This version was tagged and a GitHub Release was created for it, but **it never reached PyPI** — so there is no `maf-sandbox-wslc` 0.11.0 to install. The publish run failed before the upload, on a repository test that read the tags of a shallow checkout ([#645](https://github.com/sokolaidev/maf-extensions/pull/645)); the tag records the right commit and no artifact was ever built from it.
+>
+> Release tags here cannot be moved, so this version number is spent rather than reused. **The code these entries describe ships in 0.11.1**, whose own section says so and is otherwise the same tree.
+>
+> The entries below are left in place: they are accurate about the commit, and deleting them would hide why this version exists at all.
+
 
 ### ⚠ BREAKING CHANGES
 
