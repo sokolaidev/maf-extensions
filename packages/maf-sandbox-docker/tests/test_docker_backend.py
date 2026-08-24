@@ -690,9 +690,9 @@ class TestReclaim:
         assert fake.only("exec").args[:3] == ("exec", "-w", "/")
 
     def test_a_name_a_shell_would_read_stays_one_argument(self):
-        """Core quoted the target before it dispatched; the argv form is what discharges that
-        duty now. A `work_dir` is host-supplied, so a name holding a space or a `;` is
-        reachable, and one that split would have `rm -rf` delete something else.
+        """Core dispatches the path unaltered; this backend's argv `exec` is what keeps the
+        name one argument. A `work_dir` is host-supplied, so a name holding a space or a `;`
+        is reachable, and one that split would have `rm -rf` delete something else.
         """
         hostile = f"{_WORK}/a b; touch pwned"
         sandbox, fake = self._sandbox()

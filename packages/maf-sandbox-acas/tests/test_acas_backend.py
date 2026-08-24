@@ -2416,6 +2416,27 @@ class TestReclaim:
                 sandbox.reclaim("/maf-sandbox/work/x", working_directory=_WORK_DIR, timeout=30)
             )
 
+    def test_a_service_failure_is_answered_as_the_documented_oserror(self):
+        """The SDK raises `azure.core`'s hierarchy, and the contract names `OSError`: a
+        caller catching what the docstring says must catch a transport failure too,
+        the same translation `remove` already performs.
+        """
+        from maf_sandbox_acas._backend import _AcasSandbox
+
+        class _ServiceDown(Exception):
+            """Stands in for `azure.core`'s hierarchy: not an `OSError`."""
+
+        class _RefusingClient:
+            async def exec(self, command: str, *, working_directory: str):
+                raise _ServiceDown("502 from the data plane")
+
+        sandbox = _AcasSandbox(_RefusingClient(), 30.0)
+        with pytest.raises(OSError, match=r"could not reclaim.*_ServiceDown") as raised:
+            asyncio.run(
+                sandbox.reclaim("/maf-sandbox/work/x", working_directory=_WORK_DIR, timeout=30)
+            )
+        assert isinstance(raised.value.__cause__, _ServiceDown)
+
     def test_the_timeout_bounds_the_call(self):
         """`reclaim`'s `timeout` is read the way `exec`'s is — `asyncio.wait_for`, not a kwarg
         the SDK client takes — so this proves the value given actually bounds the call."""
@@ -2451,8 +2472,8 @@ class TestReclaim:
         assert working_directory == "/"
 
     def test_a_name_a_shell_would_read_survives_the_join(self):
-        """Core quoted the target before it dispatched; this backend's `exec` takes a string,
-        so the quoting is a real step here rather than an argv the transport keeps apart. A
+        """Core dispatches the path unaltered; this backend builds the argv, and its `exec`'s
+        `shlex.join` is the real quoting step, because the SDK takes a string only. A
         `work_dir` is host-supplied, so a name holding a space or a `;` is reachable, and one
         that split would have `rm -rf` delete something else.
         """

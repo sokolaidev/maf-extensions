@@ -414,9 +414,17 @@ class _AcasSandbox:
         because ``working_directory`` may not exist.
         """
         del working_directory
-        removed = await self.exec(
-            ["rm", "-rf", "--", directory], working_directory="/", timeout=timeout
-        )
+        try:
+            removed = await self.exec(
+                ["rm", "-rf", "--", directory], working_directory="/", timeout=timeout
+            )
+        except (TimeoutError, OSError):
+            raise
+        except Exception as refused:
+            # The SDK raises `azure.core`'s own hierarchy, which is no `OSError` — and the
+            # contract names `OSError`. Translated the way `remove` translates, so a caller
+            # catching what the docstring says catches a transport failure too.
+            raise OSError(f"could not reclaim {directory}: {type(refused).__name__}") from refused
         if removed.exit_code != 0:
             raise OSError(
                 f"could not reclaim {directory}: rm exited {removed.exit_code}"
