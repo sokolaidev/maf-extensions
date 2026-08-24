@@ -2,6 +2,20 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.23.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.22.0...maf-sandbox-v0.23.0) (2026-08-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sandbox:** dispose a sandbox the framework could not clean, unless the host opts down ([#626](https://github.com/sokolaidev/maf-extensions/issues/626))
+* every backend serves reclaim, so a call's directory goes away without a shell ([#609](https://github.com/sokolaidev/maf-extensions/issues/609))
+
+### Features
+
+* every backend serves reclaim, so a call's directory goes away without a shell ([#609](https://github.com/sokolaidev/maf-extensions/issues/609)) ([6fcfcf6](https://github.com/sokolaidev/maf-extensions/commit/6fcfcf6259874bbcb4f02ac23bddcc92ae6d8550))
+* **sandbox:** dispose a sandbox the framework could not clean, unless the host opts down ([#626](https://github.com/sokolaidev/maf-extensions/issues/626)) ([55c8ff0](https://github.com/sokolaidev/maf-extensions/commit/55c8ff073b7f7c330268ce1fb03117db3936be1a))
+* **sandbox:** tell a backend that predates reclaim what is missing, at acquire and at the call ([#636](https://github.com/sokolaidev/maf-extensions/issues/636)) ([92ff350](https://github.com/sokolaidev/maf-extensions/commit/92ff350cc2427aba029bed6fc22da94cc34098f8))
+
 ## [0.22.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.21.0...maf-sandbox-v0.22.0) (2026-08-23)
 
 
