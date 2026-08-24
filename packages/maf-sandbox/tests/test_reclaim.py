@@ -124,3 +124,44 @@ class TestItNeverRaises:
         cancelled = InProcessSandbox(raises=asyncio.CancelledError())
         with pytest.raises(asyncio.CancelledError):
             _reclaim(cancelled, f"{_WORK}/abc123")
+
+
+class TestABackendThatPredatesReclaim:
+    """`reclaim` is the one protocol member no capability gates, so nothing else refuses it.
+
+    A backend written before it satisfies every other check and serves calls — while leaking a
+    directory per call out of a `finally` that reports rather than raises. What it used to be
+    told was "the removal call failed", which is true and sends the reader nowhere.
+    """
+
+    class _Stale(InProcessSandbox):
+        """Every member but the one that became mandatory."""
+
+        reclaim = None  # type: ignore[assignment]
+
+    def test_the_reason_names_the_member_rather_than_a_failed_removal(self):
+        reason = _reclaim(self._Stale(), f"{_WORK}/abc123")
+        assert reason is not None
+        assert "does not implement `Sandbox.reclaim`" in reason
+        assert "the removal call failed" not in reason
+
+    def test_it_says_what_proves_an_implementation(self):
+        """A message naming a fault and no remedy is half a message."""
+        reason = _reclaim(self._Stale(), f"{_WORK}/abc123")
+        assert reason is not None and "assert_reclaim_conformance" in reason
+
+    def test_an_attribute_error_from_inside_a_real_reclaim_is_not_read_as_this(self):
+        """Why this asks with `getattr` rather than catching the `AttributeError`.
+
+        A correct `reclaim` raising an `AttributeError` of its own is a different fault, and
+        answering it with "your backend is out of date" sends the reader where the bug is not.
+        """
+
+        class _Buggy(InProcessSandbox):
+            async def reclaim(self, directory, *, working_directory, timeout):
+                raise AttributeError("something inside the implementation")
+
+        reason = _reclaim(_Buggy(), f"{_WORK}/abc123")
+        assert reason is not None
+        assert "the removal call failed" in reason
+        assert "does not implement" not in reason

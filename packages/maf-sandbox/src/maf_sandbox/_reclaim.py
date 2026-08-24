@@ -67,6 +67,17 @@ async def reclaim_guest_path(
         return f"{resolved!r} is the working directory itself"
     if len([part for part in resolved.split("/") if part]) < 2:
         return f"{resolved!r} is too close to the root to remove recursively"
+    # A backend written before `reclaim` was a protocol member arrives here once per call, and
+    # the `except` below would report it as a removal that failed — true, and no use to whoever
+    # has to fix it. Asked with `getattr` rather than by catching the `AttributeError`: a correct
+    # `reclaim` that raises one of its own is a different fault, and answering that with "your
+    # backend is out of date" would send the reader somewhere the bug is not.
+    if not callable(getattr(sandbox, "reclaim", None)):
+        return (
+            "this backend does not implement `Sandbox.reclaim`, which every backend serves and "
+            "no capability gates — every call leaks its directory until it does. "
+            "`maf_sandbox.conformance.assert_reclaim_conformance` is what proves an implementation"
+        )
     try:
         await sandbox.reclaim(resolved, working_directory=working_directory, timeout=timeout)
     except Exception as refused:  # noqa: BLE001 — an unreclaimed path is a leak, not a fault

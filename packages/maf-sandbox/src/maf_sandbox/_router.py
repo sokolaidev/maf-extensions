@@ -142,6 +142,28 @@ class SandboxTransferLimitsNotPermitted(PermissionError):
     """
 
 
+def _refuse_a_sandbox_that_cannot_be_reclaimed(sandbox: Sandbox) -> None:
+    """Refuse a sandbox missing :meth:`Sandbox.reclaim`, naming the member rather than leaking.
+
+    Every other protocol method a backend cannot serve is gated by a :class:`Capability` it
+    simply does not declare, so the router refuses the spec before a caller arrives. ``reclaim``
+    has no capability behind it, so nothing else here would notice: acquiring would succeed, and
+    every call would leak its directory out of a ``finally`` that reports rather than raises. One
+    refusal at acquire beats that, reported once per call for the life of a process.
+
+    A :class:`TypeError` because a protocol member that is absent is exactly that, and because a
+    sandbox-specific exception for "this backend is a release behind" is a name the family does
+    not otherwise need: nothing catches it to recover, it is read by a person and fixed in code.
+    """
+    if not callable(getattr(sandbox, "reclaim", None)):
+        raise TypeError(
+            f"{type(sandbox).__name__} does not implement `Sandbox.reclaim`, which every backend "
+            "serves and no capability gates. Add it — a directory this stack created under the "
+            "working directory, removed recursively, where a missing directory is success — and "
+            "`maf_sandbox.conformance.assert_reclaim_conformance` proves the implementation."
+        )
+
+
 def _declared_isolation(backend: SandboxBackend) -> Isolation:
     """The rung ``backend`` claims, refusing any value this package does not recognise.
 
@@ -455,11 +477,15 @@ class SandboxRouter:
                 or when the backend declares its ceilings as something other than a
                 ``SandboxLimits``.
             SandboxEgressNotEnforced: when the backend cannot confine egress to this spec.
+            TypeError: when the backend hands back a sandbox without :meth:`Sandbox.reclaim`,
+                which no capability gates and nothing else here would notice.
         """
         if self._backend is None:
             raise NoSandboxBackend("no sandbox backend is configured")
         self._refuse_unless_backend_can_serve(spec)
-        return await self._backend.acquire(key, spec)
+        sandbox = await self._backend.acquire(key, spec)
+        _refuse_a_sandbox_that_cannot_be_reclaimed(sandbox)
+        return sandbox
 
     async def dispose(self, key: SandboxKey) -> None:
         """Delete every kind's sandbox for ``key``. Best-effort across every registered backend."""
