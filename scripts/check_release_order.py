@@ -6,15 +6,18 @@ Changed paths arrive on stdin, one per line. It speaks only when the title would
 *minor* of maf-sandbox, the change is attributed to that package by the files it touches, and
 some dependent's ceiling excludes the result.
 
-**It used to refuse that, and no longer does.** Refusing is what forced a widening pull request
-ahead of every core release, and the widening was granted on schedule without anyone asking
-whether the release broke anything — five dependent releases per core minor to move a bound
-nothing checked. What checks it now is `check_core_against_dependents.py`, which runs every
-admitting published dependent's own suite against the candidate core at the moment of release.
+**It exits non-zero when it has something to say, and that is not a verdict on the
+release.** A version outside those ceilings is permitted, and for a breaking release it is the
+point: a break nothing already installed can reach is a break that hurts nobody, and each
+dependent adopts on its own schedule. What checks whether the release is *sound* is
+`check_core_against_dependents.py`, which runs every admitting published dependent's own suite
+against the candidate core at the moment of release — not this.
 
-So a version outside those ceilings is permitted, and for a breaking release it is the point: a
-break nothing already installed can reach is a break that hurts nobody, and each dependent
-adopts on its own schedule. What is *not* obvious is what follows, so that is what this prints.
+What this refuses to do is let the consequence go unread. Between #628 and #657 it reported and
+exited zero, which put the notice in the log of a green job; a notice nobody opens is one that
+is not delivered. Failing is the only channel a pull request cannot ignore. **Merging over it
+is the expected move for a deliberate breaking release** — the maintainer's override says the
+consequence was read and accepted, which is the whole thing this asks for.
 See `docs/release-compatibility.md`.
 
 One shape it cannot see: `BREAKING CHANGE:` goes in the squash-commit box at merge time, so a
@@ -178,8 +181,9 @@ def consequences(title: str, paths: list[str], repo_root: Path) -> list[str]:
 def main(argv: list[str]) -> int:
     """CLI entry: read changed paths from stdin and the title from argv, and print what follows.
 
-    Always zero. This reports a consequence rather than a fault, and the release it describes is
-    refused — when it should be — by the gates that measure rather than by a bound read here.
+    Non-zero when there is a consequence to read, zero when there is none. Not a verdict on the
+    release — the gates that measure decide that — but the only channel a pull request cannot
+    scroll past. A deliberate breaking release is merged over this, deliberately.
     """
     if len(argv) != 2:
         print(f"usage: {argv[0]} <pull-request-title>", file=sys.stderr)
@@ -190,7 +194,12 @@ def main(argv: list[str]) -> int:
         print(notice)
     if not notices:
         print("release order: every dependent's ceiling already admits what this would release")
-    return 0
+        return 0
+    print(
+        "merge over this once the consequence above is read and accepted — that is what a "
+        "deliberate breaking release looks like here."
+    )
+    return 1
 
 
 if __name__ == "__main__":
