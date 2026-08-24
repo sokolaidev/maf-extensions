@@ -18,29 +18,47 @@ that is not there.
 Two modes, because a release has two shapes:
 
 - **per-candidate** (the default) — this checkout's wheel for one dependent, beside whatever
-  the resolver picks for the others from the index. That is what a consumer gets the day that
-  one package is published and the rest are not.
+  the resolver picks for the others from the index. **A warning, never a failure.** The wheel
+  is pinned here and nobody else pins it, so a combination this cannot find is one the resolver
+  reaches by taking an older sibling. Publishing adds a version to the index; it cannot remove
+  a combination that already resolved. What it does tell you is that the newest of everything
+  does not combine yet, which is worth seeing and is not worth stopping a release for.
 - **whole-set** (`--whole-set`) — every wheel in the directory together, no published
-  fallbacks. That is what a release covering several packages has to satisfy.
+  fallbacks. **This one fails**: a release whose own packages cannot share an environment is a
+  range that moved past a sibling, and no later publish repairs it.
 
-It passes on the existential and **reports the set that resolved**. "Latest of everything" and
-"had to go back four versions" are both installable, and the difference is the drift worth
-seeing before it becomes a support question.
+Both **report the set that resolved**, and the per-candidate warning additionally resolves the
+family unpinned to show which versions do work together. "Latest of everything" and "had to go
+back four versions" are both installable, and the difference is the drift worth seeing before
+it becomes a support question.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
+import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-from check_published_dependents_admit import dependent_distributions
-from check_release_order import fetch_published_versions, version
+from check_dependent_works_with_published_cores import declared_range
+from check_published_dependents_admit import (
+    ceiling_of,
+    dependent_distributions,
+    fetch_requires_dist,
+)
+from check_release_order import admits, fetch_published_versions, version
+
+#: uv paints its diagnostics, and the colour survives a pipe into a log or a job summary.
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 _CORE = "maf-sandbox"
+
+#: The core's own entry, never a dependent's: `maf-sandbox<0.23` matches, `maf-sandbox-acas` does not.
+_CORE_ENTRY = re.compile(rf"{re.escape(_CORE)}(?![A-Za-z0-9._-])")
 _ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -78,8 +96,7 @@ def install(requirements: list[str]) -> tuple[bool, dict[str, str], str]:
             check=False,
         )
         if installed.returncode != 0:
-            tail = [line for line in installed.stderr.strip().splitlines() if line.strip()]
-            return False, {}, "\n".join(tail[-4:])
+            return False, {}, _ANSI.sub("", installed.stderr).strip()
         listed = subprocess.run(
             ["uv", "pip", "list", "--python", str(python), "--format", "json"],
             capture_output=True,
@@ -119,6 +136,67 @@ def report(resolved: dict[str, str], newest: dict[str, str], indent: str = "    
     return lines
 
 
+def _dotted(parts: tuple[int, ...]) -> str:
+    return ".".join(str(part) for part in parts)
+
+
+def _core_requirement(requires_dist: list[str]) -> str | None:
+    """The entry constraining the core, verbatim, so a report can name the real constraint."""
+    for requirement in requires_dist:
+        head = requirement.split(";", 1)[0].strip()
+        if _CORE_ENTRY.match(head):
+            return head
+    return None
+
+
+def published_core_ranges() -> dict[str, str]:
+    """What each dependent's newest published version requires of the core."""
+    ranges: dict[str, str] = {}
+    for distribution in dependent_distributions(_ROOT):
+        requires = fetch_requires_dist(distribution)
+        if requires is None:
+            continue
+        if requirement := _core_requirement(requires):
+            ranges[distribution] = requirement
+    return ranges
+
+
+def constraints(candidate: str, wheel: Path, published: dict[str, str]) -> tuple[list[str], bool]:
+    """The core ranges in play, and whether they are enough to explain the conflict.
+
+    uv explains this by walking every historical version of every sibling — hundreds of lines,
+    wrapped to a width it chooses and does not take from COLUMNS. When the core range is what
+    decides it, two lines of metadata say the same thing exactly, so they are read directly.
+
+    The flag is the honest half. These packages also carry `agent-framework-core` and the Azure
+    libraries and can collide there while their core ranges agree, and then this table shows
+    nothing and the resolver's own account is the only account there is.
+    """
+    floor, ceiling = declared_range(wheel)
+    lines = [
+        f"    {candidate + ' (this checkout)':<38} maf-sandbox>={_dotted(floor)},<{_dotted(ceiling)}"
+    ]
+    explained = False
+    for distribution, requirement in sorted(published.items()):
+        if distribution == candidate:
+            continue
+        sibling_ceiling = ceiling_of([requirement])
+        excludes = sibling_ceiling is not None and not admits(floor, sibling_ceiling)
+        explained = explained or excludes
+        note = f"   excludes {_dotted(floor)}" if excludes else ""
+        lines.append(f"    {distribution + ' (published)':<38} {requirement}{note}")
+    return lines, explained
+
+
+def summarise(lines: list[str]) -> None:
+    """Mirror the report into the job summary, so a warning is seen without opening the log."""
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not path:
+        return
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
+
+
 def main(argv: list[str]) -> int:
     """CLI entry: install the suite as a set and print what the resolver chose."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -148,26 +226,72 @@ def main(argv: list[str]) -> int:
             return 1
         return 0
 
-    failures = 0
+    published = published_core_ranges()
+    warned: list[str] = []
     for distribution, wheel in wheels.items():
         if distribution == _CORE:
             continue
         others = [name for name in wheels if name not in (distribution, _CORE)]
         passed, resolved, error = install([str(wheel), *others])
-        print(f"{'ok  ' if passed else 'FAIL'} {distribution} beside the published others")
         if passed:
+            print(f"ok   {distribution} beside the published others")
             print("\n".join(report(resolved, newest)))
-        else:
-            failures += 1
-            print(error, file=sys.stderr)
-    if failures:
-        print(
-            f"{failures} candidate(s) cannot be installed beside the published suite — publishing "
-            "one would leave the family unresolvable as a set",
-            file=sys.stderr,
-        )
+            continue
+        warned.append(distribution)
+        print(f"warn {distribution} does not combine with the newest published others")
+        lines, explained = constraints(distribution, wheel, published)
+        print("\n".join(lines))
+        if not explained:
+            # The core ranges all overlap, so this is a collision somewhere else entirely and
+            # the resolver's account is the only one there is. Whole, never a tail.
+            print("\n    the core ranges overlap, so the conflict is elsewhere — uv's account:")
+            print("\n".join(f"      {line}" for line in error.splitlines()))
+
+    if not warned:
+        print("OK  every candidate installs beside the published suite")
+        return 0
+
+    if not published:
+        # The index named nothing, so there is no published set to resolve and no ground to call
+        # one broken. `uv pip install` with no arguments would fail, and failing a release on an
+        # unreachable index is the one outcome this mode exists to avoid.
+        print("\nthe index named no published dependent — nothing to resolve the family against")
+        return 0
+
+    # Which versions *do* work together: the same question asked without pinning the candidate,
+    # which is the only way anyone but this script installs the family.
+    installable, resolved, error = install(sorted(published))
+    lines = [
+        "### The suite as a set",
+        "",
+        f"`{'`, `'.join(warned)}` cannot be installed beside the **newest** published siblings.",
+        "",
+        "This is a warning, not a failure. Publishing adds a version to the index; it never "
+        "removes a combination that already resolved, and a consumer who does not pin gets the "
+        "newest set that does.",
+        "",
+    ]
+    if installable:
+        lines += ["That set is:", "", "```"] + report(resolved, newest) + ["```"]
+        print("\nthe family a consumer resolves today:")
+        print("\n".join(report(resolved, newest)))
+    else:
+        lines += [
+            "No set of published versions resolves at all — that is a real break:",
+            "",
+            "```",
+            error,
+            "```",
+        ]
+        print("\nno set of published versions resolves at all:", file=sys.stderr)
+        print(error, file=sys.stderr)
+    summarise(lines)
+    if not installable:
         return 1
-    print("OK  every candidate installs beside the published suite")
+    print(
+        f"\nOK  {len(warned)} candidate(s) do not combine with the newest published siblings yet; "
+        "the family still resolves and publishing cannot make it worse"
+    )
     return 0
 
 
