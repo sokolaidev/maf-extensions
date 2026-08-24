@@ -22,7 +22,7 @@ The same shape covers the other capabilities, each as its own suite:
 reaches a host on the allowlist and not one off it (#402).  It takes the allowed and denied URLs
 because a spec's hosts are the deployment's, not this module's, and asserts only the outcome both
 an L3-severing and an L7-proxying backend must share.  The FILES_IN probes also attack write-path
-confinement.  The FILES_IN, EXEC and FILES_DELETE probes
+confinement.  The FILES_IN, EXEC, FILES_DELETE and reclaim probes
 verify through :meth:`Sandbox.exec` rather than the pull surface, because a backend with no
 pull surface still owes those capabilities.  They need ``cat``, ``test``, ``printf``, ``pwd``,
 ``sleep``, ``sh`` and ``mkdir`` — beyond ``PosixGuestSubject``'s own ``ln``, so the
@@ -30,16 +30,19 @@ image has to carry the POSIX core utilities, and what those suites assert is mea
 the guest the image ships, which for the suites that run in CI is the image the workflow
 names.
 
+**One suite belongs to no capability.**  :func:`assert_reclaim_conformance` covers
+:meth:`Sandbox.reclaim`, which is mandatory, so it runs with no declaration gate.
+
 **The EXEC suite may not leave the sandbox alive.**  Its last probe asserts the
 ``TimeoutError`` contract, and two backends discard the whole sandbox when a call times out —
 that is the documented recovery, not a defect.  A caller sharing one sandbox across suites runs
 EXEC last, and a caller that wants what comes after acquires a second sandbox.
 
-**The EXEC suite plants its own working directory.**  ``working_directory`` does not exist
-after ``acquire`` — no backend creates ``spec.work_dir`` and the protocol does not promise it —
-so the suite writes a marker file first: the caller-creates rule, with the reasoning and the
-open question of whether ``acquire`` should owe it filed as #466.  A subject whose sandbox has
-no ``write_file`` cannot run the suite.
+**The EXEC and reclaim suites plant their own working directory.**  ``working_directory`` does
+not exist after ``acquire`` — no backend creates ``spec.work_dir`` and the protocol does not
+promise it — so they write a marker file first: the caller-creates rule, with the reasoning and
+the open question of whether ``acquire`` should owe it filed as #466.  A subject whose sandbox
+has no ``write_file`` cannot run either.
 
 Nothing here imports a test framework: this module ships in the wheel.  A failure raises
 :class:`ConformanceFailure` naming every probe that failed rather than the first.
@@ -61,6 +64,7 @@ __all__ = [
     "FILES_DELETE_PROBES",
     "FILES_IN_PROBES",
     "FILES_OUT_PROBES",
+    "RECLAIM_PROBES",
     "ConformanceFailure",
     "ConformancePaths",
     "ConformanceSubject",
@@ -72,6 +76,7 @@ __all__ = [
     "assert_files_delete_conformance",
     "assert_files_in_conformance",
     "assert_files_out_conformance",
+    "assert_reclaim_conformance",
     "measure_files_delete_probes",
     "plant_layout",
     "run_egress_probes",
@@ -79,6 +84,7 @@ __all__ = [
     "run_files_delete_probes",
     "run_files_in_probes",
     "run_files_out_probes",
+    "run_reclaim_probes",
 ]
 
 #: What the read probes allow. Large enough that nothing here is refused for its size — every
@@ -1533,24 +1539,168 @@ async def measure_files_delete_probes(subject: ConformanceSubject) -> tuple[Prob
     raised (with what the mechanism answered).
     """
     paths = ConformancePaths.under(subject.working_directory)
-    results: list[ProbeResult] = []
-    for probe in FILES_DELETE_PROBES:
-        try:
-            await probe.run(subject, paths)
-        except AssertionError as failed:
-            results.append(ProbeResult(probe=probe, failure=str(failed)))
-        except Exception as raised:
-            results.append(
-                ProbeResult(probe=probe, failure=f"raised {type(raised).__name__}: {raised}")
-            )
-        else:
-            results.append(ProbeResult(probe=probe))
-    return tuple(results)
+    return tuple([await _probe_result(probe, subject, paths) for probe in FILES_DELETE_PROBES])
 
 
 # ---------------------------------------------------------------------------
-# the runner all four suites share
+# RECLAIM — the framework's own removal, which no capability gates
 # ---------------------------------------------------------------------------
+
+
+async def _probe_a_created_directory_is_gone(
+    subject: ConformanceSubject, paths: ConformancePaths
+) -> None:
+    await subject.plant_file(f"{paths.work}/reclaim-me/note.txt", b"a call's own file\n")
+    await subject.plant_file(f"{paths.work}/reclaim-bystander.txt", b"not the target\n")
+    await subject.sandbox.reclaim(
+        f"{paths.work}/reclaim-me", working_directory=subject.working_directory, timeout=60
+    )
+    result = await subject.sandbox.exec(
+        ["test", "-e", "reclaim-me"], working_directory=subject.working_directory, timeout=60
+    )
+    if result.exit_code == 0:
+        raise AssertionError("the reclaimed directory is still there")
+    # The method promises this directory and nothing else.
+    await _assert_present(
+        subject.sandbox, "reclaim-bystander.txt", subject.working_directory, "a bystander file"
+    )
+
+
+async def _probe_nested_content_goes_with_it(
+    subject: ConformanceSubject, paths: ConformancePaths
+) -> None:
+    await subject.plant_file(f"{paths.work}/reclaim-tree/deep/nested/leaf.txt", b"in the tree\n")
+    await subject.plant_file(f"{paths.work}/reclaim-tree/top.txt", b"in the tree\n")
+    await subject.sandbox.reclaim(
+        f"{paths.work}/reclaim-tree", working_directory=subject.working_directory, timeout=60
+    )
+    for path in ("reclaim-tree", "reclaim-tree/deep/nested/leaf.txt"):
+        result = await subject.sandbox.exec(
+            ["test", "-e", path], working_directory=subject.working_directory, timeout=60
+        )
+        if result.exit_code == 0:
+            raise AssertionError(f"{path!r} survived the reclaim")
+
+
+async def _probe_a_link_inside_is_unlinked_not_followed(
+    subject: ConformanceSubject, paths: ConformancePaths
+) -> None:
+    """A link inside the directory is unlinked, never followed: its target is outside."""
+    await subject.plant_file(f"{paths.outside}/reclaim-target.txt", b"outside the directory\n")
+    await subject.plant_file(f"{paths.work}/reclaim-linked/leaf.txt", b"in the directory\n")
+    await subject.plant_symlink(
+        f"{paths.work}/reclaim-linked/inside-link", f"{paths.outside}/reclaim-target.txt"
+    )
+    await subject.sandbox.reclaim(
+        f"{paths.work}/reclaim-linked", working_directory=subject.working_directory, timeout=60
+    )
+    reclaimed = await subject.sandbox.exec(
+        ["test", "-e", "reclaim-linked"], working_directory=subject.working_directory, timeout=60
+    )
+    if reclaimed.exit_code == 0:
+        raise AssertionError("the reclaimed directory is still there")
+    target = await subject.sandbox.exec(
+        ["test", "-f", paths.beyond("reclaim-target.txt")],
+        working_directory=subject.working_directory,
+        timeout=60,
+    )
+    if target.exit_code != 0:
+        raise AssertionError(
+            "the target of a link inside the reclaimed directory went with it: the removal "
+            "followed an interior link, deleting a file outside the working directory"
+        )
+
+
+async def _probe_a_missing_directory_is_success(
+    subject: ConformanceSubject, paths: ConformancePaths
+) -> None:
+    # Twice, the shape a `finally` cleanup runs: the repeat must not raise.
+    await subject.plant_file(f"{paths.work}/reclaim-twice/note.txt", b"gone after the first\n")
+    for _ in range(2):
+        await subject.sandbox.reclaim(
+            f"{paths.work}/reclaim-twice", working_directory=subject.working_directory, timeout=60
+        )
+
+
+async def _probe_an_absent_working_directory_still_succeeds(
+    subject: ConformanceSubject, paths: ConformancePaths
+) -> None:
+    # A call that wrote nothing leaves the work dir absent. A backend that moves there first
+    # fails here.
+    await subject.sandbox.reclaim(
+        f"{paths.work}/absent-work/call-a1b2c3",
+        working_directory=f"{paths.work}/absent-work",
+        timeout=60,
+    )
+
+
+RECLAIM_PROBES: tuple[Probe, ...] = (
+    Probe(
+        name="a-created-directory-is-gone",
+        why="the positive control: a reclaim that did nothing would pass every other probe.",
+        requires=frozenset(),
+        run=_probe_a_created_directory_is_gone,
+    ),
+    Probe(
+        name="nested-content-goes-with-it",
+        why="a call's directory is a tree; removing only the top entry leaves the rest readable.",
+        requires=frozenset(),
+        run=_probe_nested_content_goes_with_it,
+    ),
+    Probe(
+        name="a-link-inside-is-unlinked-not-followed",
+        why=(
+            "a guest plants what it likes inside the directory; a removal that follows a link "
+            "deletes a file outside the working directory on every cleanup."
+        ),
+        requires=frozenset(),
+        run=_probe_a_link_inside_is_unlinked_not_followed,
+    ),
+    Probe(
+        name="a-missing-directory-is-success",
+        why="cleanup runs in a finally; a second failure over the first buries the real one.",
+        requires=frozenset(),
+        run=_probe_a_missing_directory_is_success,
+    ),
+    Probe(
+        name="an-absent-working-directory-still-succeeds",
+        why=(
+            "working_directory says where the directory sits, not where to run from; a call "
+            "that wrote nothing leaves it absent."
+        ),
+        requires=frozenset(),
+        run=_probe_an_absent_working_directory_still_succeeds,
+    ),
+)
+
+
+async def run_reclaim_probes(subject: ConformanceSubject) -> tuple[ProbeResult, ...]:
+    """Run the reclaim probes. No gate: every backend owes every probe here."""
+    paths = await _plant_nothing(subject)
+    return tuple([await _probe_result(probe, subject, paths) for probe in RECLAIM_PROBES])
+
+
+async def assert_reclaim_conformance(subject: ConformanceSubject) -> tuple[ProbeResult, ...]:
+    """Run the reclaim probes and raise :class:`ConformanceFailure` if any failed."""
+    return _assert_conformance(await run_reclaim_probes(subject), "RECLAIM")
+
+
+# ---------------------------------------------------------------------------
+# the runners the suites share
+# ---------------------------------------------------------------------------
+
+
+async def _probe_result(
+    probe: Probe, subject: ConformanceSubject, paths: ConformancePaths
+) -> ProbeResult:
+    """Run one probe and turn whatever it did into its result."""
+    try:
+        await probe.run(subject, paths)
+    except AssertionError as failed:
+        return ProbeResult(probe=probe, failure=str(failed))
+    except Exception as raised:
+        return ProbeResult(probe=probe, failure=f"raised {type(raised).__name__}: {raised}")
+    return ProbeResult(probe=probe)
 
 
 async def _run_suite(
@@ -1574,16 +1724,7 @@ async def _run_suite(
             names = ", ".join(sorted(str(capability) for capability in missing))
             results.append(ProbeResult(probe=probe, skipped=f"backend does not declare {names}"))
             continue
-        try:
-            await probe.run(subject, paths)
-        except AssertionError as failed:
-            results.append(ProbeResult(probe=probe, failure=str(failed)))
-        except Exception as raised:
-            results.append(
-                ProbeResult(probe=probe, failure=f"raised {type(raised).__name__}: {raised}")
-            )
-        else:
-            results.append(ProbeResult(probe=probe))
+        results.append(await _probe_result(probe, subject, paths))
     return tuple(results)
 
 

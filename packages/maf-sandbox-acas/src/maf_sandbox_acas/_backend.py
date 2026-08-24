@@ -406,6 +406,31 @@ class _AcasSandbox:
             # and this one is raised at a caller rather than logged.
             raise OSError(f"could not remove {path}: {type(refused).__name__}") from refused
 
+    async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
+        """Remove ``directory`` with ``rm -rf`` over :meth:`exec`.
+
+        Not the data plane's ``delete_file``: whether it unlinks or follows a link is
+        unverified, and a guest can plant one inside this directory. Runs from ``/``
+        because ``working_directory`` may not exist.
+        """
+        del working_directory
+        try:
+            removed = await self.exec(
+                ["rm", "-rf", "--", directory], working_directory="/", timeout=timeout
+            )
+        except (TimeoutError, OSError):
+            raise
+        except Exception as refused:
+            # The SDK raises `azure.core`'s own hierarchy, which is no `OSError` — and the
+            # contract names `OSError`. Translated the way `remove` translates, so a caller
+            # catching what the docstring says catches a transport failure too.
+            raise OSError(f"could not reclaim {directory}: {type(refused).__name__}") from refused
+        if removed.exit_code != 0:
+            raise OSError(
+                f"could not reclaim {directory}: rm exited {removed.exit_code}"
+                f"{f' — {removed.stderr.strip()}' if removed.stderr else ''}"
+            )
+
     async def _stat_guest(self, guest: str, relative: str) -> SandboxEntry | None:
         """Stat an absolute guest path, with no confinement check of its own.
 

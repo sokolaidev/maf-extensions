@@ -73,8 +73,8 @@ class InProcessSandbox:
         outputs: Marker-keyed scripted stdout. On ``exec``, the first key found as a
             substring of the (possibly joined — see below) command is returned as
             ``ExecResult.stdout``. ``None`` means no scripting at all.
-        raises: When set, every ``exec`` call raises this instead of returning a result —
-            for exercising a dead or unresponsive sandbox.
+        raises: When set, every ``exec``, ``run_code`` and ``reclaim`` call raises this instead
+            of doing its work — for exercising a dead or unresponsive sandbox.
 
     Keyword Args:
         default_stdout: What ``exec`` returns when no marker in ``outputs`` matches. Left to
@@ -99,7 +99,8 @@ class InProcessSandbox:
     raises rather than vanishing, and reading it raises ``UnicodeDecodeError`` if anything
     stored is not text — asking for text that was never written is worth an error rather than
     a replacement character. ``exec`` records ``(command, working_directory, timeout)`` tuples
-    into :attr:`commands`.
+    into :attr:`commands`, and ``reclaim`` records ``(directory, working_directory, timeout)``
+    into :attr:`reclaims` and really removes.
 
     ``stat_file``, ``read_file`` and ``list_dir`` confine every ``path`` to the
     ``working_directory`` a call names: a backslash or a resolved path outside it raises
@@ -150,6 +151,8 @@ class InProcessSandbox:
             else:
                 self.contents[path] = value
         self.commands: list[tuple[str, str, float]] = []
+        #: Every ``reclaim`` call, as ``(directory, working_directory, timeout)``.
+        self.reclaims: list[tuple[str, str, float]] = []
         #: Every ``run_code`` call, as ``(code, timeout)``. Separate from :attr:`commands`
         #: because a test asserting a program was evaluated should not match a shell command
         #: that happens to contain the same text.
@@ -293,6 +296,24 @@ class InProcessSandbox:
         if (children or full_path in self.directories) and not recursive:
             raise OSError(f"refusing to remove a directory without recursive: {path}")
         for stored in (*children, full_path):
+            self.contents.pop(stored, None)
+            self.symlinks.discard(stored)
+            self.non_regular.discard(stored)
+            self.directories.discard(stored)
+
+    async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
+        """Remove the directory for real, and record the call.
+
+        No confinement check and no depth guard: the contract leaves both with the caller.
+        ``directory`` is absolute, so ``working_directory`` plays no part.
+        """
+        self.reclaims.append((directory, working_directory, timeout))
+        if self._raises is not None:
+            raise self._raises
+        full_path = posixpath.normpath(directory)
+        # A link is unlinked, not followed.
+        stored_paths = (full_path,) if full_path in self.symlinks else self._stored()
+        for stored in [p for p in stored_paths if guest_path_relative_to(p, full_path) is not None]:
             self.contents.pop(stored, None)
             self.symlinks.discard(stored)
             self.non_regular.discard(stored)

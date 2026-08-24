@@ -25,7 +25,6 @@ from maf_sandbox import (
     Capability,
     DeclaredOutput,
     Egress,
-    ExecResult,
     Isolation,
     LandedArtifact,
     NoSandboxBackend,
@@ -637,24 +636,21 @@ async def _ask_again(session: SandboxToolSession) -> str:
     return session.guest_call_path()
 
 
-def _rm_targets(sandbox):
-    """The paths this fake was asked to remove, in order."""
-    return [
-        command.removeprefix("rm -rf ")
-        for command, _, _ in sandbox.commands
-        if command.startswith("rm -rf ")
-    ]
+def _reclaimed(sandbox):
+    """The directories this fake was asked to remove, in order.
+
+    Read from ``reclaims`` rather than ``commands``: the removal is a dispatched protocol
+    member, so a command recording would answer the same whether it ran or never happened.
+    """
+    return [directory for directory, _, _ in sandbox.reclaims]
 
 
 class _RefusesToRemove(InProcessSandbox):
-    """A guest whose `rm` fails and whose every other command does not."""
+    """A sandbox alive on every other surface, whose reclaim is the one thing refused."""
 
-    async def exec(self, command, *, working_directory, timeout):
-        result = await super().exec(command, working_directory=working_directory, timeout=timeout)
-        joined = command if isinstance(command, str) else " ".join(command)
-        if joined.startswith("rm -rf "):
-            return ExecResult(stdout="", stderr="rm: Permission denied", exit_code=1)
-        return result
+    async def reclaim(self, directory, *, working_directory, timeout):
+        self.reclaims.append((directory, working_directory, timeout))
+        raise PermissionError("Permission denied")
 
 
 def _reclaiming_body(session: SandboxToolSession):
@@ -767,7 +763,7 @@ class TestTheCallOwnsAGuestPath:
 
         first, second = asyncio.run(both())
         assert first != second
-        assert sorted(_rm_targets(backend.sandbox)) == sorted([first, second])
+        assert sorted(_reclaimed(backend.sandbox)) == sorted([first, second])
 
     def test_asking_outside_a_tool_call_raises(self):
         """A wiring mistake in a kind, not something a model can cause or should be told."""
@@ -779,7 +775,7 @@ class TestTheFinallyReclaims:
     def test_the_path_goes_when_the_body_returns(self):
         backend = InProcessSandboxBackend()
         path = _call(_reclaiming(backend), target="x")
-        assert _rm_targets(backend.sandbox) == [path]
+        assert _reclaimed(backend.sandbox) == [path]
 
     def test_it_goes_when_the_body_raises_and_the_failure_survives(self):
         """An exception in the `finally` would replace what the call was already reporting."""
@@ -798,7 +794,7 @@ class TestTheFinallyReclaims:
         backend = InProcessSandboxBackend()
         with pytest.raises(RuntimeError, match="the body failed"):
             _call(_reclaiming(backend, build), target="x")
-        assert len(_rm_targets(backend.sandbox)) == 1
+        assert len(_reclaimed(backend.sandbox)) == 1
 
     def test_it_goes_when_the_body_answers_with_a_refusal(self):
         """A refusal is an ordinary answer here, and it leaves the same path behind."""
@@ -816,12 +812,12 @@ class TestTheFinallyReclaims:
 
         backend = InProcessSandboxBackend()
         assert _call(_reclaiming(backend, build), target="x") == "Error: no."
-        assert len(_rm_targets(backend.sandbox)) == 1
+        assert len(_reclaimed(backend.sandbox)) == 1
 
     def test_a_body_that_never_asked_spends_no_round_trip(self):
         backend = InProcessSandboxBackend()
         _call(_attach(_router(backend))[0], target="x")
-        assert _rm_targets(backend.sandbox) == []
+        assert _reclaimed(backend.sandbox) == []
 
     def test_a_call_that_acquired_nothing_reclaims_nothing(self):
         """Nothing was written, so there is nothing to remove and nobody to remove it with."""
@@ -835,7 +831,7 @@ class TestTheFinallyReclaims:
 
         backend = InProcessSandboxBackend()
         assert _call(_reclaiming(backend, build), target="x").startswith("/maf-sandbox/work/")
-        assert backend.sandbox.commands == []
+        assert backend.sandbox.reclaims == []
 
 
 class TestAReclaimThatDidNotHappen:
@@ -858,7 +854,7 @@ class TestAReclaimThatDidNotHappen:
         assert heard[0].tool == "widget_run"
         assert heard[0].key == _KEY
         assert heard[0].path == path
-        assert "rm exited 1" in heard[0].reason
+        assert "the removal call failed" in heard[0].reason
         assert "Permission denied" in heard[0].reason
 
     def test_the_calls_own_answer_is_untouched(self):
@@ -947,10 +943,7 @@ class TestAWorkDirThatIsNotPosixShaped:
         )[0]
         path = _call(tool, target="x")
         assert path.startswith(r"D:\agent\work" + "/")
-        # Quoted inside the command, because a name carrying backslashes is not shell-safe.
-        removals = _rm_targets(backend.sandbox)
-        assert len(removals) == 1
-        assert path in removals[0]
+        assert _reclaimed(backend.sandbox) == [path]
         assert heard == []
 
 
@@ -969,9 +962,7 @@ class TestACancelledBodyDoesNotExtendTheDeadline:
         return widget_run
 
     def _removal_bounds(self, backend):
-        return [
-            timeout for command, _, timeout in backend.sandbox.commands if command[:7] == "rm -rf "
-        ]
+        return [timeout for _, _, timeout in backend.sandbox.reclaims]
 
     def test_a_cancelled_body_gets_the_grace(self):
         backend = InProcessSandboxBackend()
@@ -1065,7 +1056,7 @@ class TestABodyThatIsAnInstance:
     def test_it_is_wrapped_and_reclaimed(self):
         backend = InProcessSandboxBackend()
         path = _call(_reclaiming(backend, _CallableBody), target="x")
-        assert _rm_targets(backend.sandbox) == [path]
+        assert _reclaimed(backend.sandbox) == [path]
 
     def test_a_body_that_awaits_nothing_is_still_left_alone(self):
         """The narrowing must not swallow the synchronous case it was written for."""
@@ -1197,7 +1188,7 @@ class TestACallThatReachesTwoSandboxes:
     def test_both_are_reclaimed(self):
         backend = _PerKeyBackend()
         path = _call(_reclaiming(backend, self._build), target="x")
-        removed = {key: _rm_targets(sandbox) for key, sandbox in backend.per_key.items()}
+        removed = {key: _reclaimed(sandbox) for key, sandbox in backend.per_key.items()}
         assert len(removed) == 2, removed
         assert all(targets == [path] for targets in removed.values()), removed
 
@@ -1225,12 +1216,12 @@ class TestAStragglerDuringTheRemoval:
         started: list[asyncio.Task[bool]] = []
 
         class _YieldsMidRemoval(InProcessSandbox):
-            async def exec(self, command, *, working_directory, timeout):
+            async def reclaim(self, directory, *, working_directory, timeout):
                 release.set()
                 for _ in range(3):
                     await asyncio.sleep(0)
-                return await super().exec(
-                    command, working_directory=working_directory, timeout=timeout
+                await super().reclaim(
+                    directory, working_directory=working_directory, timeout=timeout
                 )
 
         backend = _PerKeyBackend()
@@ -1296,8 +1287,8 @@ class TestASecondBinding:
             return widget_run
 
         path = _call(_reclaiming(mine, build), target="x")
-        assert _rm_targets(mine.sandbox) == [path]
-        assert _rm_targets(theirs.sandbox) == []
+        assert _reclaimed(mine.sandbox) == [path]
+        assert _reclaimed(theirs.sandbox) == []
 
     def test_a_second_session_cannot_take_a_path_inside_this_call(self):
         other = _session()

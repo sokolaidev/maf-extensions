@@ -101,6 +101,16 @@ class _Guest:
     async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
         del path, working_directory, recursive
 
+    async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
+        """Drop ``directory`` and everything under it from :attr:`files`.
+
+        No confinement check: the caller made ``directory``.
+        """
+        del working_directory, timeout
+        prefix = directory.rstrip("/") + "/"
+        for stored in [path for path in self.files if path == directory or path.startswith(prefix)]:
+            del self.files[stored]
+
     async def list_dir(self, path: str, *, working_directory: str) -> tuple[SandboxEntry, ...]:
         del path, working_directory
         return ()

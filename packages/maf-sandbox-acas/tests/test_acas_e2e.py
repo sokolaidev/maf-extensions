@@ -70,6 +70,13 @@ from maf_sandbox.conformance import (
     measure_files_delete_probes,
 )
 
+# Feature-detected, not floored: the published-cores gate runs this suite against every
+# core the range admits, and cores before 0.23 have no Sandbox.reclaim to conform to.
+try:
+    from maf_sandbox.conformance import assert_reclaim_conformance
+except ImportError:
+    assert_reclaim_conformance = None
+
 from maf_sandbox_acas import AcasSandboxBackend, AcasSandboxConfig
 
 _ENDPOINT = os.environ.get("ACAS_SANDBOX_ENDPOINT")
@@ -736,6 +743,28 @@ class TestBootingAnImageTheServiceProvides:
         )
         assert result.exit_code == 0, result.stderr
         assert result.stdout.strip().startswith("Python 3."), result.stdout
+
+
+@pytest.fixture(scope="module")
+def reclaim_results(live):
+    """One RECLAIM run, shared — mirrors `probe_results` and `files_in_results` above."""
+    if assert_reclaim_conformance is None:
+        pytest.skip("this maf-sandbox predates Sandbox.reclaim (< 0.23)")
+    return live.run(assert_reclaim_conformance(_subject(live)))
+
+
+class TestReclaimAgainstTheRealService:
+    """The framework's own removal, gated by no capability — every backend owes it.
+
+    Unlike FILES_DELETE above, there is no measurement fallback and no withheld-capability
+    answer: `reclaim` is mandatory, so this asserts rather than measures.
+    """
+
+    def test_the_reclaim_probes_come_back_clean(self, reclaim_results):
+        results = reclaim_results
+        assert results, "the RECLAIM conformance run returned no results"
+        skipped = {result.probe.name: result.skipped for result in results if result.skipped}
+        assert not skipped, f"probes skipped against reclaim, which no capability gates: {skipped}"
 
 
 class TestExecAgainstTheRealService:

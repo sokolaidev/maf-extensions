@@ -13,7 +13,6 @@ whose contract is likewise ``path`` and everything under it.
 from __future__ import annotations
 
 import posixpath
-import shlex
 from dataclasses import dataclass
 
 from ._error_detail import error_detail
@@ -51,12 +50,11 @@ async def reclaim_guest_path(
     **No failure of the removal raises.** It runs in a ``finally``, where an exception would
     replace whatever the call was already reporting with a message about cleanup. Cancellation
     is not such a failure: a :class:`~asyncio.CancelledError` or ``GeneratorExit`` at the
-    ``exec`` is the caller's deadline arriving, and it propagates — containing it would let the
+    removal is the caller's deadline arriving, and it propagates — containing it would let the
     call return past a bound the host thought it had.
 
-    ``rm -rf`` because that is the one removal every backend serving a kind can do today: the
-    protocol's own delete is gated by a capability no shipped spec requires. Which mechanism to
-    use is not a question this stack can answer well from here — see #477.
+    Dispatches to :meth:`Sandbox.reclaim`, which every backend serves. The guards stay here:
+    the backend is the mechanism, not the policy.
     """
     try:
         resolved = confine_guest_path(path, working_directory)
@@ -70,22 +68,10 @@ async def reclaim_guest_path(
     if len([part for part in resolved.split("/") if part]) < 2:
         return f"{resolved!r} is too close to the root to remove recursively"
     try:
-        removed = await sandbox.exec(
-            f"rm -rf {shlex.quote(resolved)}",
-            # `/`, not `working_directory`: the target is absolute, so the shell's own
-            # directory decides nothing — and no backend creates a spec's work dir, so a call
-            # that took a path and wrote nothing would have this fail on the missing directory
-            # it was told to run in, reporting a leak where there is nothing left.
-            working_directory="/",
-            timeout=timeout,
-        )
+        await sandbox.reclaim(resolved, working_directory=working_directory, timeout=timeout)
     except Exception as refused:  # noqa: BLE001 — an unreclaimed path is a leak, not a fault
         # Only `Exception`. A `CancelledError` here is the caller's own deadline arriving at
         # this await, and answering with a reason would let the call return past it; the caller
         # records the loss and lets it through. See `maf._reclaim_the_call`.
         return f"the removal call failed: {error_detail(refused)}"
-    if removed.exit_code != 0:
-        detail = removed.stderr.strip()
-        refused = f"the guest refused it: rm exited {removed.exit_code}"
-        return f"{refused} — {detail}" if detail else refused
     return None

@@ -1054,7 +1054,7 @@ def _sent_clause(reach: _Reach) -> str:
 
 
 def _removable(directory: str) -> bool:
-    """Is ``directory`` specific enough to hand to ``rm -rf``?
+    """Is ``directory`` specific enough to hand to a recursive removal?
 
     The paths here come from :func:`guest_run_layout`, which already refuses a relative one —
     so this is not the primary defence, it is the one that still holds if a caller builds a
@@ -1076,12 +1076,8 @@ async def _remove_tree(
 ) -> bool:
     """Delete ``directory`` and everything under it — never a raise.
 
-    The protocol's delete is gated by a capability no shipped spec requires, while every
-    dispatch-capable backend already serves ``EXEC``. This path therefore uses the common
-    ``EXEC`` mechanism; choosing a protocol delete for call-owned paths belongs to #477.
-
-    ``-f`` is what makes an already-gone directory a success; the status is otherwise the
-    guest's own, because a refused removal has to reach the caller as one.
+    Dispatches to :meth:`Sandbox.reclaim`. An already-gone directory is success; anything
+    raised is a refused removal.
     """
     if inside is not None and guest_path_relative_to(directory, inside) is None:
         logger.warning("host tools: refusing to remove %r — it is not inside %r", directory, inside)
@@ -1090,22 +1086,17 @@ async def _remove_tree(
         logger.warning("host tools: refusing to remove %r — it is not a run directory", directory)
         return False
     try:
-        removed = await _within(
+        await _within(
             until,
             "the cleanup",
-            sandbox.exec(
-                f"rm -rf {_quote(directory)}",
+            sandbox.reclaim(
+                directory,
                 working_directory=posixpath.dirname(directory) or "/",
                 timeout=max(0.0, until - time.monotonic()),
             ),
         )
     except Exception as refused:  # noqa: BLE001 — an unreclaimed run is a leak, not a fault
         logger.warning("host tools: could not remove %s: %s", directory, error_detail(refused))
-        return False
-    if removed.exit_code != 0:
-        logger.warning(
-            "host tools: the guest refused to remove %s: exit %d", directory, removed.exit_code
-        )
         return False
     return True
 
@@ -1120,11 +1111,11 @@ async def reclaim_run(sandbox: Sandbox, layout: GuestRunLayout, *, timeout: floa
 
     Raises:
         ValueError: when ``timeout`` is not a finite positive number of seconds. An infinite one
-            reaches the backend's own ``exec`` bound, where it means this never returns. Checked
-            before the layout, so a bad argument is never answered as a refusal instead.
+            reaches the backend's own ``reclaim`` bound, where it means this never returns.
+            Checked before the layout, so a bad argument is never answered as a refusal instead.
 
     Returns:
-        Whether the ``rm`` succeeded — the guest's own status for one command, not a promise
+        Whether the removal succeeded — the backend's own status for one call, not a promise
         the directory stays gone. A stop reaches the program's process group at most — a
         descendant that left it, or any program on a guest without `setsid`, outlives one and
         can write a path back into existence after the removal returns.
