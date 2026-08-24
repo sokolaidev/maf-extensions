@@ -4781,3 +4781,27 @@ class TestFoldDispatchTransferLimits:
         )
         assert self._WL.within(backend)  # unfolded: admitted
         assert not _fold(self._WL, self._WL, self._RL).files_out.within(backend)  # folded: refused
+
+    def test_files_in_per_file_covers_the_launcher_when_nothing_else_reaches_it(self):
+        """The launcher is one file too, not only bytes in the total. A workload and a registry
+        both capped below it would otherwise fold to a per-file requirement smaller than the
+        upload the transport always makes, and a backend admitted at attach refuses the very
+        first write."""
+        small = _TL(max_bytes_per_file=1024, max_total_bytes=4096, max_files=4)
+        launcher = host_tools_over_exec._LAUNCHER_CEILING
+        assert _fold(small, small, small).files_in.max_bytes_per_file == launcher
+
+    def test_files_out_per_file_covers_a_request_read_that_outgrows_the_output(self):
+        """Nothing orders a registry's legs: `max_bytes_per_file` may exceed `max_total_bytes`,
+        and then the largest read out is a *request*, not the program's output. Folding only the
+        output leg would leave that read over a per-file ceiling the router just approved."""
+        lopsided = _TL(max_bytes_per_file=9_000_000, max_total_bytes=1_000_000, max_files=8)
+        assert _fold(self._WL, self._WL, lopsided).files_out.max_bytes_per_file == 9_000_000
+
+    def test_files_out_per_file_never_falls_below_a_marker_read(self):
+        """Every leg is validated only as positive, so a registry may sit below the handful of
+        bytes the pid, session and exit markers are read with — reads the transport makes on
+        every run, whatever the registry says."""
+        tiny = _TL(max_bytes_per_file=1, max_total_bytes=2, max_files=1)
+        marker = host_tools_over_exec._MARKER_CEILING
+        assert _fold(tiny, tiny, tiny).files_out.max_bytes_per_file == marker

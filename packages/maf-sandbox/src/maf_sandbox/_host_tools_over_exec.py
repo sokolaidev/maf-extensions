@@ -74,6 +74,12 @@ logger = logging.getLogger(__name__)
 #: it, and negligible beside a response's byte cap.
 _LAUNCHER_CEILING = 64 * 1024
 
+#: What a marker read asks for: the pid, the session id, and the exit code are each a handful of
+#: digits. Shared by every such read *and* by the fold, so the bytes the transport asks a backend
+#: for and the bytes the fold requires of it cannot drift apart — a per-file ceiling below this
+#: refuses a read the transport always makes, however small a registry's own limits are.
+_MARKER_CEILING = 32
+
 
 def fold_dispatch_transfer_limits(
     files_in: TransferLimits, files_out: TransferLimits, response_limits: TransferLimits
@@ -86,26 +92,47 @@ def fold_dispatch_transfer_limits(
     fails mid-run inside the sandbox. Only the byte legs move; the file counts stay the
     workload's.
 
-    Two traps this encodes. The guest **output** is read as one file up to
-    ``response_limits.max_total_bytes`` (its *total* leg borrowed as an output's size, not the
-    per-file one), and that is the largest single read out, so ``files_out.max_bytes_per_file``
-    must reach it. And the cumulative bytes read out are host memory — already bounded by
-    ``response_limits`` and freed per transfer — not a backend cost, so ``files_out``'s total leg
-    is left alone. Into the guest, one response is a single copy up to
-    ``response_limits.max_bytes_per_file``, and the launcher plus every response must fit the
-    guest's storage, so ``files_in``'s total leg grows by the launcher and the responses' own
-    total.
+    **Every per-file leg is the largest single transfer in that direction**, and the traps are
+    that a registry's legs are validated only as positive — nothing orders
+    ``max_bytes_per_file`` against ``max_total_bytes``, and nothing keeps either above the
+    handful of bytes a marker needs — so a per-file requirement must name each transfer it
+    covers rather than assume one dominates.
+
+    Into the guest the transport writes exactly two things: the launcher, one file up to
+    :data:`_LAUNCHER_CEILING`, and each response, one file up to
+    ``response_limits.max_bytes_per_file``. So ``files_in``'s per-file leg must reach the larger
+    of those and the workload's own, and its total leg grows by the launcher plus the responses'
+    own total, because all of it has to fit the guest's storage at once.
+
+    Out of the guest it reads three shapes: the program's **output** as one file up to
+    ``response_limits.max_total_bytes`` (that *total* leg borrowed as an output's size, not the
+    per-file one), each **request** up to ``response_limits.max_bytes_per_file``, and the pid,
+    session and exit **markers** up to :data:`_MARKER_CEILING`. ``files_out``'s per-file leg must
+    reach whichever is largest — the output usually is, but a registry with
+    ``max_bytes_per_file`` above its total, or with every leg below a marker's few bytes, makes
+    one of the others the peak. The cumulative bytes read out are host memory — already bounded
+    by ``response_limits`` and freed per transfer — not a backend cost, so ``files_out``'s total
+    leg is left alone.
     """
     return SandboxLimits(
         files_in=TransferLimits(
-            max_bytes_per_file=max(files_in.max_bytes_per_file, response_limits.max_bytes_per_file),
+            max_bytes_per_file=max(
+                files_in.max_bytes_per_file,
+                response_limits.max_bytes_per_file,
+                _LAUNCHER_CEILING,
+            ),
             max_total_bytes=(
                 files_in.max_total_bytes + _LAUNCHER_CEILING + response_limits.max_total_bytes
             ),
             max_files=files_in.max_files,
         ),
         files_out=TransferLimits(
-            max_bytes_per_file=max(files_out.max_bytes_per_file, response_limits.max_total_bytes),
+            max_bytes_per_file=max(
+                files_out.max_bytes_per_file,
+                response_limits.max_total_bytes,
+                response_limits.max_bytes_per_file,
+                _MARKER_CEILING,
+            ),
             max_total_bytes=files_out.max_total_bytes,
             max_files=files_out.max_files,
         ),
@@ -1391,7 +1418,9 @@ async def _stop_the_program(
     if recorded is None:
         return "absent", "nothing"
     try:
-        running = await _read_if_present(sandbox, layout, layout.pid, cap=32, deadline=until)
+        running = await _read_if_present(
+            sandbox, layout, layout.pid, cap=_MARKER_CEILING, deadline=until
+        )
     except Exception as unreadable:  # noqa: BLE001 — a kill must not replace the timeout
         # The same rule `_marker_if_present` follows, and for the same reason: this runs only
         # once the run is already being reported as expired, so a backend failing here means
@@ -1459,7 +1488,9 @@ async def _session_if_recorded(
     if not (made_a_session and layout.session):
         return None
     try:
-        recorded = await _read_if_present(sandbox, layout, layout.session, cap=32, deadline=until)
+        recorded = await _read_if_present(
+            sandbox, layout, layout.session, cap=_MARKER_CEILING, deadline=until
+        )
     except Exception as unreadable:  # noqa: BLE001 — a kill must not replace the timeout
         logger.warning(
             "host tools: could not read the program's session: %s", error_detail(unreadable)
@@ -1489,7 +1520,9 @@ async def _marker_if_present(
     then signalled, so what the kill acts on is a stale answer either way.
     """
     try:
-        marker = await _read_if_present(sandbox, layout, layout.exit_code, cap=32, deadline=until)
+        marker = await _read_if_present(
+            sandbox, layout, layout.exit_code, cap=_MARKER_CEILING, deadline=until
+        )
     except Exception as failure:  # noqa: BLE001 — a last look must not replace the timeout
         logger.warning("host tools: a last look for the marker failed: %s", error_detail(failure))
         return None
@@ -1572,7 +1605,7 @@ async def _probe_exit_and_requests(
 ]:
     """Read the exit marker beside a bounded window of requests, with exit taking priority."""
     marker_probe = asyncio.create_task(
-        _read_if_present(sandbox, layout, layout.exit_code, cap=32, deadline=deadline)
+        _read_if_present(sandbox, layout, layout.exit_code, cap=_MARKER_CEILING, deadline=deadline)
     )
     request_probes = tuple(
         asyncio.create_task(

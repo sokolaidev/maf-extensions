@@ -1077,6 +1077,7 @@ class TestSpecDefaults:
             "identities",
             "egress",
             "requires_os_family",
+            "host_tools",
         ]
         assert names[: len(settled)] == settled
 
