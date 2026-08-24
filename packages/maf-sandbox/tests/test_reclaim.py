@@ -127,12 +127,8 @@ class TestItNeverRaises:
 
 
 class TestABackendThatPredatesReclaim:
-    """`reclaim` is the one protocol member no capability gates, so nothing else refuses it.
-
-    A backend written before it satisfies every other check and serves calls — while leaking a
-    directory per call out of a `finally` that reports rather than raises. What it used to be
-    told was "the removal call failed", which is true and sends the reader nowhere.
-    """
+    """`reclaim` is the one protocol member no capability gates, so nothing else refuses a
+    backend without it — the reason has to name the member itself."""
 
     class _Stale(InProcessSandbox):
         """Every member but the one that became mandatory."""
@@ -144,6 +140,19 @@ class TestABackendThatPredatesReclaim:
         assert reason is not None
         assert "does not implement `Sandbox.reclaim`" in reason
         assert "the removal call failed" not in reason
+
+    def test_a_reclaim_attribute_that_raises_is_a_reason_not_an_escape(self):
+        """The lookup runs inside the same `try` as the call: this function must not raise."""
+
+        class _BrokenProxy(InProcessSandbox):
+            @property
+            def reclaim(self):
+                raise RuntimeError("resolved through a broken proxy")
+
+        reason = _reclaim(_BrokenProxy(), f"{_WORK}/abc123")
+        assert reason is not None
+        assert "the removal call failed" in reason
+        assert "broken proxy" in reason
 
     def test_it_says_what_proves_an_implementation(self):
         """A message naming a fault and no remedy is half a message."""

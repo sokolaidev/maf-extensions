@@ -1420,6 +1420,25 @@ class TestASandboxThatCannotBeReclaimed:
         with pytest.raises(TypeError, match="does not implement `Sandbox.reclaim`"):
             asyncio.run(self._router().acquire(_KEY, _SPEC))
 
+    def test_the_refused_sandbox_is_disposed_not_left_running(self):
+        """The backend acquired before the check could refuse, and a refused acquire must
+        not leave a billable sandbox running — nothing else would ever clean it."""
+        backend = InProcessSandboxBackend(self._Stale())
+        with pytest.raises(TypeError):
+            asyncio.run(SandboxRouter([backend], min_isolation=Isolation.NONE).acquire(_KEY, _SPEC))
+        assert backend.disposed == [_KEY]
+
+    def test_a_disposal_that_fails_does_not_replace_the_refusal(self):
+        class _KeepsItsSandboxes(InProcessSandboxBackend):
+            async def dispose(self, key):
+                await super().dispose(key)
+                raise RuntimeError("the control plane is down")
+
+        backend = _KeepsItsSandboxes(self._Stale())
+        with pytest.raises(TypeError, match="does not implement"):
+            asyncio.run(SandboxRouter([backend], min_isolation=Isolation.NONE).acquire(_KEY, _SPEC))
+        assert backend.disposed == [_KEY], "the disposal was not even attempted"
+
     def test_the_refusal_says_what_proves_an_implementation(self):
         with pytest.raises(TypeError, match="assert_reclaim_conformance"):
             asyncio.run(self._router().acquire(_KEY, _SPEC))
