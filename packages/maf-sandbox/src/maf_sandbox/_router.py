@@ -590,6 +590,16 @@ class SandboxRouter:
             )
             return False
 
+    def mark_unclean(self, key: SandboxKey) -> None:
+        """Refuse ``key`` without disposing — for a cleanup cancelled before it could dispose.
+
+        Synchronous, because it is called while a :class:`~asyncio.CancelledError` is propagating
+        out of a tool call's cleanup, where awaiting a disposal is not reliable.  The sandbox is
+        left refused (:meth:`acquire` raises :class:`SandboxUnclean`) until a later disposal — a
+        subsequent :meth:`dispose_unclean`, or :meth:`dispose_scope` — lands.
+        """
+        self._unclean.add(key)
+
     @asynccontextmanager
     async def scope(self, scope: str, thread_id: str) -> AsyncGenerator[ScopeDisposal, None]:
         """Serve one conversation, and reclaim its sandboxes when the block ends.

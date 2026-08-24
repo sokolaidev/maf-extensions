@@ -570,8 +570,13 @@ async def _reclaim_the_call(
             except (asyncio.CancelledError, GeneratorExit):
                 # Recorded and then let through, and the rest of the sandboxes are abandoned:
                 # the caller's deadline has passed, and containing this would have the call
-                # return the body's answer past a bound the host thought it had. The leak still
-                # has to be visible, so the line is written before the cancellation goes on.
+                # return the body's answer past a bound the host thought it had. The removal did
+                # not finish, so the sandbox may still hold this call's data — refuse the key
+                # (synchronously; awaiting a disposal while cancelled is not reliable) so the next
+                # call cannot reacquire it before a later disposal lands. The leak still has to be
+                # visible, so the line is written before the cancellation goes on.
+                if not router.keep_unclean:
+                    router.mark_unclean(key)
                 logger.warning(
                     f"{prefix}: %s was not reclaimed: the call was cancelled during the removal",
                     path,

@@ -67,7 +67,7 @@ def note_unclean(sandbox: object, reason: str) -> None:
 
 @dataclass(frozen=True)
 class ReclaimFailure:
-    """A tool call's own guest path that is still in the sandbox, and why.
+    """A tool call's own guest path the framework acted on, and why.
 
     What ``sandboxed_tool``'s ``on_reclaim_failure`` receives, after the framework has acted.
     A data-retention failure rather than a tidiness one: ``acquire`` is get-or-create, so what

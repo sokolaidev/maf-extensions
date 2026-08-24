@@ -1108,6 +1108,27 @@ class TestTheFrameworkDisposesWhatItCouldNotClean:
         with pytest.raises(SandboxUnclean):
             asyncio.run(router.acquire(_KEY, _SPEC))
 
+    def test_a_cancellation_during_the_removal_refuses_the_key(self, caplog):
+        """A removal cancelled mid-flight leaves the sandbox possibly dirty, so the next call
+        must not reacquire it. The key is marked unclean synchronously before the cancellation
+        propagates, since awaiting a disposal while cancelled is not reliable."""
+
+        class _CancelsOnRemove(InProcessSandbox):
+            async def reclaim(
+                self, directory: str, *, working_directory: str, timeout: float
+            ) -> None:
+                raise asyncio.CancelledError()
+
+        backend = InProcessSandboxBackend(_CancelsOnRemove())
+        router = _router(backend)
+        tool = _attach_with(_reclaiming_body, router)[0]
+        with caplog.at_level(logging.WARNING, logger="test_workload"):
+            with pytest.raises(asyncio.CancelledError):
+                _call(tool, target="x")
+        assert any("cancelled during the removal" in r.message for r in caplog.records)
+        with pytest.raises(SandboxUnclean):
+            asyncio.run(router.acquire(_KEY, _SPEC))
+
 
 def _returning_body(session: SandboxToolSession):
     """The shape a real kind has: a refusal from `acquire` is the tool's answer."""

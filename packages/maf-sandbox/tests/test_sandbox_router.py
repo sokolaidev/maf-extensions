@@ -886,6 +886,7 @@ class TestAKeyTheRouterCouldNotDisposeIsRefused:
                 try:
                     await disposing
                 except asyncio.CancelledError:
+                    # `disposing` is the task we just cancelled; its CancelledError is expected.
                     pass
 
         asyncio.run(drive())
