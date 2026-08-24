@@ -124,3 +124,62 @@ class TestItNeverRaises:
         cancelled = InProcessSandbox(raises=asyncio.CancelledError())
         with pytest.raises(asyncio.CancelledError):
             _reclaim(cancelled, f"{_WORK}/abc123")
+
+
+class TestABackendThatPredatesReclaim:
+    """`reclaim` is the one protocol member no capability gates, so nothing else refuses a
+    backend without it — the reason has to name the member itself."""
+
+    class _Stale(InProcessSandbox):
+        """Every member but the one that became mandatory."""
+
+        reclaim = None  # type: ignore[assignment]
+
+    def test_the_reason_names_the_member_rather_than_a_failed_removal(self):
+        reason = _reclaim(self._Stale(), f"{_WORK}/abc123")
+        assert reason is not None
+        assert "does not implement `Sandbox.reclaim`" in reason
+        assert "the removal call failed" not in reason
+
+    def test_a_reclaim_attribute_that_raises_is_a_reason_not_an_escape(self):
+        """The lookup runs inside the same `try` as the call: this function must not raise."""
+
+        class _BrokenProxy(InProcessSandbox):
+            """Raises at attribute *lookup* — an override that raised when called would
+            exercise the ordinary failure path instead, which has its own test above.
+
+            `RuntimeError` deliberately, not `AttributeError`: the lookup runs through
+            `getattr(..., None)`, which swallows an `AttributeError` into the
+            stale-backend answer. The escape under test is everything else.
+            """
+
+            def __getattribute__(self, name: str):
+                if name == "reclaim":
+                    raise RuntimeError("resolved through a broken proxy")
+                return super().__getattribute__(name)
+
+        reason = _reclaim(_BrokenProxy(), f"{_WORK}/abc123")
+        assert reason is not None
+        assert "the removal call failed" in reason
+        assert "broken proxy" in reason
+
+    def test_it_says_what_proves_an_implementation(self):
+        """A message naming a fault and no remedy is half a message."""
+        reason = _reclaim(self._Stale(), f"{_WORK}/abc123")
+        assert reason is not None and "assert_reclaim_conformance" in reason
+
+    def test_an_attribute_error_from_inside_a_real_reclaim_is_not_read_as_this(self):
+        """Why this asks with `getattr` rather than catching the `AttributeError`.
+
+        A correct `reclaim` raising an `AttributeError` of its own is a different fault, and
+        answering it with "your backend is out of date" sends the reader where the bug is not.
+        """
+
+        class _Buggy(InProcessSandbox):
+            async def reclaim(self, directory, *, working_directory, timeout):
+                raise AttributeError("something inside the implementation")
+
+        reason = _reclaim(_Buggy(), f"{_WORK}/abc123")
+        assert reason is not None
+        assert "the removal call failed" in reason
+        assert "does not implement" not in reason

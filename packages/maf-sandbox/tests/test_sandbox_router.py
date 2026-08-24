@@ -51,7 +51,7 @@ from maf_sandbox import (
     TransferLimits,
     meets_floor,
 )
-from maf_sandbox.testing import InProcessSandboxBackend
+from maf_sandbox.testing import InProcessSandbox, InProcessSandboxBackend
 
 _KEY = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
 _SPEC = SandboxSpec(kind="test")
@@ -1401,3 +1401,49 @@ class TestScope:
             return disposal
 
         assert asyncio.run(scenario()).disposed == 0
+
+
+class TestASandboxThatCannotBeReclaimed:
+    """What gates `reclaim`, since no capability does.
+
+    Without this a stale backend acquires cleanly and the loss is reported once per call, for
+    the life of the process, as a removal that failed.
+    """
+
+    class _Stale(InProcessSandbox):
+        reclaim = None  # type: ignore[assignment]
+
+    def _router(self) -> SandboxRouter:
+        return SandboxRouter([InProcessSandboxBackend(self._Stale())], min_isolation=Isolation.NONE)
+
+    def test_acquire_refuses_and_names_the_member(self):
+        with pytest.raises(TypeError, match="does not implement `Sandbox.reclaim`"):
+            asyncio.run(self._router().acquire(_KEY, _SPEC))
+
+    def test_the_refused_sandbox_is_disposed_not_left_running(self):
+        """The backend acquired before the check could refuse, and a refused acquire must
+        not leave a billable sandbox running — nothing else would ever clean it."""
+        backend = InProcessSandboxBackend(self._Stale())
+        with pytest.raises(TypeError):
+            asyncio.run(SandboxRouter([backend], min_isolation=Isolation.NONE).acquire(_KEY, _SPEC))
+        assert backend.disposed == [_KEY]
+
+    def test_a_disposal_that_fails_does_not_replace_the_refusal(self):
+        class _KeepsItsSandboxes(InProcessSandboxBackend):
+            async def dispose(self, key):
+                await super().dispose(key)
+                raise RuntimeError("the control plane is down")
+
+        backend = _KeepsItsSandboxes(self._Stale())
+        with pytest.raises(TypeError, match="does not implement"):
+            asyncio.run(SandboxRouter([backend], min_isolation=Isolation.NONE).acquire(_KEY, _SPEC))
+        assert backend.disposed == [_KEY], "the disposal was not even attempted"
+
+    def test_the_refusal_says_what_proves_an_implementation(self):
+        with pytest.raises(TypeError, match="assert_reclaim_conformance"):
+            asyncio.run(self._router().acquire(_KEY, _SPEC))
+
+    def test_an_ordinary_sandbox_still_acquires(self):
+        """A guard that refuses everything is an outage, not a guard."""
+        router = SandboxRouter([InProcessSandboxBackend()], min_isolation=Isolation.NONE)
+        assert asyncio.run(router.acquire(_KEY, _SPEC)) is not None

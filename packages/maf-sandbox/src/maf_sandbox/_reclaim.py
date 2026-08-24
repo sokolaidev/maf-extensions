@@ -68,6 +68,16 @@ async def reclaim_guest_path(
     if len([part for part in resolved.split("/") if part]) < 2:
         return f"{resolved!r} is too close to the root to remove recursively"
     try:
+        # Inside the `try`, so a proxy whose attribute lookup raises is a reason below, not
+        # an escape past the caller's `finally`. `getattr` rather than catching the
+        # `AttributeError`: a correct `reclaim` raising one of its own is a different fault.
+        if not callable(getattr(sandbox, "reclaim", None)):
+            return (
+                "this backend does not implement `Sandbox.reclaim`, which every backend serves "
+                "and no capability gates — every call leaks its directory until it does. "
+                "`maf_sandbox.conformance.assert_reclaim_conformance` is what proves an "
+                "implementation"
+            )
         await sandbox.reclaim(resolved, working_directory=working_directory, timeout=timeout)
     except Exception as refused:  # noqa: BLE001 — an unreclaimed path is a leak, not a fault
         # Only `Exception`. A `CancelledError` here is the caller's own deadline arriving at

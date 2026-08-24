@@ -142,6 +142,22 @@ class SandboxTransferLimitsNotPermitted(PermissionError):
     """
 
 
+def _refuse_a_sandbox_that_cannot_be_reclaimed(sandbox: Sandbox) -> None:
+    """Refuse a sandbox missing :meth:`Sandbox.reclaim`, naming the member rather than leaking.
+
+    No capability gates ``reclaim``, so no other check notices a backend without it — every
+    call would leak its directory instead. A :class:`TypeError` because an absent protocol
+    member is exactly that: read by a person and fixed in code, never caught to recover.
+    """
+    if not callable(getattr(sandbox, "reclaim", None)):
+        raise TypeError(
+            f"{type(sandbox).__name__} does not implement `Sandbox.reclaim`, which every backend "
+            "serves and no capability gates. Add it — a directory this stack created under the "
+            "working directory, removed recursively, where a missing directory is success — and "
+            "`maf_sandbox.conformance.assert_reclaim_conformance` proves the implementation."
+        )
+
+
 def _declared_isolation(backend: SandboxBackend) -> Isolation:
     """The rung ``backend`` claims, refusing any value this package does not recognise.
 
@@ -455,11 +471,32 @@ class SandboxRouter:
                 or when the backend declares its ceilings as something other than a
                 ``SandboxLimits``.
             SandboxEgressNotEnforced: when the backend cannot confine egress to this spec.
+            TypeError: when the backend hands back a sandbox without :meth:`Sandbox.reclaim`.
+                That sandbox is disposed (this backend, best effort) before the refusal
+                reaches the caller: a backend that cannot reclaim can never clean it, and a
+                refused acquire must not leave a billable sandbox running.
         """
         if self._backend is None:
             raise NoSandboxBackend("no sandbox backend is configured")
         self._refuse_unless_backend_can_serve(spec)
-        return await self._backend.acquire(key, spec)
+        sandbox = await self._backend.acquire(key, spec)
+        try:
+            _refuse_a_sandbox_that_cannot_be_reclaimed(sandbox)
+        except TypeError:
+            # The sandbox already exists, and this backend can never clean it — the rule in
+            # `docs/sandbox/tool-call.md` § Cleanup. Disposed on this backend alone: its other
+            # sandboxes for the key are equally unreclaimable, and no other backend's are
+            # touched. Its own failure is logged, never allowed to replace the refusal.
+            try:
+                await self._backend.dispose(key)
+            except Exception as undisposed:  # noqa: BLE001 — the refusal must reach the caller
+                logger.warning(
+                    "sandbox router: backend %s failed to dispose after a reclaim refusal: %s",
+                    self._backend.name,
+                    undisposed,
+                )
+            raise
+        return sandbox
 
     async def dispose(self, key: SandboxKey) -> None:
         """Delete every kind's sandbox for ``key``. Best-effort across every registered backend."""
