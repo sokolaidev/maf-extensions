@@ -8,6 +8,7 @@ venv and runs pytest in it, so it is left to the live runs.
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
@@ -60,22 +61,81 @@ class TestWhichWheelsItFound:
         assert check.dependent_wheels(tmp_path) == {}
 
 
+def _repository_with_a_tag(root: Path, tag: str, distribution: str) -> Path:
+    """A throwaway repository carrying one tagged commit with ``distribution``'s test tree.
+
+    Built here rather than read out of this repository, because `recover_tests` starts with
+    `git tag --list` and a checkout without tags answers nothing. `tests.yml` fetches full
+    history and `publish-packages.yml`'s build job does not, so a test that read this
+    repository's own tags passed on every pull request and failed on every publish.
+    """
+    tests = root / "packages" / distribution / "tests"
+    tests.mkdir(parents=True)
+    (tests / "test_something.py").write_text("def test_it():\n    assert True\n", encoding="utf-8")
+    for command in (
+        ["git", "init", "-q"],
+        ["git", "config", "user.email", "t@example.invalid"],
+        ["git", "config", "user.name", "t"],
+        ["git", "add", "-A"],
+        ["git", "commit", "-q", "-m", "seed"],
+        ["git", "tag", tag],
+    ):
+        subprocess.run(command, cwd=root, check=True, capture_output=True)
+    return tests
+
+
 class TestRecoveringAVersionsTests:
     """No sdist ships tests, so a published version's suite exists only at its release tag."""
 
-    def test_a_real_tag_yields_its_test_tree(self, tmp_path: Path):
-        tests = check.recover_tests("maf-sandbox-bicep-v0.9.3", "maf-sandbox-bicep", tmp_path)
-        assert tests is not None, "the 0.9.3 tag should carry bicep's tests"
-        assert (tests / "test_bicep_workload.py").is_file()
+    _TAG = "maf-sandbox-bicep-v0.9.3"
+    _DIST = "maf-sandbox-bicep"
 
-    def test_a_tag_that_does_not_exist_is_none(self, tmp_path: Path):
+    def test_a_tag_yields_its_test_tree(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        origin = tmp_path / "origin"
+        origin.mkdir()
+        _repository_with_a_tag(origin, self._TAG, self._DIST)
+        monkeypatch.setattr(check, "_ROOT", origin)
+
+        recovered = check.recover_tests(self._TAG, self._DIST, tmp_path / "into")
+        assert recovered is not None, "the tagged commit carries the test tree"
+        assert (recovered / "test_something.py").is_file()
+
+    def test_a_tag_that_does_not_exist_is_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
         """Reported as a failure by the caller, never skipped — an untestable version is news."""
-        assert (
-            check.recover_tests("maf-sandbox-bicep-v99.0.0", "maf-sandbox-bicep", tmp_path) is None
-        )
+        origin = tmp_path / "origin"
+        origin.mkdir()
+        _repository_with_a_tag(origin, self._TAG, self._DIST)
+        monkeypatch.setattr(check, "_ROOT", origin)
 
-    def test_a_tag_without_that_package_is_none(self, tmp_path: Path):
-        assert check.recover_tests("maf-sandbox-bicep-v0.9.3", "maf-sandbox-nope", tmp_path) is None
+        assert check.recover_tests("maf-sandbox-bicep-v99.0.0", self._DIST, tmp_path / "x") is None
+
+    def test_a_tag_without_that_package_is_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        origin = tmp_path / "origin"
+        origin.mkdir()
+        _repository_with_a_tag(origin, self._TAG, self._DIST)
+        monkeypatch.setattr(check, "_ROOT", origin)
+
+        assert check.recover_tests(self._TAG, "maf-sandbox-nope", tmp_path / "y") is None
+
+    def test_a_checkout_without_tags_answers_nothing_rather_than_raising(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """The shape that broke every publish: a shallow checkout carries no tags.
+
+        The gate's own job fetches full history for this reason; a caller that does not gets
+        `None` and reports an untestable version, rather than an exception mid-release.
+        """
+        origin = tmp_path / "origin"
+        origin.mkdir()
+        _repository_with_a_tag(origin, self._TAG, self._DIST)
+        subprocess.run(["git", "tag", "-d", self._TAG], cwd=origin, check=True, capture_output=True)
+        monkeypatch.setattr(check, "_ROOT", origin)
+
+        assert check.recover_tests(self._TAG, self._DIST, tmp_path / "z") is None
 
 
 class TestHowAVerdictReads:
