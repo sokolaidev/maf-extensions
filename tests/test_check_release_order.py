@@ -8,6 +8,7 @@ package, which a prefix match missing the trailing separator gets wrong.
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import urllib.error
 import urllib.request
@@ -143,47 +144,78 @@ class TestWhatCountsAsTouchingTheCore:
         assert not check.touches_core([path])
 
 
-class TestAssess:
-    """The whole gate: refuse only when a real minor meets a ceiling that excludes it."""
+class TestConsequences:
+    """What it says, and — since #628 — that saying it is all it does."""
 
-    def test_a_core_feat_is_refused_while_a_ceiling_excludes_it(self, tmp_path: Path):
+    def test_a_core_feat_past_a_ceiling_is_reported(self, tmp_path: Path):
         repo = _repo(tmp_path, "0.6.1", {"maf-sandbox-acas": "0.7", "maf-sandbox-wslc": "0.7"})
-        problems = check.assess("feat: a thing", [_CORE_FILE], repo)
-        assert problems, "a 0.7.0 release under a <0.7 ceiling must be refused"
-        assert "maf-sandbox-acas, maf-sandbox-wslc" in problems[0]
-        assert "0.7.0" in problems[0]
+        notices = check.consequences("feat: a thing", [_CORE_FILE], repo)
+        assert notices, "a 0.7.0 release under a <0.7 ceiling has something to say"
+        assert "maf-sandbox-acas, maf-sandbox-wslc" in notices[0]
+        assert "0.7.0" in notices[0]
 
     def test_it_names_only_the_dependents_that_exclude_it(self, tmp_path: Path):
         repo = _repo(tmp_path, "0.6.1", {"maf-sandbox-acas": "0.8", "maf-sandbox-wslc": "0.7"})
-        problems = check.assess("feat: a thing", [_CORE_FILE], repo)
-        assert "maf-sandbox-wslc" in problems[0]
-        assert "maf-sandbox-acas" not in problems[0]
+        notices = check.consequences("feat: a thing", [_CORE_FILE], repo)
+        assert "maf-sandbox-wslc" in notices[0]
+        assert "maf-sandbox-acas" not in notices[0]
 
-    def test_a_widened_ceiling_lets_it_through(self, tmp_path: Path):
+    def test_a_widened_ceiling_has_nothing_to_report(self, tmp_path: Path):
         repo = _repo(tmp_path, "0.6.1", {"maf-sandbox-acas": "0.8"})
-        assert check.assess("feat: a thing", [_CORE_FILE], repo) == []
+        assert check.consequences("feat: a thing", [_CORE_FILE], repo) == []
 
     def test_a_patch_never_crosses_a_minor_ceiling(self, tmp_path: Path):
         repo = _repo(tmp_path, "0.6.1", {"maf-sandbox-acas": "0.7"})
-        assert check.assess("docs: a thing", [_CORE_FILE], repo) == []
+        assert check.consequences("docs: a thing", [_CORE_FILE], repo) == []
 
     def test_a_breaking_patch_does_cross_it(self, tmp_path: Path):
         repo = _repo(tmp_path, "0.6.1", {"maf-sandbox-acas": "0.7"})
-        assert check.assess("fix!: a thing", [_CORE_FILE], repo) != []
+        assert check.consequences("fix!: a thing", [_CORE_FILE], repo) != []
 
     def test_a_feat_that_touches_no_core_file_is_not_this_gate_s_business(self, tmp_path: Path):
         repo = _repo(tmp_path, "0.6.1", {"maf-sandbox-acas": "0.7"})
         changed = ["packages/maf-sandbox-acas/src/maf_sandbox_acas/_backend.py"]
-        assert check.assess("feat: a thing", changed, repo) == []
+        assert check.consequences("feat: a thing", changed, repo) == []
 
-    def test_a_chore_on_the_core_releases_nothing_and_passes(self, tmp_path: Path):
+    def test_a_chore_on_the_core_releases_nothing_and_says_nothing(self, tmp_path: Path):
         repo = _repo(tmp_path, "0.6.1", {"maf-sandbox-acas": "0.7"})
-        assert check.assess("chore: a thing", [_CORE_FILE], repo) == []
+        assert check.consequences("chore: a thing", [_CORE_FILE], repo) == []
 
-    def test_the_refusal_says_what_to_do_about_it(self, tmp_path: Path):
+    def test_it_names_what_follows_rather_than_a_thing_to_do_first(self, tmp_path: Path):
+        """It used to say "widen their ceilings first", which is the ordering #628 removed."""
         repo = _repo(tmp_path, "0.6.1", {"maf-sandbox-acas": "0.7"})
-        problems = check.assess("feat: a thing", [_CORE_FILE], repo)
-        assert "RELEASING.md" in problems[1]
+        notices = check.consequences("feat: a thing", [_CORE_FILE], repo)
+        assert "no published dependent resolves it" in notices[1]
+        assert "the live samples" in notices[1]
+
+
+class TestItNoLongerRefuses:
+    """The inversion itself: a version outside every ceiling is permitted, and sometimes wanted.
+
+    Refusing here is what forced a widening pull request ahead of every core release, and the
+    widening was granted on schedule without anyone asking whether the release broke anything.
+    What asks now is `check_core_against_dependents.py`, at the moment of release (#628).
+    """
+
+    def test_a_release_past_every_ceiling_still_exits_zero(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        repo = _repo(tmp_path, "0.6.1", {"maf-sandbox-acas": "0.7"})
+        monkeypatch.setattr(check.sys, "stdin", io.StringIO(_CORE_FILE))
+        monkeypatch.setattr(check.Path, "resolve", lambda self: repo / "scripts" / "x.py")
+        assert check.main(["prog", "feat: a thing"]) == 0
+
+    def test_what_it_printed_went_to_stdout_not_stderr(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        """A notice belongs in the log beside the run, not in the stream that reads as a fault."""
+        repo = _repo(tmp_path, "0.6.1", {"maf-sandbox-acas": "0.7"})
+        monkeypatch.setattr(check.sys, "stdin", io.StringIO(_CORE_FILE))
+        monkeypatch.setattr(check.Path, "resolve", lambda self: repo / "scripts" / "x.py")
+        check.main(["prog", "feat: a thing"])
+        captured = capsys.readouterr()
+        assert "maf-sandbox-acas" in captured.out
+        assert captured.err == ""
 
 
 class TestPublishedVersionsAreSortedSemantically:

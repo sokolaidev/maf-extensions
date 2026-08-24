@@ -81,10 +81,12 @@ jobs:
           # clone does not have.
           fetch-depth: 0
 
-      - name: Release order (a core minor needs its ceilings widened first)
-        # First, because it costs a second and it is the one failure here whose fix is a
-        # different pull request rather than an edit to this one. Only a pull request carries
-        # the title release-please turns into a version, so it is the only event this reads.
+      - name: Release order (what follows if this core lands outside the ceilings)
+        # First, because it costs a second. It used to be the one *failure* here whose fix
+        # was a different pull request; since #628 it reports rather than refuses, and the
+        # release it describes is refused — when it should be — by the gates that measure.
+        # Only a pull request carries the title release-please turns into a version, so it is
+        # the only event this reads.
         #
         # The `${{ }}` expression is assigned to an environment variable rather than
         # interpolated into this shell script. A pull request title is attacker-controlled
