@@ -123,6 +123,18 @@ This has been misdiagnosed twice, so the negative results are worth keeping. It 
 
 Prefer either of those to a rule bypass. The bypass works, and is even defensible here — a Release PR only edits a version, a changelog and the manifest, and `publish-packages.yml` re-runs the entire gate on the tagged commit before anything is uploaded — but a release that routinely bypasses branch protection trains you to click through branch protection.
 
+## What a red compatibility gate means
+
+Two gates can refuse a release for a reason that is about *another* package's artifacts rather than the code in front of you, and they read differently.
+
+**`published-cores` red on a dependent** means that package's suite failed against a `maf-sandbox` its own range admits — so either the code is wrong for that core, or the range claims more than it can keep. The floor is the usual culprit: a suite that needs API a release introduced, under a floor that does not require it. Raising the floor is the fix when the code genuinely needs the newer core; narrowing the ceiling is the fix when it does not and never will. Both are edits to the pull request in front of you, which is why the gate also runs there rather than only at publish.
+
+**The import check red on a core** means a *published* dependent no longer imports the candidate core. That one is not an edit to anything: the failing artifact is on PyPI and cannot be changed. Either the break is unintended and the core changes, or it is intended and that dependent has to publish an adapted version before the core can go out. Read it beside the ordinary suite — the same dependent's tests run against the in-tree core on every pull request, so a green there and a red here says the break lands only on what is already shipped.
+
+A gate that cannot reach PyPI fails rather than passes, in both directions and on purpose. A pass because the index was unreachable is the one outcome that would make either check worthless.
+
+The reasoning behind the whole arrangement, and what it still does not cover, is in [`release-compatibility.md`](release-compatibility.md).
+
 ## Adding a package to this repository
 
 1. Create `packages/<name>/` with its own `pyproject.toml`, `README.md`, `CHANGELOG.md`, `LICENSE`, and a `py.typed` beside the module.
