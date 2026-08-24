@@ -39,6 +39,10 @@ The whole suite runs, not a subset — the same tests are collected as in an ord
 
 That is the argument for making these gates strong enough to carry the weight the ceiling is pretending to. A guard that is always relaxed on schedule is not guarding, and the thing that could check runs at every publish. Widening the headroom is only honest once something verifies the promise at the moment of release rather than a cycle earlier. The full argument, the measurements behind it and the order the pieces have to land in are in [#628](https://github.com/sokolaidev/maf-extensions/issues/628).
 
+**Half of that has now happened.** `check_release_order.py` no longer refuses a core release whose version some dependent's ceiling excludes — it reports what follows. That refusal was what put the widening ahead of every core release; without it the widening is an offer a maintainer takes when they want the new core reachable, and declining it is a complete outcome. A core released outside every ceiling is out of reach of everything already installed, which for a breaking release is the point.
+
+**The headroom itself is still one minor**, and that is the remaining decision rather than an oversight. Widening it is what turns a drain every minor into a drain every few, and it is only honest because the gates above now measure the promise at each release. It is left open here because the number is a judgement with a wide blast radius: 28 tests pin the current arithmetic, which is the repository saying that the value is policy rather than a constant.
+
 ## The window that remains open
 
 Two were named when this was written and one is now closed. Both came from the same shape: a gate's verdict is a function of what is published *at the moment it runs*, and the upload happens later — the `publish` job waits on the `pypi` environment's required reviewer, which is a human, so the gap is hours or days rather than seconds.

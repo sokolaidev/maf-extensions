@@ -1,10 +1,21 @@
-"""Refuse a maf-sandbox change that would release a version the dependents cannot admit.
+"""Say what follows when a maf-sandbox release lands outside the dependents' ceilings.
 
     git diff --name-only <base> HEAD | python scripts/check_release_order.py "<pull request title>"
 
-Changed paths arrive on stdin, one per line. It refuses only when the title would cut a new
+Changed paths arrive on stdin, one per line. It speaks only when the title would cut a new
 *minor* of maf-sandbox, the change is attributed to that package by the files it touches, and
-some dependent's ceiling excludes the result — step 1 of a maf-sandbox release in RELEASING.md.
+some dependent's ceiling excludes the result.
+
+**It used to refuse that, and no longer does.** Refusing is what forced a widening pull request
+ahead of every core release, and the widening was granted on schedule without anyone asking
+whether the release broke anything — five dependent releases per core minor to move a bound
+nothing checked. What checks it now is `check_core_against_dependents.py`, which runs every
+admitting published dependent's own suite against the candidate core at the moment of release.
+
+So a version outside those ceilings is permitted, and for a breaking release it is the point: a
+break nothing already installed can reach is a break that hurts nobody, and each dependent
+adopts on its own schedule. What is *not* obvious is what follows, so that is what this prints.
+See `docs/release-compatibility.md`.
 
 One shape it cannot see: `BREAKING CHANGE:` goes in the squash-commit box at merge time, so a
 title with no `!` can still cut a minor. `tests/test_check_release_order.py` catches that on
@@ -138,8 +149,8 @@ def core_version(repo_root: Path) -> tuple[int, ...]:
     return version(tomllib.loads(text)["project"]["version"])
 
 
-def assess(title: str, paths: list[str], repo_root: Path) -> list[str]:
-    """The reasons this change may not merge yet, or an empty list."""
+def consequences(title: str, paths: list[str], repo_root: Path) -> list[str]:
+    """What follows from this title's version against the dependents' ceilings, or nothing."""
     if not touches_core(paths):
         return []
     current = core_version(repo_root)
@@ -155,24 +166,30 @@ def assess(title: str, paths: list[str], repo_root: Path) -> list[str]:
     return [
         f"this title releases maf-sandbox {shown}, which these still exclude: "
         f"{', '.join(excluded)}",
-        "widen their ceilings in a separate pull request first: RELEASING.md, step 1 of a "
-        "maf-sandbox release. Merging ahead of it publishes a version no dependent can adopt, "
-        "and the post-release floor bump then has nothing to do rather than failing.",
+        "that is allowed, and for a breaking release it is the point — a version nothing "
+        "already installed can reach is one that breaks nobody. Two things follow either way: "
+        "no published dependent resolves it until its own ceiling widens and it republishes, "
+        "and the live samples resolve their dependents from PyPI, so they will exercise the "
+        "core below this one and the dispatch will say it skipped. If you meant it to be "
+        "reachable, take the widening offer the release opens.",
     ]
 
 
 def main(argv: list[str]) -> int:
-    """CLI entry: read changed paths from stdin and the PR title from argv, run ``assess``, and print any ordering problems."""
+    """CLI entry: read changed paths from stdin and the title from argv, and print what follows.
+
+    Always zero. This reports a consequence rather than a fault, and the release it describes is
+    refused — when it should be — by the gates that measure rather than by a bound read here.
+    """
     if len(argv) != 2:
         print(f"usage: {argv[0]} <pull-request-title>", file=sys.stderr)
         return 2
     paths = [line.strip() for line in sys.stdin.read().splitlines() if line.strip()]
-    problems = assess(argv[1], paths, Path(__file__).resolve().parent.parent)
-    for problem in problems:
-        print(problem, file=sys.stderr)
-    if problems:
-        return 1
-    print("release order: nothing to widen before this merges")
+    notices = consequences(argv[1], paths, Path(__file__).resolve().parent.parent)
+    for notice in notices:
+        print(notice)
+    if not notices:
+        print("release order: every dependent's ceiling already admits what this would release")
     return 0
 
 
