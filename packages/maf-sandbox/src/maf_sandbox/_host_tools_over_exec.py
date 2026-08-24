@@ -57,6 +57,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from ._error_detail import error_detail
 from ._outputs import SandboxTransferCapExceeded
 from ._protocol import EntryKind, ExecResult
+from ._reclaim import note_unclean
 from .paths import confine_guest_path, guest_path_relative_to
 
 if TYPE_CHECKING:
@@ -786,18 +787,25 @@ async def dispatch_over_exec(
         # raised for reasons of its own. A successful run leaves exactly as much behind as
         # a failed one, and it is the common case.
         #
-        if not handled:
+        if not handled and launcher.executed:
             # `_supervise` reports its own timeouts and stops the program itself. Anything else
             # leaving this function — a backend failing mid-run — leaves a detached program
             # nobody has stopped, and the reclaim below is about to remove the files that would
-            # have identified it.
+            # have identified it. Only once the launcher `exec` was attempted, though: a failure
+            # before that (an upload that raised) started no program, and stopping-and-noting over
+            # it would dispose a clean sandbox — and maybe a sibling — on a write failure.
             if await _marker_if_present(sandbox, layout, _a_grace_from_now()) is None:
-                await _stop_the_program(
+                # Capture and note the stop, as `_supervise` does on its own paths: a backend
+                # that failed mid-run can leave the program stopped only in part, and the
+                # reclaim below removes the files that would identify it — so without a note here
+                # a partially-stopped program is reclaimed and the sandbox reused as if clean.
+                fate, reach = await _stop_the_program(
                     sandbox,
                     layout,
                     until=_a_grace_from_now(),
                     made_a_session=launcher.made_a_session,
                 )
+                _note_unclean_stop(sandbox, _started_something(fate), reach)
         await _reclaim_the_transports_own(sandbox, layout, until=time.monotonic() + _RECLAIM_GRACE)
 
 
@@ -810,6 +818,10 @@ class _WhatTheLauncherSaid:
     """
 
     made_a_session: bool = False
+    #: Set once the launcher ``exec`` is attempted. Until then a failure (an upload that raised)
+    #: means no program can have started, so the finally must not stop-and-note over it — that
+    #: would dispose a sandbox, and maybe a sibling, on a write failure.
+    executed: bool = False
 
 
 async def _supervise(
@@ -845,6 +857,8 @@ async def _supervise(
             # that nothing was started.
             signal="absent",
         ) from gone
+    # The upload landed; from here a program may exist, so the finally may stop-and-note.
+    launcher.executed = True
     try:
         started = await sandbox.exec(
             f"sh {_quote(layout.launcher)}",
@@ -884,6 +898,7 @@ async def _supervise(
         # A grace of its own, measured after the marker read rather than shared with it.
         fate, reach = await _stop_the_program(sandbox, layout, until=_a_grace_from_now())
         fate = _nothing_is_proven(fate)
+        _note_unclean_stop(sandbox, fate, reach)
         raise _TheRunsOwnTimeout(
             f"the run's {timeout:g}s were gone while starting the program"
             f"{_clause_while_starting(fate, reach)}",
@@ -930,6 +945,7 @@ async def _supervise(
                 sandbox, layout, until=_a_grace_from_now(), made_a_session=made_a_session
             )
             fate = _started_something(fate)
+            _note_unclean_stop(sandbox, fate, reach)
             raise _TheRunsOwnTimeout(
                 f"the guest program did not finish within {timeout:g}s"
                 f"{_clause_after_the_launcher_started(fate, reach)}. "
@@ -1007,6 +1023,7 @@ async def _supervise(
                 sandbox, layout, until=_a_grace_from_now(), made_a_session=made_a_session
             )
             fate = _started_something(fate)
+            _note_unclean_stop(sandbox, fate, reach)
             failure = f"{stalled}{_clause_after_the_launcher_started(fate, reach)}"
             raise _TheRunsOwnTimeout(
                 f"the guest program did not finish within {timeout:g}s — {failure}. "
@@ -1046,6 +1063,24 @@ _SIGNALLED_ALONE = (
     " and was sent SIGKILL, which reaches it alone — anything it spawned is still running"
 )
 _NOT_SIGNALLED = " and could not be signalled, so it may still be running"
+
+
+def _note_unclean_stop(sandbox: Sandbox, fate: _Fate, reach: _Reach) -> None:
+    """Tell the running tool call when a stop of ``sandbox`` did not provably take the tree.
+
+    Only ``"sent"`` to the process group says what the program spawned went with it. A
+    signal that reached the program alone, one that could not be sent, or a pid that never
+    appeared after the launcher ran, all leave something that can write a path back once
+    the call's directory is removed — so the call's sandbox is not clean, whatever the
+    removal reports. ``"absent"`` is the one proven-clean answer: nothing was started. The
+    note names ``sandbox`` so a call that acquired a second one is not disposed over this stop.
+    """
+    if fate == "absent" or (fate == "sent" and reach == "group"):
+        return
+    note_unclean(
+        sandbox,
+        "the guest program overran" + (_sent_clause(reach) if fate == "sent" else _NOT_SIGNALLED),
+    )
 
 
 def _sent_clause(reach: _Reach) -> str:

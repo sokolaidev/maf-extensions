@@ -37,7 +37,9 @@ from maf_sandbox import (
     SandboxOutputSinkRequired,
     SandboxRouter,
     SandboxSpec,
+    SandboxUnclean,
 )
+from maf_sandbox._reclaim import note_unclean
 from maf_sandbox.maf import (
     SandboxPurger,
     SandboxToolSession,
@@ -923,6 +925,233 @@ class TestAReclaimThatDidNotHappen:
         assert "the guest is gone" in heard[0].reason
 
 
+class TestTheFrameworkDisposesWhatItCouldNotClean:
+    """Better a failed run than leaked data: the disposal is core's, before the host is told."""
+
+    def _attach(self, backend, *, heard=None, **router_kw):
+        async def on_failure(failure: ReclaimFailure) -> None:
+            if heard is not None:
+                heard.append(failure)
+
+        router = _router(backend, **router_kw)
+        tool = _attach_with(_reclaiming_body, router, on_reclaim_failure=on_failure)[0]
+        return router, tool
+
+    def test_a_failed_reclaim_disposes_the_sandbox_by_default(self):
+        backend = InProcessSandboxBackend(_RefusesToRemove())
+        heard: list[ReclaimFailure] = []
+        _, tool = self._attach(backend, heard=heard)
+        _call(tool, target="x")
+        assert backend.disposed == [_KEY]
+        assert [f.disposal for f in heard] == ["disposed"]
+
+    def test_the_host_is_told_after_the_disposal_not_before(self):
+        backend = InProcessSandboxBackend(_RefusesToRemove())
+        seen: list[list[SandboxKey]] = []
+
+        async def on_failure(failure: ReclaimFailure) -> None:
+            seen.append(list(backend.disposed))
+
+        tool = _attach_with(_reclaiming_body, _router(backend), on_reclaim_failure=on_failure)[0]
+        _call(tool, target="x")
+        assert seen == [[_KEY]], "the callback ran before the disposal it reports on"
+
+    def test_a_clean_call_disposes_nothing(self):
+        backend = InProcessSandboxBackend()
+        _, tool = self._attach(backend)
+        _call(tool, target="x")
+        assert backend.disposed == []
+
+    def test_a_host_that_opted_down_keeps_the_sandbox_and_is_told_so(self):
+        backend = InProcessSandboxBackend(_RefusesToRemove())
+        heard: list[ReclaimFailure] = []
+        _, tool = self._attach(backend, heard=heard, keep_unclean=True)
+        _call(tool, target="x")
+        assert backend.disposed == []
+        assert [f.disposal for f in heard] == ["kept"]
+
+    def test_the_opt_down_is_the_routers_and_reads_back(self):
+        assert _router(InProcessSandboxBackend()).keep_unclean is False
+        assert _router(InProcessSandboxBackend(), keep_unclean=True).keep_unclean is True
+
+    def test_a_disposal_that_does_not_land_is_reported_and_the_key_refused(self, caplog):
+        backend = InProcessSandboxBackend(
+            _RefusesToRemove(), dispose_error=RuntimeError("the control plane is down")
+        )
+        heard: list[ReclaimFailure] = []
+        router, tool = self._attach(backend, heard=heard)
+        with caplog.at_level(logging.WARNING, logger="test_workload"):
+            first = _call(tool, target="x")
+        assert first.startswith("/maf-sandbox/work/")
+        assert [f.disposal for f in heard] == ["failed"]
+        assert any("could not be disposed" in r.message for r in caplog.records)
+        # The next call in the conversation is refused, not served the leftovers — through
+        # the same channel every other refusal takes, so a kind returns it to the model.
+        refusing = _attach_with(_returning_body, router)[0]
+        second = _call(refusing, target="y")
+        assert second.startswith("Error: the sandbox for this conversation is closed")
+        with pytest.raises(SandboxUnclean):
+            asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_a_landed_disposal_reopens_the_key(self):
+        backend = InProcessSandboxBackend(
+            _RefusesToRemove(), dispose_error=RuntimeError("the control plane is down")
+        )
+        router, tool = self._attach(backend)
+        _call(tool, target="x")
+        backend.dispose_error = None
+        asyncio.run(router.dispose(_KEY))
+        assert _call(tool, target="y").startswith("/maf-sandbox/work/")
+
+    def test_a_scope_purge_that_lands_reopens_every_key_under_it(self):
+        backend = InProcessSandboxBackend(
+            _RefusesToRemove(), dispose_error=RuntimeError("the control plane is down")
+        )
+        router, tool = self._attach(backend)
+        _call(tool, target="x")
+        asyncio.run(router.dispose_scope("scope-a", "thread-1"))
+        # The purge landed even though per-key disposal is still broken on this backend.
+        assert _call(tool, target="y").startswith("/maf-sandbox/work/")
+
+    def test_a_disposal_that_never_returns_is_bounded_and_counts_as_failed(self, caplog):
+        class _HangsOnDispose(InProcessSandboxBackend):
+            async def dispose(self, key):
+                await asyncio.Event().wait()
+
+        backend = _HangsOnDispose(_RefusesToRemove())
+        heard: list[ReclaimFailure] = []
+        tool = _attach_with(
+            _reclaiming_body,
+            _router(backend),
+            on_reclaim_failure=lambda f: _record(heard, f),
+            reclaim_timeout=0.05,
+        )[0]
+        with caplog.at_level(logging.WARNING, logger="test_workload"):
+            assert _call(tool, target="x").startswith("/maf-sandbox/work/")
+        assert [f.disposal for f in heard] == ["failed"]
+        assert any("did not finish within" in r.message for r in caplog.records)
+
+    def test_the_reason_carries_both_the_removal_and_the_note(self):
+        def build(session):
+            async def widget_run(target: str) -> str:
+                """Write, then note that the program's stop reached it alone."""
+                key = session.key()
+                assert not isinstance(key, str)
+                sandbox = await session.acquire(key)
+                assert not isinstance(sandbox, str)
+                path = session.guest_call_path()
+                await sandbox.write_file("program.py", target, working_directory=path)
+                note_unclean(sandbox, "the guest program overran and was sent SIGKILL alone")
+                return path
+
+            return widget_run
+
+        backend = InProcessSandboxBackend(_RefusesToRemove())
+        heard: list[ReclaimFailure] = []
+        tool = _attach_with(
+            build, _router(backend), on_reclaim_failure=lambda f: _record(heard, f)
+        )[0]
+        _call(tool, target="x")
+        assert len(heard) == 1
+        assert "Permission denied" in heard[0].reason
+        assert "SIGKILL alone" in heard[0].reason
+        assert backend.disposed == [_KEY]
+
+    def test_a_note_alone_disposes_even_though_the_removal_landed(self, caplog):
+        def build(session):
+            async def widget_run(target: str) -> str:
+                """A clean removal, an unclean stop."""
+                key = session.key()
+                assert not isinstance(key, str)
+                sandbox = await session.acquire(key)
+                assert not isinstance(sandbox, str)
+                path = session.guest_call_path()
+                await sandbox.write_file("program.py", target, working_directory=path)
+                note_unclean(sandbox, "the guest program overran and could not be signalled")
+                return path
+
+            return widget_run
+
+        sandbox = InProcessSandbox()
+        backend = InProcessSandboxBackend(sandbox)
+        heard: list[ReclaimFailure] = []
+        tool = _attach_with(
+            build, _router(backend), on_reclaim_failure=lambda f: _record(heard, f)
+        )[0]
+        with caplog.at_level(logging.WARNING, logger="test_workload"):
+            path = _call(tool, target="x")
+        assert _reclaimed(sandbox) == [path]
+        assert backend.disposed == [_KEY]
+        assert [f.disposal for f in heard] == ["disposed"]
+        assert heard[0].path == path
+        assert any("is not clean after this call" in r.message for r in caplog.records)
+
+    def test_a_note_outside_any_call_goes_nowhere(self):
+        note_unclean(object(), "nobody is running")  # must not raise, must not leak to next call
+        backend = InProcessSandboxBackend()
+        _, tool = self._attach(backend)
+        _call(tool, target="x")
+        assert backend.disposed == []
+
+    def test_a_cancellation_during_the_disposal_still_refuses_the_key(self, caplog):
+        class _CancelsOnDispose(InProcessSandboxBackend):
+            async def dispose(self, key):
+                raise asyncio.CancelledError()
+
+        backend = _CancelsOnDispose(_RefusesToRemove())
+        router = _router(backend)
+        tool = _attach_with(_reclaiming_body, router)[0]
+        with caplog.at_level(logging.WARNING, logger="test_workload"):
+            with pytest.raises(asyncio.CancelledError):
+                _call(tool, target="x")
+        assert any("during the disposal" in r.message for r in caplog.records)
+        with pytest.raises(SandboxUnclean):
+            asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_a_cancellation_during_the_removal_refuses_the_key(self, caplog):
+        """A removal cancelled mid-flight leaves the sandbox possibly dirty, so the next call
+        must not reacquire it. The key is marked unclean synchronously before the cancellation
+        propagates, since awaiting a disposal while cancelled is not reliable."""
+
+        class _CancelsOnRemove(InProcessSandbox):
+            async def reclaim(
+                self, directory: str, *, working_directory: str, timeout: float
+            ) -> None:
+                raise asyncio.CancelledError()
+
+        backend = InProcessSandboxBackend(_CancelsOnRemove())
+        router = _router(backend)
+        tool = _attach_with(_reclaiming_body, router)[0]
+        with caplog.at_level(logging.WARNING, logger="test_workload"):
+            with pytest.raises(asyncio.CancelledError):
+                _call(tool, target="x")
+        assert any("cancelled during the removal" in r.message for r in caplog.records)
+        with pytest.raises(SandboxUnclean):
+            asyncio.run(router.acquire(_KEY, _SPEC))
+
+
+def _returning_body(session: SandboxToolSession):
+    """The shape a real kind has: a refusal from `acquire` is the tool's answer."""
+
+    async def widget_run(target: str) -> str:
+        """Run against the sandbox, or say why not."""
+        key = session.key()
+        if isinstance(key, str):
+            return key
+        sandbox = await session.acquire(key)
+        if isinstance(sandbox, str):
+            return sandbox
+        path = session.guest_call_path()
+        await sandbox.write_file("program.py", target, working_directory=path)
+        return path
+
+    return widget_run
+
+
+async def _record(into: list[ReclaimFailure], failure: ReclaimFailure) -> None:
+    into.append(failure)
+
+
 class TestAWorkDirThatIsNotPosixShaped:
     """`SandboxSpec` accepts any `work_dir` and infers no guest OS — see the router's own
     `test_the_spec_imposes_no_platform_constraint_on_work_dir`. So the reclaim addresses a call
@@ -1203,6 +1432,129 @@ class TestACallThatReachesTwoSandboxes:
         backend.per_key[self._OTHER] = _RefusesToRemove()
         _call(_reclaiming(backend, self._build, on_reclaim_failure=on_failure), target="x")
         assert heard == [self._OTHER]
+
+    def test_an_unclean_note_disposes_only_its_own_sandbox(self):
+        """A stop that could not prove it took one sandbox's program tree disposes only that
+        sandbox, never a sibling the same call left clean — the note is scoped by the sandbox it
+        names, so the second key is not disposed over the first's overrun."""
+
+        def build(session: SandboxToolSession):
+            async def widget_run(target: str) -> str:
+                mine = session.key()
+                assert not isinstance(mine, str)
+                path = session.guest_call_path()
+                own: object | None = None
+                for key in (mine, TestACallThatReachesTwoSandboxes._OTHER):
+                    sandbox = await session.acquire(key)
+                    assert not isinstance(sandbox, str)
+                    await sandbox.write_file(f"{path}/program.py", target, working_directory=path)
+                    if key == mine:
+                        own = sandbox
+                assert own is not None
+                note_unclean(own, "the guest program overran and could not be signalled")
+                return path
+
+            return widget_run
+
+        backend = _PerKeyBackend()
+        _call(_reclaiming(backend, build), target="x")
+        assert backend.disposed == [_KEY], backend.disposed
+
+    def test_a_cancellation_on_the_first_removal_refuses_every_acquired_key(self):
+        """A call can acquire more than one sandbox; a cancellation while reclaiming the first
+        must refuse the later ones too, or the next call reacquires them still unclean."""
+
+        class _CancelsOnReclaim(InProcessSandbox):
+            async def reclaim(
+                self, directory: str, *, working_directory: str, timeout: float
+            ) -> None:
+                raise asyncio.CancelledError()
+
+        backend = _PerKeyBackend()
+        backend.per_key[_KEY] = _CancelsOnReclaim()
+        router = _router(backend)
+        tool = _attach_with(self._build, router)[0]
+        with pytest.raises(asyncio.CancelledError):
+            _call(tool, target="x")
+        for key in (_KEY, self._OTHER):
+            with pytest.raises(SandboxUnclean):
+                asyncio.run(router.acquire(key, _SPEC))
+
+    def test_a_cancellation_during_the_disposal_refuses_the_later_keys(self):
+        """The removal is not the only place a cancellation can land. The first sandbox is left
+        unclean, so its removal reaches the disposal; a cancellation *there* must still refuse the
+        keys the loop has not yet reached — not only the one being disposed, which the router
+        already refuses before its first await."""
+
+        class _CancelsOnDispose(_PerKeyBackend):
+            async def dispose(self, key: SandboxKey) -> None:
+                raise asyncio.CancelledError()
+
+        def build(session: SandboxToolSession):
+            async def widget_run(target: str) -> str:
+                mine = session.key()
+                assert not isinstance(mine, str)
+                path = session.guest_call_path()
+                own: object | None = None
+                for key in (mine, TestACallThatReachesTwoSandboxes._OTHER):
+                    sandbox = await session.acquire(key)
+                    assert not isinstance(sandbox, str)
+                    await sandbox.write_file(f"{path}/program.py", target, working_directory=path)
+                    if key == mine:
+                        own = sandbox
+                assert own is not None
+                note_unclean(own, "the guest program overran and could not be signalled")
+                return path
+
+            return widget_run
+
+        backend = _CancelsOnDispose()
+        router = _router(backend)
+        tool = _attach_with(build, router)[0]
+        with pytest.raises(asyncio.CancelledError):
+            _call(tool, target="x")
+        for key in (_KEY, self._OTHER):
+            with pytest.raises(SandboxUnclean):
+                asyncio.run(router.acquire(key, _SPEC))
+
+    def test_a_note_left_by_a_wrapper_a_reacquire_replaced_still_disposes(self):
+        """A key reacquired mid-call gets a fresh wrapper — a real backend hands out a new one —
+        and the map keeps only the newest. A stop that could not take the *first* wrapper's program
+        tree names that wrapper; matching notes against the last one alone would drop it and reuse a
+        sandbox with a live process in it. The note must still dispose the key."""
+
+        class _FreshWrapperPerAcquire(InProcessSandboxBackend):
+            def __init__(self):
+                super().__init__()
+                self.handed: list[InProcessSandbox] = []
+
+            async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> InProcessSandbox:
+                await super().acquire(key, spec)
+                sandbox = InProcessSandbox()
+                self.handed.append(sandbox)
+                return sandbox
+
+        def build(session: SandboxToolSession):
+            async def widget_run(target: str) -> str:
+                key = session.key()
+                assert not isinstance(key, str)
+                path = session.guest_call_path()
+                first = await session.acquire(key)
+                assert not isinstance(first, str)
+                # The first wrapper ran the stop that could not be proven complete...
+                note_unclean(first, "the guest program overran and could not be signalled")
+                # ...then a transport hiccup is caught and the same key reacquired: a new wrapper,
+                # and the map now holds only it.
+                again = await session.acquire(key)
+                assert not isinstance(again, str)
+                assert again is not first
+                return path
+
+            return widget_run
+
+        backend = _FreshWrapperPerAcquire()
+        _call(_reclaiming(backend, build), target="x")
+        assert backend.disposed == [_KEY], backend.disposed
 
 
 class TestAStragglerDuringTheRemoval:
