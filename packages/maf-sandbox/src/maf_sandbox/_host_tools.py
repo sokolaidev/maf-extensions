@@ -55,7 +55,9 @@ from ._protocol import (
 _DEFAULT_LOGGER = logging.getLogger(__name__)
 
 __all__ = [
+    "DEFAULT_MAX_DISPATCHES_PER_RUN",
     "DEFAULT_MAX_HOST_TOOL_CALLS_PER_RUN",
+    "DispatchResult",
     "HostToolCallResult",
     "FLOW_DECLARED_KEY",
     "HostToolAggregate",
@@ -85,6 +87,30 @@ DEFAULT_MAX_HOST_TOOL_CALLS_PER_RUN = 16
 #: The shortest response that can cross at all — ``json.dumps(0)`` is one byte.  What makes
 #: "no room left" answerable before a tool runs rather than only after its size is known.
 _SMALLEST_RESPONSE = 1
+
+#: "This keyword was not passed", distinct from every value one could carry — ``None`` included,
+#: which the ceilings below refuse as a non-integer and must go on refusing.  Typed as ``Any`` so
+#: a parameter's annotation stays the type a caller may actually pass.
+_UNSET: Any = object()
+
+
+def _one_spelling[T](name: str, given: T, old_name: str, old: T, default: T) -> T:
+    """Whichever spelling a caller used, refusing both at once.
+
+    A keyword cannot be aliased by assignment the way a function or a class can, so the old name
+    is a real parameter for as long as it is accepted. Absence is :data:`_UNSET` rather than
+    ``None`` because ``None`` is a value these arguments already reject, and turning a rejected
+    value into "use the default" would be a behaviour change smuggled in by a rename.
+    """
+    if given is not _UNSET and old is not _UNSET:
+        raise TypeError(
+            f"pass {name} or {old_name}, not both — {old_name} is the old name for the same "
+            f"argument and is accepted only until it is removed"
+        )
+    if old is not _UNSET:
+        return old
+    return given if given is not _UNSET else default
+
 
 #: What serving a USER-identity tool would need, named once — the refusal and the docs must
 #: tell the same story.
@@ -307,12 +333,30 @@ class HostToolRegistry:
         *,
         require_declared: bool = False,
         allowed_identities: frozenset[Identity] = frozenset({Identity.APP}),
-        max_host_tool_calls_per_run: int = DEFAULT_MAX_HOST_TOOL_CALLS_PER_RUN,
+        max_host_tool_calls_per_run: int = _UNSET,
         response_limits: TransferLimits = DEFAULT_TRANSFER_LIMITS,
         host_tool_calls_observer: (
             Callable[[HostToolRun, object], contextlib.AbstractContextManager[object]] | None
-        ) = None,
+        ) = _UNSET,
+        max_dispatches_per_run: int = _UNSET,
+        dispatch_observer: (
+            Callable[[HostToolRun, object], contextlib.AbstractContextManager[object]] | None
+        ) = _UNSET,
     ) -> None:
+        max_host_tool_calls_per_run = _one_spelling(
+            "max_host_tool_calls_per_run",
+            max_host_tool_calls_per_run,
+            "max_dispatches_per_run",
+            max_dispatches_per_run,
+            DEFAULT_MAX_HOST_TOOL_CALLS_PER_RUN,
+        )
+        host_tool_calls_observer = _one_spelling(
+            "host_tool_calls_observer",
+            host_tool_calls_observer,
+            "dispatch_observer",
+            dispatch_observer,
+            None,
+        )
         _refuse_non_integer("max_host_tool_calls_per_run", max_host_tool_calls_per_run)
         if max_host_tool_calls_per_run < 1:
             raise ValueError(
@@ -990,3 +1034,23 @@ class HostToolRun:
             )
         self._delivered_bytes += crossing
         return HostToolCallResult(value_json=encoded)
+
+
+# --- The pre-rename spelling, kept for one release ------------------------------------------
+#
+# `dispatch` named what a guest does to reach a host function, which this codebase also spells
+# for ordinary method dispatch and for CI's `workflow_dispatch`. The names below are the old
+# ones, bound to the new; they exist so a dependent keeps working against both this core and the
+# one before it, which is what lets the rename land without a release where nothing resolves.
+# Silent rather than warning: several suites here run under `simplefilter("error")`, so a
+# DeprecationWarning would fail a dependent's tests rather than inform its author.
+
+#: Deprecated alias of :class:`HostToolCallResult`.
+DispatchResult = HostToolCallResult
+
+#: Deprecated alias of :data:`DEFAULT_MAX_HOST_TOOL_CALLS_PER_RUN`.
+DEFAULT_MAX_DISPATCHES_PER_RUN = DEFAULT_MAX_HOST_TOOL_CALLS_PER_RUN
+
+#: Deprecated alias of :meth:`HostToolRun.call`. Bound to the function rather than wrapped, so
+#: the two cannot drift and a subclass overriding one overrides both.
+HostToolRun.dispatch = HostToolRun.call  # type: ignore[attr-defined]

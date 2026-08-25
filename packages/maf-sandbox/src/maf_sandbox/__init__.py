@@ -59,8 +59,10 @@ from __future__ import annotations
 
 from ._error_detail import error_detail
 from ._host_tools import (
+    DEFAULT_MAX_DISPATCHES_PER_RUN,
     DEFAULT_MAX_HOST_TOOL_CALLS_PER_RUN,
     FLOW_DECLARED_KEY,
+    DispatchResult,
     HostToolAggregate,
     HostToolCallResult,
     HostToolDeclaration,
@@ -80,6 +82,8 @@ from ._host_tools_over_exec import (
     SandboxProgramTimeout,
     SignalOutcome,
     SignalReach,
+    dispatch_over_exec,
+    fold_dispatch_transfer_limits,
     fold_host_tool_call_transfer_limits,
     guest_run_layout,
     host_tool_calls_over_exec,
@@ -158,6 +162,7 @@ from ._shim import host_tool_shim
 __all__ = [
     "CALLS_DIRECTORY",
     "DEFAULT_CAPABILITIES",
+    "DEFAULT_MAX_DISPATCHES_PER_RUN",
     "DEFAULT_MAX_HOST_TOOL_CALLS_PER_RUN",
     "DEFAULT_SANDBOX_LIMITS",
     "DEFAULT_TRANSFER_LIMITS",
@@ -170,6 +175,7 @@ __all__ = [
     "Artifact",
     "Capability",
     "DeclaredOutput",
+    "DispatchResult",
     "HostToolCallResult",
     "Egress",
     "EntryKind",
@@ -230,8 +236,10 @@ __all__ = [
     "CallerContext",
     "collect_outputs",
     "declaration_of",
+    "dispatch_over_exec",
     "host_tool_calls_over_exec",
     "error_detail",
+    "fold_dispatch_transfer_limits",
     "fold_host_tool_call_transfer_limits",
     "guest_run_layout",
     "host_tool_shim",
