@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import importlib
 import inspect
 import json
 import logging
@@ -1577,3 +1578,46 @@ class TestTheRegistryObservesEveryHostToolCall:
         registry = HostToolRegistry(host_tool_calls_observer=factory)
         registry.register(_stamped_pure())
         assert _call_host_tool(HostToolRun(registry), "doubled", {"x": 1}).ok
+
+
+#: Every name 0.25 removed, against the module a dependent imported it from — the package for a
+#: public name, the defining module for the path that skips ``__init__``.
+_REMOVED_NAMES = [
+    ("maf_sandbox", "DEFAULT_MAX_DISPATCHES_PER_RUN"),
+    ("maf_sandbox", "DispatchResult"),
+    ("maf_sandbox", "dispatch_over_exec"),
+    ("maf_sandbox", "fold_dispatch_transfer_limits"),
+    ("maf_sandbox._host_tools", "DEFAULT_MAX_DISPATCHES_PER_RUN"),
+    ("maf_sandbox._host_tools", "DispatchResult"),
+    ("maf_sandbox._host_tools_over_exec", "dispatch_over_exec"),
+    ("maf_sandbox._host_tools_over_exec", "fold_dispatch_transfer_limits"),
+]
+
+
+class TestThePreRenameSpellingIsGone:
+    """The mirror of the alias tests 0.24 carried: every old name fails, and names what it wanted.
+
+    A name, a member and a keyword each need their own check — removing one kind does not
+    remove another, which is why the aliases needed four shapes to add.
+    """
+
+    @pytest.mark.parametrize(("module", "name"), _REMOVED_NAMES)
+    def test_the_removed_names_do_not_resolve(self, module: str, name: str):
+        imported = importlib.import_module(module)
+        assert not hasattr(imported, name)
+        assert name not in getattr(imported, "__all__", ())
+
+    @pytest.mark.parametrize("name", ["max_dispatches_per_run", "dispatch_observer"])
+    def test_the_removed_registry_properties_are_gone(self, name: str):
+        assert not hasattr(HostToolRegistry(), name)
+
+    def test_the_removed_run_method_is_gone(self):
+        assert not hasattr(HostToolRun(HostToolRegistry()), "dispatch")
+
+    def test_the_old_cap_keyword_is_refused_by_name(self):
+        with pytest.raises(TypeError, match="unexpected keyword argument 'max_dispatches_per_run'"):
+            HostToolRegistry(max_dispatches_per_run=5)  # pyright: ignore[reportCallIssue]
+
+    def test_the_old_observer_keyword_is_refused_by_name(self):
+        with pytest.raises(TypeError, match="unexpected keyword argument 'dispatch_observer'"):
+            HostToolRegistry(dispatch_observer=None)  # pyright: ignore[reportCallIssue]
