@@ -114,6 +114,8 @@ Naming a host is a real widening, and worth naming as such: this sandbox runs mo
 The lever is the registry's `response_limits`. The fold asks for about `max_host_tool_calls_per_run × response_limits.max_bytes_per_file` of `files_out`, because nothing bounds the sum of the guest's request files. At the 8 MiB default a 32-call registry asks for 344 MB, more than `maf-sandbox-acas` declares. Size the ceiling to what your tools return:
 
 ```python
+from maf_sandbox import HostToolRegistry, TransferLimits
+
 registry = HostToolRegistry(
     max_host_tool_calls_per_run=32,
     response_limits=TransferLimits(
