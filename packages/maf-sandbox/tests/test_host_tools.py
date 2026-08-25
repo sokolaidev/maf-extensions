@@ -1614,10 +1614,11 @@ class TestThePreRenameSpellingIsGone:
     def test_the_removed_run_method_is_gone(self):
         assert not hasattr(HostToolRun(HostToolRegistry()), "dispatch")
 
-    def test_the_old_cap_keyword_is_refused_by_name(self):
-        with pytest.raises(TypeError, match="unexpected keyword argument 'max_dispatches_per_run'"):
-            HostToolRegistry(max_dispatches_per_run=5)  # pyright: ignore[reportCallIssue]
-
-    def test_the_old_observer_keyword_is_refused_by_name(self):
-        with pytest.raises(TypeError, match="unexpected keyword argument 'dispatch_observer'"):
-            HostToolRegistry(dispatch_observer=None)  # pyright: ignore[reportCallIssue]
+    @pytest.mark.parametrize(
+        ("keyword", "value"), [("max_dispatches_per_run", 5), ("dispatch_observer", None)]
+    )
+    def test_the_removed_keywords_are_refused_by_name(self, keyword: str, value: object):
+        # Passed as a mapping, not as a literal keyword: a literal is a call a static analyser
+        # has to flag as a wrong argument name, which is the very thing being asserted.
+        with pytest.raises(TypeError, match=f"unexpected keyword argument '{keyword}'"):
+            HostToolRegistry(**{keyword: value})
