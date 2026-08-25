@@ -349,9 +349,8 @@ class TestTheFixtureIsStillWhatTheSamplePrints:
     def test_the_fixture_is_verbatim_but_for_the_environment_line(self):
         """Every line, not just the ones `assess` reads.
 
-        The keys above cover what the checker scans, so a line it ignores could drift from
-        anything the sample can print — which is how a rename once reached the `notice:` and
-        `SandboxIdentityDenied:` lines here while both production strings still said dispatch.
+        The keys above cover only what the checker scans, so a line it ignores can drift
+        from what the sample prints without failing anything.
         """
         completed = subprocess.run(
             [sys.executable, str(_SAMPLE)],

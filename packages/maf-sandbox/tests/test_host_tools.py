@@ -1588,9 +1588,9 @@ class TestTheRegistryObservesEveryHostToolCall:
 class TestThePreRenameSpellingStillResolves:
     """Every old name, exercised — the compatibility claim, made falsifiable.
 
-    #663 renames the dispatch API and keeps the old spelling for one release so a dependent
-    resolves against this core and the one before it. Nothing asserted that, which is how the
-    registry's two public properties were dropped while the constructor keywords were kept.
+    The old spelling is kept for one release so a dependent resolves against this core and
+    the one before it. Module names, keywords, properties and methods each need their own
+    check: aliasing one kind does not alias another.
     """
 
     def test_the_module_level_names_are_the_new_objects(self):
@@ -1629,8 +1629,8 @@ class TestThePreRenameSpellingStillResolves:
     def test_dispatch_delegates_rather_than_copying_call(self):
         """A subclass overriding ``call`` is what an old caller must still reach.
 
-        Binding ``dispatch`` to the base function would resolve here to the base ``call``,
-        skipping the override entirely — the failure this delegation exists to prevent.
+        Delegation is what makes that hold: a ``dispatch`` bound to the base function would
+        resolve to the base ``call`` and skip the override.
         """
         seen: list[str] = []
 

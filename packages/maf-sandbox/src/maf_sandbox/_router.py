@@ -251,7 +251,7 @@ class SandboxRouter:
             declares — a spec *requiring* one is refused at attach. The hard stop for a
             posture: ``denied_capabilities={Capability.HOST_TOOLS}`` closes the
             middleware-bypass channel for every workload this router serves.
-        denied_identities: Identities this host refuses dispatched tools to exercise — a
+        denied_identities: Identities this host refuses host tools to exercise — a
             spec whose ``identities`` carries one is refused at attach.
             ``denied_identities={Identity.USER}`` is how a host forbids model-orchestrated
             user authority in one statement instead of auditing each registration.
@@ -446,7 +446,7 @@ class SandboxRouter:
                 # have been served. A workload already over the ceiling on its own must not be
                 # pointed at the transport, however much the fold also raised.
                 folded_note = (
-                    " (folded to include the wired host tools' dispatch transport, so above the "
+                    " (folded to include the wired host tools' call transport, so above the "
                     "workload's own declaration)"
                     if declared.within(ceiling)
                     else ""

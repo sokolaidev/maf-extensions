@@ -144,7 +144,7 @@ class Capability(StrEnum):
     EXEC = "exec"
     #: Evaluate code in a language runtime, without going through a shell.
     RUN_CODE = "run_code"
-    #: Dispatch host-registered functions from inside the sandbox.
+    #: Call host-registered functions from inside the sandbox.
     HOST_TOOLS = "host_tools"
     #: Write files into the sandbox before execution.
     FILES_IN = "files_in"
@@ -194,7 +194,7 @@ class OsFamily(StrEnum):
 
 
 class SourceIntegrity(StrEnum):
-    """How much a host may trust data a dispatched host tool brings *in* — its source leg.
+    """How much a host may trust data a host tool brings *in* — its source leg.
 
     The vocabulary MAF's information-flow module already speaks (``source_integrity`` on a
     tool's ``additional_properties``), promoted to an enum here because the host-tools
@@ -218,16 +218,16 @@ INTEGRITY_RANK: Mapping[SourceIntegrity, int] = {
 
 
 class Identity(StrEnum):
-    """Whose authority a dispatched host tool's body exercises. Its declared identity leg.
+    """Whose authority a host tool's body exercises. Its declared identity leg.
 
-    A dispatched body runs **in the host process** and carries whatever authority that
+    A host tool's body runs **in the host process** and carries whatever authority that
     process carries, so this leg is what makes the surface honest: it is declared per tool,
     aggregated per registry, and deniable per router (``denied_identities``).
 
     **:data:`APP` is not the safe option, only the declared one.**  It is the application's
     full authority — for a deployed host, its workload identity with every grant it holds —
-    and the only real bounds on it are the emptiness of the registry and the dispatch cap.
-    Least privilege for dispatched tools comes from what a host registers, never from what it
+    and the only real bounds on it are the emptiness of the registry and the host-tool-call cap.
+    Least privilege for host tools comes from what a host registers, never from what it
     declares.
 
     :data:`USER` is **declarable but not servable**: declaring it must be possible so a
@@ -235,12 +235,12 @@ class Identity(StrEnum):
     per-run token minting, an audience-within-egress check, and the ephemeral ``exec`` env
     channel exist — or a host ships model-orchestrated user authority before anything bounds
     it.  Registering a ``USER`` tool raises the whole ``execute_code`` surface to
-    approval-gated; dispatching one is refused with the prerequisites named.
+    approval-gated; calling one is refused with the prerequisites named.
     """
 
     #: The host application's own authority — everything its process can already do.
     APP = "app"
-    #: The end user's delegated authority (on-behalf-of). Declarable, refused at dispatch.
+    #: The end user's delegated authority (on-behalf-of). Declarable, refused at call time.
     USER = "user"
 
 
@@ -423,7 +423,7 @@ class HostToolAggregate:
       ordering to be data before anything ranks by it — so more than one distinct cap is the
       host's to reconcile, never this package's to guess between.
     - ``identities`` and ``requires_approval``: any :data:`Identity.USER` tool raises the whole
-      surface to approval-gated, because a single dispatch may exercise the user's delegated
+      surface to approval-gated, because a single host-tool call may exercise the user's delegated
       authority.
     - ``has_undeclared`` marks a registry serving unstamped tools (the gate off).  Each such
       tool already failed safe into the folds above — an untrusted source, an
@@ -510,15 +510,15 @@ class SandboxSpec:
     what ``collect_outputs(..., outputs=...)`` refuses to run without.  It composes with
     ``declared_outputs`` rather than replacing it, and ``files_out`` caps the union.
 
-    ``identities`` names whose authority the workload's dispatched host tools exercise —
+    ``identities`` names whose authority the workload's host tools exercise —
     derived from its registry (:attr:`~maf_sandbox.HostToolAggregate.identities`, which seals
     that registry as it answers), never invented.  Declared on the spec so the router can
     refuse it at attach
     (``denied_identities``), the same moment every other posture question is answered; a
-    workload that dispatches nothing declares nothing.
+    workload that calls nothing declares nothing.
 
     ``host_tools`` is the sealed surface a wired registry answers with
-    (:meth:`~maf_sandbox.HostToolRegistry.aggregate`), or ``None`` when nothing is dispatchable.
+    (:meth:`~maf_sandbox.HostToolRegistry.aggregate`), or ``None`` when nothing is callable.
     The router folds its ceilings into the transfer-limit match transiently, mutating nothing
     here.  It rides alongside ``identities`` rather than replacing it, so a spec may declare an
     identity set without wiring a registry — but a spec that wires one must also declare what it
@@ -573,7 +573,7 @@ class SandboxSpec:
         # silently grant what a host wrote a deny list to refuse.
         if Capability.HOST_TOOLS not in self.requires:
             raise ValueError(
-                "host_tools carries a dispatchable surface but requires does not include "
+                "host_tools carries a callable surface but requires does not include "
                 f"{str(Capability.HOST_TOOLS)!r}, so a host denying that capability "
                 "(denied_capabilities) would serve this workload anyway. Add it to requires."
             )

@@ -108,7 +108,7 @@ The remaining bounds are the same shape — host-side, at the one door, and know
 
 `maf-sandbox-docker` declares it because the container is the sandbox and stays up between calls. `maf-sandbox-acas` declares it because the microVM does — and that is the backend where it could not be taken on faith, since every call is an HTTP round trip to a remote control plane rather than a local daemon. Each measures it against the real thing in its own e2e rather than reading it off an SDK. It is **not** a claim about the image: the shipped launcher wants `sh`, `nohup`, `printf`, `mv`, `mkdir`, `rm` and `kill`, and a kind wants whatever interpreter it names, none of which a backend chooses, since `spec.image` does. That gap is the guest-platform axis's, and it is the same gap `EXEC` already has. `maf-sandbox-wslc` serves neither this nor `FILES_OUT`, so it cannot carry the transport at all.
 
-One honest gap in what ships: a host-tool call does not carry the identity of the run it served, so nothing downstream can attribute a call to the program that made it, and a workload measuring round trips has to infer the boundaries from latency instead of reading them.
+A host-tool call carries the identity of the run it served: `HostToolRun` has a documented `run_id`, stable across the run and loggable, so an observer keys a per-run ledger or a trace on it rather than inferring the boundaries from latency.
 
 ## Identity — whose authority sandbox work carries
 
