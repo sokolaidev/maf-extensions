@@ -46,6 +46,7 @@ from maf_sandbox import (
     SandboxLimits,
     SandboxOutputSinkRequired,
     SandboxRouter,
+    SandboxTransferLimitsNotPermitted,
     SourceIntegrity,
     TransferLimits,
     guest_run_layout,
@@ -359,9 +360,9 @@ class _ListedButGoneStore:
 #: A backend that can serve host tool calls has to declare transfer limits the router accepts
 #: for a *folded* spec (#393): files_in holds the workload plus the launcher and every response,
 #: files_out serves the one large output read. Generous on purpose, so the host-tool-call tests
-#: exercise mechanics rather than the limit match — `TestFoldHostToolCallTransferLimits` and
-#: `TestHostToolsFoldTheTransferCaps` cover the match itself. A test that wants a specific
-#: ceiling passes `limits=` explicitly.
+#: exercise mechanics rather than the limit match; `TestTheSpecCarriesItsHostToolSurface` below
+#: covers the match, and maf-sandbox's own `TestFoldDispatchTransferLimits` covers the
+#: arithmetic. A test that wants a specific ceiling passes `limits=` explicitly.
 _MiB = 1024 * 1024
 _CALL_LIMITS = SandboxLimits(
     files_in=TransferLimits(
@@ -2962,3 +2963,36 @@ class TestNoDirectAzureImport:
             f"the codeact workload imports Azure directly: {offenders}. "
             "It must reach a sandbox through maf_sandbox, or it stops being portable."
         )
+
+
+class TestTheSpecCarriesItsHostToolSurface:
+    """The derived surface reaches the router, so #393's fold runs for this kind.
+
+    The fold widens the transfer-limit match only for a spec whose ``host_tools`` is set, so a
+    spec that derives the aggregate and keeps it to itself is matched on the workload's own
+    caps and the transport's traffic is never counted.
+    """
+
+    def test_the_spec_carries_the_surface_it_derived(self):
+        spec = codeact_sandbox_spec(host_tools=_registry(_exchange_rate))
+        assert spec.host_tools is not None
+        assert spec.host_tools.identities == frozenset({Identity.APP})
+
+    def test_a_spec_without_a_registry_carries_nothing(self):
+        assert codeact_sandbox_spec().host_tools is None
+
+    def test_a_backend_that_cannot_serve_the_transport_is_refused_at_attach(self):
+        """The workload's own declaration fits this backend; only the folded one does not."""
+        spec = codeact_sandbox_spec(host_tools=_registry(_exchange_rate))
+        ceiling = replace(_CALL_LIMITS.files_in, max_files=spec.files_in.max_files)
+        backend = _backend(capabilities=_CALLS, limits=replace(_CALL_LIMITS, files_in=ceiling))
+        router = SandboxRouter([backend], min_isolation=backend.isolation)
+        with pytest.raises(SandboxTransferLimitsNotPermitted) as refusal:
+            router.ensure_can_serve(spec)
+        # The note is how the router says the fold caused this, not the workload's own caps.
+        assert "folded to include the wired host tools" in str(refusal.value)
+
+    def test_a_backend_that_can_serve_the_transport_attaches(self):
+        spec = codeact_sandbox_spec(host_tools=_registry(_exchange_rate))
+        backend = _backend(capabilities=_CALLS)
+        SandboxRouter([backend], min_isolation=backend.isolation).ensure_can_serve(spec)

@@ -502,6 +502,10 @@ def _codeact_spec(
         files_in=files_in,
         files_out=files_out,
         identities=surface.identities if surface is not None else frozenset(),
+        # Carried, not just read: the router folds the transport's own traffic into the
+        # transfer-limit match off this field, so a backend that cannot serve the registry's
+        # worst case is refused at attach rather than overrun mid-run.
+        host_tools=surface,
     )
 
 
