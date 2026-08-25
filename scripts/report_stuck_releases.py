@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -54,11 +55,13 @@ _RELEASE_TITLE = re.compile(
 #: step rather than only the obstacle — and names the *order*, because the label flip is the
 #: one command here that is safe to run alone and ruinous to run first.
 _UNREADABLE_TITLE = (
-    "`{title}` is not the title release-please generates, so the tag it owes cannot be read "
-    "off it. Take the package and version from the entry this pull request bumped in "
-    "`.release-please-manifest.json`, then follow the three steps in `docs/maintainers.md` **in "
-    "that order**. Flipping the label first tells release-please the version was released when "
-    "nothing was ever tagged or published, and a version number cannot be reused."
+    "`{title}` does not name a release this repository makes — either it is not the title "
+    "release-please generates, or the package is not one of ours — so the tag it owes cannot "
+    "be read off it. Take the package and version from the entry this pull request bumped in "
+    "`.release-please-manifest.json`, then follow the steps in `docs/maintainers.md` **in that "
+    "order**. Flipping the label before the Release exists tells release-please the version "
+    "was released when nothing was ever tagged or published, and a version number cannot be "
+    "reused."
 )
 
 #: Far enough back that a pull request whose merge time GitHub did not report is reported
@@ -86,22 +89,41 @@ _WHO_OWNS_THIS_ISSUE = (
 )
 
 
-def release_of(title: str) -> tuple[str, str] | None:
+def _is_taggable(tag: str) -> bool:
+    """Whether git would accept ``tag`` as a ref name.
+
+    Only the three rules this composition can break. The rest of `git check-ref-format` —
+    spaces, `~^:?*[\\`, `@{`, a leading `/` — needs characters neither half of the title is
+    allowed to contain, so checking them here would be checking the alphabet twice.
+    """
+    return not (tag.endswith(".lock") or tag.endswith(".") or ".." in tag)
+
+
+def release_of(title: str, packages: Sequence[str]) -> tuple[str, str] | None:
     """The package and version a Release PR titled ``title`` releases, or ``None``.
 
     Both halves are returned because the tag is built from them: reading them back out of the
     composed tag is a second parse that can disagree with the first, and does — a version may
     itself contain `-v`.
+
+    ``packages`` is what makes this more than a shape check. A merged Release PR's title is
+    editable, so a title in release-please's format naming a package this repository does not
+    have would otherwise render a whole recovery — a changelog path that is not there, a tag
+    under a name nobody publishes, and a label flip on the real pull request that spends its
+    version before the publish dispatch fails.
     """
     match = _RELEASE_TITLE.fullmatch(title)
     if match is None:
         return None
-    return match["package"], match["version"]
+    package, version = match["package"], match["version"]
+    if package not in packages or not _is_taggable(f"{package}-v{version}"):
+        return None
+    return package, version
 
 
-def tag_for(title: str) -> str | None:
+def tag_for(title: str, packages: Sequence[str]) -> str | None:
     """The tag release-please would have created for a Release PR titled ``title``."""
-    release = release_of(title)
+    release = release_of(title, packages)
     return None if release is None else f"{release[0]}-v{release[1]}"
 
 
@@ -129,14 +151,29 @@ def stuck_releases(pending: list[dict[str, Any]], run_started_at: str) -> list[d
     )
 
 
-def _recovery(pr: dict[str, Any], released_tags: list[str]) -> list[str]:
+def _chain(commands: list[list[str]]) -> list[str]:
+    """The commands as one fail-fast sequence — each runs only if the one before it did.
+
+    Unchained, a pasted block carries on past a failure, and the step after the two that can
+    fail here is the label flip: it would mark a version released that was never tagged or
+    published, and a version number cannot be reused.
+    """
+    lines: list[str] = []
+    for command in commands[:-1]:
+        lines += [*command[:-1], command[-1] + " &&"]
+    return lines + commands[-1]
+
+
+def _recovery(
+    pr: dict[str, Any], *, released_tags: Sequence[str], packages: Sequence[str]
+) -> list[str]:
     """The commands that finish one stuck Release PR by hand, carrying its own values.
 
     Which commands depends on whether its Release exists: release-please creates that first
     and finishes its bookkeeping after, so a failure in between leaves both true at once.
     """
     title = str(pr.get("title", ""))
-    release = release_of(title)
+    release = release_of(title, packages)
     if release is None:
         return [_UNREADABLE_TITLE.format(title=title)]
     package, version = release
@@ -145,12 +182,13 @@ def _recovery(pr: dict[str, Any], released_tags: list[str]) -> list[str]:
     # block, where `<` and `>` are redirections and the command would do something instead of
     # failing. This one is not a commit, so every command using it stops on it.
     sha = str((pr.get("mergeCommit") or {}).get("oid") or "") or "MERGE_COMMIT_SHA"
-    finish = [
+    flip = [
         f'gh pr edit {pr.get("number")} --remove-label "autorelease: pending" \\',
         '  --add-label "autorelease: tagged"',
+    ]
+    dispatch = [
         f"gh workflow run publish-packages.yml --ref {tag} \\",
         f"  -f package={package} -f target=pypi",
-        "```",
     ]
     if tag in released_tags:
         already = (
@@ -162,25 +200,39 @@ def _recovery(pr: dict[str, Any], released_tags: list[str]) -> list[str]:
             f"request's merge commit, because a tag pointing anywhere else is a different "
             f"problem from this one."
         )
-        return [already, "", "```bash", *finish]
+        return [already, "", "```bash", *_chain([flip, dispatch]), "```"]
     lead = (
         f"Its tag is `{tag}`, at `{sha}`. The notes are that version's section of "
         f"`packages/{package}/CHANGELOG.md`, which this pull request wrote — the first command "
         f"cuts it out at the merge commit, so it does not matter what the checkout is on."
     )
+    extract = [
+        f"git show {sha}:packages/{package}/CHANGELOG.md \\",
+        "  | awk '/^## \\[/{n++} n==1' > notes.md",
+    ]
+    # The pipeline's status is awk's, and awk succeeds on an empty stream, so a `git show` that
+    # found nothing would otherwise reach `gh release create` as a Release with no notes.
+    wrote_notes = ["[ -s notes.md ]"]
+    create = [
+        f"gh release create {tag} --target {sha} \\",
+        f"  --title '{package} {version}' --notes-file notes.md",
+    ]
     return [
         lead,
         "",
         "```bash",
-        f"git show {sha}:packages/{package}/CHANGELOG.md \\",
-        "  | awk '/^## \\[/{n++} n==1' > notes.md",
-        f"gh release create {tag} --target {sha} \\",
-        f"  --title '{package} {version}' --notes-file notes.md",
-        *finish,
+        *_chain([extract, wrote_notes, create, flip, dispatch]),
+        "```",
     ]
 
 
-def body(stuck: list[dict[str, Any]], run_url: str, released_tags: list[str]) -> str:
+def body(
+    stuck: list[dict[str, Any]],
+    run_url: str,
+    *,
+    released_tags: Sequence[str],
+    packages: Sequence[str],
+) -> str:
     """The tracking issue's body: what is stuck, what it costs, and how to clear it."""
     lines = [
         MARKER,
@@ -191,7 +243,7 @@ def body(stuck: list[dict[str, Any]], run_url: str, released_tags: list[str]) ->
         "| --- | --- | --- |",
     ]
     for pr in stuck:
-        tag = tag_for(str(pr.get("title", "")))
+        tag = tag_for(str(pr.get("title", "")), packages)
         owes = "unknown" if tag is None else f"`{tag}`"
         if tag is not None and tag in released_tags:
             owes = f"`{tag}` — already created"
@@ -203,7 +255,12 @@ def body(stuck: list[dict[str, Any]], run_url: str, released_tags: list[str]) ->
         lines += ["", f"Noticed by {run_url}."]
     lines += ["", "## Clearing it by hand", ""]
     for pr in stuck:
-        lines += [f"### #{pr.get('number')}", "", *_recovery(pr, released_tags), ""]
+        lines += [
+            f"### #{pr.get('number')}",
+            "",
+            *_recovery(pr, released_tags=released_tags, packages=packages),
+            "",
+        ]
     lines += [
         _HOW_TO_FINISH,
         "",
@@ -239,7 +296,10 @@ def plan(document: dict[str, Any]) -> dict[str, Any]:
             "issue": number,
             "title": TITLE,
             "body": body(
-                stuck, str(document.get("run_url", "")), document.get("released_tags") or []
+                stuck,
+                str(document.get("run_url", "")),
+                released_tags=document.get("released_tags") or [],
+                packages=document.get("packages") or [],
             ),
             "summary": _summary(action, stuck),
         }

@@ -316,6 +316,19 @@ def main(argv: list[str]) -> int:
     if is_generated_release(options.head_ref, options.head_repo, options.base_repo, options.author):
         print(f"{options.head_ref}: opened by release-please; its title is not an author's choice")
         return 0
+    # The three dots below already start the *path list* at the merge base. The `git show
+    # <base>:<path>` snapshot in `_changed_python` reads a revision by name and cannot, so the
+    # two have to be handed the same commit: a caller's base is whatever the pull request
+    # opened against, and a file the base branch has changed since would otherwise be read at
+    # the base branch's version. The AST comparison then sees that change reversed and refuses
+    # a documentation title over somebody else's code.
+    try:
+        base = _git("merge-base", base, "HEAD")
+    except subprocess.CalledProcessError:
+        # No merge base to find — a shallow clone, or a base this history does not contain.
+        # Carrying on with what the caller passed is what this did before; saying so is new,
+        # because the difference is invisible in the result.
+        print(f"no merge base for {base} and HEAD; comparing against it directly", file=sys.stderr)
     status = _git("diff", "--find-renames", "--name-status", f"{base}...HEAD")
     path_pairs = _changed_path_pairs(status)
     copied_sources = {

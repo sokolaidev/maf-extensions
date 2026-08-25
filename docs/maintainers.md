@@ -111,26 +111,43 @@ The trace is no longer the only signal. `release-please.yml`'s last step runs on
 
 A Release PR merged *while* a run is in flight is not counted, because it belongs to the run its own merge triggered — queued behind this one on the workflow's concurrency group. Without that the step would raise an alarm seconds before the next run cleared it, on the one signal that has to be trusted.
 
-**Clearing it by hand** is four commands, or two when the Release already exists. The label flip is the one nobody guesses, and the one whose order matters.
+**Clearing it by hand** is four commands, or two when the Release already exists, chained so that a failure stops the rest. The label flip is the one nobody guesses, and the one whose order matters. Fill in the four values at the top and the rest needs no editing — shell variables rather than `<angle brackets>`, which a shell reads as redirections if the block is pasted before they are replaced. The tracking issue renders the same commands with the values already in them.
 
 ```bash
+# The Release PR's own values: its title names the first two, its merge commit the third.
+package=maf-sandbox-acas
+version=0.13.0
+merge_sha=ae818cc
+release_pr=624
+tag="$package-v$version"
+
 # 1. The notes are that version's section of the changelog the Release PR itself wrote. Cut
 #    it out at the merge commit, so it does not matter what the checkout is on: the awk
 #    prints from the first `## [` heading to the next, which is exactly one release.
-git show <merge sha>:packages/<package>/CHANGELOG.md \
-  | awk '/^## \[/{n++} n==1' > notes.md
+git show "$merge_sha:packages/$package/CHANGELOG.md" \
+  | awk '/^## \[/{n++} n==1' > notes.md &&
+# A pipeline's status is awk's, and awk succeeds on an empty stream, so a `git show` that
+# found nothing would otherwise reach step 2 as a Release with no notes.
+[ -s notes.md ] &&
 
 # 2. The tag and Release release-please could not create.
-gh release create <tag> --target <merge sha> --title '<package> <version>' --notes-file notes.md
+gh release create "$tag" --target "$merge_sha" --title "$package $version" \
+  --notes-file notes.md &&
 
 # 3. The label flip. Without it release-please retries the same release for ever, and the
 #    train stays stuck even though the tag now exists. Never before step 2: it tells
 #    release-please the version was released, and a version number cannot be reused.
-gh pr edit <release pr> --remove-label "autorelease: pending" --add-label "autorelease: tagged"
+gh pr edit "$release_pr" --remove-label "autorelease: pending" \
+  --add-label "autorelease: tagged" &&
 
 # 4. A tag created by a user token starts no workflow, so nothing uploads on its own.
-gh workflow run publish-packages.yml --ref <tag> -f package=<package> -f target=pypi
+gh workflow run publish-packages.yml --ref "$tag" -f package="$package" -f target=pypi
 ```
+
+**The `&&` between them is the point, not decoration.** Pasted as a block without it the shell
+carries on past a failure, so a refused `gh release create` is followed by the label flip
+anyway — and that flip is what spends the version. Chained, nothing after the first failure
+runs. Run them one at a time if you prefer, but then stop at the first thing that fails.
 
 **Steps 1 and 2 may already be done.** release-please creates the Release *before* its post-release bookkeeping — a comment on the pull request, then the label — so a refusal at any of those leaves a pending Release PR whose Release is already there, and `gh release create` then rejects the tag as a duplicate. The tracking issue says which of the two you are looking at, because the step looks the tag up. When the Release exists, the recovery is steps 3 and 4 alone; check the tag points at that pull request's merge commit before skipping ahead, and read the release-please run log for the call that was actually refused rather than assuming it was the label.
 

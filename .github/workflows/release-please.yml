@@ -181,22 +181,34 @@ jobs:
           # Author *and* marker. The marker is in a public script, so anyone with an account
           # can open an issue carrying it — and on the marker alone that issue is what gets
           # edited and closed, while the tracker this step exists to raise is never opened at
-          # all. `is_bot` is the half a person cannot supply; the bot's login is left unpinned
-          # because its rendering is gh's business, and being wrong there opens a second
+          # all. Being a bot is the half a person cannot supply; the login is left unpinned
+          # because its spelling is the API's business, and being wrong there opens a second
           # tracker rather than writing to a stranger's issue.
-          issue="$(gh issue list --state open --limit 200 --json number,body,author \
-            | jq --arg m "$marker" \
-              '[.[] | select(.author.is_bot and (.body // "" | contains($m)))] | first')"
+          #
+          # `--paginate` rather than a page of N: a tracker stays open for as long as the train
+          # is stuck, so it sinks down a listing as other issues are opened, and a bounded page
+          # would stop returning it — after which every run opens a duplicate and none of them
+          # can close the first. This endpoint answers with pull requests too, which is what
+          # the first `select` drops; editing one of those would rewrite a pull request body.
+          issue="$(gh api --paginate "repos/{owner}/{repo}/issues?state=open&per_page=100" \
+            | jq -s --arg m "$marker" \
+              '[.[][] | select(.pull_request == null)
+                      | select(.user.type == "Bot" and (.body // "" | contains($m)))]
+               | first | if . == null then null else {number: .number} end')"
+          # Which packages this repository actually releases. A merged Release PR's title is
+          # editable, and a title in release-please's shape naming something else would
+          # otherwise render a recovery for a package that does not exist.
+          packages="$(jq -c '[.packages[]."package-name"]' release-please-config.json)"
           # release-please creates the Release first and flips the label after, so a failure in
           # between leaves a pending pull request whose Release is already there. Without this
           # the recovery would tell a maintainer to create a tag that exists.
           released="$(gh api --paginate "repos/{owner}/{repo}/releases?per_page=100" \
             --jq '.[].tag_name' | jq -R -s -c 'split("\n") | map(select(length > 0))')"
           jq -n --argjson pending "$pending" --argjson issue "$issue" \
-            --argjson released "$released" \
+            --argjson released "$released" --argjson packages "$packages" \
             --arg started "$started" --arg run_url "$RUN_URL" \
             '{run_started_at: $started, run_url: $run_url, pending: $pending, issue: $issue,
-              released_tags: $released}' \
+              released_tags: $released, packages: $packages}' \
             | python3 scripts/report_stuck_releases.py > "${RUNNER_TEMP}/plan.json"
           plan="${RUNNER_TEMP}/plan.json"
           action="$(jq -r '.action' "$plan")"

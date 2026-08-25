@@ -27,6 +27,10 @@ _WORKFLOW = yaml.safe_load(
 )
 _STEPS = _WORKFLOW["jobs"]["prepare"]["steps"]
 
+#: Every package `release-please-config.json` registers. A title naming anything else
+#: releases nothing here, so the report refuses to build a recovery from it.
+_PACKAGES = ("maf-sandbox", "maf-sandbox-acas", "maf-sandbox-bicep", "maf-sandbox-wslc")
+
 #: A minute after the fixture merged, so the fixture is a release this run should have made.
 _STARTED = "2026-08-24T20:34:00Z"
 
@@ -45,6 +49,7 @@ def _document(**overrides: object) -> dict:
         "run_url": "https://github.com/sokolaidev/maf-extensions/actions/runs/1",
         "pending": [dict(_ACAS)],
         "issue": None,
+        "packages": list(_PACKAGES),
     }
     document.update(overrides)
     return document
@@ -72,14 +77,17 @@ class TestTheTagIsReadOffTheReleasePrTitle:
     """The tag is what the recovery creates, and a maintainer under pressure should not guess it."""
 
     def test_a_single_package_release_names_its_tag(self):
-        assert report.tag_for(_ACAS["title"]) == "maf-sandbox-acas-v0.13.0"
+        assert report.tag_for(_ACAS["title"], _PACKAGES) == "maf-sandbox-acas-v0.13.0"
 
     def test_the_component_prefix_is_not_confused_with_the_core(self):
         """`maf-sandbox-acas` and `maf-sandbox` share a prefix; the tag must not."""
-        assert report.tag_for("chore(main): release maf-sandbox 0.23.0") == "maf-sandbox-v0.23.0"
+        assert (
+            report.tag_for("chore(main): release maf-sandbox 0.23.0", _PACKAGES)
+            == "maf-sandbox-v0.23.0"
+        )
 
     def test_a_title_naming_no_version_says_so_rather_than_guessing(self):
-        assert report.tag_for("chore(main): release main") is None
+        assert report.tag_for("chore(main): release main", _PACKAGES) is None
 
     @pytest.mark.parametrize(
         "title",
@@ -91,12 +99,12 @@ class TestTheTagIsReadOffTheReleasePrTitle:
     )
     def test_only_release_pleases_own_title_names_a_tag(self, title: str):
         """Matched end to end. A substring match reads a sentence *about* a release as one."""
-        assert report.tag_for(title) is None
+        assert report.tag_for(title, _PACKAGES) is None
 
     @pytest.mark.parametrize("version", ["1.0.0..9", "1.0.0.", "1.0.0-", "1.0.0+"])
     def test_a_version_git_would_refuse_as_a_ref_names_no_tag(self, version: str):
         """`..` and a trailing `.` are not legal in a ref, so the tag would not be creatable."""
-        assert report.tag_for(f"chore(main): release maf-sandbox {version}") is None
+        assert report.tag_for(f"chore(main): release maf-sandbox {version}", _PACKAGES) is None
 
     def test_the_version_is_not_read_back_out_of_the_composed_tag(self):
         """A version may itself contain `-v`, and `rsplit("-v", 1)` then splits in the wrong place.
@@ -104,12 +112,15 @@ class TestTheTagIsReadOffTheReleasePrTitle:
         `maf-sandbox-v1.0.0-v1` decomposes to package `maf-sandbox-v1.0.0` and version `1`,
         which would dispatch the publish for a package that does not exist.
         """
-        assert report.release_of("chore(main): release maf-sandbox 1.0.0-v1") == (
+        assert report.release_of("chore(main): release maf-sandbox 1.0.0-v1", _PACKAGES) == (
             "maf-sandbox",
             "1.0.0-v1",
         )
         text = report.body(
-            [{**_ACAS, "title": "chore(main): release maf-sandbox 1.0.0-v1"}], "", []
+            [{**_ACAS, "title": "chore(main): release maf-sandbox 1.0.0-v1"}],
+            "",
+            released_tags=[],
+            packages=_PACKAGES,
         )
         assert "-f package=maf-sandbox " in text
         assert "--title 'maf-sandbox 1.0.0-v1'" in text
@@ -125,17 +136,17 @@ class TestTheTagIsReadOffTheReleasePrTitle:
         characters a git tag may carry — refusing to name a tag is the safe answer, and the
         issue then says where to find it instead.
         """
-        assert report.tag_for(f"chore(main): release maf-sandbox {version}") is None
+        assert report.tag_for(f"chore(main): release maf-sandbox {version}", _PACKAGES) is None
 
     @pytest.mark.parametrize("suffix", ["-rc.1", "+build.7", "-alpha1"])
     def test_a_prerelease_or_build_version_still_names_its_tag(self, suffix: str):
         """Narrower than `\\S*`, still wide enough for every version release-please cuts."""
-        tag = report.tag_for(f"chore(main): release maf-sandbox 1.0.0{suffix}")
+        tag = report.tag_for(f"chore(main): release maf-sandbox 1.0.0{suffix}", _PACKAGES)
         assert tag == f"maf-sandbox-v1.0.0{suffix}"
 
     def test_the_body_says_where_to_find_the_tag_when_it_cannot_read_one(self):
         stuck = [{**_ACAS, "title": "chore(main): release main"}]
-        text = report.body(stuck, "", [])
+        text = report.body(stuck, "", released_tags=[], packages=_PACKAGES)
         assert ".release-please-manifest.json" in text
         assert "gh release create" not in text
 
@@ -147,18 +158,26 @@ class TestTheTagIsReadOffTheReleasePrTitle:
         unreadable-title path names the order instead of rendering the command it could.
         """
         stuck = [{**_ACAS, "title": "chore(main): release main"}]
-        text = report.body(stuck, "", [])
+        text = report.body(stuck, "", released_tags=[], packages=_PACKAGES)
         assert "gh pr edit" not in text
         assert "in that order" in text.replace("**", "")
         assert "cannot be reused" in text
         # And it points somewhere: naming the obstacle without the next step is what leaves a
-        # maintainer reconstructing three commands from memory, mid-incident.
+        # maintainer reconstructing the commands from memory, mid-incident.
         assert ".release-please-manifest.json" in text
+        # Without restating how many there are. Two places counting the same commands drift
+        # apart, and this is the path taken when nothing else about the title can be trusted.
+        assert not [n for n in ("two steps", "three steps", "four steps") if n in text]
         # Twice: once here, once in the closing paragraph every body carries. Counted rather
         # than merely present, because that closing line would satisfy a bare `in` on its own
         # and the pointer could go missing from the paragraph that needs it.
         assert text.count("docs/maintainers.md") == 2
-        assert report.body([_ACAS], "", []).count("docs/maintainers.md") == 1
+        assert (
+            report.body([_ACAS], "", released_tags=[], packages=_PACKAGES).count(
+                "docs/maintainers.md"
+            )
+            == 1
+        )
 
 
 class TestOnlyAReleaseThisRunOwedCounts:
@@ -254,6 +273,54 @@ class TestTheBodyCarriesTheRecovery:
         assert "closes itself" in text
 
 
+class TestOnlyAReleaseThisRepositoryMakesGetsARecovery:
+    """Ref-safe is not the same as real, and a merged Release PR's title is editable."""
+
+    def test_a_package_this_repository_does_not_have_names_no_tag(self):
+        assert report.tag_for("chore(main): release not-a-package 1.0.0", _PACKAGES) is None
+
+    def test_the_recovery_is_withheld_rather_than_built_from_a_guess(self):
+        """Built anyway it names a changelog that is not there, tags a name nobody publishes,
+        and flips the label on the real pull request before the dispatch fails."""
+        stuck = [{**_ACAS, "title": "chore(main): release not-a-package 1.0.0"}]
+        text = report.body(stuck, "", released_tags=[], packages=_PACKAGES)
+        assert "not-a-package" in text
+        assert "gh release create" not in text
+        assert "gh pr edit" not in text
+
+    def test_an_empty_package_list_releases_nothing(self):
+        """A caller that sends none must withhold the recovery, never widen it."""
+        assert report.tag_for(_ACAS["title"], ()) is None
+
+    @pytest.mark.parametrize("version", ["1.0.0+build.lock", "1.0.0-rc.lock"])
+    def test_a_version_composing_a_tag_git_refuses_names_no_tag(self, version: str):
+        """git rejects a ref ending in `.lock`, so that tag could never have been created."""
+        assert report.tag_for(f"chore(main): release maf-sandbox {version}", _PACKAGES) is None
+
+
+class TestTheRenderedBlockStopsOnAFailure:
+    """Pasted as a block, an unchained sequence runs the label flip after a failed create."""
+
+    @staticmethod
+    def _shell(text: str) -> str:
+        return TestNothingInTheRenderedCommandsExpands._shell(text)
+
+    def test_every_command_but_the_last_is_chained(self):
+        lines = self._shell(report.plan(_document())["body"]).split("\n")
+        assert [line for line in lines if line.endswith(" &&")]
+        assert not lines[-1].endswith("&&")
+
+    def test_the_notes_file_is_checked_before_the_release_is_created(self):
+        """A pipeline's status is awk's, and awk succeeds on an empty stream."""
+        shell = self._shell(report.plan(_document())["body"])
+        assert "[ -s notes.md ] &&" in shell
+        assert shell.index("[ -s notes.md ]") < shell.index("gh release create")
+
+    def test_the_already_created_path_is_chained_too(self):
+        plan = report.plan(_document(released_tags=["maf-sandbox-acas-v0.13.0"]))
+        assert self._shell(plan["body"]).split("\n")[1].endswith(" &&")
+
+
 class TestNothingInTheRenderedCommandsExpands:
     """What the issue prints is copy-pasted into a shell holding a maintainer's credentials."""
 
@@ -271,9 +338,9 @@ class TestNothingInTheRenderedCommandsExpands:
         assert blocks, "the recovery rendered no shell at all"
         return "\n".join(blocks)
 
-    @pytest.mark.parametrize("metacharacter", ["$", "`", ";", "&", "<", "(", ")"])
+    @pytest.mark.parametrize("metacharacter", ["$", "`", ";", "<", "(", ")"])
     def test_no_metacharacter_reaches_the_shell(self, metacharacter: str):
-        """`|` and `>` are absent from this list because the template itself uses them.
+        """`|`, `>` and `&` are absent from this list because the template itself uses them.
 
         The notes extraction is a pipeline into a file, so their presence says nothing. What
         keeps an interpolated one out is the grammar the title is matched against, and the
@@ -290,17 +357,18 @@ class TestNothingInTheRenderedCommandsExpands:
         """
         assert self._shell(report.plan(_document())["body"]).split("\n") == [
             "git show ae818cc:packages/maf-sandbox-acas/CHANGELOG.md \\",
-            "  | awk '/^## \\[/{n++} n==1' > notes.md",
+            "  | awk '/^## \\[/{n++} n==1' > notes.md &&",
+            "[ -s notes.md ] &&",
             "gh release create maf-sandbox-acas-v0.13.0 --target ae818cc \\",
-            "  --title 'maf-sandbox-acas 0.13.0' --notes-file notes.md",
+            "  --title 'maf-sandbox-acas 0.13.0' --notes-file notes.md &&",
             'gh pr edit 624 --remove-label "autorelease: pending" \\',
-            '  --add-label "autorelease: tagged"',
+            '  --add-label "autorelease: tagged" &&',
             "gh workflow run publish-packages.yml --ref maf-sandbox-acas-v0.13.0 \\",
             "  -f package=maf-sandbox-acas -f target=pypi",
         ]
 
     def test_the_notes_file_the_create_reads_is_the_one_the_block_writes(self):
-        """`--notes-file notes.md` used to name a file nothing created, so step 1 failed."""
+        """The block writes the file it then reads, and writes it first."""
         shell = self._shell(report.plan(_document())["body"])
         assert "> notes.md" in shell
         assert shell.index("> notes.md") < shell.index("--notes-file notes.md")
@@ -308,7 +376,7 @@ class TestNothingInTheRenderedCommandsExpands:
     def test_a_missing_merge_commit_renders_a_bare_word(self):
         """`<merge commit>` is two redirections, so the command ran instead of failing."""
         without = {k: v for k, v in _ACAS.items() if k != "mergeCommit"}
-        shell = self._shell(report.body([without], "", []))
+        shell = self._shell(report.body([without], "", released_tags=[], packages=_PACKAGES))
         assert "MERGE_COMMIT_SHA" in shell
         assert "<" not in shell
 
@@ -428,8 +496,28 @@ class TestTheStepRunsWhateverElseHappened:
         step exists to raise is never opened — the alarm is suppressed by a stranger.
         """
         run = _step_named("Name any release this run left stuck")["run"]
-        assert 'select(.author.is_bot and (.body // "" | contains($m)))' in run
-        assert "--json number,body,author" in run
+        assert 'select(.user.type == "Bot" and (.body // "" | contains($m)))' in run
+        assert "select(.pull_request == null)" in run
+
+    def test_the_tracker_lookup_is_not_a_bounded_page(self):
+        """A tracker sinks down a listing as issues are opened while the train stays stuck.
+
+        A page of N stops returning it, after which every run opens a duplicate and none of
+        them can close the first.
+        """
+        run = _step_named("Name any release this run left stuck")["run"]
+        assert '--paginate "repos/{owner}/{repo}/issues?state=open&per_page=100"' in run
+        assert "gh issue list" not in run
+
+    def test_it_passes_the_packages_this_repository_releases(self):
+        """Without them a title naming any package at all renders a whole recovery."""
+        run = _step_named("Name any release this run left stuck")["run"]
+        # Three links again, and the middle one is what a static check nearly misses: drop the
+        # binding and the gather and the key both still read correctly, while `jq -n` fails at
+        # run time on an undefined variable.
+        assert 'packages[]."package-name"' in run
+        assert '--argjson packages "$packages"' in run
+        assert "packages: $packages" in run
 
     @pytest.mark.parametrize("permission", ["issues", "pull-requests", "actions", "contents"])
     def test_the_job_can_still_reach_what_the_step_reads(self, permission: str):

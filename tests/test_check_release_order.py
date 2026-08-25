@@ -299,7 +299,7 @@ class TestTheVersionThisTreeDeclaresIsOneEveryDependentAdmits:
 
 
 def test_the_usage_line_matches_the_workflow_that_runs_it():
-    """Three dots in both, or the documented example recreates the attribution #664 removed.
+    """Three dots in both, so the comparison starts at the merge base wherever the base is.
 
     A maintainer reproducing a red check follows the docstring, and two dots against a base
     that has moved on hands this every commit the base gained since.

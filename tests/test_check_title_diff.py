@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -420,3 +421,67 @@ class TestTheGeneratedReleasePullRequest:
         monkeypatch.setattr(check, "_git", lambda *_args: self._STATUS)
         assert check.main(["check", "BASE", self._TITLE]) == 1
         assert check.main(["check", "BASE", self._TITLE, "--head-ref", self._BRANCH]) == 1
+
+
+class TestBothReadsStartAtTheMergeBase:
+    """A caller's base is whatever the pull request opened against, and it does not move.
+
+    The path list reaches the branch point through the three dots. The `git show <rev>:<path>`
+    snapshot names a revision and cannot, so it has to be handed the merge base itself —
+    otherwise a file the base branch changed since is read at the base branch's version, and
+    the AST comparison reports as this pull request's a change nobody here made.
+    """
+
+    @staticmethod
+    def _record(calls: list[tuple[str, ...]]):
+        def fake_git(*args: str) -> str:
+            calls.append(args)
+            if args[0] == "merge-base":
+                return "BRANCHPOINT"
+            if args[0] == "diff":
+                return "M\tpackages/maf-sandbox/src/maf_sandbox/mod.py"
+            if args[0] == "show":
+                return "x = 1\n"
+            raise AssertionError(f"unexpected git call: {args}")
+
+        return fake_git
+
+    def test_the_merge_base_is_resolved_from_the_base_the_caller_passed(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        calls: list[tuple[str, ...]] = []
+        monkeypatch.setattr(check, "_git", self._record(calls))
+        monkeypatch.chdir(tmp_path)
+        check.main(["check", "STALEBASE", "docs: a note"])
+        assert ("merge-base", "STALEBASE", "HEAD") in calls
+
+    @pytest.mark.parametrize("read", ["diff", "show"])
+    def test_neither_read_is_handed_the_callers_base(
+        self, read: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ):
+        calls: list[tuple[str, ...]] = []
+        monkeypatch.setattr(check, "_git", self._record(calls))
+        monkeypatch.chdir(tmp_path)
+        check.main(["check", "STALEBASE", "docs: a note"])
+        made = [call for call in calls if call[0] == read]
+        assert made, f"no `git {read}` was made at all"
+        assert not [call for call in made if any("STALEBASE" in arg for arg in call)]
+        assert [call for call in made if any("BRANCHPOINT" in arg for arg in call)]
+
+    def test_a_base_with_no_merge_base_is_used_as_it_stands(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture
+    ):
+        """A shallow clone has none to find, and refusing to check at all would be worse."""
+        calls: list[tuple[str, ...]] = []
+        recorded = self._record(calls)
+
+        def fake_git(*args: str) -> str:
+            if args[0] == "merge-base":
+                raise subprocess.CalledProcessError(128, args)
+            return recorded(*args)
+
+        monkeypatch.setattr(check, "_git", fake_git)
+        monkeypatch.chdir(tmp_path)
+        check.main(["check", "STALEBASE", "docs: a note"])
+        assert [call for call in calls if any("STALEBASE" in arg for arg in call)]
+        assert "no merge base" in capsys.readouterr().err
