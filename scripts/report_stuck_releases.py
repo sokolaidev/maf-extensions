@@ -55,7 +55,7 @@ _RELEASE_TITLE = re.compile(
 #: step rather than only the obstacle — and names the *order*, because the label flip is the
 #: one command here that is safe to run alone and ruinous to run first.
 _UNREADABLE_TITLE = (
-    "`{title}` does not name a release this repository made — it is not the title "
+    "{title} does not name a release this repository made — it is not the title "
     "release-please generates, or the package is not one of ours, or the version is not the "
     "one `.release-please-manifest.json` records for it — so the tag it owes cannot "
     "be read off it. Take the package and version from the entry this pull request bumped in "
@@ -91,6 +91,32 @@ _WHO_OWNS_THIS_ISSUE = (
     "This issue is opened, edited and closed by `release-please.yml`. It closes itself on "
     "the first run that finds nothing stuck, so leave it open until the release lands."
 )
+
+
+def as_code(text: str) -> str:
+    """``text`` as a Markdown code span, whatever it contains.
+
+    A pull request title is editable and this is rendered into an issue `github-actions[bot]`
+    authors, so it is data being quoted rather than markup being written. A bare backtick would
+    close the span and let the rest render — a mention in it would notify somebody who never
+    asked. CommonMark's own rule is used: a span may be opened by any backtick run that does
+    not appear in the content, and one space either side is stripped, which is what lets the
+    content itself start or end with a backtick.
+    """
+    flattened = " ".join(text.split())
+    longest = max((len(run) for run in re.findall(r"`+", flattened)), default=0)
+    fence = "`" * (longest + 1)
+    return f"{fence} {flattened} {fence}" if flattened else "``"
+
+
+def as_cell(text: str) -> str:
+    """``text`` as a Markdown code span that a table cell can hold.
+
+    A table's pipes are found before its cells are parsed as Markdown, so a `|` has to be
+    escaped even inside a code span — GFM says so explicitly, and an unescaped one silently
+    splits the row into more cells than the header has.
+    """
+    return as_code(text).replace("|", "\\|")
 
 
 def _is_taggable(tag: str) -> bool:
@@ -191,7 +217,7 @@ def _recovery(
     title = str(pr.get("title", ""))
     release = release_of(title, releases)
     if release is None:
-        return [_UNREADABLE_TITLE.format(title=title)]
+        return [_UNREADABLE_TITLE.format(title=as_code(title))]
     package, version = release
     tag = f"{package}-v{version}"
     # A bare word rather than `<merge commit>`: the placeholder is rendered into a fenced shell
@@ -264,7 +290,7 @@ def body(
         if tag is not None and tag in released_tags:
             owes = f"`{tag}` — already created"
         lines.append(
-            f"| [#{pr.get('number')}]({pr.get('url', '')}) {pr.get('title', '')} "
+            f"| [#{pr.get('number')}]({pr.get('url', '')}) {as_cell(str(pr.get('title', '')))} "
             f"| {pr.get('mergedAt') or 'unknown'} | {owes} |"
         )
     if run_url:

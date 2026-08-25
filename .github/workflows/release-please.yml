@@ -245,6 +245,17 @@ jobs:
             close)
               gh issue close "$(jq -r '.issue' "$plan")" --comment "$(jq -r '.comment' "$plan")"
               ;;
+            none)
+              # Spelled out rather than left to fall through, so that doing nothing and not
+              # recognising the plan stop being the same branch.
+              ;;
+            *)
+              # Without this an action this step does not know is a silent skip that still
+              # exits zero — the shape everything here exists to prevent, arriving through
+              # the reporting itself.
+              echo "::error::unrecognised plan action: ${action}"
+              exit 1
+              ;;
           esac
           # Red even when release-please exited zero. A release left behind by a run that
           # reported success is the shape with no other signal at all.

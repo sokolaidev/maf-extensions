@@ -89,6 +89,63 @@ def _step_named(name: str) -> dict:
     )
 
 
+#: A title carrying every way Markdown can be made to do something: a backtick run that would
+#: close a code span, a mention that would notify a stranger, an emphasis, and a pipe that a
+#: table splits on. Pull request titles are editable, and this is rendered into an issue that
+#: `github-actions[bot]` authors.
+_HOSTILE = "chore(main): release `x` @sokolaidev **bold** | pipe"
+
+
+def _row(text: str) -> str:
+    """The table's one data row — the line naming the pull request, not the header."""
+    return next(line for line in text.split("\n") if line.startswith("| [#"))
+
+
+def _unescaped_pipes(row: str) -> int:
+    """How many cell boundaries a table parser would find in ``row``."""
+    return len(row.replace("\\|", "").split("|")) - 1
+
+
+class TestATitleIsQuotedAsDataNotWrittenAsMarkup:
+    """The one artefact here is read under pressure, so it must say what the title *is*."""
+
+    @pytest.mark.parametrize(
+        ("text", "quoted"),
+        [
+            ("plain", "` plain `"),
+            ("has `one` backtick", "`` has `one` backtick ``"),
+            ("``two`` and `one`", "``` ``two`` and `one` ```"),
+            ("`", "`` ` ``"),
+            ("", "``"),
+        ],
+    )
+    def test_the_fence_is_longer_than_any_run_inside_it(self, text: str, quoted: str):
+        """CommonMark's rule, and the only one that holds for arbitrary content."""
+        assert report.as_code(text) == quoted
+
+    def test_whitespace_is_flattened(self):
+        """A title cannot hold a newline, but nothing here should depend on that."""
+        assert report.as_code("two\nlines") == "` two lines `"
+
+    def test_a_cell_also_escapes_the_pipe(self):
+        """A table's pipes are found before its cells are parsed, so a code span is not enough."""
+        assert report.as_cell("a | b") == "` a \\| b `"
+
+    def test_the_recovery_paragraph_quotes_the_title(self):
+        stuck = [{**_ACAS, "title": _HOSTILE}]
+        text = report.body(stuck, "", released_tags=[], releases=_RELEASES)
+        assert report.as_code(_HOSTILE) in text
+        assert f"`{_HOSTILE}`" not in text
+
+    def test_the_table_row_keeps_its_three_cells(self):
+        """Unescaped, the pipe shifts every column: the merge time reads `pipe` and the tag
+        column is dropped, so the row misreports rather than merely looking wrong."""
+        stuck = [{**_ACAS, "title": _HOSTILE}]
+        row = _row(report.body(stuck, "", released_tags=[], releases=_RELEASES))
+        assert _unescaped_pipes(row) == 4
+        assert report.as_cell(_HOSTILE) in row
+
+
 class TestTheTagIsReadOffTheReleasePrTitle:
     """The tag is what the recovery creates, and a maintainer under pressure should not guess it."""
 
@@ -650,6 +707,14 @@ class TestTheStepRunsWhateverElseHappened:
         assert ".release-please-manifest.json" in run
         assert '--argjson releases "$releases"' in run
         assert "releases: $releases" in run
+
+    def test_an_action_it_does_not_recognise_stops_the_step(self):
+        """A `case` with no default skips silently and still exits zero — which is the shape
+        everything here exists to prevent, arriving through the reporting itself."""
+        run = _step_named("Name any release this run left stuck")["run"]
+        assert "unrecognised plan action" in run
+        assert "\n  *)\n" in run
+        assert "\n  none)\n" in run
 
     @pytest.mark.parametrize("permission", ["issues", "pull-requests", "actions", "contents"])
     def test_the_job_can_still_reach_what_the_step_reads(self, permission: str):
