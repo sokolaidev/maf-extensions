@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.7.5](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.7.4...maf-sandbox-codeact-v0.7.5) (2026-08-25)
+
+
+### Fixes
+
+* **codeact:** carry the host-tool surface on the spec so the router folds it ([#673](https://github.com/sokolaidev/maf-extensions/issues/673)) ([5fdbaf5](https://github.com/sokolaidev/maf-extensions/commit/5fdbaf54ced52f0ea4629cd3d514f24adb09542e))
+* **codeact:** use new method names for host tool calls ([#635](https://github.com/sokolaidev/maf-extensions/issues/635)) ([0d424c5](https://github.com/sokolaidev/maf-extensions/commit/0d424c5af74be3d72ac5de0233332fdd632439d2))
+* require maf-sandbox 0.24.0 in the dependents and 0.24 in the samples, and admit 0.25 ([#665](https://github.com/sokolaidev/maf-extensions/issues/665)) ([b410d73](https://github.com/sokolaidev/maf-extensions/commit/b410d73ac866f2abd19cf3e550f60f26920d5344))
+
 ## [0.7.4](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-codeact-v0.7.3...maf-sandbox-codeact-v0.7.4) (2026-08-24)
 
 
