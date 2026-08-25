@@ -887,11 +887,23 @@ class SandboxBackend(Protocol):
         """
         ...
 
-    async def dispose(self, key: SandboxKey) -> None:
+    async def dispose(self, key: SandboxKey) -> str | None:
         """Delete every kind's sandbox for ``key``, if any. Best-effort: never raises.
 
         Every kind's, because a key may own one sandbox per kind and this method takes no
         kind: a caller releasing a key means all of it.
+
+        **Return the reason a sandbox may still be there, or ``None``.** Never raising is what
+        makes this safe to call from a ``finally``, and it is also what leaves a caller unable
+        to tell a delete that worked from one that failed — so the reason comes back as a value
+        instead.  A backend that swallows its delete error and returns ``None`` is read as
+        having disposed, which is what :meth:`SandboxRouter.dispose_unclean` then reports to a
+        host that asked for a sandbox holding unremovable data to be destroyed.
+
+        ``None`` says only that nothing was reported: a backend with no way to check returns it
+        too.  The conflation is deliberate — the alternative refuses every key served by a
+        backend that cannot answer — and it fixes the direction this fails in.  Say something
+        whenever the delete is known not to have landed.
         """
         ...
 

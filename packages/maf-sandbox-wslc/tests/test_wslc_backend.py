@@ -727,6 +727,35 @@ class TestDispose:
         backend, _ = _backend_with(_explodes)
         asyncio.run(backend.dispose(_KEY))
 
+    def test_a_removal_that_lands_reports_nothing(self):
+        backend, _ = _backend_with(_machine(running=[_NAME]))
+        assert asyncio.run(backend.dispose(_KEY)) is None
+
+    def test_a_failed_removal_comes_back_as_the_reason(self):
+        """Never raising is the contract, so the reason is the only way the router hears (#641)."""
+        failed = _WslcResult(1, b"", b"WSLC_E_SERVICE_UNAVAILABLE")
+        backend, _ = _backend_with(
+            _machine(running=[_NAME], overrides={("container", "remove"): failed})
+        )
+        reason = asyncio.run(backend.dispose(_KEY))
+        assert reason is not None
+        assert "WSLC_E_SERVICE_UNAVAILABLE" in reason
+        assert _NAME in reason
+
+    def test_a_container_that_is_already_gone_reports_nothing(self):
+        not_found = _WslcResult(1, b"", b"Error code: WSLC_E_CONTAINER_NOT_FOUND\n")
+        backend, _ = _backend_with(
+            _machine(running=[_NAME], overrides={("container", "remove"): not_found})
+        )
+        assert asyncio.run(backend.dispose(_KEY)) is None
+
+    def test_a_runner_that_raises_comes_back_as_the_reason(self):
+        backend, _ = _backend_with(_explodes)
+        backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = _NAME
+        reason = asyncio.run(backend.dispose(_KEY))
+        assert reason is not None
+        assert _NAME in reason
+
     def test_the_fallback_reaches_every_kind_this_process_remembers(self):
         """One key may own one container per kind; a dispose with a failing listing must
         reclaim all of them, not whichever one a single-slot registry kept last."""

@@ -792,8 +792,41 @@ class TestDispose:
         backend = _backend_with(client)
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
 
-        asyncio.run(backend.dispose(key))
+        assert asyncio.run(backend.dispose(key)) is None
         assert client.deleted == []
+
+    def test_a_delete_that_lands_reports_nothing(self):
+        backend = _backend_with(_FakeGroupClient())
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
+
+        assert asyncio.run(backend.dispose(key)) is None
+
+    def test_a_failed_delete_comes_back_as_the_reason(self):
+        """Never raising is the contract, so the reason is the only way the router hears (#641)."""
+        backend = _backend_with(_ExplodingGroupClient())
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
+
+        reason = asyncio.run(backend.dispose(key))
+        assert reason is not None
+        assert "sbx-1" in reason
+        assert backend._registry == {}
+
+    def test_a_group_client_that_cannot_be_built_is_reported_rather_than_raised(self):
+        """The registry entries are already gone, so silence would strand a running sandbox
+        with no record of it anywhere."""
+        backend = AcasSandboxBackend(_config())
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
+
+        def _unreachable():
+            raise RuntimeError("no credential")
+
+        backend._group_client = _unreachable  # type: ignore[method-assign]
+        reason = asyncio.run(backend.dispose(key))
+        assert reason is not None
+        assert "no credential" in reason
 
 
 # ---------------------------------------------------------------------------
@@ -1204,20 +1237,21 @@ class TestErrorDetailAdoption:
         assert failed[0].msg == "acas backend: could not list sandboxes for thread %s: %s"
 
     def test_the_model_facing_surface_is_unaffected(self):
-        """This is a log-content-only change: `error_detail` never reaches a tool result.
+        """`error_detail` reaches logs and the router, never a tool result.
 
-        Nothing in this backend returns `error_detail`'s output to a caller — it is only
-        ever handed to `logger.warning`/`logger.info`. This guards that boundary staying
-        true rather than re-deriving it by reading the source on every review.
+        Three call sites hand it to `logger.warning`/`logger.info`; the other two are
+        `dispose` reporting why it could not reach the group (#641), which the router logs
+        and does not put in the `SandboxUnclean` sentence a model would see. This guards
+        that boundary rather than re-deriving it by reading the source on every review.
         """
         import inspect
 
         from maf_sandbox_acas import _backend
 
         source = inspect.getsource(_backend)
-        assert source.count("error_detail(") == 3, (
-            "expected exactly the resume, delete and list call sites to adopt error_detail; "
-            "a new call site should extend this test rather than silently changing the count"
+        assert source.count("error_detail(") == 5, (
+            "expected the resume, delete and list log sites plus dispose's two; a new call "
+            "site should extend this test rather than silently changing the count"
         )
 
 

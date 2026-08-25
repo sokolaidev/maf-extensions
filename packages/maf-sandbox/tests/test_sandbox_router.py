@@ -1138,6 +1138,64 @@ class TestAKeyTheRouterCouldNotDisposeIsRefused:
         asyncio.run(self._router(backend).acquire(_KEY, _SPEC))
 
 
+class TestABackendReportsAFailedDeleteWithoutRaising:
+    """`dispose` never raises, so a raise is the one thing a compliant backend cannot use (#641).
+
+    Every real backend swallows its delete error and returns. Read only the raise and the
+    refusal fires against a backend breaking its contract and against nothing else — least of
+    all the silent failure it exists for.
+    """
+
+    def _router(self, *backends):
+        return SandboxRouter(list(backends), min_isolation=Isolation.NONE)
+
+    def test_a_reported_reason_refuses_the_key(self):
+        router = self._router(InProcessSandboxBackend(dispose_failure="container 7 still running"))
+        assert asyncio.run(router.dispose_unclean(_KEY, timeout=1.0)) is False
+        with pytest.raises(SandboxUnclean, match="refused until a disposal lands"):
+            asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_saying_nothing_still_lands(self):
+        """The compatibility half: a backend with no way to check keeps today's behaviour."""
+        backend = InProcessSandboxBackend()
+        router = self._router(backend)
+        assert asyncio.run(router.dispose_unclean(_KEY, timeout=1.0)) is True
+        assert backend.disposed == [_KEY]
+        asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_the_reason_and_the_backend_that_gave_it_are_logged(self, caplog):
+        router = self._router(InProcessSandboxBackend(name="acas", dispose_failure="403 denied"))
+        with caplog.at_level("WARNING"):
+            asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
+        assert "acas" in caplog.text
+        assert "403 denied" in caplog.text
+
+    def test_one_backend_reporting_is_enough_and_the_rest_are_still_asked(self):
+        good = InProcessSandboxBackend(name="good")
+        router = self._router(InProcessSandboxBackend(name="bad", dispose_failure="no"), good)
+        assert asyncio.run(router.dispose_unclean(_KEY, timeout=1.0)) is False
+        assert good.disposed == [_KEY]
+
+    def test_a_plain_dispose_that_reports_does_not_reopen_the_key(self):
+        """`dispose` reaches the same ledger, so a reported failure must not clear a refusal."""
+        backend = InProcessSandboxBackend(dispose_error=RuntimeError("down"))
+        router = self._router(backend)
+        asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
+        backend.dispose_error = None
+        backend.dispose_failure = "delete accepted but the sandbox is still listed"
+        asyncio.run(router.dispose(_KEY))
+        with pytest.raises(SandboxUnclean):
+            asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_a_later_disposal_that_says_nothing_reopens_it(self):
+        backend = InProcessSandboxBackend(dispose_failure="still there")
+        router = self._router(backend)
+        asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
+        backend.dispose_failure = None
+        asyncio.run(router.dispose(_KEY))
+        asyncio.run(router.acquire(_KEY, _SPEC))
+
+
 class TestSpecDefaults:
     def test_egress_defaults_to_denying_everything(self):
         """A spec that forgets to mention egress must get the closed configuration."""

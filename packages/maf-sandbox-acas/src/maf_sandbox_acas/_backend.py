@@ -775,21 +775,33 @@ class AcasSandboxBackend:
             )
         return _AcasSandbox(sc, self._config.read_timeout_seconds)
 
-    async def dispose(self, key: SandboxKey) -> None:
+    async def dispose(self, key: SandboxKey) -> str | None:
         """Delete every kind's sandbox for ``key`` that this process knows of.
 
         Every kind's, because the key may own one sandbox per kind and this method takes no
         kind — a caller releasing a key means all of it.
+
+        Never raises, and reports the reason a sandbox may still be there. Reaching the group
+        is part of the delete: a client this process cannot build has deleted nothing, and the
+        registry entries are dropped either way, so staying silent would leave the sandbox
+        running with no record of it left anywhere.
         """
         prefix = (key.scope, key.thread_id, key.agent_dir)
         mine = [k for k in list(self._registry) if k[:3] == prefix]
         if not mine:
-            return
-        gc = self._group_client()
-        for registry_key in mine:
-            sandbox_id = self._registry.pop(registry_key, None)
-            if sandbox_id is None:
-                continue
+            return None
+        wanted = [
+            sandbox_id
+            for sandbox_id in (self._registry.pop(k, None) for k in mine)
+            if sandbox_id is not None
+        ]
+        try:
+            gc = self._group_client()
+        except Exception as exc:  # noqa: BLE001 - disposal must never raise
+            logger.warning("acas backend: could not reach the sandbox group: %s", error_detail(exc))
+            return f"could not reach the sandbox group: {error_detail(exc)}"
+        undeleted: list[str] = []
+        for sandbox_id in wanted:
             if await self._delete(gc, sandbox_id):
                 logger.info(
                     "sandbox released: id=%s thread=%s agent=%s",
@@ -797,6 +809,9 @@ class AcasSandboxBackend:
                     key.thread_id,
                     key.agent_dir,
                 )
+            else:
+                undeleted.append(sandbox_id)
+        return f"sandbox delete failed: {', '.join(undeleted)}" if undeleted else None
 
     async def dispose_scope(self, scope: str, thread_id: str) -> int:
         """Delete every sandbox labelled ``(scope, thread_id)``; returns how many.

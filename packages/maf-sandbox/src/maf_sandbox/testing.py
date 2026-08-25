@@ -380,6 +380,10 @@ class InProcessSandboxBackend:
         dispose_error: When set, ``dispose`` records the key and then raises this — for
             exercising what a host sees when the framework cannot dispose a sandbox it
             could not clean.
+        dispose_failure: When set, ``dispose`` records the key and returns this as its reason
+            — a delete that failed *without* raising, which is what a real backend does, since
+            ``dispose`` is contractually best-effort. Fires after ``dispose_error``, so a test
+            setting both sees the raise.
 
     Every ``acquire`` records ``key`` into :attr:`keys` and ``spec`` into :attr:`specs`
     (skipped when ``acquire_error`` fires — a failed acquire acquired nothing). Every
@@ -406,6 +410,7 @@ class InProcessSandboxBackend:
         os_families: frozenset[OsFamily] = frozenset(),
         acquire_error: BaseException | None = None,
         dispose_error: BaseException | None = None,
+        dispose_failure: str | None = None,
     ) -> None:
         self.sandbox = sandbox if sandbox is not None else InProcessSandbox()
         self._name = name
@@ -416,6 +421,7 @@ class InProcessSandboxBackend:
         self._os_families = os_families
         self.acquire_error = acquire_error
         self.dispose_error = dispose_error
+        self.dispose_failure = dispose_failure
         self.keys: list[SandboxKey] = []
         self.specs: list[SandboxSpec] = []
         self.disposed: list[SandboxKey] = []
@@ -453,10 +459,11 @@ class InProcessSandboxBackend:
         self.specs.append(spec)
         return self.sandbox
 
-    async def dispose(self, key: SandboxKey) -> None:
+    async def dispose(self, key: SandboxKey) -> str | None:
         self.disposed.append(key)
         if self.dispose_error is not None:
             raise self.dispose_error
+        return self.dispose_failure
 
     async def dispose_scope(self, scope: str, thread_id: str) -> int:
         self.purged.append((scope, thread_id))

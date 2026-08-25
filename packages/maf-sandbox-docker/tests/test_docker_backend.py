@@ -1052,6 +1052,27 @@ class TestDispose:
         backend, _ = _backend_with(_machine(overrides=overrides))
         asyncio.run(backend.dispose(_KEY))  # does not raise
 
+    def test_a_removal_that_lands_reports_nothing(self):
+        backend, _ = _backend_with(_machine(running=[_NAME]))
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert asyncio.run(backend.dispose(_KEY)) is None
+
+    def test_a_failed_removal_comes_back_as_the_reason(self):
+        """Never raising is the contract, so the reason is the only way the router hears (#641)."""
+        overrides = {("rm",): _DockerResult(1, b"", "daemon error")}
+        backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        reason = asyncio.run(backend.dispose(_KEY))
+        assert reason is not None
+        assert "daemon error" in reason
+        assert _NAME in reason
+
+    def test_a_container_docker_does_not_have_is_not_a_failure(self):
+        overrides = {("rm",): _DockerResult(1, b"", f"Error: No such container: {_NAME}")}
+        backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert asyncio.run(backend.dispose(_KEY)) is None
+
 
 class TestDisposeScope:
     def test_selects_on_labels_and_returns_the_count(self):

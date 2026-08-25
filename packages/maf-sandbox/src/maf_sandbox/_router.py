@@ -554,12 +554,14 @@ class SandboxRouter:
             # sandboxes for the key are equally unreclaimable, and no other backend's are
             # touched. Its own failure is logged, never allowed to replace the refusal.
             try:
-                await self._backend.dispose(key)
+                reported = await self._backend.dispose(key)
             except Exception as undisposed:  # noqa: BLE001 — the refusal must reach the caller
+                reported = str(undisposed)
+            if reported is not None:
                 logger.warning(
                     "sandbox router: backend %s failed to dispose after a reclaim refusal: %s",
                     self._backend.name,
-                    undisposed,
+                    reported,
                 )
             raise
         return sandbox
@@ -573,16 +575,33 @@ class SandboxRouter:
 
         A landed disposal clears the key from the unclean set: whatever was in that sandbox
         went with it.
+
+        A backend refuses by *returning* a reason as much as by raising. ``dispose`` is
+        contractually best-effort and never raises, so a backend that swallowed its delete
+        error and said nothing would otherwise be read as having disposed — and the refusal
+        this whole ledger exists for could fire only against a backend breaking its own
+        contract (#641).
         """
         landed = True
         for backend in self._backends:
             try:
-                await backend.dispose(key)
+                undisposed = await backend.dispose(key)
             except Exception as exc:  # noqa: BLE001 - disposal must not fail a caller
                 landed = False
                 logger.warning(
                     "sandbox router: backend %s failed to dispose: %s", backend.name, exc
                 )
+            else:
+                if undisposed is not None:
+                    landed = False
+                    logger.warning(
+                        "sandbox router: backend %s did not dispose %s/%s/%s: %s",
+                        backend.name,
+                        key.scope,
+                        key.thread_id,
+                        key.agent_dir,
+                        undisposed,
+                    )
         if landed:
             self._unclean.discard(key)
         return landed

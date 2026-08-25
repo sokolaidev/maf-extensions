@@ -234,6 +234,26 @@ class _DockerResult:
     stderr: str
 
 
+@dataclass(frozen=True)
+class _Removal:
+    """What one force-remove did: whether a container went away, and why one did not.
+
+    Both, because a container that was already gone is neither — nothing was removed, and
+    nothing is wrong.
+    """
+
+    removed: bool
+    failure: str | None = None
+
+
+@dataclass(frozen=True)
+class _Sweep:
+    """What one label sweep did: sandboxes removed, and why any is still there."""
+
+    count: int
+    undisposed: str | None = None
+
+
 class _DockerRunner(Protocol):
     """The seam every ``docker`` invocation goes through.
 
@@ -595,18 +615,19 @@ class DockerSandboxBackend:
             self._registry[(key.scope, key.thread_id, key.agent_dir, spec.kind)] = name
             return _DockerSandbox(self._docker, name, self._config.command_timeout_seconds)
 
-    async def dispose(self, key: SandboxKey) -> None:
+    async def dispose(self, key: SandboxKey) -> str | None:
         """Delete every container for ``key`` — every kind, closed or allowlisted — with
         proxies and networks.
 
         By label, so it reaches a sandbox created under an egress configuration this backend no
         longer runs; the registry name is the fallback for when the listing itself fails. Never
-        raises.
+        raises: a ``docker rm`` that failed comes back as the reason, so the router can refuse
+        a key whose data is still sitting in a container.
         """
         prefix = (key.scope, key.thread_id, key.agent_dir)
         mine = [k for k in list(self._registry) if k[:3] == prefix]
         remembered = [self._registry.pop(k) for k in mine]
-        await self._purge(
+        swept = await self._purge(
             [
                 (_LABEL_SCOPE, key.scope),
                 (_LABEL_THREAD, key.thread_id),
@@ -615,6 +636,7 @@ class DockerSandboxBackend:
             fallback=remembered,
             thread_id=key.thread_id,
         )
+        return swept.undisposed
 
     async def dispose_scope(self, scope: str, thread_id: str) -> int:
         """Delete every container labelled ``(scope, thread_id)``; returns how many sandboxes.
@@ -625,15 +647,16 @@ class DockerSandboxBackend:
         """
         mine = [k for k in list(self._registry) if k[0] == scope and k[1] == thread_id]
         remembered = [self._registry.pop(k) for k in mine]
-        return await self._purge(
+        swept = await self._purge(
             [(_LABEL_SCOPE, scope), (_LABEL_THREAD, thread_id)],
             fallback=remembered,
             thread_id=thread_id,
         )
+        return swept.count
 
     async def _purge(
         self, label_filters: list[tuple[str, str]], fallback: list[str], thread_id: str
-    ) -> int:
+    ) -> _Sweep:
         """Remove the containers a label query returns, plus their proxies and networks.
 
         A proxy carries its sandbox's labels, so it is listed and removed alongside it, but it
@@ -652,10 +675,16 @@ class DockerSandboxBackend:
         names = [*listed, *stranded]
 
         count = 0
+        undisposed: list[str] = []
         for target in names:
-            if await self._remove(target) and not target.endswith(_PROXY_SUFFIX):
+            removal = await self._remove(target)
+            if removal.removed and not target.endswith(_PROXY_SUFFIX):
                 logger.info("sandbox released: container=%s thread=%s (purge)", target, thread_id)
                 count += 1
+            # Workload containers only. A proxy and a network carry no guest data, so one left
+            # behind is an infrastructure leak to log rather than a reason to refuse the key.
+            if removal.failure is not None and not target.endswith(_PROXY_SUFFIX):
+                undisposed.append(removal.failure)
 
         networks = {
             _network_name(n.removesuffix(_PROXY_SUFFIX))
@@ -668,7 +697,7 @@ class DockerSandboxBackend:
             networks.add(_network_name(workload))
         for net in networks:
             await self._remove_network(net)
-        return count
+        return _Sweep(count, "; ".join(undisposed) or None)
 
     # -- internals ----------------------------------------------------------------
 
@@ -1018,22 +1047,28 @@ class DockerSandboxBackend:
             return True
         return await self._exists(name) and await self._restart(name)
 
-    async def _remove(self, target: str) -> bool:
-        """Force-remove ``target``. Returns whether it removed one; never raises."""
+    async def _remove(self, target: str) -> _Removal:
+        """Force-remove ``target``. Never raises; reports what it did.
+
+        A container docker says it does not have is a removal that has nothing to do, not a
+        failure: the sweep tries names the registry remembers, and one already gone is the
+        ordinary case.
+        """
         try:
             result = await self._docker(
                 "rm", "-f", target, timeout=self._config.command_timeout_seconds
             )
         except Exception as exc:  # noqa: BLE001 - teardown must never raise
             logger.warning("docker backend: failed to remove container %s: %s", target, exc)
-            return False
+            return _Removal(removed=False, failure=f"{target}: {exc}")
         if result.returncode == 0:
-            return True
-        if _NO_SUCH not in result.stderr.lower():
-            logger.warning(
-                "docker backend: failed to remove container %s: %s", target, result.stderr.strip()
-            )
-        return False
+            return _Removal(removed=True)
+        if _NO_SUCH in result.stderr.lower():
+            return _Removal(removed=False)
+        logger.warning(
+            "docker backend: failed to remove container %s: %s", target, result.stderr.strip()
+        )
+        return _Removal(removed=False, failure=f"{target}: {result.stderr.strip()}")
 
     async def _list_names_by_labels(self, label_filters: list[tuple[str, str]]) -> list[str]:
         """Container names matching every ``(label, value)`` filter, read from docker. Never raises.
