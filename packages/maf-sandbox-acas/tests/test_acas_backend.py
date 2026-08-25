@@ -813,6 +813,22 @@ class TestDispose:
         assert "sbx-1" in reason
         assert backend._registry == {}
 
+    def test_a_sandbox_the_service_no_longer_has_is_not_a_failure(self):
+        """The auto-delete timer reclaiming one between rounds is the expected path — the same
+        reading `acquire`'s resume takes. Reporting it would refuse the key over a sandbox that
+        is already gone."""
+        from azure.core.exceptions import ResourceNotFoundError
+
+        class _Gone(_FakeGroupClient):
+            def get_sandbox_client(self, sandbox_id: str):
+                raise ResourceNotFoundError("sandbox not found")
+
+        backend = _backend_with(_Gone())
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
+
+        assert asyncio.run(backend.dispose(key)) is None
+
     def test_a_group_client_that_cannot_be_built_is_reported_rather_than_raised(self):
         """The registry entries are already gone, so silence would strand a running sandbox
         with no record of it anywhere."""
@@ -1239,19 +1255,20 @@ class TestErrorDetailAdoption:
     def test_the_model_facing_surface_is_unaffected(self):
         """`error_detail` reaches logs and the router, never a tool result.
 
-        Three call sites hand it to `logger.warning`/`logger.info`; the other two are
-        `dispose` reporting why it could not reach the group (#641), which the router logs
-        and does not put in the `SandboxUnclean` sentence a model would see. This guards
-        that boundary rather than re-deriving it by reading the source on every review.
+        Four call sites hand it to `logger.warning`/`logger.info`; the other two are `dispose`
+        and `_delete` reporting why a sandbox may still be there (#641), which the router logs
+        and keeps out of the `SandboxUnclean` sentence a model would see. This guards that
+        boundary rather than re-deriving it by reading the source on every review.
         """
         import inspect
 
         from maf_sandbox_acas import _backend
 
         source = inspect.getsource(_backend)
-        assert source.count("error_detail(") == 5, (
-            "expected the resume, delete and list log sites plus dispose's two; a new call "
-            "site should extend this test rather than silently changing the count"
+        assert source.count("error_detail(") == 6, (
+            "expected the resume, delete, list and dispose log sites plus the two disposal "
+            "reasons; a new call site should extend this test rather than silently changing "
+            "the count"
         )
 
 

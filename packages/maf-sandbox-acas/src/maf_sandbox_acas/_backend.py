@@ -16,6 +16,7 @@ import logging
 import posixpath
 import shlex
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any, cast
 
@@ -259,6 +260,18 @@ def _listed_entry_path(payload: Mapping[str, Any], *, listed: str, working_direc
             "its parent, and a listing enumerates one level only"
         )
     return relative
+
+
+@dataclass(frozen=True)
+class _Deletion:
+    """What one delete did: whether a sandbox went away, and why one did not.
+
+    Both, because a sandbox the service no longer has is neither — nothing was deleted, and
+    nothing is wrong.
+    """
+
+    deleted: bool
+    failure: str | None = None
 
 
 class _AcasSandbox:
@@ -802,16 +815,17 @@ class AcasSandboxBackend:
             return f"could not reach the sandbox group: {error_detail(exc)}"
         undeleted: list[str] = []
         for sandbox_id in wanted:
-            if await self._delete(gc, sandbox_id):
+            deletion = await self._delete(gc, sandbox_id)
+            if deletion.deleted:
                 logger.info(
                     "sandbox released: id=%s thread=%s agent=%s",
                     sandbox_id,
                     key.thread_id,
                     key.agent_dir,
                 )
-            else:
-                undeleted.append(sandbox_id)
-        return f"sandbox delete failed: {', '.join(undeleted)}" if undeleted else None
+            if deletion.failure is not None:
+                undeleted.append(deletion.failure)
+        return f"sandbox delete failed: {'; '.join(undeleted)}" if undeleted else None
 
     async def dispose_scope(self, scope: str, thread_id: str) -> int:
         """Delete every sandbox labelled ``(scope, thread_id)``; returns how many.
@@ -845,7 +859,7 @@ class AcasSandboxBackend:
 
         count = 0
         for sandbox_id in sorted(ids):
-            if await self._delete(gc, sandbox_id):
+            if (await self._delete(gc, sandbox_id)).deleted:
                 logger.info(
                     "sandbox released: id=%s thread=%s (scope purge)", sandbox_id, thread_id
                 )
@@ -886,16 +900,25 @@ class AcasSandboxBackend:
             )
         )
 
-    async def _delete(self, group_client: Any, sandbox_id: str) -> bool:
-        """Best-effort delete. Returns whether it succeeded; never raises."""
+    async def _delete(self, group_client: Any, sandbox_id: str) -> _Deletion:
+        """Best-effort delete. Never raises; reports what it did.
+
+        A sandbox the service no longer has is a delete with nothing to do, not a failure: the
+        auto-delete timer reclaiming one between rounds is the expected path, the same reading
+        the resume above takes of it.
+        """
+        from azure.core.exceptions import ResourceNotFoundError
+
         try:
             await group_client.get_sandbox_client(sandbox_id).begin_delete()
-            return True
+            return _Deletion(deleted=True)
+        except ResourceNotFoundError:
+            return _Deletion(deleted=False)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "acas backend: failed to delete sandbox %s: %s", sandbox_id, error_detail(exc)
             )
-            return False
+            return _Deletion(deleted=False, failure=f"{sandbox_id}: {error_detail(exc)}")
 
     async def _list_thread_sandbox_ids(
         self, group_client: Any, scope: str, thread_id: str
