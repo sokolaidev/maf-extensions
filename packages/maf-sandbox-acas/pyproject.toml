@@ -43,7 +43,7 @@ dependencies = [
     # older and the clean-env wheel smoke resolves it and dies on ImportError. The number
     # itself is below, and `scripts/set_dependents_range.py` moves it — so this says which
     # release the floor is for, never which release that is.
-    "maf-sandbox>=0.23.1,<0.25",
+    "maf-sandbox>=0.24.0,<0.26",
     # DefaultAzureCredential for the sandbox data plane.
     "azure-identity>=1.25.1,<2",
     # The ACA Sandboxes data-plane SDK — still 0.1.0bN. The version pin lives here and
