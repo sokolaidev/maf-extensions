@@ -10,7 +10,7 @@
 |---|---|---|
 | `EXEC` | Run a command line or argv — `Sandbox.exec` | docker, acas, wslc |
 | `RUN_CODE` | Evaluate code in a language runtime, without going through a shell — `Sandbox.run_code` | nobody |
-| `HOST_TOOLS` | Dispatch host-registered functions from inside the sandbox | docker, acas |
+| `HOST_TOOLS` | Call host-registered functions from inside the sandbox | docker, acas |
 | `FILES_IN` | Write files in before execution — `Sandbox.write_file` | docker, acas, wslc |
 | `FILES_OUT` | Stat and read back the paths a spec declared — `stat_file`, `read_file` | docker, acas |
 | `FILES_LIST` | Enumerate a directory — `list_dir` | acas |
@@ -66,7 +66,7 @@ The source leg is already answered by the tool's own integrity declaration, and 
 
 `OutputDisposition.CONSUME` and `OutputDisposition.LAND` are that distinction, declared. It is a *routing* distinction and nothing more — a `CONSUME` output is stat-ed, capped and counted exactly like a landing one. What follows from the sink leg — where artifacts land, name validation, the outbound confidentiality cap — is [`hosts.md`](hosts.md)'s.
 
-**Two things `FILES_OUT` is not.** It is **not `HOST_TOOLS`**: nothing inside the sandbox dispatches the landing callback, the kind calls it host-side after the run, and the empty-dispatch property a CodeAct-class kind rests on survives intact — a host wanting a hard stop denies `FILES_OUT`. And it is **not a second write path into the file store**: a kind landing artifacts where the agent's own file tools write has handed model-written code an unapproved write, and one that can overwrite has given it a way to influence a *different* kind on the next call.
+**Two things `FILES_OUT` is not.** It is **not `HOST_TOOLS`**: nothing inside the sandbox calls the landing callback, the kind calls it host-side after the run, and the no-host-tool-call property a CodeAct-class kind rests on survives intact — a host wanting a hard stop denies `FILES_OUT`. And it is **not a second write path into the file store**: a kind landing artifacts where the agent's own file tools write has handed model-written code an unapproved write, and one that can overwrite has given it a way to influence a *different* kind on the next call.
 
 ### Unpredictable output names do not need enumeration
 

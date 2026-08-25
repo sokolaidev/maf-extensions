@@ -128,10 +128,10 @@ Per capability, with the honest caveats:
   correct behaviour, worth stating so nobody reads it as a bug.
 - **`HOST_TOOLS`** — the native `call_tool` FFI is the concrete second transport #369 could
   only hypothesise about, and the case for its option (c): the backend supplies the channel.
-  `dispatch_over_exec` needs `sh`, `nohup` and a pollable filesystem; this guest has none and
+  `host_tool_calls_over_exec` needs `sh`, `nohup` and a pollable filesystem; this guest has none and
   needs none. Two lifecycle facts constrain the adapter: registration is
-  before-first-run-only, and the dispatch is synchronous FFI, so our async
-  `HostToolRun.dispatch` needs a per-call bridge thread (the wrapper's own pattern).
+  before-first-run-only, and the call is synchronous FFI, so our async
+  `HostToolRun.call` needs a per-call bridge thread (the wrapper's own pattern).
 - **`FILES_IN`** — implementable at acquire time by staging into the sandbox's `input_dir`.
   Whether `write_file` *after* creation is visible in the guest — WASI-mapped dirs suggest
   yes, snapshot/restore semantics suggest maybe not — is the top item for a live probe, not
@@ -195,7 +195,7 @@ its own confirmation, and hyperlight-js gets no entry until it exists and passes
 
 ## Tool calling across the boundary, and the transport design it forces
 
-How a dispatch travels in the Hyperlight stack, end to end:
+How a host-tool call travels in the Hyperlight stack, end to end:
 
 1. The host registers named callbacks with `Sandbox.register_tool` — **before the first
    `run()`**, held for the sandbox's life, never unregistered. The wrapper does it just
@@ -212,24 +212,24 @@ How a dispatch travels in the Hyperlight stack, end to end:
    recovery.
 
 And the boundary of what Hyperlight supplies: **a wire, and only a wire.** Name lookup is
-its entire dispatch policy — no cap, no response ceiling, no argument validation beyond the
+its entire host-tool-call policy — no cap, no response ceiling, no argument validation beyond the
 tool's own, no integrity or identity axes, approval only on the whole `execute_code` call.
 Everything this suite calls the safety contract has to come from our side.
 
-Our side turns out to be ready for that. `HostToolRun.dispatch(name, arguments, *,
-framing_bytes) -> DispatchResult` is already transport-neutral — a string and a mapping in,
+Our side turns out to be ready for that. `HostToolRun.call(name, arguments, *,
+framing_bytes) -> HostToolCallResult` is already transport-neutral — a string and a mapping in,
 `value_json` or a sanitized refusal out, every gate behind the one door — and #369 already
 names the missing half (negotiation) with three candidate shapes. What the Hyperlight source
 adds:
 
 - **The trampoline rule.** The adapter never registers a kind's callables directly (the
   wrapper's model). It registers one trampoline per declared name, and the trampoline's body
-  is a call to the current run's `dispatch`. Their FFI is the wire; our dispatch is the
+  is a call to the current run's `call`. Their FFI is the wire; our host-tool call is the
   door. Every gate — the cap with refused calls counted, the byte ledger, validation, the
   USER-identity refusal — comes free.
 - **`RUN_CODE` gets its method.** A `run_code(code, *, timeout)` optional method on the
   `Sandbox` protocol, gated by `Capability.RUN_CODE` exactly as `FILES_OUT` gates the
-  pull pair (#371 item 1). Host-tool dispatch becomes part of that method's contract.
+  pull pair (#371 item 1). Host-tool calling becomes part of that method's contract.
 - **#369 resolves as shape C, and its sequencing gate opens.** The issue held all three
   shapes until #302's measurement, because the second transport it foresaw (streamed stdin)
   depended on it. Hyperlight is a different second transport, arriving for capability
@@ -239,7 +239,7 @@ adds:
   only be the backend's own, which is what shape C says `HOST_TOOLS` should mean.
 - **Two absorptions the adapter owes.** The sync FFI callback runs on the worker thread
   while the host loop is free, so the trampoline bridges with `run_coroutine_threadsafe`
-  and blocks on the future **with the dispatch deadline**, answering a timeout with a
+  and blocks on the future **with the host-tool-call deadline**, answering a timeout with a
   refusal envelope rather than hanging the guest. And the guest is handed `value_json` —
   host-side JSON, never raw objects — because serializing at the door is what makes the
   response ceiling enforceable; the FFI's `repr()` fallback is the cautionary tale.
@@ -262,7 +262,7 @@ backend, and the experience the library delivers is re-served by this suite's la
 | What the library does | Where it lands here |
 |---|---|
 | `HyperlightCodeActProvider` injects instructions + a run-scoped `execute_code` tool | The codeact kind + `sandboxed_tool`: the description is built from the channels the host wired, and nothing attaches when no sandbox is configured |
-| `tools=[...]` as bare callbacks, name lookup the only gate | `HostToolRegistry` with declarations, dispatched through the trampoline — cap, ledger, validation, identity refusal at the door |
+| `tools=[...]` as bare callbacks, name lookup the only gate | `HostToolRegistry` with declarations, called through the trampoline — cap, ledger, validation, identity refusal at the door |
 | The guest's `call_tool` builtin | Kept — it is baked into the guest binary and becomes the transport's guest half. Like the over-exec shim, it is not a control; the gates are host-side |
 | `workspace_root` / `file_mounts` staged at creation, content-signature cached | `FILES_IN` per spec — and the program stops being a file at all, see the flow below |
 | `allowed_domains`, with per-method restriction | `spec.egress_allow` against the backend's `ALLOWLIST` declaration; the method refinement is #377, additive |
@@ -278,12 +278,12 @@ wrapper keys on tool identity. **Per call**, the kind hands the program text to
 `run_code(code, timeout=...)` — no `program.py`, no interpreter invocation, so the false
 `python3 program.py` sentence #111 flagged never gets written, and the write-after-create
 question (probe item 1) shrinks to data files only. Mid-run, `call_tool` → FFI → trampoline
-→ `dispatch`. Afterward, outputs are pulled from the host-side output dir with our
+→ `call`. Afterward, outputs are pulled from the host-side output dir with our
 confinement walk and landed through sinks. At **dispose**, the worker-actor teardown wires
 into `dispose`/`dispose_scope` so scope reclamation reaches it.
 
 The honest trade for a host author, against using the library directly: gained — attach-time
-refusals, declared tools, capped and ledgered dispatches, pulled outputs, and a workload
+refusals, declared tools, capped and ledgered host-tool calls, pulled outputs, and a workload
 that also runs on wslc, Docker, or the in-process fake unchanged. Given up — the per-method
 egress precision (#377 is the additive axis) and the content-signature sandbox caching,
 which explicit `(key, kind)` identity replaces.

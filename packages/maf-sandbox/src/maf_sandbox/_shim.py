@@ -6,7 +6,7 @@ verbatim, appends the caller's patience as a ``_TIMEOUT`` override and one conve
 per tool, and returns the whole as a string a kind writes beside the program.
 
 **The shim is not a control.** It runs in the guest, where model-written code can read, edit or
-ignore it; every gate that matters is host-side in :meth:`~maf_sandbox.HostToolRun.dispatch`.
+ignore it; every gate that matters is host-side in :meth:`~maf_sandbox.HostToolRun.call`.
 The wrappers grant nothing — resolution is against the registry, so a name this cannot spell as
 a function is still callable through :func:`call`, and a name it invents still resolves to a
 refusal.
@@ -26,7 +26,7 @@ from ._host_tools_over_exec import SHIM_MODULE
 #: How long the guest blocks on one call before giving up on the host, and how often it looks.
 #: Bounded on both sides. It has to outlast the host's poll interval by a wide margin or a slow
 #: supervisor reads as a dead one, and it must not be shorter than the run's own bound or the
-#: guest gives up on a dispatch that then goes on to act. The host's deadline is what actually
+#: guest gives up on a host-tool call that then goes on to act. The host's deadline is what actually
 #: ends a run; this is only the guest's patience, and :func:`host_tool_shim` takes it as an
 #: argument for a caller whose runs are longer than this. These are the canonical values the
 #: guest source carries as literals (``_TIMEOUT`` as its overridable default); a test pins that
@@ -65,10 +65,10 @@ def host_tool_shim(
 
     ``call_timeout`` is how long the guest waits for one answer, and **it must not be shorter
     than the bound the run is given**. Give up first and the guest is wrong twice over: a
-    dispatch the supervisor is still running goes on to act — a sink tool sends its message —
+    host-tool call the supervisor is still running goes on to act — a sink tool sends its message —
     while the program has already been told the host never answered, and the answer lands in
     a file nobody will read. The default suits a run bounded below it; a caller passing a
-    larger ``timeout`` to :func:`dispatch_over_exec` must pass the same number here.
+    larger ``timeout`` to :func:`host_tool_calls_over_exec` must pass the same number here.
 
     ``names`` only adds convenience wrappers; it grants nothing. Resolution happens host-side
     against the registry, so a name omitted here is still callable through :func:`call` and a
@@ -85,7 +85,7 @@ def host_tool_shim(
             canonical.setdefault(unicodedata.normalize("NFKC", name), name)
     wrappers = "\n\n".join(
         f"def {name}(**arguments):\n"
-        f'    """Dispatch to the host tool {name!r}."""\n'
+        f'    """Call the host tool {name!r}."""\n'
         f"    return call({name!r}, **arguments)"
         for name in canonical.values()
     )
@@ -139,7 +139,7 @@ def _spellable(name: str) -> bool:
 
     Three ways it cannot. A **keyword**: `def class(...)` is a `SyntaxError`, so one tool named
     that takes the whole shim down and every other call with it. A name the shim **uses
-    itself**: a wrapper called `open` or `json` replaces machinery every dispatch needs, and
+    itself**: a wrapper called `open` or `json` replaces machinery every host-tool call needs, and
     the failure reads as a broken tool rather than a name clash. And a name that **normalises
     onto** one of those: Python NFKC-normalises identifiers at compile time, so `ｃall`
     is written `call` by the time it is a global.

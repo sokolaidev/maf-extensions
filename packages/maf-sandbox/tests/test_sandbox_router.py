@@ -53,7 +53,7 @@ from maf_sandbox import (
     SandboxTransferLimitsNotPermitted,
     SandboxUnclean,
     TransferLimits,
-    fold_dispatch_transfer_limits,
+    fold_host_tool_call_transfer_limits,
     meets_floor,
 )
 from maf_sandbox.testing import InProcessSandbox, InProcessSandboxBackend
@@ -646,7 +646,7 @@ class TestTheRouterFoldsADispatchSurface:
             requires_approval=False,
             has_undeclared=False,
             response_limits=response_limits,
-            max_dispatches_per_run=dispatches,
+            max_host_tool_calls_per_run=dispatches,
         )
 
     def _router(self, ceiling: SandboxLimits) -> SandboxRouter:
@@ -760,7 +760,7 @@ class TestASpecMustAdmitTheSurfaceItCarries:
             requires_approval=False,
             has_undeclared=False,
             response_limits=DEFAULT_TRANSFER_LIMITS,
-            max_dispatches_per_run=1,
+            max_host_tool_calls_per_run=1,
         )
 
     def test_a_surface_without_the_capability_is_refused(self):
@@ -812,7 +812,7 @@ class TestASpecMustAdmitTheSurfaceItCarries:
         """Each of these is public and annotated against the aggregate, so its hints must resolve
         at runtime: a `TYPE_CHECKING`-only import satisfies the type checker while leaving
         `typing.get_type_hints` raising for every caller that reads annotations."""
-        for subject in (SandboxSpec, fold_dispatch_transfer_limits, HostToolAggregate):
+        for subject in (SandboxSpec, fold_host_tool_call_transfer_limits, HostToolAggregate):
             typing.get_type_hints(subject)
 
 

@@ -48,8 +48,8 @@ from maf_sandbox import (
     SandboxTransferCapExceeded,
     SourceIntegrity,
     TransferLimits,
-    dispatch_over_exec,
     guest_run_layout,
+    host_tool_calls_over_exec,
     host_tool_shim,
     launcher_script,
     reclaim_run,
@@ -305,7 +305,7 @@ def _run(
     output_limit: int | None = None,
 ) -> ExecResult:
     return asyncio.run(
-        dispatch_over_exec(
+        host_tool_calls_over_exec(
             guest, run, _LAYOUT, timeout=timeout, poll_interval=poll, output_limit=output_limit
         )
     )
@@ -555,13 +555,13 @@ class TestSpeculativeRequestDiscovery:
         with pytest.raises(SandboxProgramTimeout):
             _run(
                 guest,
-                HostToolRun(_registry(max_dispatches_per_run=1)),
+                HostToolRun(_registry(max_host_tool_calls_per_run=1)),
                 timeout=0.1,
             )
 
         assert len(guest.answers) == 2
         assert guest.answers[0]["value"] == 2
-        assert "dispatch cap" in guest.answers[1]["refusal"]
+        assert "host-tool-call cap" in guest.answers[1]["refusal"]
         assert "0003.request.json" not in looks
 
 
@@ -715,9 +715,9 @@ class TestWhatTheGuestIsAllowedToSee:
             [("add", {"left": 1, "right": 1}), ("add", {"left": 2, "right": 2})],
             output="finished after a refusal",
         )
-        result = _run(guest, HostToolRun(_registry(max_dispatches_per_run=1)))
+        result = _run(guest, HostToolRun(_registry(max_host_tool_calls_per_run=1)))
         assert guest.answers[0]["value"] == 2
-        assert "dispatch cap (1) is exhausted" in guest.answers[1]["refusal"]
+        assert "host-tool-call cap (1) is exhausted" in guest.answers[1]["refusal"]
         assert result.stdout == "finished after a refusal"
         assert result.exit_code == 0
 
@@ -824,7 +824,7 @@ class TestTheSupervisorsOwnBounds:
         began = time.monotonic()
         with pytest.raises(TimeoutError):
             asyncio.run(
-                dispatch_over_exec(
+                host_tool_calls_over_exec(
                     guest, HostToolRun(_registry()), _LAYOUT, timeout=0.05, poll_interval=5.0
                 )
             )
@@ -884,7 +884,7 @@ class TestTheSupervisorsOwnBounds:
         guest = _TimePassesOnRead([("add", {"left": 1, "right": 1})], finish=False)
         with pytest.raises(TimeoutError):
             asyncio.run(
-                dispatch_over_exec(
+                host_tool_calls_over_exec(
                     guest, HostToolRun(registry), _LAYOUT, timeout=1.0, poll_interval=_FAST
                 )
             )
@@ -1286,7 +1286,7 @@ class TestTheLauncherAgainstARealShell:
 
         Unguarded, a failed `mkdir`/`cd` pair leaves the program running wherever the launcher
         was exec'd: artifacts land where no kind collects them, the exit marker still appears,
-        and the run reports success. A non-zero launcher is already handled — `dispatch_over_exec`
+        and the run reports success. A non-zero launcher is already handled — `host_tool_calls_over_exec`
         turns it into "the launcher did not start the program" — so failing loudly is free.
         """
         directory = tmp_path.as_posix()
@@ -3017,7 +3017,7 @@ class TestTheArgumentsTheSupervisorTakes:
         """Zero as well as negative: `sleep(0)` comes straight back, so nothing is throttled."""
         with pytest.raises(ValueError, match="poll_interval"):
             asyncio.run(
-                dispatch_over_exec(
+                host_tool_calls_over_exec(
                     _ScriptedGuest([]),
                     HostToolRun(_registry()),
                     _LAYOUT,
@@ -3060,7 +3060,7 @@ class TestWhatTheSupervisorWillKeepPayingFor:
         The run then times out, which is the honest end state: the guest is still calling and
         the host has stopped answering.
         """
-        registry = _registry(max_dispatches_per_run=1)
+        registry = _registry(max_host_tool_calls_per_run=1)
         guest = _ScriptedGuest([("add", {"left": 1, "right": 1})] * 3)
 
         with pytest.raises(TimeoutError):
@@ -3068,7 +3068,7 @@ class TestWhatTheSupervisorWillKeepPayingFor:
 
         assert len(guest.answers) == 2, f"the allowance did not hold: {guest.answers}"
         assert guest.answers[0].get("value") == 2
-        assert "dispatch cap" in guest.answers[1]["refusal"]
+        assert "host-tool-call cap" in guest.answers[1]["refusal"]
 
 
 class TestTheShimsSequenceAllocation:
@@ -3382,7 +3382,7 @@ class TestAStopThatDidNotReachEverythingNotesTheCall:
             notes, token = open_unclean_notes()
             try:
                 with pytest.raises(SandboxProgramTimeout):
-                    await dispatch_over_exec(
+                    await host_tool_calls_over_exec(
                         guest, HostToolRun(_registry()), _LAYOUT, timeout=0.2, poll_interval=_FAST
                     )
             finally:
@@ -3429,7 +3429,7 @@ class TestAStopThatDidNotReachEverythingNotesTheCall:
             notes, token = open_unclean_notes()
             try:
                 with pytest.raises(RuntimeError, match="upload boom"):
-                    await dispatch_over_exec(
+                    await host_tool_calls_over_exec(
                         _FailsTheUpload([]),
                         HostToolRun(_registry()),
                         _LAYOUT,
@@ -4730,7 +4730,7 @@ class TestWhatACallerCanBranchOn:
 
 
 _TL = TransferLimits
-_fold = host_tools_over_exec.fold_dispatch_transfer_limits
+_fold = host_tools_over_exec.fold_host_tool_call_transfer_limits
 _LAUNCHER = host_tools_over_exec._LAUNCHER_CEILING
 _MARKER = host_tools_over_exec._MARKER_CEILING
 _MARKERS = host_tools_over_exec._MARKER_FILES
@@ -4739,7 +4739,9 @@ _REFUSAL = host_tools_over_exec._REFUSAL_CEILING
 
 def _surface(response_limits: TransferLimits, dispatches: int = 1) -> Any:
     """The sealed surface a registry answers with, which is what the fold reads."""
-    registry = HostToolRegistry(response_limits=response_limits, max_dispatches_per_run=dispatches)
+    registry = HostToolRegistry(
+        response_limits=response_limits, max_host_tool_calls_per_run=dispatches
+    )
     registry.register(add)
     return registry.aggregate()
 

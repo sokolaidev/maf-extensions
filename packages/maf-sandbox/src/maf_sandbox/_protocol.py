@@ -429,7 +429,7 @@ class HostToolAggregate:
       tool already failed safe into the folds above — an untrusted source, an
       :data:`Identity.APP` identity — and the flag is how a host notices the degrade without
       diffing the folds.
-    - ``response_limits`` and ``max_dispatches_per_run`` are the registry's own ceilings,
+    - ``response_limits`` and ``max_host_tool_calls_per_run`` are the registry's own ceilings,
       carried verbatim so the router can fold the transport's worst case into the transfer-limit
       match when it serves the spec — reported policy, not a fold performed here.  The count is
       load-bearing there and not only the bytes: it is what turns "one response" into "how many
@@ -442,7 +442,7 @@ class HostToolAggregate:
     requires_approval: bool
     has_undeclared: bool
     response_limits: TransferLimits
-    max_dispatches_per_run: int
+    max_host_tool_calls_per_run: int
 
 
 @dataclass(frozen=True)

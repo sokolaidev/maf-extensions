@@ -17,7 +17,7 @@ from collections.abc import AsyncGenerator, Iterable, Sequence
 from contextlib import asynccontextmanager
 from typing import cast
 
-from ._host_tools_over_exec import fold_dispatch_transfer_limits
+from ._host_tools_over_exec import fold_host_tool_call_transfer_limits
 from ._protocol import (
     DEFAULT_CAPABILITIES,
     DEFAULT_SANDBOX_LIMITS,
@@ -433,7 +433,9 @@ class SandboxRouter:
             # serve it is refused here rather than overrun mid-run. The spec's stored caps stay
             # untouched: the kind's runtime tally enforces against those, and folding the stored
             # values would double-count the transport against the workload's own budget.
-            folded = fold_dispatch_transfer_limits(spec.files_in, spec.files_out, spec.host_tools)
+            folded = fold_host_tool_call_transfer_limits(
+                spec.files_in, spec.files_out, spec.host_tools
+            )
             asked_in, asked_out = folded.files_in, folded.files_out
         for direction, asked, declared, ceiling in (
             (Capability.FILES_IN, asked_in, spec.files_in, limits.files_in),

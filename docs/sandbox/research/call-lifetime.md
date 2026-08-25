@@ -17,7 +17,7 @@ The problem in one sentence:
 ```
 binding    one per tool               process           SandboxToolBinding
   └ call   one per tool call          the call          ← owns its own guest path
-      └ run   0..1, dispatch only     inside a call     GuestRunLayout, reclaim_run
+      └ run   0..1, host-tool call only inside a call     GuestRunLayout, reclaim_run
 
 sandbox    one per (scope, thread_id, agent_dir, kind)   conversation
 ```

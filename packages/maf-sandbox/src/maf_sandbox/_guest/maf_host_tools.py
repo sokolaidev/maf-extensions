@@ -59,7 +59,7 @@ def _publish(request, payload):
 
 
 def call(name, **arguments):
-    """Dispatch ``name`` with keyword ``arguments`` and return its value."""
+    """Call the host tool ``name`` with keyword ``arguments`` and return its value."""
     os.makedirs(_CALLS, exist_ok=True)
     identifier = _claim()
     request = os.path.join(_CALLS, identifier + ".request.json")

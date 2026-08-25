@@ -15,7 +15,8 @@ Four things a caller must know:
 - Everything a guest can see is a sanitized sentence, in the failure-ladder style of
   :mod:`maf_sandbox.maf`: a refusal ends the call, not the program, and provider detail goes
   to the host's log rather than into a transcript.
-- **A host may watch its own dispatches, and only that.**  The registry's ``dispatch_observer``
+- **A host may watch its own host-tool calls, and only that.**  The registry's
+  ``host_tool_calls_observer``
   receives each dispatch's run and name, so a host can attribute a call to the program that made
   it.  It is off by default, it sees nothing the dispatch does not already know, and it changes
   nothing a guest can see.
@@ -54,8 +55,8 @@ from ._protocol import (
 _DEFAULT_LOGGER = logging.getLogger(__name__)
 
 __all__ = [
-    "DEFAULT_MAX_DISPATCHES_PER_RUN",
-    "DispatchResult",
+    "DEFAULT_MAX_HOST_TOOL_CALLS_PER_RUN",
+    "HostToolCallResult",
     "FLOW_DECLARED_KEY",
     "HostToolAggregate",
     "HostToolDeclaration",
@@ -79,7 +80,7 @@ FLOW_DECLARED_KEY = "__maf_sandbox_flow_declaration__"
 #: bounds what the *host* is willing to execute middleware-invisibly, not what a workload
 #: needs.  Deliberately below :data:`~maf_sandbox.DEFAULT_TRANSFER_LIMITS`'s file count, so
 #: with everything defaulted this cap is the one that bites first.
-DEFAULT_MAX_DISPATCHES_PER_RUN = 16
+DEFAULT_MAX_HOST_TOOL_CALLS_PER_RUN = 16
 
 #: The shortest response that can cross at all — ``json.dumps(0)`` is one byte.  What makes
 #: "no room left" answerable before a tool runs rather than only after its size is known.
@@ -196,13 +197,13 @@ def declaration_of(func: Callable[..., Any]) -> HostToolDeclaration | None:
 
 
 @dataclass(frozen=True)
-class DispatchResult:
+class HostToolCallResult:
     """One dispatch's outcome: the serialized response, or the sentence the guest may see.
 
     ``value_json`` is the tool's return value as JSON text — serialized here, host-side,
     because the size cap is enforced on what actually crosses the boundary and a transport
     delivers exactly these bytes, inside whatever framing it declared through
-    :meth:`HostToolRun.dispatch`'s ``framing_bytes`` and which was capped along with them.
+    :meth:`HostToolRun.call`'s ``framing_bytes`` and which was capped along with them.
     ``refusal`` is a sanitized sentence in the failure-ladder style: fixed shape, no provider
     detail, safe to land in a transcript.  Exactly one of the
     two is set, and :attr:`ok` says which.
@@ -214,7 +215,7 @@ class DispatchResult:
     def __post_init__(self) -> None:
         if (self.value_json is None) == (self.refusal is None):
             raise ValueError(
-                "a DispatchResult carries exactly one of value_json or refusal — both or "
+                "a HostToolCallResult carries exactly one of value_json or refusal — both or "
                 "neither would let a caller read a refused dispatch as a delivered one"
             )
 
@@ -285,13 +286,13 @@ class HostToolRegistry:
             ``identity=None`` exercises no authority and is always allowed.  The earlier,
             fail-closed layer beside the router's ``denied_identities``, which stays the
             attach-time authority.
-        max_dispatches_per_run: How many dispatches one :class:`HostToolRun` may make,
+        max_host_tool_calls_per_run: How many dispatches one :class:`HostToolRun` may make,
             refusals included — a probe loop burning the cap on unknown names is the cap
             working.  Must be at least 1; a host that wants zero wants an empty registry.
         response_limits: The per-response and per-run byte ceilings, reusing
             :class:`~maf_sandbox.TransferLimits` — its per-file leg caps one response, its
             total leg the run, its count leg the delivered responses.
-        dispatch_observer: A host's callback that sees each dispatch and the run that made
+        host_tool_calls_observer: A host's callback that sees each dispatch and the run that made
             it, so the host can attribute the call to the program. Takes the run and the
             name and returns a context manager the dispatch enters and exits
             structurally — a refused dispatch included, since it starts at the cap check.
@@ -306,16 +307,17 @@ class HostToolRegistry:
         *,
         require_declared: bool = False,
         allowed_identities: frozenset[Identity] = frozenset({Identity.APP}),
-        max_dispatches_per_run: int = DEFAULT_MAX_DISPATCHES_PER_RUN,
+        max_host_tool_calls_per_run: int = DEFAULT_MAX_HOST_TOOL_CALLS_PER_RUN,
         response_limits: TransferLimits = DEFAULT_TRANSFER_LIMITS,
-        dispatch_observer: (
+        host_tool_calls_observer: (
             Callable[[HostToolRun, object], contextlib.AbstractContextManager[object]] | None
         ) = None,
     ) -> None:
-        _refuse_non_integer("max_dispatches_per_run", max_dispatches_per_run)
-        if max_dispatches_per_run < 1:
+        _refuse_non_integer("max_host_tool_calls_per_run", max_host_tool_calls_per_run)
+        if max_host_tool_calls_per_run < 1:
             raise ValueError(
-                f"max_dispatches_per_run must be at least 1, not {max_dispatches_per_run}: a "
+                f"max_host_tool_calls_per_run must be at least 1, not "
+                f"{max_host_tool_calls_per_run}: a "
                 "host that wants nothing dispatched wants an empty registry, which needs no "
                 "cap to say so"
             )
@@ -340,13 +342,14 @@ class HostToolRegistry:
                     f"response_limits.{leg} is {bound!r}, so no response could ever be "
                     "delivered — a host that wants none wants an empty registry"
                 )
-        if dispatch_observer is not None:
+        if host_tool_calls_observer is not None:
             # Reject invalid observer configurations at construction rather than discovering
             # and logging them on every dispatch.
-            given_observer = cast(object, dispatch_observer)
+            given_observer = cast(object, host_tool_calls_observer)
             if not callable(given_observer):
                 raise TypeError(
-                    f"dispatch_observer must be callable, not {type(dispatch_observer).__name__}"
+                    "host_tool_calls_observer must be callable, not "
+                    f"{type(host_tool_calls_observer).__name__}"
                 )
             # An instance with an async ``__call__`` is equally an observer no one awaits,
             # and only its ``__call__`` is the coroutine function ``inspect`` can see.
@@ -354,7 +357,7 @@ class HostToolRegistry:
                 getattr(given_observer, "__call__", None)
             ):
                 raise TypeError(
-                    "dispatch_observer must be synchronous, not a coroutine function: it is "
+                    "host_tool_calls_observer must be synchronous, not a coroutine function: it is "
                     "called on the dispatching task and must return a context manager to "
                     "enter, not a coroutine to await"
                 )
@@ -372,9 +375,9 @@ class HostToolRegistry:
                 )
         self._require_declared = require_declared
         self._allowed_identities = frozenset(allowed_identities)
-        self._max_dispatches_per_run = max_dispatches_per_run
+        self._max_dispatches_per_run = max_host_tool_calls_per_run
         self._response_limits = response_limits
-        self._dispatch_observer = dispatch_observer
+        self._dispatch_observer = host_tool_calls_observer
         self._tools: dict[str, Callable[..., Any]] = {}
         # Captured at registration, never re-read from the function: see `declaration_for`.
         self._declarations: dict[str, HostToolDeclaration | None] = {}
@@ -397,7 +400,7 @@ class HostToolRegistry:
         return self._allowed_identities
 
     @property
-    def max_dispatches_per_run(self) -> int:
+    def max_host_tool_calls_per_run(self) -> int:
         """How many dispatches one run may make, refusals included."""
         return self._max_dispatches_per_run
 
@@ -407,7 +410,7 @@ class HostToolRegistry:
         return self._response_limits
 
     @property
-    def dispatch_observer(
+    def host_tool_calls_observer(
         self,
     ) -> Callable[[HostToolRun, object], contextlib.AbstractContextManager[object]] | None:
         """The host's observer, or ``None`` when the host registered none — the off-by-default
@@ -437,7 +440,7 @@ class HostToolRegistry:
                 f"host tool {name or getattr(func, '__name__', '?')!r} cannot be registered: "
                 "this registry was sealed when its aggregate was taken, and a host has "
                 "already derived a spec and a classification from the surface as it stood. "
-                "Widening it now would dispatch what nothing classified."
+                "Widening it now would let a guest call what nothing classified."
             )
         if not callable(func):
             raise TypeError(f"a host tool must be callable, not {type(func).__name__}")
@@ -509,7 +512,7 @@ class HostToolRegistry:
 
         Everything reachable from inside a sandbox goes through here, which is what makes
         registration the one door and this the one place argument validation can honestly
-        live (:meth:`HostToolRun.dispatch`).
+        live (:meth:`HostToolRun.call`).
         """
         return self._tools.get(name)
 
@@ -562,7 +565,7 @@ class HostToolRegistry:
             requires_approval=Identity.USER in identities,
             has_undeclared=bool(undeclared),
             response_limits=self._response_limits,
-            max_dispatches_per_run=self._max_dispatches_per_run,
+            max_host_tool_calls_per_run=self._max_dispatches_per_run,
         )
 
 
@@ -585,8 +588,8 @@ def _refuse_non_integer(field: str, value: object) -> None:
         )
 
 
-def _refused(sentence: str) -> DispatchResult:
-    return DispatchResult(refusal=sentence)
+def _refused(sentence: str) -> HostToolCallResult:
+    return HostToolCallResult(refusal=sentence)
 
 
 #: How much guest-chosen text one refusal may quote back.  Generous for anything a caller
@@ -681,7 +684,7 @@ class HostToolRun:
 
     Per run, not per registry: the dispatch cap and the response ceilings bound what a single
     guest program may cost, so a fresh run starts with a fresh count.  Everything model-visible
-    that leaves :meth:`dispatch` is a sanitized sentence — the detail a host needs lands in
+    that leaves :meth:`call` is a sanitized sentence — the detail a host needs lands in
     ``logger`` instead, exactly the split :mod:`maf_sandbox.maf`'s failure ladder draws.
 
     Args:
@@ -689,7 +692,8 @@ class HostToolRun:
         logger: Where dispatch failures write their detail. Defaults to this module's logger;
             pass the workload's own so its records keep the workload's logger name.
         run_id: A stable identifier for this run, carried to :attr:`run_id` and to the
-            ``dispatch_observer`` on every dispatch. Defaults to a fresh random one, so a host
+            ``host_tool_calls_observer`` on every call. Defaults to a fresh random one, so a
+            host
             that wants to attribute a call to the run that made it — a per-run ledger, a trace —
             has an identity to key on rather than the object's own, which is neither loggable nor
             stable across processes. Pass one to tie a run to a meaning of the caller's own (a
@@ -713,7 +717,7 @@ class HostToolRun:
         self._registry = registry
         self._logger = logger if logger is not None else _DEFAULT_LOGGER
         self._run_id = run_id if run_id is not None else uuid.uuid4().hex
-        self._dispatched = 0
+        self._calls = 0
         self._delivered = 0
         self._delivered_bytes = 0
 
@@ -721,7 +725,8 @@ class HostToolRun:
     def run_id(self) -> str:
         """This run's identifier — the caller's, or a fresh random one if none was given.
 
-        The identity a ``dispatch_observer`` attributes a call by: object identity works within a
+        The identity a ``host_tool_calls_observer`` attributes a call by: object identity
+        works within a
         process but is neither loggable nor stable, and this is. Unique per run unless a caller
         deliberately reuses one.
         """
@@ -731,15 +736,16 @@ class HostToolRun:
     def registry(self) -> HostToolRegistry:
         """The registry this run resolves through, whose ceilings a transport also answers to.
 
-        Read-only, and read by :func:`~maf_sandbox.dispatch_over_exec` for one reason: the size
+        Read-only, and read by :func:`~maf_sandbox.host_tool_calls_over_exec` for one reason:
+        the size
         a response may be is the size a *request* may be, and a transport inventing its own
         number would be a second ceiling for one concern.
         """
         return self._registry
 
-    async def dispatch(
+    async def call(
         self, name: str, arguments: Mapping[str, Any] | None = None, *, framing_bytes: int = 0
-    ) -> DispatchResult:
+    ) -> HostToolCallResult:
         """Resolve, gate, validate, call and cap — the whole contract, at the one door.
 
         Every call counts toward the run's dispatch cap, refused ones included: a guest
@@ -754,7 +760,8 @@ class HostToolRun:
         consistent — nothing was delivered, the slot is returned — but a sink tool's outward
         effect may already have fired, so the interruption is logged rather than left as the one
         outcome with no trace. A host that needs to *act* on it — retry, compensate — keys on the
-        registry's ``dispatch_observer``, whose context exit receives the same ``CancelledError``.
+        registry's ``host_tool_calls_observer``, whose context exit receives the same
+        ``CancelledError``.
 
         Args:
             name: The registered tool to call. Guest text — checked, never trusted.
@@ -774,13 +781,13 @@ class HostToolRun:
             raise ValueError(f"framing_bytes must not be negative, got {framing_bytes}")
         # The framing checks above raise before the observation begins: a transport's
         # programming error is not a dispatch, so the observer sees no enter for it.
-        with _observe(self._registry.dispatch_observer, self, name, self._logger):
-            return await self._run_dispatch(name, arguments, framing_bytes=framing_bytes)
+        with _observe(self._registry.host_tool_calls_observer, self, name, self._logger):
+            return await self._run_host_tool_call(name, arguments, framing_bytes=framing_bytes)
 
-    async def _run_dispatch(
+    async def _run_host_tool_call(
         self, name: str, arguments: Mapping[str, Any] | None = None, *, framing_bytes: int = 0
-    ) -> DispatchResult:
-        """The guest-answerable half of :meth:`dispatch`, split so an observer can wrap it
+    ) -> HostToolCallResult:
+        """The guest-answerable half of :meth:`call`, split so an observer can wrap it
         whole — from the first count, refusals included, to the slot's return — without
         re-indenting the body.
 
@@ -789,11 +796,11 @@ class HostToolRun:
             arguments: Its keyword arguments, as the guest's JSON parsed.
             framing_bytes: What the transport wraps around ``value_json`` before it crosses.
         """
-        self._dispatched += 1
-        cap = self._registry.max_dispatches_per_run
-        if self._dispatched > cap:
+        self._calls += 1
+        cap = self._registry.max_host_tool_calls_per_run
+        if self._calls > cap:
             return _refused(
-                f"Error: this run's host-tool dispatch cap ({cap}) is exhausted — finish "
+                f"Error: this run's host-tool-call cap ({cap}) is exhausted — finish "
                 "with the results already delivered and report what remains undone"
             )
         # The same cast-and-check the arguments get below, and for the same reason: a
@@ -883,7 +890,8 @@ class HostToolRun:
             # a cancel is neither — the turn was cut off at the body's innermost await. The ledger
             # is consistent (nothing delivered, the slot returned in `finally`), but that says
             # nothing was *delivered*, not that nothing was *done*: a sink tool may already have
-            # acted. Say which tool was interrupted, so a host that wired no `dispatch_observer`
+            # acted. Say which tool was interrupted, so a host that wired no
+            # `host_tool_calls_observer`
             # still has a record; one that did receives this same error at its context exit.
             self._logger.warning(
                 "host tools: the dispatch of %r was cancelled mid-effect — nothing was delivered, "
@@ -906,10 +914,10 @@ class HostToolRun:
         provided: dict[str, Any],
         limits: TransferLimits,
         framing_bytes: int,
-    ) -> DispatchResult:
+    ) -> HostToolCallResult:
         """Validate, call, serialize and cap, with a response slot already reserved.
 
-        Split from :meth:`dispatch` so that giving the slot back has exactly one site: every
+        Split from :meth:`call` so that giving the slot back has exactly one site: every
         refusal here is a ``return`` the caller sees, and none of them can forget.  The byte
         ledger stays here instead, where a size is known — its check and its commit sit in one
         run of statements with no ``await`` between them, which is what makes it safe from the
@@ -981,4 +989,4 @@ class HostToolRun:
                 f"this run's total response cap ({limits.max_total_bytes} bytes)"
             )
         self._delivered_bytes += crossing
-        return DispatchResult(value_json=encoded)
+        return HostToolCallResult(value_json=encoded)
