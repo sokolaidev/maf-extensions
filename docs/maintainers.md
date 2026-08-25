@@ -146,6 +146,8 @@ The reasoning behind the whole arrangement, and what it still does not cover, is
 
    `package-name` is not optional here, and its absence fails quietly rather than loudly: release-please's Python strategy reads `pyproject.toml` only to find version-bearing files, never to name the component. Leave it out and the component is the empty string, so the package tags as a bare `v<version>` — which collides with every other package and matches none of the publish workflow's globs.
 
+   It also needs **`exclude-paths`, naming that package's own `tests/`**. Without it the package is attributed a release for a commit whose only files under it were tests — the shape that used to force a split pull request or a corrective `chore:` (#629). `tests/test_release_config.py` fails for any package that omits it, so this is caught rather than discovered at release time, but registering it correctly is one line.
+
    The entry also needs its **`extra-files` updater for `uv.lock`**, copied from a sibling with the name changed in the `jsonpath`. The lock records a version for every workspace member and release-please knows nothing about it, so a package without one releases perfectly happily and leaves the lock a version behind — after which `uv sync --locked` fails for everyone, on a branch that changed none of this.
 
    Two details in that entry are load-bearing, and both were arrived at the hard way:
