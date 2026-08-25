@@ -72,12 +72,12 @@ jobs:
 
       # After maf-sandbox publishes, its dependents' range moves at both ends: the floor to the
       # version that just published, in the packages that look like they need it, and the
-      # ceiling two minors up so the release after it needs nobody's permission. The post-release
-      # step of RELEASING.md's release order, which lived only in prose until #41 and #178.
+      # ceiling two minors up so the release after it needs nobody's permission. The
+      # post-release step of RELEASING.md's release order (#41, #178).
       #
-      # One step, because the two bounds are one string. They were two steps opening two pull
-      # requests, and since each rewrote the whole constraint, whichever merged second reverted
-      # the other's half (#195). The separation was never real; only the collision was.
+      # One step, because the two bounds are one string: split across two pull requests, each
+      # rewrites the whole constraint and whichever merges second reverts the other's half
+      # (#195). The separation is not real; only the collision would be.
       - name: Propose the dependents' range
         if: >-
           steps.release.outputs.releases_created == 'true'
@@ -120,15 +120,15 @@ jobs:
           git commit -am "$title"
           git push -u origin "$branch"
           # The body is written to a file through a *quoted* heredoc, so the shell expands
-          # nothing in it. It used to be a double-quoted assignment, and the quotes around
-          # "Approve and run" in the last paragraph closed the string early: the shell read the
-          # rest as commands and the step died with `and: command not found` (run 31603351228).
-          # That fired after the tag and after the publish dispatch, so the release itself was
-          # intact and only the proposal was lost — a branch pushed with no pull request on it.
-          # This prose is long, grows every release, and is written in the same register as the
-          # docs, which means quotes and backticked identifiers will keep arriving in it. Both
-          # are inert here. The version is the one thing that has to vary, so it is substituted
-          # afterwards from a placeholder rather than by letting the whole body expand.
+          # nothing in it. A double-quoted assignment would let a quote inside the prose close
+          # the string early and hand the rest to the shell as commands — and this prose is
+          # long, grows every release, and is written in the same register as the docs, so
+          # quotes and backticked identifiers keep arriving in it. Both are inert here. The
+          # version is the one thing that has to vary, so it is substituted afterwards from a
+          # placeholder rather than by letting the whole body expand.
+          #
+          # This step runs after the tag and after the publish dispatch, so a failure here
+          # costs the proposal and not the release.
           cat > "${RUNNER_TEMP}/range-body.md" <<'BODY'
           Automated by the release workflow when maf-sandbox @VERSION@ was released. **Check that it actually published before merging this.** The upload is dispatched separately and may still be waiting on the pypi environment, or have failed; a floor pointing at a version that never reached PyPI is unresolvable for every consumer.
 
