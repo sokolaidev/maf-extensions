@@ -1,8 +1,8 @@
 """Say what follows when a maf-sandbox release lands outside the dependents' ceilings.
 
-    git diff --name-only <base> HEAD | python scripts/check_release_order.py "<pull request title>"
+    git diff --name-only <base>...HEAD | python scripts/check_release_order.py "<pull request title>"
 
-Changed paths arrive on stdin, one per line. It speaks only when the title would cut a new
+Changed paths arrive on stdin, one per line. Three dots, so the comparison starts at the merge base: against a base that has moved on, two dots hands this every commit the base gained since and reports another pull request's release as this one's. It speaks only when the title would cut a new
 *minor* of maf-sandbox, the change is attributed to that package by the files it touches, and
 some dependent's ceiling excludes the result.
 

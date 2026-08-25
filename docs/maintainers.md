@@ -105,30 +105,36 @@ Automating the publish does **not** on its own recover the ordering, which is ea
 
 ## When one release is stuck, nothing releases
 
-release-please does not release the commit that triggered it. Every run scans for merged Release PRs still labelled `autorelease: pending`, takes the oldest unfinished one, and stops there if it cannot finish it. So **one release that cannot be created stops every package's** — core, every backend, and every run after it, whatever commit triggered that run. Observed on 2026-08-24: eleven consecutive failures across two runs, over an hour, all on one `maf-sandbox-acas` release the API refused to create — and the only trace was a red workflow on `main`.
+release-please does not release the commit that triggered it. Every run scans for merged Release PRs still labelled `autorelease: pending`, takes the oldest unfinished one, and stops there if it cannot finish it. So **one merged Release PR it cannot finish stops every package's release** — core, every backend, and every run after it, whatever commit triggered that run. Unfinished covers more than a Release that was refused: release-please creates the Release first and does its bookkeeping after, so a refusal at any of those later calls leaves the same stuck label. Observed on 2026-08-24: eleven consecutive failures across two runs, over an hour, all on one `maf-sandbox-acas` release the API refused to create — and the only trace was a red workflow on `main`.
 
 The trace is no longer the only signal. `release-please.yml`'s last step runs on every run, red or green, and asks one thing: now that release-please has run, is any merged Release PR still labelled `autorelease: pending`? If one is, the step opens an issue naming the pull request, the tag it owes and the commands that clear it, edits that same issue on later runs rather than opening a second, and closes it on the first run that finds the train moving. It also fails the job, so a run that reported success while leaving a release behind is still red. `scripts/report_stuck_releases.py` decides and renders; the workflow gathers the state and carries the plan out.
 
 A Release PR merged *while* a run is in flight is not counted, because it belongs to the run its own merge triggered — queued behind this one on the workflow's concurrency group. Without that the step would raise an alarm seconds before the next run cleared it, on the one signal that has to be trusted.
 
-**Clearing it by hand** is three commands, or two when the Release already exists. The label flip is the one nobody guesses.
+**Clearing it by hand** is four commands, or two when the Release already exists. The label flip is the one nobody guesses, and the one whose order matters.
 
 ```bash
-# 1. The tag and Release release-please could not create. The notes are that version's
-#    section of packages/<package>/CHANGELOG.md, which the Release PR itself wrote.
+# 1. The notes are that version's section of the changelog the Release PR itself wrote. Cut
+#    it out at the merge commit, so it does not matter what the checkout is on: the awk
+#    prints from the first `## [` heading to the next, which is exactly one release.
+git show <merge sha>:packages/<package>/CHANGELOG.md \
+  | awk '/^## \[/{n++} n==1' > notes.md
+
+# 2. The tag and Release release-please could not create.
 gh release create <tag> --target <merge sha> --title '<package> <version>' --notes-file notes.md
 
-# 2. The label flip. Without it release-please retries the same release for ever, and the
-#    train stays stuck even though the tag now exists.
+# 3. The label flip. Without it release-please retries the same release for ever, and the
+#    train stays stuck even though the tag now exists. Never before step 2: it tells
+#    release-please the version was released, and a version number cannot be reused.
 gh pr edit <release pr> --remove-label "autorelease: pending" --add-label "autorelease: tagged"
 
-# 3. A tag created by a user token starts no workflow, so nothing uploads on its own.
+# 4. A tag created by a user token starts no workflow, so nothing uploads on its own.
 gh workflow run publish-packages.yml --ref <tag> -f package=<package> -f target=pypi
 ```
 
-**Step 1 may already be done.** release-please creates the Release *before* it flips the label, so a refusal in between leaves a pending Release PR whose Release is already there — and `gh release create` then rejects the tag as a duplicate. The tracking issue says which of the two you are looking at, because the step looks the tag up: when the Release exists, the recovery is steps 2 and 3 alone, and what to investigate is the labelling call rather than the release.
+**Steps 1 and 2 may already be done.** release-please creates the Release *before* its post-release bookkeeping — a comment on the pull request, then the label — so a refusal at any of those leaves a pending Release PR whose Release is already there, and `gh release create` then rejects the tag as a duplicate. The tracking issue says which of the two you are looking at, because the step looks the tag up. When the Release exists, the recovery is steps 3 and 4 alone; check the tag points at that pull request's merge commit before skipping ahead, and read the release-please run log for the call that was actually refused rather than assuming it was the label.
 
-Then `gh workflow run release-please.yml`, so the rest of the train drains and the tracking issue closes itself. Step 3 is still held at the `pypi` environment's reviewer, so check that the upload actually happened rather than assuming the dispatch was the end of it.
+Then `gh workflow run release-please.yml`, so the rest of the train drains and the tracking issue closes itself. Step 4 is still held at the `pypi` environment's reviewer, so check that the upload actually happened rather than assuming the dispatch was the end of it.
 
 **Read what failed before reaching for any of that.** A refusal that is ours — a trimmed permission, a config the action rejects — is fixed in the repository and re-run, and hand-creating the release buries it. The 2026-08-24 refusal was not ours, and it took probing the API as `github-actions[bot]` to establish that: the app could create releases at `main`'s head, at branch commits, and under the same tag name, and was refused *only* when the release targeted that one merge commit — which a user token could target fine. Not permissions, not a ruleset, not the organization's workflow policy; all three were changed during the diagnosis and none of them mattered.
 

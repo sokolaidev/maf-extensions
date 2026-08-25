@@ -178,8 +178,15 @@ jobs:
           # behind this one on the concurrency group above.
           started="$(gh api "repos/{owner}/{repo}/actions/runs/${GITHUB_RUN_ID}" \
             --jq '.run_started_at')"
-          issue="$(gh issue list --state open --limit 200 --json number,body \
-            | jq --arg m "$marker" '[.[] | select(.body // "" | contains($m))] | first')"
+          # Author *and* marker. The marker is in a public script, so anyone with an account
+          # can open an issue carrying it — and on the marker alone that issue is what gets
+          # edited and closed, while the tracker this step exists to raise is never opened at
+          # all. `is_bot` is the half a person cannot supply; the bot's login is left unpinned
+          # because its rendering is gh's business, and being wrong there opens a second
+          # tracker rather than writing to a stranger's issue.
+          issue="$(gh issue list --state open --limit 200 --json number,body,author \
+            | jq --arg m "$marker" \
+              '[.[] | select(.author.is_bot and (.body // "" | contains($m)))] | first')"
           # release-please creates the Release first and flips the label after, so a failure in
           # between leaves a pending pull request whose Release is already there. Without this
           # the recovery would tell a maintainer to create a tag that exists.

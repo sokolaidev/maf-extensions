@@ -31,16 +31,34 @@ MARKER = "<!-- stuck-release-tracker -->"
 #: would rename an issue people are already reading.
 TITLE = "A merged Release PR was never released, so no package can release"
 
-#: `chore(main): release maf-sandbox-acas 0.13.0` — release-please's title for a
-#: single-package Release PR, which is the only shape this repository produces, because
+#: A dotted release with an optional pre-release or build suffix. A grammar rather than a
+#: character class, so `1.0.0..x` and `1.0.0.` are refused: git rejects a ref containing `..`
+#: or ending in `.`, and the tag built from this is rendered into shell commands a maintainer
+#: copies and runs.
+_VERSION = r"\d+(?:\.\d+)*(?:[-+][0-9A-Za-z]+(?:\.[0-9A-Za-z]+)*)*"
+
+#: `chore(main): release maf-sandbox-acas 0.13.0` — release-please's whole generated title for
+#: a single-package Release PR, which is the only shape this repository produces because
 #: `release-please-config.json` sets `separate-pull-requests`.
 #:
-#: Both halves are held to what may appear in a git tag, because the tag built from them is
-#: rendered into shell commands a maintainer copies and runs. A title carrying anything else
-#: names no tag at all, and the issue says so rather than rendering a command from it.
-_VERSION = r"\d[0-9A-Za-z.+-]*"
+#: Matched end to end, never searched for inside a longer title. A pull request title is
+#: editable, and a substring match reads `do not release maf-sandbox 0.23.0` as a release and
+#: names a tag from it. Anything that is not the generated shape names no tag at all, which
+#: sends the reader to the manifest instead of to a command built from a guess.
 _RELEASE_TITLE = re.compile(
-    rf"\brelease\s+(?P<package>[A-Za-z0-9._-]+)\s+v?(?P<version>{_VERSION})\s*$"
+    rf"\s*chore(?:\([^)]*\))?:\s*release\s+(?P<package>[A-Za-z0-9._-]+)"
+    rf"\s+v?(?P<version>{_VERSION})\s*"
+)
+
+#: What a title that is not release-please's own leaves a maintainer with. It names the next
+#: step rather than only the obstacle — and names the *order*, because the label flip is the
+#: one command here that is safe to run alone and ruinous to run first.
+_UNREADABLE_TITLE = (
+    "`{title}` is not the title release-please generates, so the tag it owes cannot be read "
+    "off it. Take the package and version from the entry this pull request bumped in "
+    "`.release-please-manifest.json`, then follow the three steps in `docs/maintainers.md` **in "
+    "that order**. Flipping the label first tells release-please the version was released when "
+    "nothing was ever tagged or published, and a version number cannot be reused."
 )
 
 #: Far enough back that a pull request whose merge time GitHub did not report is reported
@@ -68,12 +86,23 @@ _WHO_OWNS_THIS_ISSUE = (
 )
 
 
-def tag_for(title: str) -> str | None:
-    """The tag release-please would have created for a Release PR titled ``title``."""
-    match = _RELEASE_TITLE.search(title)
+def release_of(title: str) -> tuple[str, str] | None:
+    """The package and version a Release PR titled ``title`` releases, or ``None``.
+
+    Both halves are returned because the tag is built from them: reading them back out of the
+    composed tag is a second parse that can disagree with the first, and does — a version may
+    itself contain `-v`.
+    """
+    match = _RELEASE_TITLE.fullmatch(title)
     if match is None:
         return None
-    return f"{match['package']}-v{match['version']}"
+    return match["package"], match["version"]
+
+
+def tag_for(title: str) -> str | None:
+    """The tag release-please would have created for a Release PR titled ``title``."""
+    release = release_of(title)
+    return None if release is None else f"{release[0]}-v{release[1]}"
 
 
 def _moment(text: str | None) -> datetime:
@@ -101,21 +130,21 @@ def stuck_releases(pending: list[dict[str, Any]], run_started_at: str) -> list[d
 
 
 def _recovery(pr: dict[str, Any], released_tags: list[str]) -> list[str]:
-    """The commands that release one stuck Release PR by hand, carrying its own values.
+    """The commands that finish one stuck Release PR by hand, carrying its own values.
 
     Which commands depends on whether its Release exists: release-please creates that first
-    and flips the label after, so a failure in between leaves both true at once.
+    and finishes its bookkeeping after, so a failure in between leaves both true at once.
     """
     title = str(pr.get("title", ""))
-    tag = tag_for(title)
-    if tag is None:
-        unreadable = (
-            f"`{title}` names no package and version, so the tag it owes cannot be read off "
-            "it. Take that from the manifest entry the pull request bumped."
-        )
-        return [unreadable]
-    sha = str((pr.get("mergeCommit") or {}).get("oid") or "") or "<merge commit>"
-    package, version = tag.rsplit("-v", 1)
+    release = release_of(title)
+    if release is None:
+        return [_UNREADABLE_TITLE.format(title=title)]
+    package, version = release
+    tag = f"{package}-v{version}"
+    # A bare word rather than `<merge commit>`: the placeholder is rendered into a fenced shell
+    # block, where `<` and `>` are redirections and the command would do something instead of
+    # failing. This one is not a commit, so every command using it stops on it.
+    sha = str((pr.get("mergeCommit") or {}).get("oid") or "") or "MERGE_COMMIT_SHA"
     finish = [
         f'gh pr edit {pr.get("number")} --remove-label "autorelease: pending" \\',
         '  --add-label "autorelease: tagged"',
@@ -125,19 +154,26 @@ def _recovery(pr: dict[str, Any], released_tags: list[str]) -> list[str]:
     ]
     if tag in released_tags:
         already = (
-            f"**`{tag}` already exists**, so release-please created the Release and stopped "
-            f"after it — what was refused is the labelling call, not the release. Creating it "
-            f"again would be rejected as a duplicate. Only the flip and the publish are left."
+            f"**`{tag}` already exists**, so release-please created the Release and its "
+            f"post-release bookkeeping — the comment on the pull request, the label, or both — "
+            f"did not finish. The release-please run log names the call that was refused. "
+            f"Creating the Release again would be rejected as a duplicate, so only the flip and "
+            f"the publish are left; check first that `{tag}` points at `{sha}`, this pull "
+            f"request's merge commit, because a tag pointing anywhere else is a different "
+            f"problem from this one."
         )
         return [already, "", "```bash", *finish]
     lead = (
         f"Its tag is `{tag}`, at `{sha}`. The notes are that version's section of "
-        f"`packages/{package}/CHANGELOG.md`, which this pull request wrote."
+        f"`packages/{package}/CHANGELOG.md`, which this pull request wrote — the first command "
+        f"cuts it out at the merge commit, so it does not matter what the checkout is on."
     )
     return [
         lead,
         "",
         "```bash",
+        f"git show {sha}:packages/{package}/CHANGELOG.md \\",
+        "  | awk '/^## \\[/{n++} n==1' > notes.md",
         f"gh release create {tag} --target {sha} \\",
         f"  --title '{package} {version}' --notes-file notes.md",
         *finish,

@@ -296,3 +296,17 @@ class TestTheVersionThisTreeDeclaresIsOneEveryDependentAdmits:
                 f"{package} caps maf-sandbox below {shown}, the version this tree declares; "
                 "widen the ceilings first (RELEASING.md, step 1 of a maf-sandbox release)"
             )
+
+
+def test_the_usage_line_matches_the_workflow_that_runs_it():
+    """Three dots in both, or the documented example recreates the attribution #664 removed.
+
+    A maintainer reproducing a red check follows the docstring, and two dots against a base
+    that has moved on hands this every commit the base gained since.
+    """
+    workflow = (_SCRIPT.parent.parent / ".github" / "workflows" / "pr-title.yml").read_text(
+        encoding="utf-8"
+    )
+    assert 'git diff --name-only "$BASE_SHA...HEAD"' in workflow
+    usage = check.__doc__ or ""
+    assert "git diff --name-only <base>...HEAD" in usage

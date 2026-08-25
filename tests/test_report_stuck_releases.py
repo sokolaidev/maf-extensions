@@ -82,6 +82,39 @@ class TestTheTagIsReadOffTheReleasePrTitle:
         assert report.tag_for("chore(main): release main") is None
 
     @pytest.mark.parametrize(
+        "title",
+        [
+            "do not release maf-sandbox 0.23.0",
+            "revert: release maf-sandbox 0.23.0",
+            "chore(main): release maf-sandbox 0.23.0 (reverted)",
+        ],
+    )
+    def test_only_release_pleases_own_title_names_a_tag(self, title: str):
+        """Matched end to end. A substring match reads a sentence *about* a release as one."""
+        assert report.tag_for(title) is None
+
+    @pytest.mark.parametrize("version", ["1.0.0..9", "1.0.0.", "1.0.0-", "1.0.0+"])
+    def test_a_version_git_would_refuse_as_a_ref_names_no_tag(self, version: str):
+        """`..` and a trailing `.` are not legal in a ref, so the tag would not be creatable."""
+        assert report.tag_for(f"chore(main): release maf-sandbox {version}") is None
+
+    def test_the_version_is_not_read_back_out_of_the_composed_tag(self):
+        """A version may itself contain `-v`, and `rsplit("-v", 1)` then splits in the wrong place.
+
+        `maf-sandbox-v1.0.0-v1` decomposes to package `maf-sandbox-v1.0.0` and version `1`,
+        which would dispatch the publish for a package that does not exist.
+        """
+        assert report.release_of("chore(main): release maf-sandbox 1.0.0-v1") == (
+            "maf-sandbox",
+            "1.0.0-v1",
+        )
+        text = report.body(
+            [{**_ACAS, "title": "chore(main): release maf-sandbox 1.0.0-v1"}], "", []
+        )
+        assert "-f package=maf-sandbox " in text
+        assert "--title 'maf-sandbox 1.0.0-v1'" in text
+
+    @pytest.mark.parametrize(
         "version",
         ["0.1.0;whoami", "0.1.0$(whoami)", "0.1.0`whoami`", "0.1.0&&whoami", "0.1.0|whoami"],
     )
@@ -103,8 +136,29 @@ class TestTheTagIsReadOffTheReleasePrTitle:
     def test_the_body_says_where_to_find_the_tag_when_it_cannot_read_one(self):
         stuck = [{**_ACAS, "title": "chore(main): release main"}]
         text = report.body(stuck, "", [])
-        assert "manifest entry" in text
+        assert ".release-please-manifest.json" in text
         assert "gh release create" not in text
+
+    def test_it_names_the_order_rather_than_offering_the_one_command_it_could(self):
+        """The label flip is the only command here that needs no tag, and the worst to offer.
+
+        Run before the Release exists it tells release-please the version was released, and
+        that number is then spent on a release that was never tagged or published. So the
+        unreadable-title path names the order instead of rendering the command it could.
+        """
+        stuck = [{**_ACAS, "title": "chore(main): release main"}]
+        text = report.body(stuck, "", [])
+        assert "gh pr edit" not in text
+        assert "in that order" in text.replace("**", "")
+        assert "cannot be reused" in text
+        # And it points somewhere: naming the obstacle without the next step is what leaves a
+        # maintainer reconstructing three commands from memory, mid-incident.
+        assert ".release-please-manifest.json" in text
+        # Twice: once here, once in the closing paragraph every body carries. Counted rather
+        # than merely present, because that closing line would satisfy a bare `in` on its own
+        # and the pointer could go missing from the paragraph that needs it.
+        assert text.count("docs/maintainers.md") == 2
+        assert report.body([_ACAS], "", []).count("docs/maintainers.md") == 1
 
 
 class TestOnlyAReleaseThisRunOwedCounts:
@@ -217,10 +271,46 @@ class TestNothingInTheRenderedCommandsExpands:
         assert blocks, "the recovery rendered no shell at all"
         return "\n".join(blocks)
 
-    @pytest.mark.parametrize("metacharacter", ["$", "`", ";", "&", "|", ">", "<", "(", ")"])
+    @pytest.mark.parametrize("metacharacter", ["$", "`", ";", "&", "<", "(", ")"])
     def test_no_metacharacter_reaches_the_shell(self, metacharacter: str):
+        """`|` and `>` are absent from this list because the template itself uses them.
+
+        The notes extraction is a pipeline into a file, so their presence says nothing. What
+        keeps an interpolated one out is the grammar the title is matched against, and the
+        rendered block below, which is asserted whole.
+        """
         shell = self._shell(report.plan(_document())["body"])
         assert metacharacter not in shell
+
+    def test_the_rendered_block_is_exactly_this(self):
+        """Asserted whole, because every line of it is copied into a shell and run.
+
+        A looser check passes on a command that silently changed shape; this one makes any
+        change to what is interpolated show up as a diff somebody has to look at.
+        """
+        assert self._shell(report.plan(_document())["body"]).split("\n") == [
+            "git show ae818cc:packages/maf-sandbox-acas/CHANGELOG.md \\",
+            "  | awk '/^## \\[/{n++} n==1' > notes.md",
+            "gh release create maf-sandbox-acas-v0.13.0 --target ae818cc \\",
+            "  --title 'maf-sandbox-acas 0.13.0' --notes-file notes.md",
+            'gh pr edit 624 --remove-label "autorelease: pending" \\',
+            '  --add-label "autorelease: tagged"',
+            "gh workflow run publish-packages.yml --ref maf-sandbox-acas-v0.13.0 \\",
+            "  -f package=maf-sandbox-acas -f target=pypi",
+        ]
+
+    def test_the_notes_file_the_create_reads_is_the_one_the_block_writes(self):
+        """`--notes-file notes.md` used to name a file nothing created, so step 1 failed."""
+        shell = self._shell(report.plan(_document())["body"])
+        assert "> notes.md" in shell
+        assert shell.index("> notes.md") < shell.index("--notes-file notes.md")
+
+    def test_a_missing_merge_commit_renders_a_bare_word(self):
+        """`<merge commit>` is two redirections, so the command ran instead of failing."""
+        without = {k: v for k, v in _ACAS.items() if k != "mergeCommit"}
+        shell = self._shell(report.body([without], "", []))
+        assert "MERGE_COMMIT_SHA" in shell
+        assert "<" not in shell
 
     def test_the_one_argument_holding_a_space_is_single_quoted(self):
         """Double quotes would still expand `$(...)`, so the release title takes single ones."""
@@ -239,8 +329,18 @@ class TestAReleaseThatAlreadyExistsIsNotCreatedAgain:
     def test_it_does_not_tell_anyone_to_create_the_release(self, text: str):
         assert "gh release create" not in text
 
-    def test_it_says_which_call_was_refused(self, text: str):
-        assert "labelling call" in text
+    def test_it_does_not_claim_to_know_which_call_was_refused(self, text: str):
+        """release-please comments on the pull request before it touches the label.
+
+        A refusal there leaves exactly this state too, so naming the label sends the
+        investigation to the wrong call. The run log is what actually knows.
+        """
+        assert "post-release bookkeeping" in text
+        assert "run log names the call" in text
+
+    def test_it_names_the_merge_commit_to_check_the_tag_against(self, text: str):
+        """An existing tag pointing somewhere else is a different problem, and a worse one."""
+        assert _ACAS["mergeCommit"]["oid"] in text
 
     def test_the_two_remaining_steps_are_still_there(self, text: str):
         assert 'gh pr edit 624 --remove-label "autorelease: pending"' in text
@@ -320,6 +420,16 @@ class TestTheStepRunsWhateverElseHappened:
         correctly, while `jq -n` fails at run time on an undefined `$released`.
         """
         assert link in _step_named("Name any release this run left stuck")["run"]
+
+    def test_the_tracker_it_writes_to_has_to_be_one_a_bot_wrote(self):
+        """The marker is in a public script, so anyone with an account can open an issue with it.
+
+        On the marker alone that issue is what gets edited and closed, and the tracker this
+        step exists to raise is never opened — the alarm is suppressed by a stranger.
+        """
+        run = _step_named("Name any release this run left stuck")["run"]
+        assert 'select(.author.is_bot and (.body // "" | contains($m)))' in run
+        assert "--json number,body,author" in run
 
     @pytest.mark.parametrize("permission", ["issues", "pull-requests", "actions", "contents"])
     def test_the_job_can_still_reach_what_the_step_reads(self, permission: str):
