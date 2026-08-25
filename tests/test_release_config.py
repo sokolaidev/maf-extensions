@@ -20,6 +20,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 import tomllib
 import urllib.error
 import urllib.parse
@@ -370,6 +371,53 @@ class TestReleasesAreNotDrafted:
     def test_component_is_in_the_tag(self):
         # Without this, all three packages would tag as plain `v<version>` and collide.
         assert CONFIG["include-component-in-tag"] is True
+
+
+class TestTestsAreExcludedFromAttribution:
+    """A commit whose only files under a package are its tests must not release that package.
+
+    `exclude-paths` is evaluated on each package's own slice of a commit: the files are
+    filtered to the package path first, and the commit is skipped for that package only when
+    every remaining one is excluded. So a core change that repairs a dependent's suite keeps
+    the core and drops the dependent.
+
+    `scripts/check_title_diff.py` applies the same rule at pull-request time, and the two have
+    to agree — the gate exists so a title cannot claim what the changelog will not say.
+    """
+
+    @pytest.mark.parametrize("package_path", PACKAGE_PATHS)
+    def test_each_package_excludes_its_own_tests(self, package_path: str):
+        excluded = CONFIG["packages"][package_path].get("exclude-paths", [])
+        assert f"{package_path}/tests" in excluded, (
+            f"{package_path} does not exclude its tests, so a commit touching only them "
+            "writes another package's title into this one's changelog."
+        )
+
+    @pytest.mark.parametrize("package_path", PACKAGE_PATHS)
+    def test_nothing_but_tests_is_excluded(self, package_path: str):
+        """Source and docs must keep attributing: `docs:` is a releasing type here."""
+        excluded = set(CONFIG["packages"][package_path].get("exclude-paths", []))
+        assert excluded == {f"{package_path}/tests"}, (
+            f"{package_path} excludes more than its tests: {sorted(excluded)}. A path excused "
+            "here releases nothing, however real the change in it."
+        )
+
+    def test_the_gate_reads_the_same_rule(self):
+        """One rule, two enforcement points. This fails if the gate stops applying it."""
+        sys.path.insert(0, str(REPO_ROOT / "scripts"))
+        import check_title_diff
+
+        core = "packages/maf-sandbox/src/maf_sandbox/_protocol.py"
+        dependent_test = "packages/maf-sandbox-codeact/tests/test_codeact_workload.py"
+        before, after = "def f() -> int:\n    return 1\n", "def f() -> int:\n    return 2\n"
+        assert (
+            check_title_diff.assess(
+                "feat(sandbox)!: a mandatory protocol member",
+                [core, dependent_test],
+                {core: (before, after), dependent_test: (before, after)},
+            )
+            == []
+        ), "check_title_diff still counts a test-only touch as a package change"
 
 
 class TestReleasePullRequestsKeepThemselvesCurrent:
