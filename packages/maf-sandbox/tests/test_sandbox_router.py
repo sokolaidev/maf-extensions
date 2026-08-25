@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import math
+import typing
 
 import pytest
 
@@ -30,6 +31,7 @@ from maf_sandbox import (
     DeclaredOutput,
     Egress,
     EntryKind,
+    HostToolAggregate,
     Identity,
     Isolation,
     NoSandboxBackend,
@@ -51,6 +53,7 @@ from maf_sandbox import (
     SandboxTransferLimitsNotPermitted,
     SandboxUnclean,
     TransferLimits,
+    fold_dispatch_transfer_limits,
     meets_floor,
 )
 from maf_sandbox.testing import InProcessSandbox, InProcessSandboxBackend
@@ -624,6 +627,195 @@ class TestTransferLimitMatch:
             asyncio.run(router.acquire(_KEY, spec))
 
 
+class TestTheRouterFoldsADispatchSurface:
+    """A spec carrying a host-tool surface has the registry's ceilings folded into the
+    transfer-limit match, transiently: a backend that serves the bare caps but not the transport
+    is refused at attach, and the spec's stored caps are left for the kind's own runtime tally.
+    """
+
+    _RL = TransferLimits(max_bytes_per_file=8_000_000, max_total_bytes=32_000_000, max_files=64)
+    _SMALL = TransferLimits(max_bytes_per_file=64 * 1024, max_total_bytes=256 * 1024, max_files=4)
+
+    def _surface(self, response_limits: TransferLimits, dispatches: int = 1) -> HostToolAggregate:
+        # The router folds the surface's limits and its dispatch bound; the other legs do not
+        # enter the match, so they take their least-opinionated values here.
+        return HostToolAggregate(
+            result_integrity=None,
+            outbound_caps=frozenset(),
+            identities=frozenset(),
+            requires_approval=False,
+            has_undeclared=False,
+            response_limits=response_limits,
+            max_dispatches_per_run=dispatches,
+        )
+
+    def _router(self, ceiling: SandboxLimits) -> SandboxRouter:
+        # Serving the capability the dispatching specs require, so what these tests exercise is
+        # the transfer match rather than the capability one.
+        return SandboxRouter(
+            [
+                InProcessSandboxBackend(
+                    limits=ceiling,
+                    capabilities=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
+                )
+            ],
+            min_isolation=Isolation.NONE,
+        )
+
+    def _dispatching(self, surface: HostToolAggregate, **kw: object) -> SandboxSpec:
+        """A spec whose declarations admit the surface it carries, which `SandboxSpec` requires:
+        the router answers posture from `requires`/`identities`, so a surface those do not admit
+        would slip past a host's deny list."""
+        return SandboxSpec(
+            kind="codeact",
+            requires=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
+            identities=surface.identities,
+            host_tools=surface,
+            **{"files_in": self._SMALL, "files_out": self._SMALL, **kw},  # type: ignore[arg-type]
+        )
+
+    def test_a_backend_the_bare_spec_passes_is_refused_once_a_surface_is_attached(self):
+        # Wide enough for the workload's own 64 KiB files_out, but under the 32 MB the folded
+        # output read needs: the bare spec attaches, the dispatching one does not.
+        ceiling = SandboxLimits(
+            files_in=TransferLimits(64 * 1024 * 1024, 64 * 1024 * 1024, 64),
+            files_out=TransferLimits(1024 * 1024, 64 * 1024 * 1024, 64),
+        )
+        bare = SandboxSpec(kind="codeact", files_in=self._SMALL, files_out=self._SMALL)
+        self._router(ceiling).ensure_can_serve(bare)
+        dispatching = self._dispatching(self._surface(self._RL))
+        with pytest.raises(SandboxTransferLimitsNotPermitted, match="files_out") as excinfo:
+            self._router(ceiling).ensure_can_serve(dispatching)
+        # The refusal names the fold, so the requirement the caller never typed is not read as
+        # their own mistake.
+        assert "folded to include" in str(excinfo.value)
+
+    def test_a_backend_wide_enough_for_the_fold_serves_the_surface(self):
+        ceiling = SandboxLimits(
+            files_in=TransferLimits(64 * 1024 * 1024, 64 * 1024 * 1024, 64),
+            files_out=TransferLimits(64 * 1024 * 1024, 64 * 1024 * 1024, 64),
+        )
+        spec = self._dispatching(self._surface(self._RL))
+        self._router(ceiling).ensure_can_serve(spec)
+
+    def test_the_fold_is_transient_and_leaves_the_specs_own_caps(self):
+        # A backend too small even for the bare caps, so the match fails; the point is that after
+        # the match the stored caps are unchanged — the fold existed only inside the comparison.
+        ceiling = SandboxLimits(files_in=self._SMALL, files_out=self._SMALL)
+        spec = self._dispatching(self._surface(self._RL))
+        with pytest.raises(SandboxTransferLimitsNotPermitted):
+            self._router(ceiling).ensure_can_serve(spec)
+        assert spec.files_in == self._SMALL
+        assert spec.files_out == self._SMALL
+
+    def test_a_workload_already_over_the_ceiling_is_not_blamed_on_the_fold(self):
+        """The note must mark the fold as the *cause*, not merely as something that also grew a
+        leg. A workload whose own per-file cap already exceeds the backend would have been
+        refused with no surface at all, so pointing at the transport sends the caller to their
+        registry to fix a number they typed into their spec."""
+        ceiling = SandboxLimits(
+            files_in=TransferLimits(64 * 1024 * 1024, 64 * 1024 * 1024, 64 * 1024),
+            files_out=TransferLimits(1024, 64 * 1024 * 1024, 64 * 1024),
+        )
+        over = TransferLimits(max_bytes_per_file=8192, max_total_bytes=8192, max_files=2)
+        spec = self._dispatching(self._surface(self._RL), files_in=over, files_out=over)
+        with pytest.raises(SandboxTransferLimitsNotPermitted, match="files_out") as excinfo:
+            self._router(ceiling).ensure_can_serve(spec)
+        assert "folded to include" not in str(excinfo.value)
+
+    def test_a_refusal_with_no_surface_does_not_mention_a_fold(self):
+        """The note is decided per direction, by whether *that* direction's number actually grew.
+        A workload refused on caps it typed itself must not be told a transport widened them."""
+        ceiling = SandboxLimits(files_in=self._SMALL, files_out=self._SMALL)
+        big = TransferLimits(max_bytes_per_file=99_000_000, max_total_bytes=99_000_000, max_files=9)
+        bare = SandboxSpec(kind="codeact", files_in=big, files_out=big)
+        with pytest.raises(SandboxTransferLimitsNotPermitted) as excinfo:
+            self._router(ceiling).ensure_can_serve(bare)
+        assert "folded to include" not in str(excinfo.value)
+
+    def test_the_fold_grows_with_the_surfaces_dispatch_bound(self):
+        """The bound rides in the surface because the transport's file counts and its refusal
+        budget both scale with it — a backend sized for a few calls cannot serve many."""
+        ceiling = SandboxLimits(
+            files_in=TransferLimits(64 * 1024 * 1024, 64 * 1024 * 1024, 12),
+            files_out=TransferLimits(64 * 1024 * 1024, 64 * 1024 * 1024, 12),
+        )
+        modest = self._dispatching(self._surface(self._RL, dispatches=1))
+        self._router(ceiling).ensure_can_serve(modest)
+        chatty = self._dispatching(self._surface(self._RL, dispatches=50))
+        with pytest.raises(SandboxTransferLimitsNotPermitted):
+            self._router(ceiling).ensure_can_serve(chatty)
+
+
+class TestASpecMustAdmitTheSurfaceItCarries:
+    """The router answers posture from `requires` and `identities`, never from the surface — so a
+    spec carrying one those fields do not admit would be served by the very host that denies it.
+    Refused where the spec is built, which is the only place both halves are visible."""
+
+    def _surface(self, identities: frozenset[Identity] = frozenset()) -> HostToolAggregate:
+        return HostToolAggregate(
+            result_integrity=None,
+            outbound_caps=frozenset(),
+            identities=identities,
+            requires_approval=False,
+            has_undeclared=False,
+            response_limits=DEFAULT_TRANSFER_LIMITS,
+            max_dispatches_per_run=1,
+        )
+
+    def test_a_surface_without_the_capability_is_refused(self):
+        with pytest.raises(ValueError, match="denied_capabilities"):
+            SandboxSpec(kind="codeact", host_tools=self._surface())
+
+    def test_a_surface_whose_identity_the_spec_does_not_claim_is_refused(self):
+        with pytest.raises(ValueError, match="denied_identities"):
+            SandboxSpec(
+                kind="codeact",
+                requires=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
+                host_tools=self._surface(frozenset({Identity.USER})),
+            )
+
+    def test_a_spec_that_declares_both_is_accepted(self):
+        surface = self._surface(frozenset({Identity.USER}))
+        spec = SandboxSpec(
+            kind="codeact",
+            requires=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
+            identities=surface.identities,
+            host_tools=surface,
+        )
+        assert spec.host_tools is surface
+
+    def test_the_hosts_identity_denial_then_actually_reaches_it(self):
+        """The point of the invariant: with it, a wired USER surface meets `denied_identities`."""
+        surface = self._surface(frozenset({Identity.USER}))
+        wide = TransferLimits(1 << 30, 1 << 34, 1 << 16)
+        router = SandboxRouter(
+            [
+                InProcessSandboxBackend(
+                    limits=SandboxLimits(files_in=wide, files_out=wide),
+                    capabilities=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
+                )
+            ],
+            min_isolation=Isolation.NONE,
+            denied_identities={Identity.USER},
+        )
+        spec = SandboxSpec(
+            kind="codeact",
+            requires=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
+            identities=surface.identities,
+            host_tools=surface,
+        )
+        with pytest.raises(SandboxIdentityDenied):
+            router.ensure_can_serve(spec)
+
+    def test_every_public_surface_annotated_with_the_aggregate_resolves(self):
+        """Each of these is public and annotated against the aggregate, so its hints must resolve
+        at runtime: a `TYPE_CHECKING`-only import satisfies the type checker while leaving
+        `typing.get_type_hints` raising for every caller that reads annotations."""
+        for subject in (SandboxSpec, fold_dispatch_transfer_limits, HostToolAggregate):
+            typing.get_type_hints(subject)
+
+
 class _BackendDeclaringTheWrongLimits(InProcessSandboxBackend):
     """A third party that reached for the adjacent type, or left the field unfilled."""
 
@@ -1002,6 +1194,7 @@ class TestSpecDefaults:
             "identities",
             "egress",
             "requires_os_family",
+            "host_tools",
         ]
         assert names[: len(settled)] == settled
 

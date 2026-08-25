@@ -305,6 +305,14 @@ class TestAggregate:
         assert aggregate.requires_approval is False
         assert aggregate.has_undeclared is False
 
+    def test_it_carries_both_ceilings_the_router_folds_against(self):
+        """The bytes alone do not bound the transport: how many files it moves, and how many
+        refusals nothing debits, are the dispatch bound's — so the surface carries it too."""
+        limits = TransferLimits(max_bytes_per_file=64, max_total_bytes=128, max_files=2)
+        aggregate = HostToolRegistry(response_limits=limits, max_dispatches_per_run=7).aggregate()
+        assert aggregate.response_limits == limits
+        assert aggregate.max_dispatches_per_run == 7
+
     def test_result_integrity_is_the_weakest_over_sources(self):
         registry = HostToolRegistry()
         registry.register(

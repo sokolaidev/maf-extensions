@@ -42,6 +42,7 @@ from ._error_detail import error_detail
 from ._protocol import (
     DEFAULT_TRANSFER_LIMITS,
     INTEGRITY_RANK,
+    HostToolAggregate,
     Identity,
     SourceIntegrity,
     TransferLimits,
@@ -192,36 +193,6 @@ def declaration_of(func: Callable[..., Any]) -> HostToolDeclaration | None:
     """
     value = getattr(func, FLOW_DECLARED_KEY, None)
     return value if isinstance(value, HostToolDeclaration) else None
-
-
-@dataclass(frozen=True)
-class HostToolAggregate:
-    """What the registry's contents mean for the one model-facing ``execute_code`` tool.
-
-    Derived per leg, over the relevant subset, never replacing the host's classification of
-    ``execute_code`` itself as an exec sink under untrusted taint — refining it:
-
-    - ``result_integrity`` is the weakest tier over *sources only* — a sink-only or pure tool
-      must not drag the result to untrusted, and a registry with no sources has no integrity
-      opinion at all (``None``): the workload's own default stands.
-    - ``outbound_caps`` is every declared sink cap, verbatim and unfolded.  Confidentiality
-      values are opaque host vocabulary with no ordering, and this repository requires an
-      ordering to be data before anything ranks by it — so more than one distinct cap is the
-      host's to reconcile, never this package's to guess between.
-    - ``identities`` and ``requires_approval``: any :data:`~maf_sandbox.Identity.USER` tool
-      raises the whole surface to approval-gated, because a single dispatch may exercise the
-      user's delegated authority.
-    - ``has_undeclared`` marks a registry serving unstamped tools (the gate off).  Each such
-      tool already failed safe into the folds above — an untrusted source, an
-      :data:`~maf_sandbox.Identity.APP` identity — and the flag is how a host notices the
-      degrade without diffing the folds.
-    """
-
-    result_integrity: SourceIntegrity | None
-    outbound_caps: frozenset[str]
-    identities: frozenset[Identity]
-    requires_approval: bool
-    has_undeclared: bool
 
 
 @dataclass(frozen=True)
@@ -590,6 +561,8 @@ class HostToolRegistry:
             identities=identities,
             requires_approval=Identity.USER in identities,
             has_undeclared=bool(undeclared),
+            response_limits=self._response_limits,
+            max_dispatches_per_run=self._max_dispatches_per_run,
         )
 
 

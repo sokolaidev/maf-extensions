@@ -17,6 +17,7 @@ from collections.abc import AsyncGenerator, Iterable, Sequence
 from contextlib import asynccontextmanager
 from typing import cast
 
+from ._host_tools_over_exec import fold_dispatch_transfer_limits
 from ._protocol import (
     DEFAULT_CAPABILITIES,
     DEFAULT_SANDBOX_LIMITS,
@@ -425,18 +426,36 @@ class SandboxRouter:
         # Silence is a safety claim here, not a functionality one: an undeclared ceiling is
         # the default ceiling, and a spec asking above it is refused rather than believed.
         limits = _declared_limits(self._backend)
-        for direction, asked, ceiling in (
-            (Capability.FILES_IN, spec.files_in, limits.files_in),
-            (Capability.FILES_OUT, spec.files_out, limits.files_out),
+        asked_in, asked_out = spec.files_in, spec.files_out
+        if spec.host_tools is not None:
+            # The transport moves its own files, bounded by the registry rather than by what the
+            # workload declared. Fold that worst case in transiently, so a backend that cannot
+            # serve it is refused here rather than overrun mid-run. The spec's stored caps stay
+            # untouched: the kind's runtime tally enforces against those, and folding the stored
+            # values would double-count the transport against the workload's own budget.
+            folded = fold_dispatch_transfer_limits(spec.files_in, spec.files_out, spec.host_tools)
+            asked_in, asked_out = folded.files_in, folded.files_out
+        for direction, asked, declared, ceiling in (
+            (Capability.FILES_IN, asked_in, spec.files_in, limits.files_in),
+            (Capability.FILES_OUT, asked_out, spec.files_out, limits.files_out),
         ):
             if not asked.within(ceiling):
+                # Only when the fold is what caused *this* refusal — the bare declaration would
+                # have been served. A workload already over the ceiling on its own must not be
+                # pointed at the transport, however much the fold also raised.
+                folded_note = (
+                    " (folded to include the wired host tools' dispatch transport, so above the "
+                    "workload's own declaration)"
+                    if declared.within(ceiling)
+                    else ""
+                )
                 raise SandboxTransferLimitsNotPermitted(
                     f"the {spec.kind!r} workload declares {str(direction)} limits above what "
-                    f"sandbox backend {self._backend.name!r} allows: it asks for {asked} and "
-                    f"the backend permits {ceiling}. Refused rather than clamped: a workload "
-                    "served a smaller cap than it declared fails part-way through a "
-                    "collection, and a partial artifact set is worse than none because the "
-                    "model cannot tell what it did not get."
+                    f"sandbox backend {self._backend.name!r} allows: it asks for {asked}"
+                    f"{folded_note} and the backend permits {ceiling}. Refused rather than "
+                    "clamped: a workload served a smaller cap than it declared fails part-way "
+                    "through a collection, and a partial artifact set is worse than none because "
+                    "the model cannot tell what it did not get."
                 )
 
         # Egress is resolved, not matched: the workload runs in exactly one mode, and the

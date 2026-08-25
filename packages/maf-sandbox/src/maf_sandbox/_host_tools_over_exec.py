@@ -56,7 +56,13 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from ._error_detail import error_detail
 from ._outputs import SandboxTransferCapExceeded
-from ._protocol import EntryKind, ExecResult
+from ._protocol import (
+    EntryKind,
+    ExecResult,
+    HostToolAggregate,
+    SandboxLimits,
+    TransferLimits,
+)
 from ._reclaim import note_unclean
 from .paths import confine_guest_path, guest_path_relative_to
 
@@ -67,6 +73,95 @@ if TYPE_CHECKING:
     from ._protocol import Sandbox
 
 logger = logging.getLogger(__name__)
+
+
+#: A generous ceiling on the transport's own launcher script (`run_program.sh`): a fixed POSIX
+#: shell template plus the run's paths, kept well above any real one so the fold need not rebuild
+#: it, and negligible beside a response's byte cap.
+_LAUNCHER_CEILING = 64 * 1024
+
+#: What a marker read asks for: the pid, the session id, and the exit code are each a handful of
+#: digits. Shared by every such read *and* by the fold, so the bytes the transport asks a backend
+#: for and the bytes the fold requires of it cannot drift apart — a per-file ceiling below this
+#: refuses a read the transport always makes, however small a registry's own limits are.
+_MARKER_CEILING = 32
+
+#: How many marker files a run leaves for the host to read: the pid, the session id and the exit
+#: code.
+_MARKER_FILES = 3
+
+#: The ceiling on one refusal envelope, enforced by :func:`_refusal` rather than assumed. A
+#: refusal spends no part of ``response_limits`` — that ledger bounds what a tool *delivered*,
+#: and a refusal delivered nothing — so the fold budgets for it separately, and the budget is
+#: only worth having if no envelope can exceed it. Counting characters does not bound bytes: a
+#: sentence quoting guest text is serialized with ``json.dumps``, which escapes a non-BMP
+#: character to twelve bytes, and other sentences quote registered names and configured numbers.
+_REFUSAL_CEILING = 1024
+
+#: What the guest is told when its own refusal did not fit :data:`_REFUSAL_CEILING`. Fixed, and
+#: therefore the one envelope whose size is known without measuring.
+_REFUSAL_TOO_LONG = (
+    "Error: this host-tool request was refused, and the reason did not fit the response ceiling"
+)
+
+
+def fold_dispatch_transfer_limits(
+    files_in: TransferLimits, files_out: TransferLimits, surface: HostToolAggregate
+) -> SandboxLimits:
+    """Widen a workload's transfer caps to cover the dispatch transport's own traffic.
+
+    The router matches only the spec's caps against the backend, so traffic the workload never
+    declared — the launcher and answers written in, the output, requests and markers read back —
+    has to be added here or a backend that cannot serve it is admitted and overrun mid-run.
+
+    Two traps. A registry's legs are validated only as positive, so no leg may be assumed to
+    dominate another and every per-file requirement names each transfer it covers. And a refusal
+    is written like any answer while spending no part of ``response_limits``, which bounds only
+    what a tool delivered — so refusals are budgeted by count, not by that ledger.
+
+    The stdout cap folded is always the one the transport *borrows* — a surface cannot see an
+    ``output_limit``, which :func:`dispatch_over_exec` takes per call. That cuts both ways and
+    neither is silent: a larger ``output_limit`` is a transfer the caller declares in its own
+    ``files_out.max_bytes_per_file``, and a smaller one leaves this asking a backend for more
+    than the run will move, so a backend that would have fit is refused. Conservative on
+    purpose — refusing a run that would have worked is recoverable, admitting one that overruns
+    mid-run is not.
+    """
+    serves = surface.max_dispatches_per_run + 1  # `_serving_bound`: the refusal past the cap.
+    response_limits = surface.response_limits
+    return SandboxLimits(
+        files_in=TransferLimits(
+            max_bytes_per_file=max(
+                files_in.max_bytes_per_file,
+                response_limits.max_bytes_per_file,
+                _LAUNCHER_CEILING,
+                _REFUSAL_CEILING,
+            ),
+            max_total_bytes=(
+                files_in.max_total_bytes
+                + _LAUNCHER_CEILING
+                + response_limits.max_total_bytes
+                + serves * _REFUSAL_CEILING
+            ),
+            max_files=files_in.max_files + 1 + serves,
+        ),
+        files_out=TransferLimits(
+            max_bytes_per_file=max(
+                files_out.max_bytes_per_file,
+                response_limits.max_total_bytes,
+                response_limits.max_bytes_per_file,
+                _MARKER_CEILING,
+            ),
+            max_total_bytes=(
+                files_out.max_total_bytes
+                + response_limits.max_total_bytes
+                + serves * response_limits.max_bytes_per_file
+                + _MARKER_FILES * _MARKER_CEILING
+            ),
+            max_files=files_out.max_files + 1 + serves + _MARKER_FILES,
+        ),
+    )
+
 
 #: The subdirectory a run's request and response files live in, under the run directory.
 CALLS_DIRECTORY = "host_tool_calls"
@@ -585,7 +680,7 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
         f"wait $!; "
         f"printf %s $? > {_quote(staged)}; mv {_quote(staged)} {_quote(layout.exit_code)}"
     )
-    return (
+    script = (
         "#!/bin/sh\n"
         f"mkdir -p {_quote(layout.work)} && cd {_quote(layout.work)} || exit 1\n"
         "maf_kept=''\n"
@@ -629,6 +724,19 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
         f"  nohup sh -c {_quote(inner)} >/dev/null 2>&1 &\n"
         "fi\n"
     )
+    if len(script.encode("utf-8")) > _LAUNCHER_CEILING:
+        # The router promised a backend this ceiling for the upload (see
+        # `fold_dispatch_transfer_limits`), and the template repeats the layout's paths and the
+        # interpreter enough times that a long enough work_dir outgrows it. Refused rather than
+        # uploaded: a transfer past a ceiling the backend agreed to is the failure the fold
+        # exists to prevent, and a named refusal beats discovering it inside the guest.
+        raise ValueError(
+            f"the generated launcher is {len(script.encode('utf-8'))} bytes, over the "
+            f"{_LAUNCHER_CEILING}-byte ceiling the transfer match declares for it. The template "
+            "repeats the run's paths and the interpreter, so shorten whichever is long here: the "
+            f"spec's work_dir, or interpreter ({len(interpreter)} characters)."
+        )
+    return script
 
 
 def _quote(text: str) -> str:
@@ -671,6 +779,11 @@ async def dispatch_over_exec(
             past the limit is not returned and the reason is noted on ``stderr``, exactly as when
             the borrowed leg is exceeded; passing a limit only stops that number being a side
             effect of unrelated host-tool configuration. Must be a positive integer when given.
+            A caller that passes one owes it to its own spec: only the borrowed cap is folded
+            into the router's transfer match (:func:`fold_dispatch_transfer_limits`), so a limit
+            above ``files_out.max_bytes_per_file`` is a read the backend never agreed to — and a
+            limit below the borrowed cap still leaves the match asking for the borrowed one,
+            which can refuse a backend this run would have fitted.
 
     Attempts to remove the transport's own directory before returning, on every exit path.
     A removal the guest refuses is logged and nothing else — the call still returns what it
@@ -1347,7 +1460,9 @@ async def _stop_the_program(
     if recorded is None:
         return "absent", "nothing"
     try:
-        running = await _read_if_present(sandbox, layout, layout.pid, cap=32, deadline=until)
+        running = await _read_if_present(
+            sandbox, layout, layout.pid, cap=_MARKER_CEILING, deadline=until
+        )
     except Exception as unreadable:  # noqa: BLE001 — a kill must not replace the timeout
         # The same rule `_marker_if_present` follows, and for the same reason: this runs only
         # once the run is already being reported as expired, so a backend failing here means
@@ -1415,7 +1530,9 @@ async def _session_if_recorded(
     if not (made_a_session and layout.session):
         return None
     try:
-        recorded = await _read_if_present(sandbox, layout, layout.session, cap=32, deadline=until)
+        recorded = await _read_if_present(
+            sandbox, layout, layout.session, cap=_MARKER_CEILING, deadline=until
+        )
     except Exception as unreadable:  # noqa: BLE001 — a kill must not replace the timeout
         logger.warning(
             "host tools: could not read the program's session: %s", error_detail(unreadable)
@@ -1445,7 +1562,9 @@ async def _marker_if_present(
     then signalled, so what the kill acts on is a stale answer either way.
     """
     try:
-        marker = await _read_if_present(sandbox, layout, layout.exit_code, cap=32, deadline=until)
+        marker = await _read_if_present(
+            sandbox, layout, layout.exit_code, cap=_MARKER_CEILING, deadline=until
+        )
     except Exception as failure:  # noqa: BLE001 — a last look must not replace the timeout
         logger.warning("host tools: a last look for the marker failed: %s", error_detail(failure))
         return None
@@ -1528,7 +1647,7 @@ async def _probe_exit_and_requests(
 ]:
     """Read the exit marker beside a bounded window of requests, with exit taking priority."""
     marker_probe = asyncio.create_task(
-        _read_if_present(sandbox, layout, layout.exit_code, cap=32, deadline=deadline)
+        _read_if_present(sandbox, layout, layout.exit_code, cap=_MARKER_CEILING, deadline=deadline)
     )
     request_probes = tuple(
         asyncio.create_task(
@@ -1675,6 +1794,22 @@ async def _skip_dead_claim_hole(
     return served + 1, True
 
 
+def _refusal(sentence: str) -> str:
+    """``sentence`` as a refusal envelope, guaranteed to fit :data:`_REFUSAL_CEILING`.
+
+    Measured after serializing, never estimated from the sentence's length: ``json.dumps``
+    escapes a non-BMP character to twelve bytes, so a sentence within every character bound this
+    package applies can still serialize past the byte one the fold declared to the backend. An
+    envelope that does not fit is replaced whole rather than truncated — a cut JSON document is
+    not a document the guest can read.
+    """
+    envelope = json.dumps({"refusal": sentence})
+    if len(envelope.encode("utf-8")) <= _REFUSAL_CEILING:
+        return envelope
+    logger.warning("host tools: a refusal did not fit %s bytes and was replaced", _REFUSAL_CEILING)
+    return json.dumps({"refusal": _REFUSAL_TOO_LONG})
+
+
 async def _answer(
     run: HostToolRun, body: str | _TooLarge | _NotText, identifier: str
 ) -> str | None:
@@ -1684,16 +1819,14 @@ async def _answer(
     publish under. Every other outcome, refusals included, is a sentence the guest may read.
     """
     if isinstance(body, _TooLarge):
-        return json.dumps(
-            {
-                "refusal": "Error: this host-tool request is larger than the host will read — "
-                "pass less, or write what you have to a file instead"
-            }
+        return _refusal(
+            "Error: this host-tool request is larger than the host will read — pass less, or "
+            "write what you have to a file instead"
         )
     if isinstance(body, _NotText):
         # The same sentence as an unparseable request, and deliberately: from the guest's
         # side both are a request the host would not read, and neither is retryable.
-        return json.dumps({"refusal": _NOT_JSON})
+        return _refusal(_NOT_JSON)
     try:
         parsed = cast(object, json.loads(body))
     except (ValueError, RecursionError):
@@ -1701,9 +1834,9 @@ async def _answer(
         # cap, would otherwise escape the supervisor and leave the detached guest waiting for
         # an answer that is never written.
         logger.warning("host tools: request %s is not JSON, refusing it", identifier)
-        return json.dumps({"refusal": _NOT_JSON})
+        return _refusal(_NOT_JSON)
     if not isinstance(parsed, dict):
-        return json.dumps({"refusal": "Error: a host-tool request must be a JSON object"})
+        return _refusal("Error: a host-tool request must be a JSON object")
     request = cast("dict[str, object]", parsed)
     # Handed over as-is, casts and all: `dispatch` is where guest data is checked, and it
     # takes `object` to its own `isinstance` gates for exactly this reason. Narrowing here
@@ -1722,7 +1855,8 @@ async def _answer(
     # leaving the run paying for a response that was never delivered.
     result = await run.dispatch(name, arguments, framing_bytes=_FRAMING_BYTES)
     if not result.ok:
-        return json.dumps({"refusal": result.refusal})
+        # `DispatchResult` carries exactly one of the two, enforced in its own `__post_init__`.
+        return _refusal(cast(str, result.refusal))
     # `value_json` is already the serialized return value, capped host-side. Splicing it in as
     # text keeps those exact bytes rather than re-serializing a parse of them.
     return _FRAME_OPEN + (result.value_json or "null") + _FRAME_CLOSE
