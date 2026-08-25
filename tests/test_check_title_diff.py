@@ -125,21 +125,17 @@ class TestAssess:
         ]
         assert check.assess("ci: enforce title policy", paths, {}) == []
 
-    def test_a_module_moved_into_another_packages_tests_leaves_that_package_untouched(self):
-        """`b` gains only a test file, so it is not touched and owes no executable change.
+    def test_a_module_moved_into_another_packages_tests_releases_nothing(self):
+        """release-please reads a renamed file at its new path only, so this releases nothing.
 
-        `a` loses source, which is the executable change the `feat` claims. release-please
-        reads the same commit the same way — `packages/b/tests` is in `b`'s `exclude-paths`,
-        so the move releases `a` and not `b` (#629).
+        `b` excludes its tests and `a` is never attributed the old location, so a releasing
+        title here would promise a changelog entry no package receives.
         """
-        assert (
-            check.assess(
-                "feat: move module",
-                ["packages/b/tests/test_mod.py"],
-                {},
-                [("packages/a/src/mod.py", "packages/b/tests/test_mod.py")],
-            )
-            == []
+        assert check.assess(
+            "feat: move module",
+            ["packages/b/tests/test_mod.py"],
+            {},
+            [("packages/a/src/mod.py", "packages/b/tests/test_mod.py")],
         )
 
     def test_readme_like_tool_name_is_not_documentation(self):
@@ -232,7 +228,6 @@ class TestTestsDoNotMakeAPackageTouched:
     _DEPENDENT_TEST = "packages/maf-sandbox-codeact/tests/test_codeact_workload.py"
 
     def test_a_core_feat_may_repair_a_dependents_suite(self):
-        """The case this cost a split pull request and an override for, twice."""
         before, after = "def f() -> int:\n    return 1\n", "def f() -> int:\n    return 2\n"
         assert (
             check.assess(
@@ -260,6 +255,20 @@ class TestTestsDoNotMakeAPackageTouched:
                 {self._DEPENDENT_TEST: (before, after)},
             )
             == []
+        )
+
+    def test_a_tests_directory_inside_src_still_ships(self):
+        """Only `packages/<name>/tests/` is excused, which is what the config excludes.
+
+        A `tests` directory nested under `src/` is shipped code, and release-please attributes
+        it, so excusing it here would let a `feat` past a package the changelog still names.
+        """
+        before, after = "def f() -> int:\n    return 1\n", "def f() -> int:\n    return 2\n"
+        nested = "packages/maf-sandbox-codeact/src/maf_sandbox_codeact/tests/helper.py"
+        assert check.assess(
+            "feat: a thing",
+            [self._CORE, nested],
+            {self._CORE: (before, after), nested: (before, after)},
         )
 
     def test_a_dependents_source_still_makes_it_touched(self):

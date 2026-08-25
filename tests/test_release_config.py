@@ -376,18 +376,13 @@ class TestReleasesAreNotDrafted:
 class TestTestsAreExcludedFromAttribution:
     """A commit whose only files under a package are its tests must not release that package.
 
-    Without this, a core change that repairs a dependent's suite writes the core's title into
-    the dependent's changelog — a `feat!` note for a package that shipped nothing — and the
-    sanctioned remedy is a corrective `chore:` after the wrong release has gone out.
+    `exclude-paths` is evaluated on each package's own slice of a commit: the files are
+    filtered to the package path first, and the commit is skipped for that package only when
+    every remaining one is excluded. So a core change that repairs a dependent's suite keeps
+    the core and drops the dependent.
 
-    `exclude-paths` is evaluated on each package's own slice of a commit, so this drops the
-    dependent and keeps the core: release-please filters a commit's files to the package path
-    first, then skips the commit for that package only when every remaining file matches an
-    excluded path.
-
-    `scripts/check_title_diff.py` applies the same rule at pull-request time. The two have to
-    agree — the gate exists so a title cannot claim something the changelog will not say —
-    so widening one without the other is what this pins against (#629).
+    `scripts/check_title_diff.py` applies the same rule at pull-request time, and the two have
+    to agree — the gate exists so a title cannot claim what the changelog will not say.
     """
 
     @pytest.mark.parametrize("package_path", PACKAGE_PATHS)

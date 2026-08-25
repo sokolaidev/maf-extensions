@@ -123,6 +123,17 @@ def is_documentation_path(path: str) -> bool:
     )
 
 
+def is_package_test_path(path: str) -> bool:
+    """Whether ``path`` is a package's own test tree — the paths release attribution excuses.
+
+    Narrower than :func:`is_test_path` on purpose: it matches only ``packages/<name>/tests/``,
+    which is what each package excludes in ``release-please-config.json``. A ``tests``
+    directory nested anywhere else — inside ``src/``, say — ships, attributes, and releases.
+    """
+    parts = path.replace("\\", "/").split("/")
+    return len(parts) > 3 and parts[0] == "packages" and parts[2] == "tests"
+
+
 def is_non_behavior_path(path: str) -> bool:
     """Whether a changed path is a test or documentation rather than shipped behavior."""
     return is_test_path(path) or is_documentation_path(path)
@@ -156,18 +167,18 @@ def assess(
     touched_packages: set[str] = set()
     executable_packages: set[str] = set()
     for paths in pairs:
-        # Tests do not make a package touched. A `feat` in core that repairs a dependent's
-        # suite would otherwise have to prove an executable change in that dependent too, and
-        # the only ways out are a split pull request or an override. Kept in step with
-        # `exclude-paths` in release-please-config.json, which drops the same commit from the
-        # same package's changelog: the gate exists to agree with the attribution, so widening
-        # one without the other puts them back in conflict (#629).
-        package_names = {
-            package
-            for path in paths
-            if not is_test_path(path) and (package := _package_for(path)) is not None
-        }
-        touched_packages.update(package_names)
+        # The destination decides, because release-please reads a commit's files by their
+        # current path: a rename's old location is attributed to nobody, so counting it here
+        # would refuse a title over a package that will not be released.
+        destination = paths[-1]
+        # `is_package_test_path`, not `is_test_path`: this predicate has to match
+        # `exclude-paths` in release-please-config.json exactly, and a wider one excuses a
+        # package here that the changelog still attributes to.
+        if (
+            not is_package_test_path(destination)
+            and (package := _package_for(destination)) is not None
+        ):
+            touched_packages.add(package)
         executable_paths_in_pair = (
             paths[1:] if copied_sources and paths and paths[0] in copied_sources else paths
         )
