@@ -357,12 +357,9 @@ class _ListedButGoneStore:
         return [self._name]
 
 
-#: A backend that can serve host tool calls has to declare transfer limits the router accepts
-#: for a *folded* spec (#393): files_in holds the workload plus the launcher and every response,
-#: files_out serves the one large output read. Generous on purpose, so the host-tool-call tests
-#: exercise mechanics rather than the limit match; `TestTheSpecCarriesItsHostToolSurface` below
-#: covers the match, and maf-sandbox's own `TestFoldDispatchTransferLimits` covers the
-#: arithmetic. A test that wants a specific ceiling passes `limits=` explicitly.
+#: Transfer limits the router accepts for a *folded* spec (#393). Generous on purpose, so these
+#: tests exercise mechanics rather than the limit match; `TestTheSpecCarriesItsHostToolSurface`
+#: covers the match. A test that wants a specific ceiling passes `limits=` explicitly.
 _MiB = 1024 * 1024
 _CALL_LIMITS = SandboxLimits(
     files_in=TransferLimits(
@@ -2966,12 +2963,7 @@ class TestNoDirectAzureImport:
 
 
 class TestTheSpecCarriesItsHostToolSurface:
-    """The derived surface reaches the router, so #393's fold runs for this kind.
-
-    The fold widens the transfer-limit match only for a spec whose ``host_tools`` is set, so a
-    spec that derives the aggregate and keeps it to itself is matched on the workload's own
-    caps and the transport's traffic is never counted.
-    """
+    """The router folds the transport's traffic only for a spec whose ``host_tools`` is set."""
 
     def test_the_spec_carries_the_surface_it_derived(self):
         spec = codeact_sandbox_spec(host_tools=_registry(_exchange_rate))
@@ -2989,7 +2981,7 @@ class TestTheSpecCarriesItsHostToolSurface:
         router = SandboxRouter([backend], min_isolation=backend.isolation)
         with pytest.raises(SandboxTransferLimitsNotPermitted) as refusal:
             router.ensure_can_serve(spec)
-        # The note is how the router says the fold caused this, not the workload's own caps.
+        # The note says the fold caused this, not the workload's own caps.
         assert "folded to include the wired host tools" in str(refusal.value)
 
     def test_a_backend_that_can_serve_the_transport_attaches(self):
