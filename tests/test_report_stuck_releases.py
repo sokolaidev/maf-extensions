@@ -27,7 +27,7 @@ _WORKFLOW = yaml.safe_load(
 )
 _STEPS = _WORKFLOW["jobs"]["prepare"]["steps"]
 
-#: The run started a minute after #624 merged, which is the shape of the incident in #661.
+#: A minute after the fixture merged, so the fixture is a release this run should have made.
 _STARTED = "2026-08-24T20:34:00Z"
 
 _ACAS = {

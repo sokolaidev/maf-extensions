@@ -41,6 +41,25 @@ _RELEASE_TITLE = re.compile(r"\brelease\s+(?P<package>[A-Za-z0-9._-]+)\s+v?(?P<v
 #: false alarm closes itself on the next run.
 _LONG_AGO = datetime(1970, 1, 1, tzinfo=UTC)
 
+#: The tracking issue's fixed paragraphs, named rather than wrapped inside the list that
+#: renders it: adjacent string literals in a list cannot be told from a missing comma.
+_WHAT_IS_STUCK = (
+    "**Release Please ran and left a merged Release PR unreleased.** It takes the oldest "
+    "unfinished one and stops there, whatever commit triggered the run, so until this is "
+    "cleared **no package can release** — not core, not any backend."
+)
+_HOW_TO_FINISH = (
+    "**The label flip is the step nobody guesses.** Without it release-please retries the "
+    "same release for ever, and the train stays stuck even once the tag exists. Then "
+    "dispatch Release Please (`gh workflow run release-please.yml`) so the rest of the "
+    "train drains, and check that the publish reached PyPI — a tag created by a user "
+    "token starts no workflow, which is why the publish is dispatched above."
+)
+_WHO_OWNS_THIS_ISSUE = (
+    "This issue is opened, edited and closed by `release-please.yml`. It closes itself on "
+    "the first run that finds nothing stuck, so leave it open until the release lands."
+)
+
 
 def tag_for(title: str) -> str | None:
     """The tag release-please would have created for a Release PR titled ``title``."""
@@ -79,15 +98,19 @@ def _recovery(pr: dict[str, Any]) -> list[str]:
     title = str(pr.get("title", ""))
     tag = tag_for(title)
     if tag is None:
-        return [
+        unreadable = (
             f"`{title}` names no package and version, so the tag it owes cannot be read off "
-            "it. Take that from the manifest entry the pull request bumped.",
-        ]
+            "it. Take that from the manifest entry the pull request bumped."
+        )
+        return [unreadable]
     sha = str((pr.get("mergeCommit") or {}).get("oid") or "") or "<merge commit>"
     package, version = tag.rsplit("-v", 1)
-    return [
+    lead = (
         f"Its tag is `{tag}`, at `{sha}`. The notes are that version's section of "
-        f"`packages/{package}/CHANGELOG.md`, which this pull request wrote.",
+        f"`packages/{package}/CHANGELOG.md`, which this pull request wrote."
+    )
+    return [
+        lead,
         "",
         "```bash",
         f"gh release create {tag} --target {sha} \\",
@@ -105,9 +128,7 @@ def body(stuck: list[dict[str, Any]], run_url: str) -> str:
     lines = [
         MARKER,
         "",
-        "**Release Please ran and left a merged Release PR unreleased.** It takes the oldest "
-        "unfinished one and stops there, whatever commit triggered the run, so until this is "
-        "cleared **no package can release** — not core, not any backend.",
+        _WHAT_IS_STUCK,
         "",
         "| Release PR | Merged | Tag it owes |",
         "| --- | --- | --- |",
@@ -124,16 +145,11 @@ def body(stuck: list[dict[str, Any]], run_url: str) -> str:
     for pr in stuck:
         lines += [f"### #{pr.get('number')}", "", *_recovery(pr), ""]
     lines += [
-        "**The label flip is the step nobody guesses.** Without it release-please retries the "
-        "same release for ever, and the train stays stuck even once the tag exists. Then "
-        "dispatch Release Please (`gh workflow run release-please.yml`) so the rest of the "
-        "train drains, and check that the publish reached PyPI — a tag created by a user "
-        "token starts no workflow, which is why the publish is dispatched above.",
+        _HOW_TO_FINISH,
         "",
         "`docs/maintainers.md` carries the same steps with the reasoning behind each.",
         "",
-        "This issue is opened, edited and closed by `release-please.yml`. It closes itself on "
-        "the first run that finds nothing stuck, so leave it open until the release lands.",
+        _WHO_OWNS_THIS_ISSUE,
     ]
     return "\n".join(lines)
 

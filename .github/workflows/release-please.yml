@@ -151,8 +151,8 @@ jobs:
       # Every run ends here, red or green. A merged Release PR still labelled
       # `autorelease: pending` once release-please has run is one it could not finish, and it
       # takes the oldest of those and stops there — so until that one is cleared no package
-      # releases, whatever commit triggers the next run. The signal for that used to be a red
-      # run on `main`: eleven consecutive ones reached nobody. An issue does (#661).
+      # releases, whatever commit triggers the next run. A red run does not carry that on its
+      # own, because nothing sends anyone to open it; the tracking issue does (#661).
       - name: Name any release this run left stuck
         if: always()
         env:
