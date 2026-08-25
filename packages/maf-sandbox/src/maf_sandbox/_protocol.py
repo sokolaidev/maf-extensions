@@ -519,11 +519,12 @@ class SandboxSpec:
 
     ``host_tools`` is the sealed surface a wired registry answers with
     (:meth:`~maf_sandbox.HostToolRegistry.aggregate`), or ``None`` when nothing is dispatchable.
-    The router reads its ``response_limits`` to fold the dispatch transport's worst case into the
-    transfer-limit match, so a backend that could not serve a dispatch is refused at attach
-    rather than overrun mid-run (#393); nothing here mutates it, and it rides alongside
-    ``identities`` rather than replacing that field, so a spec may still declare an identity set
-    without wiring a registry.
+    The router folds its ceilings into the transfer-limit match transiently, mutating nothing
+    here.  It rides alongside ``identities`` rather than replacing it, so a spec may declare an
+    identity set without wiring a registry — but a spec that wires one must also declare what it
+    carries, :data:`Capability.HOST_TOOLS` in ``requires`` and the surface's identities in
+    ``identities``, and is refused below otherwise: the router reads posture from those two
+    fields, so a surface they do not admit would pass a host's deny list.
     """
 
     kind: str

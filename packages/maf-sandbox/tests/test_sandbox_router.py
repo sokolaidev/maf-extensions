@@ -53,6 +53,7 @@ from maf_sandbox import (
     SandboxTransferLimitsNotPermitted,
     SandboxUnclean,
     TransferLimits,
+    fold_dispatch_transfer_limits,
     meets_floor,
 )
 from maf_sandbox.testing import InProcessSandbox, InProcessSandboxBackend
@@ -816,6 +817,14 @@ class TestASpecMustAdmitTheSurfaceItCarries:
         """`SandboxSpec` is public and consumed by tooling that reads annotations, so a field
         annotated with a name only a type checker can see breaks `typing.get_type_hints`."""
         assert typing.get_type_hints(SandboxSpec)["host_tools"] is not None
+
+    def test_every_public_surface_annotated_with_the_aggregate_resolves(self):
+        """The same trap, swept rather than spotted: a `TYPE_CHECKING`-only import satisfies the
+        type checker and leaves `get_type_hints` raising for callers. It has now caught the spec
+        and the fold helper, so both — and anything else annotated against the aggregate — are
+        resolved here rather than one at a time."""
+        for subject in (SandboxSpec, fold_dispatch_transfer_limits, HostToolAggregate):
+            typing.get_type_hints(subject)
 
 
 class _BackendDeclaringTheWrongLimits(InProcessSandboxBackend):

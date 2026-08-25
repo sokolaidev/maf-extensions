@@ -56,14 +56,25 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from ._error_detail import error_detail
 from ._outputs import SandboxTransferCapExceeded
-from ._protocol import EntryKind, ExecResult, SandboxLimits, TransferLimits
+
+# `HostToolAggregate` at runtime, not under TYPE_CHECKING: it annotates a *public* function
+# here, and a postponed annotation naming an absent module attribute makes
+# `typing.get_type_hints` raise for every caller that resolves it. `_protocol` owns the type
+# and this module already imports it, so there is no cycle to avoid.
+from ._protocol import (
+    EntryKind,
+    ExecResult,
+    HostToolAggregate,
+    SandboxLimits,
+    TransferLimits,
+)
 from ._reclaim import note_unclean
 from .paths import confine_guest_path, guest_path_relative_to
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Mapping
 
-    from ._host_tools import HostToolAggregate, HostToolRun
+    from ._host_tools import HostToolRun
     from ._protocol import Sandbox
 
 logger = logging.getLogger(__name__)
@@ -113,10 +124,13 @@ def fold_dispatch_transfer_limits(
     is written like any answer while spending no part of ``response_limits``, which bounds only
     what a tool delivered — so refusals are budgeted by count, not by that ledger.
 
-    An explicit ``output_limit`` to :func:`dispatch_over_exec` is *not* folded: it is the
-    caller's own number for its own program's output, so it belongs in the workload's
-    ``files_out.max_bytes_per_file`` the way any other declared transfer does. Only the cap the
-    transport borrows when none is given is covered here.
+    The stdout cap folded is always the one the transport *borrows* — a surface cannot see an
+    ``output_limit``, which :func:`dispatch_over_exec` takes per call. That cuts both ways and
+    neither is silent: a larger ``output_limit`` is a transfer the caller declares in its own
+    ``files_out.max_bytes_per_file``, and a smaller one leaves this asking a backend for more
+    than the run will move, so a backend that would have fit is refused. Conservative on
+    purpose — refusing a run that would have worked is recoverable, admitting one that overruns
+    mid-run is not.
     """
     serves = surface.max_dispatches_per_run + 1  # `_serving_bound`: the refusal past the cap.
     response_limits = surface.response_limits
@@ -771,7 +785,9 @@ async def dispatch_over_exec(
             effect of unrelated host-tool configuration. Must be a positive integer when given.
             A caller that passes one owes it to its own spec: only the borrowed cap is folded
             into the router's transfer match (:func:`fold_dispatch_transfer_limits`), so a limit
-            above ``files_out.max_bytes_per_file`` is a read the backend never agreed to.
+            above ``files_out.max_bytes_per_file`` is a read the backend never agreed to — and a
+            limit below the borrowed cap still leaves the match asking for the borrowed one,
+            which can refuse a backend this run would have fitted.
 
     Attempts to remove the transport's own directory before returning, on every exit path.
     A removal the guest refuses is logged and nothing else — the call still returns what it
