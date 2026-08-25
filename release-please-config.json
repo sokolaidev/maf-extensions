@@ -21,6 +21,7 @@
   "packages": {
     "packages/maf-sandbox": {
       "package-name": "maf-sandbox",
+      "exclude-paths": ["packages/maf-sandbox/tests"],
       "extra-files": [
         {
           "type": "toml",
@@ -31,6 +32,7 @@
     },
     "packages/maf-sandbox-acas": {
       "package-name": "maf-sandbox-acas",
+      "exclude-paths": ["packages/maf-sandbox-acas/tests"],
       "extra-files": [
         {
           "type": "toml",
@@ -41,6 +43,7 @@
     },
     "packages/maf-sandbox-bicep": {
       "package-name": "maf-sandbox-bicep",
+      "exclude-paths": ["packages/maf-sandbox-bicep/tests"],
       "extra-files": [
         {
           "type": "toml",
@@ -51,6 +54,7 @@
     },
     "packages/maf-sandbox-codeact": {
       "package-name": "maf-sandbox-codeact",
+      "exclude-paths": ["packages/maf-sandbox-codeact/tests"],
       "extra-files": [
         {
           "type": "toml",
@@ -61,6 +65,7 @@
     },
     "packages/maf-sandbox-docker": {
       "package-name": "maf-sandbox-docker",
+      "exclude-paths": ["packages/maf-sandbox-docker/tests"],
       "extra-files": [
         {
           "type": "toml",
@@ -71,6 +76,7 @@
     },
     "packages/maf-sandbox-wslc": {
       "package-name": "maf-sandbox-wslc",
+      "exclude-paths": ["packages/maf-sandbox-wslc/tests"],
       "extra-files": [
         {
           "type": "toml",
