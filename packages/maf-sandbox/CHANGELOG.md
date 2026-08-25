@@ -2,6 +2,18 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.24.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.23.1...maf-sandbox-v0.24.0) (2026-08-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sandbox:** refuse a backend that cannot serve a workload's host-tool dispatch at attach ([#631](https://github.com/sokolaidev/maf-extensions/issues/631))
+
+### Features
+
+* **sandbox:** keep the dispatch names working beside the new host_tool_call ones ([#663](https://github.com/sokolaidev/maf-extensions/issues/663)) ([d4b20a3](https://github.com/sokolaidev/maf-extensions/commit/d4b20a357bfd06785ca12236be80e861c8d8248e))
+* **sandbox:** refuse a backend that cannot serve a workload's host-tool dispatch at attach ([#631](https://github.com/sokolaidev/maf-extensions/issues/631)) ([9bcea42](https://github.com/sokolaidev/maf-extensions/commit/9bcea420f35477a89dc32b9a9d0fe9e01bcba3e5))
+
 ## [0.23.1](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.23.0...maf-sandbox-v0.23.1) (2026-08-24)
 
 
