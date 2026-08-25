@@ -156,7 +156,17 @@ def assess(
     touched_packages: set[str] = set()
     executable_packages: set[str] = set()
     for paths in pairs:
-        package_names = {package for path in paths if (package := _package_for(path)) is not None}
+        # Tests do not make a package touched. A `feat` in core that repairs a dependent's
+        # suite would otherwise have to prove an executable change in that dependent too, and
+        # the only ways out are a split pull request or an override. Kept in step with
+        # `exclude-paths` in release-please-config.json, which drops the same commit from the
+        # same package's changelog: the gate exists to agree with the attribution, so widening
+        # one without the other puts them back in conflict (#629).
+        package_names = {
+            package
+            for path in paths
+            if not is_test_path(path) and (package := _package_for(path)) is not None
+        }
         touched_packages.update(package_names)
         executable_paths_in_pair = (
             paths[1:] if copied_sources and paths and paths[0] in copied_sources else paths

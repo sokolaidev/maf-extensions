@@ -125,12 +125,21 @@ class TestAssess:
         ]
         assert check.assess("ci: enforce title policy", paths, {}) == []
 
-    def test_cross_package_python_rename_counts_only_non_test_endpoints(self):
-        assert check.assess(
-            "feat: move module",
-            ["packages/b/tests/test_mod.py"],
-            {},
-            [("packages/a/src/mod.py", "packages/b/tests/test_mod.py")],
+    def test_a_module_moved_into_another_packages_tests_leaves_that_package_untouched(self):
+        """`b` gains only a test file, so it is not touched and owes no executable change.
+
+        `a` loses source, which is the executable change the `feat` claims. release-please
+        reads the same commit the same way — `packages/b/tests` is in `b`'s `exclude-paths`,
+        so the move releases `a` and not `b` (#629).
+        """
+        assert (
+            check.assess(
+                "feat: move module",
+                ["packages/b/tests/test_mod.py"],
+                {},
+                [("packages/a/src/mod.py", "packages/b/tests/test_mod.py")],
+            )
+            == []
         )
 
     def test_readme_like_tool_name_is_not_documentation(self):
@@ -208,6 +217,59 @@ class TestAssess:
             ["packages/example/src/example.py"],
             {"packages/example/src/example.py": (None, source)},
             [("packages/example/README.md", "packages/example/src/example.py")],
+        )
+
+
+class TestTestsDoNotMakeAPackageTouched:
+    """A package changed only in its tests is not releasing, so it owes no executable change.
+
+    This is the gate's half of #629; `exclude-paths` in release-please-config.json is the
+    other. They have to agree: the gate exists so a title and the changelog it becomes cannot
+    disagree, and a rule applied on one side only puts them back in conflict.
+    """
+
+    _CORE = "packages/maf-sandbox/src/maf_sandbox/_protocol.py"
+    _DEPENDENT_TEST = "packages/maf-sandbox-codeact/tests/test_codeact_workload.py"
+
+    def test_a_core_feat_may_repair_a_dependents_suite(self):
+        """The case this cost a split pull request and an override for, twice."""
+        before, after = "def f() -> int:\n    return 1\n", "def f() -> int:\n    return 2\n"
+        assert (
+            check.assess(
+                "feat(sandbox)!: a mandatory protocol member",
+                [self._CORE, self._DEPENDENT_TEST],
+                {self._CORE: (before, after), self._DEPENDENT_TEST: (before, after)},
+            )
+            == []
+        )
+
+    def test_a_behavior_title_over_tests_alone_still_fails(self):
+        """The rule narrows what counts as touched; it does not stop asking for behavior."""
+        before, after = "def f() -> int:\n    return 1\n", "def f() -> int:\n    return 2\n"
+        problems = check.assess(
+            "feat: a thing", [self._DEPENDENT_TEST], {self._DEPENDENT_TEST: (before, after)}
+        )
+        assert problems and "no executable change" in problems[0]
+
+    def test_a_test_title_over_tests_alone_is_fine(self):
+        before, after = "def f() -> int:\n    return 1\n", "def f() -> int:\n    return 2\n"
+        assert (
+            check.assess(
+                "test(codeact): read the kind's own records",
+                [self._DEPENDENT_TEST],
+                {self._DEPENDENT_TEST: (before, after)},
+            )
+            == []
+        )
+
+    def test_a_dependents_source_still_makes_it_touched(self):
+        """Only `tests/` is excused. A `feat` naming two packages still owes both."""
+        before, after = "def f() -> int:\n    return 1\n", "def f() -> int:\n    return 2\n"
+        assert check.assess(
+            "feat: two packages",
+            [self._CORE, "packages/maf-sandbox-codeact/README.md"],
+            {self._CORE: (before, after)},
+            [(self._CORE,), ("packages/maf-sandbox-codeact/README.md",)],
         )
 
 
