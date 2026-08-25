@@ -23,6 +23,13 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+          # The pull request's own head, never the merge commit this event builds by
+          # default. `base.sha` is pinned at the moment the pull request opened and does not
+          # move when `main` does, so diffing the merge commit against it hands this check
+          # every commit merged into `main` since — and fails a title that is correct, for
+          # changes the pull request did not make. Against the head, the merge base is the
+          # branch point whatever `main` has done, which is the question both checks ask.
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - uses: amannn/action-semantic-pull-request@e32d7e603df1aa1ba07e981f2a23455dee596825 # v5
         env:
@@ -89,6 +96,13 @@ jobs:
         with:
           # The check diffs against the base commit, which a shallow clone does not have.
           fetch-depth: 0
+          # The pull request's own head, never the merge commit this event builds by
+          # default. `base.sha` is pinned at the moment the pull request opened and does not
+          # move when `main` does, so diffing the merge commit against it hands this check
+          # every commit merged into `main` since — and fails a title that is correct, for
+          # changes the pull request did not make. Against the head, the merge base is the
+          # branch point whatever `main` has done, which is the question both checks ask.
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: What follows if this core lands outside the ceilings
         # **A failure here is not a verdict on the release.** A core version outside the
@@ -98,9 +112,9 @@ jobs:
         # `check_core_against_dependents.py` at release time, and the publish gate before an
         # upload; neither is this.
         #
-        # It exited zero between #628 and #657, which left the notice in the log of a green
-        # job. A notice nobody opens is not delivered, and this is the one channel a pull
-        # request cannot scroll past.
+        # Reporting and exiting zero would leave the notice in the log of a green job. A
+        # notice nobody opens is not delivered, and this is the one channel a pull request
+        # cannot scroll past.
         #
         # The `${{ github.event.pull_request.title }}` expression is assigned to an environment
         # variable rather than interpolated into this shell script. A pull request title is
@@ -110,5 +124,5 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
-          git diff --name-only "$BASE_SHA" HEAD |
+          git diff --name-only "$BASE_SHA...HEAD" |
             python3 scripts/check_release_order.py "$PR_TITLE"

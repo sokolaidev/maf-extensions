@@ -1,10 +1,12 @@
 """Say what follows when a maf-sandbox release lands outside the dependents' ceilings.
 
-    git diff --name-only <base> HEAD | python scripts/check_release_order.py "<pull request title>"
+    git diff --name-only <base>...HEAD | python scripts/check_release_order.py "<pull request title>"
 
-Changed paths arrive on stdin, one per line. It speaks only when the title would cut a new
-*minor* of maf-sandbox, the change is attributed to that package by the files it touches, and
-some dependent's ceiling excludes the result.
+Changed paths arrive on stdin, one per line. Three dots, so the comparison starts at the merge
+base: against a base that has moved on, two dots hands this every commit the base gained since
+and reports another pull request's release as this one's. It speaks only when the title would
+cut a new *minor* of maf-sandbox, the change is attributed to that package by the files it
+touches, and some dependent's ceiling excludes the result.
 
 **It exits non-zero when it has something to say, and that is not a verdict on the
 release.** A version outside those ceilings is permitted, and for a breaking release it is the
@@ -13,11 +15,11 @@ dependent adopts on its own schedule. What checks whether the release is *sound*
 `check_core_against_dependents.py`, which runs every admitting published dependent's own suite
 against the candidate core at the moment of release — not this.
 
-What this refuses to do is let the consequence go unread. Between #628 and #657 it reported and
-exited zero, which put the notice in the log of a green job; a notice nobody opens is one that
-is not delivered. Failing is the only channel a pull request cannot ignore. **Merging over it
-is the expected move for a deliberate breaking release** — the maintainer's override says the
-consequence was read and accepted, which is the whole thing this asks for.
+What this refuses to do is let the consequence go unread. Reporting and exiting zero would put
+the notice in the log of a green job, and a notice nobody opens is one that is not delivered;
+failing is the only channel a pull request cannot ignore. **Merging over it is the expected
+move for a deliberate breaking release** — the maintainer's override says the consequence was
+read and accepted, which is the whole thing this asks for.
 See `docs/release-compatibility.md`.
 
 One shape it cannot see: `BREAKING CHANGE:` goes in the squash-commit box at merge time, so a

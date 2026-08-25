@@ -62,6 +62,14 @@ jobs:
             echo "dispatched publish for ${path##*/} at ${tag}" >> "$GITHUB_STEP_SUMMARY"
           done
 
+      # Unconditional, because the two steps below both read the checkout and both run on
+      # runs that release nothing. Behind release-please rather than in front of it: those
+      # steps work over the API and want no workspace, so a checkout that fails must not be
+      # able to stop a release from being cut.
+      - name: Check out
+        if: always()
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
       # After maf-sandbox publishes, its dependents' range moves at both ends: the floor to the
       # version that just published, in the packages that look like they need it, and the
       # ceiling two minors up so the release after it needs nobody's permission. The post-release
@@ -70,12 +78,6 @@ jobs:
       # One step, because the two bounds are one string. They were two steps opening two pull
       # requests, and since each rewrote the whole constraint, whichever merged second reverted
       # the other's half (#195). The separation was never real; only the collision was.
-      - name: Check out to set the dependents' range
-        if: >-
-          steps.release.outputs.releases_created == 'true'
-          && contains(steps.release.outputs.paths_released, '"packages/maf-sandbox"')
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
       - name: Propose the dependents' range
         if: >-
           steps.release.outputs.releases_created == 'true'
@@ -147,3 +149,117 @@ jobs:
             --title "$title" \
             --body-file "${RUNNER_TEMP}/range-body.md"
           echo "opened ${branch}" >> "$GITHUB_STEP_SUMMARY"
+
+      # Every run ends here, red or green. A merged Release PR still labelled
+      # `autorelease: pending` once release-please has run is one it could not finish, and it
+      # takes the oldest of those and stops there — so until that one is cleared no package
+      # releases, whatever commit triggers the next run. A red run does not carry that on its
+      # own, because nothing sends anyone to open it; the tracking issue does (#661).
+      - name: Name any release this run left stuck
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # gh reads the repository from a git remote, and the steps above may have left the
+          # checkout on a branch of their own; naming it costs nothing and cannot drift.
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: >-
+            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # The marker comes from the script so there is one definition of it: this step has to
+          # find the issue the script wrote, and a second copy here would drift and duplicate.
+          marker="$(python3 scripts/report_stuck_releases.py --marker)"
+          # GraphQL rather than `gh search`, whose index lags a merge by minutes — and minutes
+          # after a merge is exactly when this runs. Paginated rather than a page of N: the
+          # `gh pr list` this replaced answered newest-first, so its cap dropped the oldest,
+          # which is the one release-please stops at and the only one the report is about.
+          pending="$(gh api graphql --paginate -F owner="${GH_REPO%%/*}" \
+            -F repo="${GH_REPO##*/}" -f query='
+              query($owner:String!,$repo:String!,$endCursor:String){
+                repository(owner:$owner,name:$repo){
+                  pullRequests(states:MERGED, labels:["autorelease: pending"],
+                               first:100, after:$endCursor){
+                    pageInfo{ hasNextPage endCursor }
+                    nodes{ number title url mergedAt mergeCommit{ oid } }
+                  }
+                }
+              }' --jq '.data.repository.pullRequests.nodes[]' | jq -s '.')"
+          # The run's own start separates a release this run owed from one that merged while it
+          # was in flight — that one belongs to the run its merge triggered, which is queued
+          # behind this one on the concurrency group above.
+          started="$(gh api "repos/{owner}/{repo}/actions/runs/${GITHUB_RUN_ID}" \
+            --jq '.run_started_at')"
+          # Author *and* marker. The marker is in a public script, so anyone with an account
+          # can open an issue carrying it — and on the marker alone that issue is what gets
+          # edited and closed, while the tracker this step exists to raise is never opened at
+          # all. The author is pinned to the exact identity this job writes as, not merely to
+          # some bot: any app installed here that can open an issue can be asked to carry the
+          # marker. Being wrong about the login opens a second tracker, which is visible and
+          # harmless; being wrong about the author writes to somebody else's issue.
+          #
+          # `--paginate` rather than a page of N: a tracker stays open for as long as the train
+          # is stuck, so it sinks down a listing as other issues are opened, and a bounded page
+          # would stop returning it — after which every run opens a duplicate and none of them
+          # can close the first. This endpoint answers with pull requests too, which is what
+          # the first `select` drops; editing one of those would rewrite a pull request body.
+          issue="$(gh api --paginate "repos/{owner}/{repo}/issues?state=open&per_page=100" \
+            | jq -s --arg m "$marker" \
+              '[.[][] | select(.pull_request == null)
+                      | select(.user.login == "github-actions[bot]")
+                      | select(.body // "" | contains($m))]
+               | first | if . == null then null else {number: .number} end')"
+          # What each package has actually released, from the manifest a Release PR bumps as
+          # part of its own diff — so once merged it holds exactly that pull request's version.
+          # A merged Release PR's title is editable and this is not, so a title naming a
+          # package we do not have, or a version nobody released, renders no recovery at all.
+          releases="$(jq -c --slurpfile manifest .release-please-manifest.json '
+            .packages | to_entries
+            | map({key: .value."package-name", value: ($manifest[0][.key] // null)})
+            | from_entries' release-please-config.json)"
+          # release-please creates the Release first and flips the label after, so a failure in
+          # between leaves a pending pull request whose Release is already there. Without this
+          # the recovery would tell a maintainer to create a tag that exists.
+          released="$(gh api --paginate "repos/{owner}/{repo}/releases?per_page=100" \
+            --jq '.[].tag_name' | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+          jq -n --argjson pending "$pending" --argjson issue "$issue" \
+            --argjson released "$released" --argjson releases "$releases" \
+            --arg started "$started" --arg run_url "$RUN_URL" \
+            '{run_started_at: $started, run_url: $run_url, pending: $pending, issue: $issue,
+              released_tags: $released, releases: $releases}' \
+            | python3 scripts/report_stuck_releases.py > "${RUNNER_TEMP}/plan.json"
+          plan="${RUNNER_TEMP}/plan.json"
+          action="$(jq -r '.action' "$plan")"
+          jq -r '.summary' "$plan" >> "$GITHUB_STEP_SUMMARY"
+          case "$action" in
+            open)
+              jq -r '.body' "$plan" > "${RUNNER_TEMP}/stuck.md"
+              gh issue create --title "$(jq -r '.title' "$plan")" \
+                --body-file "${RUNNER_TEMP}/stuck.md"
+              ;;
+            update)
+              # Edited rather than commented on: a run happens on every push to `main`, and a
+              # comment per run would bury the recovery steps under its own noise.
+              jq -r '.body' "$plan" > "${RUNNER_TEMP}/stuck.md"
+              gh issue edit "$(jq -r '.issue' "$plan")" --body-file "${RUNNER_TEMP}/stuck.md"
+              ;;
+            close)
+              gh issue close "$(jq -r '.issue' "$plan")" --comment "$(jq -r '.comment' "$plan")"
+              ;;
+            none)
+              # Spelled out rather than left to fall through, so that doing nothing and not
+              # recognising the plan stop being the same branch.
+              ;;
+            *)
+              # Without this an action this step does not know is a silent skip that still
+              # exits zero — the shape everything here exists to prevent, arriving through
+              # the reporting itself.
+              echo "::error::unrecognised plan action: ${action}"
+              exit 1
+              ;;
+          esac
+          # Red even when release-please exited zero. A release left behind by a run that
+          # reported success is the shape with no other signal at all.
+          if [ "$action" = "open" ] || [ "$action" = "update" ]; then
+            echo "::error::$(jq -r '.summary' "$plan")"
+            exit 1
+          fi
