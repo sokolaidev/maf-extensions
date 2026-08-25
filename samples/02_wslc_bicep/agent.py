@@ -26,7 +26,7 @@ the environment variables, before running this.
 #     "agent-framework-openai",
 #     "maf-sandbox-bicep",
 #     "maf-sandbox-wslc",
-#     "maf-sandbox>=0.23",
+#     "maf-sandbox>=0.24",
 # ]
 # ///
 
