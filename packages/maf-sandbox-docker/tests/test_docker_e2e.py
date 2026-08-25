@@ -41,8 +41,8 @@ from maf_sandbox import (
     SandboxTransferCapExceeded,
     TransferLimits,
     collect_outputs,
-    dispatch_over_exec,
     guest_run_layout,
+    host_tool_calls_over_exec,
     launcher_script,
 )
 from maf_sandbox.conformance import (
@@ -533,7 +533,7 @@ class TestWhetherThisBackendCouldServeHostTools:
     transport is composed by the kind out of `exec`, `write_file`, `stat_file` and `read_file`,
     all covered by capabilities this backend already declares. What a backend would be adding is
     that its `exec` **detaches** — that a process started by one call outlives it and is still
-    observable from the next — because `dispatch_over_exec` is built on exactly that. The
+    observable from the next — because `host_tool_calls_over_exec` is built on exactly that. The
     launcher returns immediately by design, and the appearance of the exit-code file is the only
     thing that tells the supervisor the run is over.
 
@@ -652,7 +652,7 @@ class TestWhetherThisBackendCouldServeHostTools:
 
 
 class TestWhatOnlyARealRunawayCanSettle:
-    """A live runaway timed out through `dispatch_over_exec` is gone when it returns.
+    """A live runaway timed out through `host_tool_calls_over_exec` is gone when it returns.
 
     It proves both the process and the transport files are really gone in a container.
     """
@@ -678,7 +678,7 @@ class TestWhatOnlyARealRunawayCanSettle:
                 await sandbox.write_file(layout.shim, "", working_directory=_WORK)
 
                 with pytest.raises(SandboxProgramTimeout) as expired:
-                    await dispatch_over_exec(
+                    await host_tool_calls_over_exec(
                         sandbox,
                         HostToolRun(HostToolRegistry()),
                         layout,

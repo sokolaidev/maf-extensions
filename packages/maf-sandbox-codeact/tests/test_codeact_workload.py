@@ -43,6 +43,7 @@ from maf_sandbox import (
     OutputSink,
     SandboxCapabilityNotSupported,
     SandboxEntry,
+    SandboxLimits,
     SandboxOutputSinkRequired,
     SandboxRouter,
     SourceIntegrity,
@@ -72,9 +73,9 @@ from maf_sandbox_codeact._tool import (
 #: What a backend must declare before this kind may collect anything.
 _PULLS = DEFAULT_CAPABILITIES | {Capability.FILES_OUT}
 
-#: And before a program may reach a host tool: dispatch carries its requests over the same
-#: pull surface, so it needs everything a collection needs and the capability besides.
-_DISPATCHES = _PULLS | {Capability.HOST_TOOLS}
+#: And before a program may reach a host tool: a host-tool call carries its requests over the
+#: same pull surface, so it needs everything a collection needs and the capability besides.
+_CALLS = _PULLS | {Capability.HOST_TOOLS}
 
 # ---------------------------------------------------------------------------
 # Fakes: a sandbox that keeps the command it was handed, unjoined, and what it was written
@@ -194,7 +195,7 @@ class _StatOnlySandbox(_ScriptedSandbox):
 
 
 class _CallingSandbox(_ScriptedSandbox):
-    """A sandbox whose "program" dispatches one host tool, prints the answer, and exits.
+    """A sandbox whose "program" calls one host tool, prints the answer, and exits.
 
     The interleaving is what a real guest has and what a scripted ``exec`` cannot express: the
     request appears when the launcher starts, and the exit marker only once the supervisor's
@@ -244,10 +245,11 @@ class _CallingSandbox(_ScriptedSandbox):
 
 
 class _FinishingSandbox(_ProducingSandbox):
-    """A dispatch-served guest that produces its files and then leaves the exit marker.
+    """A guest served over the host-tool-call transport that produces its files and then leaves
+    the exit marker.
 
     The supervisor polls for that marker, so a guest that never writes one is waited out. This
-    one calls nothing: what it stands in for is a dispatched run that simply *succeeds*.
+    one calls nothing: what it stands in for is a run over that transport that simply *succeeds*.
     """
 
     def _program_cwd(self, working_directory: str) -> str:
@@ -354,16 +356,39 @@ class _ListedButGoneStore:
         return [self._name]
 
 
+#: A backend that can serve host tool calls has to declare transfer limits the router accepts
+#: for a *folded* spec (#393): files_in holds the workload plus the launcher and every response,
+#: files_out serves the one large output read. Generous on purpose, so the host-tool-call tests
+#: exercise mechanics rather than the limit match — `TestFoldHostToolCallTransferLimits` and
+#: `TestHostToolsFoldTheTransferCaps` cover the match itself. A test that wants a specific
+#: ceiling passes `limits=` explicitly.
+_MiB = 1024 * 1024
+_CALL_LIMITS = SandboxLimits(
+    files_in=TransferLimits(
+        max_bytes_per_file=64 * _MiB, max_total_bytes=256 * _MiB, max_files=1024
+    ),
+    files_out=TransferLimits(
+        max_bytes_per_file=64 * _MiB, max_total_bytes=256 * _MiB, max_files=1024
+    ),
+)
+
+
 def _backend(
     sandbox: InProcessSandbox | None = None,
     *,
     acquire_error: BaseException | None = None,
     capabilities: frozenset[Capability] | None = None,
+    limits: SandboxLimits | None = None,
 ) -> InProcessSandboxBackend:
+    # A backend that arms host tool calls declares limits that can serve it, unless a test pins
+    # its own.
+    if limits is None and capabilities is not None and Capability.HOST_TOOLS in capabilities:
+        limits = _CALL_LIMITS
     return InProcessSandboxBackend(
         sandbox if sandbox is not None else _ScriptedSandbox(),
         acquire_error=acquire_error,
         **({} if capabilities is None else {"capabilities": capabilities}),
+        **({} if limits is None else {"limits": limits}),
     )
 
 
@@ -457,9 +482,10 @@ def _registry(*tools: Callable[..., Any], **policy: Any) -> HostToolRegistry:
     return registry
 
 
-def _dispatching_tool(registry: HostToolRegistry, **kw: Any):
-    """The tool a host gets for `registry`, on a backend that can serve what dispatch needs."""
-    return _tool(_backend(capabilities=_DISPATCHES), host_tools=registry, **kw)
+def _host_tool_calling_tool(registry: HostToolRegistry, **kw: Any):
+    """The tool a host gets for `registry`, on a backend that can serve what host tool calls
+    need."""
+    return _tool(_backend(capabilities=_CALLS), host_tools=registry, **kw)
 
 
 def _callable(tool):
@@ -491,8 +517,8 @@ class TestCodeactSandboxSpec:
 
     def test_egress_is_closed_by_default(self):
         """A spec that names no host denies every host, so the program can compute but cannot
-        fetch — and with no host tools dispatchable from inside either, nothing external can
-        enter the sandbox and nothing leaves it but what the program printed.
+        fetch — and with nothing callable as a host tool from inside either, nothing external
+        can enter the sandbox and nothing leaves it but what the program printed.
 
         The default, not the only option: a deployment may name hosts, and the tests below
         cover what that opens. What stays fixed is the kind's own half.
@@ -615,10 +641,10 @@ class TestCodeactSandboxSpec:
         assert codeact_sandbox_spec(image_id="disk-image-7").image_id == "disk-image-7"
 
     def test_a_registry_holding_nothing_leaves_the_spec_where_it_was(self):
-        """An empty registry is a dispatch surface that does not exist, and reads as one."""
+        """An empty registry is a host-tool surface that does not exist, and reads as one."""
         assert codeact_sandbox_spec(host_tools=_registry()) == codeact_sandbox_spec()
 
-    def test_a_registry_adds_the_capability_and_the_surface_dispatch_travels_over(self):
+    def test_a_registry_adds_the_capability_and_the_surface_host_tool_calls_travel_over(self):
         """`FILES_OUT` is not optional here, and not this kind's output channel either: the
         transport stats and reads the program's request files and its exit marker, so even a
         stdout-only program that can call a host function needs the pull surface."""
@@ -628,7 +654,7 @@ class TestCodeactSandboxSpec:
         )
 
     def test_a_registry_of_pure_computation_widens_it_just_the_same(self):
-        """The capability follows from something being dispatchable at all, never from what
+        """The capability follows from something being callable at all, never from what
         the aggregate found in it: a tool that is no source, no sink and no authority is
         still a call crossing the boundary."""
         spec = codeact_sandbox_spec(host_tools=_registry(_round_half_up))
@@ -647,7 +673,7 @@ class TestCodeactSandboxSpec:
         assert spec.identities == frozenset({Identity.APP, Identity.USER})
 
     def test_reading_a_registry_seals_it(self):
-        """A tool registered afterwards would be dispatchable from a spec that never saw it."""
+        """A tool registered afterwards would be callable from a spec that never saw it."""
         registry = _registry(_exchange_rate)
         codeact_sandbox_spec(host_tools=registry)
         with pytest.raises(ValueError, match="sealed"):
@@ -817,8 +843,8 @@ class TestMakeCodeactTools:
         not at the first call, and not silently. That is the promise the module docstring and
         the README both make, and this is where it is held.
 
-        `_PULLS` is `{EXEC, FILES_IN, FILES_OUT}` — every file channel dispatch rides on, and
-        `HOST_TOOLS` withheld. No shipped backend has that shape: docker and acas declare the
+        `_PULLS` is `{EXEC, FILES_IN, FILES_OUT}` — every file channel a host-tool call rides on,
+        and `HOST_TOOLS` withheld. No shipped backend has that shape: docker and acas declare the
         capability, and wslc lacks `FILES_OUT` as well. Built rather than borrowed on purpose,
         so the refusal can only come from the one capability under test. It has to come from
         the capability match rather than from the registry being empty, so the registry here
@@ -842,8 +868,8 @@ class TestFidesDeclarations:
         assert dict(tool.additional_properties or {}) == {}
 
     def test_an_empty_registry_declares_nothing_either(self):
-        """Nothing dispatchable is nothing carried, whatever cap the host holds."""
-        tool = _dispatching_tool(_registry(), outbound_max_confidentiality="private")
+        """Nothing callable is nothing carried, whatever cap the host holds."""
+        tool = _host_tool_calling_tool(_registry(), outbound_max_confidentiality="private")
         assert dict(tool.additional_properties or {}) == {}
 
     def test_an_opened_allowlist_makes_the_hosts_cap_apply(self):
@@ -870,7 +896,7 @@ class TestFidesDeclarations:
         the cap gates still does not exist — and a cap on a flow that cannot happen gates
         calls for nothing."""
         registry = _registry(_exchange_rate, _round_half_up)
-        tool = _dispatching_tool(registry, outbound_max_confidentiality="private")
+        tool = _host_tool_calling_tool(registry, outbound_max_confidentiality="private")
         assert dict(tool.additional_properties or {}) == {}
 
     def test_a_sink_tool_makes_the_hosts_cap_apply_with_nothing_landing(self):
@@ -878,7 +904,9 @@ class TestFidesDeclarations:
         anyway — the one flow a derivation reading only the spec cannot see. What is written
         is the host's own cap, never the tool's sink value: the two are vocabularies this
         package refuses to order against each other."""
-        tool = _dispatching_tool(_registry(_log_to_crm), outbound_max_confidentiality="private")
+        tool = _host_tool_calling_tool(
+            _registry(_log_to_crm), outbound_max_confidentiality="private"
+        )
         assert dict(tool.additional_properties or {}) == {"max_allowed_confidentiality": "private"}
 
     def test_a_sink_tool_beside_an_output_sink_still_attaches(self):
@@ -886,7 +914,7 @@ class TestFidesDeclarations:
         nothing to override anyway: a spec that lands already has the derivation writing the
         very same cap."""
         tool = _tool(
-            _backend(capabilities=_DISPATCHES),
+            _backend(capabilities=_CALLS),
             host_tools=_registry(_log_to_crm),
             outbound_max_confidentiality="private",
             **_landing(CodeactOutputs.DECLARED),
@@ -895,10 +923,11 @@ class TestFidesDeclarations:
 
     def test_an_unstamped_tool_carries_the_hosts_cap_as_a_sink_tool_would(self):
         """Nobody answered the sink question, so the fold sees no sink to write a cap from —
-        and the guest can still dispatch that function with conversation-derived arguments.
+        and the guest can still call that function as a host tool with conversation-derived
+        arguments.
         Every other undeclared leg fails safe (untrusted source, APP identity); so does this
         one, or a confidential conversation reaches `execute_code` ungated."""
-        tool = _dispatching_tool(
+        tool = _host_tool_calling_tool(
             _registry(_unstamped_lookup), outbound_max_confidentiality="private"
         )
         assert dict(tool.additional_properties or {}) == {"max_allowed_confidentiality": "private"}
@@ -906,7 +935,7 @@ class TestFidesDeclarations:
     def test_no_source_integrity_is_declared_however_the_registry_is_stamped(self):
         """A registry of trusted lookups does not make a model-written `print(...)` trusted."""
         registry = _registry(_exchange_rate, _log_to_crm)
-        tool = _dispatching_tool(registry, outbound_max_confidentiality="private")
+        tool = _host_tool_calling_tool(registry, outbound_max_confidentiality="private")
         assert "source_integrity" not in dict(tool.additional_properties or {})
 
 
@@ -914,9 +943,9 @@ class TestWhatARegistryDoesBeyondTheSpec:
     """The two things a host's registry decides here that its own `requires` does not say."""
 
     def test_a_user_identity_tool_gates_every_call_on_approval(self):
-        """A dispatch may exercise the caller's own delegated authority, and which call does
+        """A host-tool call may exercise the caller's own delegated authority, and which call does
         is not knowable before the program runs — so one such tool raises the whole surface."""
-        tool = _dispatching_tool(
+        tool = _host_tool_calling_tool(
             _registry(
                 _the_callers_calendar,
                 allowed_identities=frozenset({Identity.APP, Identity.USER}),
@@ -925,7 +954,7 @@ class TestWhatARegistryDoesBeyondTheSpec:
         assert tool.approval_mode == "always_require"
 
     def test_the_applications_own_authority_does_not_gate_it(self):
-        tool = _dispatching_tool(_registry(_exchange_rate, _log_to_crm))
+        tool = _host_tool_calling_tool(_registry(_exchange_rate, _log_to_crm))
         assert tool.approval_mode == "never_require"
 
     @pytest.mark.parametrize("tools", [(), (_exchange_rate,)])
@@ -934,7 +963,7 @@ class TestWhatARegistryDoesBeyondTheSpec:
         after the tool was built" into a refusal at the host's own `register` rather than a
         registration that quietly reaches nothing."""
         registry = _registry(*tools)
-        _dispatching_tool(registry)
+        _host_tool_calling_tool(registry)
         with pytest.raises(ValueError, match="sealed"):
             registry.register(_round_half_up)
 
@@ -1091,7 +1120,7 @@ class TestToolDescriptionWithHostTools:
 
     def test_every_registered_tool_is_named(self):
         registry = _registry(_exchange_rate, _log_to_crm, _round_half_up)
-        described = _callable(_dispatching_tool(registry)).__doc__ or ""
+        described = _callable(_host_tool_calling_tool(registry)).__doc__ or ""
         assert "_exchange_rate" in described
         assert "_log_to_crm" in described
         assert "_round_half_up" in described
@@ -1101,7 +1130,7 @@ class TestToolDescriptionWithHostTools:
         neither is — the claim that names only one understates what can leave."""
         described = (
             _callable(
-                _dispatching_tool(_registry(_round_half_up), egress_allow=("index.example",))
+                _host_tool_calling_tool(_registry(_round_half_up), egress_allow=("index.example",))
             ).__doc__
             or ""
         )
@@ -1112,13 +1141,13 @@ class TestToolDescriptionWithHostTools:
 
     def test_an_empty_registry_reads_exactly_like_no_registry_at_all(self):
         plain = _callable(_tool(_backend(capabilities=_PULLS))).__doc__ or ""
-        with_empty_registry = _callable(_dispatching_tool(_registry())).__doc__ or ""
+        with_empty_registry = _callable(_host_tool_calling_tool(_registry())).__doc__ or ""
         assert with_empty_registry == plain
         assert "maf_host_tools" not in with_empty_registry
 
     def test_the_network_claim_is_qualified_only_once_a_tool_is_registered(self):
         without = _callable(_tool(_backend(capabilities=_PULLS))).__doc__ or ""
-        described = _callable(_dispatching_tool(_registry(_exchange_rate))).__doc__ or ""
+        described = _callable(_host_tool_calling_tool(_registry(_exchange_rate))).__doc__ or ""
         assert "no network access" in without
         assert "no network access" not in described
         assert "no network of its own" in described
@@ -1128,7 +1157,7 @@ class TestToolDescriptionWithHostTools:
         """The syntax the model is told to write must be the syntax the generated shim
         module accepts — checked against the real generated source, not a copy of it."""
         registry = _registry(_exchange_rate)
-        described = _callable(_dispatching_tool(registry)).__doc__ or ""
+        described = _callable(_host_tool_calling_tool(registry)).__doc__ or ""
         generated = host_tool_shim(registry.names())
         module = SHIM_MODULE.removesuffix(".py")
 
@@ -1144,7 +1173,7 @@ class TestToolDescriptionWithHostTools:
         would send a model looking for its traceback in a section that cannot hold one."""
         launcher = launcher_script(guest_run_layout("/w/run", program=_PROGRAM_FILENAME))
         plain = _callable(_tool(_backend(capabilities=_PULLS))).__doc__ or ""
-        described = _callable(_dispatching_tool(_registry(_exchange_rate))).__doc__ or ""
+        described = _callable(_host_tool_calling_tool(_registry(_exchange_rate))).__doc__ or ""
 
         assert "2>&1" in launcher
         assert "its stderr when it wrote any" in plain
@@ -1379,7 +1408,7 @@ class TestTheInboundCapsAreEnforcedHere:
 
         out = _run(tool, "print(1)", files=["a", "b", "c"])
         assert "your program and 3 shared" in out
-        # Unqualified: with nothing dispatchable that list is everything that would cross.
+        # Unqualified: with nothing callable that list is everything that would cross.
         assert "writes at most 2 per call" in out
         assert sandbox.written == {}
 
@@ -1682,9 +1711,9 @@ class TestDeclaredOutputs:
         assert sandbox.raw_commands == []
         assert sink.names == []
 
-    def test_the_work_subdirectory_counts_toward_the_ceiling_when_a_run_dispatches(self):
-        """A dispatching run keeps the model's files one level deeper, so the prefix a declared
-        name is judged against is `<run>/work/` — five bytes more than `<run>/`.
+    def test_the_work_subdirectory_counts_toward_the_ceiling_when_a_run_calls_a_host_tool(self):
+        """A host-tool-calling run keeps the model's files one level deeper, so the prefix a
+        declared name is judged against is `<run>/work/` — five bytes more than `<run>/`.
 
         242 is the longest name the flat layout accepts, and it is over the ceiling as soon as
         those five are counted. Both halves are asserted because only the pair discriminates:
@@ -1890,9 +1919,9 @@ class TestManifestOutputs:
         assert sink.names == ["r.csv"]
         assert "saved r.csv" in out
 
-    def test_the_manifest_is_read_from_the_work_directory_when_a_run_dispatches(self):
+    def test_the_manifest_is_read_from_the_work_directory_when_a_run_calls_a_host_tool(self):
         """`_read_manifest` stats a path built from the same prefix everything else uses, so a
-        dispatching run must look in `work/` rather than in the run directory.
+        host-tool-calling run must look in `work/` rather than in the run directory.
 
         MANIFEST is the one output mode whose names arrive after the program has run, and the
         stat that fetches them is the only place the prefix is used for a read. Get it wrong
@@ -1902,7 +1931,7 @@ class TestManifestOutputs:
         sandbox = _FinishingSandbox()
         sink = _RecordingSink()
         tool = _tool(
-            _backend(sandbox, capabilities=_DISPATCHES),
+            _backend(sandbox, capabilities=_CALLS),
             host_tools=_registry(_round_half_up),
             **_landing(CodeactOutputs.MANIFEST, sink),
         )
@@ -2297,9 +2326,9 @@ class TestTheSinkIsTheHostsChoice:
 # ---------------------------------------------------------------------------
 
 
-def _dispatching(sandbox: InProcessSandbox, *tools: Callable[..., Any], **kw: Any):
+def _calling_tool(sandbox: InProcessSandbox, *tools: Callable[..., Any], **kw: Any):
     """The tool for a registry serving `tools`, over a sandbox that can serve the transport."""
-    return _tool(_backend(sandbox, capabilities=_DISPATCHES), host_tools=_registry(*tools), **kw)
+    return _tool(_backend(sandbox, capabilities=_CALLS), host_tools=_registry(*tools), **kw)
 
 
 class TestAProgramThatCallsOut:
@@ -2307,7 +2336,7 @@ class TestAProgramThatCallsOut:
         """End to end over the transport: the request the guest wrote reaches the registered
         function, its arguments arrive, and its return value is what the program prints."""
         sandbox = _CallingSandbox("_round_half_up", {"value": 3.6})
-        out = _run(_dispatching(sandbox, _round_half_up), "print(_round_half_up(value=3.6))")
+        out = _run(_calling_tool(sandbox, _round_half_up), "print(_round_half_up(value=3.6))")
 
         assert sandbox.answers == [{"value": 4}]
         assert out == "stdout:\nthe host said 4"
@@ -2316,7 +2345,7 @@ class TestAProgramThatCallsOut:
         """`acquire` is get-or-create, so a second call must not find the first one's requests,
         its answers or its exit marker sitting where the supervisor polls."""
         sandbox = _CallingSandbox("_round_half_up", {"value": 0.5})
-        tool = _dispatching(sandbox, _round_half_up)
+        tool = _calling_tool(sandbox, _round_half_up)
         _run(tool, "print(1)")
         _run(tool, "print(2)")
 
@@ -2325,12 +2354,12 @@ class TestAProgramThatCallsOut:
         assert [first.directory, second.directory] == _run_dirs(sandbox)
         assert len(sandbox.answers) == 2
 
-    def test_the_dispatch_cap_bounds_one_call_rather_than_the_conversation(self):
+    def test_the_host_tool_call_cap_bounds_one_call_rather_than_the_conversation(self):
         """The cap bounds what one program may cost, so a run that spends it all must leave the
         next call as much — not retire `execute_code` for the rest of the conversation."""
         sandbox = _CallingSandbox("_round_half_up", {"value": 3.6})
-        registry = _registry(_round_half_up, max_dispatches_per_run=1)
-        tool = _tool(_backend(sandbox, capabilities=_DISPATCHES), host_tools=registry)
+        registry = _registry(_round_half_up, max_host_tool_calls_per_run=1)
+        tool = _tool(_backend(sandbox, capabilities=_CALLS), host_tools=registry)
         _run(tool, "print(1)")
         _run(tool, "print(2)")
 
@@ -2344,7 +2373,7 @@ class TestAProgramThatCallsOut:
         a model's files are.
         """
         sandbox = _CallingSandbox("_round_half_up", {"value": 0.5})
-        _run(_dispatching(sandbox, _round_half_up), "print('hi')")
+        _run(_calling_tool(sandbox, _round_half_up), "print('hi')")
 
         (layout,) = sandbox.layouts
         assert sandbox.written_files.get(layout.program) == "print('hi')", sorted(
@@ -2354,10 +2383,10 @@ class TestAProgramThatCallsOut:
         assert f"{layout.work}/{_PROGRAM_FILENAME}" not in sandbox.written_files
 
     def test_the_shim_is_written_beside_the_program_with_the_runs_own_patience(self):
-        """A guest that gives up before the supervisor does is wrong twice over: the dispatch
-        it asked for goes on to act while the program has been told nobody answered."""
+        """A guest that gives up before the supervisor does is wrong twice over: the host-tool
+        call it asked for goes on to act while the program has been told nobody answered."""
         sandbox = _CallingSandbox("_round_half_up", {"value": 0.5})
-        _run(_dispatching(sandbox, _round_half_up, exec_timeout_seconds=97), "print(1)")
+        _run(_calling_tool(sandbox, _round_half_up, exec_timeout_seconds=97), "print(1)")
 
         (layout,) = sandbox.layouts
         assert sandbox.written_files[layout.shim] == host_tool_shim(
@@ -2367,8 +2396,8 @@ class TestAProgramThatCallsOut:
     def test_both_paths_run_the_program_under_this_kinds_own_interpreter(
         self, monkeypatch: pytest.MonkeyPatch
     ):
-        """The transport carries a default of its own, so a dispatching run that leaves it out
-        is running under a constant this kind does not own and cannot change."""
+        """The transport carries a default of its own, so a host-tool-calling run that leaves it
+        out is running under a constant this kind does not own and cannot change."""
         monkeypatch.setattr("maf_sandbox_codeact._tool._INTERPRETER", "pypy3")
 
         plain = _ScriptedSandbox()
@@ -2376,7 +2405,7 @@ class TestAProgramThatCallsOut:
         assert plain.commands[0][0].startswith("pypy3 ")
 
         sandbox = _CallingSandbox("_round_half_up", {"value": 0.5})
-        _run(_dispatching(sandbox, _round_half_up), "print(1)")
+        _run(_calling_tool(sandbox, _round_half_up), "print(1)")
 
         (layout,) = sandbox.layouts
         assert "pypy3" in sandbox.written_files[layout.launcher]
@@ -2384,7 +2413,8 @@ class TestAProgramThatCallsOut:
 
 
 class _StallingSandbox(_ScriptedSandbox):
-    """A dispatch-served guest that prints and then never records an exit marker.
+    """A guest served over the host-tool-call transport that prints and then never records an
+    exit marker.
 
     What a wedged program looks like from the supervisor's side: the launcher returns, output
     accumulates, and the marker the run is waiting for never lands.
@@ -2413,7 +2443,7 @@ class _SlowToTakeTheLauncherSandbox(_ScriptedSandbox):
 
     #: Longer than the one second the test gives the run, so the deadline `_within` holds the
     #: upload to is already gone when it returns. The factory refuses a non-positive
-    #: `exec_timeout_seconds` on a dispatching tool, so one second is the shortest bound that
+    #: `exec_timeout_seconds` on a host-tool-calling tool, so one second is the shortest bound that
     #: reaches this path at all, and this has to outlast it.
     _SLOWER_THAN_THE_RUN = 1.2
 
@@ -2435,12 +2465,12 @@ class _StatTimingOutSandbox(_StallingSandbox):
 
 
 class TestATimeoutSaysWhoseItWas:
-    """`TimeoutError` means two unrelated things on the dispatch path, and only one of them is
-    the program running out. Collapsing them tells the model to rewrite code that was fine."""
+    """`TimeoutError` means two unrelated things on the host-tool-call path, and only one of them
+    is the program running out. Collapsing them tells the model to rewrite code that was fine."""
 
     def test_a_backends_own_timeout_is_not_blamed_on_the_program(self):
         sandbox = _StatTimingOutSandbox()
-        out = _run(_dispatching(sandbox, _round_half_up, exec_timeout_seconds=600), "print('hi')")
+        out = _run(_calling_tool(sandbox, _round_half_up, exec_timeout_seconds=600), "print('hi')")
 
         assert "timed out" not in out, "a stat that ran out was reported as the program's bound"
         assert out == "Error: could not run the program in the sandbox"
@@ -2454,7 +2484,7 @@ class TestATimeoutSaysWhoseItWas:
         host's reason for having read no output, both of which live only in the message.
         """
         sandbox = _StallingSandbox(printed=b"step 1 done\nstep 2 done")
-        out = _run(_dispatching(sandbox, _round_half_up, exec_timeout_seconds=1), "print('x')")
+        out = _run(_calling_tool(sandbox, _round_half_up, exec_timeout_seconds=1), "print('x')")
 
         assert "did not finish within 1s" in out, out
         assert "step 2 done" in out, "the partial output the transport paid to read was dropped"
@@ -2467,7 +2497,7 @@ class TestATimeoutSaysWhoseItWas:
         same and `output` is empty either way.
         """
         sandbox = _SlowToTakeTheLauncherSandbox()
-        out = _run(_dispatching(sandbox, _round_half_up, exec_timeout_seconds=1), "print('x')")
+        out = _run(_calling_tool(sandbox, _round_half_up, exec_timeout_seconds=1), "print('x')")
 
         assert "before the program was started" in out, out
         assert "did not finish" not in out, "a run that never started was reported as overrunning"
@@ -2480,7 +2510,7 @@ class TestATimeoutSaysWhoseItWas:
         """
         sandbox = _StallingSandbox(printed=b"step 1 done")
         with caplog.at_level(logging.WARNING, logger="maf_sandbox_codeact._tool"):
-            out = _run(_dispatching(sandbox, _round_half_up, exec_timeout_seconds=1), "print('x')")
+            out = _run(_calling_tool(sandbox, _round_half_up, exec_timeout_seconds=1), "print('x')")
 
         # The kind's own records only: the framework logs what it did about the sandbox
         # through the same logger, and that is its claim to make, not this kind's.
@@ -2492,7 +2522,8 @@ class TestATimeoutSaysWhoseItWas:
         assert logged == [f"execute_code: {out.removeprefix('Error: ')}"], logged
 
     def test_the_plain_path_still_reads_a_timeout_as_the_programs_own(self):
-        """No dispatch, one `exec`, one bound: the equation this class complicates holds here."""
+        """No host-tool call, one `exec`, one bound: the equation this class complicates holds
+        here."""
         sandbox = _ScriptedSandbox(raises=TimeoutError())
         out = _run(_tool(_backend(sandbox), exec_timeout_seconds=7), "print('hi')")
 
@@ -2510,7 +2541,7 @@ class TestOnlyAnAttachedToolSealsTheRegistry:
         assert registry.names() == frozenset({"_round_half_up", "_exchange_rate"})
 
 
-#: Every name the transport writes into a dispatching run, and one nested beneath each of the
+#: Every name the transport writes into a host-tool-calling run, and one nested beneath each of the
 #: two that are files: the nested rule reads the same per-mode set as the exact one, so both
 #: have to fall silent for these.
 _TRANSPORT_NAMES = [
@@ -2527,7 +2558,7 @@ _TRANSPORT_NAMES = [
 
 
 class TestWhatTheTwoDirectoriesMakeHarmless:
-    """A run that dispatches puts the transport's files in `host_tools/` and the model's in
+    """A host-tool-calling run puts the transport's files in `host_tools/` and the model's in
     `work/`, so a name that would collide is written instead of refused.
 
     Two directories are the guarantee, so what pins it is that these names land — not that
@@ -2538,7 +2569,7 @@ class TestWhatTheTwoDirectoriesMakeHarmless:
     def test_a_shared_file_may_take_a_name_the_transport_uses(self, name: str):
         sandbox = _FinishingSandbox()
         tool = _tool(
-            _backend(sandbox, capabilities=_DISPATCHES),
+            _backend(sandbox, capabilities=_CALLS),
             host_tools=_registry(_round_half_up),
             file_store=InMemoryStore({name: "x"}),
             exec_timeout_seconds=5,
@@ -2573,7 +2604,7 @@ class TestWhatTheTwoDirectoriesMakeHarmless:
         """
         sandbox = _CallingSandbox("_round_half_up", {"value": 0.5})
         tool = _tool(
-            _backend(sandbox, capabilities=_DISPATCHES),
+            _backend(sandbox, capabilities=_CALLS),
             host_tools=_registry(_round_half_up),
             file_store=InMemoryStore({"data.csv": "a,b\n"}),
         )
@@ -2597,100 +2628,109 @@ class TestADegenerateRunBoundIsRefusedInThisKindsVoice:
     @pytest.mark.parametrize("seconds", [0, -1])
     def test_a_registry_makes_a_non_positive_bound_a_factory_refusal(self, seconds: int):
         with pytest.raises(ValueError) as refused:
-            _dispatching_tool(_registry(_round_half_up), exec_timeout_seconds=seconds)
+            _host_tool_calling_tool(_registry(_round_half_up), exec_timeout_seconds=seconds)
 
         assert str(refused.value).startswith(f"{EXECUTE_CODE_TOOL_NAME}: exec_timeout_seconds")
         # `call_timeout` is the shim generator's parameter, which this factory does not expose.
         assert "call_timeout" not in str(refused.value)
 
-    def test_a_host_with_nothing_dispatchable_keeps_tolerating_one(self):
+    def test_a_host_with_nothing_callable_keeps_tolerating_one(self):
         """With no shim to generate the number only ever reaches `exec`, and this factory has
         never had an opinion about it."""
         _tool(_backend(), exec_timeout_seconds=0)
-        _dispatching_tool(_registry(), exec_timeout_seconds=0)
+        _host_tool_calling_tool(_registry(), exec_timeout_seconds=0)
 
 
-def _neighbouring(dispatch: bool, **kw: Any):
-    """The tool and its sandbox for the tests below, dispatching or not.
+def _neighbouring(calls_a_host_tool: bool, **kw: Any):
+    """The tool and its sandbox for the tests below, calling a host tool or not.
 
     Both halves run because the two put the model's files in different places — the run
     directory flat, or its `work` subdirectory — while the rule under test is the same one.
     """
-    sandbox = _FinishingSandbox() if dispatch else _ProducingSandbox()
+    sandbox = _FinishingSandbox() if calls_a_host_tool else _ProducingSandbox()
     tool = _tool(
-        _backend(sandbox, capabilities=_DISPATCHES if dispatch else _PULLS),
+        _backend(sandbox, capabilities=_CALLS if calls_a_host_tool else _PULLS),
         exec_timeout_seconds=1,
-        **({"host_tools": _registry(_round_half_up)} if dispatch else {}),
+        **({"host_tools": _registry(_round_half_up)} if calls_a_host_tool else {}),
         **kw,
     )
     return tool, sandbox
 
 
-def _model_dir(sandbox: _ScriptedSandbox, dispatch: bool) -> str:
+def _model_dir(sandbox: _ScriptedSandbox, calls_a_host_tool: bool) -> str:
     """Where this run put the files a model named: the work subdirectory, or the run directory.
 
-    Derived from `dispatch` rather than from what the sandbox happens to contain, so a
+    Derived from `calls_a_host_tool` rather than from what the sandbox happens to contain, so a
     regression that writes them to the wrong directory fails here instead of being read back
     from wherever it wrote them.
     """
     run_dir = _run_dirs(sandbox)[0]
-    return f"{run_dir}/{WORK_DIRECTORY}" if dispatch else run_dir
+    return f"{run_dir}/{WORK_DIRECTORY}" if calls_a_host_tool else run_dir
 
 
-@pytest.mark.parametrize("dispatch", [False, True], ids=["no registry", "dispatch armed"])
+@pytest.mark.parametrize(
+    "calls_a_host_tool", [False, True], ids=["no registry", "host tool call armed"]
+)
 class TestANeighbourOfTheProgramsNameIsNotTheProgram:
     """`program.py` is exec'd by path, so neither a `program/` directory nor a `program.*`
     sibling displaces it, and both are names the `files` channel documents. The reserved-name
     rule is a prefix test, which is the shape that over-reaches onto these if written
     carelessly."""
 
-    def test_a_sibling_of_the_programs_name_is_shared(self, dispatch: bool):
-        tool, sandbox = _neighbouring(dispatch, file_store=InMemoryStore({"program.csv": "a,b\n"}))
+    def test_a_sibling_of_the_programs_name_is_shared(self, calls_a_host_tool: bool):
+        tool, sandbox = _neighbouring(
+            calls_a_host_tool, file_store=InMemoryStore({"program.csv": "a,b\n"})
+        )
 
         out = _run(tool, "print('hi')", files=["program.csv"])
         assert "cannot be shared" not in out
-        assert f"{_model_dir(sandbox, dispatch)}/program.csv" in sandbox.written_files
+        assert f"{_model_dir(sandbox, calls_a_host_tool)}/program.csv" in sandbox.written_files
 
-    def test_a_nested_input_under_the_programs_name_is_shared(self, dispatch: bool):
+    def test_a_nested_input_under_the_programs_name_is_shared(self, calls_a_host_tool: bool):
         store = InMemoryStore({"program/train.py": "x = 1\n"})
-        tool, sandbox = _neighbouring(dispatch, file_store=store)
+        tool, sandbox = _neighbouring(calls_a_host_tool, file_store=store)
 
         out = _run(tool, "print('hi')", files=["program/train.py"])
         assert "cannot be shared" not in out
-        assert f"{_model_dir(sandbox, dispatch)}/program/train.py" in sandbox.written_files
+        assert f"{_model_dir(sandbox, calls_a_host_tool)}/program/train.py" in sandbox.written_files
 
     @pytest.mark.parametrize("name", ["Program.py", "Program.py/x.csv"])
-    def test_a_case_variant_of_the_programs_name_is_shared(self, dispatch: bool, name: str):
+    def test_a_case_variant_of_the_programs_name_is_shared(
+        self, calls_a_host_tool: bool, name: str
+    ):
         """The guest filesystem is POSIX, where `Program.py` and `program.py` are two files, so
         the rule matches exactly. Case-folding either comparison refuses a legal name."""
-        tool, sandbox = _neighbouring(dispatch, file_store=InMemoryStore({name: "x"}))
+        tool, sandbox = _neighbouring(calls_a_host_tool, file_store=InMemoryStore({name: "x"}))
 
         out = _run(tool, "print('hi')", files=[name])
         assert "cannot be shared" not in out, out
-        assert f"{_model_dir(sandbox, dispatch)}/{name}" in sandbox.written_files
+        assert f"{_model_dir(sandbox, calls_a_host_tool)}/{name}" in sandbox.written_files
 
     @pytest.mark.parametrize("name", ["Program.py", "Program.py/x.csv"])
-    def test_a_case_variant_of_the_programs_name_is_saved(self, dispatch: bool, name: str):
+    def test_a_case_variant_of_the_programs_name_is_saved(self, calls_a_host_tool: bool, name: str):
         sink = _RecordingSink()
-        tool, sandbox = _neighbouring(dispatch, **_landing(CodeactOutputs.DECLARED, sink))
+        tool, sandbox = _neighbouring(calls_a_host_tool, **_landing(CodeactOutputs.DECLARED, sink))
 
         out = _run_producing(tool, sandbox, {name: b"a,b\n"}, outputs=[name])
         assert sink.names == [name]
         assert "cannot be saved" not in out
 
-    def test_the_programs_name_deeper_in_a_path_is_shared(self, dispatch: bool):
+    def test_the_programs_name_deeper_in_a_path_is_shared(self, calls_a_host_tool: bool):
         """The rule is about the first segment. `data/program.py/notes.txt` displaces nothing,
         and a containment test written in place of the prefix test refuses it."""
         store = InMemoryStore({"data/program.py/notes.txt": "x"})
-        tool, sandbox = _neighbouring(dispatch, file_store=store)
+        tool, sandbox = _neighbouring(calls_a_host_tool, file_store=store)
 
         out = _run(tool, "print('hi')", files=["data/program.py/notes.txt"])
         assert "cannot be shared" not in out, out
-        assert f"{_model_dir(sandbox, dispatch)}/data/program.py/notes.txt" in sandbox.written_files
+        assert (
+            f"{_model_dir(sandbox, calls_a_host_tool)}/data/program.py/notes.txt"
+            in sandbox.written_files
+        )
 
-    def test_a_nested_output_under_it_is_saved(self, dispatch: bool):
+    def test_a_nested_output_under_it_is_saved(self, calls_a_host_tool: bool):
         sink = _RecordingSink()
-        tool, sandbox = _neighbouring(dispatch, **_landing(CodeactOutputs.DECLARED, sink))
+        tool, sandbox = _neighbouring(calls_a_host_tool, **_landing(CodeactOutputs.DECLARED, sink))
 
         out = _run_producing(
             tool, sandbox, {"program/report.csv": b"a,b\n"}, outputs=["program/report.csv"]
@@ -2712,7 +2752,7 @@ class TestTheShimIsAnInboundFileToo:
 
         sandbox = _ScriptedSandbox()
         tool = _tool(
-            _backend(sandbox, capabilities=_DISPATCHES),
+            _backend(sandbox, capabilities=_CALLS),
             host_tools=_registry(_round_half_up),
             file_store=store,
             files_in=limits,
@@ -2726,7 +2766,9 @@ class TestTheShimIsAnInboundFileToo:
 
     def test_it_counts_against_the_inbound_byte_ceilings(self):
         """Kilobytes of generated source, against a total with room for the module alone and
-        not for the program beside it."""
+        not for the program beside it.  The kind's runtime tally enforces against the workload's
+        own files_in — the router's host-tool-call fold is transient and never reaches here
+        (#393)."""
         module = len(host_tool_shim(frozenset({"_round_half_up"}), call_timeout=97).encode())
         limits = replace(DEFAULT_TRANSFER_LIMITS, max_total_bytes=module + 5)
 
@@ -2736,7 +2778,7 @@ class TestTheShimIsAnInboundFileToo:
 
         sandbox = _ScriptedSandbox()
         tool = _tool(
-            _backend(sandbox, capabilities=_DISPATCHES),
+            _backend(sandbox, capabilities=_CALLS),
             host_tools=_registry(_round_half_up),
             files_in=limits,
             exec_timeout_seconds=97,
@@ -2748,8 +2790,8 @@ class TestTheShimIsAnInboundFileToo:
         """Two files cross on every call, so a cap of one could never serve a single call — and
         a tool the model can see and never use successfully is worse than one that never
         attached."""
-        with pytest.raises(ValueError, match="dispatch module"):
-            _dispatching_tool(
+        with pytest.raises(ValueError, match="host-tool module"):
+            _host_tool_calling_tool(
                 _registry(_round_half_up), files_in=replace(DEFAULT_TRANSFER_LIMITS, max_files=1)
             )
 
@@ -2758,16 +2800,16 @@ class TestTheShimIsAnInboundFileToo:
         """Its size is settled before anything attaches, so a ceiling under it is the same
         never-usable tool the count check refuses — reached by the other leg."""
         module = len(host_tool_shim(frozenset({"_round_half_up"}), call_timeout=97).encode())
-        with pytest.raises(ValueError, match="dispatch module is"):
-            _dispatching_tool(
+        with pytest.raises(ValueError, match="host-tool module is"):
+            _host_tool_calling_tool(
                 _registry(_round_half_up),
                 files_in=replace(DEFAULT_TRANSFER_LIMITS, **{cap: module - 1}),
                 exec_timeout_seconds=97,
             )
 
     def test_a_registry_holding_nothing_is_refused_nothing(self):
-        """Nothing dispatchable is no shim, exactly as it is no capability in the spec."""
-        _dispatching_tool(_registry(), files_in=replace(DEFAULT_TRANSFER_LIMITS, max_files=1))
+        """Nothing callable is no shim, exactly as it is no capability in the spec."""
+        _host_tool_calling_tool(_registry(), files_in=replace(DEFAULT_TRANSFER_LIMITS, max_files=1))
 
 
 class TestWithoutARegistry:
