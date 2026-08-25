@@ -376,7 +376,7 @@ class SandboxProgramTimeout(TimeoutError):
       already exited. What it says is that this transport did not stop anything.
     - ``"absent"`` — the run ended before any launcher ran, so no program was started and
       none is running. It says nothing about *files*: a kind writes the program, the shim and
-      the model's shared-in files into the run directory before the first call, so
+      the model's shared-in files into the run directory before the run starts, so
       :func:`reclaim_run` is owed here exactly as it is on every other outcome.
     - ``"unrecorded"`` — the launcher returned and no pid ever appeared. The launcher may have
       failed before publishing one, so this is not evidence of a running program either — it

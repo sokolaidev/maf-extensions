@@ -133,7 +133,7 @@
   <circle cx="667" cy="413" r="2.4" fill="#2fa8a0"/>
   <circle cx="677" cy="413" r="2.4" fill="#2fa8a0"/>
   <text x="776" y="446" text-anchor="middle" font-size="13" fill="#7d8694">run — a crafted process group</text>
-  <text x="776" y="466" text-anchor="middle" font-size="12" fill="#9aa1ac">detached · 0..1 per call · host-tool call only</text>
+  <text x="776" y="466" text-anchor="middle" font-size="12" fill="#9aa1ac">detached · 0..1 per call · host-tools transport only</text>
 
   <!-- one valve on the edge, shut -->
   <line x1="908" y1="470" x2="976" y2="470" stroke="#7d8694" stroke-width="1.8" marker-end="url(#map-slate)"/>
