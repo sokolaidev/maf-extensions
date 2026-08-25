@@ -1061,7 +1061,8 @@ jobs:
   sample-12:
     name: samples/12_purge_lifecycle against a live container
     # The lifecycle end no other sample reaches: reuse within a turn, `router.scope` at the end
-    # of one, and `SandboxPurger` on a thread delete. Only the router (maf-sandbox) and the
+    # of one, `SandboxPurger` on a thread delete, and the disposal nobody asked for — what the
+    # framework does about a call whose cleanup failed. Only the router (maf-sandbox) and the
     # backend it disposes through (maf-sandbox-docker) can change what this exercises; no kind
     # package is involved.
     if: >-
@@ -1104,10 +1105,11 @@ jobs:
         run: |
           set -euo pipefail
           uv run --no-project samples/12_purge_lifecycle/agent.py | tee /tmp/sample12-out.txt
-          # Two assertions carry it: no container left behind, and the purger finding 1 on the
-          # abandoned thread — a purger wired to nothing reports 0 everywhere, so the tidy
-          # thread's expected 0 cannot be the only zero checked. stdlib-only, so the runner's
-          # own python3 runs it.
+          # Two assertions carry the first four acts: no container left behind, and the purger
+          # finding 1 on the abandoned thread — a purger wired to nothing reports 0 everywhere,
+          # so the tidy thread's expected 0 cannot be the only zero checked. Act 5 creates no
+          # container, so it is read on what the backend was asked to dispose and on the two
+          # consequences a caller can see. stdlib-only, so the runner's own python3 runs it.
           python3 "$HARNESS"/scripts/check_live_purge_sample.py /tmp/sample12-out.txt
 
       - name: Assert the published version the sample resolved
