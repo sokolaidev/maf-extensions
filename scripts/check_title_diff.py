@@ -238,12 +238,13 @@ def _changed_path_pairs(status: str) -> list[tuple[str, ...]]:
     return pairs
 
 
-def _changed_python(
-    base: str, status: str | None = None
-) -> dict[str, tuple[str | None, str | None]]:
-    """Read changed Python files, preserving rename sources for the AST comparison."""
+def _changed_python(base: str, status: str) -> dict[str, tuple[str | None, str | None]]:
+    """Read changed Python files, preserving rename sources for the AST comparison.
+
+    ``status`` is passed in rather than taken here, so the file list and the ``base`` these
+    snapshots are read at cannot be computed from two different comparisons.
+    """
     result: dict[str, tuple[str | None, str | None]] = {}
-    status = status or _git("diff", "--find-renames", "--name-status", f"{base}...HEAD")
     for line in status.splitlines():
         fields = line.split("\t")
         kind, paths = fields[0], fields[1:]
@@ -316,7 +317,23 @@ def main(argv: list[str]) -> int:
     if is_generated_release(options.head_ref, options.head_repo, options.base_repo, options.author):
         print(f"{options.head_ref}: opened by release-please; its title is not an author's choice")
         return 0
-    status = _git("diff", "--find-renames", "--name-status", f"{base}...HEAD")
+    # The three dots below already start the *path list* at the merge base. The `git show
+    # <base>:<path>` snapshot in `_changed_python` reads a revision by name and cannot, so the
+    # two have to be handed the same commit: a caller's base is whatever the pull request
+    # opened against, and a file the base branch has changed since would otherwise be read at
+    # the base branch's version. The AST comparison then sees that change reversed and refuses
+    # a documentation title over somebody else's code.
+    try:
+        base = _git("merge-base", base, "HEAD")
+        # Three dots resolve the merge base a second time, harmlessly: it is already the one.
+        span = (f"{base}...HEAD",)
+    except subprocess.CalledProcessError:
+        # No merge base to find — a shallow clone, or a base this history does not contain.
+        # Two revisions rather than three dots, which needs the merge base this branch is here
+        # because there is not one, and would fail rather than compare.
+        print(f"no merge base for {base} and HEAD; comparing against it directly", file=sys.stderr)
+        span = (base, "HEAD")
+    status = _git("diff", "--find-renames", "--name-status", *span)
     path_pairs = _changed_path_pairs(status)
     copied_sources = {
         fields[1]
