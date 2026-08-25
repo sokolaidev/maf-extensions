@@ -1196,6 +1196,49 @@ class TestABackendReportsAFailedDeleteWithoutRaising:
         asyncio.run(router.acquire(_KEY, _SPEC))
 
 
+class TestTheRefusalNamesWhy:
+    """A host reading `SandboxUnclean` should not have to go to the logs to learn what broke."""
+
+    def _router(self, *backends):
+        return SandboxRouter(list(backends), min_isolation=Isolation.NONE)
+
+    def test_the_backend_reason_is_quoted(self):
+        router = self._router(InProcessSandboxBackend(name="acas", dispose_failure="403 denied"))
+        asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
+        with pytest.raises(SandboxUnclean, match=r"acas: 403 denied"):
+            asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_a_bare_mark_still_refuses_without_one(self):
+        router = self._router(InProcessSandboxBackend())
+        router.mark_unclean(_KEY)
+        with pytest.raises(SandboxUnclean, match="did not land. It is refused"):
+            asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_a_marked_reason_is_quoted_too(self):
+        router = self._router(InProcessSandboxBackend())
+        router.mark_unclean(_KEY, "the cleanup was cancelled")
+        with pytest.raises(SandboxUnclean, match=r"the cleanup was cancelled"):
+            asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_a_mark_does_not_overwrite_what_a_disposal_reported(self):
+        """What a backend said about the sandbox outranks "a cleanup was cut short"."""
+        router = self._router(InProcessSandboxBackend(dispose_failure="container 7 still running"))
+        asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
+        router.mark_unclean(_KEY, "the cleanup was cancelled")
+        with pytest.raises(SandboxUnclean, match=r"container 7 still running"):
+            asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_a_timeout_says_so(self):
+        class _Hangs(InProcessSandboxBackend):
+            async def dispose(self, key: SandboxKey) -> str | None:
+                await asyncio.Event().wait()
+
+        router = self._router(_Hangs())
+        asyncio.run(router.dispose_unclean(_KEY, timeout=0.05))
+        with pytest.raises(SandboxUnclean, match="did not finish within 0.05s"):
+            asyncio.run(router.acquire(_KEY, _SPEC))
+
+
 class TestSpecDefaults:
     def test_egress_defaults_to_denying_everything(self):
         """A spec that forgets to mention egress must get the closed configuration."""

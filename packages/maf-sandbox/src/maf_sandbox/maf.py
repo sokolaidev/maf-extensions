@@ -542,7 +542,7 @@ def _refuse_not_yet_reclaimed(
     if router.keep_unclean:
         return
     for key, _ in acquired[start:]:
-        router.mark_unclean(key)
+        router.mark_unclean(key, "the tool call's cleanup was cancelled before it could dispose")
 
 
 async def _reclaim_the_call(

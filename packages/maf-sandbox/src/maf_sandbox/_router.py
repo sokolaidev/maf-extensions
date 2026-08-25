@@ -290,7 +290,9 @@ class SandboxRouter:
         self._keep_unclean = bool(keep_unclean)
         # Keys whose sandbox holds data the framework could not remove and could not dispose
         # of. An entry leaves when a disposal lands; a key that keeps failing stays refused.
-        self._unclean: set[SandboxKey] = set()
+        # Keyed rather than a set so a refusal can say *why*: the reason is written when the
+        # disposal reports one, and stays `None` for a key marked before anything was tried.
+        self._unclean: dict[SandboxKey, str | None] = {}
         self._min_isolation = Isolation(str(min_isolation))
         self._selected_name = selected
         self._denied_capabilities = frozenset(
@@ -538,11 +540,17 @@ class SandboxRouter:
         if self._backend is None:
             raise NoSandboxBackend("no sandbox backend is configured")
         if key in self._unclean:
+            # The reason is the backend's own sentence, so it reaches the host that has to act
+            # on it. It is safe here and nowhere near a model: `sandboxed_tool` logs this and
+            # answers the model with a fixed line that names no backend, id or endpoint.
+            reported = self._unclean[key]
+            because = f" ({reported})" if reported is not None else ""
             raise SandboxUnclean(
                 f"the sandbox for {key.scope}/{key.thread_id}/{key.agent_dir} was left unclean — "
                 "a tool call's data could not be removed, or a program it started may still be "
-                "running — and disposing it did not land. It is refused until a disposal lands — "
-                "dispose(key) or dispose_scope(scope, thread_id) — rather than served unclean."
+                f"running — and disposing it did not land{because}. It is refused until a "
+                "disposal lands — dispose(key) or dispose_scope(scope, thread_id) — rather than "
+                "served unclean."
             )
         self._refuse_unless_backend_can_serve(spec)
         sandbox = await self._backend.acquire(key, spec)
@@ -582,18 +590,18 @@ class SandboxRouter:
         this whole ledger exists for could fire only against a backend breaking its own
         contract (#641).
         """
-        landed = True
+        reasons: list[str] = []
         for backend in self._backends:
             try:
                 undisposed = await backend.dispose(key)
             except Exception as exc:  # noqa: BLE001 - disposal must not fail a caller
-                landed = False
+                reasons.append(f"{backend.name}: {exc}")
                 logger.warning(
                     "sandbox router: backend %s failed to dispose: %s", backend.name, exc
                 )
             else:
                 if undisposed is not None:
-                    landed = False
+                    reasons.append(f"{backend.name}: {undisposed}")
                     logger.warning(
                         "sandbox router: backend %s did not dispose %s/%s/%s: %s",
                         backend.name,
@@ -602,9 +610,13 @@ class SandboxRouter:
                         key.agent_dir,
                         undisposed,
                     )
-        if landed:
-            self._unclean.discard(key)
-        return landed
+        if reasons:
+            # Recorded over whatever marked the key, so the refusal quotes the latest attempt
+            # rather than the sentence that first closed it.
+            self._unclean[key] = "; ".join(reasons)
+            return False
+        self._unclean.pop(key, None)
+        return True
 
     async def dispose_unclean(self, key: SandboxKey, *, timeout: float) -> bool:
         """Dispose a sandbox the framework could not clean, and refuse the key until one lands.
@@ -630,7 +642,7 @@ class SandboxRouter:
         """
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError(f"timeout must be a finite positive number of seconds, not {timeout}")
-        self._unclean.add(key)
+        self._unclean.setdefault(key, None)
         try:
             async with asyncio.timeout(timeout):
                 return await self._dispose_each(key)
@@ -642,17 +654,23 @@ class SandboxRouter:
                 key.agent_dir,
                 timeout,
             )
+            self._unclean[key] = f"the disposal did not finish within {timeout}s"
             return False
 
-    def mark_unclean(self, key: SandboxKey) -> None:
+    def mark_unclean(self, key: SandboxKey, reason: str | None = None) -> None:
         """Refuse ``key`` without disposing — for a cleanup cancelled before it could dispose.
 
         Synchronous, because it is called while a :class:`~asyncio.CancelledError` is propagating
         out of a tool call's cleanup, where awaiting a disposal is not reliable.  The sandbox is
         left refused (:meth:`acquire` raises :class:`SandboxUnclean`) until a later disposal — a
         subsequent :meth:`dispose_unclean`, or :meth:`dispose_scope` — lands.
+
+        ``reason`` is quoted back by that refusal.  It does not overwrite one a disposal already
+        recorded: what a backend reported about the sandbox says more than that a cleanup was
+        cut short.
         """
-        self._unclean.add(key)
+        if self._unclean.get(key) is None:
+            self._unclean[key] = reason
 
     @asynccontextmanager
     async def scope(self, scope: str, thread_id: str) -> AsyncGenerator[ScopeDisposal, None]:
@@ -698,6 +716,8 @@ class SandboxRouter:
         if landed:
             # The conversation's sandboxes are gone, so nothing under it holds data any more.
             self._unclean = {
-                key for key in self._unclean if (key.scope, key.thread_id) != (scope, thread_id)
+                key: reason
+                for key, reason in self._unclean.items()
+                if (key.scope, key.thread_id) != (scope, thread_id)
             }
         return total
