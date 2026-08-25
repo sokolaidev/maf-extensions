@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import re
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any
 
@@ -55,8 +55,9 @@ _RELEASE_TITLE = re.compile(
 #: step rather than only the obstacle — and names the *order*, because the label flip is the
 #: one command here that is safe to run alone and ruinous to run first.
 _UNREADABLE_TITLE = (
-    "`{title}` does not name a release this repository makes — either it is not the title "
-    "release-please generates, or the package is not one of ours — so the tag it owes cannot "
+    "`{title}` does not name a release this repository made — it is not the title "
+    "release-please generates, or the package is not one of ours, or the version is not the "
+    "one `.release-please-manifest.json` records for it — so the tag it owes cannot "
     "be read off it. Take the package and version from the entry this pull request bumped in "
     "`.release-please-manifest.json`, then follow the steps in `docs/maintainers.md` **in that "
     "order**. Flipping the label before the Release exists tells release-please the version "
@@ -99,31 +100,34 @@ def _is_taggable(tag: str) -> bool:
     return not (tag.endswith(".lock") or tag.endswith(".") or ".." in tag)
 
 
-def release_of(title: str, packages: Sequence[str]) -> tuple[str, str] | None:
+def release_of(title: str, releases: Mapping[str, str]) -> tuple[str, str] | None:
     """The package and version a Release PR titled ``title`` releases, or ``None``.
 
     Both halves are returned because the tag is built from them: reading them back out of the
     composed tag is a second parse that can disagree with the first, and does — a version may
     itself contain `-v`.
 
-    ``packages`` is what makes this more than a shape check. A merged Release PR's title is
-    editable, so a title in release-please's format naming a package this repository does not
-    have would otherwise render a whole recovery — a changelog path that is not there, a tag
-    under a name nobody publishes, and a label flip on the real pull request that spends its
-    version before the publish dispatch fails.
+    ``releases`` maps each configured package to the version `.release-please-manifest.json`
+    records for it, and is what makes this more than a shape check. A merged Release PR's title
+    is editable, and the manifest is not — a Release PR bumps it as part of its own diff, so
+    once merged it holds exactly the version that pull request released. Checking the title
+    against it refuses both an invented package and an invented version, either of which would
+    otherwise render a whole recovery: a changelog path that is not there or a tag nobody
+    publishes, and in both cases a label flip on the real pull request that spends its version
+    before anything downstream fails.
     """
     match = _RELEASE_TITLE.fullmatch(title)
     if match is None:
         return None
     package, version = match["package"], match["version"]
-    if package not in packages or not _is_taggable(f"{package}-v{version}"):
+    if releases.get(package) != version or not _is_taggable(f"{package}-v{version}"):
         return None
     return package, version
 
 
-def tag_for(title: str, packages: Sequence[str]) -> str | None:
+def tag_for(title: str, releases: Mapping[str, str]) -> str | None:
     """The tag release-please would have created for a Release PR titled ``title``."""
-    release = release_of(title, packages)
+    release = release_of(title, releases)
     return None if release is None else f"{release[0]}-v{release[1]}"
 
 
@@ -165,7 +169,7 @@ def _chain(commands: list[list[str]]) -> list[str]:
 
 
 def _recovery(
-    pr: dict[str, Any], *, released_tags: Sequence[str], packages: Sequence[str]
+    pr: dict[str, Any], *, released_tags: Sequence[str], releases: Mapping[str, str]
 ) -> list[str]:
     """The commands that finish one stuck Release PR by hand, carrying its own values.
 
@@ -173,7 +177,7 @@ def _recovery(
     and finishes its bookkeeping after, so a failure in between leaves both true at once.
     """
     title = str(pr.get("title", ""))
-    release = release_of(title, packages)
+    release = release_of(title, releases)
     if release is None:
         return [_UNREADABLE_TITLE.format(title=title)]
     package, version = release
@@ -231,7 +235,7 @@ def body(
     run_url: str,
     *,
     released_tags: Sequence[str],
-    packages: Sequence[str],
+    releases: Mapping[str, str],
 ) -> str:
     """The tracking issue's body: what is stuck, what it costs, and how to clear it."""
     lines = [
@@ -243,7 +247,7 @@ def body(
         "| --- | --- | --- |",
     ]
     for pr in stuck:
-        tag = tag_for(str(pr.get("title", "")), packages)
+        tag = tag_for(str(pr.get("title", "")), releases)
         owes = "unknown" if tag is None else f"`{tag}`"
         if tag is not None and tag in released_tags:
             owes = f"`{tag}` — already created"
@@ -258,7 +262,7 @@ def body(
         lines += [
             f"### #{pr.get('number')}",
             "",
-            *_recovery(pr, released_tags=released_tags, packages=packages),
+            *_recovery(pr, released_tags=released_tags, releases=releases),
             "",
         ]
     lines += [
@@ -271,11 +275,13 @@ def body(
     return "\n".join(lines)
 
 
-def _summary(action: str, stuck: list[dict[str, Any]]) -> str:
+def _summary(action: str, stuck: list[dict[str, Any]], held: bool = False) -> str:
     """What the step writes to the run summary, whichever way it went."""
     if not stuck:
         if action == "close":
             return "the stuck release cleared; closing the tracking issue"
+        if action == "none" and held:
+            return "a release merged too recently for this run to owe it; holding the tracker open"
         return "no merged Release PR is waiting to be released"
     listed = ", ".join(f"#{pr.get('number')}" for pr in stuck)
     return (
@@ -286,7 +292,8 @@ def _summary(action: str, stuck: list[dict[str, Any]]) -> str:
 
 def plan(document: dict[str, Any]) -> dict[str, Any]:
     """What to do about the state in ``document`` — open, update, close, or nothing."""
-    stuck = stuck_releases(document.get("pending") or [], str(document.get("run_started_at", "")))
+    pending = document.get("pending") or []
+    stuck = stuck_releases(pending, str(document.get("run_started_at", "")))
     issue = document.get("issue")
     number = issue.get("number") if isinstance(issue, dict) else None
     if stuck:
@@ -299,11 +306,15 @@ def plan(document: dict[str, Any]) -> dict[str, Any]:
                 stuck,
                 str(document.get("run_url", "")),
                 released_tags=document.get("released_tags") or [],
-                packages=document.get("packages") or [],
+                releases=document.get("releases") or {},
             ),
             "summary": _summary(action, stuck),
         }
-    if number is not None:
+    # Closing is the only action that takes the signal away, so it asks for more than the
+    # filter did: nothing merged and still pending at all, rather than nothing this run owed.
+    # A release merged too recently for this run to have owed it is still a release nobody has
+    # made, and the run that will own it has not had its turn.
+    if number is not None and not pending:
         return {
             "action": "close",
             "issue": number,
@@ -313,7 +324,10 @@ def plan(document: dict[str, Any]) -> dict[str, Any]:
             ),
             "summary": _summary("close", stuck),
         }
-    return {"action": "none", "summary": _summary("none", stuck)}
+    return {
+        "action": "none",
+        "summary": _summary("none", stuck, held=number is not None and bool(pending)),
+    }
 
 
 def main(argv: list[str]) -> int:

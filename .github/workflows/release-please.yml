@@ -169,10 +169,21 @@ jobs:
           # The marker comes from the script so there is one definition of it: this step has to
           # find the issue the script wrote, and a second copy here would drift and duplicate.
           marker="$(python3 scripts/report_stuck_releases.py --marker)"
-          # `gh pr list`, not `gh search`: search reads an index that lags a merge by minutes,
-          # and minutes after a merge is exactly when this runs.
-          pending="$(gh pr list --state merged --label 'autorelease: pending' --limit 100 \
-            --json number,title,url,mergedAt,mergeCommit)"
+          # GraphQL rather than `gh search`, whose index lags a merge by minutes — and minutes
+          # after a merge is exactly when this runs. Paginated rather than a page of N: the
+          # `gh pr list` this replaced answered newest-first, so its cap dropped the oldest,
+          # which is the one release-please stops at and the only one the report is about.
+          pending="$(gh api graphql --paginate -F owner="${GH_REPO%%/*}" \
+            -F repo="${GH_REPO##*/}" -f query='
+              query($owner:String!,$repo:String!,$endCursor:String){
+                repository(owner:$owner,name:$repo){
+                  pullRequests(states:MERGED, labels:["autorelease: pending"],
+                               first:100, after:$endCursor){
+                    pageInfo{ hasNextPage endCursor }
+                    nodes{ number title url mergedAt mergeCommit{ oid } }
+                  }
+                }
+              }' --jq '.data.repository.pullRequests.nodes[]' | jq -s '.')"
           # The run's own start separates a release this run owed from one that merged while it
           # was in flight — that one belongs to the run its merge triggered, which is queued
           # behind this one on the concurrency group above.
@@ -181,9 +192,10 @@ jobs:
           # Author *and* marker. The marker is in a public script, so anyone with an account
           # can open an issue carrying it — and on the marker alone that issue is what gets
           # edited and closed, while the tracker this step exists to raise is never opened at
-          # all. Being a bot is the half a person cannot supply; the login is left unpinned
-          # because its spelling is the API's business, and being wrong there opens a second
-          # tracker rather than writing to a stranger's issue.
+          # all. The author is pinned to the exact identity this job writes as, not merely to
+          # some bot: any app installed here that can open an issue can be asked to carry the
+          # marker. Being wrong about the login opens a second tracker, which is visible and
+          # harmless; being wrong about the author writes to somebody else's issue.
           #
           # `--paginate` rather than a page of N: a tracker stays open for as long as the train
           # is stuck, so it sinks down a listing as other issues are opened, and a bounded page
@@ -193,22 +205,27 @@ jobs:
           issue="$(gh api --paginate "repos/{owner}/{repo}/issues?state=open&per_page=100" \
             | jq -s --arg m "$marker" \
               '[.[][] | select(.pull_request == null)
-                      | select(.user.type == "Bot" and (.body // "" | contains($m)))]
+                      | select(.user.login == "github-actions[bot]")
+                      | select(.body // "" | contains($m))]
                | first | if . == null then null else {number: .number} end')"
-          # Which packages this repository actually releases. A merged Release PR's title is
-          # editable, and a title in release-please's shape naming something else would
-          # otherwise render a recovery for a package that does not exist.
-          packages="$(jq -c '[.packages[]."package-name"]' release-please-config.json)"
+          # What each package has actually released, from the manifest a Release PR bumps as
+          # part of its own diff — so once merged it holds exactly that pull request's version.
+          # A merged Release PR's title is editable and this is not, so a title naming a
+          # package we do not have, or a version nobody released, renders no recovery at all.
+          releases="$(jq -c --slurpfile manifest .release-please-manifest.json '
+            .packages | to_entries
+            | map({key: .value."package-name", value: ($manifest[0][.key] // null)})
+            | from_entries' release-please-config.json)"
           # release-please creates the Release first and flips the label after, so a failure in
           # between leaves a pending pull request whose Release is already there. Without this
           # the recovery would tell a maintainer to create a tag that exists.
           released="$(gh api --paginate "repos/{owner}/{repo}/releases?per_page=100" \
             --jq '.[].tag_name' | jq -R -s -c 'split("\n") | map(select(length > 0))')"
           jq -n --argjson pending "$pending" --argjson issue "$issue" \
-            --argjson released "$released" --argjson packages "$packages" \
+            --argjson released "$released" --argjson releases "$releases" \
             --arg started "$started" --arg run_url "$RUN_URL" \
             '{run_started_at: $started, run_url: $run_url, pending: $pending, issue: $issue,
-              released_tags: $released, packages: $packages}' \
+              released_tags: $released, releases: $releases}' \
             | python3 scripts/report_stuck_releases.py > "${RUNNER_TEMP}/plan.json"
           plan="${RUNNER_TEMP}/plan.json"
           action="$(jq -r '.action' "$plan")"

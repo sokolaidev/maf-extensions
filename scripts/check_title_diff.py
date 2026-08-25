@@ -238,12 +238,13 @@ def _changed_path_pairs(status: str) -> list[tuple[str, ...]]:
     return pairs
 
 
-def _changed_python(
-    base: str, status: str | None = None
-) -> dict[str, tuple[str | None, str | None]]:
-    """Read changed Python files, preserving rename sources for the AST comparison."""
+def _changed_python(base: str, status: str) -> dict[str, tuple[str | None, str | None]]:
+    """Read changed Python files, preserving rename sources for the AST comparison.
+
+    ``status`` is passed in rather than taken here, so the file list and the ``base`` these
+    snapshots are read at cannot be computed from two different comparisons.
+    """
     result: dict[str, tuple[str | None, str | None]] = {}
-    status = status or _git("diff", "--find-renames", "--name-status", f"{base}...HEAD")
     for line in status.splitlines():
         fields = line.split("\t")
         kind, paths = fields[0], fields[1:]
@@ -324,12 +325,15 @@ def main(argv: list[str]) -> int:
     # a documentation title over somebody else's code.
     try:
         base = _git("merge-base", base, "HEAD")
+        # Three dots resolve the merge base a second time, harmlessly: it is already the one.
+        span = (f"{base}...HEAD",)
     except subprocess.CalledProcessError:
         # No merge base to find — a shallow clone, or a base this history does not contain.
-        # Carrying on with what the caller passed is what this did before; saying so is new,
-        # because the difference is invisible in the result.
+        # Two revisions rather than three dots, which needs the merge base this branch is here
+        # because there is not one, and would fail rather than compare.
         print(f"no merge base for {base} and HEAD; comparing against it directly", file=sys.stderr)
-    status = _git("diff", "--find-renames", "--name-status", f"{base}...HEAD")
+        span = (base, "HEAD")
+    status = _git("diff", "--find-renames", "--name-status", *span)
     path_pairs = _changed_path_pairs(status)
     copied_sources = {
         fields[1]

@@ -162,17 +162,13 @@ class TestAssess:
         new_path = tmp_path / "new_name.py"
         source = "def run() -> int:\n    return 1\n"
         new_path.write_text(source, encoding="utf-8")
-        calls: list[tuple[str, ...]] = []
 
         def fake_git(*args: str) -> str:
-            calls.append(args)
-            if args[:3] == ("diff", "--find-renames", "--name-status"):
-                return f"R100\t{old_path}\t{new_path}"
             assert args == ("show", f"base:{old_path}")
             return source
 
         monkeypatch.setattr(check, "_git", fake_git)
-        result = check._changed_python("base")
+        result = check._changed_python("base", f"R100\t{old_path}\t{new_path}")
         assert result[str(new_path)] == (source, source)
         assert check.assess(
             "chore: rename the module",
@@ -202,12 +198,10 @@ class TestAssess:
         source = "def run() -> int:\n    return 1\n"
 
         def fake_git(*args: str) -> str:
-            if args[:3] == ("diff", "--find-renames", "--name-status"):
-                return "R100\tREADME.md\tscripts/example.py"
-            raise AssertionError(args)
+            raise AssertionError(f"nothing should be read for a non-Python source: {args}")
 
         monkeypatch.setattr(check, "_git", fake_git)
-        result = check._changed_python("base")
+        result = check._changed_python("base", "R100\tREADME.md\tscripts/example.py")
         assert result["scripts/example.py"] == (None, None)
         assert check.assess(
             "docs: add module",
@@ -467,6 +461,8 @@ class TestBothReadsStartAtTheMergeBase:
         assert made, f"no `git {read}` was made at all"
         assert not [call for call in made if any("STALEBASE" in arg for arg in call)]
         assert [call for call in made if any("BRANCHPOINT" in arg for arg in call)]
+        if read == "diff":
+            assert made == [("diff", "--find-renames", "--name-status", "BRANCHPOINT...HEAD")]
 
     def test_a_base_with_no_merge_base_is_used_as_it_stands(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture
@@ -483,5 +479,10 @@ class TestBothReadsStartAtTheMergeBase:
         monkeypatch.setattr(check, "_git", fake_git)
         monkeypatch.chdir(tmp_path)
         check.main(["check", "STALEBASE", "docs: a note"])
-        assert [call for call in calls if any("STALEBASE" in arg for arg in call)]
+        # The diff specifically, and as two revisions: three dots resolve a merge base, which
+        # is the thing this branch exists because git could not find. Asserting only that
+        # `STALEBASE` appears somewhere passes on `STALEBASE...HEAD`, because the `merge-base`
+        # call that failed carries it too.
+        diffs = [call for call in calls if call[0] == "diff"]
+        assert diffs == [("diff", "--find-renames", "--name-status", "STALEBASE", "HEAD")]
         assert "no merge base" in capsys.readouterr().err
