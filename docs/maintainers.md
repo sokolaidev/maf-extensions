@@ -103,6 +103,33 @@ So: if a publish fails after its Release exists, delete the Release and the tag.
 
 Automating the publish does **not** on its own recover the ordering, which is easy to assume and wrong. release-please creates the Release the moment its PR merges no matter what starts the upload, and the only two settings that would stop it are the two broken ones above. Recovering the ordering means taking its release bookkeeping over entirely — `skip-github-release: true`, then creating the tag, relabelling the merged Release PR `autorelease: tagged` yourself so [#1561](https://github.com/googleapis/release-please/issues/1561) does not wedge the next one, and letting the publish run create the Release at the end. That works, and it is a hand-built state machine standing in for a known bug. Weigh it as such.
 
+## When one release is stuck, nothing releases
+
+release-please does not release the commit that triggered it. Every run scans for merged Release PRs still labelled `autorelease: pending`, takes the oldest unfinished one, and stops there if it cannot finish it. So **one release that cannot be created stops every package's** — core, every backend, and every run after it, whatever commit triggered that run. Observed on 2026-08-24: eleven consecutive runs failed identically over an hour on one `maf-sandbox-acas` release the API refused to create, and the only trace was a red workflow on `main`.
+
+The trace is no longer the only signal. `release-please.yml`'s last step runs on every run, red or green, and asks one thing: now that release-please has run, is any merged Release PR still labelled `autorelease: pending`? If one is, the step opens an issue naming the pull request, the tag it owes and the commands below, edits that same issue on later runs rather than opening a second, and closes it on the first run that finds the train moving. It also fails the job, so a run that reported success while leaving a release behind is still red. `scripts/report_stuck_releases.py` decides and renders; the workflow gathers the state and carries the plan out.
+
+A Release PR merged *while* a run is in flight is not counted, because it belongs to the run its own merge triggered — queued behind this one on the workflow's concurrency group. Without that the step would raise an alarm seconds before the next run cleared it, on the one signal that has to be trusted.
+
+**Clearing it by hand** is three commands, and the middle one is the one nobody guesses.
+
+```bash
+# 1. The tag and Release release-please could not create. The notes are that version's
+#    section of packages/<package>/CHANGELOG.md, which the Release PR itself wrote.
+gh release create <tag> --target <merge sha> --title "<package> <version>" --notes-file notes.md
+
+# 2. The label flip. Without it release-please retries the same release for ever, and the
+#    train stays stuck even though the tag now exists.
+gh pr edit <release pr> --remove-label "autorelease: pending" --add-label "autorelease: tagged"
+
+# 3. A tag created by a user token starts no workflow, so nothing uploads on its own.
+gh workflow run publish-packages.yml --ref <tag> -f package=<package> -f target=pypi
+```
+
+Then `gh workflow run release-please.yml`, so the rest of the train drains and the tracking issue closes itself. Step 3 is still held at the `pypi` environment's reviewer, so check that the upload actually happened rather than assuming the dispatch was the end of it.
+
+**Read what failed before reaching for any of that.** A refusal that is ours — a trimmed permission, a config the action rejects — is fixed in the repository and re-run, and hand-creating the release buries it. The 2026-08-24 refusal was not ours, and it took probing the API as `github-actions[bot]` to establish that: the app could create releases at `main`'s head, at branch commits, and under the same tag name, and was refused *only* when the release targeted that one merge commit — which a user token could target fine. Not permissions, not a ruleset, not the organization's workflow policy; all three were changed during the diagnosis and none of them mattered.
+
 ## Why publishing is dispatched rather than triggered
 
 `publish-packages.yml` still declares `on: push: tags`, and in the automated path nothing uses it. That is because of a GitHub rule with no configuration switch: **events triggered by a workflow's own `GITHUB_TOKEN` do not start another workflow run**, which exists to stop a workflow that pushes a commit from triggering itself forever. release-please creates the tag, so the tag push is the robot's, so `on: push: tags` never fires.
