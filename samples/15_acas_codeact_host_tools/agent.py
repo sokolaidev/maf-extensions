@@ -83,6 +83,7 @@ from maf_sandbox import (
     SandboxKey,
     SandboxRouter,
     SourceIntegrity,
+    TransferLimits,
     sandbox_tool,
 )
 from maf_sandbox.maf import list_all_files, make_caller_context
@@ -159,6 +160,13 @@ NAIVE_LOOKUPS = len(STATES) * 2 + len(SALES) + sum(len(rows) for rows in SALES.v
 #: program, and one that re-reads a product name it already has costs more than the arithmetic
 #: predicts. A program that exhausts the budget returns a partial answer, not an error.
 HOST_TOOL_CALL_CAP = NAIVE_LOOKUPS + 11
+
+#: What one lookup may answer with. The router folds this, times the cap above, into the
+#: `files_out` it asks a backend for: at the 8 MiB default this walk would ask ACAS for 344 MB
+#: against the 128 MB it declares and be refused at attach.
+RESPONSE_LIMITS = TransferLimits(
+    max_bytes_per_file=64 * 1024, max_total_bytes=1024 * 1024, max_files=HOST_TOOL_CALL_CAP
+)
 
 #: The four lookups, and the order they have to happen in. Naming the stages here rather than
 #: leaving them implicit, because the count is the measurement: a stage costs direct tool
@@ -552,6 +560,7 @@ def act_one_what_the_host_wired(ledger: Ledger) -> HostToolRegistry:
         require_declared=True,
         max_host_tool_calls_per_run=HOST_TOOL_CALL_CAP,
         host_tool_calls_observer=observe_host_tool_call,
+        response_limits=RESPONSE_LIMITS,
     )
     for lookup in host_tool_lookups(ledger):
         registry.register(lookup)

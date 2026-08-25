@@ -107,6 +107,23 @@ Naming a host is a real widening, and worth naming as such: this sandbox runs mo
 
 **Isolation is the host's call, and a store changes what that call is about.** This kind does not raise `SandboxSpec.min_isolation`, so the router's floor governs — `MICROVM` unless the host opted down. A kind that ran code influenced by untrusted external content would pin the floor itself, and this one cannot know whether it is one: with no store and no allowlist, the program's only input is source the model wrote, and opting down to `CONTAINER` weighs model-written code against a shared kernel. **With a store the program also reads whatever those files contain, and with an allowlist whatever an allowed host returns** — so the floor should be chosen against the provenance of everything the program can read, not against this kind's defaults. Only the host knows that.
 
+## Upgrading to 0.7.5
+
+**A wired registry is now carried on the spec, so the router folds the transport's own traffic into the transfer-limit match.** An attach that used to succeed can be refused, with `SandboxTransferLimitsNotPermitted` naming the folded figure — instead of the same run overrunning the backend part-way through.
+
+The lever is the registry's `response_limits`. The fold asks for about `max_host_tool_calls_per_run × response_limits.max_bytes_per_file` of `files_out`, because nothing bounds the sum of the guest's request files. At the 8 MiB default a 32-call registry asks for 344 MB, more than `maf-sandbox-acas` declares. Size the ceiling to what your tools return:
+
+```python
+from maf_sandbox import HostToolRegistry, TransferLimits
+
+registry = HostToolRegistry(
+    max_host_tool_calls_per_run=32,
+    response_limits=TransferLimits(
+        max_bytes_per_file=64 * 1024, max_total_bytes=1024 * 1024, max_files=32
+    ),
+)
+```
+
 ## Upgrading to 0.7
 
 `0.7.0` requires `maf-sandbox` 0.19, which made the egress mode a thing a workload declares.
