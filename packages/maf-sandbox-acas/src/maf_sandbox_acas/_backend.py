@@ -602,10 +602,10 @@ class AcasSandboxBackend:
         # HOST_TOOLS is the one member with no method behind it, so what it asserts here is
         # narrower than the others and worth stating: `exec` **detaches**. A process started by
         # one call outlives it and is observable from the next, because the sandbox is a microVM
-        # the group keeps between calls rather than a session torn down per dispatch — which is
-        # what `dispatch_over_exec` is built on, its launcher returning at once and the exit-code
-        # file being the run's only witness. This is the backend where that could not be taken on
-        # faith, since every call is an HTTP round trip to a remote control plane, so
+        # the group keeps between calls rather than a session torn down per `exec` call — which
+        # is what `host_tool_calls_over_exec` is built on, its launcher returning at once and the
+        # exit-code file being the run's only witness. This is the backend where that could not
+        # be taken on faith, since every call is an HTTP round trip to a remote control plane, so
         # `test_acas_e2e.py` measures it against the service rather than against a reading of the
         # SDK.
         #

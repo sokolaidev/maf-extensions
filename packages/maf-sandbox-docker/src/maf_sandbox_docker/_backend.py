@@ -525,8 +525,8 @@ class DockerSandboxBackend:
         # HOST_TOOLS is the one member with no method behind it, so what it asserts here is
         # narrower than the others and worth stating: `exec` **detaches**. A process started by
         # one call outlives it and is observable from the next, because the container is the
-        # sandbox and it stays up between calls — which is what `dispatch_over_exec` is built
-        # on, its launcher returning at once and the exit-code file being the run's only
+        # sandbox and it stays up between calls — which is what `host_tool_calls_over_exec` is
+        # built on, its launcher returning at once and the exit-code file being the run's only
         # witness. `test_docker_e2e.py` measures it rather than assuming it.
         #
         # It is *not* a claim about the image. The shipped launcher wants `sh`, `nohup`,
