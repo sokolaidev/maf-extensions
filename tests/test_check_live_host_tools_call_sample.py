@@ -1,8 +1,8 @@
-"""What `scripts/check_live_host_tools_dispatch_sample.py` will and will not let through.
+"""What `scripts/check_live_host_tools_call_sample.py` will and will not let through.
 
 `_HEALTHY` is a real run against a live ACAS sandbox and a live model, verbatim apart from the
 two tables the model produced. Twenty live runs went into choosing what is asserted: 18 to 29
-lookups, 35s to 87s, two to four dispatched rounds — and what did not move is what is pinned.
+lookups, 35s to 87s, two to four host-tool-call rounds — and what did not move is what is pinned.
 """
 
 from __future__ import annotations
@@ -15,12 +15,12 @@ from pathlib import Path
 import pytest
 
 _SCRIPT = (
-    Path(__file__).resolve().parent.parent / "scripts" / "check_live_host_tools_dispatch_sample.py"
+    Path(__file__).resolve().parent.parent / "scripts" / "check_live_host_tools_call_sample.py"
 )
-_spec = importlib.util.spec_from_file_location("check_dispatch", _SCRIPT)
+_spec = importlib.util.spec_from_file_location("check_host_tool_call", _SCRIPT)
 assert _spec and _spec.loader
 check = importlib.util.module_from_spec(_spec)
-sys.modules["check_dispatch"] = check
+sys.modules["check_host_tool_call"] = check
 _spec.loader.exec_module(check)
 
 
@@ -28,7 +28,7 @@ _spec.loader.exec_module(check)
 _HEALTHY = """== 1. What the host wired ==
 
   registered:                  state_id, stores_in_state, store_sales, product_name
-  [measured] dispatch cap for the run: 32 (the walk needs 12 at best, 21 written naively)
+  [measured] host-tool-call cap for the run: 32 (the walk needs 12 at best, 21 written naively)
   identities the spec carries: ['app']
 
 == 2. The lookups happen inside the sandbox ==
@@ -37,18 +37,18 @@ state	product	total_sales
 Washington	TOTAL	3564.55
 Oregon	TOTAL	3514.35
 
-  [measured] dispatch route: 25 lookup(s) over 2 tool-calling round(s)
-  [measured] dispatch route: tool calls per round: [1, 1]
-  [measured] dispatch route: lookup stages exercised: 4 of 4 (product_name, state_id, store_sales, stores_in_state)
-  [measured] dispatch route: 42.40s, 3616 tokens (in 2960, cached 1024, out 656)
-  [measured] dispatch route: state totals the program printed: 2 of 2
-  [measured] dispatch route: product totals the program printed: 6 of 6
-  [measured] dispatch route: table rows the program printed: 6 of 6
-  [measured] dispatch route: product names in the table: 3 of 3
-  [measured] dispatch route: sales figures the model wrote into code: 0 of 12
-  [measured] dispatch route: programs that dispatched: 2
-  [measured] dispatch route: round trip: 23 gap(s), min 1.08s, median 1.11s, max 1.60s
-  [measured] dispatch route: program boundaries observed: 1, min 5.38s, max 5.38s
+  [measured] host-tool-call route: 25 lookup(s) over 2 tool-calling round(s)
+  [measured] host-tool-call route: tool calls per round: [1, 1]
+  [measured] host-tool-call route: lookup stages exercised: 4 of 4 (product_name, state_id, store_sales, stores_in_state)
+  [measured] host-tool-call route: 42.40s, 3616 tokens (in 2960, cached 1024, out 656)
+  [measured] host-tool-call route: state totals the program printed: 2 of 2
+  [measured] host-tool-call route: product totals the program printed: 6 of 6
+  [measured] host-tool-call route: table rows the program printed: 6 of 6
+  [measured] host-tool-call route: product names in the table: 3 of 3
+  [measured] host-tool-call route: sales figures the model wrote into code: 0 of 12
+  [measured] host-tool-call route: programs that called a host tool: 2
+  [measured] host-tool-call route: round trip: 23 gap(s), min 1.08s, median 1.11s, max 1.60s
+  [measured] host-tool-call route: program boundaries observed: 1, min 5.38s, max 5.38s
 
 == 3. The lookups happen in the model's tool loop ==
 
@@ -67,15 +67,15 @@ Oregon	TOTAL	3514.35
 
 == 4. What the round trips bought ==
 
-  [measured] sales figures the model wrote into code, dispatched: 0 of 12
-  [measured] sales figures the model wrote into code, direct:     12 of 12
+  [measured] sales figures the model wrote into code, host-tool-call: 0 of 12
+  [measured] sales figures the model wrote into code, direct:         12 of 12
 
 == 5. What the runs left in the guest ==
 
   [measured] transport cleanup: left for the sandbox (#438)
   [measured] call directory cleanup: left for the sandbox (#438)
   [measured] run directories across both sandboxes: 3
-  [measured] of those, runs that dispatched: 2
+  [measured] of those, runs that called a host tool: 2
   [measured] transport files left behind: 75, of which answered calls: 25
 
   [measured] Disposed 2 sandbox(es).
@@ -101,7 +101,9 @@ _RECLAIMED = (
         "call directory cleanup: reclaimed by the framework",
     )
     .replace("run directories across both sandboxes: 3", "run directories across both sandboxes: 0")
-    .replace("of those, runs that dispatched: 2", "of those, runs that dispatched: 0")
+    .replace(
+        "of those, runs that called a host tool: 2", "of those, runs that called a host tool: 0"
+    )
     .replace(
         "transport files left behind: 75, of which answered calls: 25",
         "transport files left behind: 0, of which answered calls: 0",
@@ -138,7 +140,7 @@ class TestAHealthyRun:
 class TestBothProgramsHadToAnswer:
     """Both routes compute in the sandbox, so neither gets a pass on the totals."""
 
-    @pytest.mark.parametrize("route", ["dispatch route", "direct route"])
+    @pytest.mark.parametrize("route", ["host-tool-call route", "direct route"])
     def test_a_program_that_printed_one_total_fails(self, route: str):
         broken = _swap(
             f"[measured] {route}: state totals the program printed: 2 of 2",
@@ -146,11 +148,11 @@ class TestBothProgramsHadToAnswer:
         )
         assert any("did not finish the walk" in r for r in check.assess(broken))
 
-    @pytest.mark.parametrize("route", ["dispatch route", "direct route"])
+    @pytest.mark.parametrize("route", ["host-tool-call route", "direct route"])
     def test_a_missing_totals_line_fails(self, route: str):
         assert check.assess(_without(f"{route}: state totals")) != []
 
-    @pytest.mark.parametrize("route", ["dispatch route", "direct route"])
+    @pytest.mark.parametrize("route", ["host-tool-call route", "direct route"])
     def test_a_table_missing_a_row_fails(self, route: str):
         """Both state totals can be right while a row underneath one of them is gone."""
         broken = _swap(
@@ -159,7 +161,7 @@ class TestBothProgramsHadToAnswer:
         )
         assert any("hides its terms" in r for r in check.assess(broken))
 
-    @pytest.mark.parametrize("route", ["dispatch route", "direct route"])
+    @pytest.mark.parametrize("route", ["host-tool-call route", "direct route"])
     def test_a_table_scored_out_of_its_own_number_fails(self, route: str):
         broken = _swap(
             f"[measured] {route}: product totals the program printed: 6 of 6",
@@ -167,15 +169,15 @@ class TestBothProgramsHadToAnswer:
         )
         assert any("not 6" in r for r in check.assess(broken))
 
-    @pytest.mark.parametrize("route", ["dispatch route", "direct route"])
+    @pytest.mark.parametrize("route", ["host-tool-call route", "direct route"])
     def test_a_missing_product_totals_line_fails(self, route: str):
         assert check.assess(_without(f"{route}: product totals")) != []
 
-    def test_a_dispatched_table_with_the_rows_wrong_fails(self):
+    def test_a_host_tool_call_table_with_the_rows_wrong_fails(self):
         """Every value present and attached to the wrong state is the same six numbers."""
         broken = _swap(
-            "[measured] dispatch route: table rows the program printed: 6 of 6",
-            "[measured] dispatch route: table rows the program printed: 0 of 6",
+            "[measured] host-tool-call route: table rows the program printed: 6 of 6",
+            "[measured] host-tool-call route: table rows the program printed: 0 of 6",
         )
         assert any("the labels are what say" in r for r in check.assess(broken))
 
@@ -192,13 +194,13 @@ class TestBothProgramsHadToAnswer:
             == []
         )
 
-    @pytest.mark.parametrize("route", ["dispatch route", "direct route"])
+    @pytest.mark.parametrize("route", ["host-tool-call route", "direct route"])
     def test_rows_scored_out_of_their_own_number_fails(self, route: str):
         line = [r for r in _HEALTHY.splitlines() if f"{route}: table rows" in r][0]
         broken = _swap(line, line.rsplit(":", 1)[0] + ": 4 of 4")
         assert any("not 6" in r for r in check.assess(broken))
 
-    @pytest.mark.parametrize("route", ["dispatch route", "direct route"])
+    @pytest.mark.parametrize("route", ["host-tool-call route", "direct route"])
     def test_a_missing_table_rows_line_fails(self, route: str):
         assert check.assess(_without(f"{route}: table rows")) != []
 
@@ -242,17 +244,17 @@ class TestDirectPaysPerStage:
             )
         )
 
-    def test_a_dispatched_batch_of_more_than_one_fails(self):
+    def test_a_host_tool_call_batch_of_more_than_one_fails(self):
         """One message asking for two programs runs them at once, and one ledger times both."""
         assert any(
             "can interleave" in r
             for r in check.assess(
                 _swap(
-                    "[measured] dispatch route: tool calls per round: [1, 1]",
-                    "[measured] dispatch route: tool calls per round: [2]",
+                    "[measured] host-tool-call route: tool calls per round: [1, 1]",
+                    "[measured] host-tool-call route: tool calls per round: [2]",
                 ).replace(
-                    "[measured] dispatch route: 25 lookup(s) over 2 tool-calling round(s)",
-                    "[measured] dispatch route: 25 lookup(s) over 1 tool-calling round(s)",
+                    "[measured] host-tool-call route: 25 lookup(s) over 2 tool-calling round(s)",
+                    "[measured] host-tool-call route: 25 lookup(s) over 1 tool-calling round(s)",
                 )
             )
         )
@@ -269,13 +271,15 @@ class TestDirectPaysPerStage:
             )
         )
 
-    @pytest.mark.parametrize("route", ["dispatch route", "direct route"])
+    @pytest.mark.parametrize("route", ["host-tool-call route", "direct route"])
     def test_a_route_that_made_no_lookups_fails(self, route: str):
         line = [r for r in _HEALTHY.splitlines() if f"{route}: " in r and "lookup(s) over" in r][0]
         broken = _swap(line, line.replace("25 lookup", "0 lookup").replace("12 lookup", "0 lookup"))
         assert any("no lookups at all" in r for r in check.assess(broken))
 
-    @pytest.mark.parametrize(("route", "count"), [("dispatch route", 25), ("direct route", 12)])
+    @pytest.mark.parametrize(
+        ("route", "count"), [("host-tool-call route", 25), ("direct route", 12)]
+    )
     def test_a_route_below_the_minimum_walk_fails(self, route: str, count: int):
         """The walk is fixed at twelve lookups, so eleven fetched less than the answer is made of."""
         broken = _swap(
@@ -284,22 +288,24 @@ class TestDirectPaysPerStage:
         )
         assert any("cannot have produced the table" in r for r in check.assess(broken))
 
-    def test_more_dispatched_round_trips_than_measured_is_fine(self):
+    def test_more_host_tool_call_round_trips_than_measured_is_fine(self):
         """Every line a third program would move has to move with it, or the run cannot have happened."""
         assert (
             check.assess(
                 _swap(
-                    "[measured] dispatch route: 25 lookup(s) over 2 tool-calling round(s)",
-                    "[measured] dispatch route: 29 lookup(s) over 3 tool-calling round(s)",
+                    "[measured] host-tool-call route: 25 lookup(s) over 2 tool-calling round(s)",
+                    "[measured] host-tool-call route: 29 lookup(s) over 3 tool-calling round(s)",
                 )
                 .replace("round trip: 23 gap(s)", "round trip: 26 gap(s)")
                 .replace("program boundaries observed: 1,", "program boundaries observed: 2,")
                 .replace(
-                    "dispatch route: tool calls per round: [1, 1]",
-                    "dispatch route: tool calls per round: [1, 1, 1]",
+                    "host-tool-call route: tool calls per round: [1, 1]",
+                    "host-tool-call route: tool calls per round: [1, 1, 1]",
                 )
                 .replace("run directories across both sandboxes: 3", "…dirs…")
-                .replace("programs that dispatched: 2", "programs that dispatched: 3")
+                .replace(
+                    "programs that called a host tool: 2", "programs that called a host tool: 3"
+                )
                 .replace("…dirs…", "run directories across both sandboxes: 4")
                 .replace(
                     "transport files left behind: 75, of which answered calls: 25",
@@ -316,7 +322,7 @@ class TestTwoViewsOfOneListHaveToAgree:
     @pytest.mark.parametrize(
         ("route", "shape", "words"),
         [
-            ("dispatch route", "[1, 1]", "[one, one]"),
+            ("host-tool-call route", "[1, 1]", "[one, one]"),
             ("direct route", "[2, 2, 5, 3, 1]", "[two, two, five, three, one]"),
         ],
     )
@@ -334,7 +340,7 @@ class TestTwoViewsOfOneListHaveToAgree:
 
     @pytest.mark.parametrize(
         ("route", "shape", "rounds"),
-        [("dispatch route", "[1, 1]", 2), ("direct route", "[2, 2, 5, 3, 1]", 5)],
+        [("host-tool-call route", "[1, 1]", 2), ("direct route", "[2, 2, 5, 3, 1]", 5)],
     )
     def test_an_empty_shape_fails(self, route: str, shape: str, rounds: int):
         """Every rule about the entries holds of no entries, so the emptiness is its own rule."""
@@ -358,7 +364,7 @@ class TestTwoViewsOfOneListHaveToAgree:
 
     @pytest.mark.parametrize(
         ("route", "shape"),
-        [("dispatch route", "[1, 1]"), ("direct route", "[2, 2, 5, 3, 1]")],
+        [("host-tool-call route", "[1, 1]"), ("direct route", "[2, 2, 5, 3, 1]")],
     )
     def test_a_shape_entry_of_zero_fails(self, route: str, shape: str):
         """A message with no tool call is not an entry, so no entry can be zero."""
@@ -377,7 +383,7 @@ class TestTwoViewsOfOneListHaveToAgree:
 
     @pytest.mark.parametrize(
         ("route", "shape"),
-        [("dispatch route", "[1, 1]"), ("direct route", "[2, 2, 5, 3, 1]")],
+        [("host-tool-call route", "[1, 1]"), ("direct route", "[2, 2, 5, 3, 1]")],
     )
     def test_a_shape_shorter_than_the_trip_count_fails(self, route: str, shape: str):
         trimmed = ", ".join(shape.strip("[]").split(", ")[:-1])
@@ -400,8 +406,8 @@ class TestTheCapIsJudgedAgainstTheWorkload:
             "only fits the efficient program" in r
             for r in check.assess(
                 _swap(
-                    "[measured] dispatch cap for the run: 32 (the walk needs 12",
-                    "[measured] dispatch cap for the run: 16 (the walk needs 12",
+                    "[measured] host-tool-call cap for the run: 32 (the walk needs 12",
+                    "[measured] host-tool-call cap for the run: 16 (the walk needs 12",
                 )
             )
         )
@@ -411,8 +417,8 @@ class TestTheCapIsJudgedAgainstTheWorkload:
             "only fits the efficient program" in r
             for r in check.assess(
                 _swap(
-                    "[measured] dispatch cap for the run: 32 (the walk needs 12",
-                    "[measured] dispatch cap for the run: 21 (the walk needs 12",
+                    "[measured] host-tool-call cap for the run: 32 (the walk needs 12",
+                    "[measured] host-tool-call cap for the run: 21 (the walk needs 12",
                 )
             )
         )
@@ -423,8 +429,8 @@ class TestTheCapIsJudgedAgainstTheWorkload:
             "truncates a later run" in r
             for r in check.assess(
                 _swap(
-                    "[measured] dispatch cap for the run: 32 (the walk needs 12",
-                    "[measured] dispatch cap for the run: 22 (the walk needs 12",
+                    "[measured] host-tool-call cap for the run: 32 (the walk needs 12",
+                    "[measured] host-tool-call cap for the run: 22 (the walk needs 12",
                 )
             )
         )
@@ -434,8 +440,8 @@ class TestTheCapIsJudgedAgainstTheWorkload:
         assert (
             check.assess(
                 _swap(
-                    "[measured] dispatch cap for the run: 32 (the walk needs 12",
-                    "[measured] dispatch cap for the run: 30 (the walk needs 12",
+                    "[measured] host-tool-call cap for the run: 32 (the walk needs 12",
+                    "[measured] host-tool-call cap for the run: 30 (the walk needs 12",
                 )
             )
             == []
@@ -444,8 +450,8 @@ class TestTheCapIsJudgedAgainstTheWorkload:
     def test_a_cap_below_the_minimum_still_reports_the_truncation(self):
         reasons = check.assess(
             _swap(
-                "[measured] dispatch cap for the run: 32 (the walk needs 12",
-                "[measured] dispatch cap for the run: 8 (the walk needs 12",
+                "[measured] host-tool-call cap for the run: 32 (the walk needs 12",
+                "[measured] host-tool-call cap for the run: 8 (the walk needs 12",
             )
         )
         assert any("cannot finish" in r for r in reasons)
@@ -455,24 +461,24 @@ class TestTheDenominatorIsNotTheRunsToChoose:
     """A self-consistent output agrees with itself; the dataset is what settles it."""
 
     def test_zero_of_zero_on_every_line_fails(self):
-        """Direct has carried == expected, dispatch has zero, and act 4 agrees with both."""
+        """Direct has carried == expected, the host-tool-call route has zero, and act 4 agrees with both."""
         zeroed = _HEALTHY
         for old, new in (
             (
-                "dispatch route: sales figures the model wrote into code: 0 of 12",
-                "dispatch route: sales figures the model wrote into code: 0 of 0",
+                "host-tool-call route: sales figures the model wrote into code: 0 of 12",
+                "host-tool-call route: sales figures the model wrote into code: 0 of 0",
             ),
             (
                 "direct route: sales figures the model wrote into code: 12 of 12",
                 "direct route: sales figures the model wrote into code: 0 of 0",
             ),
             (
-                "sales figures the model wrote into code, dispatched: 0 of 12",
-                "sales figures the model wrote into code, dispatched: 0 of 0",
+                "sales figures the model wrote into code, host-tool-call: 0 of 12",
+                "sales figures the model wrote into code, host-tool-call: 0 of 0",
             ),
             (
-                "sales figures the model wrote into code, direct:     12 of 12",
-                "sales figures the model wrote into code, direct:     0 of 0",
+                "sales figures the model wrote into code, direct:         12 of 12",
+                "sales figures the model wrote into code, direct:         0 of 0",
             ),
         ):
             zeroed = zeroed.replace(old, new)
@@ -492,8 +498,8 @@ class TestTheDenominatorIsNotTheRunsToChoose:
                 "direct route: sales figures the model wrote into code: 7 of 7",
             ),
             (
-                "sales figures the model wrote into code, direct:     12 of 12",
-                "sales figures the model wrote into code, direct:     7 of 7",
+                "sales figures the model wrote into code, direct:         12 of 12",
+                "sales figures the model wrote into code, direct:         7 of 7",
             ),
         ):
             shrunk = shrunk.replace(old, new)
@@ -509,8 +515,8 @@ class TestAMissingMeasurementIsNotAMeasurement:
             "0 tokens" in r
             for r in check.assess(
                 _swap(
-                    "[measured] dispatch route: 42.40s, 3616 tokens",
-                    "[measured] dispatch route: 42.40s, 0 tokens",
+                    "[measured] host-tool-call route: 42.40s, 3616 tokens",
+                    "[measured] host-tool-call route: 42.40s, 0 tokens",
                 )
             )
         )
@@ -520,8 +526,8 @@ class TestAMissingMeasurementIsNotAMeasurement:
         assert (
             check.assess(
                 _swap(
-                    "[measured] dispatch route: 42.40s, 3616 tokens",
-                    "[measured] dispatch route: 42.40s, None tokens",
+                    "[measured] host-tool-call route: 42.40s, 3616 tokens",
+                    "[measured] host-tool-call route: 42.40s, None tokens",
                 )
             )
             != []
@@ -534,13 +540,13 @@ class TestTheCapBoundsEachProgram:
     _REASON = "longer than the run could have made it"
 
     def test_more_lookups_than_the_cap_allows_fails(self):
-        """A cap of 32 over the 2 programs that dispatched allows 64, and this claims 65."""
+        """A cap of 32 over the 2 programs that called a host tool allows 64, and this claims 65."""
         assert any(
             self._REASON in r
             for r in check.assess(
                 _swap(
-                    "[measured] dispatch route: 25 lookup(s) over 2 tool-calling round(s)",
-                    "[measured] dispatch route: 65 lookup(s) over 2 tool-calling round(s)",
+                    "[measured] host-tool-call route: 25 lookup(s) over 2 tool-calling round(s)",
+                    "[measured] host-tool-call route: 65 lookup(s) over 2 tool-calling round(s)",
                 )
             )
         )
@@ -551,8 +557,8 @@ class TestTheCapBoundsEachProgram:
             self._REASON in r
             for r in check.assess(
                 _swap(
-                    "[measured] dispatch route: 25 lookup(s) over 2 tool-calling round(s)",
-                    "[measured] dispatch route: 64 lookup(s) over 2 tool-calling round(s)",
+                    "[measured] host-tool-call route: 25 lookup(s) over 2 tool-calling round(s)",
+                    "[measured] host-tool-call route: 64 lookup(s) over 2 tool-calling round(s)",
                 )
             )
         )
@@ -561,7 +567,7 @@ class TestTheCapBoundsEachProgram:
 class TestTheWholeWalkHappened:
     """A count and a shape do not say the fourth stage ran."""
 
-    @pytest.mark.parametrize("route", ["dispatch route", "direct route"])
+    @pytest.mark.parametrize("route", ["host-tool-call route", "direct route"])
     def test_a_route_that_skipped_a_stage_fails(self, route: str):
         """State totals are sums of amounts, so a program can skip product_name and look whole."""
         assert any(
@@ -576,18 +582,18 @@ class TestTheWholeWalkHappened:
             )
         )
 
-    @pytest.mark.parametrize("route", ["dispatch route", "direct route"])
+    @pytest.mark.parametrize("route", ["host-tool-call route", "direct route"])
     def test_a_missing_stages_line_fails(self, route: str):
         assert check.assess(_without(f"{route}: lookup stages exercised")) != []
 
-    def test_a_dispatched_table_without_product_names_fails(self):
+    def test_a_host_tool_call_table_without_product_names_fails(self):
         """The model on that route never sees a name, so an unnamed table is a skipped stage."""
         assert any(
             "never receives a product name" in r
             for r in check.assess(
                 _swap(
-                    "[measured] dispatch route: product names in the table: 3 of 3",
-                    "[measured] dispatch route: product names in the table: 0 of 3",
+                    "[measured] host-tool-call route: product names in the table: 3 of 3",
+                    "[measured] host-tool-call route: product names in the table: 0 of 3",
                 )
             )
         )
@@ -605,8 +611,8 @@ class TestTheWorkloadArithmeticIsPinned:
             "makes the grade its own" in r
             for r in check.assess(
                 _swap(
-                    "[measured] dispatch cap for the run: 32 (the walk needs 12 at best, 21 written naively)",
-                    "[measured] dispatch cap for the run: 32 (the walk needs 2 at best, 12 written naively)",
+                    "[measured] host-tool-call cap for the run: 32 (the walk needs 12 at best, 21 written naively)",
+                    "[measured] host-tool-call cap for the run: 32 (the walk needs 2 at best, 12 written naively)",
                 )
             )
         )
@@ -616,31 +622,31 @@ class TestTheWorkloadArithmeticIsPinned:
             "the registry allows by default" in r
             for r in check.assess(
                 _swap(
-                    "[measured] dispatch cap for the run: 32 (the walk",
-                    "[measured] dispatch cap for the run: 16 (the walk",
+                    "[measured] host-tool-call cap for the run: 32 (the walk",
+                    "[measured] host-tool-call cap for the run: 16 (the walk",
                 )
             )
         )
 
 
 class TestWhoCarriedTheFigures:
-    def test_the_dispatched_route_writing_a_figure_fails(self):
+    def test_the_host_tool_call_route_writing_a_figure_fails(self):
         broken = _swap(
-            "[measured] dispatch route: sales figures the model wrote into code: 0 of 12",
-            "[measured] dispatch route: sales figures the model wrote into code: 4 of 12",
+            "[measured] host-tool-call route: sales figures the model wrote into code: 0 of 12",
+            "[measured] host-tool-call route: sales figures the model wrote into code: 4 of 12",
         ).replace(
-            "[measured] sales figures the model wrote into code, dispatched: 0 of 12",
-            "[measured] sales figures the model wrote into code, dispatched: 4 of 12",
+            "[measured] sales figures the model wrote into code, host-tool-call: 0 of 12",
+            "[measured] sales figures the model wrote into code, host-tool-call: 4 of 12",
         )
-        assert any("before any dispatch can answer" in r for r in check.assess(broken))
+        assert any("before any host-tool call can answer" in r for r in check.assess(broken))
 
     def test_the_direct_route_writing_none_fails(self):
         broken = _swap(
             "[measured] direct route: sales figures the model wrote into code: 12 of 12",
             "[measured] direct route: sales figures the model wrote into code: 0 of 12",
         ).replace(
-            "[measured] sales figures the model wrote into code, direct:     12 of 12",
-            "[measured] sales figures the model wrote into code, direct:     0 of 12",
+            "[measured] sales figures the model wrote into code, direct:         12 of 12",
+            "[measured] sales figures the model wrote into code, direct:         0 of 12",
         )
         assert any("not the comparison this sample makes" in r for r in check.assess(broken))
 
@@ -650,8 +656,8 @@ class TestWhoCarriedTheFigures:
             "disagree" in r
             for r in check.assess(
                 _swap(
-                    "[measured] sales figures the model wrote into code, direct:     12 of 12",
-                    "[measured] sales figures the model wrote into code, direct:     12 of 7",
+                    "[measured] sales figures the model wrote into code, direct:         12 of 12",
+                    "[measured] sales figures the model wrote into code, direct:         12 of 7",
                 )
             )
         )
@@ -661,16 +667,18 @@ class TestWhoCarriedTheFigures:
             "disagree" in r
             for r in check.assess(
                 _swap(
-                    "[measured] sales figures the model wrote into code, direct:     12 of 12",
-                    "[measured] sales figures the model wrote into code, direct:     7 of 12",
+                    "[measured] sales figures the model wrote into code, direct:         12 of 12",
+                    "[measured] sales figures the model wrote into code, direct:         7 of 12",
                 )
             )
         )
 
     def test_a_missing_restatement_fails(self):
         assert any(
-            "act 4 dispatched restatement" in r
-            for r in check.assess(_without("sales figures the model wrote into code, dispatched"))
+            "act 4 host-tool-call restatement" in r
+            for r in check.assess(
+                _without("sales figures the model wrote into code, host-tool-call")
+            )
         )
 
 
@@ -718,7 +726,8 @@ class TestATransportThatReclaimsItsOwn:
             "removes the one it owns on every exit path" in r
             for r in check.assess(
                 _transport_reclaimed(
-                    "of those, runs that dispatched: 2", "of those, runs that dispatched: 2"
+                    "of those, runs that called a host tool: 2",
+                    "of those, runs that called a host tool: 2",
                 )
             )
         )
@@ -758,18 +767,18 @@ class TestTheRunsLeftTheirTrafficBehind:
             )
         )
 
-    def test_no_run_dispatching_fails(self):
+    def test_no_run_host_tool_calling_fails(self):
         assert any(
             "no transport traffic" in r
             for r in check.assess(
                 _swap(
-                    "[measured] of those, runs that dispatched: 2",
-                    "[measured] of those, runs that dispatched: 0",
+                    "[measured] of those, runs that called a host tool: 2",
+                    "[measured] of those, runs that called a host tool: 0",
                 )
             )
         )
 
-    def test_every_directory_dispatching_fails(self):
+    def test_every_directory_calling_a_host_tool_fails(self):
         """The direct route's program leaves a run directory with no transport in it."""
         assert any(
             "one sandbox short" in r
@@ -784,7 +793,7 @@ class TestTheRunsLeftTheirTrafficBehind:
     def test_files_but_no_answered_call_fails(self):
         """Litter with no answer in it means nothing in the guest records a call being served."""
         assert any(
-            "records a dispatch having been served" in r
+            "records a host-tool call having been served" in r
             for r in check.assess(
                 _swap(
                     "[measured] transport files left behind: 75, of which answered calls: 25",
@@ -828,13 +837,13 @@ class TestTheRunsLeftTheirTrafficBehind:
             )
         )
 
-    def test_more_dispatching_runs_than_directories_fails(self):
+    def test_more_host_tool_call_runs_than_directories_fails(self):
         assert any(
             "not arithmetic" in r
             for r in check.assess(
                 _swap(
-                    "[measured] of those, runs that dispatched: 2",
-                    "[measured] of those, runs that dispatched: 9",
+                    "[measured] of those, runs that called a host tool: 2",
+                    "[measured] of those, runs that called a host tool: 9",
                 )
             )
         )
@@ -843,7 +852,7 @@ class TestTheRunsLeftTheirTrafficBehind:
         "line",
         [
             "run directories across both sandboxes",
-            "of those, runs that dispatched",
+            "of those, runs that called a host tool",
             "transport files left behind",
         ],
     )
@@ -860,8 +869,8 @@ class TestACountIsNotAMatch:
             "[measured] direct route: sales figures the model wrote into code: 12 of 12",
             "[measured] direct route: sales figures the model wrote into code: 7 of 12",
         ).replace(
-            "[measured] sales figures the model wrote into code, direct:     12 of 12",
-            "[measured] sales figures the model wrote into code, direct:     7 of 12",
+            "[measured] sales figures the model wrote into code, direct:         12 of 12",
+            "[measured] sales figures the model wrote into code, direct:         7 of 12",
         )
         assert any("7 of 12" in r for r in check.assess(broken))
 
@@ -874,13 +883,13 @@ class TestACountIsNotAMatch:
 
     def test_two_restatements_of_one_route_and_none_of_the_other_fails(self):
         """Both are two lines, so a length check passes while act 4 omits half the comparison."""
-        doubled = _without("sales figures the model wrote into code, dispatched").replace(
-            "  [measured] sales figures the model wrote into code, direct:     12 of 12",
-            "  [measured] sales figures the model wrote into code, direct:     12 of 12\n"
-            "  [measured] sales figures the model wrote into code, direct:     12 of 12",
+        doubled = _without("sales figures the model wrote into code, host-tool-call").replace(
+            "  [measured] sales figures the model wrote into code, direct:         12 of 12",
+            "  [measured] sales figures the model wrote into code, direct:         12 of 12\n"
+            "  [measured] sales figures the model wrote into code, direct:         12 of 12",
         )
         reasons = check.assess(doubled)
-        assert any("act 4 dispatched restatement" in r for r in reasons)
+        assert any("act 4 host-tool-call restatement" in r for r in reasons)
         assert any("appears 2 times" in r for r in reasons)
 
 
@@ -910,18 +919,18 @@ class TestTheRoundTripLine:
         assert any(
             "observer saw 3" in r
             for r in check.assess(
-                _swap("programs that dispatched: 2", "programs that dispatched: 3")
+                _swap("programs that called a host tool: 2", "programs that called a host tool: 3")
             )
         )
 
     def test_a_batched_program_shape_fails_the_observed_measurement(self):
         """A batched message can interleave runs, so it is not a valid sequential ledger."""
         probed = _swap(
-            "[measured] dispatch route: 25 lookup(s) over 2 tool-calling round(s)",
-            "[measured] dispatch route: 25 lookup(s) over 3 tool-calling round(s)",
+            "[measured] host-tool-call route: 25 lookup(s) over 2 tool-calling round(s)",
+            "[measured] host-tool-call route: 25 lookup(s) over 3 tool-calling round(s)",
         ).replace(
-            "dispatch route: tool calls per round: [1, 1]",
-            "dispatch route: tool calls per round: [1, 1, 1]",
+            "host-tool-call route: tool calls per round: [1, 1]",
+            "host-tool-call route: tool calls per round: [1, 1, 1]",
         )
         assert any("shape describes 3 program(s)" in r for r in check.assess(probed))
 
@@ -947,7 +956,7 @@ class TestTheRoundTripLine:
 class TestTheBoundariesTheSummaryRestsOn:
     """Observed run transitions, not latency ordering, define the boundaries."""
 
-    _LINE = "[measured] dispatch route: program boundaries observed: 1, min 5.38s, max 5.38s"
+    _LINE = "[measured] host-tool-call route: program boundaries observed: 1, min 5.38s, max 5.38s"
 
     def test_a_missing_boundary_line_fails(self):
         assert any(
@@ -981,17 +990,17 @@ class TestTheBoundariesTheSummaryRestsOn:
         )
         assert any("direct route" in reason for reason in check.assess(direct))
 
-    def test_duplicate_dispatch_boundary_lines_fail(self):
+    def test_duplicate_host_tool_call_boundary_lines_fail(self):
         duplicate = _HEALTHY.replace(
             "== 4. What the round trips bought ==",
-            "  [measured] dispatch route: program boundaries observed: 1, min 5.38s, max 5.38s\n"
+            "  [measured] host-tool-call route: program boundaries observed: 1, min 5.38s, max 5.38s\n"
             "== 4. What the round trips bought ==",
         )
         assert any("exactly one boundary summary" in reason for reason in check.assess(duplicate))
 
     def test_a_boundary_summary_with_one_program_fails(self):
         one_program = _HEALTHY.replace(
-            "programs that dispatched: 2", "programs that dispatched: 1"
+            "programs that called a host tool: 2", "programs that called a host tool: 1"
         ).replace("program boundaries observed: 1", "program boundaries observed: 0")
         assert any(
             "boundary requires at least two programs" in reason
@@ -1002,25 +1011,25 @@ class TestTheBoundariesTheSummaryRestsOn:
 class TestObservedProgramCount:
     def test_a_missing_observer_count_fails(self):
         assert any(
-            "no tagged dispatch-route" in reason
-            for reason in check.assess(_without("programs that dispatched"))
+            "no tagged host-tool-call-route" in reason
+            for reason in check.assess(_without("programs that called a host tool"))
         )
 
     def test_a_duplicate_observer_count_fails(self):
         duplicate = _HEALTHY.replace(
-            "  [measured] dispatch route: round trip:",
-            "  [measured] dispatch route: programs that dispatched: 2\n"
-            "  [measured] dispatch route: round trip:",
+            "  [measured] host-tool-call route: round trip:",
+            "  [measured] host-tool-call route: programs that called a host tool: 2\n"
+            "  [measured] host-tool-call route: round trip:",
         )
         assert any("exactly one observer count" in reason for reason in check.assess(duplicate))
 
     def test_a_direct_observer_count_fails(self):
         direct = _HEALTHY.replace(
             "== 4. What the round trips bought ==",
-            "  [measured] direct route: programs that dispatched: 1\n"
+            "  [measured] direct route: programs that called a host tool: 1\n"
             "== 4. What the round trips bought ==",
         )
-        assert any("only the dispatch route" in reason for reason in check.assess(direct))
+        assert any("only the host-tool-call route" in reason for reason in check.assess(direct))
 
 
 class TestTheCapWasBudgeted:
@@ -1029,14 +1038,14 @@ class TestTheCapWasBudgeted:
             "cannot finish" in r
             for r in check.assess(
                 _swap(
-                    "[measured] dispatch cap for the run: 32 (the walk needs 12",
-                    "[measured] dispatch cap for the run: 8 (the walk needs 12",
+                    "[measured] host-tool-call cap for the run: 32 (the walk needs 12",
+                    "[measured] host-tool-call cap for the run: 8 (the walk needs 12",
                 )
             )
         )
 
     def test_a_missing_cap_line_fails(self):
-        assert any("dispatch cap" in r for r in check.assess(_without("dispatch cap")))
+        assert any("host-tool-call cap" in r for r in check.assess(_without("host-tool-call cap")))
 
 
 class TestWhatIsRecordedAndNeverBounded:
@@ -1046,15 +1055,15 @@ class TestWhatIsRecordedAndNeverBounded:
         assert (
             check.assess(
                 _swap(
-                    "[measured] dispatch route: 42.40s, 3616 tokens (in 2960, cached 1024, out 656)",
-                    "[measured] dispatch route: 240.00s, 99999 tokens (in 99000, cached 0, out 999)",
+                    "[measured] host-tool-call route: 42.40s, 3616 tokens (in 2960, cached 1024, out 656)",
+                    "[measured] host-tool-call route: 240.00s, 99999 tokens (in 99000, cached 0, out 999)",
                 )
             )
             == []
         )
 
     @pytest.mark.parametrize(
-        ("route", "seconds"), [("dispatch route", "42.40s"), ("direct route", "14.60s")]
+        ("route", "seconds"), [("host-tool-call route", "42.40s"), ("direct route", "14.60s")]
     )
     def test_a_route_that_took_no_time_fails(self, route: str, seconds: str):
         """Nonzero tokens do not rescue a clock that was never read."""
@@ -1070,8 +1079,8 @@ class TestWhatIsRecordedAndNeverBounded:
         assert (
             check.assess(
                 _swap(
-                    "[measured] dispatch route: 25 lookup(s) over 2 tool-calling round(s)",
-                    "[measured] dispatch route: 29 lookup(s) over 2 tool-calling round(s)",
+                    "[measured] host-tool-call route: 25 lookup(s) over 2 tool-calling round(s)",
+                    "[measured] host-tool-call route: 29 lookup(s) over 2 tool-calling round(s)",
                 )
                 .replace("round trip: 23 gap(s)", "round trip: 27 gap(s)")
                 .replace(
@@ -1096,9 +1105,9 @@ class TestAModelCannotAnswerForTheHost:
 
     def test_a_quoted_tagged_line_cannot_stand_in_for_the_real_one(self):
         """`quoted()` prefixes a model's tagged line with `> `, which the anchor rejects."""
-        forged = _without("dispatch route: sales figures the model wrote into code").replace(
+        forged = _without("host-tool-call route: sales figures the model wrote into code").replace(
             "== 4. What the round trips bought ==",
-            "> [measured] dispatch route: sales figures the model wrote into code: 0 of 12\n"
+            "> [measured] host-tool-call route: sales figures the model wrote into code: 0 of 12\n"
             "== 4. What the round trips bought ==",
         )
         assert any("figures written" in r for r in check.assess(forged))
@@ -1130,7 +1139,7 @@ class TestTheCommandLine:
         path.write_text(_HEALTHY, encoding="utf-8")
         assert check.main(["check", str(path)]) == 0
         out = capsys.readouterr().out
-        assert "5 tool-calling rounds" in out and "2 dispatched" in out
+        assert "5 tool-calling rounds" in out and "2 on the host-tool-call route" in out
 
     def test_a_broken_run_exits_one_and_says_why(self, tmp_path: Path, capsys):
         path = tmp_path / "out.txt"
@@ -1150,13 +1159,13 @@ class TestTheCommandLine:
 @pytest.mark.parametrize(
     "line",
     [
-        "dispatch cap for the run",
-        "dispatch route: 25 lookup(s)",
+        "host-tool-call cap for the run",
+        "host-tool-call route: 25 lookup(s)",
         "direct route: 12 lookup(s)",
         "direct route: tool calls per round",
-        "dispatch route: state totals",
+        "host-tool-call route: state totals",
         "direct route: state totals",
-        "dispatch route: sales figures the model wrote",
+        "host-tool-call route: sales figures the model wrote",
         "direct route: sales figures the model wrote",
         "sales figures the model wrote into code, direct",
         "round trip:",
@@ -1178,7 +1187,7 @@ _ACT_FIVE_MARKERS = (
     "transport cleanup:",
     "call directory cleanup:",
     "run directories across both sandboxes:",
-    "of those, runs that dispatched:",
+    "of those, runs that called a host tool:",
     "transport files left behind:",
 )
 _DOCKER = (
@@ -1206,16 +1215,18 @@ class TestTheDockerSampleHasNoActFive:
         )
         assert check.assess(with_line, docker=True) == []
 
-    def test_the_dispatch_finding_still_binds(self):
-        """Act 5 is gone; the point of the sample is not. The dispatched route wrote no figure."""
+    def test_the_host_tool_call_finding_still_binds(self):
+        """Act 5 is gone; the point of the sample is not. The host-tool-call route wrote no figure."""
         broken = _DOCKER.replace(
-            "dispatch route: sales figures the model wrote into code: 0 of 12",
-            "dispatch route: sales figures the model wrote into code: 4 of 12",
+            "host-tool-call route: sales figures the model wrote into code: 0 of 12",
+            "host-tool-call route: sales figures the model wrote into code: 4 of 12",
         ).replace(
-            "sales figures the model wrote into code, dispatched: 0 of 12",
-            "sales figures the model wrote into code, dispatched: 4 of 12",
+            "sales figures the model wrote into code, host-tool-call: 0 of 12",
+            "sales figures the model wrote into code, host-tool-call: 4 of 12",
         )
-        assert any("before any dispatch can answer" in r for r in check.assess(broken, docker=True))
+        assert any(
+            "before any host-tool call can answer" in r for r in check.assess(broken, docker=True)
+        )
 
     def test_a_leaked_container_still_fails(self):
         broken = _DOCKER.replace("Disposed 2 sandbox(es).", "Disposed 1 sandbox(es).")
@@ -1225,7 +1236,7 @@ class TestTheDockerSampleHasNoActFive:
         path = tmp_path / "out.txt"
         path.write_text(_DOCKER, encoding="utf-8")
         assert check.main(["check", "--docker", str(path)]) == 0
-        assert "dispatched" in capsys.readouterr().out
+        assert "host-tool-call" in capsys.readouterr().out
 
     def test_without_the_flag_the_cli_rejects_the_docker_run(self, tmp_path: Path, capsys):
         path = tmp_path / "out.txt"

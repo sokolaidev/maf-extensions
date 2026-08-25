@@ -1,6 +1,6 @@
 """Tests for the host-tools safety contract (issue #133, part A).
 
-The contract is what has to exist before anything can dispatch, so what is pinned here is
+The contract is what has to exist before anything can call a host tool, so what is pinned here is
 the *shape of refusal* as much as the happy path: an unstamped function refused where the
 host can fix it, an undeclared name unreachable from inside, a cap that ends a run with a
 sentence rather than an exception, and a USER-identity tool that registers loudly and never
@@ -24,10 +24,12 @@ import pytest
 import maf_sandbox._host_tools as host_tools_module
 from maf_sandbox import (
     DEFAULT_MAX_DISPATCHES_PER_RUN,
+    DEFAULT_MAX_HOST_TOOL_CALLS_PER_RUN,
     DEFAULT_TRANSFER_LIMITS,
     FLOW_DECLARED_KEY,
     INTEGRITY_RANK,
     DispatchResult,
+    HostToolCallResult,
     HostToolDeclaration,
     HostToolIdentityNotAllowed,
     HostToolNotDeclared,
@@ -39,6 +41,10 @@ from maf_sandbox import (
     SourceIntegrity,
     TransferLimits,
     declaration_of,
+    dispatch_over_exec,
+    fold_dispatch_transfer_limits,
+    fold_host_tool_call_transfer_limits,
+    host_tool_calls_over_exec,
     sandbox_tool,
 )
 
@@ -122,15 +128,15 @@ class TestIntegrityRank:
 
 class TestRegistryConstruction:
     def test_the_cap_default_is_the_named_constant(self):
-        assert HostToolRegistry().max_dispatches_per_run == DEFAULT_MAX_DISPATCHES_PER_RUN
+        assert HostToolRegistry().max_host_tool_calls_per_run == DEFAULT_MAX_HOST_TOOL_CALLS_PER_RUN
 
     def test_the_default_cap_bites_before_the_response_count_leg(self):
-        """So with everything defaulted, exhaustion names the dispatch cap, not the ledger."""
-        assert DEFAULT_MAX_DISPATCHES_PER_RUN < DEFAULT_TRANSFER_LIMITS.max_files
+        """So with everything defaulted, exhaustion names the host-tool-call cap, not the ledger."""
+        assert DEFAULT_MAX_HOST_TOOL_CALLS_PER_RUN < DEFAULT_TRANSFER_LIMITS.max_files
 
     def test_a_cap_below_one_is_refused(self):
         with pytest.raises(ValueError, match="empty registry"):
-            HostToolRegistry(max_dispatches_per_run=0)
+            HostToolRegistry(max_host_tool_calls_per_run=0)
 
     def test_the_pair_of_directions_type_is_refused_as_response_limits(self):
         """The same TransferLimits-vs-SandboxLimits confusion the router already refuses."""
@@ -150,13 +156,13 @@ class TestTheRunIdentity:
     def test_a_caller_supplied_identity_is_kept(self):
         assert HostToolRun(HostToolRegistry(), run_id="turn-7").run_id == "turn-7"
 
-    def test_the_identity_is_stable_across_dispatches(self):
+    def test_the_identity_is_stable_across_host_tool_calls(self):
         """A ledger keyed on it must see one run as one run, not a fresh id per call."""
         registry = HostToolRegistry()
         registry.register(_stamped_pure())
         run = HostToolRun(registry)
         before = run.run_id
-        assert _dispatch(run, "doubled", {"x": 1}).ok
+        assert _call_host_tool(run, "doubled", {"x": 1}).ok
         assert run.run_id == before
 
     @pytest.mark.parametrize("bad", ["", 0, object()])
@@ -168,7 +174,7 @@ class TestTheRunIdentity:
 
 class TestRegistration:
     def test_starts_empty(self):
-        """Layer 1: nothing is dispatchable until a developer explicitly registers it."""
+        """Layer 1: nothing is callable as a host tool until a developer explicitly registers it."""
         registry = HostToolRegistry()
         assert len(registry) == 0
         assert registry.names() == frozenset()
@@ -211,7 +217,7 @@ class TestRegistration:
             registry.register(Odd())
 
     def test_the_gate_refuses_an_unstamped_function_at_registration(self):
-        """Where the host can fix it — one decorator away — not later at dispatch."""
+        """Where the host can fix it — one decorator away — not later at call time."""
         registry = HostToolRegistry(require_declared=True)
         with pytest.raises(HostToolNotDeclared, match="@sandbox_tool"):
             registry.register(_pure)
@@ -219,7 +225,7 @@ class TestRegistration:
     def test_the_gate_and_the_snapshot_are_one_read(self):
         """A stamp is an attribute, so it can be a property that answers once and then stops.
         Read twice, such a function passes the gate and registers as undeclared — the refusal
-        this gate promises the host arriving instead as a sentence to the model at dispatch."""
+        this gate promises the host arriving instead as a sentence to the model at call time."""
         stamp = HostToolDeclaration(source=None, sink=None, identity=None)
         reads: list[int] = []
 
@@ -309,9 +315,11 @@ class TestAggregate:
         """The bytes alone do not bound the transport: how many files it moves, and how many
         refusals nothing debits, are the dispatch bound's — so the surface carries it too."""
         limits = TransferLimits(max_bytes_per_file=64, max_total_bytes=128, max_files=2)
-        aggregate = HostToolRegistry(response_limits=limits, max_dispatches_per_run=7).aggregate()
+        aggregate = HostToolRegistry(
+            response_limits=limits, max_host_tool_calls_per_run=7
+        ).aggregate()
         assert aggregate.response_limits == limits
-        assert aggregate.max_dispatches_per_run == 7
+        assert aggregate.max_host_tool_calls_per_run == 7
 
     def test_result_integrity_is_the_weakest_over_sources(self):
         registry = HostToolRegistry()
@@ -452,7 +460,7 @@ class TestAggregate:
         with pytest.raises(ValueError, match="sealed"):
             registry.register(_stamped_pure(), name="another")
 
-    def test_the_sealed_surface_is_the_one_that_dispatches(self):
+    def test_the_sealed_surface_is_the_one_used_for_host_tool_calls(self):
         registry = HostToolRegistry()
         registry.register(_stamped_pure(), name="doubled")
         registry.aggregate()
@@ -463,15 +471,15 @@ class TestAggregate:
     def test_the_identity_set_is_readable_only_through_the_sealing_aggregate(self):
         """A policy view that does not seal is a way around the seal: read an empty identity
         set, build a spec and a router that denies `Identity.APP` from it, then register an
-        APP tool afterwards and dispatch it past a deny list that never saw it."""
+        APP tool afterwards and call it past a deny list that never saw it."""
         registry = HostToolRegistry()
         assert not hasattr(registry, "identities")
         assert registry.aggregate().identities == frozenset()
 
 
-class TestConcurrentDispatchesCannotOversubscribeTheLedger:
-    """The tool body is the one place `dispatch` awaits — which is long enough for a second
-    dispatch to walk past a ledger the first has not written to yet."""
+class TestConcurrentHostToolCallsCannotOversubscribeTheLedger:
+    """The tool body is the one place `call` awaits — which is long enough for a second
+    host-tool call to walk past a ledger the first has not written to yet."""
 
     def test_the_second_of_two_in_flight_calls_is_refused_without_running(self):
         calls: list[int] = []
@@ -491,10 +499,10 @@ class TestConcurrentDispatchesCannotOversubscribeTheLedger:
         registry.register(slow)
         run = HostToolRun(registry)
 
-        async def scenario() -> tuple[DispatchResult, DispatchResult]:
-            first = asyncio.create_task(run.dispatch("slow", {"x": 1}))
+        async def scenario() -> tuple[HostToolCallResult, HostToolCallResult]:
+            first = asyncio.create_task(run.call("slow", {"x": 1}))
             await entered.wait()  # the first call is inside its body, holding the one slot
-            second = asyncio.create_task(run.dispatch("slow", {"x": 2}))
+            second = asyncio.create_task(run.call("slow", {"x": 2}))
             # A task and a bounded wait rather than a plain `await`: a regression here does
             # not refuse the second call, it runs its body — which blocks on `release`, and
             # awaiting it directly would deadlock the test instead of failing it.
@@ -528,21 +536,21 @@ class TestConcurrentDispatchesCannotOversubscribeTheLedger:
         registry.register(_stamped_pure(), name="doubled")
         run = HostToolRun(registry)
 
-        async def scenario() -> DispatchResult:
-            abandoned = asyncio.create_task(run.dispatch("never"))
+        async def scenario() -> HostToolCallResult:
+            abandoned = asyncio.create_task(run.call("never"))
             await entered.wait()
             abandoned.cancel()
             await asyncio.wait([abandoned])
             assert abandoned.cancelled(), "the premise: the call was abandoned mid-body"
-            return await run.dispatch("doubled", {"x": 21})
+            return await run.call("doubled", {"x": 21})
 
         result = asyncio.run(scenario())
         assert result.ok, result.refusal
 
-    def test_a_cancelled_dispatch_is_recorded(self, caplog: pytest.LogCaptureFixture):
+    def test_a_cancelled_host_tool_call_is_recorded(self, caplog: pytest.LogCaptureFixture):
         """#355: a cancel is the one outcome that otherwise leaves no trace — a refusal and a
         failure are logged, a success is deliberately quiet. It is logged, naming the tool, so a
-        host that wired no `dispatch_observer` still learns a sink may have fired; and the ledger
+        host that wired no `host_tool_calls_observer` still learns a sink may have fired; and the ledger
         stays consistent (the reserved slot goes back, the attempt still counts)."""
         entered = asyncio.Event()
 
@@ -557,7 +565,7 @@ class TestConcurrentDispatchesCannotOversubscribeTheLedger:
         run = HostToolRun(registry)
 
         async def scenario() -> None:
-            call = asyncio.create_task(run.dispatch("never"))
+            call = asyncio.create_task(run.call("never"))
             await entered.wait()
             call.cancel()
             await asyncio.wait([call])
@@ -569,8 +577,8 @@ class TestConcurrentDispatchesCannotOversubscribeTheLedger:
         assert any(
             "cancelled mid-effect" in record.getMessage() and "never" in record.getMessage()
             for record in caplog.records
-        ), "a cancelled dispatch must leave a record naming the tool"
-        assert run._dispatched == 1, "the attempt is counted"
+        ), "a cancelled host-tool call must leave a record naming the tool"
+        assert run._calls == 1, "the attempt is counted"
         assert run._delivered == 0, "the reserved slot was returned"
 
 
@@ -578,9 +586,9 @@ class TestACeilingMustBeAbleToCompare:
     """A non-integer ceiling removes itself, which is the one thing a safety cap must not do."""
 
     @pytest.mark.parametrize("bad", [float("nan"), float("inf"), 2.5, True, "8", None])
-    def test_the_dispatch_cap_refuses_anything_but_a_plain_integer(self, bad: object):
-        with pytest.raises(TypeError, match="max_dispatches_per_run"):
-            HostToolRegistry(max_dispatches_per_run=bad)  # type: ignore[arg-type]
+    def test_the_host_tool_call_cap_refuses_anything_but_a_plain_integer(self, bad: object):
+        with pytest.raises(TypeError, match="max_host_tool_calls_per_run"):
+            HostToolRegistry(max_host_tool_calls_per_run=bad)  # type: ignore[arg-type]
 
     @pytest.mark.parametrize("leg", ["max_bytes_per_file", "max_total_bytes", "max_files"])
     @pytest.mark.parametrize("bad", [float("nan"), float("inf"), True])
@@ -623,8 +631,8 @@ class TestTheResponseLedgerIsCheckedBeforeTheSideEffect:
         registry.register(writes, name="writes")
         run = HostToolRun(registry)
 
-        assert _dispatch(run, "writes", {"x": 1}).ok
-        second = _dispatch(run, "writes", {"x": 2})
+        assert _call_host_tool(run, "writes", {"x": 1}).ok
+        second = _call_host_tool(run, "writes", {"x": 2})
 
         assert not second.ok
         assert second.refusal is not None and "delivered-response cap" in second.refusal
@@ -646,8 +654,8 @@ class TestTheResponseLedgerIsCheckedBeforeTheSideEffect:
         registry.register(writes, name="writes")
         run = HostToolRun(registry)
 
-        assert _dispatch(run, "writes", {"x": 1}).ok  # 22 bytes: the budget, exactly
-        second = _dispatch(run, "writes", {"x": 2})
+        assert _call_host_tool(run, "writes", {"x": 1}).ok  # 22 bytes: the budget, exactly
+        second = _call_host_tool(run, "writes", {"x": 2})
 
         assert not second.ok
         assert second.refusal is not None and "byte budget" in second.refusal
@@ -674,7 +682,7 @@ class TestTheResponseLedgerIsCheckedBeforeTheSideEffect:
         )
         registry.register(writes, name="writes")
 
-        refused = asyncio.run(HostToolRun(registry).dispatch("writes", {"x": 1}, framing_bytes=11))
+        refused = asyncio.run(HostToolRun(registry).call("writes", {"x": 1}, framing_bytes=11))
 
         assert not refused.ok
         assert refused.refusal is not None and "per-response cap" in refused.refusal
@@ -685,7 +693,7 @@ class TestTheResponseLedgerIsCheckedBeforeTheSideEffect:
         registry = HostToolRegistry()
         registry.register(sandbox_tool(source=None, sink=None, identity=None)(lambda: 1), name="f")
         with pytest.raises(ValueError, match="framing_bytes"):
-            asyncio.run(HostToolRun(registry).dispatch("f", None, framing_bytes=-1))
+            asyncio.run(HostToolRun(registry).call("f", None, framing_bytes=-1))
 
     @pytest.mark.parametrize("allowance", [float("nan"), float("inf"), 2.5, True, "8", None])
     def test_a_framing_allowance_that_is_not_a_plain_integer_is_refused(self, allowance: object):
@@ -698,7 +706,7 @@ class TestTheResponseLedgerIsCheckedBeforeTheSideEffect:
         registry = HostToolRegistry()
         registry.register(sandbox_tool(source=None, sink=None, identity=None)(lambda: 1), name="f")
         with pytest.raises(TypeError, match="framing_bytes"):
-            asyncio.run(HostToolRun(registry).dispatch("f", None, framing_bytes=allowance))  # type: ignore[arg-type]
+            asyncio.run(HostToolRun(registry).call("f", None, framing_bytes=allowance))  # type: ignore[arg-type]
 
     def test_a_nan_framing_allowance_cannot_disable_the_byte_ledger(self):
         """The consequence, not the type: a run that admitted one would stop capping anything.
@@ -716,26 +724,26 @@ class TestTheResponseLedgerIsCheckedBeforeTheSideEffect:
         run = HostToolRun(registry)
 
         with pytest.raises(TypeError):
-            asyncio.run(run.dispatch("f", None, framing_bytes=float("nan")))  # type: ignore[arg-type]
+            asyncio.run(run.call("f", None, framing_bytes=float("nan")))  # type: ignore[arg-type]
 
-        assert _dispatch(run, "f").ok, "the refused call spent the budget"
-        exhausted = _dispatch(run, "f")
+        assert _call_host_tool(run, "f").ok, "the refused call spent the budget"
+        exhausted = _call_host_tool(run, "f")
         assert not exhausted.ok, "the byte ledger stopped counting"
         assert exhausted.refusal is not None and "byte budget" in exhausted.refusal
 
 
-class TestDispatchResult:
+class TestHostToolCallResult:
     def test_exactly_one_side_must_be_set(self):
         with pytest.raises(ValueError):
-            DispatchResult()
+            HostToolCallResult()
         with pytest.raises(ValueError):
-            DispatchResult(value_json="1", refusal="Error: no")
-        assert DispatchResult(value_json="1").ok is True
-        assert DispatchResult(refusal="Error: no").ok is False
+            HostToolCallResult(value_json="1", refusal="Error: no")
+        assert HostToolCallResult(value_json="1").ok is True
+        assert HostToolCallResult(refusal="Error: no").ok is False
 
 
-def _dispatch(run: HostToolRun, name: str, arguments=None) -> DispatchResult:
-    return asyncio.run(run.dispatch(name, arguments))
+def _call_host_tool(run: HostToolRun, name: str, arguments=None) -> HostToolCallResult:
+    return asyncio.run(run.call(name, arguments))
 
 
 def _nesting_json_refuses_to_encode() -> list[object]:
@@ -759,11 +767,11 @@ def _nesting_json_refuses_to_encode() -> list[object]:
     raise AssertionError("json.dumps encoded 60k levels of nesting without a RecursionError")
 
 
-class TestDispatch:
+class TestHostToolCall:
     def test_a_registered_tool_round_trips_its_value_as_json(self):
         registry = HostToolRegistry()
         registry.register(_stamped_pure(), name="doubled")
-        result = _dispatch(HostToolRun(registry), "doubled", {"x": 21})
+        result = _call_host_tool(HostToolRun(registry), "doubled", {"x": 21})
         assert result.ok
         assert result.value_json is not None
         assert json.loads(result.value_json) == 42
@@ -775,7 +783,7 @@ class TestDispatch:
 
         registry = HostToolRegistry()
         registry.register(fetch)
-        result = _dispatch(HostToolRun(registry), "fetch", {"x": 7})
+        result = _call_host_tool(HostToolRun(registry), "fetch", {"x": 7})
         assert result.ok
         assert result.value_json is not None
         assert json.loads(result.value_json) == {"x": 7}
@@ -785,7 +793,7 @@ class TestDispatch:
         path in — resolution goes exclusively through the registry."""
         registry = HostToolRegistry()
         registry.register(_stamped_pure(), name="doubled")
-        result = _dispatch(HostToolRun(registry), "_pure", {"x": 1})
+        result = _call_host_tool(HostToolRun(registry), "_pure", {"x": 1})
         assert not result.ok
         assert result.refusal == "Error: '_pure' is not a registered host tool"
 
@@ -797,7 +805,7 @@ class TestDispatch:
 
         registry = HostToolRegistry()
         registry.register(_stamped_pure(), name="doubled")
-        result = _dispatch(HostToolRun(registry), ["doubled"])  # type: ignore[arg-type]
+        result = _call_host_tool(HostToolRun(registry), ["doubled"])  # type: ignore[arg-type]
         assert not result.ok
         assert result.refusal == "Error: a host tool name must be a string, not list"
 
@@ -818,56 +826,56 @@ class TestDispatch:
         an unexpected one, so a call that omits it never reaches the guest-chosen keyword."""
         registry = HostToolRegistry()
         registry.register(_stamped_pure(), name="doubled")
-        result = _dispatch(HostToolRun(registry), name, arguments)
+        result = _call_host_tool(HostToolRun(registry), name, arguments)
         assert not result.ok
         assert result.refusal is not None
         assert len(result.refusal) < 400, "the guest chose the length of this refusal"
         assert "truncated" in result.refusal
 
     def test_the_cap_returns_a_sanitized_refusal_rather_than_raising(self):
-        registry = HostToolRegistry(max_dispatches_per_run=2)
+        registry = HostToolRegistry(max_host_tool_calls_per_run=2)
         registry.register(_stamped_pure(), name="doubled")
         run = HostToolRun(registry)
-        assert _dispatch(run, "doubled", {"x": 1}).ok
-        assert _dispatch(run, "doubled", {"x": 2}).ok
-        third = _dispatch(run, "doubled", {"x": 3})
+        assert _call_host_tool(run, "doubled", {"x": 1}).ok
+        assert _call_host_tool(run, "doubled", {"x": 2}).ok
+        third = _call_host_tool(run, "doubled", {"x": 3})
         assert not third.ok
-        assert third.refusal is not None and "dispatch cap (2) is exhausted" in third.refusal
+        assert third.refusal is not None and "host-tool-call cap (2) is exhausted" in third.refusal
 
     def test_refused_attempts_burn_the_cap_too(self):
         """A guest probing unknown names is spending exactly the budget the cap bounds."""
-        registry = HostToolRegistry(max_dispatches_per_run=2)
+        registry = HostToolRegistry(max_host_tool_calls_per_run=2)
         registry.register(_stamped_pure(), name="doubled")
         run = HostToolRun(registry)
-        _dispatch(run, "nope")
-        _dispatch(run, "nope")
-        third = _dispatch(run, "doubled", {"x": 1})
+        _call_host_tool(run, "nope")
+        _call_host_tool(run, "nope")
+        third = _call_host_tool(run, "doubled", {"x": 1})
         assert not third.ok
         assert third.refusal is not None and "exhausted" in third.refusal
 
     def test_a_fresh_run_starts_with_a_fresh_count(self):
-        registry = HostToolRegistry(max_dispatches_per_run=1)
+        registry = HostToolRegistry(max_host_tool_calls_per_run=1)
         registry.register(_stamped_pure(), name="doubled")
-        assert _dispatch(HostToolRun(registry), "doubled", {"x": 1}).ok
-        assert _dispatch(HostToolRun(registry), "doubled", {"x": 1}).ok
+        assert _call_host_tool(HostToolRun(registry), "doubled", {"x": 1}).ok
+        assert _call_host_tool(HostToolRun(registry), "doubled", {"x": 1}).ok
 
     def test_arguments_are_validated_host_side_at_the_one_door(self):
         registry = HostToolRegistry()
         registry.register(_stamped_pure(), name="doubled")
-        result = _dispatch(HostToolRun(registry), "doubled", {"y": 1})
+        result = _call_host_tool(HostToolRun(registry), "doubled", {"y": 1})
         assert not result.ok
         assert result.refusal is not None and "do not bind" in result.refusal
         # The diagnostic is the point of quoting the error at all — a model fixes its own
         # call from it. `bind` reports the missing argument before it notices the extra one.
         assert "missing a required argument" in result.refusal
 
-        named = _dispatch(HostToolRun(registry), "doubled", {"x": 1, "y": 2})
+        named = _call_host_tool(HostToolRun(registry), "doubled", {"x": 1, "y": 2})
         assert named.refusal is not None and "unexpected keyword argument 'y'" in named.refusal
 
     def test_non_mapping_arguments_are_refused(self):
         registry = HostToolRegistry()
         registry.register(_stamped_pure(), name="doubled")
-        result = _dispatch(HostToolRun(registry), "doubled", [1, 2])  # type: ignore[arg-type]
+        result = _call_host_tool(HostToolRun(registry), "doubled", [1, 2])  # type: ignore[arg-type]
         assert not result.ok
         assert result.refusal is not None and "JSON object" in result.refusal
 
@@ -880,23 +888,23 @@ class TestDispatch:
 
         registry = HostToolRegistry(allowed_identities=frozenset({Identity.APP, Identity.USER}))
         registry.register(as_user)
-        result = _dispatch(HostToolRun(registry), "as_user")
+        result = _call_host_tool(HostToolRun(registry), "as_user")
         assert not result.ok
         assert result.refusal is not None
         assert "per-run token minting" in result.refusal
         assert "audience-within-egress" in result.refusal
         assert "env channel" in result.refusal
 
-    def test_dispatch_uses_the_declaration_registration_captured(self):
+    def test_a_host_tool_call_uses_the_declaration_registration_captured(self):
         """A stamp removed after registration neither refuses nor widens: it is not read."""
         registry = HostToolRegistry(require_declared=True)
         tool = _stamped_pure()
         registry.register(tool, name="doubled")
         delattr(tool, FLOW_DECLARED_KEY)
-        result = _dispatch(HostToolRun(registry), "doubled", {"x": 1})
+        result = _call_host_tool(HostToolRun(registry), "doubled", {"x": 1})
         assert result.ok, "the registered claim stands; the attribute is no longer consulted"
 
-    def test_an_identity_swapped_in_after_registration_cannot_reach_dispatch(self):
+    def test_an_identity_swapped_in_after_registration_cannot_reach_the_host_tool_call(self):
         """The swap that matters: USER authority arriving after the aggregate was derived."""
         registry = HostToolRegistry()
         tool = _stamped_pure()
@@ -906,11 +914,11 @@ class TestDispatch:
             FLOW_DECLARED_KEY,
             HostToolDeclaration(source=None, sink=None, identity=Identity.USER),
         )
-        result = _dispatch(HostToolRun(registry), "doubled", {"x": 1})
-        assert result.ok, "dispatch reads the registered declaration, not the current one"
+        result = _call_host_tool(HostToolRun(registry), "doubled", {"x": 1})
+        assert result.ok, "the call reads the registered declaration, not the current one"
 
 
-class TestDispatchFailureLadder:
+class TestHostToolCallFailureLadder:
     def test_a_raising_tool_sends_the_detail_to_the_log_not_the_guest(
         self, caplog: pytest.LogCaptureFixture
     ):
@@ -921,7 +929,7 @@ class TestDispatchFailureLadder:
         registry = HostToolRegistry()
         registry.register(broken)
         with caplog.at_level(logging.WARNING):
-            result = _dispatch(HostToolRun(registry), "broken")
+            result = _call_host_tool(HostToolRun(registry), "broken")
         assert not result.ok
         assert (
             result.refusal == "Error: host tool 'broken' failed — the reason is in the host's log"
@@ -933,7 +941,7 @@ class TestDispatchFailureLadder:
         self, caplog: pytest.LogCaptureFixture
     ):
         """`register` takes any callable, and some built-ins expose no signature to read —
-        that must follow the failure ladder rather than escaping `dispatch`.
+        that must follow the failure ladder rather than escaping `call`.
 
         `max` is one such built-in today; the assertion below pins the premise, so this test
         fails loudly if CPython ever gives it a text signature rather than passing vacuously.
@@ -944,7 +952,7 @@ class TestDispatchFailureLadder:
         registry = HostToolRegistry()
         registry.register(max, name="largest")
         with caplog.at_level(logging.WARNING):
-            result = _dispatch(HostToolRun(registry), "largest", {"iterable": [1, 2]})
+            result = _call_host_tool(HostToolRun(registry), "largest", {"iterable": [1, 2]})
         assert not result.ok
         assert result.refusal is not None and "signature could not be read" in result.refusal
         assert "largest" in caplog.text
@@ -968,7 +976,7 @@ class TestDispatchFailureLadder:
         registry = HostToolRegistry()
         registry.register(proxy, name="proxied")
         with caplog.at_level(logging.WARNING):
-            result = _dispatch(HostToolRun(registry), "proxied")
+            result = _call_host_tool(HostToolRun(registry), "proxied")
         assert not result.ok
         assert result.refusal is not None and "signature could not be read" in result.refusal
         assert "internal.example" not in result.refusal
@@ -985,7 +993,7 @@ class TestDispatchFailureLadder:
 
         registry = HostToolRegistry()
         registry.register(measure)
-        result = _dispatch(HostToolRun(registry), "measure")
+        result = _call_host_tool(HostToolRun(registry), "measure")
         assert not result.ok
         assert result.refusal is not None and "cannot be carried as JSON" in result.refusal
 
@@ -996,7 +1004,7 @@ class TestDispatchFailureLadder:
 
         registry = HostToolRegistry()
         registry.register(opaque)
-        result = _dispatch(HostToolRun(registry), "opaque")
+        result = _call_host_tool(HostToolRun(registry), "opaque")
         assert not result.ok
         assert result.refusal is not None and "cannot be carried as JSON" in result.refusal
 
@@ -1012,7 +1020,7 @@ class TestDispatchFailureLadder:
 
         registry = HostToolRegistry()
         registry.register(half_a_pair)
-        result = _dispatch(HostToolRun(registry), "half_a_pair")
+        result = _call_host_tool(HostToolRun(registry), "half_a_pair")
         assert not result.ok
         assert result.refusal is not None and "cannot be carried as JSON" in result.refusal
 
@@ -1027,7 +1035,7 @@ class TestDispatchFailureLadder:
 
         registry = HostToolRegistry()
         registry.register(nested)
-        result = _dispatch(HostToolRun(registry), "nested")
+        result = _call_host_tool(HostToolRun(registry), "nested")
         assert not result.ok
         assert result.refusal is not None and "cannot be carried as JSON" in result.refusal
 
@@ -1049,47 +1057,47 @@ class TestResponseCaps:
         return registry
 
     def test_a_response_over_the_per_response_cap_is_refused(self):
-        result = _dispatch(HostToolRun(self._registry()), "payload", {"size": 100})
+        result = _call_host_tool(HostToolRun(self._registry()), "payload", {"size": 100})
         assert not result.ok
         assert result.refusal is not None and "per-response cap allows 64" in result.refusal
 
     def test_the_run_total_is_a_running_ledger(self):
         run = HostToolRun(self._registry())
-        assert _dispatch(run, "payload", {"size": 60}).ok
-        assert _dispatch(run, "payload", {"size": 60}).ok
-        third = _dispatch(run, "payload", {"size": 60})
+        assert _call_host_tool(run, "payload", {"size": 60}).ok
+        assert _call_host_tool(run, "payload", {"size": 60}).ok
+        third = _call_host_tool(run, "payload", {"size": 60})
         assert not third.ok
         assert third.refusal is not None and "total response cap" in third.refusal
 
     def test_the_delivered_response_count_is_capped(self):
         run = HostToolRun(self._registry(max_files=1, max_total_bytes=10_000))
-        assert _dispatch(run, "payload", {"size": 1}).ok
-        second = _dispatch(run, "payload", {"size": 1})
+        assert _call_host_tool(run, "payload", {"size": 1}).ok
+        second = _call_host_tool(run, "payload", {"size": 1})
         assert not second.ok
         assert second.refusal is not None and "delivered-response cap (1)" in second.refusal
 
     def test_a_refused_response_does_not_spend_the_ledger(self):
         """Over-cap bytes are never delivered, so they must not count as if they were."""
         run = HostToolRun(self._registry())
-        assert not _dispatch(run, "payload", {"size": 100}).ok
-        assert _dispatch(run, "payload", {"size": 60}).ok
+        assert not _call_host_tool(run, "payload", {"size": 100}).ok
+        assert _call_host_tool(run, "payload", {"size": 60}).ok
 
     def test_a_refusal_gives_its_reserved_response_slot_back(self):
         """The count slot is taken before the call so it can be held across it; a run that
         once overran the per-response cap must not be one response poorer forever after."""
         run = HostToolRun(self._registry(max_files=1, max_total_bytes=10_000))
-        assert not _dispatch(run, "payload", {"size": 100}).ok
-        assert _dispatch(run, "payload", {"size": 1}).ok
+        assert not _call_host_tool(run, "payload", {"size": 100}).ok
+        assert _call_host_tool(run, "payload", {"size": 1}).ok
 
 
-class TestTheRegistryObservesEveryDispatch:
-    """Verify dispatch attribution and observer lifecycle behavior."""
+class TestTheRegistryObservesEveryHostToolCall:
+    """Verify host-tool-call attribution and observer lifecycle behavior."""
 
     @staticmethod
     def _recording(events: list[tuple[str, object, HostToolRun, object]]):
         def factory(run: HostToolRun, name: object):
             # A token unique to this context: a run is not one, and the pairing must hold
-            # against a regression that opens the same dispatch's context twice.
+            # against a regression that opens the same host-tool call's context twice.
             token = object()
 
             @contextlib.contextmanager
@@ -1100,7 +1108,7 @@ class TestTheRegistryObservesEveryDispatch:
                 try:
                     yield
                 finally:
-                    # `finally`, because on a failing or cancelled dispatch the exit is a
+                    # `finally`, because on a failing or cancelled host-tool call the exit is a
                     # throw into the yield, and a line after it would never run.
                     events.append(("exit", token, run, name))
 
@@ -1121,26 +1129,26 @@ class TestTheRegistryObservesEveryDispatch:
                 assert state == "open", f"an exit before the enter, or twice: {run!r}"
                 states[token] = "closed"
         assert all(state == "closed" for state in states.values()), (
-            "an enter the dispatch never closed"
+            "an enter the host-tool call never closed"
         )
 
     def test_the_observer_is_absent_by_default(self):
-        """No host, no observer: the property is ``None`` and a dispatch is exactly today's."""
+        """No host, no observer: the property is ``None`` and a call is exactly today's."""
         registry = HostToolRegistry()
-        assert registry.dispatch_observer is None
+        assert registry.host_tool_calls_observer is None
         registry.register(_stamped_pure())
-        result = _dispatch(HostToolRun(registry), "doubled", {"x": 21})
+        result = _call_host_tool(HostToolRun(registry), "doubled", {"x": 21})
         assert result.ok
 
     def test_one_run_per_program_and_the_name_of_the_call(self):
         """Two programs on one host: the run object is what a ledger attributes a call by."""
         events: list[tuple[str, object, HostToolRun, object]] = []
-        registry = HostToolRegistry(dispatch_observer=self._recording(events))
+        registry = HostToolRegistry(host_tool_calls_observer=self._recording(events))
         registry.register(_stamped_pure())
         run_a = HostToolRun(registry)
         run_b = HostToolRun(registry)
-        assert _dispatch(run_a, "doubled", {"x": 1}).ok
-        assert _dispatch(run_b, "doubled", {"x": 2}).ok
+        assert _call_host_tool(run_a, "doubled", {"x": 1}).ok
+        assert _call_host_tool(run_b, "doubled", {"x": 2}).ok
         assert [(kind, run is run_a, name) for kind, _, run, name in events] == [
             ("enter", True, "doubled"),
             ("exit", True, "doubled"),
@@ -1153,28 +1161,28 @@ class TestTheRegistryObservesEveryDispatch:
         """#446's point: two programs' calls are told apart by the run's own ``run_id`` — a
         documented, loggable identity — not by the object the observer happens to be handed."""
         events: list[tuple[str, object, HostToolRun, object]] = []
-        registry = HostToolRegistry(dispatch_observer=self._recording(events))
+        registry = HostToolRegistry(host_tool_calls_observer=self._recording(events))
         registry.register(_stamped_pure())
         run_a = HostToolRun(registry, run_id="prog-a")
         run_b = HostToolRun(registry)  # a generated identity, distinct from prog-a
-        assert _dispatch(run_a, "doubled", {"x": 1}).ok
-        assert _dispatch(run_b, "doubled", {"x": 2}).ok
+        assert _call_host_tool(run_a, "doubled", {"x": 1}).ok
+        assert _call_host_tool(run_b, "doubled", {"x": 2}).ok
         entered = [run.run_id for kind, _, run, _ in events if kind == "enter"]
         assert entered == ["prog-a", run_b.run_id]
         assert run_b.run_id != "prog-a"
 
-    def test_a_refused_dispatch_is_observed_too(self):
+    def test_a_refused_host_tool_call_is_observed_too(self):
         """A refusal is a call the host still ran, so it is observed: a cap refusal returns
         before any body runs, and without the enter/exit pair nothing else names the run."""
         events: list[tuple[str, object, HostToolRun, object]] = []
         registry = HostToolRegistry(
-            max_dispatches_per_run=1,
-            dispatch_observer=self._recording(events),
+            max_host_tool_calls_per_run=1,
+            host_tool_calls_observer=self._recording(events),
         )
         registry.register(_stamped_pure())
         run = HostToolRun(registry)
-        assert _dispatch(run, "doubled", {"x": 1}).ok
-        assert not _dispatch(run, "doubled", {"x": 2}).ok
+        assert _call_host_tool(run, "doubled", {"x": 1}).ok
+        assert not _call_host_tool(run, "doubled", {"x": 2}).ok
         self._pairing(events)
         assert [kind for kind, *_ in events] == ["enter", "exit", "enter", "exit"]
         assert all(event_run is run for _, _, event_run, _ in events)
@@ -1182,9 +1190,9 @@ class TestTheRegistryObservesEveryDispatch:
     def test_the_observer_sees_an_unresolved_name(self):
         """A name that never resolves is observed too, and the unhashable refusal is reachable."""
         events: list[tuple[str, object, HostToolRun, object]] = []
-        registry = HostToolRegistry(dispatch_observer=self._recording(events))
+        registry = HostToolRegistry(host_tool_calls_observer=self._recording(events))
         run = HostToolRun(registry)
-        unknown = _dispatch(run, "never_registered")
+        unknown = _call_host_tool(run, "never_registered")
         assert not unknown.ok
         assert unknown.refusal is not None and "not a registered host tool" in unknown.refusal
         self._pairing(events)
@@ -1194,10 +1202,10 @@ class TestTheRegistryObservesEveryDispatch:
     def test_an_unstring_name_is_seen_as_given(self):
         """The name is handed over as given: a non-string appears only on the refusal that ends it."""
         events: list[tuple[str, object, HostToolRun, object]] = []
-        registry = HostToolRegistry(dispatch_observer=self._recording(events))
+        registry = HostToolRegistry(host_tool_calls_observer=self._recording(events))
         run = HostToolRun(registry)
         not_a_name = ["doubled"]
-        refused = _dispatch(run, not_a_name)  # type: ignore[arg-type]
+        refused = _call_host_tool(run, not_a_name)  # type: ignore[arg-type]
         assert not refused.ok
         self._pairing(events)
         assert events[0][2:] == (run, not_a_name)
@@ -1210,7 +1218,7 @@ class TestTheRegistryObservesEveryDispatch:
         # The budget is spent by the framing alone, so a one-byte value does not even matter.
         registry = HostToolRegistry(
             response_limits=TransferLimits(max_bytes_per_file=64, max_total_bytes=5, max_files=8),
-            dispatch_observer=self._recording(events),
+            host_tool_calls_observer=self._recording(events),
         )
 
         @sandbox_tool(source=None, sink=None, identity=None)
@@ -1220,7 +1228,7 @@ class TestTheRegistryObservesEveryDispatch:
 
         registry.register(payload)
         run = HostToolRun(registry)
-        refused = asyncio.run(run.dispatch("payload", {"size": 1}, framing_bytes=5))
+        refused = asyncio.run(run.call("payload", {"size": 1}, framing_bytes=5))
         assert not refused.ok
         assert refused.refusal is not None and "byte budget" in refused.refusal
         assert body_calls == []
@@ -1228,9 +1236,9 @@ class TestTheRegistryObservesEveryDispatch:
         assert [kind for kind, *_ in events] == ["enter", "exit"]
         assert events[0][3] == "payload"
 
-    def test_two_in_flight_dispatches_pair_their_observers(self):
-        """Concurrency correctness is the ``with``, not a primitive: each dispatch enters its
-        own observer, so an interleaving is legal but never crosses."""
+    def test_two_in_flight_host_tool_calls_pair_their_observers(self):
+        """Concurrency correctness is the ``with``, not a primitive: each host-tool call enters
+        its own observer, so an interleaving is legal but never crosses."""
         entered = asyncio.Event()
         release = asyncio.Event()
 
@@ -1243,22 +1251,22 @@ class TestTheRegistryObservesEveryDispatch:
         events: list[tuple[str, object, HostToolRun, object]] = []
         registry = HostToolRegistry(
             response_limits=dataclasses.replace(DEFAULT_TRANSFER_LIMITS, max_files=1),
-            dispatch_observer=self._recording(events),
+            host_tool_calls_observer=self._recording(events),
         )
         registry.register(slow)
         run = HostToolRun(registry)
 
         async def scenario() -> None:
-            first = asyncio.create_task(run.dispatch("slow", {"x": 1}))
+            first = asyncio.create_task(run.call("slow", {"x": 1}))
             await entered.wait()  # inside its body, observer still entered
-            second = asyncio.create_task(run.dispatch("slow", {"x": 2}))
-            # Pin the second observer's enter, not the dispatch's outcome: a second that is
+            second = asyncio.create_task(run.call("slow", {"x": 2}))
+            # Pin the second observer's enter, not the host-tool call's outcome: a second that is
             # no longer observed never enters, and the wait must fail the suite instead of
             # hanging. Release only once it is in — the interleave the test exists to pin.
             deadline = time.monotonic() + 5
             while sum(kind == "enter" for kind, *_ in events) < 2:
                 if time.monotonic() > deadline:
-                    pytest.fail("the second dispatch never entered its observer")
+                    pytest.fail("the second host-tool call never entered its observer")
                 await asyncio.sleep(0)
             release.set()
             await asyncio.gather(first, second)
@@ -1267,7 +1275,7 @@ class TestTheRegistryObservesEveryDispatch:
         self._pairing(events)
         assert sum(kind == "enter" for kind, *_ in events) == 2
 
-    def test_a_cancelled_dispatch_still_exits_its_observer(self):
+    def test_a_cancelled_host_tool_call_still_exits_its_observer(self):
         """Cancellation is a ``BaseException`` with no outcome — the exit is structural, so it
         still happens, and the slot the body was holding goes back with it."""
         entered = asyncio.Event()
@@ -1281,13 +1289,13 @@ class TestTheRegistryObservesEveryDispatch:
         events: list[tuple[str, object, HostToolRun, object]] = []
         registry = HostToolRegistry(
             response_limits=dataclasses.replace(DEFAULT_TRANSFER_LIMITS, max_files=1),
-            dispatch_observer=self._recording(events),
+            host_tool_calls_observer=self._recording(events),
         )
         registry.register(never)
         run = HostToolRun(registry)
 
         async def scenario() -> None:
-            abandoned = asyncio.create_task(run.dispatch("never"))
+            abandoned = asyncio.create_task(run.call("never"))
             await entered.wait()
             abandoned.cancel()
             await asyncio.wait([abandoned])
@@ -1297,8 +1305,8 @@ class TestTheRegistryObservesEveryDispatch:
         self._pairing(events)
         assert [kind for kind, *_ in events] == ["enter", "exit"]
 
-    def test_a_context_the_dispatch_never_enters_records_nothing(self):
-        """The ``enter`` event is the ``__enter__`` itself: a context the dispatch never
+    def test_a_context_the_host_tool_call_never_enters_records_nothing(self):
+        """The ``enter`` event is the ``__enter__`` itself: a context the host-tool call never
         enters records no event at all, not an enter that no exit will ever pair."""
         events: list[tuple[str, object, HostToolRun, object]] = []
         observer = self._recording(events)
@@ -1306,7 +1314,7 @@ class TestTheRegistryObservesEveryDispatch:
         assert events == []
 
     def test_observation_begins_before_the_body_and_ends_after(self):
-        """The body's position in the stream is the pin: a dispatch that entered its
+        """The body's position in the stream is the pin: a host-tool call that entered its
         observer after the body ran — or exited it before — breaks the shape."""
         order: list[str] = []
 
@@ -1325,20 +1333,20 @@ class TestTheRegistryObservesEveryDispatch:
         def marks_body() -> None:
             order.append("body")
 
-        registry = HostToolRegistry(dispatch_observer=factory)
+        registry = HostToolRegistry(host_tool_calls_observer=factory)
         registry.register(marks_body)
-        assert _dispatch(HostToolRun(registry), "marks_body").ok
+        assert _call_host_tool(HostToolRun(registry), "marks_body").ok
         assert order == ["enter", "body", "exit"]
 
     def test_a_framing_rejection_happens_before_the_observation(self):
-        """The door's own checks, so no enter exists for an exit to pair: a dispatch that
+        """The door's own checks, so no enter exists for an exit to pair: a host-tool call that
         raised on framing has spent nothing, and the host saw nothing to attribute."""
         events: list[tuple[str, object, HostToolRun, object]] = []
-        registry = HostToolRegistry(dispatch_observer=self._recording(events))
+        registry = HostToolRegistry(host_tool_calls_observer=self._recording(events))
         registry.register(_stamped_pure())
         run = HostToolRun(registry)
         with pytest.raises(ValueError, match="framing_bytes"):
-            asyncio.run(run.dispatch("doubled", {"x": 1}, framing_bytes=-1))
+            asyncio.run(run.call("doubled", {"x": 1}, framing_bytes=-1))
         assert events == []
 
     def _observer_that_raises(self, where: str):
@@ -1378,40 +1386,42 @@ class TestTheRegistryObservesEveryDispatch:
 
         return factory
 
-    def test_a_failing_observer_costs_the_host_a_log_line_not_the_dispatch(self, caplog):
+    def test_a_failing_observer_costs_the_host_a_log_line_not_the_host_tool_call(self, caplog):
         caplog.at_level(logging.WARNING)
         for where in ("factory", "enter", "exit"):
             caplog.clear()
-            registry = HostToolRegistry(dispatch_observer=self._observer_that_raises(where))
+            registry = HostToolRegistry(host_tool_calls_observer=self._observer_that_raises(where))
             registry.register(_stamped_pure())
             with caplog.at_level(logging.WARNING):
-                result = _dispatch(HostToolRun(registry), "doubled", {"x": 21})
+                result = _call_host_tool(HostToolRun(registry), "doubled", {"x": 21})
             assert result.ok, where
             assert "observer" in caplog.text, where
 
-    def test_an_observer_that_cancels_costs_the_host_a_log_line_not_the_dispatch(self, caplog):
-        """``CancelledError`` is a ``BaseException``, and the dispatch is not the observer's to
-        cancel: each guard must take it and log, the way it takes any other observer failure."""
+    def test_an_observer_that_cancels_costs_the_host_a_log_line_not_the_host_tool_call(
+        self, caplog
+    ):
+        """``CancelledError`` is a ``BaseException``, and the host-tool call is not the observer's
+        to cancel: each guard must take it and log, the way it takes any other observer failure."""
         caplog.at_level(logging.WARNING)
         for where in ("factory", "enter", "exit"):
             caplog.clear()
-            registry = HostToolRegistry(dispatch_observer=self._observer_that_cancels(where))
+            registry = HostToolRegistry(host_tool_calls_observer=self._observer_that_cancels(where))
             registry.register(_stamped_pure())
             with caplog.at_level(logging.WARNING):
-                result = _dispatch(HostToolRun(registry), "doubled", {"x": 21})
+                result = _call_host_tool(HostToolRun(registry), "doubled", {"x": 21})
             assert result.ok, where
             assert "observer" in caplog.text, where
 
     def test_an_observer_that_exits_the_process_still_does(self, caplog):
         """``SystemExit`` is the host's control flow, not an observer failure: contained for
         ``Exception`` and ``CancelledError`` alike, it escapes the guards rather than being
-        logged and the dispatch carried on past a process that is on its way out."""
+        logged and the host-tool call carried on past a process that is on its way out."""
         for where in ("factory", "enter", "exit"):
             caplog.clear()
-            registry = HostToolRegistry(dispatch_observer=self._observer_that_exits(where))
+            registry = HostToolRegistry(host_tool_calls_observer=self._observer_that_exits(where))
             registry.register(_stamped_pure())
             with pytest.raises(SystemExit):
-                _dispatch(HostToolRun(registry), "doubled", {"x": 21})
+                _call_host_tool(HostToolRun(registry), "doubled", {"x": 21})
             assert "observer" not in caplog.text, where
 
     @staticmethod
@@ -1435,15 +1445,15 @@ class TestTheRegistryObservesEveryDispatch:
 
     def test_an_observer_that_closes_its_own_generator_is_contained(self, caplog):
         """``GeneratorExit`` from the observer's own generator is an observer failure — the
-        dispatch is not made to fail, or to stop, over it, the way an ``Exception`` or a
+        host-tool call is not made to fail, or to stop, over it, the way an ``Exception`` or a
         ``CancelledError`` is not."""
         caplog.at_level(logging.WARNING)
         for where in ("factory", "enter", "exit"):
             caplog.clear()
-            registry = HostToolRegistry(dispatch_observer=self._observer_that_closes(where))
+            registry = HostToolRegistry(host_tool_calls_observer=self._observer_that_closes(where))
             registry.register(_stamped_pure())
             with caplog.at_level(logging.WARNING):
-                result = _dispatch(HostToolRun(registry), "doubled", {"x": 21})
+                result = _call_host_tool(HostToolRun(registry), "doubled", {"x": 21})
             assert result.ok, where
             assert "observer" in caplog.text, where
 
@@ -1476,14 +1486,14 @@ class TestTheRegistryObservesEveryDispatch:
         def broken() -> None:
             raise RuntimeError("boom")
 
-        registry = HostToolRegistry(dispatch_observer=self._observer_that_returns_true())
+        registry = HostToolRegistry(host_tool_calls_observer=self._observer_that_returns_true())
         registry.register(broken)
-        result = _dispatch(HostToolRun(registry), "broken")
+        result = _call_host_tool(HostToolRun(registry), "broken")
         assert not result.ok
         assert result.refusal is not None and "failed" in result.refusal
 
     def test_an_exit_that_returns_true_does_not_swallow_a_cancellation(self):
-        """The only exception a dispatch can propagate is a cancellation; an ``__exit__`` that
+        """The only exception a host-tool call can propagate is a cancellation; an ``__exit__`` that
         returns ``True`` is exactly the form that would swallow it — and does not."""
         entered = asyncio.Event()
 
@@ -1495,13 +1505,13 @@ class TestTheRegistryObservesEveryDispatch:
 
         registry = HostToolRegistry(
             response_limits=dataclasses.replace(DEFAULT_TRANSFER_LIMITS, max_files=1),
-            dispatch_observer=self._observer_that_returns_true(),
+            host_tool_calls_observer=self._observer_that_returns_true(),
         )
         registry.register(never)
         run = HostToolRun(registry)
 
         async def scenario() -> None:
-            abandoned = asyncio.create_task(run.dispatch("never"))
+            abandoned = asyncio.create_task(run.call("never"))
             await entered.wait()
             abandoned.cancel()
             await asyncio.wait([abandoned])
@@ -1529,7 +1539,7 @@ class TestTheRegistryObservesEveryDispatch:
 
     def test_a_non_callable_observer_is_refused_at_construction(self):
         with pytest.raises(TypeError, match="must be callable"):
-            HostToolRegistry(dispatch_observer=3)  # type: ignore[arg-type]
+            HostToolRegistry(host_tool_calls_observer=3)  # type: ignore[arg-type]
 
     def test_a_coroutine_function_observer_is_refused_at_construction(self):
         """A coroutine ``factory`` would be a context manager no one awaits — an observer that
@@ -1539,7 +1549,7 @@ class TestTheRegistryObservesEveryDispatch:
             return contextlib.nullcontext()
 
         with pytest.raises(TypeError, match="must be synchronous"):
-            HostToolRegistry(dispatch_observer=factory)  # type: ignore[arg-type]
+            HostToolRegistry(host_tool_calls_observer=factory)  # type: ignore[arg-type]
 
     def test_an_async_callable_instance_observer_is_refused_at_construction(self):
         """The same observer no one awaits, as an instance: only its ``__call__`` is the
@@ -1552,16 +1562,16 @@ class TestTheRegistryObservesEveryDispatch:
                 return contextlib.nullcontext()
 
         with pytest.raises(TypeError, match="must be synchronous"):
-            HostToolRegistry(dispatch_observer=_async_call())  # type: ignore[arg-type]
+            HostToolRegistry(host_tool_calls_observer=_async_call())  # type: ignore[arg-type]
 
     def test_the_property_reflects_what_the_host_registered(self):
         observer = lambda run, name: contextlib.nullcontext()  # noqa: E731
-        registry = HostToolRegistry(dispatch_observer=observer)
-        assert registry.dispatch_observer is observer
+        registry = HostToolRegistry(host_tool_calls_observer=observer)
+        assert registry.host_tool_calls_observer is observer
 
     def test_an_observer_whose_enter_returns_a_span_is_admitted(self):
         """Tracing and span context managers return their span from ``__enter__``: the
-        dispatch discards that value, so the public type must not refuse to name it."""
+        host-tool call discards that value, so the public type must not refuse to name it."""
 
         @contextlib.contextmanager
         def span() -> Generator[object]:
@@ -1570,6 +1580,67 @@ class TestTheRegistryObservesEveryDispatch:
         def factory(run: HostToolRun, name: object) -> contextlib.AbstractContextManager[object]:
             return span()
 
-        registry = HostToolRegistry(dispatch_observer=factory)
+        registry = HostToolRegistry(host_tool_calls_observer=factory)
         registry.register(_stamped_pure())
-        assert _dispatch(HostToolRun(registry), "doubled", {"x": 1}).ok
+        assert _call_host_tool(HostToolRun(registry), "doubled", {"x": 1}).ok
+
+
+class TestThePreRenameSpellingStillResolves:
+    """Every old name, exercised — the compatibility claim, made falsifiable.
+
+    The old spelling is kept for one release so a dependent resolves against this core and
+    the one before it. Module names, keywords, properties and methods each need their own
+    check: aliasing one kind does not alias another.
+    """
+
+    def test_the_module_level_names_are_the_new_objects(self):
+        assert DispatchResult is HostToolCallResult
+        assert DEFAULT_MAX_DISPATCHES_PER_RUN == DEFAULT_MAX_HOST_TOOL_CALLS_PER_RUN
+        assert dispatch_over_exec is host_tool_calls_over_exec
+        assert fold_dispatch_transfer_limits is fold_host_tool_call_transfer_limits
+
+    def test_the_cap_reads_under_both_spellings(self):
+        registry = HostToolRegistry(max_host_tool_calls_per_run=5)
+        assert registry.max_dispatches_per_run == 5
+        assert registry.max_host_tool_calls_per_run == 5
+
+    def test_the_cap_is_settable_under_the_old_keyword(self):
+        registry = HostToolRegistry(max_dispatches_per_run=5)
+        assert registry.max_host_tool_calls_per_run == 5
+        assert registry.max_dispatches_per_run == 5
+
+    def test_the_observer_reads_under_both_spellings(self):
+        observer = lambda run, name: contextlib.nullcontext()  # noqa: E731
+        registry = HostToolRegistry(dispatch_observer=observer)
+        assert registry.dispatch_observer is observer
+        assert registry.host_tool_calls_observer is observer
+
+    def test_one_spelling_at_a_time(self):
+        with pytest.raises(TypeError, match="not both"):
+            HostToolRegistry(max_host_tool_calls_per_run=5, max_dispatches_per_run=5)
+
+    def test_dispatch_reaches_the_tool(self):
+        registry = HostToolRegistry()
+        registry.register(_stamped_pure())
+        result = asyncio.run(HostToolRun(registry).dispatch("doubled", {"x": 1}))
+        assert result.ok
+        assert result.value_json == "2"
+
+    def test_dispatch_delegates_rather_than_copying_call(self):
+        """A subclass overriding ``call`` is what an old caller must still reach.
+
+        Delegation is what makes that hold: a ``dispatch`` bound to the base function would
+        resolve to the base ``call`` and skip the override.
+        """
+        seen: list[str] = []
+
+        class Watched(HostToolRun):
+            async def call(self, name, arguments=None, *, framing_bytes=0):
+                seen.append(name)
+                return await super().call(name, arguments, framing_bytes=framing_bytes)
+
+        registry = HostToolRegistry()
+        registry.register(_stamped_pure())
+        result = asyncio.run(Watched(registry).dispatch("doubled", {"x": 1}))
+        assert result.ok
+        assert seen == ["doubled"]

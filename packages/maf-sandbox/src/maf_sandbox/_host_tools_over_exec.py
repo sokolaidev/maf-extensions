@@ -1,12 +1,13 @@
 """A host-tool transport an ``EXEC`` backend can implement honestly — request and response files.
 
-:mod:`maf_sandbox._host_tools` says what may be dispatched and on whose authority.  It does not
-say how a dispatch *reaches* the host, and the shipped backends have no channel for one: their
+:mod:`maf_sandbox._host_tools` says what may be called and on whose authority.  It does not
+say how a call *reaches* the host, and the shipped backends have no channel for one: their
 guests speak an exit code, stdout, and a stat-and-read pull surface.  This is that channel,
 built from those primitives and nothing else.
 
 The shape, in one paragraph.  A kind writes the guest program and the generated shim beside
-it, into a **fresh per-run directory**; :func:`dispatch_over_exec` writes the launcher, starts
+it, into a **fresh per-run directory**; :func:`host_tool_calls_over_exec` writes the launcher,
+starts
 it detached, and then supervises — polling for the next request file, resolving it through
 :class:`~maf_sandbox.HostToolRegistry`, and writing the answer back — until the program leaves
 its exit marker or the deadline passes.
@@ -14,19 +15,19 @@ its exit marker or the deadline passes.
 **The shim is not a control.** It runs in the guest, where model-written code can read, edit or
 ignore it: a program that writes request files itself is served identically, and that is by
 design rather than an oversight. Every gate that matters — resolution, the declaration check,
-argument validation, the dispatch cap, the response ceiling — is host-side in
-:meth:`~maf_sandbox.HostToolRun.dispatch`, which this module calls and never reimplements.
+argument validation, the call cap, the response ceiling — is host-side in
+:meth:`~maf_sandbox.HostToolRun.call`, which this module calls and never reimplements.
 
 Three costs, named here rather than discovered later:
 
-- **Three backend calls per dispatch, at minimum, plus polling.** Serving one request is a
+- **Three backend calls per host-tool call, at minimum, plus polling.** Serving one request is a
   ``stat_file``, then a ``read_file``, then a ``write_file`` for the answer. The exit-marker
   probe overlaps the request probes, and a small adaptive window discovers contiguous requests
   ahead of the one being served. On a remote backend every operation is still a round trip, so
   a call-heavy program can cost far more of them than the direct tool-calling this replaces.
   Whether that is worth it is a measurement, not an assumption (#133).
-- **Dispatch stays sequential.** The supervisor discovers requests by sequential name rather
-  than enumerating a directory, because the backend that most needs this transport
+- **Host-tool calls stay sequential.** The supervisor discovers requests by sequential name
+  rather than enumerating a directory, because the backend that most needs this transport
   (`maf-sandbox-docker`) serves ``FILES_OUT`` and not ``FILES_LIST``. Concurrent guest callers
   can publish several requests before the prior answer lands, but their host tools still run
   strictly in identifier order. Threads and processes share that order: the shim claims each
@@ -34,9 +35,9 @@ Three costs, named here rather than discovered later:
 - **Cleanup is this transport's own doing, because the protocol offers none.** Nothing in the
   vocabulary deletes, so the files a run leaves would sit in the guest until the sandbox was
   disposed of — readable by every later run in it, since ``acquire`` is get-or-create. What
-  removes them is ``rm`` over the ``exec`` the dispatch path already requires, which works
+  removes them is ``rm`` over the ``exec`` the host-tool-call path already requires, which works
   here and is not a general answer: a guest without a POSIX shell has no cleanup at all
-  (#438). :func:`dispatch_over_exec` reclaims the directory it owns on every exit path;
+  (#438). :func:`host_tool_calls_over_exec` reclaims the directory it owns on every exit path;
   :attr:`GuestRunLayout.work` is the caller's, because artifacts are collected after this
   returns, and :func:`reclaim_run` is what a kind calls for it. A fresh per-run directory is
   still required — it is what keeps one run's traffic out of the next one's while both are
@@ -105,10 +106,10 @@ _REFUSAL_TOO_LONG = (
 )
 
 
-def fold_dispatch_transfer_limits(
+def fold_host_tool_call_transfer_limits(
     files_in: TransferLimits, files_out: TransferLimits, surface: HostToolAggregate
 ) -> SandboxLimits:
-    """Widen a workload's transfer caps to cover the dispatch transport's own traffic.
+    """Widen a workload's transfer caps to cover the host-tool-call transport's own traffic.
 
     The router matches only the spec's caps against the backend, so traffic the workload never
     declared — the launcher and answers written in, the output, requests and markers read back —
@@ -120,14 +121,15 @@ def fold_dispatch_transfer_limits(
     what a tool delivered — so refusals are budgeted by count, not by that ledger.
 
     The stdout cap folded is always the one the transport *borrows* — a surface cannot see an
-    ``output_limit``, which :func:`dispatch_over_exec` takes per call. That cuts both ways and
+    ``output_limit``, which :func:`host_tool_calls_over_exec` takes per call. That cuts both
+    ways and
     neither is silent: a larger ``output_limit`` is a transfer the caller declares in its own
     ``files_out.max_bytes_per_file``, and a smaller one leaves this asking a backend for more
     than the run will move, so a backend that would have fit is refused. Conservative on
     purpose — refusing a run that would have worked is recoverable, admitting one that overruns
     mid-run is not.
     """
-    serves = surface.max_dispatches_per_run + 1  # `_serving_bound`: the refusal past the cap.
+    serves = surface.max_host_tool_calls_per_run + 1  # `_serving_bound`: the refusal past the cap.
     response_limits = surface.response_limits
     return SandboxLimits(
         files_in=TransferLimits(
@@ -281,7 +283,7 @@ _STARTUP_STEMS = frozenset(
 #: :data:`_SHIM_STEMS` is what the generated shim imports, and the collision is with the shim
 #: rather than the interpreter: the two share a directory, so a program named ``json`` *is*
 #: what the shim's own ``import json`` finds. The program's body runs a second time under that
-#: name and every dispatch afterwards dies on an attribute the real module would have had —
+#: name and every call afterwards dies on an attribute the real module would have had —
 #: a traceback that names ``dumps`` and never the collision.
 #:
 #: Only ``json`` is resolved from a directory on a current guest; ``os`` and ``time`` are
@@ -374,7 +376,7 @@ class SandboxProgramTimeout(TimeoutError):
       already exited. What it says is that this transport did not stop anything.
     - ``"absent"`` — the run ended before any launcher ran, so no program was started and
       none is running. It says nothing about *files*: a kind writes the program, the shim and
-      the model's shared-in files into the run directory before dispatching, so
+      the model's shared-in files into the run directory before the run starts, so
       :func:`reclaim_run` is owed here exactly as it is on every other outcome.
     - ``"unrecorded"`` — the launcher returned and no pid ever appeared. The launcher may have
       failed before publishing one, so this is not evidence of a running program either — it
@@ -440,7 +442,7 @@ _FINAL_READ_GRACE = 2.0
 _RECLAIM_GRACE = 10.0
 
 #: What writing one answer may spend when the run's own bound has already passed. Small, and
-#: not the run's remainder: a dispatch may finish after the deadline by design, and the answer
+#: not the run's remainder: a call may finish after the deadline by design, and the answer
 #: to a tool that has already acted is worth one more round trip to record.
 _RESPONSE_WRITE_GRACE = 2.0
 
@@ -502,7 +504,7 @@ class GuestRunLayout:
 
 
 def guest_run_layout(run_directory: str, *, program: str = "program.py") -> GuestRunLayout:
-    """The paths :func:`dispatch_over_exec` expects, derived from one run's directory.
+    """The paths :func:`host_tool_calls_over_exec` expects, derived from one run's directory.
 
     A kind writes ``program`` and :attr:`GuestRunLayout.shim`; everything else is written here.
 
@@ -726,7 +728,8 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
     )
     if len(script.encode("utf-8")) > _LAUNCHER_CEILING:
         # The router promised a backend this ceiling for the upload (see
-        # `fold_dispatch_transfer_limits`), and the template repeats the layout's paths and the
+        # `fold_host_tool_call_transfer_limits`), and the template repeats the layout's paths
+        # and the
         # interpreter enough times that a long enough work_dir outgrows it. Refused rather than
         # uploaded: a transfer past a ceiling the backend agreed to is the failure the fold
         # exists to prevent, and a named refusal beats discovering it inside the guest.
@@ -745,7 +748,7 @@ def _quote(text: str) -> str:
     return "'" + text.replace("'", "'\\''") + "'"
 
 
-async def dispatch_over_exec(
+async def host_tool_calls_over_exec(
     sandbox: Sandbox,
     run: HostToolRun,
     layout: GuestRunLayout,
@@ -763,8 +766,8 @@ async def dispatch_over_exec(
     Args:
         sandbox: Must serve ``EXEC``, ``FILES_IN`` and ``FILES_OUT`` — the supervisor stats and
             reads requests and writes responses. ``FILES_LIST`` is deliberately not required.
-        run: One run's dispatch context. Every request goes through
-            :meth:`~maf_sandbox.HostToolRun.dispatch`, which is where the contract lives.
+        run: One run's host-tool-call context. Every request goes through
+            :meth:`~maf_sandbox.HostToolRun.call`, which is where the contract lives.
         layout: From :func:`guest_run_layout`, on a directory used by this run alone.
         timeout: Seconds for the **whole program**, not one command. A wedged guest is bounded
             by this and nothing else, since a detached process outlives the ``exec`` that
@@ -780,7 +783,8 @@ async def dispatch_over_exec(
             the borrowed leg is exceeded; passing a limit only stops that number being a side
             effect of unrelated host-tool configuration. Must be a positive integer when given.
             A caller that passes one owes it to its own spec: only the borrowed cap is folded
-            into the router's transfer match (:func:`fold_dispatch_transfer_limits`), so a limit
+            into the router's transfer match (:func:`fold_host_tool_call_transfer_limits`), so
+            a limit
             above ``files_out.max_bytes_per_file`` is a read the backend never agreed to — and a
             limit below the borrowed cap still leaves the match asking for the borrowed one,
             which can refuse a backend this run would have fitted.
@@ -826,8 +830,8 @@ async def dispatch_over_exec(
     caller that needs the process actually gone must dispose of the sandbox rather than trust
     the return.
 
-    **This supervisor never cancels a dispatch already under way**, and the deadline is
-    checked before starting one rather than during it. A dispatched body runs in the host
+    **This supervisor never cancels a call already under way**, and the deadline is
+    checked before starting one rather than during it. A host tool's body runs in the host
     process and may have acted already — written a row, sent a message — so cancelling it
     mid-effect would leave the effect and lose the record of it. The cost is stated rather
     than hidden: a tool that blocks forever holds the supervisor past ``timeout``, and
@@ -836,12 +840,12 @@ async def dispatch_over_exec(
 
     The promise is about this function's own bound and reaches no further. A caller that
     cancels the coroutine — an outer ``asyncio.wait_for``, a cancelled task — cancels
-    whatever is in flight, a dispatch included, and can leave a tool's effect half done.
+    whatever is in flight, a host-tool call included, and can leave a tool's effect half done.
     Shielding it would trade that for a worse one, since a host tool is deliberately unbounded
     here: cancellation would then take arbitrarily long to be honoured, or never.
-    :meth:`~maf_sandbox.HostToolRun.dispatch` treats the outcome as legitimate rather than
+    :meth:`~maf_sandbox.HostToolRun.call` treats the outcome as legitimate rather than
     impossible — it returns the response slot, logs which tool was cut off, and lets a wired
-    ``dispatch_observer`` see the cancellation (#355), so a half-done effect is recorded even
+    ``host_tool_calls_observer`` see the cancellation (#355), so a half-done effect is recorded even
     though the response never lands.
     """
     # Both bounds checked before the launcher starts, because a detached program outlives a
@@ -926,7 +930,7 @@ async def dispatch_over_exec(
 class _WhatTheLauncherSaid:
     """What the launcher reported, for the paths that run after the supervisor has it.
 
-    `dispatch_over_exec` stops the program itself when anything other than a timeout leaves
+    `host_tool_calls_over_exec` stops the program itself when anything other than a timeout leaves
     the supervisor, and that path has no launcher result of its own.
     """
 
@@ -948,7 +952,7 @@ async def _supervise(
     launcher: _WhatTheLauncherSaid,
     output_limit: int | None,
 ) -> ExecResult:
-    """The body of :func:`dispatch_over_exec`, minus the cleanup that wraps it."""
+    """The body of :func:`host_tool_calls_over_exec`, minus the cleanup that wraps it."""
     deadline = time.monotonic() + timeout
     try:
         await _within(
@@ -1254,7 +1258,8 @@ async def reclaim_run(sandbox: Sandbox, layout: GuestRunLayout, *, timeout: floa
 
     **A kind's to call in a ``finally``, after collecting anything it means to keep.** The
     ordering is the trap: artifacts live in :attr:`GuestRunLayout.work`, so a caller that
-    reclaims before collecting loses them, and :func:`dispatch_over_exec` cannot do this itself
+    reclaims before collecting loses them, and :func:`host_tool_calls_over_exec` cannot do this
+    itself
     for the same reason.
 
     Raises:
@@ -1706,7 +1711,7 @@ async def _serve_request_probes(
                 served += 1
                 continue
             response_path = posixpath.join(layout.calls, f"{identifier}.response.json")
-            # A dispatch may finish after the deadline by design. Its answer gets a fresh
+            # A call may finish after the deadline by design. Its answer gets a fresh
             # write grace so the effect and its record cannot be split.
             await _within(
                 max(deadline, time.monotonic() + _RESPONSE_WRITE_GRACE),
@@ -1838,24 +1843,24 @@ async def _answer(
     if not isinstance(parsed, dict):
         return _refusal("Error: a host-tool request must be a JSON object")
     request = cast("dict[str, object]", parsed)
-    # Handed over as-is, casts and all: `dispatch` is where guest data is checked, and it
+    # Handed over as-is, casts and all: `call` is where guest data is checked, and it
     # takes `object` to its own `isinstance` gates for exactly this reason. Narrowing here
     # would be a second validation in the wrong process's file — and the annotations describe
     # the contract a *host* calls under, not what a transport can promise about a JSON blob.
     if request.get("abandoned") is True:
-        # The guest's own marker for a number it took and could not use. Nothing dispatches
+        # The guest's own marker for a number it took and could not use. Nothing calls
         # and nothing is written; a guest spending its allowance on these is bounded by the
         # same count as one spending it on refusals — see `_serving_bound`.
         return None
     name = cast(str, request.get("name"))
     arguments = cast("Mapping[str, Any] | None", request.get("arguments"))
-    # The framing is declared, not policed afterwards. `dispatch` charges the run for the
+    # The framing is declared, not policed afterwards. `call` charges the run for the
     # payload *and* these bytes, so a value that only fits unwrapped is refused before the
     # ledger is spent — checking it here could only turn a committed success into a refusal,
     # leaving the run paying for a response that was never delivered.
-    result = await run.dispatch(name, arguments, framing_bytes=_FRAMING_BYTES)
+    result = await run.call(name, arguments, framing_bytes=_FRAMING_BYTES)
     if not result.ok:
-        # `DispatchResult` carries exactly one of the two, enforced in its own `__post_init__`.
+        # `HostToolCallResult` carries exactly one of the two, enforced in its own `__post_init__`.
         return _refusal(cast(str, result.refusal))
     # `value_json` is already the serialized return value, capped host-side. Splicing it in as
     # text keeps those exact bytes rather than re-serializing a parse of them.
@@ -1884,11 +1889,11 @@ class _DeadlineExpired(TimeoutError):
 async def _within[T](deadline: float, what: str, call: Awaitable[T]) -> T:
     """Await one transport call inside what is left of the run's deadline.
 
-    Sandbox I/O is bounded and a dispatched host tool is not, and the difference is where the
+    Sandbox I/O is bounded and a host tool is not, and the difference is where the
     effect lives. A stalled ``stat_file`` is the backend's control plane hanging — cancelling
     it costs nothing and is the only thing standing between one slow request and a supervisor
     that never returns. A host tool has already begun acting in this process; see
-    :func:`dispatch_over_exec` on why that one is left alone.
+    :func:`host_tool_calls_over_exec` on why that one is left alone.
     """
     remaining = max(0.0, deadline - time.monotonic())
     bound = asyncio.timeout(remaining)
@@ -1978,7 +1983,7 @@ async def _read_if_present(
         # a backend was asked for, not what it is guaranteed to have honoured — one whose SDK
         # buffers the whole response can only refuse after the fact. The stat that came before
         # is a second-hand number and the file may have grown since. Counted here, so nothing
-        # over the cap is decoded, let alone dispatched.
+        # over the cap is decoded, let alone called.
         logger.warning(
             "host tools: %s returned %d bytes against a %d cap, refusing it",
             posixpath.basename(path),
@@ -2086,13 +2091,13 @@ def _why_no_output(value: str | _TooLarge | _NotText | None) -> str:
 def _serving_bound(run: HostToolRun) -> int:
     """How many requests this supervisor will read before it stops reading them.
 
-    Every request, not every dispatch: a malformed one is answered before the door and so
-    never spends the cap that is meant to bound this. One more than the cap because dispatch
+    Every request, not every call: a malformed one is answered before the door and so
+    never spends the cap that is meant to bound this. One more than the cap because calling
     stays sequential even when parallel, speculative probes discover several outstanding
     requests: the first request past the cap receives the single refusal that tells the guest
     the cap is gone. Past it the supervisor only waits for the program to end.
     """
-    return run.registry.max_dispatches_per_run + 1
+    return run.registry.max_host_tool_calls_per_run + 1
 
 
 def _request_cap(run: HostToolRun) -> int:
@@ -2109,7 +2114,8 @@ def _request_cap(run: HostToolRun) -> int:
 def _output_cap(run: HostToolRun, output_limit: int | None = None) -> int:
     """What the host will read back of the program's own output.
 
-    ``output_limit`` is the caller's own bound, passed to :func:`dispatch_over_exec`, and it is
+    ``output_limit`` is the caller's own bound, passed to
+    :func:`host_tool_calls_over_exec`, and it is
     the right answer when given: only the caller knows what its program prints and what it will
     hold. When it is not given the run's **total** response leg is borrowed — the opposite of
     :func:`_request_cap`'s per-file one, and deliberate. A request file is a host-tool response's
@@ -2140,3 +2146,12 @@ def _exit_code_from(recorded: str | _TooLarge | _NotText) -> int:
         return int(recorded.strip())
     except ValueError:
         return 1
+
+
+# --- The pre-rename spelling, kept for one release (see `_host_tools`) ----------------------
+
+#: Deprecated alias of :func:`host_tool_calls_over_exec`.
+dispatch_over_exec = host_tool_calls_over_exec
+
+#: Deprecated alias of :func:`fold_host_tool_call_transfer_limits`.
+fold_dispatch_transfer_limits = fold_host_tool_call_transfer_limits

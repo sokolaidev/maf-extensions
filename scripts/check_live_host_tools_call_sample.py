@@ -1,9 +1,9 @@
-"""Assert that a live host-tools dispatch sample really dispatched, and measured.
+"""Assert that a live host-tools sample really called a host tool, and measured.
 
 The live workflow installs the *published* wheels, runs the sample and pipes its output here.
 
     python samples/15_acas_codeact_host_tools/agent.py | tee out.txt
-    python scripts/check_live_host_tools_dispatch_sample.py out.txt   # or: ... | python -
+    python scripts/check_live_host_tools_call_sample.py out.txt   # or: ... | python -
 
 Sample 15 runs the same call-heavy walk on either backend: ACAS by default, docker with
 `SAMPLE_BACKEND=docker`. Pass `--docker` to check the docker run — its backend declares no
@@ -15,8 +15,8 @@ Python in the sandbox and walk the same four stages, so what is enforced is eith
 interpreter's output or a structural property of the two roads:
 
 - Both programs printed the whole table — both state totals and all six cells.
-- Direct needed more tool-calling rounds than dispatch.
-- The dispatched route's model carried no sales figure into code; the direct route's carried
+- Direct needed more tool-calling rounds than the host-tool-call route.
+- The host-tool-call route's model carried no sales figure into code; the direct route's carried
   all twelve.
 - The runs declare both transport cleanup and framework call-directory cleanup, which act 5
   measures — ACAS only, since `--docker` drops that act.
@@ -38,13 +38,13 @@ from pathlib import Path
 from typing import Any
 
 _TAG = "[measured]"
-_DISPATCH = "dispatch route"
+_HOST_TOOL_CALL = "host-tool-call route"
 _DIRECT = "direct route"
-_ROUTES = (_DISPATCH, _DIRECT)
+_ROUTES = (_HOST_TOOL_CALL, _DIRECT)
 _ANY_ROUTE = "|".join(re.escape(name) for name in _ROUTES)
 
 #: Act 4 names the same two by their short form.
-_SHORT = {"dispatched": _DISPATCH, "direct": _DIRECT}
+_SHORT = {"host-tool-call": _HOST_TOOL_CALL, "direct": _DIRECT}
 
 #: How many states the summary covers, and so how many totals each program must print.
 _STATES = 2
@@ -90,7 +90,7 @@ def _tagged(pattern: str) -> re.Pattern[str]:
     return re.compile(rf"^\s*{re.escape(_TAG)}\s+{pattern}", _F)
 
 
-_CAP = _tagged(r"dispatch cap for the run:\s+(\d+)\s+\(the walk needs\s+(\d+)[^,]*,\s+(\d+)")
+_CAP = _tagged(r"host-tool-call cap for the run:\s+(\d+)\s+\(the walk needs\s+(\d+)[^,]*,\s+(\d+)")
 _TRIPS = _tagged(rf"({_ANY_ROUTE}):\s+(\d+)\s+lookup\(s\) over\s+(\d+)\s+tool-calling round\(s\)")
 _SHAPE = _tagged(rf"({_ANY_ROUTE}):\s+tool calls per round:\s+\[([^\]]*)\]")
 _COST = _tagged(rf"({_ANY_ROUTE}):\s+([\d.]+)s,\s+(\d+)\s+tokens")
@@ -103,9 +103,9 @@ _WROTE = _tagged(
     rf"({_ANY_ROUTE}):\s+sales figures the model wrote into code:\s+(\d+)\s+of\s+(\d+)"
 )
 _RESTATED = _tagged(
-    r"sales figures the model wrote into code,\s+(dispatched|direct):\s+(\d+)\s+of\s+(\d+)"
+    r"sales figures the model wrote into code,\s+(host-tool-call|direct):\s+(\d+)\s+of\s+(\d+)"
 )
-_OBSERVED_PROGRAMS = _tagged(rf"({_ANY_ROUTE}):\s+programs that dispatched:\s+(\d+)")
+_OBSERVED_PROGRAMS = _tagged(rf"({_ANY_ROUTE}):\s+programs that called a host tool:\s+(\d+)")
 _ROUND_TRIP = _tagged(
     rf"({_ANY_ROUTE}):\s+round trip:\s+(\d+)\s+gap\(s\),\s+min\s+([\d.]+)s,\s+"
     r"median\s+([\d.]+)s,\s+max\s+([\d.]+)s"
@@ -121,7 +121,7 @@ _CALL_CLEANUP = _tagged(
     r"call directory cleanup:\s+(reclaimed by the framework|left for the sandbox)"
 )
 _RUN_DIRS = _tagged(r"run directories across both sandboxes:\s+(\d+)")
-_DISPATCHING = _tagged(r"of those, runs that dispatched:\s+(\d+)")
+_RUNS_THAT_CALLED = _tagged(r"of those, runs that called a host tool:\s+(\d+)")
 _LEFT = _tagged(r"transport files left behind:\s+(\d+), of which answered calls:\s+(\d+)")
 _DISPOSED = _tagged(r"Disposed\s+(\d+)\s+sandbox\(es\)\.")
 
@@ -160,7 +160,7 @@ def _per_route(
 
 def _assess_the_cap_was_budgeted(output: str) -> list[str]:
     """A call-heavy host has to raise the default, and saying so is half the lesson."""
-    match, failures = _once(_CAP.findall(output), "dispatch cap")
+    match, failures = _once(_CAP.findall(output), "host-tool-call cap")
     if match is None:
         return failures
     cap, minimum, naive = int(match[0]), int(match[1]), int(match[2])
@@ -172,14 +172,14 @@ def _assess_the_cap_was_budgeted(output: str) -> list[str]:
         )
     if cap <= _REGISTRY_DEFAULT_CAP:
         failures.append(
-            f"the run allowed {cap} dispatches, which the registry allows by default "
+            f"the run allowed {cap} host-tool calls, which the registry allows by default "
             f"({_REGISTRY_DEFAULT_CAP}). The sample is here because this workload does not fit "
             "the default, and a run that never raised it is not showing that"
         )
     if cap < minimum:
         failures.append(
-            f"the run allowed {cap} dispatches where the walk needs at least {minimum} — the "
-            "program cannot finish, and the sample would be measuring a truncated one"
+            f"the run allowed {cap} host-tool calls where the walk needs at least {minimum} — "
+            "the program cannot finish, and the sample would be measuring a truncated one"
         )
     elif cap <= naive:
         # Against the naive figure rather than the theoretical best, and rather than against
@@ -187,7 +187,7 @@ def _assess_the_cap_was_budgeted(output: str) -> list[str]:
         # runs where the model happens to cache its lookups and truncates the ones where it
         # does not, which is the failure this act exists to have already met.
         failures.append(
-            f"the run allowed {cap} dispatches against {naive} for the same walk written "
+            f"the run allowed {cap} host-tool calls against {naive} for the same walk written "
             "without caching. A budget that only fits the efficient program is decided by how "
             "the model felt, and this sample is here because the default does not fit at all"
         )
@@ -197,7 +197,7 @@ def _assess_the_cap_was_budgeted(output: str) -> list[str]:
         # truncates the next one, which is the worst way for this to fail — intermittently,
         # with a partial table and no error.
         failures.append(
-            f"the run allowed {cap} dispatches, above the {naive} the walk costs written "
+            f"the run allowed {cap} host-tool calls, above the {naive} the walk costs written "
             f"carelessly but not above the {_OBSERVED_MAX_LOOKUPS} a live run has actually "
             "used. Neither arithmetic is a ceiling — the model writes the program — so a cap "
             "in this range truncates a later run rather than this one"
@@ -205,21 +205,21 @@ def _assess_the_cap_was_budgeted(output: str) -> list[str]:
 
     # Everything above grades the cap against the workload. This grades it against the run.
     # The cap bounds one `HostToolRun` and CodeAct builds a fresh one per `execute_code`, so
-    # the route's ledger holds at most `cap` calls from each program that dispatched — not
-    # `cap` in total. Above that is a ledger no run could have filled: the call past a
+    # the route's ledger holds at most `cap` calls from each program that called a host tool —
+    # not `cap` in total. Above that is a ledger no run could have filled: the call past a
     # program's budget is refused before the tool body that records it runs.
     counted = {route: int(count) for route, count, _ in _TRIPS.findall(output)}
     # A missing or doubled line belongs to the assessment that owns it, not to this one.
-    dispatching = _observed_programs(output)
-    if _DISPATCH in counted and dispatching is not None and dispatching > 0:
-        allowed = cap * dispatching
-        if counted[_DISPATCH] > allowed:
+    called_a_host_tool = _observed_programs(output)
+    if _HOST_TOOL_CALL in counted and called_a_host_tool is not None and called_a_host_tool > 0:
+        allowed = cap * called_a_host_tool
+        if counted[_HOST_TOOL_CALL] > allowed:
             failures.append(
-                f"the dispatched route recorded {counted[_DISPATCH]} lookup(s) across "
-                f"{dispatching} program(s) that dispatched, where a cap of {cap} a program "
-                f"allows at most {allowed}. The cap is per `execute_code` run and a refused "
-                "call never reaches the tool body that records it, so this ledger is longer "
-                "than the run could have made it"
+                f"the host-tool-call route recorded {counted[_HOST_TOOL_CALL]} lookup(s) across "
+                f"{called_a_host_tool} program(s) that called a host tool, where a cap of {cap} "
+                f"a program allows at most {allowed}. The cap is per `execute_code` run and a "
+                "refused call never reaches the tool body that records it, so this ledger is "
+                "longer than the run could have made it"
             )
     return failures
 
@@ -250,18 +250,18 @@ def _assess_the_whole_walk_happened(output: str) -> list[str]:
         found, expected = int(match[1]), int(match[2])
         if expected != _PRODUCTS:
             failures.append(f"{route} scored itself out of {expected} products, not {_PRODUCTS}")
-        # Enforced on the dispatched route only, and the asymmetry is the sample's subject
+        # Enforced on the host-tool-call route only, and the asymmetry is the sample's subject
         # rather than a loophole. There the model is never handed a product name, so a named
         # table can only have come from the program — which is what makes the fourth stage
         # visible. On the direct route the model holds the names from its own tool loop and
         # routinely labels the table in its reply while the program returns bare numbers;
         # measured at 0 of 3 on a healthy run. Requiring it there would fail a correct run for
         # doing the presentation in the place that route naturally does it.
-        if route == _DISPATCH and found != expected:
+        if route == _HOST_TOOL_CALL and found != expected:
             failures.append(
-                f"the dispatched program's table names {found} of {expected} products. The model "
-                "on that route never receives a product name, so the names can only come from "
-                "the program — and a table without them is the fourth stage never having run"
+                f"the host-tool-call program's table names {found} of {expected} products. The "
+                "model on that route never receives a product name, so the names can only come "
+                "from the program — and a table without them is the fourth stage never having run"
             )
     return failures
 
@@ -296,7 +296,7 @@ def _assess_both_interpreters_answered(output: str) -> list[str]:
             )
 
     # The cells are a multiset, so swapping the two states' figures leaves them intact. Rows
-    # carry the association, and are required of the dispatched route for the same reason its
+    # carry the association, and are required of the host-tool-call route for the same reason its
     # product names are: that model is never handed one, so a correctly labelled row can only
     # have come from the walk. The direct route's program prints figures its model then labels,
     # and has been measured printing no names at all, so there the rows are recorded.
@@ -306,10 +306,10 @@ def _assess_both_interpreters_answered(output: str) -> list[str]:
         printed, expected = int(match[1]), int(match[2])
         if expected != _CELLS:
             failures.append(f"{route} scored itself out of {expected} table rows, not {_CELLS}")
-        if route == _DISPATCH and printed != expected:
+        if route == _HOST_TOOL_CALL and printed != expected:
             failures.append(
-                f"the dispatched program printed {printed} of {expected} rows with the state and "
-                "product attached. The six values can all be present and belong to the wrong "
+                f"the host-tool-call program printed {printed} of {expected} rows with the state "
+                "and product attached. The six values can all be present and belong to the wrong "
                 "rows — two states' figures swapped leaves the same numbers and the same two "
                 "totals — so the labels are what say the table is the answer"
             )
@@ -323,11 +323,11 @@ def _assess_direct_pays_per_stage(output: str) -> list[str]:
     failures.extend(problems)
 
     if len(found) == len(_ROUTES):
-        dispatched, direct = int(found[_DISPATCH][2]), int(found[_DIRECT][2])
-        if direct <= dispatched:
+        host_tool_call, direct = int(found[_HOST_TOOL_CALL][2]), int(found[_DIRECT][2])
+        if direct <= host_tool_call:
             failures.append(
-                f"the direct route took {direct} tool-calling round(s) and the dispatched "
-                f"route {dispatched} — the comparison this sample exists for is that walking "
+                f"the direct route took {direct} tool-calling round(s) and the host-tool-call "
+                f"route {host_tool_call} — the comparison this sample exists for is that walking "
                 "the stages in the model's own loop costs more of them, and this run did not "
                 "show it"
             )
@@ -350,7 +350,7 @@ def _assess_direct_pays_per_stage(output: str) -> list[str]:
         # Read as counts before anything counts them. An entry is how many calls one message
         # asked for, so a shape of words has a length and means nothing, and a zero is a
         # message that was never an entry. Both routes: either length is read as a round count,
-        # and the dispatched one is summed for the programs behind the round-trip summary.
+        # and the host-tool-call one is summed for the programs behind the round-trip summary.
         if not groups:
             # Refused before the rule below, which an empty list passes by having nothing to
             # break it, and it would then agree with a round count of zero. Both routes reach
@@ -375,14 +375,14 @@ def _assess_direct_pays_per_stage(output: str) -> list[str]:
                 "cannot both be from this run"
             )
         if (
-            route == _DISPATCH
+            route == _HOST_TOOL_CALL
             and all(entry.isdigit() for entry in groups)
             and any(int(entry) > 1 for entry in groups)
         ):
             failures.append(
-                f"the dispatched route asked for {max(int(entry) for entry in groups)} tool call(s) "
-                "in one message. Those programs can interleave in the ledger, so the observed "
-                "run-boundary measurement would not describe consecutive programs"
+                f"the host-tool-call route asked for {max(int(entry) for entry in groups)} tool "
+                "call(s) in one message. Those programs can interleave in the ledger, so the "
+                "observed run-boundary measurement would not describe consecutive programs"
             )
     if _DIRECT in shapes:
         groups = [g for g in shapes[_DIRECT][1].split(",") if g.strip()]
@@ -421,11 +421,12 @@ def _assess_who_carried_the_figures(output: str) -> list[str]:
                 "`0 of 0` agrees with itself on every line in this act"
             )
 
-    if wrote.get(_DISPATCH, (0, 0))[0] != 0:
+    if wrote.get(_HOST_TOOL_CALL, (0, 0))[0] != 0:
         failures.append(
-            f"the dispatched route wrote {wrote[_DISPATCH][0]} sales figure(s) into a tool "
-            "call — the program is written before any dispatch can answer, so a figure cannot "
-            "have reached it that way, and this line has stopped measuring what it says"
+            f"the host-tool-call route wrote {wrote[_HOST_TOOL_CALL][0]} sales figure(s) into a "
+            "tool call — the program is written before any host-tool call can answer, so a "
+            "figure cannot have reached it that way, and this line has stopped measuring what "
+            "it says"
         )
     if _DIRECT in wrote:
         carried, expected = wrote[_DIRECT]
@@ -441,8 +442,8 @@ def _assess_who_carried_the_figures(output: str) -> list[str]:
             )
 
     # One restatement per route, matched by route rather than counted. Two for `direct` and
-    # none for `dispatched` is also two lines, and would pass a length check while act 4 said
-    # nothing at all about half the comparison.
+    # none for `host-tool-call` is also two lines, and would pass a length check while act 4
+    # said nothing at all about half the comparison.
     for short, route in _SHORT.items():
         match, problems = _once(
             [m for m in _RESTATED.findall(output) if m[0] == short],
@@ -464,17 +465,19 @@ def _assess_who_carried_the_figures(output: str) -> list[str]:
 
 
 def _assess_the_round_trips(output: str) -> list[str]:
-    """Reported for the dispatched route only, and its three figures are ordered."""
+    """Reported for the host-tool-call route only, and its three figures are ordered."""
     matches = _ROUND_TRIP.findall(output)
     if any(m[0] == _DIRECT for m in matches):
         failures = [
             "a round-trip line was printed for the direct route — its lookups run in the host "
             "process between two model turns, so whatever that measured is not a round trip and "
-            "inviting the reader to compare it with the dispatched figure is the wrong reading"
+            "inviting the reader to compare it with the host-tool-call figure is the wrong reading"
         ]
     else:
         failures = []
-    match, problems = _once([m for m in matches if m[0] == _DISPATCH], "dispatch round trip")
+    match, problems = _once(
+        [m for m in matches if m[0] == _HOST_TOOL_CALL], "host-tool-call round trip"
+    )
     failures.extend(problems)
     if match is None:
         return failures
@@ -483,8 +486,8 @@ def _assess_the_round_trips(output: str) -> list[str]:
         failures.append("the round-trip line reports no gaps, so nothing was measured")
     if high <= 0:
         failures.append(
-            "the round-trip summary is all zeroes. A dispatch is a file written, polled for and "
-            "read back across the control plane, so zero is not a fast run — it is the "
+            "the round-trip summary is all zeroes. A host-tool call is a file written, polled "
+            "for and read back across the control plane, so zero is not a fast run — it is the "
             "measurement having disappeared, the same way a token count of zero is"
         )
     elif mid <= 0:
@@ -496,55 +499,57 @@ def _assess_the_round_trips(output: str) -> list[str]:
     # The ledger now classifies every gap from the observed HostToolRun identity. There are still
     # *n - 1* gaps, but no arithmetic or latency threshold decides which ones are boundaries.
     counted = {route: int(count) for route, count, _ in _TRIPS.findall(output)}
-    dispatching = _observed_programs(output)
+    called_a_host_tool = _observed_programs(output)
     shaped = dict(_SHAPE.findall(output))
-    groups = [g.strip() for g in shaped.get(_DISPATCH, "").split(",") if g.strip()]
-    if _DISPATCH in counted and dispatching is not None:
-        lookups = counted[_DISPATCH]
-        expected = lookups - dispatching
+    groups = [g.strip() for g in shaped.get(_HOST_TOOL_CALL, "").split(",") if g.strip()]
+    if _HOST_TOOL_CALL in counted and called_a_host_tool is not None:
+        lookups = counted[_HOST_TOOL_CALL]
+        expected = lookups - called_a_host_tool
         if gaps != expected:
             failures.append(
-                f"{gaps} round-trip gap(s) were measured across {lookups} dispatched lookup(s), "
-                f"where the observer saw {dispatching} program(s) and run transitions leave "
-                f"{expected} same-run gaps"
+                f"{gaps} round-trip gap(s) were measured across {lookups} host-tool-call "
+                f"lookup(s), where the observer saw {called_a_host_tool} program(s) and run "
+                f"transitions leave {expected} same-run gaps"
             )
-    if groups and all(entry.isdigit() for entry in groups) and dispatching is not None:
+    if groups and all(entry.isdigit() for entry in groups) and called_a_host_tool is not None:
         shaped_programs = sum(int(entry) for entry in groups)
-        if shaped_programs != dispatching:
+        if shaped_programs != called_a_host_tool:
             failures.append(
                 f"the tool-call shape describes {shaped_programs} program(s), but the observer "
-                f"saw {dispatching}; the independent host record and model message shape disagree"
+                f"saw {called_a_host_tool}; the independent host record and model message shape "
+                "disagree"
             )
-    observed = [match for match in _BOUNDARIES.findall(output) if match[0] == _DISPATCH]
+    observed = [match for match in _BOUNDARIES.findall(output) if match[0] == _HOST_TOOL_CALL]
     direct_boundaries = [match for match in _BOUNDARIES.findall(output) if match[0] == _DIRECT]
     if direct_boundaries:
         failures.append("a program-boundary line was printed for the direct route")
     if len(observed) > 1:
         failures.append(
-            f"the dispatch route reports program boundaries {len(observed)} times; exactly one "
-            "boundary summary is required"
+            f"the host-tool-call route reports program boundaries {len(observed)} times; "
+            "exactly one boundary summary is required"
         )
-    if len(observed) == 1 and dispatching is not None:
+    if len(observed) == 1 and called_a_host_tool is not None:
         _, count, smallest, largest = observed[0]
-        expected = dispatching - 1
+        expected = called_a_host_tool - 1
         if expected < 1:
             failures.append(
-                f"the dispatch route reports a program boundary summary, but only {dispatching} "
-                "program dispatched; a boundary requires at least two programs"
+                f"the host-tool-call route reports a program boundary summary, but only "
+                f"{called_a_host_tool} program called a host tool; a boundary requires at least "
+                "two programs"
             )
         if int(count) != expected:
             failures.append(
-                f"{count} program boundary/ies were observed where {dispatching} program(s) "
-                f"dispatched, so run identity should produce {expected}"
+                f"{count} program boundary/ies were observed where {called_a_host_tool} "
+                f"program(s) called a host tool, so run identity should produce {expected}"
             )
         if float(smallest) <= 0 or float(largest) <= 0 or float(smallest) > float(largest):
             failures.append(
                 f"observed boundary times {smallest}s and {largest}s are not positive and ordered"
             )
-    elif dispatching is not None and dispatching > 1:
+    elif called_a_host_tool is not None and called_a_host_tool > 1:
         failures.append(
-            f"{dispatching} program(s) dispatched and no program boundary was reported; "
-            "the observer-derived run identities must be visible in the measurement"
+            f"{called_a_host_tool} program(s) called a host tool and no program boundary was "
+            "reported; the observer-derived run identities must be visible in the measurement"
         )
     if not low <= mid <= high:
         failures.append(
@@ -567,32 +572,34 @@ def _call_reclaims(output: str) -> bool | None:
 
 
 def _observed_programs(output: str) -> int | None:
-    """How many distinct `HostToolRun` identities the host observer saw dispatch."""
+    """How many distinct `HostToolRun` identities the host observer saw call a host tool."""
     seen = _OBSERVED_PROGRAMS.findall(output)
-    dispatch = [match for match in seen if match[0] == _DISPATCH]
+    host_tool_call = [match for match in seen if match[0] == _HOST_TOOL_CALL]
     direct = [match for match in seen if match[0] == _DIRECT]
-    if len(dispatch) != 1 or direct:
+    if len(host_tool_call) != 1 or direct:
         return None
-    return int(dispatch[0][1])
+    return int(host_tool_call[0][1])
 
 
 def _assess_observed_program_count(output: str) -> list[str]:
-    """Require one observer count for the dispatched route and none for the direct route."""
+    """Require one observer count for the host-tool-call route and none for the direct route."""
     seen = _OBSERVED_PROGRAMS.findall(output)
-    dispatch = [match for match in seen if match[0] == _DISPATCH]
+    host_tool_call = [match for match in seen if match[0] == _HOST_TOOL_CALL]
     direct = [match for match in seen if match[0] == _DIRECT]
     failures: list[str] = []
-    if len(dispatch) == 0:
-        failures.append("no tagged dispatch-route 'programs that dispatched' line was reported")
-    elif len(dispatch) > 1:
+    if len(host_tool_call) == 0:
         failures.append(
-            f"the dispatch route reports 'programs that dispatched' {len(dispatch)} times; "
-            "exactly one observer count is required"
+            "no tagged host-tool-call-route 'programs that called a host tool' line was reported"
+        )
+    elif len(host_tool_call) > 1:
+        failures.append(
+            f"the host-tool-call route reports 'programs that called a host tool' "
+            f"{len(host_tool_call)} times; exactly one observer count is required"
         )
     if direct:
         failures.append(
-            "the direct route reports 'programs that dispatched'; only the dispatch route has "
-            "an observer count"
+            "the direct route reports 'programs that called a host tool'; only the "
+            "host-tool-call route has an observer count"
         )
     return failures
 
@@ -612,19 +619,21 @@ def _assess_what_the_runs_left(output: str) -> list[str]:
     failures.extend(problems)
     dirs, problems = _once(_RUN_DIRS.findall(output), "run directories")
     failures.extend(problems)
-    dispatching, problems = _once(_DISPATCHING.findall(output), "runs that dispatched")
+    called_a_host_tool, problems = _once(
+        _RUNS_THAT_CALLED.findall(output), "runs that called a host tool"
+    )
     failures.extend(problems)
     left, problems = _once(_LEFT.findall(output), "files left behind")
     failures.extend(problems)
-    if None in (dirs, dispatching, left) or len(said) != 1 or call_reclaims is None:
+    if None in (dirs, called_a_host_tool, left) or len(said) != 1 or call_reclaims is None:
         return failures
     total, answers = int(left[0]), int(left[1])  # type: ignore[index]
 
     if call_reclaims.startswith("reclaimed"):
-        if int(dirs) != 0 or int(dispatching) != 0:  # type: ignore[arg-type]
+        if int(dirs) != 0 or int(called_a_host_tool) != 0:  # type: ignore[arg-type]
             failures.append(
-                f"{dirs} run director(y/ies), including {dispatching} dispatched run(s), survived "
-                "framework reclamation of CodeAct call directories"
+                f"{dirs} run director(y/ies), including {called_a_host_tool} run(s) that called "
+                "a host tool, survived framework reclamation of CodeAct call directories"
             )
         if total or answers:
             failures.append(
@@ -637,16 +646,16 @@ def _assess_what_the_runs_left(output: str) -> list[str]:
         # Nothing is a measurement here, so it has to be exactly nothing: this transport removes
         # the whole directory it owns, and a run that left some of it behind either did not
         # reclaim or reclaimed part. The runs themselves are the kind's and stay — they are what
-        # still says the programs ran, and there has to be one more of them than dispatched,
-        # because the direct route's program is in the other sandbox.
+        # still says the programs ran, and there has to be one more of them than the number that
+        # called a host tool, because the direct route's program is in the other sandbox.
         shaped = dict(_SHAPE.findall(output))
-        groups = [g.strip() for g in shaped.get(_DISPATCH, "").split(",") if g.strip()]
+        groups = [g.strip() for g in shaped.get(_HOST_TOOL_CALL, "").split(",") if g.strip()]
         programs = sum(int(g) for g in groups) if groups and all(g.isdigit() for g in groups) else 0
-        if int(dispatching) != 0:  # type: ignore[arg-type]
+        if int(called_a_host_tool) != 0:  # type: ignore[arg-type]
             failures.append(
-                f"{dispatching} run(s) still hold a transport directory, and this transport "
-                "removes the one it owns on every exit path. Either the cleanup did not run or "
-                "the enumeration is counting something the transport does not write"
+                f"{called_a_host_tool} run(s) still hold a transport directory, and this "
+                "transport removes the one it owns on every exit path. Either the cleanup did "
+                "not run or the enumeration is counting something the transport does not write"
             )
         if (total, answers) != (0, 0):
             failures.append(
@@ -657,29 +666,32 @@ def _assess_what_the_runs_left(output: str) -> list[str]:
             )
         if programs and int(dirs) <= programs:  # type: ignore[arg-type]
             failures.append(
-                f"{dirs} run director(y/ies) in the guest against {programs} dispatched "
-                "program(s), and the direct route's program leaves one more in the other "
+                f"{dirs} run director(y/ies) in the guest against {programs} program(s) that "
+                "called a host tool, and the direct route's program leaves one more in the other "
                 "sandbox. The traffic is reclaimed now, so these directories are the only "
                 "thing left saying the programs ran at all"
             )
         return failures
 
-    if int(dispatching) < 1:  # type: ignore[arg-type]
-        failures.append("no run dispatched, so there is no transport traffic to have left behind")
-    if int(dirs) < int(dispatching):  # type: ignore[arg-type]
+    if int(called_a_host_tool) < 1:  # type: ignore[arg-type]
         failures.append(
-            f"{dispatching} run(s) dispatched out of {dirs} in the guest, which is not arithmetic"
+            "no run called a host tool, so there is no transport traffic to have left behind"
         )
-    elif int(dirs) == int(dispatching):  # type: ignore[arg-type]
+    if int(dirs) < int(called_a_host_tool):  # type: ignore[arg-type]
+        failures.append(
+            f"{called_a_host_tool} run(s) called a host tool out of {dirs} in the guest, which "
+            "is not arithmetic"
+        )
+    elif int(dirs) == int(called_a_host_tool):  # type: ignore[arg-type]
         # The direct route runs its program in a sandbox built with no registry, so its run
         # directory has no transport in it and is counted here but not there. A run that
         # reaches this act has one — its table came from an `execute_code` — so a count with
         # none of them in it is an enumeration that read one sandbox and reported both.
         failures.append(
-            f"all {dirs} run directories dispatched, so none of them is the direct route's. "
-            "That program runs in a sandbox with no registry and leaves a directory with no "
-            "transport in it, and its table above says it ran — so this count is one sandbox "
-            "short of what it claims to cover"
+            f"all {dirs} run directories are ones that called a host tool, so none of them is "
+            "the direct route's. That program runs in a sandbox with no registry and leaves a "
+            "directory with no transport in it, and its table above says it ran — so this count "
+            "is one sandbox short of what it claims to cover"
         )
     if total < 1:
         failures.append(
@@ -692,7 +704,7 @@ def _assess_what_the_runs_left(output: str) -> list[str]:
     if answers < 1:
         failures.append(
             "no answered call was found among the files left behind, so nothing in the guest "
-            "records a dispatch having been served"
+            "records a host-tool call having been served"
         )
 
     # Two floors the transport cannot go under, so a broken enumeration cannot pass as traffic.
@@ -702,14 +714,14 @@ def _assess_what_the_runs_left(output: str) -> list[str]:
             f"leaves three — the id its caller claimed, the request and the answer — so "
             f"{3 * answers} is the floor. Below it the enumeration found less than it counted"
         )
-    dispatched = {route: int(count) for route, count, _ in _TRIPS.findall(output)}
-    if _DISPATCH in dispatched and answers < dispatched[_DISPATCH]:
+    lookup_counts = {route: int(count) for route, count, _ in _TRIPS.findall(output)}
+    if _HOST_TOOL_CALL in lookup_counts and answers < lookup_counts[_HOST_TOOL_CALL]:
         failures.append(
-            f"the guest holds {answers} answered call(s) against the {dispatched[_DISPATCH]} "
-            "lookup(s) the dispatched route recorded. The host answers every call it serves and "
-            "the legacy transport leaves every answer, so fewer answers than lookups is the "
-            "enumeration having missed part of the traffic rather than the run having made less "
-            "of it"
+            f"the guest holds {answers} answered call(s) against the "
+            f"{lookup_counts[_HOST_TOOL_CALL]} lookup(s) the host-tool-call route recorded. The "
+            "host answers every call it serves and the legacy transport leaves every answer, so "
+            "fewer answers than lookups is the enumeration having missed part of the traffic "
+            "rather than the run having made less of it"
         )
     return failures
 
@@ -763,13 +775,14 @@ def _assess_the_cost_was_measured(output: str) -> list[str]:
 
 
 def assess(output: str, *, docker: bool = False) -> list[str]:
-    """Every reason the run does not show a real, measured, call-heavy dispatch.
+    """Every reason the run does not show a real, measured, call-heavy host-tool call.
 
     `docker` drops act 5: the docker backend declares no `FILES_LIST`, so
     `samples/15_acas_codeact_host_tools` on docker (`SAMPLE_BACKEND=docker`) cannot enumerate the
     guest filesystem and prints no leftover-traffic lines. Everything above act 5 is
     backend-agnostic and stays enforced — the
-    dispatch finding itself, the cap, the walk and the round trips are what this sample is for.
+    host-tool-call finding itself, the cap, the walk and the round trips are what this sample is
+    for.
     """
     return [
         *_assess_the_cap_was_budgeted(output),
@@ -806,7 +819,10 @@ def main(argv: list[str]) -> int:
 
     failures = assess(output, docker=docker)
     if failures:
-        print("FAIL: the dispatch sample did not show a program calling back out:", file=sys.stderr)
+        print(
+            "FAIL: the host-tool-call sample did not show a program calling back out:",
+            file=sys.stderr,
+        )
         for reason in failures:
             print(f"  - {reason}", file=sys.stderr)
         return 1
@@ -815,8 +831,8 @@ def main(argv: list[str]) -> int:
     print(
         f"OK  both programs answered from the sandbox; the walk cost "
         f"{trips.get(_DIRECT, '?')} tool-calling rounds in the model's loop against "
-        f"{trips.get(_DISPATCH, '?')} dispatched, and the model wrote no data into code on "
-        "the second"
+        f"{trips.get(_HOST_TOOL_CALL, '?')} on the host-tool-call route, and the model wrote no "
+        "data into code on the second"
     )
     return 0
 

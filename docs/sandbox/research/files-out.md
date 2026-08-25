@@ -318,9 +318,9 @@ The comparison is **lowercase, not casefold**, and the difference is a refusal n
 
 ### The sink is structural, and that is why it is not declared
 
-It is tempting to give the landing callback a role decoration like a dispatched host tool, or to stamp it as a sink automatically when the host runs information-flow enforcement. Both are wrong.
+It is tempting to give the landing callback a role decoration like a host-tool call, or to stamp it as a sink automatically when the host runs information-flow enforcement. Both are wrong.
 
-A dispatched host tool's role is genuinely ambiguous — source, sink, both, or neither — which is why [`two-axis-sandbox-policy.md`](two-axis-sandbox-policy.md) *proposes* making every leg explicit. **A landing callback has no ambiguity**: data moves guest → host state, always. It cannot be a source. There is nothing to infer, so nothing to auto-infer.
+A host-tool call's role is genuinely ambiguous — source, sink, both, or neither — which is why [`two-axis-sandbox-policy.md`](two-axis-sandbox-policy.md) *proposes* making every leg explicit. **A landing callback has no ambiguity**: data moves guest → host state, always. It cannot be a source. There is nothing to infer, so nothing to auto-infer.
 
 What is *not* structural is how confidential the destination is — exactly the value `sandbox_tool_declarations` already refuses to invent: writing a confidentiality key "participates in a policy leg that may be dormant in the host … the host's decision to make with its own classification in hand, never a default a library picks".
 
@@ -342,7 +342,7 @@ One further hazard, which is the same shape as the bug this section fixes: `sand
 
 ### What `FILES_OUT` is not
 
-**It is not `HOST_TOOLS`.** Nothing inside the sandbox dispatches the landing callback; the kind calls it host-side after the run. The empty-dispatch property a CodeAct-class kind rests on survives intact. A host wanting a hard stop denies `FILES_OUT`.
+**It is not `HOST_TOOLS`.** Nothing inside the sandbox calls the landing callback; the kind calls it host-side after the run. The no-host-tool-call property a CodeAct-class kind rests on survives intact. A host wanting a hard stop denies `FILES_OUT`.
 
 **It is not a second write path into the file store.** A kind that lands artifacts where the agent's own file tools write has given model-written code an unapproved `file_access_write`, and one that can overwrite has given it a way to influence a *different* kind on the next call. `(key, kind)` sandbox identity ([#84](https://github.com/sokolaidev/maf-extensions/issues/84)) separates sandboxes; it does nothing about host state they both touch.
 

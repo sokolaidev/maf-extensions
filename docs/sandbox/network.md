@@ -128,7 +128,7 @@ An allowlist entry names a host and opens it to every method. A workload that sh
 
 **An attached identity does not have to cross the network path to be exercised.** A platform connector or a sandbox-scoped credential reaches services through the platform's own plumbing, so a tight `egress_allow` is not a bound on what a workload's *authority* can touch. That axis is `Capability.ATTACHED_IDENTITY` and `Identity`, in [`hosts.md`](hosts.md).
 
-**A dispatched host tool's body runs in the host process, not in the sandbox.** What it reaches is bounded by the host's own network position and by what the host registered, never by the sandbox's mode — the guest asks, the host acts. That is `Capability.HOST_TOOLS` and the `Identity` axis, in [`hosts.md`](hosts.md).
+**A host-tool call's body runs in the host process, not in the sandbox.** What it reaches is bounded by the host's own network position and by what the host registered, never by the sandbox's mode — the guest asks, the host acts. That is `Capability.HOST_TOOLS` and the `Identity` axis, in [`hosts.md`](hosts.md).
 
 **A landing sink moves bytes to host state with no network at all.** An output declared `LAND` leaves the sandbox through the backend's file transport and arrives in the host's store, which is a confidentiality flow that `egress=CLOSED` says nothing about — the reason the outbound cap is a separate declaration. Also [`hosts.md`](hosts.md); the transport itself is in [`backends/README.md`](backends/README.md) and the surface in [`architecture.md`](architecture.md).
 

@@ -1,4 +1,4 @@
-"""Measure host-tool dispatch for sequential and concurrent guest request publication.
+"""Measure host-tool calls for sequential and concurrent guest request publication.
 
 The guest double models only the request/response files. It keeps backend latency out of the
 comparison while recording host arrivals, transport probes, and elapsed time. The result is a
@@ -23,8 +23,8 @@ from maf_sandbox import (
     Identity,
     SandboxEntry,
     SourceIntegrity,
-    dispatch_over_exec,
     guest_run_layout,
+    host_tool_calls_over_exec,
     sandbox_tool,
 )
 
@@ -39,7 +39,7 @@ class Measurement:
 
     mode: str
     elapsed_seconds: float
-    dispatches: int
+    host_tool_calls: int
     host_arrivals: int
     host_arrival_gaps: tuple[float, ...]
     stat_probes: int
@@ -157,7 +157,7 @@ async def _measure(concurrent: bool) -> Measurement:
     registry.register(add)
     guest = _Guest(concurrent)
     started = time.perf_counter()
-    result = await dispatch_over_exec(
+    result = await host_tool_calls_over_exec(
         guest,
         HostToolRun(registry),
         _LAYOUT,
@@ -170,7 +170,7 @@ async def _measure(concurrent: bool) -> Measurement:
     return Measurement(
         mode="concurrent" if concurrent else "sequential",
         elapsed_seconds=elapsed,
-        dispatches=len(arrivals),
+        host_tool_calls=len(arrivals),
         host_arrivals=len(arrivals),
         host_arrival_gaps=gaps,
         stat_probes=guest.stat_probes,

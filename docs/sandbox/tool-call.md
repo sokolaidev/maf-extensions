@@ -1,6 +1,6 @@
 # The tool call: what owns it, what it owns, and what happens when it ends
 
-> The lifetime model of one sandboxed tool call — binding, call and run — what each owns, and what is reclaimed when the call ends. It is universal to every kind, not a CodeAct feature. Its source of record is [`research/call-lifetime.md`](research/call-lifetime.md); its siblings are [`architecture.md`](architecture.md), the structure a call lives in, and [`hosts.md`](hosts.md), the outward direction where a guest dispatches host tools.
+> The lifetime model of one sandboxed tool call — binding, call and run — what each owns, and what is reclaimed when the call ends. It is universal to every kind, not a CodeAct feature. Its source of record is [`research/call-lifetime.md`](research/call-lifetime.md); its siblings are [`architecture.md`](architecture.md), the structure a call lives in, and [`hosts.md`](hosts.md), the outward direction where a guest calls host tools.
 
 Several problems turn out to be one: how a kind cleans up after itself, which layer knows how to delete, what happens when two calls share a sandbox, and who decides where a workload's files go. None can be answered without first answering what a tool call is, what it owns, and how long anything lives. In one sentence:
 
@@ -13,7 +13,7 @@ Several problems turn out to be one: how a kind cleans up after itself, which la
 ```
 binding    one per tool               process           SandboxToolBinding
   └ call   one per tool call          the call          ← owns its own guest path
-      └ run   0..1, dispatch only     inside a call     GuestRunLayout, reclaim_run
+      └ run   0..1, transport only    inside a call     GuestRunLayout, reclaim_run
 
 sandbox    one per (scope, thread_id, agent_dir, kind)   conversation
 ```
@@ -22,7 +22,7 @@ The nesting is real; **the sandbox is not its root.** It sits beside the chain. 
 
 Four lines is the terse form; the bars below put the same four lifetimes on one time axis, where the coincidence that confuses them comes apart.
 
-![Four lifetimes drawn as bars on one left-to-right time axis. The binding is the topmost bar and spans the whole axis — one per tool, built once before any key exists, holding host configuration only and reading scope and thread per call — while two teal sandbox bars with different spans sit beside it rather than under it, one per conversation, keyed by scope, thread, agent dir and kind. Inside the first conversation's span three amber call bars run in sequence over the one warm sandbox, each ending in a tick, the finally that removes the guest path that call owns; exactly one of them carries a thinner, sharp-cornered run bar — 0..1 per call, dispatch only — and the other two carry none. The second conversation carries a call of its own, because one binding reaches as many sandboxes as it serves conversations. Both sandbox bars outlive every call in them and end only with the conversation, where disposal is best-effort and purge asks every registered backend.](assets/four-lifetimes.svg)
+![Four lifetimes drawn as bars on one left-to-right time axis. The binding is the topmost bar and spans the whole axis — one per tool, built once before any key exists, holding host configuration only and reading scope and thread per call — while two teal sandbox bars with different spans sit beside it rather than under it, one per conversation, keyed by scope, thread, agent dir and kind. Inside the first conversation's span three amber call bars run in sequence over the one warm sandbox, each ending in a tick, the finally that removes the guest path that call owns; exactly one of them carries a thinner, sharp-cornered run bar — 0..1 per call, host-tools transport only — and the other two carry none. The second conversation carries a call of its own, because one binding reaches as many sandboxes as it serves conversations. Both sandbox bars outlive every call in them and end only with the conversation, where disposal is best-effort and purge asks every registered backend.](assets/four-lifetimes.svg)
 
 ## The words
 

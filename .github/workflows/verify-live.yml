@@ -1490,7 +1490,7 @@ jobs:
           # Both routes compute in the sandbox, so both are held to the totals their programs
           # printed; what the check compares is how many tool-calling rounds each road cost and
           # which of them carried the data. stdlib-only, so the runner's own python3 runs it.
-          python3 "$HARNESS"/scripts/check_live_host_tools_dispatch_sample.py /tmp/sample15-out.txt
+          python3 "$HARNESS"/scripts/check_live_host_tools_call_sample.py /tmp/sample15-out.txt
 
       - name: Assert the published version the sample resolved
         if: ${{ always() && inputs.version != '' }}
@@ -1586,7 +1586,7 @@ jobs:
           # The same check as sample-15, with --docker: on docker the backend declares no
           # FILES_LIST, so the run prints no act-5 leftover lines and that one act is dropped.
           # stdlib-only, so the runner's own python3 runs it.
-          python3 "$HARNESS"/scripts/check_live_host_tools_dispatch_sample.py --docker /tmp/sample15-docker-out.txt
+          python3 "$HARNESS"/scripts/check_live_host_tools_call_sample.py --docker /tmp/sample15-docker-out.txt
 
       - name: Assert the published version the sample resolved
         if: ${{ always() && inputs.version != '' }}

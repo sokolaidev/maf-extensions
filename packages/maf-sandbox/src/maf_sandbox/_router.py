@@ -17,7 +17,7 @@ from collections.abc import AsyncGenerator, Iterable, Sequence
 from contextlib import asynccontextmanager
 from typing import cast
 
-from ._host_tools_over_exec import fold_dispatch_transfer_limits
+from ._host_tools_over_exec import fold_host_tool_call_transfer_limits
 from ._protocol import (
     DEFAULT_CAPABILITIES,
     DEFAULT_SANDBOX_LIMITS,
@@ -116,7 +116,7 @@ class SandboxCapabilityDenied(PermissionError):
 
 
 class SandboxIdentityDenied(PermissionError):
-    """The workload's dispatched tools exercise an identity this host's router denies.
+    """The workload's host tools exercise an identity this host's router denies.
 
     Same posture as :class:`SandboxCapabilityDenied`, on the identity axis: a host that
     forbids model-orchestrated user authority states ``denied_identities={Identity.USER}``
@@ -251,7 +251,7 @@ class SandboxRouter:
             declares — a spec *requiring* one is refused at attach. The hard stop for a
             posture: ``denied_capabilities={Capability.HOST_TOOLS}`` closes the
             middleware-bypass channel for every workload this router serves.
-        denied_identities: Identities this host refuses dispatched tools to exercise — a
+        denied_identities: Identities this host refuses host tools to exercise — a
             spec whose ``identities`` carries one is refused at attach.
             ``denied_identities={Identity.USER}`` is how a host forbids model-orchestrated
             user authority in one statement instead of auditing each registration.
@@ -374,7 +374,7 @@ class SandboxRouter:
         denied_identities = spec.identities & self._denied_identities
         if denied_identities:
             raise SandboxIdentityDenied(
-                f"the {spec.kind!r} workload's dispatched tools exercise "
+                f"the {spec.kind!r} workload's host tools exercise "
                 f"{', '.join(sorted(str(identity) for identity in denied_identities))} "
                 "authority, which this host's router denies outright (denied_identities). "
                 "Remove the tools declaring that identity from the workload's registry, or "
@@ -433,7 +433,9 @@ class SandboxRouter:
             # serve it is refused here rather than overrun mid-run. The spec's stored caps stay
             # untouched: the kind's runtime tally enforces against those, and folding the stored
             # values would double-count the transport against the workload's own budget.
-            folded = fold_dispatch_transfer_limits(spec.files_in, spec.files_out, spec.host_tools)
+            folded = fold_host_tool_call_transfer_limits(
+                spec.files_in, spec.files_out, spec.host_tools
+            )
             asked_in, asked_out = folded.files_in, folded.files_out
         for direction, asked, declared, ceiling in (
             (Capability.FILES_IN, asked_in, spec.files_in, limits.files_in),
@@ -444,7 +446,7 @@ class SandboxRouter:
                 # have been served. A workload already over the ceiling on its own must not be
                 # pointed at the transport, however much the fold also raised.
                 folded_note = (
-                    " (folded to include the wired host tools' dispatch transport, so above the "
+                    " (folded to include the wired host tools' call transport, so above the "
                     "workload's own declaration)"
                     if declared.within(ceiling)
                     else ""

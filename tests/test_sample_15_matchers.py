@@ -72,7 +72,7 @@ def _table(cells: dict[str, dict[str, float]], separator: str = "\t") -> str:
 
 _HONEST = _table(sample.TRUTH)
 #: Every cell and both totals, and not one label. The check requires the rows and the product
-#: names of the dispatched route only, so on the direct route this is the whole answer.
+#: names of the host-tool-call route only, so on the direct route this is the whole answer.
 _UNLABELLED = "\n".join(
     ["\t".join(str(value) for value in products.values()) for products in sample.TRUTH.values()]
     + [f"{sum(products.values()):.2f}" for products in sample.TRUTH.values()]
@@ -225,39 +225,39 @@ class TestLedgerRunAttribution:
         clock = iter([0.0, 1.0, 2.0, 3.0, 10.0, 11.0])
         monkeypatch.setattr(sample.time, "perf_counter", lambda: next(clock))
 
-        with sample.observe_dispatch(first, "state_id"):
+        with sample.observe_host_tool_call(first, "state_id"):
             ledger.arriving("state_id(Washington)")
             ledger.answered()
-        with sample.observe_dispatch(first, "stores_in_state"):
+        with sample.observe_host_tool_call(first, "stores_in_state"):
             ledger.arriving("stores_in_state(ST-WA)")
             ledger.answered()
-        with sample.observe_dispatch(second, "store_sales"):
+        with sample.observe_host_tool_call(second, "store_sales"):
             ledger.arriving("store_sales(STO-101)")
             ledger.answered()
 
         trips, boundaries = ledger.round_trips()
         assert trips == [1.0]
         assert boundaries == [7.0]
-        assert ledger.dispatched_runs == {first.run_id, second.run_id}
+        assert ledger.runs_that_called_a_host_tool == {first.run_id, second.run_id}
 
-    def test_an_unobserved_call_does_not_count_as_a_dispatched_run(self):
+    def test_an_unobserved_call_does_not_count_as_a_run_that_called_a_host_tool(self):
         ledger = sample.Ledger()
         ledger.arriving("state_id(Washington)")
-        assert ledger.dispatched_runs == set()
+        assert ledger.runs_that_called_a_host_tool == set()
 
 
 class TestTheConversationIds:
     """One conversation per route and per run: `dispose_scope` deletes by label, not by owner."""
 
     def test_each_route_and_each_run_gets_its_own(self):
-        assert sample.DISPATCH_THREAD != sample.DIRECT_THREAD
+        assert sample.HOST_TOOL_CALL_THREAD != sample.DIRECT_THREAD
         expected = os.environ.get("GITHUB_RUN_ID") or f"local-{os.getpid()}"
-        assert expected in sample.DISPATCH_THREAD
+        assert expected in sample.HOST_TOOL_CALL_THREAD
         assert expected in sample.DIRECT_THREAD
 
     def test_both_fit_the_label_the_backend_writes(self):
         """Over `_LABEL_VALUE_MAX` (63) an ACAS label becomes a digest, which is unreadable."""
-        assert max(len(sample.DISPATCH_THREAD), len(sample.DIRECT_THREAD)) <= 63
+        assert max(len(sample.HOST_TOOL_CALL_THREAD), len(sample.DIRECT_THREAD)) <= 63
 
 
 class TestTheProgramThatAnswered:
@@ -277,7 +277,7 @@ class TestTheProgramThatAnswered:
         assert sample.the_program_that_answered([_HONEST, _SWAPPED]) == _HONEST
 
     def test_a_complete_answer_beats_a_labelled_fragment(self):
-        """Only the dispatched route must label its table, so an unlabelled one has still answered."""
+        """Only the host-tool-call route must label its table, so an unlabelled one has still answered."""
         probe = "Washington\tWidget\t1896.25"
         assert sample.the_program_that_answered([probe, _UNLABELLED]) == _UNLABELLED
         assert sample.the_program_that_answered([_UNLABELLED, probe]) == _UNLABELLED

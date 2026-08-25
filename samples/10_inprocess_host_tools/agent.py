@@ -4,7 +4,7 @@ Registration, the aggregate the registry folds to, a router that permits the spe
 it, and the two axes a router refuses on. Every one of them is answered at attach, so this
 runs with no sandbox, no model and no configuration.
 
-Why the channel is shaped this way, and why nothing is dispatched, is in this directory's
+Why the channel is shaped this way, and why no host-tool call is made, is in this directory's
 README.
 """
 
@@ -48,11 +48,11 @@ KIND = "release-notes"
 def act_one_registration() -> HostToolRegistry:
     """Register the surface. The registry is the one door, and two gates guard it.
 
-    `require_declared=True` is the host saying it will not dispatch what nobody classified.
-    `allowed_identities` is the host saying which authorities it will run at all: the default
-    is `{Identity.APP}`, so a tool exercising the *user's* authority is refused at
+    `require_declared=True` is the host saying it will not call what nobody classified as a
+    host tool. `allowed_identities` is the host saying which authorities it will run at all:
+    the default is `{Identity.APP}`, so a tool exercising the *user's* authority is refused at
     registration until the host opts in. Both gates refuse at the configuration site, where
-    the fix is one line away, rather than later at dispatch.
+    the fix is one line away, rather than later at the call.
     """
     print("== 1. Registration ==\n")
 
@@ -67,7 +67,7 @@ def act_one_registration() -> HostToolRegistry:
         print(f"  refused:    publish_release_note (registry is APP-only) — {refusal}\n")
 
     # The registration notice fires once per process and is informational — it says out loud
-    # that dispatched calls bypass middleware. Shown rather than suppressed, because a reader
+    # that host-tool calls bypass middleware. Shown rather than suppressed, because a reader
     # meeting this channel for the first time is exactly who it is written for.
     registry = HostToolRegistry(
         require_declared=True,
@@ -88,7 +88,7 @@ def act_one_registration() -> HostToolRegistry:
     except HostToolNotDeclared as refusal:
         print(f"  refused:    rerun_failed_jobs — {refusal}")
 
-    print(f"\n  the dispatchable surface is {len(registry)} functions, and nothing else.")
+    print(f"\n  the callable surface is {len(registry)} functions, and nothing else.")
     print("  Least privilege here is what was registered, not what was declared.\n")
     return registry
 
@@ -111,12 +111,12 @@ def act_two_aggregate(registry: HostToolRegistry) -> frozenset[Identity]:
     print("                     vocabulary, and this library never guesses at an ordering.")
     print(f"  identities:        {{{', '.join(sorted(aggregate.identities))}}}")
     print(f"  requires_approval: {aggregate.requires_approval}")
-    print("                     because one USER tool is enough — a single dispatch could")
-    print("                     exercise the user's delegated authority.")
+    print("                     because one USER tool is enough — a single host-tool call")
+    print("                     could exercise the user's delegated authority.")
     print(f"  has_undeclared:    {aggregate.has_undeclared}  (the gate refused the fourth)")
 
     # Sealing. A host has now derived a policy view from this surface, so the surface stops
-    # moving — otherwise a tool registered afterwards would be dispatched past a router that
+    # moving — otherwise a tool registered afterwards would be called past a router that
     # never saw it.
     try:
         registry.register(semver_bump, name="semver_bump_again")
@@ -154,7 +154,9 @@ def act_three_permitted(identities: frozenset[Identity]) -> InProcessSandboxBack
     router.ensure_can_serve(spec)
     print(f"  ensure_can_serve({KIND!r}) returned. The kind may attach.")
     print("  One call is the whole of a host's wiring test — and the whole of this sample's")
-    print("  happy path, because a dispatch needs a guest program and this sample runs none.\n")
+    print(
+        "  happy path, because a host-tool call needs a guest program and this sample runs none.\n"
+    )
     # Handed back so `main` can read what it recorded rather than assert what it expects:
     # `InProcessSandboxBackend` appends to `keys` on every `acquire`.
     return backend
@@ -249,8 +251,8 @@ def main() -> int:
     done.append("refused")
 
     print("== What is not here ==\n")
-    print("  A dispatch. The transport a guest sends a request over has landed (#327),")
-    print("  maf-sandbox-codeact dispatches over it, and the docker and acas backends")
+    print("  A host-tool call. The transport a guest sends a request over has landed (#327),")
+    print("  maf-sandbox-codeact makes host-tool calls over it, and the docker and acas backends")
     print("  declare Capability.HOST_TOOLS — so one would run. It needs a real sandbox,")
     print("  a guest program and a model, and this sample uses none of the three (#302).")
     print("  Everything above is the half a host configures on day one regardless, and it")

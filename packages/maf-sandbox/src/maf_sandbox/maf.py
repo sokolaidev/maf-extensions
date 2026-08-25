@@ -143,7 +143,7 @@ def _awaits(body: object) -> bool:
 
     An instance with an async ``__call__`` is as awaitable as a coroutine function, and only its
     ``__call__`` is the coroutine function :mod:`inspect` can see — the same reading
-    ``_host_tools`` makes of a dispatch observer.
+    ``_host_tools`` makes of a host-tool-call observer.
     """
     return inspect.iscoroutinefunction(body) or inspect.iscoroutinefunction(
         getattr(body, "__call__", None)

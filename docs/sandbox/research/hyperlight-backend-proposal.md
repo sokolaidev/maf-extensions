@@ -106,7 +106,7 @@ the adapter registers a spec's bare hostnames under both schemes — the widenin
 one hostname to its two schemes, never to a different host.
 
 **`limits` declares the transfer ceilings**, with one number that is not ours to choose:
-whenever host tools arrive, the per-dispatch response ceiling must sit well below the
+whenever host tools arrive, the per-host-tool-call response ceiling must sit well below the
 measured **16,376-byte** shared-buffer capacity, because exceeding it is not a refusal —
 it is an abort that poisons the sandbox. Transfer limits for files are policy constants as
 in the Docker proposal; the memory reality (~40–50 MB of user allocation under the default
@@ -161,8 +161,8 @@ When `HOST_TOOLS` is declared, the channel is the backend's own: the `call_tool`
 ships inside the guest, so the guarantee-by-construction reading applies with no probe
 needed. The trampoline rule is absolute — the adapter registers one trampoline per sealed
 registry name, and the trampoline's body is a call to the current run's
-`HostToolRun.dispatch`; the kind's callables are never registered directly, because the
-wire's entire native dispatch policy is a name lookup. The measured facts the trampoline
+`HostToolRun.call`; the kind's callables are never registered directly, because the
+wire's entire native host-tool-call policy is a name lookup. The measured facts the trampoline
 builds to: the callback fires synchronously on the OS thread that called `run()`; a host
 exception surfaces in-guest as a catchable `RuntimeError` with the sandbox staying healthy;
 `framing_bytes` is ~192; the response ceiling is enforced host-side *before* the value
