@@ -117,10 +117,15 @@ async def report_reclaim_failure(failure: ReclaimFailure) -> None:
     keeps ``failure.path`` out of what it prints: a guest path is host-side detail, and this
     program's stdout is also the model's transcript.
 
-    **A healthy run never reaches this.**  Nothing in the sample can make a removal fail — the
-    docker backend's ``reclaim`` is ``rm -rf`` running as root over ``exec``, and it succeeds.
-    Making one fail on purpose takes a backend whose removal can be told to refuse, which is
-    why the sample that exercises the failure is filed separately (#520).
+    **A healthy run never reaches this, and a misassembled one reaches it on the first call.**
+    The removal is ``rm -rf`` run as the image's user, so an image whose ``USER`` cannot write
+    the call directory refuses every one of them — which is what the ``mkdir`` in
+    ``diagram_kind.py`` is there to make impossible, and what this handler is here to report
+    when a kind skips it (#680).
+
+    It cannot stop anything, and that is by design: the body has already returned by the time
+    this runs, so the result has already gone to the model. A handler that raises is logged and
+    contained. The place to refuse is before the work, not after it.
     """
     print(
         f"{MEASURED}The call directory was not reclaimed: {failure.reason} "

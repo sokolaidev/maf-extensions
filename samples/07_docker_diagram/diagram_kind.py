@@ -212,9 +212,33 @@ def _render_diagram_tool(
         source_path = f"{call_directory}/{_SOURCE_FILENAME}"
         output_path = f"{call_directory}/{_OUTPUT_FILENAME}"
 
+        # Made by the *guest*, before anything is written into it, and this is the load-bearing
+        # line of the whole file. `write_file` would create it too — but it creates what it
+        # creates as `root`, while commands run as whatever the image's `USER` says, and a
+        # removal needs write permission on the directory it is emptying. So on an image
+        # hardened the way every guide asks, a call directory made by `write_file` can never be
+        # reclaimed, and every call's source and image stay readable by the next one (#680).
+        # One `mkdir` from the guest settles it: where the image allows it, the directory
+        # belongs to the user that will remove it; where it does not, this fails and the tool
+        # refuses below, before it has written anything or produced any result.
+        #
+        # Run from `/`, not from `work_dir`: nothing guarantees `work_dir` exists yet (#466),
+        # and a command whose working directory is missing fails before it starts.
+        made = await sandbox.exec(
+            ["mkdir", "-p", call_directory], working_directory="/", timeout=timeout
+        )
+        if made.exit_code != 0:
+            logger.warning(
+                "render_diagram: the guest could not make the call directory: %s",
+                (made.stderr or "").strip(),
+            )
+            return (
+                "Error: this sandbox image does not let the workload create a directory under "
+                "its working directory, so nothing it wrote could be cleaned up afterwards. "
+                "Nothing was run."
+            )
+
         try:
-            # `write_file` creates the parents, so this is also what brings the call directory
-            # into existence: `guest_call_path()` returns a name, never a made directory.
             await sandbox.write_file(source_path, dot, working_directory=session.spec.work_dir)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
