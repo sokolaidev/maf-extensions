@@ -545,7 +545,7 @@ class TestWhetherThisBackendCouldServeHostTools:
     transport is composed by the kind out of `exec`, `write_file`, `stat_file` and `read_file`,
     all covered by capabilities this backend already declares. What a backend would be adding is
     that its `exec` **detaches** — that a process started by one call outlives it and is still
-    observable from the next — because `dispatch_over_exec` is built on exactly that. The
+    observable from the next — because `host_tool_calls_over_exec` is built on exactly that. The
     launcher returns immediately by design, and the appearance of the exit-code file is the only
     thing that tells the supervisor the run is over.
 
