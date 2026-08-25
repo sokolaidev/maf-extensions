@@ -32,12 +32,6 @@ jobs:
       # still waits on the `pypi` environment's reviewer.
       actions: write
     steps:
-      # First and unconditional, because the last step in this job runs on every run —
-      # including the ones where release-please failed — and reads a script out of the
-      # checkout. release-please itself works over the API and does not use the workspace.
-      - name: Check out
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-
       - name: Run release-please
         # Pinned to the commit v4 resolves to: a moving tag is a supply-chain hole, and this
         # job can write to the repository.
@@ -67,6 +61,14 @@ jobs:
               -f package="${path##*/}" -f target=pypi
             echo "dispatched publish for ${path##*/} at ${tag}" >> "$GITHUB_STEP_SUMMARY"
           done
+
+      # Unconditional, because the two steps below both read the checkout and both run on
+      # runs that release nothing. Behind release-please rather than in front of it: those
+      # steps work over the API and want no workspace, so a checkout that fails must not be
+      # able to stop a release from being cut.
+      - name: Check out
+        if: always()
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # After maf-sandbox publishes, its dependents' range moves at both ends: the floor to the
       # version that just published, in the packages that look like they need it, and the
@@ -178,9 +180,16 @@ jobs:
             --jq '.run_started_at')"
           issue="$(gh issue list --state open --limit 200 --json number,body \
             | jq --arg m "$marker" '[.[] | select(.body // "" | contains($m))] | first')"
+          # release-please creates the Release first and flips the label after, so a failure in
+          # between leaves a pending pull request whose Release is already there. Without this
+          # the recovery would tell a maintainer to create a tag that exists.
+          released="$(gh api --paginate "repos/{owner}/{repo}/releases?per_page=100" \
+            --jq '.[].tag_name' | jq -R -s -c 'split("\n") | map(select(length > 0))')"
           jq -n --argjson pending "$pending" --argjson issue "$issue" \
+            --argjson released "$released" \
             --arg started "$started" --arg run_url "$RUN_URL" \
-            '{run_started_at: $started, run_url: $run_url, pending: $pending, issue: $issue}' \
+            '{run_started_at: $started, run_url: $run_url, pending: $pending, issue: $issue,
+              released_tags: $released}' \
             | python3 scripts/report_stuck_releases.py > "${RUNNER_TEMP}/plan.json"
           plan="${RUNNER_TEMP}/plan.json"
           action="$(jq -r '.action' "$plan")"

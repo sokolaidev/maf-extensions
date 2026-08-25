@@ -93,8 +93,12 @@ def stuck_releases(pending: list[dict[str, Any]], run_started_at: str) -> list[d
     )
 
 
-def _recovery(pr: dict[str, Any]) -> list[str]:
-    """The commands that release one stuck Release PR by hand, carrying its own values."""
+def _recovery(pr: dict[str, Any], released_tags: list[str]) -> list[str]:
+    """The commands that release one stuck Release PR by hand, carrying its own values.
+
+    Which commands depends on whether its Release exists: release-please creates that first
+    and flips the label after, so a failure in between leaves both true at once.
+    """
     title = str(pr.get("title", ""))
     tag = tag_for(title)
     if tag is None:
@@ -105,6 +109,20 @@ def _recovery(pr: dict[str, Any]) -> list[str]:
         return [unreadable]
     sha = str((pr.get("mergeCommit") or {}).get("oid") or "") or "<merge commit>"
     package, version = tag.rsplit("-v", 1)
+    finish = [
+        f'gh pr edit {pr.get("number")} --remove-label "autorelease: pending" \\',
+        '  --add-label "autorelease: tagged"',
+        f"gh workflow run publish-packages.yml --ref {tag} \\",
+        f"  -f package={package} -f target=pypi",
+        "```",
+    ]
+    if tag in released_tags:
+        already = (
+            f"**`{tag}` already exists**, so release-please created the Release and stopped "
+            f"after it — what was refused is the labelling call, not the release. Creating it "
+            f"again would be rejected as a duplicate. Only the flip and the publish are left."
+        )
+        return [already, "", "```bash", *finish]
     lead = (
         f"Its tag is `{tag}`, at `{sha}`. The notes are that version's section of "
         f"`packages/{package}/CHANGELOG.md`, which this pull request wrote."
@@ -115,15 +133,11 @@ def _recovery(pr: dict[str, Any]) -> list[str]:
         "```bash",
         f"gh release create {tag} --target {sha} \\",
         f'  --title "{package} {version}" --notes-file notes.md',
-        f'gh pr edit {pr.get("number")} --remove-label "autorelease: pending" \\',
-        '  --add-label "autorelease: tagged"',
-        f"gh workflow run publish-packages.yml --ref {tag} \\",
-        f"  -f package={package} -f target=pypi",
-        "```",
+        *finish,
     ]
 
 
-def body(stuck: list[dict[str, Any]], run_url: str) -> str:
+def body(stuck: list[dict[str, Any]], run_url: str, released_tags: list[str]) -> str:
     """The tracking issue's body: what is stuck, what it costs, and how to clear it."""
     lines = [
         MARKER,
@@ -135,15 +149,18 @@ def body(stuck: list[dict[str, Any]], run_url: str) -> str:
     ]
     for pr in stuck:
         tag = tag_for(str(pr.get("title", "")))
+        owes = "unknown" if tag is None else f"`{tag}`"
+        if tag is not None and tag in released_tags:
+            owes = f"`{tag}` — already created"
         lines.append(
             f"| [#{pr.get('number')}]({pr.get('url', '')}) {pr.get('title', '')} "
-            f"| {pr.get('mergedAt') or 'unknown'} | {f'`{tag}`' if tag else 'unknown'} |"
+            f"| {pr.get('mergedAt') or 'unknown'} | {owes} |"
         )
     if run_url:
         lines += ["", f"Noticed by {run_url}."]
     lines += ["", "## Clearing it by hand", ""]
     for pr in stuck:
-        lines += [f"### #{pr.get('number')}", "", *_recovery(pr), ""]
+        lines += [f"### #{pr.get('number')}", "", *_recovery(pr, released_tags), ""]
     lines += [
         _HOW_TO_FINISH,
         "",
@@ -178,7 +195,9 @@ def plan(document: dict[str, Any]) -> dict[str, Any]:
             "action": action,
             "issue": number,
             "title": TITLE,
-            "body": body(stuck, str(document.get("run_url", ""))),
+            "body": body(
+                stuck, str(document.get("run_url", "")), document.get("released_tags") or []
+            ),
             "summary": _summary(action, stuck),
         }
     if number is not None:

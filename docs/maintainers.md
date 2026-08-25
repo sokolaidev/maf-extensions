@@ -107,7 +107,7 @@ Automating the publish does **not** on its own recover the ordering, which is ea
 
 release-please does not release the commit that triggered it. Every run scans for merged Release PRs still labelled `autorelease: pending`, takes the oldest unfinished one, and stops there if it cannot finish it. So **one release that cannot be created stops every package's** — core, every backend, and every run after it, whatever commit triggered that run. Observed on 2026-08-24: eleven consecutive failures across two runs, over an hour, all on one `maf-sandbox-acas` release the API refused to create — and the only trace was a red workflow on `main`.
 
-The trace is no longer the only signal. `release-please.yml`'s last step runs on every run, red or green, and asks one thing: now that release-please has run, is any merged Release PR still labelled `autorelease: pending`? If one is, the step opens an issue naming the pull request, the tag it owes and the commands below, edits that same issue on later runs rather than opening a second, and closes it on the first run that finds the train moving. It also fails the job, so a run that reported success while leaving a release behind is still red. `scripts/report_stuck_releases.py` decides and renders; the workflow gathers the state and carries the plan out.
+The trace is no longer the only signal. `release-please.yml`'s last step runs on every run, red or green, and asks one thing: now that release-please has run, is any merged Release PR still labelled `autorelease: pending`? If one is, the step opens an issue naming the pull request, the tag it owes and the commands that clear it, edits that same issue on later runs rather than opening a second, and closes it on the first run that finds the train moving. It also fails the job, so a run that reported success while leaving a release behind is still red. `scripts/report_stuck_releases.py` decides and renders; the workflow gathers the state and carries the plan out.
 
 A Release PR merged *while* a run is in flight is not counted, because it belongs to the run its own merge triggered — queued behind this one on the workflow's concurrency group. Without that the step would raise an alarm seconds before the next run cleared it, on the one signal that has to be trusted.
 
@@ -125,6 +125,8 @@ gh pr edit <release pr> --remove-label "autorelease: pending" --add-label "autor
 # 3. A tag created by a user token starts no workflow, so nothing uploads on its own.
 gh workflow run publish-packages.yml --ref <tag> -f package=<package> -f target=pypi
 ```
+
+**Step 1 may already be done.** release-please creates the Release *before* it flips the label, so a refusal in between leaves a pending Release PR whose Release is already there — and `gh release create` then rejects the tag as a duplicate. The tracking issue says which of the two you are looking at, because the step looks the tag up: when the Release exists, the recovery is steps 2 and 3 alone, and what to investigate is the labelling call rather than the release.
 
 Then `gh workflow run release-please.yml`, so the rest of the train drains and the tracking issue closes itself. Step 3 is still held at the `pypi` environment's reviewer, so check that the upload actually happened rather than assuming the dispatch was the end of it.
 

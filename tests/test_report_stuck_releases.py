@@ -50,6 +50,14 @@ def _document(**overrides: object) -> dict:
     return document
 
 
+def _step_index(name: str) -> int:
+    """Where a step sits in the job, so an ordering constraint can be stated as one."""
+    for index, step in enumerate(_STEPS):
+        if step.get("name") == name:
+            return index
+    raise AssertionError(f"no step in release-please.yml is named {name!r}")
+
+
 def _step_named(name: str) -> dict:
     for step in _STEPS:
         if step.get("name") == name:
@@ -75,7 +83,7 @@ class TestTheTagIsReadOffTheReleasePrTitle:
 
     def test_the_body_says_where_to_find_the_tag_when_it_cannot_read_one(self):
         stuck = [{**_ACAS, "title": "chore(main): release main"}]
-        text = report.body(stuck, "")
+        text = report.body(stuck, "", [])
         assert "manifest entry" in text
         assert "gh release create" not in text
 
@@ -173,6 +181,33 @@ class TestTheBodyCarriesTheRecovery:
         assert "closes itself" in text
 
 
+class TestAReleaseThatAlreadyExistsIsNotCreatedAgain:
+    """release-please creates the Release, then flips the label. A failure in between leaves a
+    pending pull request whose Release is already there, and `gh release create` refuses it."""
+
+    @pytest.fixture
+    def text(self) -> str:
+        return report.plan(_document(released_tags=["maf-sandbox-acas-v0.13.0"]))["body"]
+
+    def test_it_does_not_tell_anyone_to_create_the_release(self, text: str):
+        assert "gh release create" not in text
+
+    def test_it_says_which_call_was_refused(self, text: str):
+        assert "labelling call" in text
+
+    def test_the_two_remaining_steps_are_still_there(self, text: str):
+        assert 'gh pr edit 624 --remove-label "autorelease: pending"' in text
+        assert "gh workflow run publish-packages.yml --ref maf-sandbox-acas-v0.13.0" in text
+
+    def test_the_table_says_the_tag_exists(self, text: str):
+        assert "`maf-sandbox-acas-v0.13.0` — already created" in text
+
+    def test_another_package_s_release_does_not_count_as_this_one_s(self):
+        """Membership, not a prefix: `maf-sandbox-v0.13.0` is a different package's tag."""
+        text = report.plan(_document(released_tags=["maf-sandbox-v0.13.0"]))["body"]
+        assert "gh release create maf-sandbox-acas-v0.13.0" in text
+
+
 class TestTheMarkerHasOneDefinition:
     def test_the_script_prints_it_for_the_workflow_to_search_on(
         self, capsys: pytest.CaptureFixture
@@ -197,16 +232,47 @@ class TestTheStepRunsWhateverElseHappened:
         """It reads what the run left behind, so anything after it would not be counted."""
         assert _STEPS[-1].get("name") == "Name any release this run left stuck"
 
-    def test_the_checkout_is_first_and_unconditional(self):
+    def test_the_checkout_is_unconditional(self):
         """The step reads `scripts/` off disk, and it runs on runs that release nothing."""
-        assert _STEPS[0]["name"] == "Check out"
-        assert "if" not in _STEPS[0]
-        assert "actions/checkout@" in _STEPS[0]["uses"]
+        checkout = _step_named("Check out")
+        assert "always()" in str(checkout.get("if", ""))
+        assert "actions/checkout@" in checkout["uses"]
+
+    def test_the_checkout_comes_after_release_please(self):
+        """In front of it, a failed checkout would stop a release being cut at all.
+
+        release-please and the publish dispatch work over the API and want no workspace, so
+        nothing is gained by checking out first and a whole release cycle is risked.
+        """
+        assert _step_index("Run release-please") < _step_index("Check out")
+        assert _step_index("Publish each released package") < _step_index("Check out")
+
+    def test_the_checkout_comes_before_everything_that_reads_it(self):
+        for step in ["Propose the dependents' range", "Name any release this run left stuck"]:
+            assert _step_index("Check out") < _step_index(step)
 
     def test_only_one_step_checks_out(self):
         """Two checkouts of the same ref is the shape left behind by moving the first one."""
         checkouts = [step for step in _STEPS if "actions/checkout@" in str(step.get("uses", ""))]
         assert len(checkouts) == 1
+
+    @pytest.mark.parametrize(
+        "link",
+        [
+            'released="$(gh api --paginate "repos/{owner}/{repo}/releases?per_page=100"',
+            '--argjson released "$released"',
+            "released_tags: $released",
+        ],
+    )
+    def test_it_gathers_which_releases_already_exist(self, link: str):
+        """Three links, and each is a separate way for the answer to stop arriving.
+
+        Without the tag list every recovery renders `gh release create`, including the ones
+        where the Release is already there and that command is refused. The middle link is the
+        one a static check nearly misses: drop it and the gather and the key both still read
+        correctly, while `jq -n` fails at run time on an undefined `$released`.
+        """
+        assert link in _step_named("Name any release this run left stuck")["run"]
 
     @pytest.mark.parametrize("permission", ["issues", "pull-requests", "actions", "contents"])
     def test_the_job_can_still_reach_what_the_step_reads(self, permission: str):
