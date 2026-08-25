@@ -4745,10 +4745,7 @@ def _surface(response_limits: TransferLimits, dispatches: int = 1) -> Any:
 
 
 class TestTheCeilingsTheFoldPromisesAreEnforced:
-    """A fold is only worth the ceilings it declares. Both constants bound a transfer the router
-    told a backend to expect, so each has to be a bound the transport cannot exceed rather than a
-    generous guess — a guess admits the backend and then overruns it, which is the failure #393
-    exists to close."""
+    """Each constant the fold declares to a backend is a bound the transport cannot exceed."""
 
     def test_a_launcher_the_run_paths_blow_past_the_ceiling_is_refused(self):
         """The template repeats the layout's paths many times, so a long enough `work_dir`

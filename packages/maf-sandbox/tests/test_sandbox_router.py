@@ -628,12 +628,9 @@ class TestTransferLimitMatch:
 
 
 class TestTheRouterFoldsADispatchSurface:
-    """#393: a spec carrying a host-tool surface has the registry's ``response_limits`` folded
-    into the transfer-limit match, transiently.  The transport's own footprint — request files
-    in, responses and the exit marker back — is bounded by ``response_limits``, not by what the
-    workload declared for its own I/O, so a backend that could serve the bare caps but not the
-    dispatch is refused at attach rather than overrun mid-run.  The fold never touches the spec's
-    stored caps: the kind's runtime tally and output collection still enforce against those.
+    """A spec carrying a host-tool surface has the registry's ceilings folded into the
+    transfer-limit match, transiently: a backend that serves the bare caps but not the transport
+    is refused at attach, and the spec's stored caps are left for the kind's own runtime tally.
     """
 
     _RL = TransferLimits(max_bytes_per_file=8_000_000, max_total_bytes=32_000_000, max_files=64)
@@ -724,8 +721,6 @@ class TestTheRouterFoldsADispatchSurface:
         spec = self._dispatching(self._surface(self._RL), files_in=over, files_out=over)
         with pytest.raises(SandboxTransferLimitsNotPermitted, match="files_out") as excinfo:
             self._router(ceiling).ensure_can_serve(spec)
-        # files_out is over the 1 KiB ceiling on the workload's own 8 KiB declaration, before any
-        # fold; the fold also raised it, which the previous predicate mistook for causation.
         assert "folded to include" not in str(excinfo.value)
 
     def test_a_refusal_with_no_surface_does_not_mention_a_fold(self):
@@ -813,16 +808,10 @@ class TestASpecMustAdmitTheSurfaceItCarries:
         with pytest.raises(SandboxIdentityDenied):
             router.ensure_can_serve(spec)
 
-    def test_the_new_field_resolves_at_runtime(self):
-        """`SandboxSpec` is public and consumed by tooling that reads annotations, so a field
-        annotated with a name only a type checker can see breaks `typing.get_type_hints`."""
-        assert typing.get_type_hints(SandboxSpec)["host_tools"] is not None
-
     def test_every_public_surface_annotated_with_the_aggregate_resolves(self):
-        """The same trap, swept rather than spotted: a `TYPE_CHECKING`-only import satisfies the
-        type checker and leaves `get_type_hints` raising for callers. It has now caught the spec
-        and the fold helper, so both — and anything else annotated against the aggregate — are
-        resolved here rather than one at a time."""
+        """Each of these is public and annotated against the aggregate, so its hints must resolve
+        at runtime: a `TYPE_CHECKING`-only import satisfies the type checker while leaving
+        `typing.get_type_hints` raising for every caller that reads annotations."""
         for subject in (SandboxSpec, fold_dispatch_transfer_limits, HostToolAggregate):
             typing.get_type_hints(subject)
 

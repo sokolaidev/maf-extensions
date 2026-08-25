@@ -56,11 +56,6 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from ._error_detail import error_detail
 from ._outputs import SandboxTransferCapExceeded
-
-# `HostToolAggregate` at runtime, not under TYPE_CHECKING: it annotates a *public* function
-# here, and a postponed annotation naming an absent module attribute makes
-# `typing.get_type_hints` raise for every caller that resolves it. `_protocol` owns the type
-# and this module already imports it, so there is no cycle to avoid.
 from ._protocol import (
     EntryKind,
     ExecResult,
@@ -737,8 +732,9 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
         # exists to prevent, and a named refusal beats discovering it inside the guest.
         raise ValueError(
             f"the generated launcher is {len(script.encode('utf-8'))} bytes, over the "
-            f"{_LAUNCHER_CEILING}-byte ceiling the transfer match declares for it — the run's "
-            "paths or interpreter are too long. Shorten the spec's work_dir."
+            f"{_LAUNCHER_CEILING}-byte ceiling the transfer match declares for it. The template "
+            "repeats the run's paths and the interpreter, so shorten whichever is long here: the "
+            f"spec's work_dir, or interpreter ({len(interpreter)} characters)."
         )
     return script
 
