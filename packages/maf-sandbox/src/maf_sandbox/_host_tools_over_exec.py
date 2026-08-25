@@ -2146,12 +2146,3 @@ def _exit_code_from(recorded: str | _TooLarge | _NotText) -> int:
         return int(recorded.strip())
     except ValueError:
         return 1
-
-
-# --- The pre-rename spelling, kept for one release (see `_host_tools`) ----------------------
-
-#: Deprecated alias of :func:`host_tool_calls_over_exec`.
-dispatch_over_exec = host_tool_calls_over_exec
-
-#: Deprecated alias of :func:`fold_host_tool_call_transfer_limits`.
-fold_dispatch_transfer_limits = fold_host_tool_call_transfer_limits

@@ -23,12 +23,10 @@ import pytest
 
 import maf_sandbox._host_tools as host_tools_module
 from maf_sandbox import (
-    DEFAULT_MAX_DISPATCHES_PER_RUN,
     DEFAULT_MAX_HOST_TOOL_CALLS_PER_RUN,
     DEFAULT_TRANSFER_LIMITS,
     FLOW_DECLARED_KEY,
     INTEGRITY_RANK,
-    DispatchResult,
     HostToolCallResult,
     HostToolDeclaration,
     HostToolIdentityNotAllowed,
@@ -41,10 +39,6 @@ from maf_sandbox import (
     SourceIntegrity,
     TransferLimits,
     declaration_of,
-    dispatch_over_exec,
-    fold_dispatch_transfer_limits,
-    fold_host_tool_call_transfer_limits,
-    host_tool_calls_over_exec,
     sandbox_tool,
 )
 
@@ -1583,64 +1577,3 @@ class TestTheRegistryObservesEveryHostToolCall:
         registry = HostToolRegistry(host_tool_calls_observer=factory)
         registry.register(_stamped_pure())
         assert _call_host_tool(HostToolRun(registry), "doubled", {"x": 1}).ok
-
-
-class TestThePreRenameSpellingStillResolves:
-    """Every old name, exercised — the compatibility claim, made falsifiable.
-
-    The old spelling is kept for one release so a dependent resolves against this core and
-    the one before it. Module names, keywords, properties and methods each need their own
-    check: aliasing one kind does not alias another.
-    """
-
-    def test_the_module_level_names_are_the_new_objects(self):
-        assert DispatchResult is HostToolCallResult
-        assert DEFAULT_MAX_DISPATCHES_PER_RUN == DEFAULT_MAX_HOST_TOOL_CALLS_PER_RUN
-        assert dispatch_over_exec is host_tool_calls_over_exec
-        assert fold_dispatch_transfer_limits is fold_host_tool_call_transfer_limits
-
-    def test_the_cap_reads_under_both_spellings(self):
-        registry = HostToolRegistry(max_host_tool_calls_per_run=5)
-        assert registry.max_dispatches_per_run == 5
-        assert registry.max_host_tool_calls_per_run == 5
-
-    def test_the_cap_is_settable_under_the_old_keyword(self):
-        registry = HostToolRegistry(max_dispatches_per_run=5)
-        assert registry.max_host_tool_calls_per_run == 5
-        assert registry.max_dispatches_per_run == 5
-
-    def test_the_observer_reads_under_both_spellings(self):
-        observer = lambda run, name: contextlib.nullcontext()  # noqa: E731
-        registry = HostToolRegistry(dispatch_observer=observer)
-        assert registry.dispatch_observer is observer
-        assert registry.host_tool_calls_observer is observer
-
-    def test_one_spelling_at_a_time(self):
-        with pytest.raises(TypeError, match="not both"):
-            HostToolRegistry(max_host_tool_calls_per_run=5, max_dispatches_per_run=5)
-
-    def test_dispatch_reaches_the_tool(self):
-        registry = HostToolRegistry()
-        registry.register(_stamped_pure())
-        result = asyncio.run(HostToolRun(registry).dispatch("doubled", {"x": 1}))
-        assert result.ok
-        assert result.value_json == "2"
-
-    def test_dispatch_delegates_rather_than_copying_call(self):
-        """A subclass overriding ``call`` is what an old caller must still reach.
-
-        Delegation is what makes that hold: a ``dispatch`` bound to the base function would
-        resolve to the base ``call`` and skip the override.
-        """
-        seen: list[str] = []
-
-        class Watched(HostToolRun):
-            async def call(self, name, arguments=None, *, framing_bytes=0):
-                seen.append(name)
-                return await super().call(name, arguments, framing_bytes=framing_bytes)
-
-        registry = HostToolRegistry()
-        registry.register(_stamped_pure())
-        result = asyncio.run(Watched(registry).dispatch("doubled", {"x": 1}))
-        assert result.ok
-        assert seen == ["doubled"]

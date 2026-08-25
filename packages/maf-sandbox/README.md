@@ -147,6 +147,24 @@ The contract says what may be called; it does not say how a host-tool call *reac
 
 It costs round trips — several backend calls per host-tool call, plus polling, plus one on every return to reclaim, and one more to stop the program on a run that overran. It serves one outstanding call at a time. This module's own docstring counts those costs exactly, beside the code that decides them; whether the trade is worth it is a measurement rather than an assumption.
 
+## Upgrading to 0.25
+
+**The `dispatch` spelling is gone.** 0.24 added the `host_tool_call` names beside the old ones so a dependent could move in its own release; this removes what was kept.
+
+| Was | Is |
+| --- | --- |
+| `dispatch_over_exec` | `host_tool_calls_over_exec` |
+| `DispatchResult` | `HostToolCallResult` |
+| `DEFAULT_MAX_DISPATCHES_PER_RUN` | `DEFAULT_MAX_HOST_TOOL_CALLS_PER_RUN` |
+| `fold_dispatch_transfer_limits` | `fold_host_tool_call_transfer_limits` |
+| `HostToolRun.dispatch` | `HostToolRun.call` |
+| `registry.dispatch_observer` | `registry.host_tool_calls_observer` |
+| `registry.max_dispatches_per_run` | `registry.max_host_tool_calls_per_run` |
+| `dispatch_observer=` | `host_tool_calls_observer=` |
+| `max_dispatches_per_run=` | `max_host_tool_calls_per_run=` |
+
+Pin `maf-sandbox<0.25` to stay, or rename: an old import is an `ImportError`, an old attribute an `AttributeError`, and an old keyword a `TypeError` — each naming what it wanted, none of them silent.
+
 ## Upgrading to 0.23
 
 **`Sandbox` gains `reclaim`, and there is no declare-or-raise escape for it.** Every other protocol method a backend cannot serve may raise `NotImplementedError` as long as it does not declare the matching `Capability` — the `run_code` note below is that escape, spelled out. `reclaim` is the first member with no capability behind it: there is no spec the router could refuse before a caller arrives, and a sandbox answering with `NotImplementedError` leaks a directory per call out of a `finally` that reports rather than raises. **A third-party backend adds one method, and has to genuinely implement it:**
