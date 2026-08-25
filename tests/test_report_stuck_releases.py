@@ -242,6 +242,37 @@ class TestOnlyAReleaseThisRunOwedCounts:
         ]
 
 
+class TestARunStartNobodyCanReadFiltersNothing:
+    """The same unreadable timestamp has to fail in opposite directions on the two sides.
+
+    On a merge time the far past means "old enough to be stuck", so the release is reported.
+    On the run start that same value means "after nothing", which drops every pending release
+    and reports none — the silent miss this whole step exists to prevent. `gh api --jq` prints
+    the string `null` for a field the API did not return, so it is an ordinary absence rather
+    than anything exotic that gets here.
+    """
+
+    _LATER = {**_ACAS, "number": 700, "mergedAt": "2026-08-24T20:36:00Z"}
+
+    @pytest.mark.parametrize("started", ["", "null", "not a timestamp", "2026-13-45"])
+    def test_every_pending_release_is_still_reported(self, started: str):
+        stuck = report.stuck_releases([dict(_ACAS), dict(self._LATER)], started)
+        assert [pr["number"] for pr in stuck] == [624, 700]
+
+    @pytest.mark.parametrize("started", ["", "null"])
+    def test_so_the_tracker_is_opened_rather_than_never_raised(self, started: str):
+        assert report.plan(_document(run_started_at=started))["action"] == "open"
+
+    def test_a_merge_time_nobody_can_read_either_is_still_reported(self):
+        """Both sides unreadable at once, which is the state a bad API response leaves."""
+        unknown = {**_ACAS, "mergedAt": None}
+        assert report.stuck_releases([unknown], "null") == [unknown]
+
+    def test_and_a_readable_run_start_still_filters(self):
+        """The safety net must not swallow the filter it is a net for."""
+        assert report.stuck_releases([dict(self._LATER)], _STARTED) == []
+
+
 class TestThePlanIsOneIssue:
     def test_a_wedge_with_no_tracker_opens_one(self):
         plan = report.plan(_document())

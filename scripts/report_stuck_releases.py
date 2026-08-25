@@ -65,10 +65,13 @@ _UNREADABLE_TITLE = (
     "reused."
 )
 
-#: Far enough back that a pull request whose merge time GitHub did not report is reported
-#: rather than filtered away. Missing the wedge is the failure this exists to prevent, and a
-#: false alarm closes itself on the next run.
+#: The two directions an unreadable timestamp can fail in. They are opposite values and they
+#: mean the same thing — report it: a merge time GitHub did not give is old enough to be
+#: stuck, and a run start nobody can read is after every merge, so it filters nothing out.
+#: Missing the wedge is the failure this exists to prevent, and a false alarm closes itself on
+#: the next run.
 _LONG_AGO = datetime(1970, 1, 1, tzinfo=UTC)
+_LATER_THAN_ANY_MERGE = datetime(9999, 12, 31, tzinfo=UTC)
 
 #: The tracking issue's fixed paragraphs, named rather than wrapped inside the list that
 #: renders it: adjacent string literals in a list cannot be told from a missing comma.
@@ -131,14 +134,20 @@ def tag_for(title: str, releases: Mapping[str, str]) -> str | None:
     return None if release is None else f"{release[0]}-v{release[1]}"
 
 
-def _moment(text: str | None) -> datetime:
-    """A GitHub timestamp as an aware datetime, or the far past when it says nothing."""
+def _moment(text: str | None, unreadable: datetime) -> datetime:
+    """A GitHub timestamp as an aware datetime, or ``unreadable`` when it is not one.
+
+    The fallback is the caller's to choose and cannot be defaulted, because the same value
+    fails safe on one side of a comparison and silently on the other. `gh api --jq` prints the
+    string `null` for a field the API did not return, so this is reached by an ordinary
+    absence rather than by anything exotic.
+    """
     if not text:
-        return _LONG_AGO
+        return unreadable
     try:
         return datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError:
-        return _LONG_AGO
+        return unreadable
 
 
 def stuck_releases(pending: list[dict[str, Any]], run_started_at: str) -> list[dict[str, Any]]:
@@ -147,11 +156,14 @@ def stuck_releases(pending: list[dict[str, Any]], run_started_at: str) -> list[d
     A Release PR merged *while* the run was in flight belongs to the run its own merge
     triggered, which has not had its turn yet — the workflow's concurrency group serialises
     them. Reporting one of those would be a false alarm that closes itself a minute later.
+
+    A ``run_started_at`` that cannot be read filters nothing, so an unusable one costs a false
+    alarm rather than the whole report.
     """
-    started = _moment(run_started_at)
+    started = _moment(run_started_at, _LATER_THAN_ANY_MERGE)
     return sorted(
-        (pr for pr in pending if _moment(pr.get("mergedAt")) <= started),
-        key=lambda pr: _moment(pr.get("mergedAt")),
+        (pr for pr in pending if _moment(pr.get("mergedAt"), _LONG_AGO) <= started),
+        key=lambda pr: _moment(pr.get("mergedAt"), _LONG_AGO),
     )
 
 
