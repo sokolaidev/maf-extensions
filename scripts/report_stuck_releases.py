@@ -34,7 +34,14 @@ TITLE = "A merged Release PR was never released, so no package can release"
 #: `chore(main): release maf-sandbox-acas 0.13.0` — release-please's title for a
 #: single-package Release PR, which is the only shape this repository produces, because
 #: `release-please-config.json` sets `separate-pull-requests`.
-_RELEASE_TITLE = re.compile(r"\brelease\s+(?P<package>[A-Za-z0-9._-]+)\s+v?(?P<version>\d\S*)\s*$")
+#:
+#: Both halves are held to what may appear in a git tag, because the tag built from them is
+#: rendered into shell commands a maintainer copies and runs. A title carrying anything else
+#: names no tag at all, and the issue says so rather than rendering a command from it.
+_VERSION = r"\d[0-9A-Za-z.+-]*"
+_RELEASE_TITLE = re.compile(
+    rf"\brelease\s+(?P<package>[A-Za-z0-9._-]+)\s+v?(?P<version>{_VERSION})\s*$"
+)
 
 #: Far enough back that a pull request whose merge time GitHub did not report is reported
 #: rather than filtered away. Missing the wedge is the failure this exists to prevent, and a
@@ -132,7 +139,7 @@ def _recovery(pr: dict[str, Any], released_tags: list[str]) -> list[str]:
         "",
         "```bash",
         f"gh release create {tag} --target {sha} \\",
-        f'  --title "{package} {version}" --notes-file notes.md',
+        f"  --title '{package} {version}' --notes-file notes.md",
         *finish,
     ]
 

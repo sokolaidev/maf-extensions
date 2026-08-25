@@ -111,12 +111,12 @@ The trace is no longer the only signal. `release-please.yml`'s last step runs on
 
 A Release PR merged *while* a run is in flight is not counted, because it belongs to the run its own merge triggered — queued behind this one on the workflow's concurrency group. Without that the step would raise an alarm seconds before the next run cleared it, on the one signal that has to be trusted.
 
-**Clearing it by hand** is three commands, and the middle one is the one nobody guesses.
+**Clearing it by hand** is three commands, or two when the Release already exists. The label flip is the one nobody guesses.
 
 ```bash
 # 1. The tag and Release release-please could not create. The notes are that version's
 #    section of packages/<package>/CHANGELOG.md, which the Release PR itself wrote.
-gh release create <tag> --target <merge sha> --title "<package> <version>" --notes-file notes.md
+gh release create <tag> --target <merge sha> --title '<package> <version>' --notes-file notes.md
 
 # 2. The label flip. Without it release-please retries the same release for ever, and the
 #    train stays stuck even though the tag now exists.

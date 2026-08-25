@@ -81,6 +81,25 @@ class TestTheTagIsReadOffTheReleasePrTitle:
     def test_a_title_naming_no_version_says_so_rather_than_guessing(self):
         assert report.tag_for("chore(main): release main") is None
 
+    @pytest.mark.parametrize(
+        "version",
+        ["0.1.0;whoami", "0.1.0$(whoami)", "0.1.0`whoami`", "0.1.0&&whoami", "0.1.0|whoami"],
+    )
+    def test_a_version_carrying_shell_syntax_names_no_tag(self, version: str):
+        """The tag is rendered into commands a maintainer copies into a shell and runs.
+
+        A pull request title is editable, so what the tag is built from is held to the
+        characters a git tag may carry — refusing to name a tag is the safe answer, and the
+        issue then says where to find it instead.
+        """
+        assert report.tag_for(f"chore(main): release maf-sandbox {version}") is None
+
+    @pytest.mark.parametrize("suffix", ["-rc.1", "+build.7", "-alpha1"])
+    def test_a_prerelease_or_build_version_still_names_its_tag(self, suffix: str):
+        """Narrower than `\\S*`, still wide enough for every version release-please cuts."""
+        tag = report.tag_for(f"chore(main): release maf-sandbox 1.0.0{suffix}")
+        assert tag == f"maf-sandbox-v1.0.0{suffix}"
+
     def test_the_body_says_where_to_find_the_tag_when_it_cannot_read_one(self):
         stuck = [{**_ACAS, "title": "chore(main): release main"}]
         text = report.body(stuck, "", [])
@@ -179,6 +198,34 @@ class TestTheBodyCarriesTheRecovery:
 
     def test_it_says_the_issue_closes_itself(self, text: str):
         assert "closes itself" in text
+
+
+class TestNothingInTheRenderedCommandsExpands:
+    """What the issue prints is copy-pasted into a shell holding a maintainer's credentials."""
+
+    @staticmethod
+    def _shell(text: str) -> str:
+        """Everything inside the body's fenced ```bash blocks, joined."""
+        blocks, inside = [], False
+        for line in text.split("\n"):
+            if line.startswith("```bash"):
+                inside = True
+            elif line.startswith("```"):
+                inside = False
+            elif inside:
+                blocks.append(line)
+        assert blocks, "the recovery rendered no shell at all"
+        return "\n".join(blocks)
+
+    @pytest.mark.parametrize("metacharacter", ["$", "`", ";", "&", "|", ">", "<", "(", ")"])
+    def test_no_metacharacter_reaches_the_shell(self, metacharacter: str):
+        shell = self._shell(report.plan(_document())["body"])
+        assert metacharacter not in shell
+
+    def test_the_one_argument_holding_a_space_is_single_quoted(self):
+        """Double quotes would still expand `$(...)`, so the release title takes single ones."""
+        shell = self._shell(report.plan(_document())["body"])
+        assert "--title 'maf-sandbox-acas 0.13.0'" in shell
 
 
 class TestAReleaseThatAlreadyExistsIsNotCreatedAgain:
