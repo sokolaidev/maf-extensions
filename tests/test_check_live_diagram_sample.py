@@ -32,16 +32,20 @@ assert _scaffold_spec and _scaffold_spec.loader
 scaffold = importlib.util.module_from_spec(_scaffold_spec)
 _scaffold_spec.loader.exec_module(scaffold)
 
-#: The one line here that is not prose: the sample's own report of what `dispose_scope`
-#: returned, tagged as the sample tags it.
+#: The lines here that are not prose: the sample's own report of what it read out of the
+#: sandbox once the turn was over, and of what `dispose_scope` returned. Both tagged as the
+#: sample tags them.
+_SURVIVING_LINE = f"{scaffold.MEASURED}Left in the sandbox work directory: nothing"
 _DISPOSAL_LINE = f"{scaffold.MEASURED}Disposed 1 sandbox(es)."
 
-#: A healthy run: the model's own words about what it drew, then that line. Nothing in the
+#: A healthy run: the model's own words about what it drew, then those lines. Nothing in the
 #: reply is matched — it is prose, and it is deliberately not the prose a checker could be
 #: tuned to.
 _HEALTHY = f"""\
 I wrote the DOT for a three-node pipeline and called render_diagram. It saved the image as
 diagram.png under out/. I have not seen the image itself.
+
+{_SURVIVING_LINE}
 
 {_DISPOSAL_LINE}
 """
@@ -68,7 +72,10 @@ class TestAHealthyRun:
         assert check.assess(_HEALTHY, _png(640, 480)) == []
 
     def test_it_passes_whatever_the_model_said(self):
-        output = f"Here is a lovely diagram.\n\n{scaffold.MEASURED}Disposed 2 sandbox(es).\n"
+        output = (
+            f"Here is a lovely diagram.\n\n{_SURVIVING_LINE}\n\n"
+            f"{scaffold.MEASURED}Disposed 2 sandbox(es).\n"
+        )
         assert check.assess(output, _png(1, 1)) == []
 
 
@@ -164,6 +171,81 @@ class TestTheImageHalf:
         assert any("640x0" in reason for reason in failures)
 
 
+class TestTheReclaimHalf:
+    """The kind writes inside the call's own directory, and the framework removes it.
+
+    A run that leaves the DOT source or the PNG in the sandbox has not: `acquire` is
+    get-or-create, so both stay readable by every later call in the conversation. The sample
+    reads the working directory back before disposing, and this is what makes that reading
+    count for something.
+    """
+
+    def test_a_listing_that_names_files_fails(self):
+        left = f"{scaffold.MEASURED}Left in the sandbox work directory: diagram.dot, diagram.png"
+        output = _HEALTHY.replace(_SURVIVING_LINE, left)
+        assert output != _HEALTHY, "the fixture moved"
+
+        failures = check.assess(output, _png(64, 64))
+        assert any("diagram.dot, diagram.png" in reason for reason in failures)
+
+    def test_a_missing_listing_fails(self):
+        output = _HEALTHY.replace(f"{_SURVIVING_LINE}\n\n", "")
+        assert output != _HEALTHY, "the fixture moved"
+
+        failures = check.assess(output, _png(64, 64))
+        assert any("should have read the sandbox back" in reason for reason in failures)
+
+    def test_a_missing_listing_is_not_asked_for_when_nothing_landed(self):
+        """The sample will not acquire a sandbox just to look inside it, because acquiring is
+        what creates one — so a turn that landed nothing prints no listing, and demanding one
+        would report a second failure for the same absence."""
+        output = _HEALTHY.replace(f"{_SURVIVING_LINE}\n\n", "")
+        failures = check.assess(output, None)
+        assert failures == [reason for reason in failures if "no image on disk" in reason]
+
+    def test_the_handler_firing_fails(self):
+        fired = (
+            f"{scaffold.MEASURED}The call directory was not reclaimed: the removal call failed: "
+            "OSError: rm exited 1 (the framework's disposal: disposed)."
+        )
+        output = _HEALTHY.replace(_SURVIVING_LINE, f"{fired}\n\n{_SURVIVING_LINE}")
+
+        failures = check.assess(output, _png(64, 64))
+        assert any("on_reclaim_failure handler fired" in reason for reason in failures)
+
+    def test_the_handler_firing_fails_even_though_the_listing_is_empty(self):
+        """The reason both lines are read rather than only the listing.
+
+        A removal that fails takes the sandbox with it — the framework disposes what it could
+        not clean — so the working directory the sample reads afterwards belongs to a *new*
+        sandbox and is empty for the wrong reason. The listing alone would call that healthy.
+        """
+        fired = f"{scaffold.MEASURED}The call directory was not reclaimed: it stayed."
+        output = _HEALTHY.replace(_SURVIVING_LINE, f"{fired}\n\n{_SURVIVING_LINE}")
+        assert _SURVIVING_LINE in output, "the empty listing has to still be there"
+
+        assert check.assess(output, _png(64, 64)) != []
+
+    def test_an_untagged_listing_answers_for_nothing(self):
+        """Same rule as the disposal line: a model writing this sentence is not the host."""
+        untagged = _HEALTHY.replace(_SURVIVING_LINE, "Left in the sandbox work directory: nothing")
+        assert untagged != _HEALTHY, "the fixture moved"
+
+        failures = check.assess(untagged, _png(64, 64))
+        assert any("should have read the sandbox back" in reason for reason in failures)
+
+    def test_the_sample_prints_both_lines_from_the_scaffold(self):
+        source = (_ROOT / "samples" / _SAMPLE / "agent.py").read_text(encoding="utf-8")
+        assert "{MEASURED}Left in the sandbox work directory: " in source, (
+            f"samples/{_SAMPLE}/agent.py no longer tags what it read out of the sandbox, so "
+            "this check reads a line a model could have written"
+        )
+        assert "{MEASURED}The call directory was not reclaimed: " in source, (
+            f"samples/{_SAMPLE}/agent.py no longer reports a failed reclaim, so a run whose "
+            "cleanup failed would read as healthy here"
+        )
+
+
 class TestDimensions:
     def test_it_reads_what_the_header_declares(self):
         assert check.dimensions(_png(1920, 1080)) == (1920, 1080)
@@ -173,7 +255,10 @@ class TestDimensions:
 
 
 class TestEveryReasonIsReported:
-    def test_a_run_that_failed_twice_says_so_twice(self):
+    def test_a_run_that_failed_every_way_says_so_every_time(self):
         """A checker that stops at the first reason makes a red run take two live runs to read."""
         failures = check.assess("nothing here", b"<svg/>")
-        assert len(failures) == 2
+        assert len(failures) == 3
+        assert any("did not run to completion" in reason for reason in failures)
+        assert any("Left in the sandbox work directory" in reason for reason in failures)
+        assert any("not a readable PNG" in reason for reason in failures)

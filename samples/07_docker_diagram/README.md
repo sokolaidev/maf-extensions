@@ -14,13 +14,31 @@ Samples 05 and 06 lean on a packaged kind: `maf_sandbox_bicep`'s `bicep_validate
 
 A kind is two things plus the seam it leaves for the host, and `diagram_kind.py` is exactly that — `agent.py` beside it is the same host wiring as every other sample, and imports one name from it:
 
-- **`diagram_sandbox_spec()`** — a `SandboxSpec` with `kind="diagram-generator"`, closed egress, and one `DeclaredOutput` (`diagram.png`, `image/png`, `required=False`). It `requires` `EXEC`, `FILES_IN` and — the new one — `FILES_OUT`, so the router refuses any backend without a pull surface before a container is ever created.
-- **`render_diagram(dot)`** — the tool body. It writes the DOT in with `write_file`, runs `dot -Tpng` as a fixed argv (no shell, the model's source is a file argument), and on success calls `collect_outputs(...)` to land the PNG. A `dot` that rejects malformed DOT exits non-zero and produces no file; the body hands its diagnostic back for the model to fix, which is exactly why the output is `required=False`.
+- **`diagram_sandbox_spec()`** — a `SandboxSpec` with `kind="diagram-generator"`, closed egress, and `outputs_named_at_call_time=True`: this workload lands something, and cannot say here what its path will be, because the path carries the call's own run id. It `requires` `EXEC`, `FILES_IN` and — the new one — `FILES_OUT`, so the router refuses any backend without a pull surface before a container is ever created.
+- **`render_diagram(dot)`** — the tool body. It takes the call's own directory from `session.guest_call_path()`, writes the DOT there with `write_file`, runs `dot -Tpng` as a fixed argv (no shell, the model's source is a file argument), and on success calls `collect_outputs(..., outputs=(DeclaredOutput(...),))` with the declaration it can only make now. A `dot` that rejects malformed DOT exits non-zero and produces no file; the body hands its diagnostic back for the model to fix, which is exactly why the output is `required=False`.
 - **`make_diagram_tools(..., sink)`** — and the `sink` parameter is the interesting half. The kind does not build one. It takes an `OutputSink` from the host and passes it to `sandboxed_tool`, so where the bytes land is the application's decision and never the kind's; `agent.py` supplies `make_file_system_sink` from `maf_sandbox`. What the kind does own is the consequence of that split: `deliver` returns a `LandedArtifact` whose `display` — a one-line "saved under `out/`" — is all the model sees, while its `handle`, the real host path, stays the host's own reference and is never rendered into the transcript. That is a security property rather than tidiness: one string doing both jobs, put in a tool result, could persist a path or a signed URL into the conversation to be replayed every turn.
 
 ## The image itself does not come back
 
 `render_diagram` returns **where** the PNG landed, never the PNG. The model is told to report the location and not to claim it saw the picture, and the tool's result carries no image bytes to tempt it. This is the shape any "produce a file" workload wants: the artifact goes to storage the host controls, and the transcript carries a handle to it — not a base64 blob that bloats every subsequent turn and puts guest-produced bytes in the model's context.
+
+## Every call gets a directory, and the framework takes it away
+
+The sandbox outlives the call. `acquire` is get-or-create, keyed by `(scope, thread_id, agent_dir)`, so the container that served this render is the same one that serves the next — that is the point of it, and it is what makes *where a kind writes* a decision rather than a detail.
+
+Write at a fixed path under `work_dir` and both halves of that reuse work against you. Two `render_diagram` calls in one assistant message run **concurrently** — the framework does not serialise them — so both would write one `diagram.dot` and read one `diagram.png`, and one call could collect the other's image. And every call would leave its source and its render sitting there for every later call in the conversation to read: the model's own input, and the picture made from it, retained for the life of the thread by nothing more than an oversight.
+
+`SandboxToolSession.guest_call_path()` is the answer to both at once. It names a directory allocated for this call, under `work_dir`, and `sandboxed_tool` removes it and everything under it when the body returns — after a result, a refusal and an exception alike. So:
+
+- **No lock.** Two renders share no path, so they cannot collide, and the kind needs nothing to make that true. An earlier version of this sample held an `asyncio.Lock` around `write → exec → collect`; the lock was the price of the fixed path, and it is gone with it.
+- **Nothing to clean up.** The kind calls no removal of its own. `Sandbox.remove` is a capability (`FILES_DELETE`) that only some backends serve; the reclaim of a call's own directory is not — every backend does it, and a kind that writes here gets it for free.
+- **The landed name stays `diagram.png`.** The guest path carries a run id; host storage should not. `DeclaredOutput(path=f"{run_id}/diagram.png", name="diagram.png")` is what splits the two — `path` is where to read it in the guest, `name` is what it lands as, and without the second the run id ends up in `out/` and in the sentence the model is shown.
+
+The price is that the spec no longer names the file at attach time. `outputs_named_at_call_time=True` says *this kind lands something* without saying what, which is weaker as documentation and exactly as strong as a check: `sandboxed_tool` still refuses to attach without an `OutputSink`, and still refuses a spec that lands anything without requiring `FILES_OUT`. Nothing moved out of the attach gate — only the filename did.
+
+**The sample reads that back rather than asserting it.** After the turn and before the disposal, `agent.py` reacquires the same sandbox and lists `work_dir` over `exec` — the docker backend serves no `FILES_LIST`, and this is host-side instrumentation rather than something the kind does. A healthy run prints `nothing`, which is the only interesting listing there is. It asks only once an image has landed, because `acquire` is get-or-create: probing a turn that called no tool would *create* the sandbox whose absence the disposal line is evidence of.
+
+**And it wires the failure path**, which is the one thing here a healthy run never exercises. `make_diagram_tools` passes the host's `on_reclaim_failure` straight to `sandboxed_tool`; `agent.py` supplies a handler that prints what was left and what the framework did about it. A removal that fails is a data-retention failure rather than an untidy one, and the framework treats it as such: it disposes the sandbox itself, before telling the host, and `ReclaimFailure.disposal` says whether that landed. Nothing in this sample can make a removal fail — the docker backend's `reclaim` is `rm -rf` running as root — so the handler is here for its shape, and the sample that actually forces a failure needs a backend whose removal can be told to refuse ([#520](https://github.com/sokolaidev/maf-extensions/issues/520)). `tests/test_sample_07_diagram_kind.py` stages it against the in-process backend, which is where it can be staged honestly.
 
 ## The boundary is weaker, and the refusal is the feature
 
@@ -63,30 +81,36 @@ With `DIAGRAM_SANDBOX_IMAGE` or either required model variable unset, the progra
 
 ## Run
 
-The first call pays for creating and starting the container — a few seconds, against the minutes a microVM-isolated sandbox needs. `agent.py` prints only the model's reply and the disposal line — never `render_diagram`'s own result — so what you see looks something like this:
+The first call pays for creating and starting the container — a few seconds, against the minutes a microVM-isolated sandbox needs. `agent.py` prints the model's reply and its own three tagged lines — what it resolved, what was left in the sandbox, and what it disposed — and never `render_diagram`'s own result, so what you see looks something like this:
 
 ```
-The diagram has been rendered and saved to `out/diagram.png`. It shows the
-three-stage pipeline: ingest → transform → load.
+  [measured] installed: maf-sandbox 0.24.0, maf-sandbox-docker 0.8.1
+Rendered diagram.png (image/png); saved under out/.
+
+  [measured] Left in the sandbox work directory: nothing
 
   [measured] Disposed 1 sandbox(es).
 ```
 
-That block is one real run. **What the model says varies** — the DOT it writes, whether it labels the edges, how it phrases the reply. **What does not vary** is the tool result underneath it and the file on disk: `render_diagram` returns exactly
+That block is one real run, on 2026-08-25. **What the model says varies** — the DOT it writes, whether it labels the edges, how it phrases the reply; this one happened to repeat the tool's own sentence almost word for word, which is its choice and not the sample printing the tool result. **What does not vary** is the tool result underneath it and the file on disk: `render_diagram` returns exactly
 
 ```
 Rendered diagram.png (image/png); saved under out/.
 ```
 
-every time — a host-authored line, not the model's — and a valid PNG appears at `out/diagram.png` (`89 50 4E 47` — the PNG magic — as its first bytes). The disposal line prints only once `render_diagram` has actually created and torn down a container; a `Disposed 0` would mean the model answered without rendering anything, the T0 behaviour this sample exists to contrast with. It carries `[measured]` because it is the sample's report rather than the model's, and the reply is filtered before printing so a line of it starting with that tag comes out quoted, `> [measured] …` — otherwise a reply writing "Disposed 1 sandbox(es)." would answer for the router ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)).
+every time — a host-authored line, not the model's — and a valid PNG appears at `out/diagram.png` (`89 50 4E 47` — the PNG magic — as its first bytes). The disposal line prints only once `render_diagram` has actually created and torn down a container; a `Disposed 0` would mean the model answered without rendering anything, the T0 behaviour this sample exists to contrast with. The listing above it is what was still in the sandbox at that moment, read out of the guest rather than assumed — `nothing`, because the framework removed the call's directory when the tool returned.
+
+Both carry `[measured]` because they are the sample's reports rather than the model's, and the reply is filtered before printing so a line of it starting with that tag comes out quoted, `> [measured] …` — otherwise a reply writing "Disposed 1 sandbox(es)." would answer for the router ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)).
 
 The PNG is git-ignored (`out/`), so a run leaves no tracked file behind.
 
 ## What has and has not been run against a live backend
 
-**Run live**, on 2026-08-11: Docker Engine 29.5.3 with the `diagram-sandbox` image above (Graphviz 2.43.0), and a local tool-calling model behind an OpenAI-compatible endpoint — which is what this sample used at the time; it has since moved onto the same Azure OpenAI wiring as the rest of the set, and that run has not been repeated against it. The agent wrote DOT, `render_diagram` rendered it in a `--network none` container at `Isolation.CONTAINER`, and `collect_outputs` landed a valid 4–11 KB PNG at `out/diagram.png` — the full `FILES_IN → exec → FILES_OUT` round trip, end to end.
+**Run live**, on 2026-08-11: Docker Engine 29.5.3 with the `diagram-sandbox` image above (Graphviz 2.43.0), and a local tool-calling model behind an OpenAI-compatible endpoint — which is what this sample used at the time. The agent wrote DOT, `render_diagram` rendered it in a `--network none` container at `Isolation.CONTAINER`, and `collect_outputs` landed a valid 4–11 KB PNG at `out/diagram.png` — the full `FILES_IN → exec → FILES_OUT` round trip, end to end.
 
-**Gated in CI.** `verify-live.yml` builds the image above on the runner and runs this sample on demand and once after each release of `maf-sandbox` or `maf-sandbox-docker`. Its check reads the landed PNG's own header rather than the model's account of it (`scripts/check_live_diagram_sample.py`): a turn that describes a diagram it never rendered writes the same paragraph as one that did, so the file is the evidence. The docker **backend** beneath it is exercised more often still — `test_docker_e2e.py` runs a real container on every pull request, `FILES_OUT` stat-and-read path included.
+**Run live again**, on 2026-08-25, on the Azure OpenAI wiring the rest of the set uses and on the call-directory shape above: Docker Engine 29.7.2, `gpt-5.4-mini`, and the **published** wheels the PEP 723 block resolves — `maf-sandbox 0.24.0` and `maf-sandbox-docker 0.8.1`, which is the pair a reader gets today. A 377×59 PNG landed, the working directory read back empty, and `scripts/check_live_diagram_sample.py` passed on that transcript. Worth saying which core that was: everything the new shape uses — `guest_call_path()`, `outputs_named_at_call_time`, `DeclaredOutput.name`, `on_reclaim_failure` — is in 0.24.0 already, so the floor in the script block did not have to move.
+
+**Gated in CI.** `verify-live.yml` builds the image above on the runner and runs this sample on demand and once after each release of `maf-sandbox` or `maf-sandbox-docker`. Its check reads the landed PNG's own header rather than the model's account of it (`scripts/check_live_diagram_sample.py`): a turn that describes a diagram it never rendered writes the same paragraph as one that did, so the file is the evidence. The same check reads the sandbox listing, so a run that renders perfectly and leaves the model's DOT source behind goes red on the retention rather than passing on the picture. The docker **backend** beneath it is exercised more often still — `test_docker_e2e.py` runs a real container on every pull request, `FILES_OUT` stat-and-read path included.
 
 ## Troubleshooting
 

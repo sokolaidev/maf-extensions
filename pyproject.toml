@@ -83,8 +83,10 @@ typeCheckingMode = "standard"
 # (reportIncompatibleMethodOverride), and `in`/`not in` on Optional results (reportOperatorIssue).
 # They warn rather than error so the pass stays green on known fakes without going silent on
 # them; every other rule stays an error and catches real drift. reportMissingImports is
-# deliberately not relaxed. The tests/ env also puts sample 09 on extraPaths so pyright can
-# resolve the runtime sys.path import in test_no_isolation_backend.py instead of suppressing it.
+# deliberately not relaxed. The tests/ env also puts samples 09 and 07 on extraPaths so pyright
+# can resolve the runtime sys.path imports in test_no_isolation_backend.py and
+# test_sample_07_diagram_kind.py instead of suppressing them — both suites exercise a module the
+# sample ships, and a suppression there would hide a sample that stopped type-checking.
 #
 # **samples/ relaxes nothing** — a sample is code an adopter copies, and the two sites that would
 # want those four are not loose fakes. They carry an inline `# pyright: ignore[...]` naming the
@@ -94,7 +96,7 @@ typeCheckingMode = "standard"
 # stale ones.
 executionEnvironments = [
   { root = "samples", reportUnnecessaryTypeIgnoreComment = "error" },
-  { root = "tests", extraPaths = ["samples/09_inprocess_bicep", "scripts"], reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
+  { root = "tests", extraPaths = ["samples/09_inprocess_bicep", "samples/07_docker_diagram", "scripts"], reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
   { root = "packages/maf-sandbox/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
   { root = "packages/maf-sandbox-acas/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },
   { root = "packages/maf-sandbox-bicep/tests", reportArgumentType = "warning", reportOptionalMemberAccess = "warning", reportIncompatibleMethodOverride = "warning", reportOperatorIssue = "warning" },

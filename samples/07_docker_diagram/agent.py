@@ -49,10 +49,12 @@ from _scaffold import MEASURED, installed_versions, quoted, require_env_vars
 from agent_framework import Agent
 from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
-from diagram_kind import make_diagram_tools
+from diagram_kind import diagram_sandbox_spec, make_diagram_tools
 from maf_sandbox import (
     Isolation,
+    SandboxKey,
     SandboxRouter,
+    error_detail,
     make_file_system_sink,
 )
 from maf_sandbox.maf import (
@@ -62,7 +64,7 @@ from maf_sandbox.maf import (
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
 
 if TYPE_CHECKING:
-    pass
+    from maf_sandbox import ReclaimFailure, SandboxSpec
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +94,60 @@ SANDBOX_VARS = ("DIAGRAM_SANDBOX_IMAGE",)
 MODEL_VARS = ("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_CHAT_MODEL")
 
 
+#: Bounds the one command this program runs itself. Nothing to do with the render, which the
+#: kind bounds with its own.
+PROBE_TIMEOUT_SECONDS = 30
+
+
 # --- Host wiring -----------------------------------------------------------------------------
+
+
+async def report_reclaim_failure(failure: ReclaimFailure) -> None:
+    """What this host does when a call's directory could not be removed.
+
+    A notification rather than a decision.  By the time this runs the framework has already
+    disposed the sandbox, and ``failure.disposal`` says whether that landed — so there is
+    nothing to arrange here, and what a host adds is what it does with the fact.  This one
+    prints it; a real one counts it, and pages on ``"failed"``, which is the case where the
+    router goes on refusing the key until a disposal lands.
+
+    Two things the shape obeys.  It does as little as possible, because it runs inside the same
+    ``finally`` that reclaims and is bounded by the same timeout — the framework catches a
+    handler that raises and logs it, but a handler that raises loses its own report.  And it
+    keeps ``failure.path`` out of what it prints: a guest path is host-side detail, and this
+    program's stdout is also the model's transcript.
+
+    **A healthy run never reaches this.**  Nothing in the sample can make a removal fail — the
+    docker backend's ``reclaim`` is ``rm -rf`` running as root over ``exec``, and it succeeds.
+    Making one fail on purpose takes a backend whose removal can be told to refuse, which is
+    why the sample that exercises the failure is filed separately (#520).
+    """
+    print(
+        f"{MEASURED}The call directory was not reclaimed: {failure.reason} "
+        f"(the framework's disposal: {failure.disposal})."
+    )
+
+
+async def left_in_the_sandbox(router: SandboxRouter, spec: SandboxSpec, key: SandboxKey) -> str:
+    """Whatever is still in the sandbox's working directory now the turn is over.
+
+    Host-side instrumentation rather than part of the kind: it reads the guest to grade a claim
+    the library makes about it.  ``render_diagram`` writes its DOT source and its PNG inside the
+    call's own directory, so a healthy turn leaves the working directory **empty** — the
+    framework removed that directory, and everything under it, when the tool call returned.
+
+    Read over ``exec``, because the docker backend serves no ``FILES_LIST``; sample 15's act 5
+    asks the same question of a backend that does.  ``acquire`` is get-or-create, so this reuses
+    the sandbox the turn left warm rather than creating one — which is why ``run`` asks only
+    once something has landed, and never on a turn that called no tool.
+    """
+    sandbox = await router.acquire(key, spec)
+    listing = await sandbox.exec(
+        ["ls", "-A", spec.work_dir],
+        working_directory=spec.work_dir,
+        timeout=PROBE_TIMEOUT_SECONDS,
+    )
+    return ", ".join(listing.stdout.split())
 
 
 async def run() -> int:
@@ -126,6 +181,9 @@ async def run() -> int:
         context,
         sink,
         image=env["DIAGRAM_SANDBOX_IMAGE"],
+        # The one call-lifetime decision a host has to make. The framework reclaims the call's
+        # directory whether or not this is wired; this is how the host hears when it could not.
+        on_reclaim_failure=report_reclaim_failure,
     )
     if not tools:
         print("No sandbox backend: render_diagram was not attached.", file=sys.stderr)
@@ -153,6 +211,20 @@ async def run() -> int:
         # check trusts the `[measured]` tag completely (#314).
         print(quoted(response.text))
     finally:
+        # Asked only once something has landed, because that means the tool ran and left its
+        # sandbox warm. Asking unconditionally would *create* one, and the disposal count below
+        # is this sample's evidence that a tool call — not this line — is what made a sandbox
+        # exist. Contained, because the disposal after it has to happen either way.
+        if OUTPUT_DIR.is_dir() and any(OUTPUT_DIR.iterdir()):
+            try:
+                surviving = await left_in_the_sandbox(
+                    router,
+                    diagram_sandbox_spec(env["DIAGRAM_SANDBOX_IMAGE"]),
+                    SandboxKey(scope=SCOPE, thread_id=THREAD_ID, agent_dir=AGENT_DIR),
+                )
+                print(f"\n{MEASURED}Left in the sandbox work directory: {surviving or 'nothing'}")
+            except Exception as exc:  # noqa: BLE001 — a probe must not cost the disposal
+                print(f"\n{MEASURED}Could not read the sandbox after the call: {error_detail(exc)}")
         purge = await router.dispose_scope(SCOPE, THREAD_ID)
         print(f"\n{MEASURED}Disposed {purge.disposed} sandbox(es).")
         if purge.undisposed is not None:

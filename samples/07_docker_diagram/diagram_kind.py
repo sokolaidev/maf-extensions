@@ -16,7 +16,6 @@ files need. `sys.path[0]` is the script's directory, which is what lets `agent.p
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -36,6 +35,8 @@ from maf_sandbox.maf import SandboxToolSession, sandboxed_tool
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from maf_sandbox import ReclaimFailure
+
 logger = logging.getLogger(__name__)
 
 
@@ -53,9 +54,11 @@ _RENDERER = "dot"
 _OUTPUT_FORMAT = "png"
 _FORMAT_FLAG = f"-T{_OUTPUT_FORMAT}"
 _OUTPUT_FLAG = "-o"
-#: One fixed name each. The sandbox is reused across calls, so concurrent calls would share
-#: these paths — the render is serialised per attached tool (see `_render_diagram_tool`) so one
-#: call's source and image are never overwritten by another's mid-render.
+#: One name each, and both live inside the call's own directory rather than at a fixed place
+#: under `work_dir`. The sandbox is reused across calls, so a fixed path belongs to every call
+#: in the conversation at once: two renders in one assistant message overwrite each other's
+#: source mid-render, and each of them leaves its DOT and its PNG behind for every later call
+#: to read. `guest_call_path()` is the answer to both — see `_render_diagram_tool`.
 _SOURCE_FILENAME = "diagram.dot"
 _OUTPUT_FILENAME = f"diagram.{_OUTPUT_FORMAT}"
 _OUTPUT_MEDIA_TYPE = "image/png"
@@ -76,9 +79,16 @@ def diagram_sandbox_spec(image: str | None = None) -> SandboxSpec:
     """The sandbox a diagram render needs, in backend-neutral terms.
 
     ``egress_allow=()`` because rendering is pure computation — ``dot`` reads the source it was
-    given and writes an image, and reaches nothing.  The one declared output lands (``FILES_OUT``)
-    and is ``required=False``: a ``dot`` that rejects malformed source produces no file, and that
-    absence is a diagnostic the model should fix rather than a transfer error.
+    given and writes an image, and reaches nothing.
+
+    ``outputs_named_at_call_time`` because the image is produced inside the call's own
+    directory, whose name is allocated per call, so its path cannot be written down here.  What
+    *is* written down here is that this workload lands something at all, and that is what keeps
+    the attach-time checks honest: ``sandboxed_tool`` still refuses to attach without a sink,
+    and still refuses a spec that declares an output without requiring ``FILES_OUT``.  The
+    declaration itself is built in the tool body — ``required=False``, because a ``dot`` that
+    rejects malformed source produces no file, and that absence is a diagnostic the model
+    should fix rather than a transfer error.
     """
     return SandboxSpec(
         kind=DIAGRAM_KIND,
@@ -86,13 +96,7 @@ def diagram_sandbox_spec(image: str | None = None) -> SandboxSpec:
         egress_allow=(),
         work_dir=_WORK_DIR,
         requires=frozenset({Capability.EXEC, Capability.FILES_IN, Capability.FILES_OUT}),
-        declared_outputs=(
-            DeclaredOutput(
-                path=_OUTPUT_FILENAME,
-                media_type=_OUTPUT_MEDIA_TYPE,
-                required=False,
-            ),
-        ),
+        outputs_named_at_call_time=True,
         files_out=_FILES_OUT_LIMITS,
     )
 
@@ -105,6 +109,7 @@ def make_diagram_tools(
     *,
     image: str | None = None,
     exec_timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS,
+    on_reclaim_failure: Callable[[ReclaimFailure], Awaitable[None]] | None = None,
 ) -> list[Any]:
     """Return the ``[render_diagram]`` tool list, or ``[]`` when no sandbox is available.
 
@@ -119,6 +124,10 @@ def make_diagram_tools(
         image: OCI reference of a sandbox image with ``dot`` on its path.
         exec_timeout_seconds: Per-render bound. A sandbox that stops answering must not hold the
             caller's turn open.
+        on_reclaim_failure: The host's, and passed straight through. A kind that writes under
+            ``guest_call_path()`` has the framework remove that directory for it; this is how
+            the host hears when a removal did not happen. Taken as a parameter rather than
+            wired here because the decision is the deployment's — see ``agent.py``.
     """
     spec = diagram_sandbox_spec(image)
     return sandboxed_tool(
@@ -134,6 +143,7 @@ def make_diagram_tools(
         # reference on success, `dot`'s own diagnostic on failure — the same basis on which the
         # Bicep workload trusts a compiler's output. It is not model-authored content.
         output_sink=sink,
+        on_reclaim_failure=on_reclaim_failure,
         logger=logger,
     )
 
@@ -151,18 +161,13 @@ def _render_diagram_tool(
     re-indent every line of what the model reads.
     """
 
+    # Nothing to serialise, and that is a consequence of where the files go rather than luck.
     # The function calls in one assistant message run concurrently, so two `render_diagram`
     # calls can drive the same sandbox at once — `maf_sandbox._protocol.Sandbox.acquire`
-    # documents this. Both write `diagram.dot` and read `diagram.png` at the fixed paths below,
-    # so without guarding, one call could collect the other's image. This lock serialises the
-    # write -> exec -> collect sequence per attached tool.
-    #
-    # A FILES_OUT kind could instead build its `DeclaredOutput` per call under
-    # `guest_call_path()`: `outputs_named_at_call_time` is what admits that, and `name`
-    # keeps the landed artifact name stable while the framework reclaims the call path.
-    # This sample keeps the output in the spec so a first-custom-kind reader sees the
-    # contract at attach time; the lock is that choice's price.
-    render_lock = asyncio.Lock()
+    # documents this. At a fixed path under `work_dir` both calls would write one `diagram.dot`
+    # and read one `diagram.png`, so one could collect the other's image, and the only defence
+    # is a lock that makes the second render wait for the first. Under `guest_call_path()` they
+    # share no path, so both renders run at once and neither can see the other's files.
 
     async def render_diagram(dot: str) -> str:
         """Render a Graphviz diagram from DOT source and save it as a PNG image.
@@ -196,53 +201,76 @@ def _render_diagram_tool(
         if isinstance(sandbox, str):
             return sandbox
 
-        source_path = f"{session.spec.work_dir}/{_SOURCE_FILENAME}"
-        output_path = f"{session.spec.work_dir}/{_OUTPUT_FILENAME}"
+        # This call's own directory inside the sandbox. Asking for it is what puts it on the
+        # framework's list: a body that never asks has nothing reclaimed, and one that does has
+        # this path — and everything under it — removed when the body returns, after a result, a
+        # refusal and an exception alike. Nothing here has to remember that.
+        call_directory = session.guest_call_path()
+        # What `collect_outputs` resolves is relative to `work_dir`, and the call directory sits
+        # directly under it, so its last component is the whole of the prefix.
+        run_id = call_directory.rsplit("/", 1)[-1]
+        source_path = f"{call_directory}/{_SOURCE_FILENAME}"
+        output_path = f"{call_directory}/{_OUTPUT_FILENAME}"
 
-        # One call's write -> exec -> collect must complete before the next touches the shared
-        # paths — see the note where `render_lock` is created.
-        async with render_lock:
-            try:
-                await sandbox.write_file(source_path, dot, working_directory=session.spec.work_dir)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "render_diagram: could not write the DOT source into the sandbox: %s",
-                    error_detail(exc),
-                )
-                return "Error: could not write the diagram source into the sandbox"
+        try:
+            # `write_file` creates the parents, so this is also what brings the call directory
+            # into existence: `guest_call_path()` returns a name, never a made directory.
+            await sandbox.write_file(source_path, dot, working_directory=session.spec.work_dir)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "render_diagram: could not write the DOT source into the sandbox: %s",
+                error_detail(exc),
+            )
+            return "Error: could not write the diagram source into the sandbox"
 
-            try:
-                # An argv sequence, never a command line: the source is a written file and the
-                # renderer's arguments are fixed, so nothing the model wrote reaches a shell.
-                result = await sandbox.exec(
-                    [_RENDERER, _FORMAT_FLAG, source_path, _OUTPUT_FLAG, output_path],
-                    working_directory=session.spec.work_dir,
-                    timeout=timeout,
-                )
-            except TimeoutError:
-                logger.warning("render_diagram: dot timed out after %ss", timeout)
-                return f"Error: rendering timed out after {timeout}s"
-            except Exception as exc:  # noqa: BLE001
-                # Provider/transport detail can carry account ids — must not reach the transcript.
-                logger.warning("render_diagram: exec failed: %s", error_detail(exc))
-                return "Error: could not run the renderer in the sandbox"
+        try:
+            # An argv sequence, never a command line: the source is a written file and the
+            # renderer's arguments are fixed, so nothing the model wrote reaches a shell.
+            result = await sandbox.exec(
+                [_RENDERER, _FORMAT_FLAG, source_path, _OUTPUT_FLAG, output_path],
+                working_directory=session.spec.work_dir,
+                timeout=timeout,
+            )
+        except TimeoutError:
+            logger.warning("render_diagram: dot timed out after %ss", timeout)
+            return f"Error: rendering timed out after {timeout}s"
+        except Exception as exc:  # noqa: BLE001
+            # Provider/transport detail can carry account ids — must not reach the transcript.
+            logger.warning("render_diagram: exec failed: %s", error_detail(exc))
+            return "Error: could not run the renderer in the sandbox"
 
-            if result.exit_code != 0:
-                # dot rejects malformed DOT with a diagnostic on stderr. That is the model's to
-                # fix, not a transport failure — hand it back so the next attempt can correct the
-                # source. The declared output is required=False, so an absent file here is not a
-                # transfer error.
-                logger.info("render_diagram: dot exited %d", result.exit_code)
-                return _render_failed(result.exit_code, (result.stderr or "").rstrip("\n"))
+        if result.exit_code != 0:
+            # dot rejects malformed DOT with a diagnostic on stderr. That is the model's to
+            # fix, not a transport failure — hand it back so the next attempt can correct the
+            # source. The declared output is required=False, so an absent file here is not a
+            # transfer error.
+            logger.info("render_diagram: dot exited %d", result.exit_code)
+            return _render_failed(result.exit_code, (result.stderr or "").rstrip("\n"))
 
-            try:
-                landed = await collect_outputs(sandbox, session.spec, sink=sink)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "render_diagram: could not land the rendered image: %s",
-                    error_detail(exc),
-                )
-                return "Error: the diagram rendered but could not be saved"
+        try:
+            landed = await collect_outputs(
+                sandbox,
+                session.spec,
+                sink=sink,
+                # Declared here rather than in the spec because the path carries this call's
+                # run id, which did not exist when the tool was built. `name` is what keeps the
+                # run id out of host storage: the artifact lands as `diagram.png` however many
+                # calls precede it, so nothing downstream has to know the guest's layout.
+                outputs=(
+                    DeclaredOutput(
+                        path=f"{run_id}/{_OUTPUT_FILENAME}",
+                        media_type=_OUTPUT_MEDIA_TYPE,
+                        required=False,
+                        name=_OUTPUT_FILENAME,
+                    ),
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "render_diagram: could not land the rendered image: %s",
+                error_detail(exc),
+            )
+            return "Error: the diagram rendered but could not be saved"
 
         if not landed:
             # dot exited 0 but produced no file — required=False, so collect_outputs returned

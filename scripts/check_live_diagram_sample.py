@@ -3,11 +3,19 @@
     python samples/07_docker_diagram/agent.py | tee out.txt
     python scripts/check_live_diagram_sample.py out.txt samples/07_docker_diagram/out/diagram.png
 
-Everything this sample prints except one line is model prose, and prose is not evidence that a
-renderer ran: an agent describing the picture it would have drawn writes the same paragraph as
-one that drew it. So the assertion is the two things the host produced itself — the sample's
-own disposal line, which is non-zero only if a sandbox was created to serve a tool call, and
-the file the sink wrote.
+Everything this sample prints except its own tagged lines is model prose, and prose is not
+evidence that a renderer ran: an agent describing the picture it would have drawn writes the
+same paragraph as one that drew it. So the assertion is what the host produced itself — the
+sample's own disposal line, which is non-zero only if a sandbox was created to serve a tool
+call, the file the sink wrote, and the listing the sample read back out of the sandbox once the
+turn was over.
+
+That last one is this check's half of the call-lifetime contract. `render_diagram` writes its
+DOT source and its PNG inside the call's own directory, and the framework removes that directory
+when the tool call returns — so a healthy run leaves the working directory empty. A run that
+leaves anything there has not tidied up after itself: `acquire` is get-or-create, so what
+survives is readable by every later call in the conversation, which for this kind means the
+model's own source and the image rendered from it.
 
 The image is read structurally rather than compared: a PNG signature, then the dimensions out
 of the IHDR chunk. The model writes the DOT, so what the graph contains and how large it comes
@@ -32,6 +40,26 @@ from pathlib import Path
 _DISPOSED = re.compile(
     r"^  (?-i:\[measured\]) Disposed\s+(\d+)\s+sandbox", re.MULTILINE | re.IGNORECASE
 )
+
+#: The sample's own listing of the sandbox's working directory, read after the turn and before
+#: the disposal. Tagged like the line above and for the same reason.
+_SURVIVING = re.compile(
+    r"^  (?-i:\[measured\]) Left in the sandbox work directory:\s*(?P<left>.*)$",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+#: What the sample's `on_reclaim_failure` handler prints. A healthy run never reaches it — the
+#: docker backend's `reclaim` is `rm -rf` running as root — so its presence is a failure rather
+#: than a detail, and it is also the one thing that makes the listing above meaningless: a
+#: removal that failed takes the sandbox with it, and the empty directory read afterwards is a
+#: **new** sandbox's.
+_NOT_RECLAIMED = re.compile(
+    r"^  (?-i:\[measured\]) The call directory was not reclaimed:\s*(?P<why>.*)$",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+#: What the sample prints for an empty listing.
+_NOTHING = "nothing"
 
 #: The 8-byte PNG signature, and the fixed layout that must follow it: a 4-byte chunk length,
 #: the chunk type `IHDR`, then width and height as big-endian uint32. The header chunk is first
@@ -75,12 +103,34 @@ def assess(output: str, image: bytes | None) -> list[str]:
             "without calling render_diagram"
         )
 
+    unreclaimed = _NOT_RECLAIMED.search(output)
+    if unreclaimed is not None:
+        failures.append(
+            "the host's on_reclaim_failure handler fired, so the call's directory survived the "
+            f"call: {unreclaimed.group('why').strip()}"
+        )
+
     if image is None:
         failures.append(
             "no image on disk — the turn may have described a diagram and rendered nothing, "
             "which is the failure this sample exists to catch"
         )
         return failures
+
+    # Only once an image is in hand, because that is the condition the sample reads the sandbox
+    # under: it will not acquire one just to look, since acquiring is what creates it.
+    surviving = _SURVIVING.search(output)
+    if surviving is None:
+        failures.append(
+            "no measured 'Left in the sandbox work directory' line — an image landed, so the "
+            "sample should have read the sandbox back before disposing it"
+        )
+    elif (left := surviving.group("left").strip()) != _NOTHING:
+        failures.append(
+            f"the sandbox still held {left} after the call — the framework reclaims the call's "
+            "own directory, so anything left there is a file this kind wrote outside it, "
+            "readable by every later call in the conversation"
+        )
 
     size = dimensions(image)
     if size is None:
@@ -121,8 +171,8 @@ def main(argv: list[str]) -> int:
     size = dimensions(image) if image is not None else None
     measured = f" {size[0]}x{size[1]}" if size else ""
     print(
-        f"OK  the diagram sample rendered in a live container and landed a{measured} PNG "
-        "against the published wheels"
+        f"OK  the diagram sample rendered in a live container, landed a{measured} PNG against "
+        "the published wheels, and left nothing behind in the sandbox"
     )
     return 0
 
