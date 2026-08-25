@@ -1,15 +1,12 @@
-"""When a sandbox goes away: within a turn, at the end of one, on thread delete — and unasked.
+"""When a sandbox goes away: within a turn, at the end of one, and when a thread is deleted.
 
-Four disposal moments. Choosing between the first three is a cost decision rather than a style
-one; the fourth is not chosen at all, and is what the framework does about a call it could not
-clean. Every other sample creates a sandbox and drops it on the way out; this one is about what
-a long-lived host has to wire, because a sandbox is keyed by `(scope, thread_id, agent_dir)`
-and outlives the turn that made it.
+Three disposal moments, and choosing between them is a cost decision rather than a style one.
+Every other sample creates a sandbox and drops it on the way out; this one is about what a
+long-lived host has to wire, because a sandbox is keyed by `(scope, thread_id, agent_dir)` and
+outlives the turn that made it.
 
 Needs a Docker-compatible engine. Containers are counted with `docker ps` rather than trusted
-from a return value — except in act 5, which runs on the in-process backend because no real
-one can be told to refuse a removal, and which says so where it prints. See this directory's
-README.
+from a return value — see this directory's README.
 """
 
 # /// script
@@ -24,36 +21,15 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
-from typing import TYPE_CHECKING, Any
 
 from _scaffold import installed_versions
 from maf_sandbox import Isolation, SandboxKey, SandboxRouter, SandboxSpec
-from maf_sandbox.maf import (
-    SandboxPurger,
-    list_no_files,
-    make_caller_context,
-    sandboxed_tool,
-)
-from maf_sandbox.testing import InProcessSandbox, InProcessSandboxBackend
+from maf_sandbox.maf import SandboxPurger
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
-
-if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
-
-    from maf_sandbox import ReclaimFailure
-    from maf_sandbox.maf import SandboxToolSession
 
 IMAGE = "mcr.microsoft.com/devcontainers/python:3.13-bookworm"
 SCOPE = "samples"
 AGENT_DIR = "assistant"
-
-#: Act 5's thread. Kept apart from the four docker ones because that act runs on a different
-#: backend, and `containers()` would answer 0 for it whatever happened.
-UNCLEAN_THREAD = "t-unclean"
-
-#: What act 5's tool call leaves in the sandbox — the data whose retention the whole act is
-#: about, so it is worth being able to read it back by name.
-NOTE = "left behind"
 
 #: The labels `DockerSandboxBackend` stamps on every container it creates, and the same ones its
 #: `dispose_scope` selects on. Short plain values pass through unchanged, which is why the
@@ -88,13 +64,8 @@ def containers(thread_id: str) -> int:
 
 
 def spec() -> SandboxSpec:
-    """The spec acts 1 to 4 use. A function so each act states it rather than sharing one."""
+    """The one spec every act uses. A function so each act states it rather than sharing one."""
     return SandboxSpec(kind="assistant", image=IMAGE)
-
-
-def note_spec() -> SandboxSpec:
-    """Act 5's, and it names no image: nothing there runs in a container."""
-    return SandboxSpec(kind="note-taker")
 
 
 async def one_turn(router: SandboxRouter, key: SandboxKey) -> None:
@@ -218,141 +189,8 @@ async def act_four_thread_delete(router: SandboxRouter) -> tuple[int, int]:
     return tidy_found, unscoped_found
 
 
-# --- Act 5: the moment nobody chose ------------------------------------------------------------
-
-
-class RefusingReclaim(InProcessSandbox):
-    """An in-process sandbox that serves a call and then will not clean up after it.
-
-    The one method overridden is the one the protocol makes mandatory. `Sandbox.reclaim` is what
-    the framework calls on the call's own directory when the tool body returns, and a backend
-    that cannot remove it raises: a read-only mount, a guest running as a user that does not own
-    the path, a store that no longer has it. Everything else is `InProcessSandbox`'s behaviour.
-    """
-
-    async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
-        raise OSError(f"could not reclaim {directory}: rm exited 1")
-
-
-def _note_body(session: SandboxToolSession) -> Callable[..., Awaitable[str]]:
-    """The smallest tool that owns a guest path: it writes one line and says where."""
-
-    async def take_note(text: str) -> str:
-        """Write a note inside the sandbox.
-
-        Args:
-            text: The line to write.
-        """
-        key = session.key()
-        if isinstance(key, str):
-            return key
-        sandbox = await session.acquire(key)
-        if isinstance(sandbox, str):
-            # The refusal a caller reads when the router will not serve the key — the third
-            # outcome below, and the only one visible without a callback wired at all.
-            return sandbox
-        # Written inside the call's own directory, so the framework is what removes it. Or
-        # tries to: the sandbox above refuses, which is the whole of what this act stages.
-        path = f"{session.guest_call_path()}/note"
-        await sandbox.write_file(path, text, working_directory=session.spec.work_dir)
-        return path
-
-    return take_note
-
-
-def _wired(
-    *, keep_unclean: bool = False, dispose_error: BaseException | None = None
-) -> tuple[Any, SandboxRouter, InProcessSandboxBackend, list[ReclaimFailure]]:
-    """A tool whose sandbox will not clean up, and the host wiring around it.
-
-    The two things act 5 varies are both here and both the host's: whether it opted down from
-    the framework disposing an unclean sandbox, and — for the third run — whether that disposal
-    lands when it is attempted.
-    """
-    backend = InProcessSandboxBackend(RefusingReclaim(), dispose_error=dispose_error)
-    router = SandboxRouter([backend], min_isolation=Isolation.NONE, keep_unclean=keep_unclean)
-    heard: list[ReclaimFailure] = []
-
-    async def told(failure: ReclaimFailure) -> None:
-        # The host's handler, and all of it. It runs *after* the framework has acted, so there
-        # is nothing for it to arrange — only what this host does with the fact. A real one
-        # counts these and pages on `disposal == "failed"`.
-        heard.append(failure)
-
-    tool = sandboxed_tool(
-        _note_body,
-        router=router,
-        context=make_caller_context(list_no_files, lambda: SCOPE, lambda: UNCLEAN_THREAD),
-        agent_dir=AGENT_DIR,
-        spec=note_spec(),
-        name="take_note",
-        on_reclaim_failure=told,
-    )[0]
-    return tool, router, backend, heard
-
-
-async def act_five_a_call_that_could_not_be_cleaned() -> tuple[str, str, str]:
-    """The fourth moment, and the only one no host chose: cleanup that did not work.
-
-    Returns the three disposals the host was told about, so the footer reports what the run
-    observed rather than what this file expects.
-    """
-    print("== 5. Cleanup that did not work: the moment nobody chose ==\n")
-    print("  Not on Docker, and that is a finding rather than a shortcut. That backend")
-    print("  reclaims with `rm -rf` running as root inside the container, and there is no")
-    print("  honest way to make it refuse — so this act runs on the in-process backend, where")
-    print("  the one member every backend must serve can be told to say no.\n")
-
-    tool, router, backend, heard = _wired()
-    await tool.invoke(arguments={"text": NOTE}, skip_parsing=True)
-    default = heard[0].disposal
-    print(
-        f"  default posture       -> disposal={default}, and the backend was asked to "
-        f"dispose it {len(backend.disposed)} time(s)"
-    )
-    await router.dispose_scope(SCOPE, UNCLEAN_THREAD)
-
-    tool, router, backend, heard = _wired(keep_unclean=True)
-    left = str(await tool.invoke(arguments={"text": NOTE}, skip_parsing=True))
-    kept = heard[0].disposal
-    warm = await router.acquire(
-        SandboxKey(scope=SCOPE, thread_id=UNCLEAN_THREAD, agent_dir=AGENT_DIR), note_spec()
-    )
-    read_back = await warm.read_file(left, working_directory=note_spec().work_dir, max_bytes=64)
-    print(
-        f"\n  keep_unclean=True     -> disposal={kept}, and the backend was asked to "
-        f"dispose it {len(backend.disposed)} time(s)"
-    )
-    print(f"  and the next acquire read the call's file back: {read_back.decode()!r}")
-    await router.dispose_scope(SCOPE, UNCLEAN_THREAD)
-
-    tool, router, backend, heard = _wired(dispose_error=RuntimeError("the backend is unreachable"))
-    await tool.invoke(arguments={"text": NOTE}, skip_parsing=True)
-    failed = heard[0].disposal
-    refused = str(await tool.invoke(arguments={"text": NOTE}, skip_parsing=True))
-    print(f"\n  a disposal that fails -> disposal={failed}, and the next call was refused:")
-    print(f"    {refused!r}")
-
-    print("\n  Three outcomes, one failure. The framework disposes what it could not clean")
-    print("  before the host hears about it, because `acquire` is get-or-create and a sandbox")
-    print("  left warm hands the next call everything the last one could not take back — the")
-    print("  middle line above is that, read back through a later acquire. `keep_unclean=True`")
-    print("  is the host's to set and no kind's, and it buys a warm sandbox at exactly that")
-    print("  price. A disposal that does not land refuses the key until one does, which is a")
-    print("  failed conversation rather than a leaked one.")
-    print("\n  What this act cannot show is the disposed sandbox being cold afterwards: the")
-    print("  in-process backend hands back the same object whatever was disposed, where a")
-    print("  container backend creates a new one. So the first line reports the disposal the")
-    print("  backend was actually asked for, which is the whole of that mechanism here — and")
-    print("  the read above is the cost of opting down only because of the 0 beside it, since")
-    print("  on this backend it would come back after a disposal too.\n")
-
-    return default, kept, failed
-
-
 async def main() -> int:
-    """Five acts: four against one Docker backend counted with `docker ps`, and one that cannot
-    be counted that way and says so."""
+    """Four acts against one Docker backend, counted with `docker ps` throughout."""
     backend = DockerSandboxBackend(DockerSandboxConfig())
     router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
     try:
@@ -360,7 +198,6 @@ async def main() -> int:
         await act_two_between_turns(router)
         await act_three_purge_at_end_of_turn(router)
         tidy_found, unscoped_found = await act_four_thread_delete(router)
-        disposals = await act_five_a_call_that_could_not_be_cleaned()
     finally:
         # Whatever any act left behind, however it ended. The sample is about not leaking, so
         # it does not get to leak while saying so.
@@ -371,9 +208,8 @@ async def main() -> int:
         containers(thread) for thread in ("t-reuse", "t-kept", "t-perturn", "t-tidy", "t-unscoped")
     )
     print(
-        f"Completed 5 of 5 acts. Purger found {tidy_found} on a purged thread and "
-        f"{unscoped_found} on an unscoped one. The three unclean postures reported "
-        f"{', '.join(disposals)}. Containers left behind: {leftover}."
+        f"Completed 4 of 4 acts. Purger found {tidy_found} on a purged thread and "
+        f"{unscoped_found} on an unscoped one. Containers left behind: {leftover}."
     )
     return 0
 

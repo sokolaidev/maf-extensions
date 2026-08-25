@@ -30,13 +30,7 @@ _HEALTHY = """\
   a thread never scoped per turn -> containers: 1
   user deletes the conversation  -> purger found 1
   and docker agrees, after purge -> containers: 0
-== 5. Cleanup that did not work: the moment nobody chose ==
-  default posture       -> disposal=disposed, and the backend was asked to dispose it 1 time(s)
-  keep_unclean=True     -> disposal=kept, and the backend was asked to dispose it 0 time(s)
-  and the next acquire read the call's file back: 'left behind'
-  a disposal that fails -> disposal=failed, and the next call was refused:
-    'Error: the sandbox for this conversation is closed: a previous call left it unclean — data that could not be removed, or a program that may still be running — and it could not be disposed. Nothing runs in it until it is.'
-Completed 5 of 5 acts. Purger found 0 on a purged thread and 1 on an unscoped one. The three unclean postures reported disposed, kept, failed. Containers left behind: 0.
+Completed 4 of 4 acts. Purger found 0 on a purged thread and 1 on an unscoped one. Containers left behind: 0.
 """
 
 
@@ -150,69 +144,6 @@ class TestTheDeletePath:
         assert check._UNSCOPED_AFTER.search(act_four_only).group(1) == "3"
 
 
-class TestTheCallThatCouldNotBeCleaned:
-    """Act 5: one failure under three postures, which the check has to tell apart.
-
-    All three report a `ReclaimFailure`, so the disposal word alone does not say what the
-    framework actually did about the sandbox — the count of disposals the backend was asked for
-    is what does, and a posture quietly behaving like another is the failure worth catching.
-    """
-
-    def test_a_default_posture_that_disposed_nothing_is_caught(self):
-        tampered = _HEALTHY.replace(
-            "disposal=disposed, and the backend was asked to dispose it 1",
-            "disposal=disposed, and the backend was asked to dispose it 0",
-        )
-        assert tampered != _HEALTHY, "the substitution matched nothing — the fixture moved"
-        reasons = check.assess(tampered)
-        assert any("expected disposed after exactly 1" in r for r in reasons), reasons
-
-    def test_an_opt_down_that_disposed_anyway_is_caught(self):
-        tampered = _HEALTHY.replace(
-            "disposal=kept, and the backend was asked to dispose it 0",
-            "disposal=kept, and the backend was asked to dispose it 1",
-        )
-        assert tampered != _HEALTHY, "the substitution matched nothing — the fixture moved"
-        reasons = check.assess(tampered)
-        assert any("opt-down that disposes anyway" in r for r in reasons), reasons
-
-    def test_a_kept_sandbox_that_gave_nothing_back_is_caught(self):
-        """The retention shown as data. A read that comes back empty proves the opposite."""
-        tampered = _HEALTHY.replace(
-            "read the call's file back: 'left behind'", "read the call's file back: ''"
-        )
-        assert tampered != _HEALTHY, "the substitution matched nothing — the fixture moved"
-        reasons = check.assess(tampered)
-        assert any("did not reach the file" in r for r in reasons), reasons
-
-    def test_a_missing_read_back_is_caught(self):
-        cut = _HEALTHY.replace(
-            "  and the next acquire read the call's file back: 'left behind'\n", ""
-        )
-        assert cut != _HEALTHY, "the substitution matched nothing — the fixture moved"
-        reasons = check.assess(cut)
-        assert any("a word rather than a file" in r for r in reasons), reasons
-
-    def test_a_disposal_that_failed_and_said_otherwise_is_caught(self):
-        tampered = _HEALTHY.replace(
-            "a disposal that fails -> disposal=failed",
-            "a disposal that fails -> disposal=disposed",
-        )
-        assert tampered != _HEALTHY, "the substitution matched nothing — the fixture moved"
-        reasons = check.assess(tampered)
-        assert any("expected failed" in r for r in reasons), reasons
-
-    def test_a_next_call_that_was_not_refused_is_caught(self):
-        """The consequence a caller sees with no callback wired at all, so the one that must
-        not be reported as healthy: a router still serving the key it could not clean."""
-        served = (
-            "\n".join(line for line in _HEALTHY.splitlines() if check._CLOSED not in line) + "\n"
-        )
-        assert served != _HEALTHY, "the fixture moved"
-        reasons = check.assess(served)
-        assert any("goes on serving a key it could not clean" in r for r in reasons), reasons
-
-
 class TestTheFooter:
     def test_a_leaked_container_fails(self):
         """A sample about reclaiming sandboxes may not leave one running."""
@@ -230,20 +161,12 @@ class TestTheFooter:
         assert any("summary and the run disagree" in r for r in reasons), reasons
 
     def test_a_partial_run_is_caught(self):
-        reasons = check.assess(_HEALTHY.replace("Completed 5 of 5", "Completed 2 of 5"))
-        assert any("2 of 5 acts completed" in r for r in reasons), reasons
+        reasons = check.assess(_HEALTHY.replace("Completed 4 of 4", "Completed 2 of 4"))
+        assert any("2 of 4 acts completed" in r for r in reasons), reasons
 
     def test_a_truncated_run_has_no_footer(self):
-        cut = _HEALTHY[: _HEALTHY.index("Completed 5 of 5")]
+        cut = _HEALTHY[: _HEALTHY.index("Completed 4 of 4")]
         assert any("did not run to completion" in r for r in check.assess(cut))
-
-    def test_a_footer_disagreeing_with_act_five_is_caught(self):
-        tampered = _HEALTHY.replace(
-            "postures reported disposed, kept, failed", "postures reported disposed, kept, kept"
-        )
-        assert tampered != _HEALTHY, "the substitution matched nothing — the fixture moved"
-        reasons = check.assess(tampered)
-        assert any("act 5 reported disposed, kept and failed" in r for r in reasons), reasons
 
 
 class TestEmptyOutput:

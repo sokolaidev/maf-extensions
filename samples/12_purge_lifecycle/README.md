@@ -1,8 +1,8 @@
-# 12 — when a sandbox goes away: within a turn, at its end, on thread delete, and unasked
+# 12 — when a sandbox goes away: within a turn, at its end, and on thread delete
 
 Every other sample creates a sandbox and drops it on the way out, because every other sample is one program that runs once. A real host is not that. It serves many conversations, for a long time, and a sandbox is keyed by `(scope, thread_id, agent_dir)` — so it **outlives the turn that made it**, on purpose.
 
-That leaves a host three moments where a sandbox can go away, and choosing between them is a cost decision rather than a style one. There is a fourth that no host chooses: the framework taking a sandbox away because a tool call left it in a state it could not clean.
+That leaves a host three moments where a sandbox can go away, and choosing between them is a cost decision rather than a style one.
 
 **Not named for a backend, deliberately.** It runs on Docker because that is the cheapest place to watch containers appear and vanish, but the decision it argues about belongs to the backends where a sandbox costs money — ACAS above all. A `12_docker_…` name would put it behind the one prefix an ACAS reader filters out, and sample 11 already set the precedent of naming by subject when the subject is not one backend.
 
@@ -11,7 +11,6 @@ That leaves a host three moments where a sandbox can go away, and choosing betwe
 | Within a turn | `acquire` is get-or-create | the second tool call does not pay for a second boot |
 | End of turn | `async with router.scope(scope, thread)` | on a billable backend, the only sane default |
 | Thread delete | `SandboxPurger.purge_scoped_thread` | the backstop, and the only thing that reclaims a conversation whose turns were never scoped |
-| A call it could not clean | `sandboxed_tool` disposes from its own `finally` | not a choice: the next call would otherwise reuse a sandbox still holding the last one's data |
 
 ## The end-of-turn decision is where the money is
 
@@ -48,26 +47,11 @@ What makes the delete path able to find it at all is that `dispose_scope` select
 
 That asymmetry is the argument for wiring the purger even when you already purge per turn.
 
-## The fourth moment: a call the framework could not clean
-
-Act 5 is the one nobody wires. A tool call owns a directory inside the sandbox — `SandboxToolSession.guest_call_path()` — and `sandboxed_tool` removes it when the body returns. When that removal *fails*, the sandbox is left holding whatever the call put there, and `acquire` being get-or-create means every later call in that conversation can read it. So the framework disposes the sandbox itself, from the same `finally`, before the host hears anything.
-
-That leaves the host two decisions and no third:
-
-- **`on_reclaim_failure`** — a notification, not a remedy. It runs after the disposal, and `ReclaimFailure.disposal` says what happened: `"disposed"`, `"kept"`, or `"failed"`. It is where a host counts, logs and pages.
-- **`SandboxRouter(keep_unclean=True)`** — the opt-down, and the host's alone; a kind cannot set it. It buys a warm sandbox at the price the act prints: the file the failed removal left, read back through the conversation's next acquire. That read is the cost of opting down only alongside the `0` disposals beside it — see the last paragraph of this section for why.
-
-And when the disposal itself does not land, the router **refuses that key** until one does. The next call comes back with *"the sandbox for this conversation is closed"* — a failed conversation instead of a leaked one, and the only one of the three outcomes a caller sees without any callback wired at all.
-
-**Act 5 does not run on Docker, and that is a finding rather than a shortcut.** `Sandbox.reclaim` is the one member every backend must serve, and the docker backend serves it with `rm -rf` running as root inside the container: there is no honest way to make that refuse. So the act runs on `maf_sandbox.testing`'s in-process backend, with one method overridden — the mandatory one — and everything downstream of it real. What that costs is stated where it prints: the in-process backend hands back the same sandbox object whatever was disposed, so this act cannot show the disposed one coming back cold, and it reports the disposal the backend was actually asked for instead.
-
 ## Counted, not claimed
 
 Every number here comes from `docker ps -a --filter label=maf-sandbox.thread=…`, the same labels `dispose_scope` selects on and the same `-a` the backend itself lists with when it purges. Without `-a` a container stopped but not removed would be invisible here while still sitting on the machine — the leak this sample exists to rule out, hidden from the check that rules it out. The library's return values say what it *believes* it disposed; the container count is what is actually on the machine, and only the second means anything for a leak. Where both appear, the sample prints them side by side so a disagreement would be visible.
 
 The footer reports containers left behind, and the live check requires that number to be **0** — a sample about reclaiming sandboxes does not get to leak while saying so.
-
-Act 5 is the exception, and the only one: it creates no container, so `docker ps` answers 0 for it whatever happened and cannot be the evidence. What is read there instead is the number of disposals the backend was actually asked for, the file a kept sandbox still handed back, and the refusal the next call got — a mechanism's own record and two consequences, rather than the router's word for any of them.
 
 ## Reuse is the same sandbox, not the same object
 
@@ -81,7 +65,7 @@ That distinction is load-bearing. The protocol promises "a running sandbox for `
 cd samples/12_purge_lifecycle && uv run agent.py
 ```
 
-Needs a Docker-compatible engine and nothing else — no cloud account, no model, no environment variables. It creates five containers over the run, one thread at a time, and reclaims all of them; the last thing it prints is how many were left behind. Act 5 adds no container: it runs in this process, for the reason above.
+Needs a Docker-compatible engine and nothing else — no cloud account, no model, no environment variables. It creates five containers over the run, one thread at a time, and reclaims all of them; the last thing it prints is how many were left behind.
 
 ## Where this sits
 
