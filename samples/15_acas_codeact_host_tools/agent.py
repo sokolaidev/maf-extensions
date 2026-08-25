@@ -5,14 +5,14 @@ direction::
 
     app  ->  maf_sandbox (router)  ->  a backend  ->  the sandbox
                   ^ maf_sandbox_codeact calls the router    |
-                  +------ a host function, dispatched ------+
+                  +--------- a host function, called --------+
 
 `SAMPLE_BACKEND` picks the backend: `acas` (the default) runs the walk against a remote Azure
 microVM, `docker` against a local container. The workload, the two routes and the measurement are
 identical — the point (#519) is to read a remote round trip against a local one and tell the
-dispatch pattern apart from the control plane it ran on. The one behaviour that differs is act 5:
-reading the guest filesystem needs `Capability.FILES_LIST`, which ACAS declares and Docker does
-not, so it runs only on ACAS.
+host-tool-call pattern apart from the control plane it ran on. The one behaviour that differs
+is act 5: reading the guest filesystem needs `Capability.FILES_LIST`, which ACAS declares and
+Docker does not, so it runs only on ACAS.
 
 Sample 10 is the configuration half and this is the traffic half (#302); read 10 first, since
 the acts below use its vocabulary.  #133 asks for the trade-off to be measured rather than
@@ -20,9 +20,9 @@ assumed, so the workload is deliberately call-heavy and deep: three tables and a
 cannot be answered without walking them in order.
 
 Acts 2 and 3 answer it twice and **both run Python in the sandbox** — only the place of the
-lookups differs, which is what keeps this a measurement of dispatch rather than of CodeAct.
-Act 4 compares them, act 5 (ACAS only) reads the guest filesystem, and the teardown takes the
-sandboxes down.
+lookups differs, which is what keeps this a measurement of host-tool calling rather than of
+CodeAct. Act 4 compares them, act 5 (ACAS only) reads the guest filesystem, and the teardown
+takes the sandboxes down.
 
 The README has the prerequisites, the environment variables and the reasoning behind each act.
 
@@ -89,7 +89,7 @@ from maf_sandbox.maf import list_all_files, make_caller_context
 
 #: Whether the installed transport takes its own files back when a run ends. #434 gave it a
 #: cleanup and exported `reclaim_run` in the same release, so the import is the marker for
-#: transport cleanup: before it, `dispatch_over_exec` left the request and response files in the
+#: transport cleanup: before it, `host_tool_calls_over_exec` left the request and response files in the
 #: guest; after it, the transport removes the directory it owns. CodeAct 0.6+ requests the
 #: framework-owned call path, so its distribution version is the independent lifecycle marker.
 try:
@@ -118,12 +118,13 @@ BACKEND = os.environ.get("SAMPLE_BACKEND", "acas")
 
 #: A sandbox each, for reasons that hold on either backend and one that is ACAS's. The routes are
 #: two conversations (`conversation_id` says why, and #445 is the rest of the samples that needed
-#: it), and the dispatched route widens its sandbox's spec with the host-tool channel while the
-#: direct route's carries none, so sharing one would give the direct route a road to the lookups
-#: this sample never measures on it. The ACAS-only reason is act 5: on a legacy transport the
-#: dispatched route's responses stay readable on the guest filesystem, and a shared sandbox would
-#: let the direct route's program read them. Two threads give two sandboxes regardless.
-DISPATCH_THREAD = conversation_id("15-host-tools-dispatch")
+#: it), and the host-tool-call route widens its sandbox's spec with the host-tool channel while
+#: the direct route's carries none, so sharing one would give the direct route a road to the
+#: lookups this sample never measures on it. The ACAS-only reason is act 5: on a legacy transport
+#: the host-tool-call route's responses stay readable on the guest filesystem, and a shared
+#: sandbox would let the direct route's program read them. Two threads give two sandboxes
+#: regardless.
+HOST_TOOL_CALL_THREAD = conversation_id("15-host-tools-call")
 DIRECT_THREAD = conversation_id("15-host-tools-direct")
 
 #: The guest image. On `acas` it is imported into the sandbox group as a disk image (sample 14's,
@@ -157,11 +158,11 @@ NAIVE_LOOKUPS = len(STATES) * 2 + len(SALES) + sum(len(rows) for rows in SALES.v
 #: raise it deliberately. Set above the naive figure rather than at it: the model writes the
 #: program, and one that re-reads a product name it already has costs more than the arithmetic
 #: predicts. A program that exhausts the budget returns a partial answer, not an error.
-DISPATCH_CAP = NAIVE_LOOKUPS + 11
+HOST_TOOL_CALL_CAP = NAIVE_LOOKUPS + 11
 
 #: The four lookups, and the order they have to happen in. Naming the stages here rather than
 #: leaving them implicit, because the count is the measurement: a stage costs direct tool
-#: calling one tool-calling round, and dispatch none.
+#: calling one tool-calling round, and host-tool calling none.
 STAGES = ("state_id", "stores_in_state", "store_sales", "product_name")
 
 #: A served call leaves three files: the id its caller claimed, the request, and the answer.
@@ -170,7 +171,7 @@ STAGES = ("state_id", "stores_in_state", "store_sales", "product_name")
 _RESPONSE_SUFFIX = ".response.json"
 
 #: The two roads, spelled once.
-DISPATCH_ROUTE = "dispatch route"
+HOST_TOOL_CALL_ROUTE = "host-tool-call route"
 DIRECT_ROUTE = "direct route"
 
 #: Every sales figure, as a number. Act 4 reports how many the model had to write down
@@ -221,7 +222,7 @@ MODEL_VARS = ("AZURE_OPENAI_ENDPOINT", "AZURE_OPENAI_CHAT_MODEL")
 #: Shared by both routes, and the first sentence is what keeps the comparison fair: *both*
 #: sides compute with the interpreter. Without it the direct route would be a model doing
 #: decimal arithmetic in one forward pass, which it is bad at — a real effect, and the wrong
-#: one to attribute to dispatch. Sample 03 is where that belongs.
+#: one to attribute to host-tool calling. Sample 03 is where that belongs.
 INSTRUCTIONS = (
     "You answer with numbers an interpreter computed. Never add anything up yourself: always "
     "run Python with execute_code for the arithmetic. The data is not yours to guess: every "
@@ -255,8 +256,8 @@ _current_run: ContextVar[HostToolRun | None] = ContextVar("sample_15_host_tool_r
 
 
 @contextlib.contextmanager
-def observe_dispatch(run: HostToolRun, _name: object):
-    """Attribute the observed dispatch body to its CodeAct run."""
+def observe_host_tool_call(run: HostToolRun, _name: object):
+    """Attribute the observed host-tool call's body to its CodeAct run."""
     token = _current_run.set(run)
     try:
         yield
@@ -272,7 +273,7 @@ class Ledger:
         self._arrived: list[float] = []
         self._answered: list[float] = []
         self._runs: list[str | None] = []
-        self.dispatched_runs: set[str] = set()
+        self.runs_that_called_a_host_tool: set[str] = set()
 
     def arriving(self, what: str) -> None:
         self.asked.append(what)
@@ -282,7 +283,7 @@ class Ledger:
         # host observer carries, rather than this process's `id()` for an internal class.
         self._runs.append(run.run_id if run is not None else None)
         if run is not None:
-            self.dispatched_runs.add(run.run_id)
+            self.runs_that_called_a_host_tool.add(run.run_id)
 
     def answered(self) -> None:
         self._answered.append(time.perf_counter())
@@ -313,7 +314,7 @@ class Ledger:
 
 
 def build(stamp: Any, ledger: Ledger) -> list[Any]:
-    """The four lookups, stamped for dispatch or wrapped as ordinary MAF tools.
+    """The four lookups, stamped to be called as a host tool or wrapped as ordinary MAF tools.
 
     One body per lookup, so a difference between the acts is never a difference in the function.
     `register` keys on `__name__`, so these keep the names the guest calls. Sample 10's README
@@ -359,8 +360,8 @@ def build(stamp: Any, ledger: Ledger) -> list[Any]:
     return [state_id, stores_in_state, store_sales, product_name]
 
 
-def dispatchable(ledger: Ledger) -> list[Any]:
-    """The four lookups as *dispatchable* tools, for registration behind the gate."""
+def host_tool_lookups(ledger: Ledger) -> list[Any]:
+    """The four lookups as *callable* host tools, for registration behind the gate."""
     return build(
         sandbox_tool(source=SourceIntegrity.TRUSTED, sink=None, identity=Identity.APP), ledger
     )
@@ -427,7 +428,7 @@ def amounts_the_model_wrote(response: object) -> int:
     """How many distinct sales figures the model itself put into a tool call.
 
     Arguments only: the question is whether the model had to carry a value from one place to
-    another. Forced on the direct route, impossible on the dispatched one. Matched by value, so
+    another. Forced on the direct route, impossible on the host-tool-call one. Matched by value, so
     `980` is `980.00` written down and `1980.0` is neither.
     """
     written: set[float] = set()
@@ -488,7 +489,7 @@ def graded(printed: str) -> tuple[int, int, int, int]:
     """What one program's output is worth: cells, totals, rows, names, in that order.
 
     One function, because the figures a route reports and the key that picks the program they are
-    reported for must not disagree. Ordered by what both routes owe: only the dispatched one has
+    reported for must not disagree. Ordered by what both routes owe: only the host-tool-call one has
     to label its table, so leading on labels throws away an unlabelled direct-route answer.
     """
     return (
@@ -534,7 +535,7 @@ def report(
     # cells are counted separately: this is the table the task asked for, row by row.
     print(f"{MEASURED}{route}: product totals the program printed: {cells} of {len(PRODUCT_CELLS)}")
     print(f"{MEASURED}{route}: product names in the table: {named} of {len(PRODUCTS)}")
-    # Required of the dispatched route only, for the reason the names are: that model is never
+    # Required of the host-tool-call route only, for the reason the names are: that model is never
     # handed a product name, so a row it labelled correctly can only have come from the walk.
     print(f"{MEASURED}{route}: table rows the program printed: {rows} of {len(PRODUCT_CELLS)}")
     carried = amounts_the_model_wrote(response)
@@ -549,15 +550,15 @@ def act_one_what_the_host_wired(ledger: Ledger) -> HostToolRegistry:
     print("== 1. What the host wired ==\n")
     registry = HostToolRegistry(
         require_declared=True,
-        max_dispatches_per_run=DISPATCH_CAP,
-        dispatch_observer=observe_dispatch,
+        max_host_tool_calls_per_run=HOST_TOOL_CALL_CAP,
+        host_tool_calls_observer=observe_host_tool_call,
     )
-    for lookup in dispatchable(ledger):
+    for lookup in host_tool_lookups(ledger):
         registry.register(lookup)
     aggregate = registry.aggregate()
     print(f"  registered:                  {', '.join(STAGES)}")
     print(
-        f"{MEASURED}dispatch cap for the run: {DISPATCH_CAP} "
+        f"{MEASURED}host-tool-call cap for the run: {HOST_TOOL_CALL_CAP} "
         f"(the walk needs {MINIMUM_LOOKUPS} at best, {NAIVE_LOOKUPS} written naively)"
     )
     print(f"  identities the spec carries: {sorted(str(one) for one in aggregate.identities)}")
@@ -603,12 +604,15 @@ async def one_route(
     print(quoted(response.text))
     print()
     carried = report(route, seconds, dict(response.usage_details or {}), ledger, response)
-    # Only the dispatched route has round trips to report. The direct route's lookups run in
+    # Only the host-tool-call route has round trips to report. The direct route's lookups run in
     # the host process between two model turns, so the same arithmetic yields microseconds, and
     # printing that under the same name would invite a reader to compare two different things.
-    if route == DISPATCH_ROUTE:
+    if route == HOST_TOOL_CALL_ROUTE:
         trips, boundaries = ledger.round_trips()
-        print(f"{MEASURED}{route}: programs that dispatched: {len(ledger.dispatched_runs)}")
+        print(
+            f"{MEASURED}{route}: programs that called a host tool: "
+            f"{len(ledger.runs_that_called_a_host_tool)}"
+        )
         if trips:
             print(
                 f"{MEASURED}{route}: round trip: {len(trips)} gap(s), min {min(trips):.2f}s, "
@@ -623,15 +627,18 @@ async def one_route(
     return carried
 
 
-def act_four_what_the_round_trips_bought(dispatched: int, direct: int) -> None:
+def act_four_what_the_round_trips_bought(host_tool_call: int, direct: int) -> None:
     """The comparison, once correctness has stopped being the variable."""
     print("== 4. What the round trips bought ==\n")
     total = len(AMOUNTS)
-    # "wrote into code", not "handled": the dispatched program's printed table goes back to
+    # "wrote into code", not "handled": the host-tool-call program's printed table goes back to
     # the model as a tool result, and it carries figures. What never happens on that route is
     # the model putting one into a call of its own, which is the narrower thing measured here.
-    print(f"{MEASURED}sales figures the model wrote into code, dispatched: {dispatched} of {total}")
-    print(f"{MEASURED}sales figures the model wrote into code, direct:     {direct} of {total}")
+    print(
+        f"{MEASURED}sales figures the model wrote into code, host-tool-call: "
+        f"{host_tool_call} of {total}"
+    )
+    print(f"{MEASURED}sales figures the model wrote into code, direct:         {direct} of {total}")
     print()
     print("  Both routes ran Python and both reached the same table, so correctness is not what")
     print("  a round trip buys — sample 03 already showed what an interpreter is for.")
@@ -642,9 +649,10 @@ def act_four_what_the_round_trips_bought(dispatched: int, direct: int) -> None:
     print("  the context window, and whatever logs either of them reaches — and they stay")
     print("  there, turn after turn, which is a ceiling long before it is a bill.")
     print()
-    print("  Dispatch pays a transport round trip per discovered call instead. The host serves")
-    print("  those calls sequentially; concurrent guest callers can overlap request discovery, but")
-    print("  that does not make host-tool execution concurrent or collapse the wall clock (#439).")
+    print("  Host-tool calling pays a transport round trip per discovered call instead. The host")
+    print("  serves those calls sequentially; concurrent guest callers can overlap request")
+    print("  discovery, but that does not make host-tool execution concurrent or collapse the")
+    print("  wall clock (#439).")
     print("  The model writes none of the data into code —")
     print("  what comes back to it is the program's finished table. That is the trade:")
     print("  wall clock, which is spent per run, against context, which accumulates.\n")
@@ -653,7 +661,8 @@ def act_four_what_the_round_trips_bought(dispatched: int, direct: int) -> None:
 async def _what_one_sandbox_holds(
     router: SandboxRouter, thread: str, registry: HostToolRegistry | None
 ) -> tuple[int, int, int, int]:
-    """Run directories, how many dispatched, and the files those left, for one route's sandbox.
+    """Run directories, how many called a host tool, and the files those left, for one route's
+    sandbox.
 
     Acquiring returns the same warm sandbox the route used, which is the point: the runs are in it.
     """
@@ -670,25 +679,26 @@ async def _what_one_sandbox_holds(
 
     # `guest_run_layout` puts the transport under `<run>/host_tools/`, with the calls beneath
     # that — not directly in the run directory.
-    dispatched, left, answered = 0, 0, 0
+    called_a_host_tool, left, answered = 0, 0, 0
     for run in directories:
         try:
             entries = await sandbox.list_dir(f"{run}/host_tools", working_directory=spec.work_dir)
         except FileNotFoundError:
-            # A run that dispatched nothing. Without a registry the kind uses the flat run
+            # A run that called no host tool. Without a registry the kind uses the flat run
             # directory it always has, so there is no `host_tools/` and nothing was left.
             # Caught by its own type rather than by a bare `except`, because "this run did not
-            # dispatch" is the distinction being counted and any other failure should be heard.
+            # call a host tool" is the distinction being counted and any other failure should
+            # be heard.
             continue
         if not any(entry.path.rstrip("/").endswith(CALLS_DIRECTORY) for entry in entries):
             continue
-        dispatched += 1
+        called_a_host_tool += 1
         files = await sandbox.list_dir(
             f"{run}/host_tools/{CALLS_DIRECTORY}", working_directory=spec.work_dir
         )
         left += len(files)
         answered += sum(1 for entry in files if entry.path.endswith(_RESPONSE_SUFFIX))
-    return len(directories), dispatched, left, answered
+    return len(directories), called_a_host_tool, left, answered
 
 
 async def act_five_what_the_runs_left_behind(
@@ -704,17 +714,17 @@ async def act_five_what_the_runs_left_behind(
     no longer corroborates how many programs called out.
     """
     print("== 5. What the runs left in the guest ==\n")
-    routes = ((DISPATCH_THREAD, registry), (DIRECT_THREAD, None))
+    routes = ((HOST_TOOL_CALL_THREAD, registry), (DIRECT_THREAD, None))
     totals = [await _what_one_sandbox_holds(router, thread, reg) for thread, reg in routes]
     directories = sum(t[0] for t in totals)
-    dispatched_runs = sum(t[1] for t in totals)
+    runs_that_called_a_host_tool = sum(t[1] for t in totals)
     left = sum(t[2] for t in totals)
     answered = sum(t[3] for t in totals)
 
     print(f"{MEASURED}transport cleanup: {RECLAIMED if TRANSPORT_RECLAIMS else KEPT}")
     print(f"{MEASURED}call directory cleanup: {CALL_RECLAIMED if CALL_RECLAIMS else CALL_KEPT}")
     print(f"{MEASURED}run directories across both sandboxes: {directories}")
-    print(f"{MEASURED}of those, runs that dispatched: {dispatched_runs}")
+    print(f"{MEASURED}of those, runs that called a host tool: {runs_that_called_a_host_tool}")
     print(f"{MEASURED}transport files left behind: {left}, of which answered calls: {answered}")
     print()
     print("  A fresh directory per run keeps one run's traffic out of the next one's.")
@@ -724,7 +734,9 @@ async def act_five_what_the_runs_left_behind(
         print("  On older CodeAct kinds, those call directories remain for act 5 to count.")
     print()
     if TRANSPORT_RECLAIMS:
-        print("  The traffic is not. `dispatch_over_exec` removes the directory it owns on every")
+        print(
+            "  The traffic is not. `host_tool_calls_over_exec` removes the directory it owns on every"
+        )
         print("  exit path, so the requests and responses above are gone and zero is the cleanup")
         print("  having worked (#434). The framework may also reclaim the whole call directory")
         print("  after the kind returns; when it does, the host's observer is the only run count.")
@@ -747,8 +759,8 @@ async def run() -> int:
     if env is None:
         return 2
 
-    dispatch_ledger, direct_ledger = Ledger(), Ledger()
-    registry = act_one_what_the_host_wired(dispatch_ledger)
+    host_tool_call_ledger, direct_ledger = Ledger(), Ledger()
+    registry = act_one_what_the_host_wired(host_tool_call_ledger)
 
     if BACKEND == "docker":
         # A local container per acquire. Docker declares `Isolation.CONTAINER`, one rung below the
@@ -773,14 +785,14 @@ async def run() -> int:
 
     credential = DefaultAzureCredential()
     try:
-        dispatched = await one_route(
+        host_tool_call = await one_route(
             "2. The lookups happen inside the sandbox",
-            DISPATCH_ROUTE,
+            HOST_TOOL_CALL_ROUTE,
             env,
             credential,
-            codeact_for(router, registry, DISPATCH_THREAD),
+            codeact_for(router, registry, HOST_TOOL_CALL_THREAD),
             FROM_INSIDE,
-            dispatch_ledger,
+            host_tool_call_ledger,
         )
         direct = await one_route(
             "3. The lookups happen in the model's tool loop",
@@ -791,7 +803,7 @@ async def run() -> int:
             FROM_THE_TOOL_LIST,
             direct_ledger,
         )
-        act_four_what_the_round_trips_bought(dispatched, direct)
+        act_four_what_the_round_trips_bought(host_tool_call, direct)
         # Act 5 enumerates the guest filesystem with `list_dir`, which needs FILES_LIST. ACAS
         # declares it; docker does not (no engine-level directory-listing primitive), so there the
         # leftover-traffic count cannot be taken and the act is skipped — acts 2-4 above, which is
@@ -801,8 +813,8 @@ async def run() -> int:
         else:
             print("== 5. What the runs left in the guest ==\n")
             print("  Skipped: this backend declares no FILES_LIST, so the guest filesystem cannot")
-            print("  be enumerated. The dispatch itself needs only HOST_TOOLS and FILES_OUT, both")
-            print("  of which it does declare, which is why acts 2-4 ran.\n")
+            print("  be enumerated. The host-tool call itself needs only HOST_TOOLS and FILES_OUT,")
+            print("  both of which it does declare, which is why acts 2-4 ran.\n")
     finally:
         # Deletes rather than leaving the backend to reclaim them later — ACAS's idle timers, or
         # on docker a label-based purge or nothing at all — see sample 01's README. It is also
@@ -810,7 +822,7 @@ async def run() -> int:
         # reported it could not signal.
         deleted = sum(
             [
-                await router.dispose_scope(SCOPE, DISPATCH_THREAD),
+                await router.dispose_scope(SCOPE, HOST_TOOL_CALL_THREAD),
                 await router.dispose_scope(SCOPE, DIRECT_THREAD),
             ]
         )

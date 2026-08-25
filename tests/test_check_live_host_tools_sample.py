@@ -27,12 +27,12 @@ _HEALTHY = """\
 
   refused:    publish_release_note (registry is APP-only) — host tool 'publish_release_note' exercises 'user' authority, which this registry does not allow (allowed_identities: app). A host that means to run tools under this authority opts in at construction with allowed_identities=frozenset({Identity.APP, Identity.USER}); a tool declaring identity=None exercises no authority and is always allowed. denied_identities on the router stays the attach-time backstop.
 
-  notice: a host tool was registered for sandbox dispatch: dispatched calls run in the host process with the host's authority and bypass the middleware chain — the boundary sees only execute_code's aggregate result. Suppress this notice with warnings.filterwarnings('ignore', category=MafSandboxHostToolsWarning) once read.
+  notice: a host tool was registered for calling from a sandbox: host-tool calls run in the host process with the host's authority and bypass the middleware chain — the boundary sees only execute_code's aggregate result. Suppress this notice with warnings.filterwarnings('ignore', category=MafSandboxHostToolsWarning) once read.
 
   registered: fetch_changelog, publish_release_note, semver_bump
   refused:    rerun_failed_jobs — host tool 'rerun_failed_jobs' has no complete information-flow declaration and this registry requires one. Stamp it with @sandbox_tool(source=..., sink=..., identity=...) — every leg answered; None is an answer, an omission is not.
 
-  the dispatchable surface is 3 functions, and nothing else.
+  the callable surface is 3 functions, and nothing else.
   Least privilege here is what was registered, not what was declared.
 
 == 2. What the surface means ==
@@ -45,17 +45,17 @@ _HEALTHY = """\
                      vocabulary, and this library never guesses at an ordering.
   identities:        {app, user}
   requires_approval: True
-                     because one USER tool is enough — a single dispatch could
-                     exercise the user's delegated authority.
+                     because one USER tool is enough — a single host-tool call
+                     could exercise the user's delegated authority.
   has_undeclared:    False  (the gate refused the fourth)
 
-  sealed:     host tool 'semver_bump_again' cannot be registered: this registry was sealed when its aggregate was taken, and a host has already derived a spec and a classification from the surface as it stood. Widening it now would dispatch what nothing classified.
+  sealed:     host tool 'semver_bump_again' cannot be registered: this registry was sealed when its aggregate was taken, and a host has already derived a spec and a classification from the surface as it stood. Widening it now would let a guest call what nothing classified.
 
 == 3. A host that permits it ==
 
   ensure_can_serve('release-notes') returned. The kind may attach.
   One call is the whole of a host's wiring test — and the whole of this sample's
-  happy path, because a dispatch needs a guest program and this sample runs none.
+  happy path, because a host-tool call needs a guest program and this sample runs none.
 
 == 4. The two refusals ==
 
@@ -63,7 +63,7 @@ _HEALTHY = """\
     SandboxCapabilityDenied: the 'release-notes' workload requires host_tools, which this host's router denies outright (denied_capabilities). A hard stop rather than a missing feature: whatever backend is registered, this posture refuses the capability — serve the workload on a host that permits it, or narrow what it requires.
 
   denied_identities={USER}
-    SandboxIdentityDenied: the 'release-notes' workload's dispatched tools exercise user authority, which this host's router denies outright (denied_identities). Remove the tools declaring that identity from the workload's registry, or serve it on a host whose posture permits them.
+    SandboxIdentityDenied: the 'release-notes' workload's host tools exercise user authority, which this host's router denies outright (denied_identities). Remove the tools declaring that identity from the workload's registry, or serve it on a host whose posture permits them.
 
   Both are PermissionError, both name the deployment's own setting, and both
   turn away the whole kind rather than one function — there is no partial
@@ -77,8 +77,8 @@ _HEALTHY = """\
 
 == What is not here ==
 
-  A dispatch. The transport a guest sends a request over has landed (#327),
-  maf-sandbox-codeact dispatches over it, and the docker and acas backends
+  A host-tool call. The transport a guest sends a request over has landed (#327),
+  maf-sandbox-codeact makes host-tool calls over it, and the docker and acas backends
   declare Capability.HOST_TOOLS — so one would run. It needs a real sandbox,
   a guest program and a model, and this sample uses none of the three (#302).
   Everything above is the half a host configures on day one regardless, and it

@@ -105,7 +105,7 @@ _TICKS = re.compile(r"`+")
 _MARKUP = re.compile(r"[`*~]")
 
 #: Underscore emphasis, which the run above cannot strip blindly. An underscore is a word
-#: character GitHub keeps, so `## dispatch_over_exec` slugs with it — but `## _Important_` is
+#: character GitHub keeps, so `## host_tool_calls_over_exec` slugs with it — but `## _Important_` is
 #: emphasis and slugs to `important`. Only a *paired* run at a word boundary is markup: an
 #: unmatched `_private` emphasises nothing and stays, and an intraword `_` is never a
 #: delimiter, which is what keeps the identifiers in these headings intact.

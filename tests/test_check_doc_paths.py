@@ -468,12 +468,18 @@ class TestAnchors:
             # two spaces leaves two. Collapsing them reports a working link as broken.
             ("Host tools — the contract", "host-tools--the-contract"),
             # `_` is a word character GitHub keeps, and every identifier here has one.
-            ("Reaching it via `dispatch_over_exec`", "reaching-it-via-dispatch_over_exec"),
+            (
+                "Reaching it via `host_tool_calls_over_exec`",
+                "reaching-it-via-host_tool_calls_over_exec",
+            ),
             # It is also an emphasis marker, and the two cannot be told apart by the character.
             # A *paired* run at a word boundary is markup; anything else is part of the word.
             ("_Important_", "important"),
             ("__Important__", "important"),
-            ("_Important_ for dispatch_over_exec", "important-for-dispatch_over_exec"),
+            (
+                "_Important_ for host_tool_calls_over_exec",
+                "important-for-host_tool_calls_over_exec",
+            ),
             # Nothing closes it, so GitHub emphasises nothing and the underscore is literal.
             ("_private", "_private"),
             ("requires_os_family and _egress_", "requires_os_family-and-egress"),

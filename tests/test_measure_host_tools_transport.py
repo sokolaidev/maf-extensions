@@ -17,7 +17,7 @@ def test_sequential_and_concurrent_guest_publication_are_measured_without_timing
     assert sequential.mode == "sequential"
     assert concurrent.mode == "concurrent"
     assert sequential.answers == concurrent.answers == tuple(range(1, 9))
-    assert sequential.dispatches == concurrent.dispatches == 8
+    assert sequential.host_tool_calls == concurrent.host_tool_calls == 8
     assert sequential.host_arrivals == concurrent.host_arrivals == 8
 
     # A+B's speculative discovery changes probes, not the ordered host-tool contract. Keep the

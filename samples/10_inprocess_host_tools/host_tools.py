@@ -46,8 +46,8 @@ def publish_release_note(text: str) -> str:
     string stays opaque and is carried verbatim into the aggregate.
 
     ``Identity.USER`` is declarable and deliberately not servable: registering it raises the
-    whole ``execute_code`` surface to approval-gated, and dispatching it is refused with the
-    prerequisites named. Declaring it honestly is what lets a router refuse it (see
+    whole ``execute_code`` surface to approval-gated, and calling it as a host tool is refused
+    with the prerequisites named. Declaring it honestly is what lets a router refuse it (see
     ``agent.py``'s fourth act); declaring it as ``APP`` to make the refusal go away would be
     the lie the leg exists to prevent.
     """
@@ -59,7 +59,7 @@ def rerun_failed_jobs(workflow: str) -> str:
 
     Here to be refused. A registry built with ``require_declared=True`` turns this away at
     registration — the host's own configuration site, where the fix is one decorator away —
-    rather than at dispatch, where the model would get a sanitized sentence and the host a
+    rather than at the call, where the model would get a sanitized sentence and the host a
     tool it never classified.
 
     With the gate off it would register and fail safe instead: read as an ``UNTRUSTED``
