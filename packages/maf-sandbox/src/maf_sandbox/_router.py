@@ -116,7 +116,7 @@ class SandboxCapabilityDenied(PermissionError):
 
 
 class SandboxIdentityDenied(PermissionError):
-    """The workload's dispatched tools exercise an identity this host's router denies.
+    """The workload's host tools exercise an identity this host's router denies.
 
     Same posture as :class:`SandboxCapabilityDenied`, on the identity axis: a host that
     forbids model-orchestrated user authority states ``denied_identities={Identity.USER}``
@@ -374,7 +374,7 @@ class SandboxRouter:
         denied_identities = spec.identities & self._denied_identities
         if denied_identities:
             raise SandboxIdentityDenied(
-                f"the {spec.kind!r} workload's dispatched tools exercise "
+                f"the {spec.kind!r} workload's host tools exercise "
                 f"{', '.join(sorted(str(identity) for identity in denied_identities))} "
                 "authority, which this host's router denies outright (denied_identities). "
                 "Remove the tools declaring that identity from the workload's registry, or "

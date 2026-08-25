@@ -266,8 +266,8 @@ def _warn_host_tools_once() -> None:
         return
     _RegistrationNotice.warned = True
     message = (
-        "a host tool was registered for sandbox dispatch: dispatched calls run in the host "
-        "process with the host's authority and bypass the middleware chain — the boundary "
+        "a host tool was registered for calling from a sandbox: host-tool calls run in the "
+        "host process with the host's authority and bypass the middleware chain — the boundary "
         "sees only execute_code's aggregate result. Suppress this notice with "
         "warnings.filterwarnings('ignore', category=MafSandboxHostToolsWarning) once read."
     )
@@ -419,9 +419,9 @@ class HostToolRegistry:
                 )
         self._require_declared = require_declared
         self._allowed_identities = frozenset(allowed_identities)
-        self._max_dispatches_per_run = max_host_tool_calls_per_run
+        self._max_host_tool_calls_per_run = max_host_tool_calls_per_run
         self._response_limits = response_limits
-        self._dispatch_observer = host_tool_calls_observer
+        self._host_tool_calls_observer = host_tool_calls_observer
         self._tools: dict[str, Callable[..., Any]] = {}
         # Captured at registration, never re-read from the function: see `declaration_for`.
         self._declarations: dict[str, HostToolDeclaration | None] = {}
@@ -445,8 +445,8 @@ class HostToolRegistry:
 
     @property
     def max_host_tool_calls_per_run(self) -> int:
-        """How many dispatches one run may make, refusals included."""
-        return self._max_dispatches_per_run
+        """How many host-tool calls one run may make, refusals included."""
+        return self._max_host_tool_calls_per_run
 
     @property
     def response_limits(self) -> TransferLimits:
@@ -459,7 +459,23 @@ class HostToolRegistry:
     ) -> Callable[[HostToolRun, object], contextlib.AbstractContextManager[object]] | None:
         """The host's observer, or ``None`` when the host registered none — the off-by-default
         half of the contract, where a host can confirm it is watching nothing."""
-        return self._dispatch_observer
+        return self._host_tool_calls_observer
+
+    # Both spellings read, for the same reason `__init__` accepts both: these two were public
+    # properties in 0.23.1, so dropping them would break reading a registry even where
+    # constructing one still worked.
+
+    @property
+    def max_dispatches_per_run(self) -> int:
+        """Deprecated alias of :attr:`max_host_tool_calls_per_run`."""
+        return self._max_host_tool_calls_per_run
+
+    @property
+    def dispatch_observer(
+        self,
+    ) -> Callable[[HostToolRun, object], contextlib.AbstractContextManager[object]] | None:
+        """Deprecated alias of :attr:`host_tool_calls_observer`."""
+        return self._host_tool_calls_observer
 
     def __len__(self) -> int:
         return len(self._tools)
@@ -609,7 +625,7 @@ class HostToolRegistry:
             requires_approval=Identity.USER in identities,
             has_undeclared=bool(undeclared),
             response_limits=self._response_limits,
-            max_host_tool_calls_per_run=self._max_dispatches_per_run,
+            max_host_tool_calls_per_run=self._max_host_tool_calls_per_run,
         )
 
 
@@ -827,6 +843,16 @@ class HostToolRun:
         # programming error is not a dispatch, so the observer sees no enter for it.
         with _observe(self._registry.host_tool_calls_observer, self, name, self._logger):
             return await self._run_host_tool_call(name, arguments, framing_bytes=framing_bytes)
+
+    async def dispatch(
+        self, name: str, arguments: Mapping[str, Any] | None = None, *, framing_bytes: int = 0
+    ) -> HostToolCallResult:
+        """Deprecated alias of :meth:`call`, kept for one release.
+
+        Delegates rather than aliasing the function object, so a subclass overriding
+        :meth:`call` is still the code an old caller reaches.
+        """
+        return await self.call(name, arguments, framing_bytes=framing_bytes)
 
     async def _run_host_tool_call(
         self, name: str, arguments: Mapping[str, Any] | None = None, *, framing_bytes: int = 0
@@ -1051,6 +1077,5 @@ DispatchResult = HostToolCallResult
 #: Deprecated alias of :data:`DEFAULT_MAX_HOST_TOOL_CALLS_PER_RUN`.
 DEFAULT_MAX_DISPATCHES_PER_RUN = DEFAULT_MAX_HOST_TOOL_CALLS_PER_RUN
 
-#: Deprecated alias of :meth:`HostToolRun.call`. Bound to the function rather than wrapped, so
-#: the two cannot drift and a subclass overriding one overrides both.
-HostToolRun.dispatch = HostToolRun.call  # type: ignore[attr-defined]
+# The method and property spellings cannot be bound out here: `HostToolRun.dispatch` and the
+# registry's two properties are defined in their classes so an override still wins.

@@ -346,6 +346,29 @@ class TestTheFixtureIsStillWhatTheSamplePrints:
             fixture = [line.strip() for line in _HEALTHY.splitlines() if key in line]
             assert live == fixture, (key, live, fixture)
 
+    def test_the_fixture_is_verbatim_but_for_the_environment_line(self):
+        """Every line, not just the ones `assess` reads.
+
+        The keys above cover what the checker scans, so a line it ignores could drift from
+        anything the sample can print — which is how a rename once reached the `notice:` and
+        `SandboxIdentityDenied:` lines here while both production strings still said dispatch.
+        """
+        completed = subprocess.run(
+            [sys.executable, str(_SAMPLE)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=180,
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+        )
+        assert completed.returncode == 0, completed.stderr
+        live = [
+            line
+            for line in completed.stdout.splitlines()
+            if not line.strip().startswith("[measured] installed:")
+        ]
+        assert live == _HEALTHY.splitlines()
+
 
 class TestALabelIsNotProseOnAnotherLine:
     """`cannot be registered:` sits mid-sentence on the sealed line, one lookup away."""
