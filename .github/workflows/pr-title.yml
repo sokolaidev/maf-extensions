@@ -112,9 +112,9 @@ jobs:
         # `check_core_against_dependents.py` at release time, and the publish gate before an
         # upload; neither is this.
         #
-        # It exited zero between #628 and #657, which left the notice in the log of a green
-        # job. A notice nobody opens is not delivered, and this is the one channel a pull
-        # request cannot scroll past.
+        # Reporting and exiting zero would leave the notice in the log of a green job. A
+        # notice nobody opens is not delivered, and this is the one channel a pull request
+        # cannot scroll past.
         #
         # The `${{ github.event.pull_request.title }}` expression is assigned to an environment
         # variable rather than interpolated into this shell script. A pull request title is

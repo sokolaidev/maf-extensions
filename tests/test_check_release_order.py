@@ -145,7 +145,7 @@ class TestWhatCountsAsTouchingTheCore:
 
 
 class TestConsequences:
-    """What it says, and — since #628 — that saying it is all it does."""
+    """What it says, and that saying it is all it does."""
 
     def test_a_core_feat_past_a_ceiling_is_reported(self, tmp_path: Path):
         repo = _repo(tmp_path, "0.6.1", {"maf-sandbox-acas": "0.7", "maf-sandbox-wslc": "0.7"})
@@ -182,7 +182,7 @@ class TestConsequences:
         assert check.consequences("chore: a thing", [_CORE_FILE], repo) == []
 
     def test_it_names_what_follows_rather_than_a_thing_to_do_first(self, tmp_path: Path):
-        """It used to say "widen their ceilings first", which is the ordering #628 removed."""
+        """It names what follows, not a thing to do first: the order is not this to decide."""
         repo = _repo(tmp_path, "0.6.1", {"maf-sandbox-acas": "0.7"})
         notices = check.consequences("feat: a thing", [_CORE_FILE], repo)
         assert "no published dependent resolves it" in notices[1]
@@ -195,11 +195,11 @@ class TestItFailsSoTheConsequenceIsRead:
     Not a verdict on the release — a version outside every ceiling is permitted, and for a
     breaking release it is the point. Merging over the red is the expected move, and the
     override is what records that the consequence was read. What asks whether the release is
-    *sound* is `check_core_against_dependents.py` at the moment of release (#628); this asks
-    only that somebody looked (#657).
+    *sound* is `check_core_against_dependents.py` at the moment of release; this asks only
+    that somebody looked.
 
-    The reporting-and-exiting-zero era was #628 to #657, and it put the notice in the log of a
-    green job — which is where the release train got stuck without anyone reading it.
+    Reporting and exiting zero puts the notice in the log of a green job, where nothing sends
+    anyone to read it — so the exit code is the whole delivery mechanism.
     """
 
     def test_a_release_past_every_ceiling_fails(
