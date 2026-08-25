@@ -4744,6 +4744,41 @@ def _surface(response_limits: TransferLimits, dispatches: int = 1) -> Any:
     return registry.aggregate()
 
 
+class TestTheCeilingsTheFoldPromisesAreEnforced:
+    """A fold is only worth the ceilings it declares. Both constants bound a transfer the router
+    told a backend to expect, so each has to be a bound the transport cannot exceed rather than a
+    generous guess — a guess admits the backend and then overruns it, which is the failure #393
+    exists to close."""
+
+    def test_a_launcher_the_run_paths_blow_past_the_ceiling_is_refused(self):
+        """The template repeats the layout's paths many times, so a long enough `work_dir`
+        outgrows the ceiling the fold declared for the upload."""
+        layout = host_tools_over_exec.guest_run_layout("/w/" + "d" * 5000)
+        with pytest.raises(ValueError, match="over the .* ceiling"):
+            host_tools_over_exec.launcher_script(layout, "python3")
+
+    def test_an_ordinary_launcher_still_builds(self):
+        layout = host_tools_over_exec.guest_run_layout("/maf-sandbox/work/run-1")
+        script = host_tools_over_exec.launcher_script(layout, "python3")
+        assert len(script.encode("utf-8")) <= host_tools_over_exec._LAUNCHER_CEILING
+
+    def test_a_refusal_quoting_non_bmp_text_still_fits_the_ceiling(self):
+        """`_bounded` counts characters and the ceiling counts bytes: `json.dumps` escapes one
+        non-BMP character to twelve bytes, so a sentence inside every character bound this
+        package applies can still serialize past the byte one the fold declared."""
+        sentence = f"Error: {'😀' * 120!r} is not a registered host tool"
+        envelope = host_tools_over_exec._refusal(sentence)
+        assert len(envelope.encode("utf-8")) <= host_tools_over_exec._REFUSAL_CEILING
+
+    def test_a_refusal_that_does_not_fit_is_replaced_whole_not_truncated(self):
+        envelope = host_tools_over_exec._refusal("😀" * 4000)
+        assert json.loads(envelope)["refusal"] == host_tools_over_exec._REFUSAL_TOO_LONG
+
+    def test_an_ordinary_refusal_is_passed_through_unchanged(self):
+        envelope = host_tools_over_exec._refusal("Error: 'nope' is not a registered host tool")
+        assert json.loads(envelope)["refusal"] == "Error: 'nope' is not a registered host tool"
+
+
 class TestFoldDispatchTransferLimits:
     """Fold the dispatch transport's own traffic into a workload's caps, so the router refuses a
     backend the transport would overrun.

@@ -84,11 +84,19 @@ _MARKER_CEILING = 32
 #: code.
 _MARKER_FILES = 3
 
-#: A generous ceiling on one refusal envelope. A refusal is a fixed sentence plus at most
-#: ``_MAX_ECHOED_CHARS`` of quoted guest text, and it spends no part of ``response_limits`` —
-#: that ledger bounds what a tool *delivered*, and a refusal delivered nothing — so the fold
-#: budgets for it separately or a run of refusals moves bytes nothing accounted for.
+#: The ceiling on one refusal envelope, enforced by :func:`_refusal` rather than assumed. A
+#: refusal spends no part of ``response_limits`` — that ledger bounds what a tool *delivered*,
+#: and a refusal delivered nothing — so the fold budgets for it separately, and the budget is
+#: only worth having if no envelope can exceed it. Counting characters does not bound bytes: a
+#: sentence quoting guest text is serialized with ``json.dumps``, which escapes a non-BMP
+#: character to twelve bytes, and other sentences quote registered names and configured numbers.
 _REFUSAL_CEILING = 1024
+
+#: What the guest is told when its own refusal did not fit :data:`_REFUSAL_CEILING`. Fixed, and
+#: therefore the one envelope whose size is known without measuring.
+_REFUSAL_TOO_LONG = (
+    "Error: this host-tool request was refused, and the reason did not fit the response ceiling"
+)
 
 
 def fold_dispatch_transfer_limits(
@@ -663,7 +671,7 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
         f"wait $!; "
         f"printf %s $? > {_quote(staged)}; mv {_quote(staged)} {_quote(layout.exit_code)}"
     )
-    return (
+    script = (
         "#!/bin/sh\n"
         f"mkdir -p {_quote(layout.work)} && cd {_quote(layout.work)} || exit 1\n"
         "maf_kept=''\n"
@@ -707,6 +715,18 @@ def launcher_script(layout: GuestRunLayout, interpreter: str = "python3") -> str
         f"  nohup sh -c {_quote(inner)} >/dev/null 2>&1 &\n"
         "fi\n"
     )
+    if len(script.encode("utf-8")) > _LAUNCHER_CEILING:
+        # The router promised a backend this ceiling for the upload (see
+        # `fold_dispatch_transfer_limits`), and the template repeats the layout's paths and the
+        # interpreter enough times that a long enough work_dir outgrows it. Refused rather than
+        # uploaded: a transfer past a ceiling the backend agreed to is the failure the fold
+        # exists to prevent, and a named refusal beats discovering it inside the guest.
+        raise ValueError(
+            f"the generated launcher is {len(script.encode('utf-8'))} bytes, over the "
+            f"{_LAUNCHER_CEILING}-byte ceiling the transfer match declares for it — the run's "
+            "paths or interpreter are too long. Shorten the spec's work_dir."
+        )
+    return script
 
 
 def _quote(text: str) -> str:
@@ -1762,6 +1782,22 @@ async def _skip_dead_claim_hole(
     return served + 1, True
 
 
+def _refusal(sentence: str) -> str:
+    """``sentence`` as a refusal envelope, guaranteed to fit :data:`_REFUSAL_CEILING`.
+
+    Measured after serializing, never estimated from the sentence's length: ``json.dumps``
+    escapes a non-BMP character to twelve bytes, so a sentence within every character bound this
+    package applies can still serialize past the byte one the fold declared to the backend. An
+    envelope that does not fit is replaced whole rather than truncated — a cut JSON document is
+    not a document the guest can read.
+    """
+    envelope = json.dumps({"refusal": sentence})
+    if len(envelope.encode("utf-8")) <= _REFUSAL_CEILING:
+        return envelope
+    logger.warning("host tools: a refusal did not fit %s bytes and was replaced", _REFUSAL_CEILING)
+    return json.dumps({"refusal": _REFUSAL_TOO_LONG})
+
+
 async def _answer(
     run: HostToolRun, body: str | _TooLarge | _NotText, identifier: str
 ) -> str | None:
@@ -1771,16 +1807,14 @@ async def _answer(
     publish under. Every other outcome, refusals included, is a sentence the guest may read.
     """
     if isinstance(body, _TooLarge):
-        return json.dumps(
-            {
-                "refusal": "Error: this host-tool request is larger than the host will read — "
-                "pass less, or write what you have to a file instead"
-            }
+        return _refusal(
+            "Error: this host-tool request is larger than the host will read — pass less, or "
+            "write what you have to a file instead"
         )
     if isinstance(body, _NotText):
         # The same sentence as an unparseable request, and deliberately: from the guest's
         # side both are a request the host would not read, and neither is retryable.
-        return json.dumps({"refusal": _NOT_JSON})
+        return _refusal(_NOT_JSON)
     try:
         parsed = cast(object, json.loads(body))
     except (ValueError, RecursionError):
@@ -1788,9 +1822,9 @@ async def _answer(
         # cap, would otherwise escape the supervisor and leave the detached guest waiting for
         # an answer that is never written.
         logger.warning("host tools: request %s is not JSON, refusing it", identifier)
-        return json.dumps({"refusal": _NOT_JSON})
+        return _refusal(_NOT_JSON)
     if not isinstance(parsed, dict):
-        return json.dumps({"refusal": "Error: a host-tool request must be a JSON object"})
+        return _refusal("Error: a host-tool request must be a JSON object")
     request = cast("dict[str, object]", parsed)
     # Handed over as-is, casts and all: `dispatch` is where guest data is checked, and it
     # takes `object` to its own `isinstance` gates for exactly this reason. Narrowing here
@@ -1809,7 +1843,8 @@ async def _answer(
     # leaving the run paying for a response that was never delivered.
     result = await run.dispatch(name, arguments, framing_bytes=_FRAMING_BYTES)
     if not result.ok:
-        return json.dumps({"refusal": result.refusal})
+        # `DispatchResult` carries exactly one of the two, enforced in its own `__post_init__`.
+        return _refusal(cast(str, result.refusal))
     # `value_json` is already the serialized return value, capped host-side. Splicing it in as
     # text keeps those exact bytes rather than re-serializing a parse of them.
     return _FRAME_OPEN + (result.value_json or "null") + _FRAME_CLOSE

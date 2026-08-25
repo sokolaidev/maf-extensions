@@ -440,12 +440,13 @@ class SandboxRouter:
             (Capability.FILES_OUT, asked_out, spec.files_out, limits.files_out),
         ):
             if not asked.within(ceiling):
-                # Only when this direction's number actually grew: a refusal driven by what the
-                # workload itself declared must not be blamed on a fold that left it alone.
+                # Only when the fold is what caused *this* refusal — the bare declaration would
+                # have been served. A workload already over the ceiling on its own must not be
+                # pointed at the transport, however much the fold also raised.
                 folded_note = (
                     " (folded to include the wired host tools' dispatch transport, so above the "
                     "workload's own declaration)"
-                    if asked != declared
+                    if declared.within(ceiling)
                     else ""
                 )
                 raise SandboxTransferLimitsNotPermitted(

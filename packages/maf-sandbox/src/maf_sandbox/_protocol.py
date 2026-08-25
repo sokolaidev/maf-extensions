@@ -15,10 +15,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
-
-if TYPE_CHECKING:
-    from ._host_tools import HostToolAggregate
+from typing import Any, Protocol, runtime_checkable
 
 __all__ = [
     "DEFAULT_CAPABILITIES",
@@ -31,6 +28,7 @@ __all__ = [
     "Egress",
     "EntryKind",
     "ExecResult",
+    "HostToolAggregate",
     "Identity",
     "Isolation",
     "OutputDisposition",
@@ -406,6 +404,48 @@ class SandboxKey:
 
 
 @dataclass(frozen=True)
+class HostToolAggregate:
+    """What a host-tool registry's contents mean for the one model-facing tool that serves them.
+
+    Lives here rather than beside the registry because :class:`SandboxSpec` carries one: an
+    annotation a spec cannot resolve at runtime breaks ``typing.get_type_hints``, and every field
+    below is already this module's vocabulary.  :mod:`maf_sandbox._host_tools` builds it and
+    re-exports the name.
+
+    Derived per leg, over the relevant subset, never replacing the host's classification of the
+    tool itself as an exec sink under untrusted taint — refining it:
+
+    - ``result_integrity`` is the weakest tier over *sources only* — a sink-only or pure tool
+      must not drag the result to untrusted, and a registry with no sources has no integrity
+      opinion at all (``None``): the workload's own default stands.
+    - ``outbound_caps`` is every declared sink cap, verbatim and unfolded.  Confidentiality
+      values are opaque host vocabulary with no ordering, and this repository requires an
+      ordering to be data before anything ranks by it — so more than one distinct cap is the
+      host's to reconcile, never this package's to guess between.
+    - ``identities`` and ``requires_approval``: any :data:`Identity.USER` tool raises the whole
+      surface to approval-gated, because a single dispatch may exercise the user's delegated
+      authority.
+    - ``has_undeclared`` marks a registry serving unstamped tools (the gate off).  Each such
+      tool already failed safe into the folds above — an untrusted source, an
+      :data:`Identity.APP` identity — and the flag is how a host notices the degrade without
+      diffing the folds.
+    - ``response_limits`` and ``max_dispatches_per_run`` are the registry's own ceilings,
+      carried verbatim so the router can fold the transport's worst case into the transfer-limit
+      match when it serves the spec — reported policy, not a fold performed here.  The count is
+      load-bearing there and not only the bytes: it is what turns "one response" into "how many
+      files, and how many refusals nothing debits".
+    """
+
+    result_integrity: SourceIntegrity | None
+    outbound_caps: frozenset[str]
+    identities: frozenset[Identity]
+    requires_approval: bool
+    has_undeclared: bool
+    response_limits: TransferLimits
+    max_dispatches_per_run: int
+
+
+@dataclass(frozen=True)
 class SandboxSpec:
     """What a sandbox of a given kind needs, in terms no backend is privileged by.
 
@@ -523,6 +563,26 @@ class SandboxSpec:
                 f"egress_allow names hosts ({hosts}) but egress is {str(self.egress)!r}: a host "
                 f"list is the payload of an {str(Egress.ALLOWLIST)!r} run and has no meaning "
                 "without it. Set egress=Egress.ALLOWLIST, or drop the hosts."
+            )
+        if self.host_tools is None:
+            return
+        # The router answers posture from `requires` and `identities`, never from the surface, so
+        # a spec carrying one that those fields do not admit would be served by a host that
+        # denies exactly it. Refused here rather than reconciled: deriving the wider set would
+        # silently grant what a host wrote a deny list to refuse.
+        if Capability.HOST_TOOLS not in self.requires:
+            raise ValueError(
+                "host_tools carries a dispatchable surface but requires does not include "
+                f"{str(Capability.HOST_TOOLS)!r}, so a host denying that capability "
+                "(denied_capabilities) would serve this workload anyway. Add it to requires."
+            )
+        unclaimed = self.host_tools.identities - self.identities
+        if unclaimed:
+            named = ", ".join(sorted(str(identity) for identity in unclaimed))
+            raise ValueError(
+                f"host_tools carries tools exercising {named} authority, which identities does "
+                "not declare, so a host denying it (denied_identities) would serve this workload "
+                "anyway. Set identities to the surface's own."
             )
 
 
