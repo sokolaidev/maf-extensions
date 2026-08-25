@@ -27,10 +27,11 @@ _WORKFLOW = yaml.safe_load(
 )
 _STEPS = _WORKFLOW["jobs"]["prepare"]["steps"]
 
-#: What each configured package has released, as `.release-please-manifest.json` records it.
-#: A title naming another package, or another version, names no release this repository made.
-#: `TestTheFixtureIsThisRepository` holds this to the two files it is copied from, so it
-#: cannot quietly cover fewer packages than the workflow passes.
+#: What each configured package has released, in the shape the workflow passes. The package
+#: names are this repository's and `TestTheFixtureIsThisRepository` holds them to the
+#: configuration, so this cannot quietly cover fewer than the workflow does. The versions are
+#: the fixture's own: the manifest moves on every release, so a copy of it here would turn
+#: this suite red whenever anybody ships.
 _RELEASES = {
     "maf-sandbox": "0.23.1",
     "maf-sandbox-acas": "0.13.0",
@@ -303,18 +304,17 @@ class TestTheBodyCarriesTheRecovery:
 
 
 class TestTheFixtureIsThisRepository:
-    """`_RELEASES` is what the workflow passes, so a fixture that drifted would test nothing.
+    """`_RELEASES` covers what the workflow passes, so a fixture that drifted would test less.
 
-    Transcribed rather than computed, because a fixture derived from the same two files it is
-    checked against would agree with them by construction and prove nothing about either.
+    The names, and not the versions. What each package has released is checked against the
+    manifest at run time; pinning a copy of the manifest *here* would fail on every release of
+    every package, and a suite that goes red because somebody else shipped is measuring
+    something other than the code in front of it.
     """
 
-    def test_it_holds_every_configured_package_and_its_released_version(self):
+    def test_it_names_every_configured_package(self):
         config = json.loads((_ROOT / "release-please-config.json").read_text(encoding="utf-8"))
-        manifest = json.loads((_ROOT / ".release-please-manifest.json").read_text(encoding="utf-8"))
-        assert _RELEASES == {
-            entry["package-name"]: manifest[path] for path, entry in config["packages"].items()
-        }
+        assert set(_RELEASES) == {entry["package-name"] for entry in config["packages"].values()}
 
 
 class TestAVersionTheManifestDoesNotRecord:
