@@ -165,76 +165,72 @@ _CORE_PATH = "packages/maf-sandbox/src/maf_sandbox/_protocol.py"
 _BACKEND_PATH = "packages/maf-sandbox-bicep/src/maf_sandbox_bicep/_kind.py"
 
 
-class TestTheReleaseThisBranchWouldCut:
-    """`pending_core_release` — the branch reading behind `--unreleased-core`.
-
-    A change that adds to the core and uses it from a dependent has to raise that dependent's
-    floor to a version nothing has published, so the range admits nothing until the same merge
-    uploads the core. This is what tells that apart from a floor that is simply wrong.
-    """
+class TestTheReleaseTheRangeIsWaitingOn:
+    """`pending_core_release` — the branch reading behind `--unreleased-core`."""
 
     @staticmethod
-    def _at(monkeypatch: pytest.MonkeyPatch, current: str) -> None:
-        monkeypatch.setattr(check, "core_version", lambda _: check.version(current))
+    def _branch(monkeypatch: pytest.MonkeyPatch, carries: str, published: list[str]) -> None:
+        monkeypatch.setattr(check, "core_version", lambda _: check.version(carries))
+        monkeypatch.setattr(check, "fetch_published_versions", lambda _: list(published))
 
-    def test_the_release_a_breaking_core_change_would_cut_is_admitted(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        """`bump-minor-pre-major`, so below 1.0.0 a `feat!` is a minor like any other feature."""
-        self._at(monkeypatch, "0.25.0")
-        pending = check.pending_core_release(
-            "feat!: a scope purge reports what it could not delete",
-            [_CORE_PATH, _BACKEND_PATH],
-            (0, 26, 0),
-            (0, 28),
-        )
-        assert pending == "0.26.0"
-
-    def test_a_change_that_does_not_touch_the_core_cuts_no_core_release(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        """Otherwise a dependent-only pull request could raise its floor past every artifact and
-        be waved through on a release nothing would make."""
-        self._at(monkeypatch, "0.25.0")
+    def test_the_release_this_pull_request_would_cut_counts(self, monkeypatch):
+        """`bump-minor-pre-major`, so below 1.0.0 a `feat!` is a minor like any feature."""
+        self._branch(monkeypatch, "0.25.0", ["0.25.0"])
         assert (
             check.pending_core_release(
-                "feat!: only the backend", [_BACKEND_PATH], (0, 26, 0), (0, 28)
+                "feat!: a scope purge", [_CORE_PATH, _BACKEND_PATH], (0, 26, 0), (0, 28)
             )
+            == "0.26.0"
+        )
+
+    def test_a_bump_already_merged_counts_without_a_prediction(self, monkeypatch):
+        """Release-please merges the bump before the tag publishes, so a rebased branch carries
+        a version the index has not seen. That is a fact, not a guess — and it does not need
+        this pull request to touch the core."""
+        self._branch(monkeypatch, "0.26.0", ["0.25.0"])
+        assert (
+            check.pending_core_release("fix: unrelated", [_BACKEND_PATH], (0, 26, 0), (0, 27))
+            == "0.26.0"
+        )
+
+    def test_what_the_branch_carries_is_preferred_to_what_it_would_cut(self, monkeypatch):
+        """A ceiling of `<0.27` admits the pending 0.26.0 and not the 0.27.0 a further `feat!`
+        would cut, so reading the prediction first would refuse a range that is about to hold."""
+        self._branch(monkeypatch, "0.26.0", ["0.25.0"])
+        assert (
+            check.pending_core_release("feat!: more", [_CORE_PATH], (0, 26, 0), (0, 27)) == "0.26.0"
+        )
+
+    def test_a_carried_version_the_index_already_has_is_not_pending(self, monkeypatch):
+        """In range *and* published, which is a yanked release reaching here: nothing is pending
+        on it, so this falls through to what the pull request would cut instead."""
+        self._branch(monkeypatch, "0.25.0", ["0.25.0"])
+        assert check.pending_core_release("feat!: x", [_CORE_PATH], (0, 25, 0), (0, 27)) == "0.26.0"
+
+    def test_a_change_that_does_not_touch_the_core_cuts_no_core_release(self, monkeypatch):
+        """Or a dependent-only pull request could floor itself past every artifact."""
+        self._branch(monkeypatch, "0.25.0", ["0.25.0"])
+        assert (
+            check.pending_core_release("feat!: backend only", [_BACKEND_PATH], (0, 26, 0), (0, 28))
             is None
         )
 
-    def test_a_title_that_releases_nothing_justifies_nothing(self, monkeypatch: pytest.MonkeyPatch):
-        self._at(monkeypatch, "0.25.0")
-        assert (
-            check.pending_core_release("chore: tidy up", [_CORE_PATH], (0, 26, 0), (0, 28)) is None
-        )
+    def test_a_title_that_releases_nothing_justifies_nothing(self, monkeypatch):
+        self._branch(monkeypatch, "0.25.0", ["0.25.0"])
+        assert check.pending_core_release("chore: tidy", [_CORE_PATH], (0, 26, 0), (0, 28)) is None
 
-    def test_a_floor_above_the_release_is_still_uninstallable(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        """The point of the flag is a floor the *next* release reaches, not any floor at all."""
-        self._at(monkeypatch, "0.25.0")
-        assert (
-            check.pending_core_release("feat!: a scope purge", [_CORE_PATH], (0, 27, 0), (0, 28))
-            is None
-        )
+    def test_a_floor_above_the_release_is_still_uninstallable(self, monkeypatch):
+        self._branch(monkeypatch, "0.25.0", ["0.25.0"])
+        assert check.pending_core_release("feat!: x", [_CORE_PATH], (0, 27, 0), (0, 28)) is None
 
-    def test_a_release_above_the_ceiling_is_refused_too(self, monkeypatch: pytest.MonkeyPatch):
-        """A range whose own ceiling excludes the release it is waiting for keeps nothing."""
-        self._at(monkeypatch, "0.25.0")
-        assert (
-            check.pending_core_release("feat!: a scope purge", [_CORE_PATH], (0, 26, 0), (0, 26))
-            is None
-        )
+    def test_a_release_above_the_ceiling_is_refused_too(self, monkeypatch):
+        self._branch(monkeypatch, "0.25.0", ["0.25.0"])
+        assert check.pending_core_release("feat!: x", [_CORE_PATH], (0, 26, 0), (0, 26)) is None
 
-    def test_a_patch_release_counts_when_the_floor_is_the_patch(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        """Not only minors: a `fix:` that the dependent's floor waits on is the same shape."""
-        self._at(monkeypatch, "0.25.0")
+    def test_a_patch_release_counts_when_the_floor_waits_on_it(self, monkeypatch):
+        self._branch(monkeypatch, "0.25.0", ["0.25.0"])
         assert (
-            check.pending_core_release("fix: a corrected code", [_CORE_PATH], (0, 25, 1), (0, 27))
-            == "0.25.1"
+            check.pending_core_release("fix: a code", [_CORE_PATH], (0, 25, 1), (0, 27)) == "0.25.1"
         )
 
 
@@ -250,6 +246,7 @@ class TestTheCliReadsTheBranchOnlyWhenAsked:
     def test_the_flag_accepts_a_range_only_this_branch_will_satisfy(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ):
+        """The shape #681 needs: a floor on the release this merge would cut."""
         wheel = self._wheel_and_index(tmp_path, monkeypatch, "maf-sandbox>=0.26.0,<0.28")
         monkeypatch.setattr("sys.stdin", io.StringIO(f"{_CORE_PATH}\n{_BACKEND_PATH}\n"))
         code = check.main(
@@ -262,13 +259,12 @@ class TestTheCliReadsTheBranchOnlyWhenAsked:
             ]
         )
         assert code == 0
-        assert "would release maf-sandbox 0.26.0" in capsys.readouterr().out
+        assert "waiting on maf-sandbox 0.26.0" in capsys.readouterr().out
 
     def test_without_the_flag_the_same_range_is_refused(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ):
-        """What `publish-packages.yml` calls: by then the core is up, so a range nothing
-        satisfies is the uninstallable wheel it has always been."""
+        """What `publish-packages.yml` calls, where the core is already up."""
         wheel = self._wheel_and_index(tmp_path, monkeypatch, "maf-sandbox>=0.26.0,<0.28")
         assert check.main(["prog", "maf-sandbox-bicep", str(wheel)]) == 1
         assert "uninstallable as declared" in capsys.readouterr().err

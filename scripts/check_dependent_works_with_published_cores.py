@@ -23,20 +23,11 @@ Two failures are worth telling apart, and both exit non-zero:
 - **No published core is admitted at all.** The wheel is uninstallable as declared, which is
   the shape #175 describes: a range whose ends have drifted past every artifact that exists.
 
-The second one has a legitimate case behind it, and ``--unreleased-core`` is how a pull request
-says so. A change that adds something to the core *and* uses it from a dependent has to raise
-that dependent's floor to a release that does not exist yet, so no published core is admitted
-and the wheel is uninstallable — until the core uploads, minutes later, from the same merge.
-Refusing that would mean splitting every such change across two releases; #681 is the one that
-made the cost plain.
-
-So with the flag, and only then, this reads the branch as well as the index: given the pull
-request title and its changed paths — the same two inputs `check_release_order.py` predicts a
-release from — a range that admits nothing published is accepted when the release *this branch
-would cut* falls inside it. Nothing is waived that could have been checked: there is no
-artifact to install, and the pairing of this code against this core is what the offline suite
-runs on every commit. What the flag does not do is soften anything at publish time, where the
-core is already up and `publish-packages.yml` passes no flag.
+The second is right before an upload and wrong on a pull request, where a change that uses a
+new core symbol from a dependent must floor it on a release that does not exist yet (#681).
+``--unreleased-core`` lifts that one refusal when the core the range waits for is one this
+branch already carries or would cut. Nothing is waived: with nothing published there is no
+artifact to install. `publish-packages.yml` passes no flag.
 
 A network failure is fatal rather than skipped, the same stance as the admit and work checks:
 passing because PyPI could not be reached is the one outcome that would make this worthless.
@@ -81,30 +72,39 @@ _USAGE = "usage: {program} <distribution> <wheel> [--unreleased-core <title>]"
 _TEST_REQUIREMENTS = ("pytest",)
 
 
+def _shown(release: tuple[int, ...]) -> str:
+    """The dotted spelling, as the index and the range both write it."""
+    return ".".join(str(part) for part in release)
+
+
+def _wanted(release: tuple[int, ...], floor: tuple[int, ...], ceiling: tuple[int, ...]) -> bool:
+    """Whether ``release`` falls inside both ends: a floor above it is still uninstallable."""
+    return release >= floor and admits(release, ceiling)
+
+
 def pending_core_release(
     title: str,
     changed: list[str],
     floor: tuple[int, ...],
     ceiling: tuple[int, ...],
 ) -> str | None:
-    """The core release this branch would cut, when the range admits it and nothing published is.
+    """The core release the range is waiting on, or ``None`` when it is waiting on nothing.
 
-    Three things have to hold, and each is a way the answer could be a wish rather than a fact.
-    The change has to touch the core, or release-please cuts no core release for it to resolve
-    to.  The title has to name a type that releases at all, since a ``chore:`` publishes
-    nothing.  And the version that would result has to fall inside the range — a floor above it
-    is still uninstallable, just later.
-
-    The title is a prediction, the same one `check_release_order.py` makes and with the same
-    blind spot: a ``BREAKING CHANGE:`` written in the squash box at merge time is not visible
-    here.  A prediction is enough, because the strict reading still runs before the upload.
+    Two ways a core can be about to exist. Release-please may have merged the bump already, so
+    the branch carries a version the index has not seen — that one is a fact, and needs no
+    title.  Otherwise this pull request is what would cut it, which is a prediction from the
+    title and the changed paths, with `check_release_order.py`'s blind spot: a
+    ``BREAKING CHANGE:`` typed into the squash box is not visible here.  Either is enough,
+    because the strict reading still runs before the upload.
     """
+    published = fetch_published_versions(_CORE) or []
+    carried = core_version(_ROOT)
+    if _shown(carried) not in published and _wanted(carried, floor, ceiling):
+        return _shown(carried)
     if not touches_core(changed):
         return None
-    proposed = next_version(core_version(_ROOT), title)
-    if proposed is None or proposed < floor or not admits(proposed, ceiling):
-        return None
-    return ".".join(str(part) for part in proposed)
+    proposed = next_version(carried, title)
+    return _shown(proposed) if proposed and _wanted(proposed, floor, ceiling) else None
 
 
 def declared_range(wheel: Path) -> tuple[tuple[int, ...], tuple[int, ...]]:
@@ -251,8 +251,8 @@ def main(argv: list[str]) -> int:
         if pending is not None:
             print(
                 f"OK  {distribution} declares {_CORE}{span}, which nothing published satisfies "
-                f"yet — this branch would release {_CORE} {pending}, which it admits. The "
-                "pairing is re-checked against the index before the upload."
+                f"yet — this branch is waiting on {_CORE} {pending}, which it admits. Re-checked "
+                "against the index before the upload."
             )
             return 0
         print(
