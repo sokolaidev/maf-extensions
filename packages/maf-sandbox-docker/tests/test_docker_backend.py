@@ -818,6 +818,18 @@ class TestWhichPrincipalACommandCarries:
         assert first.timeout == 30
         assert second.timeout is not None and second.timeout <= 30 - spent
 
+    def test_both_attempts_messages_reach_the_caller(self):
+        """A failure that was nothing to do with ownership is retried too, so the second
+        attempt must not be the only thing the caller hears about.
+        """
+        differ = {
+            ("exec", "--user", "0"): _DockerResult(1, b"", "rm: read-only file system"),
+            ("exec", "-w"): _DockerResult(1, b"", "rm: Permission denied"),
+        }
+        sandbox, _fake = self._sandbox(differ, capabilities_dropped=True)
+        with pytest.raises(OSError, match=r"Permission denied.*as root: rm: read-only file"):
+            asyncio.run(sandbox.reclaim(f"{_WORK}/x", working_directory=_WORK, timeout=30))
+
     def test_a_refused_remove_is_retried_the_same_way(self):
         refused = {("exec", "--user", "0"): _DockerResult(1, b"", "rm: Permission denied")}
         sandbox, fake = self._sandbox(refused, capabilities_dropped=True)
@@ -942,6 +954,30 @@ class TestTheAncestorsAboveTheWorkDirAreChecked:
         fake.mark()
         asyncio.run(backend.acquire(_KEY, SandboxSpec(kind=_SPEC.kind, image="other:local")))
         assert fake.cp_since_mark() == [(*_cp("/maf-sandbox"), "-")]
+
+    def test_a_changed_image_id_re_reads_even_where_the_image_name_holds_still(self):
+        """`image_id` is what `_create_workload` runs when a spec carries one, so it is what
+        the key has to follow — a spec naming only `image_id`, or changing it under a constant
+        `image`, would otherwise share one entry across two different images.
+        """
+        backend, fake, _ = self._backend(_owned_directory_tar("maf-sandbox", 0, 0o755))
+        pinned = SandboxSpec(kind=_SPEC.kind, image="same:local", image_id="sha256:aaa")
+        asyncio.run(backend.acquire(_KEY, pinned))
+        fake.mark()
+        asyncio.run(
+            backend.acquire(
+                _KEY, SandboxSpec(kind=_SPEC.kind, image="same:local", image_id="sha256:bbb")
+            )
+        )
+        assert fake.cp_since_mark() == [(*_cp("/maf-sandbox"), "-")]
+
+    def test_the_same_image_id_is_still_read_once(self):
+        backend, fake, _ = self._backend(_owned_directory_tar("maf-sandbox", 0, 0o755))
+        pinned = SandboxSpec(kind=_SPEC.kind, image="same:local", image_id="sha256:aaa")
+        asyncio.run(backend.acquire(_KEY, pinned))
+        fake.mark()
+        asyncio.run(backend.acquire(_KEY, pinned))
+        assert fake.cp_since_mark() == []
 
     def test_removing_the_container_forgets_the_answer(self):
         backend, fake, spec = self._backend(_owned_directory_tar("maf-sandbox", 0, 0o755))

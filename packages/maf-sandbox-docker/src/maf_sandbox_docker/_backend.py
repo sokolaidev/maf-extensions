@@ -29,7 +29,7 @@ import tarfile
 import time
 import weakref
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from typing import TYPE_CHECKING, Protocol, cast
 
@@ -202,7 +202,17 @@ def _proxy_name(container: str) -> str:
     return f"{container}{_PROXY_SUFFIX}"
 
 
-def _stat_from_tar_header(block: bytes, rel_path: str) -> SandboxEntry:
+def _image_reference(spec: SandboxSpec) -> str:
+    """The reference this backend will actually run, or ``""`` when the spec names none.
+
+    ``image_id`` wins over ``image``: it is the escape hatch for a caller pinning a digest, and
+    a spec can carry it alone.  Anything keyed on which image a container holds has to key on
+    this, not on ``spec.image``, or two different images collapse to one key.
+    """
+    return spec.image_id or spec.image or ""
+
+
+def _stat_from_tar_header(info: tarfile.TarInfo, rel_path: str) -> SandboxEntry:
     """Read one ``docker cp`` tar header into a :class:`~maf_sandbox.SandboxEntry`.
 
     The first 512-byte block of ``docker cp <name>:<path> -`` is the entry's tar header: it
@@ -216,7 +226,6 @@ def _stat_from_tar_header(block: bytes, rel_path: str) -> SandboxEntry:
     path, so it is not a way out of the working directory, and it is refused as non-regular
     regardless.
     """
-    info = tarfile.TarInfo.frombuf(block, encoding="utf-8", errors="surrogateescape")
     if info.isreg():
         return SandboxEntry(path=rel_path, kind=EntryKind.FILE, size_bytes=info.size)
     if info.isdir():
@@ -433,7 +442,9 @@ class _DockerSandbox:
         Without it, one ``exec`` as the image's user.  With it, root — and a refusal is
         retried as the image's user where this container holds no ``CAP_DAC_OVERRIDE``, since
         root can then empty only what it owns.  Which of those a refusal was is not read from
-        ``rm``'s message, which belongs to the guest's ``rm`` and its locale.
+        ``rm``'s message, which belongs to the guest's ``rm`` and its locale — so a failure
+        that was nothing to do with ownership is retried too, and **both attempts' messages
+        reach the caller** rather than the second one silently replacing the first.
 
         ``timeout`` is one deadline across both attempts, not one each.
         """
@@ -448,7 +459,20 @@ class _DockerSandbox:
         left = timeout - (time.monotonic() - started)
         if left <= 0:
             return removed
-        return await self._exec(argv, working_directory=working_directory, timeout=left)
+        logger.debug(
+            "docker: %s refused a removal as root (exit %d: %s), retrying as the image's user "
+            "with %.1fs left",
+            self._name,
+            removed.exit_code,
+            removed.stderr.strip() or "no output",
+            left,
+        )
+        retried = await self._exec(argv, working_directory=working_directory, timeout=left)
+        if retried.exit_code == 0 or not removed.stderr.strip():
+            return retried
+        return replace(
+            retried, stderr=f"{retried.stderr.strip()} (as root: {removed.stderr.strip()})"
+        )
 
     async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
         """Describe ``path``, or return ``None`` when nothing is there.
@@ -581,13 +605,14 @@ class _DockerSandbox:
             raise RuntimeError(f"docker could not stat {rel}: {result.stderr.strip()}")
         if len(result.stdout) < _TAR_BLOCK:
             raise RuntimeError(f"docker returned no tar header for {rel}")
-        block = result.stdout[:_TAR_BLOCK]
+        info = tarfile.TarInfo.frombuf(
+            result.stdout[:_TAR_BLOCK], encoding="utf-8", errors="surrogateescape"
+        )
         if walked is not None:
-            # The same header the classification reads. Ownership is the other half of what a
-            # component walk can answer, and asking for it separately would be a second `cp`.
-            info = tarfile.TarInfo.frombuf(block, encoding="utf-8", errors="surrogateescape")
+            # Ownership is the other half of what one header can answer, and a walk that wants
+            # both should not fetch — or parse — the block twice.
             walked[guest] = (info.uid, info.mode)
-        return _stat_from_tar_header(block, rel)
+        return _stat_from_tar_header(info, rel)
 
     async def _refuse_symlinked_parents(
         self,
@@ -835,7 +860,7 @@ class DockerSandboxBackend:
         **Fails closed.**  A component that cannot be read leaves the removal at the guest's
         authority, which is what every backend did before #680 and costs only the leak.
         """
-        key = (name, spec.image or "", spec.work_dir)
+        key = (name, _image_reference(spec), spec.work_dir)
         cached = self._facts.get(key)
         if cached is not None:
             return cached
