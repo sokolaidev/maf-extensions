@@ -814,9 +814,7 @@ class TestDispose:
         assert backend._registry == {}
 
     def test_a_second_attempt_still_reports_what_the_first_could_not_delete(self):
-        """This backend has no listing to fall back on here, so the registry entry the first
-        attempt dropped is the only record — without a retry one, the second attempt finds
-        nothing, says nothing, and the router reads that as the delete finally landing."""
+        """An id a delete could not remove outlives the registry entry it came from."""
         backend = _backend_with(_ExplodingGroupClient())
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
         backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
@@ -837,6 +835,32 @@ class TestDispose:
         backend._group_client = _unreachable  # type: ignore[method-assign]
         assert asyncio.run(backend.dispose(key)) is not None
         assert asyncio.run(backend.dispose(key)) is not None
+
+    def test_a_delete_cancelled_part_way_still_leaves_the_id_to_retry(self):
+        """The record is written before the first await, so a bound that expires mid-delete
+        does not take the only name of the sandbox with it."""
+
+        class _Hanging:
+            async def begin_delete(self) -> None:
+                await asyncio.Event().wait()
+
+        class _Hangs(_FakeGroupClient):
+            def get_sandbox_client(self, sandbox_id: str):
+                return _Hanging()
+
+        backend = _backend_with(_Hangs())
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
+
+        async def cut_short() -> None:
+            async with asyncio.timeout(0.05):
+                await backend.dispose(key)
+
+        with pytest.raises(TimeoutError):
+            asyncio.run(cut_short())
+
+        assert backend._registry == {}, "the registry entry is gone"
+        assert backend._undeleted == {(key.scope, key.thread_id, key.agent_dir): {"sbx-1"}}
 
     def test_a_delete_that_lands_clears_the_retry_record(self):
         backend = _backend_with(_FakeGroupClient())

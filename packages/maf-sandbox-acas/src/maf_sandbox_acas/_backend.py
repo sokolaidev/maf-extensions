@@ -799,16 +799,12 @@ class AcasSandboxBackend:
         kind — a caller releasing a key means all of it.
 
         Never raises, and reports the reason a sandbox may still be there. Reaching the group
-        is part of the delete: a client this process cannot build has deleted nothing, and the
-        registry entries are dropped either way, so staying silent would leave the sandbox
-        running with no record of it left anywhere.
+        is part of the delete: a client this process cannot build has deleted nothing. Ids a
+        delete could not remove are kept for the next attempt, apart from the registry, which
+        :meth:`acquire` resumes from — a sandbox whose delete failed is retried, never served.
         """
         prefix = (key.scope, key.thread_id, key.agent_dir)
         mine = [k for k in list(self._registry) if k[:3] == prefix]
-        # The registry entry is dropped on the first attempt, so an id that failed is held
-        # here or nowhere. Without it a retry finds nothing to delete, says nothing, and the
-        # router reads that silence as the disposal finally landing — a false all-clear over
-        # a sandbox still running. This backend has no listing to fall back on here.
         wanted = list(
             dict.fromkeys(
                 [
@@ -819,11 +815,15 @@ class AcasSandboxBackend:
         )
         if not wanted:
             return None
+        # Recorded before the first await: the registry no longer holds these ids and this
+        # method has no listing to fall back on, so this is the only place a retry can find
+        # them. Over-retaining is the safe direction — an id already deleted answers
+        # `ResourceNotFoundError` next time and drops out.
+        self._undeleted[prefix] = set(wanted)
         try:
             gc = self._group_client()
         except Exception as exc:  # noqa: BLE001 - disposal must never raise
             logger.warning("acas backend: could not reach the sandbox group: %s", error_detail(exc))
-            self._undeleted[prefix] = set(wanted)
             return f"could not reach the sandbox group: {error_detail(exc)}"
         undeleted: dict[str, str] = {}
         for sandbox_id in wanted:

@@ -743,9 +743,7 @@ class TestDispose:
         assert _NAME in reason
 
     def test_a_second_attempt_still_reports_what_the_first_could_not_remove(self):
-        """The registry entry is popped by the first attempt. Without a retry record the second
-        sweep has no fallback, removes nothing, reports nothing — and the router reads that
-        silence as the delete finally landing."""
+        """A name a removal could not take away outlives the registry entry it came from."""
         overrides = {
             ("container", "remove"): _WslcResult(1, b"", b"WSLC_E_SERVICE_UNAVAILABLE"),
             ("container", "list"): _WslcResult(1, b"", b"WSLC_E_SERVICE_UNAVAILABLE"),
@@ -757,6 +755,31 @@ class TestDispose:
         second = asyncio.run(backend.dispose(_KEY))
         assert second is not None
         assert _NAME in second
+
+    def test_a_sweep_cancelled_part_way_still_leaves_the_name_to_retry(self):
+        """The record is written before the first await, so a bound that expires mid-sweep does
+        not take the only name of the container with it."""
+        backend, _ = _backend_with(_machine(running=[_NAME]))
+        backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = _NAME  # noqa: SLF001
+        inner = backend._wslc  # noqa: SLF001
+
+        async def hangs_on_remove(*args: str, **kwargs: object) -> _WslcResult:
+            if args[:2] == ("container", "remove"):
+                await asyncio.Event().wait()
+            return await inner(*args, **kwargs)  # type: ignore[arg-type]
+
+        backend._wslc = hangs_on_remove  # type: ignore[method-assign]  # noqa: SLF001
+
+        async def cut_short() -> None:
+            async with asyncio.timeout(0.05):
+                await backend.dispose(_KEY)
+
+        with pytest.raises(TimeoutError):
+            asyncio.run(cut_short())
+
+        assert backend._undeleted == {  # noqa: SLF001
+            ("scope-a", "thread-1", "devops-engineer"): {_NAME}
+        }
 
     def test_a_removal_that_lands_clears_the_retry_record(self):
         overrides = {("container", "list"): _WslcResult(1, b"", b"WSLC_E_SERVICE_UNAVAILABLE")}

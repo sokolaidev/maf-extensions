@@ -636,19 +636,23 @@ class DockerSandboxBackend:
         prefix = (key.scope, key.thread_id, key.agent_dir)
         mine = [k for k in list(self._registry) if k[:3] == prefix]
         remembered = [self._registry.pop(k) for k in mine]
+        candidates = list(dict.fromkeys([*remembered, *sorted(self._undeleted.get(prefix, ()))]))
+        if candidates:
+            # Recorded before the first await: the registry no longer holds these names,
+            # so this is the only place a retry can find them if the sweep does not return.
+            self._undeleted[prefix] = set(candidates)
         swept = await self._purge(
             [
                 (_LABEL_SCOPE, key.scope),
                 (_LABEL_THREAD, key.thread_id),
                 (_LABEL_AGENT, key.agent_dir),
             ],
-            # The registry entry is gone by the second attempt, so a name that failed once is
-            # remembered here or nowhere. Without it a retry whose listing also fails sweeps
-            # with no fallback, removes nothing, reports nothing — and the router reads that
-            # silence as the disposal finally landing.
-            fallback=list(dict.fromkeys([*remembered, *sorted(self._undeleted.get(prefix, ()))])),
+            fallback=candidates,
             thread_id=key.thread_id,
         )
+        # Reconciled only on a normal return, so a cancelled sweep keeps the whole set.
+        # Over-retaining is the safe direction: a container already gone is reported as such
+        # on the next attempt and drops out.
         if swept.undeleted:
             self._undeleted[prefix] = set(swept.undeleted)
         else:

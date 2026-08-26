@@ -1068,9 +1068,7 @@ class TestDispose:
         assert _NAME in reason
 
     def test_a_second_attempt_still_reports_what_the_first_could_not_remove(self):
-        """The registry entry is popped by the first attempt. Without a retry record the second
-        sweep has no fallback, removes nothing, reports nothing — and the router reads that
-        silence as the delete finally landing."""
+        """A name a removal could not take away outlives the registry entry it came from."""
         overrides = {
             ("rm",): _DockerResult(1, b"", "daemon error"),
             ("ps",): _DockerResult(1, b"", "daemon down"),
@@ -1082,6 +1080,32 @@ class TestDispose:
         second = asyncio.run(backend.dispose(_KEY))
         assert second is not None
         assert _NAME in second
+
+    def test_a_sweep_cancelled_part_way_still_leaves_the_name_to_retry(self):
+        """The record is written before the first await, so a bound that expires mid-sweep does
+        not take the only name of the container with it."""
+        backend, _ = _backend_with(_machine(running=[_NAME]))
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        inner = backend._docker  # noqa: SLF001
+
+        async def hangs_on_rm(*args: str, **kwargs: object) -> _DockerResult:
+            if args[:1] == ("rm",):
+                await asyncio.Event().wait()
+            return await inner(*args, **kwargs)  # type: ignore[arg-type]
+
+        backend._docker = hangs_on_rm  # type: ignore[method-assign]  # noqa: SLF001
+
+        async def cut_short() -> None:
+            async with asyncio.timeout(0.05):
+                await backend.dispose(_KEY)
+
+        with pytest.raises(TimeoutError):
+            asyncio.run(cut_short())
+
+        assert backend._registry == {}, "the registry entry is gone"  # noqa: SLF001
+        assert backend._undeleted == {  # noqa: SLF001
+            (_KEY.scope, _KEY.thread_id, _KEY.agent_dir): {_NAME}
+        }
 
     def test_a_removal_that_lands_clears_the_retry_record(self):
         overrides = {("ps",): _DockerResult(1, b"", "daemon down")}
