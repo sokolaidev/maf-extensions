@@ -16,6 +16,7 @@ import io
 import logging
 import sys
 import tarfile
+import time
 from collections.abc import Sequence
 
 import pytest
@@ -89,6 +90,17 @@ def _directory_tar(path: str) -> bytes:
     return buffer.getvalue()
 
 
+def _owned_directory_tar(path: str, uid: int, mode: int) -> bytes:
+    """A directory entry with an owner and a mode, which is what the reach rule reads."""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        entry = tarfile.TarInfo(path)
+        entry.type = tarfile.DIRTYPE
+        entry.uid, entry.mode = uid, mode
+        archive.addfile(entry)
+    return buffer.getvalue()
+
+
 def _cp(guest: str) -> tuple[str, ...]:
     """The ``docker cp`` argv prefix for one guest path — the key a per-path override needs."""
     return ("cp", f"{_NAME}:{guest}")
@@ -101,6 +113,9 @@ _WORK_IS_A_DIRECTORY = {
     _cp("/maf-sandbox"): _DockerResult(0, _directory_tar("maf-sandbox"), ""),
     _cp(_WORK): _DockerResult(0, _directory_tar(_WORK.lstrip("/")), ""),
 }
+
+#: What `docker inspect` prints for a container created with `--cap-drop ALL`.
+_CAPS_DROPPED = {("inspect", "-f", "{{.HostConfig.CapDrop}}"): _DockerResult(0, b"[ALL]\n", "")}
 
 
 class _Recorded:
@@ -128,6 +143,7 @@ class _FakeDocker:
     def __init__(self, responder=None) -> None:
         self.calls: list[_Recorded] = []
         self._responder = responder or (lambda args: _DockerResult(0, b"", ""))
+        self._marked = 0
 
     async def __call__(
         self, *args: str, stdin=None, timeout=None, read_limit=None
@@ -137,6 +153,13 @@ class _FakeDocker:
         if read_limit is not None and len(result.stdout) > read_limit:
             result = _DockerResult(result.returncode, result.stdout[:read_limit], result.stderr)
         return result
+
+    def mark(self) -> None:
+        """Draw a line under what has been recorded, so a later assertion starts from here."""
+        self._marked = len(self.calls)
+
+    def cp_since_mark(self) -> list[tuple[str, ...]]:
+        return [call.args for call in self.calls[self._marked :] if call.args[:1] == ("cp",)]
 
     def matching(self, *prefix: str) -> list[_Recorded]:
         return [c for c in self.calls if c.args[: len(prefix)] == prefix]
@@ -599,6 +622,8 @@ class TestRemove:
         asyncio.run(sandbox.remove("run-1", working_directory=_WORK, recursive=True))
         assert fake.only("exec").args == (
             "exec",
+            "--user",
+            "0",
             "-w",
             _WORK,
             _NAME,
@@ -617,7 +642,7 @@ class TestRemove:
         sandbox, fake = self._sandbox()
         asyncio.run(sandbox.remove("a.txt", working_directory=_WORK))
         args = fake.only("exec").args
-        assert args[4:] == ("rm", "-f", "--", f"{_WORK}/a.txt")
+        assert args[6:] == ("rm", "-f", "--", f"{_WORK}/a.txt")
 
     def test_the_working_directory_itself_is_refused_before_any_command_runs(self):
         sandbox, fake = self._sandbox()
@@ -644,6 +669,8 @@ class TestReclaim:
         asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
         assert fake.only("exec").args == (
             "exec",
+            "--user",
+            "0",
             "-w",
             "/",
             _NAME,
@@ -687,7 +714,7 @@ class TestReclaim:
                 timeout=30,
             )
         )
-        assert fake.only("exec").args[:3] == ("exec", "-w", "/")
+        assert fake.only("exec").args[:5] == ("exec", "--user", "0", "-w", "/")
 
     def test_a_name_a_shell_would_read_stays_one_argument(self):
         """Core dispatches the path unaltered; this backend's argv `exec` is what keeps the
@@ -698,6 +725,361 @@ class TestReclaim:
         sandbox, fake = self._sandbox()
         asyncio.run(sandbox.reclaim(hostile, working_directory=_WORK, timeout=30))
         assert fake.only("exec").args[-1] == hostile
+
+
+class TestWhichPrincipalACommandCarries:
+    """The file plane is the host's; `exec` and `run_code` are the guest program's."""
+
+    def _sandbox(self, overrides=None, *, capabilities_dropped=False):
+        merged = {
+            **_WORK_IS_A_DIRECTORY,
+            ("cp",): _DockerResult(1, b"", "Error: Could not find the file in container"),
+            **(_CAPS_DROPPED if capabilities_dropped else {}),
+            **(overrides or {}),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=merged))
+        return asyncio.run(backend.acquire(_KEY, _SPEC)), fake
+
+    def test_a_guest_command_is_the_argv_and_nothing_else(self):
+        """The whole tuple, so the absence of `--user` is asserted rather than searched for."""
+        sandbox, fake = self._sandbox()
+        asyncio.run(sandbox.exec(["whoami"], working_directory=_WORK, timeout=5))
+        assert fake.only("exec").args == ("exec", "-w", _WORK, _NAME, "whoami")
+
+    def test_a_refused_removal_is_retried_when_capabilities_were_dropped(self):
+        """`--user 0` is a uid, not a capability set: without `CAP_DAC_OVERRIDE` root empties
+        only what it owns.
+        """
+        refused = {("exec", "--user", "0"): _DockerResult(1, b"", "rm: Permission denied")}
+        sandbox, fake = self._sandbox(refused, capabilities_dropped=True)
+        asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
+        assert [call.args[:3] for call in fake.matching("exec")] == [
+            ("exec", "--user", "0"),
+            ("exec", "-w", "/"),
+        ]
+
+    def test_a_refused_removal_is_not_retried_while_root_keeps_its_capabilities(self):
+        """With `CAP_DAC_OVERRIDE` root empties anything, so a refusal is not about ownership
+        and a retry would report its own error over the one that mattered.
+        """
+        refused = {("exec",): _DockerResult(1, b"", "rm: read-only file system")}
+        sandbox, fake = self._sandbox(refused)
+        with pytest.raises(OSError, match="read-only file system"):
+            asyncio.run(sandbox.reclaim(f"{_WORK}/x", working_directory=_WORK, timeout=30))
+        assert len(fake.matching("exec")) == 1
+
+    def test_a_removal_root_could_make_is_not_retried(self):
+        sandbox, fake = self._sandbox(capabilities_dropped=True)
+        asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
+        assert len(fake.matching("exec")) == 1
+
+    def test_a_removal_neither_can_make_raises_with_what_the_guest_said(self):
+        """The fallback must not swallow a failure that is nothing to do with ownership."""
+        both = {("exec",): _DockerResult(1, b"", "rm: read-only file system")}
+        sandbox, fake = self._sandbox(both, capabilities_dropped=True)
+        with pytest.raises(OSError, match="read-only file system"):
+            asyncio.run(sandbox.reclaim(f"{_WORK}/x", working_directory=_WORK, timeout=30))
+        assert len(fake.matching("exec")) == 2
+
+    def test_the_retry_gets_what_is_left_of_the_one_deadline(self):
+        """`reclaim(timeout=T)` promises completion within T, not 2T — two attempts each handed
+        the full timeout still succeed, just twice as late as the contract allows.
+        """
+        spent = 0.05
+        base = _machine(running=[_NAME], overrides={**_WORK_IS_A_DIRECTORY, **_CAPS_DROPPED})
+
+        def slow(args):
+            if args[:3] == ("exec", "--user", "0"):
+                time.sleep(spent)
+                return _DockerResult(1, b"", "rm: Permission denied")
+            return base(args)
+
+        backend, fake = _backend_with(slow)
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
+
+        first, second = fake.matching("exec")
+        assert first.timeout == 30
+        assert second.timeout is not None and second.timeout <= 30 - spent
+
+    def test_both_attempts_messages_reach_the_caller(self):
+        """A failure that was nothing to do with ownership is retried too, so the second
+        attempt must not be the only thing the caller hears about.
+        """
+        differ = {
+            ("exec", "--user", "0"): _DockerResult(1, b"", "rm: read-only file system"),
+            ("exec", "-w"): _DockerResult(1, b"", "rm: Permission denied"),
+        }
+        sandbox, _fake = self._sandbox(differ, capabilities_dropped=True)
+        with pytest.raises(OSError, match=r"Permission denied.*as root: rm: read-only file"):
+            asyncio.run(sandbox.reclaim(f"{_WORK}/x", working_directory=_WORK, timeout=30))
+
+    def test_a_refused_remove_is_retried_the_same_way(self):
+        refused = {("exec", "--user", "0"): _DockerResult(1, b"", "rm: Permission denied")}
+        sandbox, fake = self._sandbox(refused, capabilities_dropped=True)
+        asyncio.run(sandbox.remove("a.txt", working_directory=_WORK))
+        assert [call.args[:3] for call in fake.matching("exec")] == [
+            ("exec", "--user", "0"),
+            ("exec", "-w", _WORK),
+        ]
+
+
+class TestTheReachRuleChoosesThePrincipal:
+    """The reach rule: root is for paths with no component the guest could have swapped."""
+
+    def _sandbox(self, work_dir_entry: bytes):
+        overrides = {
+            _cp("/maf-sandbox"): _DockerResult(0, _directory_tar("maf-sandbox"), ""),
+            _cp(_WORK): _DockerResult(0, work_dir_entry, ""),
+            ("cp",): _DockerResult(1, b"", "Error: Could not find the file in container"),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        return asyncio.run(backend.acquire(_KEY, _SPEC)), fake
+
+    def test_a_path_the_guest_could_not_have_touched_is_removed_as_root(self):
+        sandbox, fake = self._sandbox(_owned_directory_tar(_WORK.lstrip("/"), 0, 0o755))
+        asyncio.run(sandbox.remove("a.txt", working_directory=_WORK))
+        assert fake.only("exec").args[:3] == ("exec", "--user", "0")
+
+    def test_a_component_the_guest_owns_keeps_the_removal_at_the_guest_authority(self):
+        """The guest can swap what it owns, so root here would delete what it could not."""
+        sandbox, fake = self._sandbox(_owned_directory_tar(_WORK.lstrip("/"), 10001, 0o755))
+        asyncio.run(sandbox.remove("a.txt", working_directory=_WORK))
+        assert "--user" not in fake.only("exec").args
+
+    def test_a_root_owned_component_anyone_may_write_is_the_guests_too(self):
+        """Ownership alone is not the question — `0777` under root is writable by the guest."""
+        sandbox, fake = self._sandbox(_owned_directory_tar(_WORK.lstrip("/"), 0, 0o777))
+        asyncio.run(sandbox.remove("a.txt", working_directory=_WORK))
+        assert "--user" not in fake.only("exec").args
+
+    def test_reclaim_raises_authority_without_a_walk(self):
+        """`reclaim` owes no walk, so the argument stands in for one."""
+        sandbox, fake = self._sandbox(_owned_directory_tar(_WORK.lstrip("/"), 10001, 0o755))
+        asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
+        assert fake.only("exec").args[:3] == ("exec", "--user", "0")
+
+
+class TestTheAncestorsAboveTheWorkDirAreChecked:
+    """The half of `reclaim`'s argument that is read rather than asserted, once per container."""
+
+    def _backend(self, parent: bytes | None, image: str = _SPEC.image):
+        overrides = {("cp",): _DockerResult(1, b"", "Error: Could not find the file in container")}
+        if parent is not None:
+            overrides[_cp("/maf-sandbox")] = _DockerResult(0, parent, "")
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        return backend, fake, SandboxSpec(kind=_SPEC.kind, image=image)
+
+    def _reclaimed_as(self, backend, fake, spec) -> tuple[str, ...]:
+        sandbox = asyncio.run(backend.acquire(_KEY, spec))
+        fake.mark()
+        asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
+        return fake.only("exec").args[:3]
+
+    def test_a_host_owned_chain_lets_reclaim_remove_as_root(self):
+        backend, fake, spec = self._backend(_owned_directory_tar("maf-sandbox", 0, 0o755))
+        assert self._reclaimed_as(backend, fake, spec) == ("exec", "--user", "0")
+
+    def test_an_ancestor_the_guest_may_write_keeps_reclaim_at_the_guest_authority(self):
+        """A swapped parent is followed rather than unlinked, so root there would delete what
+        the guest could not.
+        """
+        backend, fake, spec = self._backend(_owned_directory_tar("maf-sandbox", 0, 0o777))
+        assert "--user" not in self._reclaimed_as(backend, fake, spec)
+
+    def test_an_ancestor_owned_by_someone_else_does_the_same(self):
+        backend, fake, spec = self._backend(_owned_directory_tar("maf-sandbox", 10001, 0o755))
+        assert "--user" not in self._reclaimed_as(backend, fake, spec)
+
+    def test_an_unreadable_ancestor_fails_closed(self):
+        """An engine that will not answer leaves the removal at the guest's authority."""
+
+        def refuses(args):
+            if args[:2] == ("cp", f"{_NAME}:/maf-sandbox"):
+                raise RuntimeError("the daemon said no")
+            return _machine(running=[_NAME])(args)
+
+        backend, fake = _backend_with(refuses)
+        assert "--user" not in self._reclaimed_as(backend, fake, _SPEC)
+
+    def test_the_answer_is_read_once_per_container(self):
+        backend, fake, spec = self._backend(_owned_directory_tar("maf-sandbox", 0, 0o755))
+        asyncio.run(backend.acquire(_KEY, spec))
+        fake.mark()
+        asyncio.run(backend.acquire(_KEY, spec))
+        assert fake.cp_since_mark() == []
+
+    def test_the_answer_is_re_read_when_the_image_changes(self):
+        """A container name never carries the image, so one can come back with a different one."""
+        backend, fake, spec = self._backend(_owned_directory_tar("maf-sandbox", 0, 0o755))
+        asyncio.run(backend.acquire(_KEY, spec))
+        fake.mark()
+        asyncio.run(backend.acquire(_KEY, SandboxSpec(kind=_SPEC.kind, image="other:local")))
+        assert fake.cp_since_mark() == [(*_cp("/maf-sandbox"), "-")]
+
+    def test_a_changed_image_id_re_reads_even_where_the_image_name_holds_still(self):
+        """`image_id` is what `_create_workload` runs when a spec carries one, so it is what
+        the key has to follow.
+        """
+        backend, fake, _ = self._backend(_owned_directory_tar("maf-sandbox", 0, 0o755))
+        pinned = SandboxSpec(kind=_SPEC.kind, image="same:local", image_id="sha256:aaa")
+        asyncio.run(backend.acquire(_KEY, pinned))
+        fake.mark()
+        asyncio.run(
+            backend.acquire(
+                _KEY, SandboxSpec(kind=_SPEC.kind, image="same:local", image_id="sha256:bbb")
+            )
+        )
+        assert fake.cp_since_mark() == [(*_cp("/maf-sandbox"), "-")]
+
+    def test_the_same_image_id_is_still_read_once(self):
+        backend, fake, _ = self._backend(_owned_directory_tar("maf-sandbox", 0, 0o755))
+        pinned = SandboxSpec(kind=_SPEC.kind, image="same:local", image_id="sha256:aaa")
+        asyncio.run(backend.acquire(_KEY, pinned))
+        fake.mark()
+        asyncio.run(backend.acquire(_KEY, pinned))
+        assert fake.cp_since_mark() == []
+
+    def test_removing_the_container_forgets_the_answer(self):
+        backend, fake, spec = self._backend(_owned_directory_tar("maf-sandbox", 0, 0o755))
+        asyncio.run(backend.acquire(_KEY, spec))
+        asyncio.run(backend.dispose(_KEY))
+        fake.mark()
+        asyncio.run(backend.acquire(_KEY, spec))
+        assert fake.cp_since_mark() == [(*_cp("/maf-sandbox"), "-")]
+
+
+class TestTheHardeningIsReadFromTheContainer:
+    """`acquire` reuses a container by a name that carries no hardening, so the config is not
+    evidence about the container it got.
+    """
+
+    def _reclaim_calls(self, config, container_says_dropped: bool) -> list[tuple[str, ...]]:
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("exec", "--user", "0"): _DockerResult(1, b"", "rm: Permission denied"),
+            **(_CAPS_DROPPED if container_says_dropped else {}),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides), config)
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        fake.mark()
+        asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
+        return [call.args[:3] for call in fake.matching("exec")]
+
+    def test_a_hardened_container_retries_even_though_this_config_is_not(self):
+        calls = self._reclaim_calls(DockerSandboxConfig(cap_drop_all=False), True)
+        assert calls == [("exec", "--user", "0"), ("exec", "-w", "/")]
+
+    def test_an_unhardened_container_does_not_retry_even_though_this_config_would(self):
+        backend_config = DockerSandboxConfig(cap_drop_all=True)
+        with pytest.raises(OSError):
+            self._reclaim_calls(backend_config, False)
+
+    def test_a_container_that_will_not_say_is_treated_as_hardened(self):
+        """Unknown costs one extra `exec` on a removal that failed anyway."""
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("exec", "--user", "0"): _DockerResult(1, b"", "rm: Permission denied"),
+            ("inspect", "-f", "{{.HostConfig.CapDrop}}"): _DockerResult(1, b"", "no such object"),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        fake.mark()
+        asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
+        assert len(fake.matching("exec")) == 2
+
+
+class TestAContainerThatVanishedBehindThisBackend:
+    """A name is not a container: a `docker rm` this backend did not run invalidates the facts.
+
+    `_remove` drops them, but nothing outside this process goes through it — a `docker rm` at
+    a terminal, a pruned daemon, a host reboot. The create branch is where that is noticed.
+    """
+
+    _CALL = f"{_WORK}/call-a1b2c3"
+
+    def _backend(self, present: set[str], hardening: list[bytes]):
+        base = _machine(
+            running=[_NAME],
+            overrides={
+                **_WORK_IS_A_DIRECTORY,
+                ("cp",): _DockerResult(1, b"", "Error: Could not find the file in container"),
+                ("exec", "--user", "0"): _DockerResult(1, b"", "rm: Permission denied"),
+            },
+        )
+
+        def respond(args):
+            if args[:3] == ("inspect", "-f", "{{.HostConfig.CapDrop}}"):
+                return _DockerResult(0, hardening[0], "")
+            if args[0] == "inspect" and args[-1] not in present:
+                return _DockerResult(1, b"", f"Error: No such object: {args[-1]}")
+            return base(args)
+
+        return _backend_with(respond)
+
+    def test_the_replacement_container_decides_its_own_removals(self):
+        """The consequence, not the cache: a root refusal is retried only where the container
+        holds no `CAP_DAC_OVERRIDE`, so stale facts leave a hardened container unable to remove.
+        """
+        present, hardening = {_NAME}, [b"[]\n"]
+        backend, fake = self._backend(present, hardening)
+
+        keeps_capabilities = asyncio.run(backend.acquire(_KEY, _SPEC))
+        with pytest.raises(OSError, match="Permission denied"):
+            asyncio.run(keeps_capabilities.reclaim(self._CALL, working_directory=_WORK, timeout=30))
+
+        # Removed by something that is not this backend, and the name taken by a hardened one.
+        present.discard(_NAME)
+        hardening[0] = b"[ALL]\n"
+
+        replaced = asyncio.run(backend.acquire(_KEY, _SPEC))
+        fake.mark()
+        asyncio.run(replaced.reclaim(self._CALL, working_directory=_WORK, timeout=30))
+        assert [call.args[:3] for call in fake.matching("exec")][-2:] == [
+            ("exec", "--user", "0"),
+            ("exec", "-w", "/"),
+        ]
+
+    def test_the_ancestors_of_the_replacement_are_read_again(self):
+        present, hardening = {_NAME}, [b"[]\n"]
+        backend, fake = self._backend(present, hardening)
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+
+        present.discard(_NAME)
+        fake.mark()
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert fake.cp_since_mark() == [(*_cp("/maf-sandbox"), "-")]
+
+
+class TestReclaimKeepsAFloorUnderRoot:
+    """`maf_sandbox.reclaim_guest_path` holds the policy; this is the subset kept here."""
+
+    def _sandbox(self):
+        backend, fake = _backend_with(_machine(running=[_NAME]))
+        return asyncio.run(backend.acquire(_KEY, _SPEC)), fake
+
+    @pytest.mark.parametrize("directory", ["/", "/etc", "/maf-sandbox/", "//tmp", "/a/.."])
+    def test_a_path_within_two_components_of_the_root_runs_no_command(self, directory):
+        sandbox, fake = self._sandbox()
+        with pytest.raises(ValueError, match="close to the root"):
+            asyncio.run(sandbox.reclaim(directory, working_directory=_WORK, timeout=30))
+        assert fake.matching("exec") == []
+
+    @pytest.mark.parametrize("directory", ["etc/ssh", "a/b", "./x/y", "../../etc/ssh"])
+    def test_a_relative_path_runs_no_command(self, directory):
+        """The removal runs from `/`, so a relative path resolves against the filesystem root:
+        `etc/ssh` would be `rm -rf /etc/ssh`, as root.
+        """
+        sandbox, fake = self._sandbox()
+        with pytest.raises(ValueError, match="not absolute"):
+            asyncio.run(sandbox.reclaim(directory, working_directory=_WORK, timeout=30))
+        assert fake.matching("exec") == []
+
+    def test_a_call_directory_two_components_deep_is_allowed(self):
+        """The floor is a floor: what core dispatches has to go through it unchanged."""
+        sandbox, fake = self._sandbox()
+        asyncio.run(sandbox.reclaim("/srv/run-a1b2c3", working_directory="/srv", timeout=30))
+        assert fake.only("exec").args[-1] == "/srv/run-a1b2c3"
 
 
 class TestExecDiscardsATimedOutSandbox:
@@ -914,10 +1296,11 @@ class TestASymlinkedAncestorOfTheWorkingDirectory:
         }
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
         sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        fake.mark()
         with pytest.raises(ValueError, match="real directory"):
             asyncio.run(sandbox.read_file("hostname", working_directory=self._NESTED, max_bytes=99))
         # Stopped at the ancestor: the entry itself was never fetched.
-        assert [c.args for c in fake.matching("cp")] == [(*_cp("/maf-sandbox"), "-")]
+        assert fake.cp_since_mark() == [(*_cp("/maf-sandbox"), "-")]
 
 
 class TestASymlinkedParentEscapesLexicalConfinement:
@@ -941,7 +1324,9 @@ class TestASymlinkedParentEscapesLexicalConfinement:
             ("cp",): _DockerResult(1, b"", "Error: Could not find the file in container"),
         }
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
-        return asyncio.run(backend.acquire(_KEY, _SPEC)), fake
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        fake.mark()
+        return sandbox, fake
 
     def test_the_engine_answers_from_outside_the_working_directory(self):
         """The premise of the refusals below: the path through the link resolves daemon-side.
@@ -968,7 +1353,7 @@ class TestASymlinkedParentEscapesLexicalConfinement:
         sandbox, fake = self._sandbox()
         with pytest.raises(ValueError, match="real directory"):
             asyncio.run(sandbox.stat_file("out/hostname", working_directory=_WORK))
-        assert [c.args for c in fake.matching("cp")] == [
+        assert fake.cp_since_mark() == [
             (*_cp("/maf-sandbox"), "-"),
             (*_cp(_WORK), "-"),
             (*_cp(f"{_WORK}/out"), "-"),
@@ -978,7 +1363,7 @@ class TestASymlinkedParentEscapesLexicalConfinement:
         sandbox, fake = self._sandbox()
         with pytest.raises(ValueError, match="real directory"):
             asyncio.run(sandbox.read_file("out/hostname", working_directory=_WORK, max_bytes=1000))
-        assert [c.args for c in fake.matching("cp")] == [
+        assert fake.cp_since_mark() == [
             (*_cp("/maf-sandbox"), "-"),
             (*_cp(_WORK), "-"),
             (*_cp(f"{_WORK}/out"), "-"),
@@ -992,9 +1377,10 @@ class TestASymlinkedParentEscapesLexicalConfinement:
         }
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
         sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        fake.mark()
         with pytest.raises(ValueError, match="real directory"):
             asyncio.run(sandbox.read_file("hostname", working_directory=_WORK, max_bytes=1000))
-        assert [c.args for c in fake.matching("cp")] == [
+        assert fake.cp_since_mark() == [
             (*_cp("/maf-sandbox"), "-"),
             (*_cp(_WORK), "-"),
         ]

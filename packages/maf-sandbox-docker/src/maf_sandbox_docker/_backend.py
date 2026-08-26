@@ -26,9 +26,10 @@ import logging
 import posixpath
 import re
 import tarfile
+import time
 import weakref
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from typing import TYPE_CHECKING, Protocol, cast
 
@@ -50,6 +51,7 @@ from maf_sandbox import (
 from maf_sandbox.paths import (
     confine_guest_path,
     confine_guest_write_path,
+    guest_directory_chain,
     refuse_symlinked_parents,
 )
 
@@ -200,7 +202,16 @@ def _proxy_name(container: str) -> str:
     return f"{container}{_PROXY_SUFFIX}"
 
 
-def _stat_from_tar_header(block: bytes, rel_path: str) -> SandboxEntry:
+def _image_reference(spec: SandboxSpec) -> str:
+    """The reference this backend will actually run, or ``""`` when the spec names none.
+
+    ``image_id`` wins over ``image`` and can be the only one set, so anything keyed on which
+    image a container holds keys on this.
+    """
+    return spec.image_id or spec.image or ""
+
+
+def _stat_from_tar_header(info: tarfile.TarInfo, rel_path: str) -> SandboxEntry:
     """Read one ``docker cp`` tar header into a :class:`~maf_sandbox.SandboxEntry`.
 
     The first 512-byte block of ``docker cp <name>:<path> -`` is the entry's tar header: it
@@ -214,7 +225,6 @@ def _stat_from_tar_header(block: bytes, rel_path: str) -> SandboxEntry:
     path, so it is not a way out of the working directory, and it is refused as non-regular
     regardless.
     """
-    info = tarfile.TarInfo.frombuf(block, encoding="utf-8", errors="surrogateescape")
     if info.isreg():
         return SandboxEntry(path=rel_path, kind=EntryKind.FILE, size_bytes=info.size)
     if info.isdir():
@@ -222,6 +232,29 @@ def _stat_from_tar_header(block: bytes, rel_path: str) -> SandboxEntry:
     if info.issym():
         return SandboxEntry(path=rel_path, kind=EntryKind.SYMLINK, size_bytes=None)
     return SandboxEntry(path=rel_path, kind=EntryKind.OTHER, size_bytes=None)
+
+
+def _no_component_was_the_guests(walked: Mapping[str, tuple[int, int]]) -> bool:
+    """Could the guest program have swapped any directory on this path?
+
+    Not where every one is root's and writable by nobody else.  Empty is ``True``: a walk that
+    reached nothing found nothing writable.  See ``docs/sandbox/backends/docker.md``.
+    """
+    return all(uid == 0 and not mode & 0o022 for uid, mode in walked.values())
+
+
+@dataclass(frozen=True)
+class _ContainerFacts:
+    """What a running container says about itself, as against what this backend asked for.
+
+    A container name carries neither the image nor the hardening, so a reused container can
+    predate a change to either and this backend's config is not evidence about it.
+    """
+
+    #: Every directory above ``work_dir`` is root's and writable by nobody else.
+    host_owned_ancestors: bool
+    #: Runs with ``--cap-drop ALL``, so root holds no ``CAP_DAC_OVERRIDE``.
+    capabilities_dropped: bool
 
 
 @dataclass(frozen=True)
@@ -280,10 +313,20 @@ class _DockerRunner(Protocol):
 class _DockerSandbox:
     """A running container, narrowed to the :class:`~maf_sandbox.Sandbox` protocol."""
 
-    def __init__(self, run: _DockerRunner, name: str, command_timeout: float) -> None:
+    def __init__(
+        self,
+        run: _DockerRunner,
+        name: str,
+        command_timeout: float,
+        cap_drop_all: bool = False,
+        reclaim_as_root: bool = True,
+    ) -> None:
         self._run = run
         self._name = name
         self._command_timeout = command_timeout
+        # Both read from the container at acquire, not taken from this backend's config.
+        self._reclaim_as_root = reclaim_as_root
+        self._cap_drop_all = cap_drop_all
 
     @property
     def container_name(self) -> str:
@@ -316,7 +359,7 @@ class _DockerSandbox:
     async def exec(
         self, command: str | Sequence[str], *, working_directory: str, timeout: float
     ) -> ExecResult:
-        """Run ``command``, bounded by ``timeout``.
+        """Run ``command`` as the image's user, bounded by ``timeout``.
 
         ``docker exec`` takes argv natively, so a sequence goes through element for element with
         no shell and nothing to quote; a string is a shell command line and runs as ``sh -c``.
@@ -329,9 +372,25 @@ class _DockerSandbox:
         keeps the sandbox: the in-container command runs on until the sandbox is disposed.
         """
         argv = ["sh", "-c", command] if isinstance(command, str) else list(command)
+        return await self._exec(argv, working_directory=working_directory, timeout=timeout)
+
+    async def _exec(
+        self,
+        argv: Sequence[str],
+        *,
+        working_directory: str,
+        timeout: float,
+        as_root: bool = False,
+    ) -> ExecResult:
+        """One ``docker exec``, as the image's user or as ``--user 0``.
+
+        :meth:`remove` and :meth:`reclaim` ask for root; :meth:`exec` and :meth:`run_code` are
+        the guest program's own and name no user.  See ``docs/sandbox/backends/docker.md``.
+        """
+        privilege = ("--user", "0") if as_root else ()
         try:
             result = await self._run(
-                "exec", "-w", working_directory, self._name, *argv, timeout=timeout
+                "exec", *privilege, "-w", working_directory, self._name, *argv, timeout=timeout
             )
         except TimeoutError:
             with contextlib.suppress(Exception):
@@ -341,6 +400,57 @@ class _DockerSandbox:
             stdout=result.stdout.decode("utf-8", errors="replace"),
             stderr=result.stderr,
             exit_code=result.returncode,
+        )
+
+    async def ancestors_are_the_hosts(self, work_dir: str) -> bool:
+        """Is every directory *above* ``work_dir`` one the guest program cannot write?
+
+        One tar header per component.  Raises whatever the stat raises; the caller decides what
+        an unreadable component means.
+        """
+        walked: dict[str, tuple[int, int]] = {}
+        for directory in guest_directory_chain(posixpath.dirname(work_dir), "/"):
+            await self._stat_guest(directory, directory, walked)
+        return _no_component_was_the_guests(walked)
+
+    async def _removal(
+        self,
+        argv: Sequence[str],
+        *,
+        working_directory: str,
+        timeout: float,
+        raise_authority: bool,
+    ) -> ExecResult:
+        """Run a removal, as root where ``raise_authority`` says the reach rule allows it.
+
+        A root refusal is retried as the image's user where this container holds no
+        ``CAP_DAC_OVERRIDE``, and both attempts' messages reach the caller.  ``timeout`` is one
+        deadline across both, not one each.  See ``docs/sandbox/backends/docker.md``.
+        """
+        if not raise_authority:
+            return await self._exec(argv, working_directory=working_directory, timeout=timeout)
+        started = time.monotonic()
+        removed = await self._exec(
+            argv, working_directory=working_directory, timeout=timeout, as_root=True
+        )
+        if removed.exit_code == 0 or not self._cap_drop_all:
+            return removed
+        left = timeout - (time.monotonic() - started)
+        if left <= 0:
+            return removed
+        logger.debug(
+            "docker: %s refused a removal as root (exit %d: %s), retrying as the image's user "
+            "with %.1fs left",
+            self._name,
+            removed.exit_code,
+            removed.stderr.strip() or "no output",
+            left,
+        )
+        retried = await self._exec(argv, working_directory=working_directory, timeout=left)
+        if retried.exit_code == 0 or not removed.stderr.strip():
+            return retried
+        return replace(
+            retried, stderr=f"{retried.stderr.strip()} (as root: {removed.stderr.strip()})"
         )
 
     async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
@@ -383,17 +493,24 @@ class _DockerSandbox:
         ``rm``'s exit codes are the contract rather than a re-implementation of it: ``-f``
         makes a missing path succeed and refuses a directory without ``-r``. The image
         dependency is the one :attr:`capabilities` already names for ``EXEC``.
+
+        Runs as root only where no component of the path was the guest's, which the walk this
+        already owes answers.  See ``docs/sandbox/backends/docker.md``.
         """
         guest = confine_guest_path(path, working_directory)
-        await self._refuse_symlinked_parents(guest, working_directory=working_directory)
+        walked: dict[str, tuple[int, int]] = {}
+        await self._refuse_symlinked_parents(
+            guest, working_directory=working_directory, walked=walked
+        )
         if posixpath.normpath(guest) == posixpath.normpath(working_directory):
             raise ValueError(
                 f"refusing to remove the working directory itself: {working_directory}"
             )
-        removed = await self.exec(
+        removed = await self._removal(
             ["rm", "-rf" if recursive else "-f", "--", guest],
             working_directory=working_directory,
             timeout=self._command_timeout,
+            raise_authority=_no_component_was_the_guests(walked),
         )
         if removed.exit_code != 0:
             raise OSError(
@@ -402,14 +519,26 @@ class _DockerSandbox:
             )
 
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
-        """Remove ``directory`` with ``rm -rf`` over :meth:`exec`.
+        """Remove ``directory`` with ``rm -rf``, through :meth:`_removal`.
 
-        No confinement check: the caller made ``directory``. Runs from ``/`` because
-        ``working_directory`` may not exist.
+        Runs from ``/`` because ``working_directory`` may not exist, and takes no confinement
+        check: the caller made ``directory``, and :func:`~maf_sandbox.reclaim_guest_path` is
+        where that policy lives.  The floor below re-refuses a subset of it, because this
+        command runs from ``/`` and can carry root's authority.
+
+        Why root is allowed without a walk, and which half of the argument is checked at
+        acquire rather than asserted: ``docs/sandbox/backends/docker.md``.
         """
         del working_directory
-        removed = await self.exec(
-            ["rm", "-rf", "--", directory], working_directory="/", timeout=timeout
+        if not directory.startswith("/"):
+            raise ValueError(f"refusing to reclaim a path that is not absolute: {directory}")
+        if len([part for part in posixpath.normpath(directory).split("/") if part]) < 2:
+            raise ValueError(f"refusing to reclaim recursively that close to the root: {directory}")
+        removed = await self._removal(
+            ["rm", "-rf", "--", directory],
+            working_directory="/",
+            timeout=timeout,
+            raise_authority=self._reclaim_as_root,
         )
         if removed.exit_code != 0:
             raise OSError(
@@ -417,7 +546,9 @@ class _DockerSandbox:
                 f"{f' — {removed.stderr.strip()}' if removed.stderr else ''}"
             )
 
-    async def _stat_guest(self, guest: str, rel: str) -> SandboxEntry | None:
+    async def _stat_guest(
+        self, guest: str, rel: str, walked: dict[str, tuple[int, int]] | None = None
+    ) -> SandboxEntry | None:
         """Stat an absolute guest path, with no confinement check of its own.
 
         Split out because the component walk stats the working directory's own ancestors, which
@@ -432,9 +563,21 @@ class _DockerSandbox:
             raise RuntimeError(f"docker could not stat {rel}: {result.stderr.strip()}")
         if len(result.stdout) < _TAR_BLOCK:
             raise RuntimeError(f"docker returned no tar header for {rel}")
-        return _stat_from_tar_header(result.stdout[:_TAR_BLOCK], rel)
+        info = tarfile.TarInfo.frombuf(
+            result.stdout[:_TAR_BLOCK], encoding="utf-8", errors="surrogateescape"
+        )
+        if walked is not None:
+            # The same header answers ownership, so a walk that wants both parses it once.
+            walked[guest] = (info.uid, info.mode)
+        return _stat_from_tar_header(info, rel)
 
-    async def _refuse_symlinked_parents(self, guest: str, *, working_directory: str) -> None:
+    async def _refuse_symlinked_parents(
+        self,
+        guest: str,
+        *,
+        working_directory: str,
+        walked: dict[str, tuple[int, int]] | None = None,
+    ) -> None:
         """The protocol's component walk, over this backend's own unconfined stat.
 
         The :func:`~maf_sandbox.paths.confine_guest_path` paired with it at every call site is
@@ -445,7 +588,9 @@ class _DockerSandbox:
         read per component.
         """
         await refuse_symlinked_parents(
-            lambda directory: self._stat_guest(directory, directory), guest, working_directory
+            lambda directory: self._stat_guest(directory, directory, walked),
+            guest,
+            working_directory,
         )
 
     async def read_file(self, path: str, *, working_directory: str, max_bytes: int) -> bytes:
@@ -524,6 +669,9 @@ class DockerSandboxBackend:
         self._acquire_locks: weakref.WeakKeyDictionary[
             asyncio.AbstractEventLoop, dict[tuple[str, str, str, str], asyncio.Lock]
         ] = weakref.WeakKeyDictionary()
+        # (container, image, work_dir) -> what the container itself says. Keyed on the image
+        # because a container name is not, so one name can come back carrying a different one.
+        self._facts: dict[tuple[str, str, str], _ContainerFacts] = {}
 
     @property
     def name(self) -> str:
@@ -560,6 +708,7 @@ class DockerSandboxBackend:
         #
         # It is *not* a claim about the image. The shipped launcher wants `sh`, `nohup`,
         # `printf`, `mv`, `mkdir`, `rm` and `kill` — and `setsid` where the image has it — and a
+        # run directory it can write, which a non-root guest does not have here (#680) — and a
         # kind wants whatever interpreter it names — codeact wants
         # `python3` — none of which this backend chooses, since `spec.image` does. That gap is
         # #111's axis, and it is the same gap `EXEC` already has: a kind execing `python3`
@@ -601,6 +750,9 @@ class DockerSandboxBackend:
             elif stopped and await self._restart(name):
                 verb = "restarted"
             else:
+                # A create means this name is about to be a different container, whether the
+                # last one was removed through this backend or vanished behind its back.
+                self._forget_facts(name)
                 image = await self._create_workload(name, key, spec, allowlisting=bool(egress_id))
                 logger.info(
                     "sandbox created: container=%s kind=%s image=%s thread=%s agent=%s",
@@ -622,7 +774,74 @@ class DockerSandboxBackend:
                 )
 
             self._registry[(key.scope, key.thread_id, key.agent_dir, spec.kind)] = name
-            return _DockerSandbox(self._docker, name, self._config.command_timeout_seconds)
+            facts = await self._container_facts(name, spec)
+            return _DockerSandbox(
+                self._docker,
+                name,
+                self._config.command_timeout_seconds,
+                facts.capabilities_dropped,
+                facts.host_owned_ancestors,
+            )
+
+    async def _capabilities_dropped(self, name: str) -> bool:
+        """Does this container run without ``CAP_DAC_OVERRIDE``?
+
+        Read from the container, never from :attr:`DockerSandboxConfig.cap_drop_all`, which
+        describes what this backend would create rather than what it reused.  Unknown counts as
+        dropped.
+        """
+        result = await self._docker(
+            "inspect",
+            "-f",
+            "{{.HostConfig.CapDrop}}",
+            name,
+            timeout=self._config.command_timeout_seconds,
+        )
+        if result.returncode != 0:
+            return True
+        return "ALL" in result.stdout.decode("utf-8", errors="replace").upper()
+
+    async def _container_facts(self, name: str, spec: SandboxSpec) -> _ContainerFacts:
+        """Read what ``name`` says about itself, once per container.
+
+        Here rather than in :meth:`_DockerSandbox.reclaim` because the ancestor chain is fixed
+        before any guest runs: one answer per container, not one walk per call.  **Fails
+        closed** — an unreadable component leaves removals at the guest's authority.  See
+        ``docs/sandbox/backends/docker.md``.
+        """
+        key = (name, _image_reference(spec), spec.work_dir)
+        cached = self._facts.get(key)
+        if cached is not None:
+            return cached
+        probe = _DockerSandbox(self._docker, name, self._config.command_timeout_seconds)
+        try:
+            answer = await probe.ancestors_are_the_hosts(spec.work_dir)
+        except Exception as unreadable:  # noqa: BLE001 — an acquire must not fail over this
+            logger.debug("docker: could not read %s's work dir ancestors (%s)", name, unreadable)
+            answer = False
+        if not answer:
+            logger.info(
+                "docker: %s has a directory above %s the guest may write, so removals run as "
+                "the guest rather than as root",
+                name,
+                spec.work_dir,
+            )
+        facts = _ContainerFacts(
+            host_owned_ancestors=answer,
+            capabilities_dropped=await self._capabilities_dropped(name),
+        )
+        self._facts[key] = facts
+        return facts
+
+    def _forget_facts(self, container: str) -> None:
+        """Drop what ``container`` said about itself, whatever key it was read under.
+
+        A name is not a container.  Every entry for one has to go the moment this backend
+        knows the name will mean a different container, or a removal decides its principal
+        from a container that no longer exists.
+        """
+        for cached in [key for key in self._facts if key[0] == container]:
+            del self._facts[cached]
 
     async def dispose(self, key: SandboxKey) -> str | None:
         """Delete every container for ``key`` — every kind, closed or allowlisted — with
@@ -1104,6 +1323,8 @@ class DockerSandboxBackend:
         failure: the sweep tries names the registry remembers, and one already gone is the
         ordinary case.
         """
+        # Dropped before the call, so a failed removal cannot leave stale facts behind.
+        self._forget_facts(target)
         try:
             result = await self._docker(
                 "rm", "-f", target, timeout=self._config.command_timeout_seconds
