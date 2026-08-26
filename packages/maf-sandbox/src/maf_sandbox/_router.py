@@ -620,7 +620,8 @@ class SandboxRouter:
         went with it.  ``refuse`` is what closes the key when one does *not* land, and only
         :meth:`dispose_unclean` passes it: :meth:`dispose` is best-effort and its caller has
         made no claim that the sandbox held anything, so a transient failure there must not
-        leave a clean key unservable.
+        leave a clean key unservable.  Under ``refuse`` each reason reaches the ledger as its
+        backend answers, because this runs inside a bound that can expire mid-loop.
 
         A backend refuses by *returning* a reason as much as by raising: ``dispose`` never
         raises, so silence is the only thing that may be read as success.
@@ -647,11 +648,16 @@ class SandboxRouter:
                         key.agent_dir,
                         undisposed,
                     )
-        if reasons:
-            if refuse:
-                # Recorded over whatever marked the key, so the refusal quotes the latest
-                # attempt rather than the sentence that first closed it.
+            if refuse and reasons:
+                # Written before the next backend is awaited, not after the last one answers:
+                # `dispose_unclean` bounds this with `asyncio.timeout`, so a later backend that
+                # hangs cancels the coroutine and a reason still sitting in this list dies with
+                # it — leaving the timeout handler to record `timeout` over a code that outranks
+                # it. Recorded over whatever marked the key, so the refusal quotes the latest
+                # attempt rather than the sentence that first closed it. No await between the
+                # fold and the write.
                 self._unclean[key] = fold_disposal_failures(reasons)
+        if reasons:
             return False
         self._unclean.pop(key, None)
         return True

@@ -1341,6 +1341,26 @@ class TestTheDisposalCodeIsWhatACallerBranchesOn:
             asyncio.run(router.acquire(_KEY, _SPEC))
         assert refusal.value.code == "unreachable"
 
+    def test_a_code_reported_before_the_bound_expired_outranks_the_timeout(self):
+        """The *same* attempt, not a previous one: with several backends, a reason held in a
+        local list until the loop ends dies with the coroutine the bound cancels, and the
+        timeout is then recorded over a code that outranks it."""
+
+        class _Hangs(InProcessSandboxBackend):
+            async def dispose(self, key: SandboxKey) -> DisposalFailure | str | None:
+                await asyncio.Event().wait()
+
+        router = self._router(
+            InProcessSandboxBackend(
+                name="acas", dispose_failure=DisposalFailure("unreachable", "the daemon is down")
+            ),
+            _Hangs(name="docker"),
+        )
+        asyncio.run(router.dispose_unclean(_KEY, timeout=0.05))
+        with pytest.raises(SandboxUnclean) as refusal:
+            asyncio.run(router.acquire(_KEY, _SPEC))
+        assert refusal.value.code == "unreachable"
+
     def test_a_backend_that_breaks_its_contract_and_raises_is_unknown(self):
         """Nothing a backend says while violating never-raises can be classified."""
         router = self._router(
