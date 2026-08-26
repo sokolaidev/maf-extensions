@@ -581,6 +581,10 @@ class AcasSandboxBackend:
         # `dispose_scope` treats this as a fast path, never as the source of truth — see its
         # docstring.
         self._registry: dict[tuple[str, str, str, str], str] = {}
+        #: Sandbox ids a delete could not remove, by key prefix. Disposal-only and deliberately
+        #: apart from the registry, which `acquire` resumes from: a sandbox whose delete failed
+        #: must be retried, never served. An entry lives only while its delete keeps failing.
+        self._undeleted: dict[tuple[str, str, str], set[str]] = {}
         # Group clients cached per event loop. An azure-core async client binds its transport
         # to the loop that created it, and this host runs some work on a dedicated background
         # loop, so one shared client would be a cross-loop hazard; one per call would leak a
@@ -801,19 +805,27 @@ class AcasSandboxBackend:
         """
         prefix = (key.scope, key.thread_id, key.agent_dir)
         mine = [k for k in list(self._registry) if k[:3] == prefix]
-        if not mine:
+        # The registry entry is dropped on the first attempt, so an id that failed is held
+        # here or nowhere. Without it a retry finds nothing to delete, says nothing, and the
+        # router reads that silence as the disposal finally landing — a false all-clear over
+        # a sandbox still running. This backend has no listing to fall back on here.
+        wanted = list(
+            dict.fromkeys(
+                [
+                    *(sid for sid in (self._registry.pop(k, None) for k in mine) if sid),
+                    *sorted(self._undeleted.get(prefix, ())),
+                ]
+            )
+        )
+        if not wanted:
             return None
-        wanted = [
-            sandbox_id
-            for sandbox_id in (self._registry.pop(k, None) for k in mine)
-            if sandbox_id is not None
-        ]
         try:
             gc = self._group_client()
         except Exception as exc:  # noqa: BLE001 - disposal must never raise
             logger.warning("acas backend: could not reach the sandbox group: %s", error_detail(exc))
+            self._undeleted[prefix] = set(wanted)
             return f"could not reach the sandbox group: {error_detail(exc)}"
-        undeleted: list[str] = []
+        undeleted: dict[str, str] = {}
         for sandbox_id in wanted:
             deletion = await self._delete(gc, sandbox_id)
             if deletion.deleted:
@@ -824,8 +836,13 @@ class AcasSandboxBackend:
                     key.agent_dir,
                 )
             if deletion.failure is not None:
-                undeleted.append(deletion.failure)
-        return f"sandbox delete failed: {'; '.join(undeleted)}" if undeleted else None
+                undeleted[sandbox_id] = deletion.failure
+        if undeleted:
+            self._undeleted[prefix] = set(undeleted)
+        else:
+            self._undeleted.pop(prefix, None)
+        reasons = "; ".join(undeleted.values())
+        return f"sandbox delete failed: {reasons}" if undeleted else None
 
     async def dispose_scope(self, scope: str, thread_id: str) -> int:
         """Delete every sandbox labelled ``(scope, thread_id)``; returns how many.
@@ -838,7 +855,8 @@ class AcasSandboxBackend:
 
         Registry entries are dropped up front whether or not the delete succeeds: a stale
         entry pointing at a sandbox that may already be gone is worse than no entry, since
-        the next acquire would try to resume it.
+        the next acquire would try to resume it.  An id a previous :meth:`dispose` could not
+        delete is swept here too, and stops being owed a retry once this takes it away.
         """
         known = [
             (k, sandbox_id)
@@ -854,16 +872,28 @@ class AcasSandboxBackend:
             logger.warning("acas backend: could not reach the sandbox group: %s", exc)
             return 0
 
+        stuck = [p for p in self._undeleted if p[0] == scope and p[1] == thread_id]
         ids = {sandbox_id for _, sandbox_id in known}
+        ids.update(sandbox_id for p in stuck for sandbox_id in self._undeleted[p])
         ids.update(await self._list_thread_sandbox_ids(gc, scope, thread_id))
 
         count = 0
+        undeleted: set[str] = set()
         for sandbox_id in sorted(ids):
-            if (await self._delete(gc, sandbox_id)).deleted:
+            deletion = await self._delete(gc, sandbox_id)
+            if deletion.deleted:
                 logger.info(
                     "sandbox released: id=%s thread=%s (scope purge)", sandbox_id, thread_id
                 )
                 count += 1
+            if deletion.failure is not None:
+                undeleted.add(sandbox_id)
+        for prefix in stuck:
+            left = self._undeleted[prefix] & undeleted
+            if left:
+                self._undeleted[prefix] = left
+            else:
+                del self._undeleted[prefix]
         return count
 
     # -- internals ----------------------------------------------------------------

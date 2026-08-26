@@ -742,6 +742,30 @@ class TestDispose:
         assert "WSLC_E_SERVICE_UNAVAILABLE" in reason
         assert _NAME in reason
 
+    def test_a_second_attempt_still_reports_what_the_first_could_not_remove(self):
+        """The registry entry is popped by the first attempt. Without a retry record the second
+        sweep has no fallback, removes nothing, reports nothing — and the router reads that
+        silence as the delete finally landing."""
+        overrides = {
+            ("container", "remove"): _WslcResult(1, b"", b"WSLC_E_SERVICE_UNAVAILABLE"),
+            ("container", "list"): _WslcResult(1, b"", b"WSLC_E_SERVICE_UNAVAILABLE"),
+        }
+        backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = _NAME  # noqa: SLF001
+
+        assert asyncio.run(backend.dispose(_KEY)) is not None
+        second = asyncio.run(backend.dispose(_KEY))
+        assert second is not None
+        assert _NAME in second
+
+    def test_a_removal_that_lands_clears_the_retry_record(self):
+        overrides = {("container", "list"): _WslcResult(1, b"", b"WSLC_E_SERVICE_UNAVAILABLE")}
+        backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        backend._undeleted[("scope-a", "thread-1", "devops-engineer")] = {_NAME}  # noqa: SLF001
+
+        assert asyncio.run(backend.dispose(_KEY)) is None
+        assert backend._undeleted == {}  # noqa: SLF001
+
     def test_a_container_that_is_already_gone_reports_nothing(self):
         not_found = _WslcResult(1, b"", b"Error code: WSLC_E_CONTAINER_NOT_FOUND\n")
         backend, _ = _backend_with(

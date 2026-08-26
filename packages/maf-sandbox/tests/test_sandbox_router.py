@@ -1139,12 +1139,7 @@ class TestAKeyTheRouterCouldNotDisposeIsRefused:
 
 
 class TestABackendReportsAFailedDeleteWithoutRaising:
-    """`dispose` never raises, so a raise is the one thing a compliant backend cannot use (#641).
-
-    Every real backend swallows its delete error and returns. Read only the raise and the
-    refusal fires against a backend breaking its contract and against nothing else — least of
-    all the silent failure it exists for.
-    """
+    """A returned reason refuses the key; only silence lets it be served again."""
 
     def _router(self, *backends):
         return SandboxRouter(list(backends), min_isolation=Isolation.NONE)

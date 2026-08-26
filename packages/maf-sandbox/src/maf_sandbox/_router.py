@@ -584,11 +584,8 @@ class SandboxRouter:
         A landed disposal clears the key from the unclean set: whatever was in that sandbox
         went with it.
 
-        A backend refuses by *returning* a reason as much as by raising. ``dispose`` is
-        contractually best-effort and never raises, so a backend that swallowed its delete
-        error and said nothing would otherwise be read as having disposed — and the refusal
-        this whole ledger exists for could fire only against a backend breaking its own
-        contract (#641).
+        A backend refuses by *returning* a reason as much as by raising: ``dispose`` never
+        raises, so silence is the only thing that may be read as success.
         """
         reasons: list[str] = []
         for backend in self._backends:

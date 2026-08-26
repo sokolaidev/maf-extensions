@@ -813,6 +813,46 @@ class TestDispose:
         assert "sbx-1" in reason
         assert backend._registry == {}
 
+    def test_a_second_attempt_still_reports_what_the_first_could_not_delete(self):
+        """This backend has no listing to fall back on here, so the registry entry the first
+        attempt dropped is the only record — without a retry one, the second attempt finds
+        nothing, says nothing, and the router reads that as the delete finally landing."""
+        backend = _backend_with(_ExplodingGroupClient())
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
+
+        assert asyncio.run(backend.dispose(key)) is not None
+        second = asyncio.run(backend.dispose(key))
+        assert second is not None
+        assert "sbx-1" in second
+
+    def test_a_group_client_that_cannot_be_built_keeps_the_ids_for_a_retry(self):
+        backend = AcasSandboxBackend(_config())
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
+
+        def _unreachable():
+            raise RuntimeError("no credential")
+
+        backend._group_client = _unreachable  # type: ignore[method-assign]
+        assert asyncio.run(backend.dispose(key)) is not None
+        assert asyncio.run(backend.dispose(key)) is not None
+
+    def test_a_delete_that_lands_clears_the_retry_record(self):
+        backend = _backend_with(_FakeGroupClient())
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+        backend._undeleted[(key.scope, key.thread_id, key.agent_dir)] = {"sbx-1"}
+
+        assert asyncio.run(backend.dispose(key)) is None
+        assert backend._undeleted == {}
+
+    def test_a_scope_purge_that_lands_clears_the_retry_record(self):
+        backend = _backend_with(_FakeGroupClient())
+        backend._undeleted[("scope-a", "thread-1", "devops-engineer")] = {"sbx-1"}
+
+        asyncio.run(backend.dispose_scope("scope-a", "thread-1"))
+        assert backend._undeleted == {}
+
     def test_a_sandbox_the_service_no_longer_has_is_not_a_failure(self):
         """The auto-delete timer reclaiming one between rounds is the expected path — the same
         reading `acquire`'s resume takes. Reporting it would refuse the key over a sandbox that

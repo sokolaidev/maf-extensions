@@ -1067,6 +1067,31 @@ class TestDispose:
         assert "daemon error" in reason
         assert _NAME in reason
 
+    def test_a_second_attempt_still_reports_what_the_first_could_not_remove(self):
+        """The registry entry is popped by the first attempt. Without a retry record the second
+        sweep has no fallback, removes nothing, reports nothing — and the router reads that
+        silence as the delete finally landing."""
+        overrides = {
+            ("rm",): _DockerResult(1, b"", "daemon error"),
+            ("ps",): _DockerResult(1, b"", "daemon down"),
+        }
+        backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+
+        assert asyncio.run(backend.dispose(_KEY)) is not None
+        second = asyncio.run(backend.dispose(_KEY))
+        assert second is not None
+        assert _NAME in second
+
+    def test_a_removal_that_lands_clears_the_retry_record(self):
+        overrides = {("ps",): _DockerResult(1, b"", "daemon down")}
+        backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        backend._undeleted[(_KEY.scope, _KEY.thread_id, _KEY.agent_dir)] = {_NAME}  # noqa: SLF001
+
+        assert asyncio.run(backend.dispose(_KEY)) is None
+        assert backend._undeleted == {}  # noqa: SLF001
+
     def test_a_container_docker_does_not_have_is_not_a_failure(self):
         overrides = {("rm",): _DockerResult(1, b"", f"Error: No such container: {_NAME}")}
         backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))

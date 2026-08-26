@@ -27,8 +27,8 @@ import posixpath
 import re
 import tarfile
 import weakref
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from hashlib import sha256
 from typing import TYPE_CHECKING, Protocol, cast
 
@@ -248,10 +248,14 @@ class _Removal:
 
 @dataclass(frozen=True)
 class _Sweep:
-    """What one label sweep did: sandboxes removed, and why any is still there."""
+    """What one label sweep did: sandboxes removed, and the workload containers still there.
+
+    ``undeleted`` maps a container name to why its removal failed, so a caller can report the
+    reason and remember the name to try again.
+    """
 
     count: int
-    undisposed: str | None = None
+    undeleted: Mapping[str, str] = field(default_factory=dict[str, str])
 
 
 class _DockerRunner(Protocol):
@@ -507,6 +511,11 @@ class DockerSandboxBackend:
         # (scope, thread_id, agent_dir, kind) -> name: a purge fallback for when the listing
         # fails, never the truth. Holds the last name acquired per key and kind.
         self._registry: dict[tuple[str, str, str, str], str] = {}
+        #: Workload containers a removal could not take away, by key prefix. Disposal-only and
+        #: deliberately apart from the registry, which `acquire` reuses: a container whose
+        #: delete failed must be retried, never served. An entry lives only while its removal
+        #: keeps failing, so this holds nothing for a key that disposes cleanly.
+        self._undeleted: dict[tuple[str, str, str], set[str]] = {}
         # Get-or-create serialised per (running loop, key, kind), for the same reason wslc does
         # it: a create names no container until it returns, so two acquires racing one key would
         # each build a network, a proxy and a sandbox. Per loop because an asyncio.Lock binds to
@@ -633,10 +642,18 @@ class DockerSandboxBackend:
                 (_LABEL_THREAD, key.thread_id),
                 (_LABEL_AGENT, key.agent_dir),
             ],
-            fallback=remembered,
+            # The registry entry is gone by the second attempt, so a name that failed once is
+            # remembered here or nowhere. Without it a retry whose listing also fails sweeps
+            # with no fallback, removes nothing, reports nothing — and the router reads that
+            # silence as the disposal finally landing.
+            fallback=list(dict.fromkeys([*remembered, *sorted(self._undeleted.get(prefix, ()))])),
             thread_id=key.thread_id,
         )
-        return swept.undisposed
+        if swept.undeleted:
+            self._undeleted[prefix] = set(swept.undeleted)
+        else:
+            self._undeleted.pop(prefix, None)
+        return "; ".join(swept.undeleted.values()) or None
 
     async def dispose_scope(self, scope: str, thread_id: str) -> int:
         """Delete every container labelled ``(scope, thread_id)``; returns how many sandboxes.
@@ -647,11 +664,22 @@ class DockerSandboxBackend:
         """
         mine = [k for k in list(self._registry) if k[0] == scope and k[1] == thread_id]
         remembered = [self._registry.pop(k) for k in mine]
+        stuck = [p for p in self._undeleted if p[0] == scope and p[1] == thread_id]
         swept = await self._purge(
             [(_LABEL_SCOPE, scope), (_LABEL_THREAD, thread_id)],
-            fallback=remembered,
+            fallback=list(
+                dict.fromkeys([*remembered, *sorted(n for p in stuck for n in self._undeleted[p])])
+            ),
             thread_id=thread_id,
         )
+        # Whatever this sweep took away stops being owed a retry; what it still could not
+        # remove keeps its place, so a conversation delete that failed does not look clean.
+        for prefix in stuck:
+            left = self._undeleted[prefix] & set(swept.undeleted)
+            if left:
+                self._undeleted[prefix] = left
+            else:
+                del self._undeleted[prefix]
         return swept.count
 
     async def _purge(
@@ -675,7 +703,7 @@ class DockerSandboxBackend:
         names = [*listed, *stranded]
 
         count = 0
-        undisposed: list[str] = []
+        undeleted: dict[str, str] = {}
         for target in names:
             removal = await self._remove(target)
             if removal.removed and not target.endswith(_PROXY_SUFFIX):
@@ -684,7 +712,7 @@ class DockerSandboxBackend:
             # Workload containers only. A proxy and a network carry no guest data, so one left
             # behind is an infrastructure leak to log rather than a reason to refuse the key.
             if removal.failure is not None and not target.endswith(_PROXY_SUFFIX):
-                undisposed.append(removal.failure)
+                undeleted[target] = removal.failure
 
         networks = {
             _network_name(n.removesuffix(_PROXY_SUFFIX))
@@ -697,7 +725,7 @@ class DockerSandboxBackend:
             networks.add(_network_name(workload))
         for net in networks:
             await self._remove_network(net)
-        return _Sweep(count, "; ".join(undisposed) or None)
+        return _Sweep(count, undeleted)
 
     # -- internals ----------------------------------------------------------------
 
