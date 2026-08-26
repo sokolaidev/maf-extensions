@@ -406,6 +406,13 @@ class TestAnImageThatGivesAwayADirectoryAboveWorkDir:
 
         async def scenario() -> None:
             sandbox = await backend.acquire(_key(scope), self._spec())
+            # Named rather than wrapped inside the argv list: two adjacent literals there are
+            # the shape a missing comma takes, and a reader cannot tell the two apart.
+            plant_the_target = (
+                "mkdir -p /victim/abc123def456"
+                " && echo treasure > /victim/abc123def456/t"
+                " && chmod 755 /victim"
+            )
             planted = subprocess.run(
                 [
                     "docker",
@@ -415,8 +422,7 @@ class TestAnImageThatGivesAwayADirectoryAboveWorkDir:
                     sandbox.container_name,
                     "sh",
                     "-c",
-                    "mkdir -p /victim/abc123def456 && echo treasure > /victim/abc123def456/t "
-                    "&& chmod 755 /victim",
+                    plant_the_target,
                 ],
                 capture_output=True,
                 text=True,
