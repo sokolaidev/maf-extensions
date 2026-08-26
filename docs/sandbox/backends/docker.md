@@ -38,13 +38,15 @@ Docker has **no engine-level primitive for enumerating a directory**. A *named* 
 
 `reclaim` is mandatory and gated by no capability, and this backend serves it with `rm -rf` over its own `exec` — the mechanism `remove` already uses recursively, minus the parent walk. It needs none: what it removes is a directory the framework created under `working_directory` with an unguessable name, so there is no attacker-chosen component to walk. `-f` is again what makes an already-gone directory a success, which is the contract's rule rather than a convenience, and anything else raises for the caller to report. The declaration is beside the point: this backend would serve `reclaim` while withholding `FILES_DELETE`, as the other two do.
 
-## A write is owned by whoever runs the commands
+## Who each command runs as
 
-`write_file` is one `docker cp` of a tar on stdin, and the tar decides ownership: every entry carries the **uid and gid `exec` runs as**, read once per container with `id` and cached. A guest that cannot answer — a distroless image writes files perfectly well without an `id` binary — falls back to root, which is what this backend did before and is right for a root image.
+**The file plane is the host's.** `write_file`, `read_file`, `stat_file` and the component walk under them are all `docker cp`, which the daemon performs as root; the image's `USER` never enters into it. `remove` and `reclaim` are the two file-plane members Docker gives no primitive for, so they borrow `exec` — and they take `--user 0` with it.
 
-Each parent directory that is not there yet gets an **entry of its own** rather than being left for docker to infer. An inferred parent is created as root whatever the tar says, and a removal needs write permission on the directory it is emptying rather than on the files in it — so on an image with a non-root `USER`, directories created here could never be emptied by the guest, and every call's files stayed for the life of the conversation while the framework disposed the sandbox after each failed reclaim ([#680](https://github.com/sokolaidev/maf-extensions/issues/680)). The same ownership answers the other half: a program cannot modify a file it was given if root wrote it.
+They have to. Unlink permission comes from the **containing** directory, and every directory under `work_dir` either arrived through `docker cp` or was baked into the image, so it is root's either way. As the image's user, deleting would be the one file-plane call that needs the guest to own what the host wrote. On a non-root image it owns none of it: every call's directory survived `reclaim`, and the framework disposed the sandbox after each failure ([#680](https://github.com/sokolaidev/maf-extensions/issues/680)).
 
-Only **missing** parents are named. An entry for a directory that already exists would take its ownership and mode over, which is not a write's business, and the confinement walk has already stated which ones are there — so the answer is free rather than a second walk.
+**`exec` and `run_code` are the guest program's own** and name no user, so the image decides. Root there would hand a model-written program the authority to rewrite what the host put beside it — the transport shim it imports, the request and response files, the inputs it was given.
+
+What this does not give a hardened image is anywhere to **write**. `work_dir` is root's, so a program on a non-root image reads its inputs and creates nothing of its own. Splitting the run directory into a host-owned mechanics part and a guest-owned workspace is the other half, and [#680](https://github.com/sokolaidev/maf-extensions/issues/680) stays open for it.
 
 ## `run_code` answers by refusing
 
@@ -77,7 +79,8 @@ Names are **derived** from a digest of scope, thread, agent dir, kind and egress
 | `egress_modes = {CLOSED}`, or `{CLOSED, ALLOWLIST}` with a proxy image; a mode outside the set is refused rather than degraded | shipped | [#530](https://github.com/sokolaidev/maf-extensions/pull/530) (merged) under [#265](https://github.com/sokolaidev/maf-extensions/issues/265) (closed) |
 | `run_code` implemented as a refusal, `RUN_CODE` undeclared | shipped — the image's runtime is the image's property, and this backend does not parse the reference | [#531](https://github.com/sokolaidev/maf-extensions/pull/531) (merged) |
 | `FILES_DELETE` over `rm`, held to the ten probes | shipped | — |
-| A write owns what it creates: entries carry the guest's uid and gid, and every missing parent is named rather than inferred | shipped — an inferred parent is root's whatever the tar says, which left a non-root guest unable to remove its own call directory and unable to modify what it was given | [#680](https://github.com/sokolaidev/maf-extensions/issues/680) |
+| `remove` and `reclaim` run as `--user 0`; `exec` and `run_code` run as the image's user | shipped — the rest of the file plane is `docker cp`, which is already root's, so the two members that borrow `exec` borrow root with it rather than needing a non-root guest to own what the host wrote | [#680](https://github.com/sokolaidev/maf-extensions/issues/680) |
+| A guest-writable workspace inside the run directory, so a program on a hardened image can create files of its own | open — `work_dir` and everything `docker cp` puts under it is root's, and separating the two principals is a protocol question rather than this backend's | [#680](https://github.com/sokolaidev/maf-extensions/issues/680) |
 | `reclaim` over `rm -rf`, mandatory and gated by no capability | shipped — the same `rm -rf` behind a `--` that `remove` runs, without the confinement walk and without the capability gate | [#477](https://github.com/sokolaidev/maf-extensions/issues/477) |
 | The egress proxy is a byte copy of wslc's, pinned by test rather than hoisted into core | shipped, by maintainer ruling | — |
 | Live e2e on every pull request as the repository's acceptance gate | shipped | — |

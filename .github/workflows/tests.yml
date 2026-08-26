@@ -352,8 +352,8 @@ jobs:
       MAF_SANDBOX_DOCKER_E2E_IMAGE: mcr.microsoft.com/azurelinux/base/core:3.0
       MAF_SANDBOX_DOCKER_E2E_PROXY_IMAGE: maf-sandbox-docker-proxy:ci
       # The same base with a non-root `USER`, built below. Its own column because every other
-      # image this repository runs — here, in the samples, in verify-live — is root's, and an
-      # ownership bug in the write path all of them exercise survived exactly that (#680).
+      # image this repository runs — here, in the samples, in verify-live — is root's, and a
+      # deletion that needed the guest to own what the host wrote survived exactly that (#680).
       MAF_SANDBOX_DOCKER_E2E_NONROOT_IMAGE: maf-sandbox-docker-nonroot:ci
       # The CodeAct kind runs a Python program in the guest, so it needs an interpreter the
       # backend suite's image does not carry. Same registry for the same reason — MCR rather

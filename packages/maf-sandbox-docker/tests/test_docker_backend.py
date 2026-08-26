@@ -599,6 +599,8 @@ class TestRemove:
         asyncio.run(sandbox.remove("run-1", working_directory=_WORK, recursive=True))
         assert fake.only("exec").args == (
             "exec",
+            "--user",
+            "0",
             "-w",
             _WORK,
             _NAME,
@@ -617,7 +619,7 @@ class TestRemove:
         sandbox, fake = self._sandbox()
         asyncio.run(sandbox.remove("a.txt", working_directory=_WORK))
         args = fake.only("exec").args
-        assert args[4:] == ("rm", "-f", "--", f"{_WORK}/a.txt")
+        assert args[6:] == ("rm", "-f", "--", f"{_WORK}/a.txt")
 
     def test_the_working_directory_itself_is_refused_before_any_command_runs(self):
         sandbox, fake = self._sandbox()
@@ -644,6 +646,8 @@ class TestReclaim:
         asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
         assert fake.only("exec").args == (
             "exec",
+            "--user",
+            "0",
             "-w",
             "/",
             _NAME,
@@ -687,7 +691,7 @@ class TestReclaim:
                 timeout=30,
             )
         )
-        assert fake.only("exec").args[:3] == ("exec", "-w", "/")
+        assert fake.only("exec").args[:5] == ("exec", "--user", "0", "-w", "/")
 
     def test_a_name_a_shell_would_read_stays_one_argument(self):
         """Core dispatches the path unaltered; this backend's argv `exec` is what keeps the
@@ -698,6 +702,40 @@ class TestReclaim:
         sandbox, fake = self._sandbox()
         asyncio.run(sandbox.reclaim(hostile, working_directory=_WORK, timeout=30))
         assert fake.only("exec").args[-1] == hostile
+
+
+class TestWhoseAuthorityACommandCarries:
+    """The file plane is the host's; `exec` and `run_code` are the guest program's.
+
+    Every other file-plane member is `docker cp`, which the daemon performs as root. `remove`
+    and `reclaim` have no engine primitive and borrow `exec`, so they borrow `--user 0` with
+    it — unlink permission comes from the containing directory, and on an image with a
+    non-root `USER` that directory is one `cp` created as root (#680). Giving the guest's own
+    commands the same privilege would let a program rewrite what the host put beside it.
+    """
+
+    def _sandbox(self):
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("cp",): _DockerResult(1, b"", "Error: Could not find the file in container"),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        return asyncio.run(backend.acquire(_KEY, _SPEC)), fake
+
+    def test_a_guest_command_names_no_user_so_the_image_decides(self):
+        sandbox, fake = self._sandbox()
+        asyncio.run(sandbox.exec(["whoami"], working_directory=_WORK, timeout=5))
+        assert "--user" not in fake.only("exec").args
+
+    def test_remove_runs_as_root(self):
+        sandbox, fake = self._sandbox()
+        asyncio.run(sandbox.remove("a.txt", working_directory=_WORK))
+        assert fake.only("exec").args[:3] == ("exec", "--user", "0")
+
+    def test_reclaim_runs_as_root(self):
+        sandbox, fake = self._sandbox()
+        asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
+        assert fake.only("exec").args[:3] == ("exec", "--user", "0")
 
 
 class TestExecDiscardsATimedOutSandbox:
@@ -743,9 +781,7 @@ class TestWriteFile:
         stdin = fake.only("cp", "-").stdin
         assert stdin is not None
         with tarfile.open(fileobj=io.BytesIO(stdin)) as archive:
-            # Last, because the entries above it are the parents that were not there — see
-            # `TestWhoOwnsWhatAWriteCreates`.
-            assert archive.getnames()[-1] == "maf-sandbox/work/main.bicep"
+            assert archive.getnames() == ["maf-sandbox/work/main.bicep"]
 
     def test_str_content_round_trips_as_utf8(self):
         sandbox, fake = self._sandbox()
@@ -782,87 +818,6 @@ class TestWriteFile:
         with pytest.raises(ValueError):
             asyncio.run(sandbox.write_file("../escape", "x", working_directory=_WORK))
         assert fake.matching("cp", "-") == []
-
-
-class TestWhoOwnsWhatAWriteCreates:
-    """A write must not leave the guest unable to remove what it made (#680).
-
-    `docker cp` creates a parent it *infers* as root whatever the tar says, and a removal needs
-    write permission on the directory it is emptying rather than on the files in it. So every
-    missing parent is named explicitly, and every entry carries the uid and gid commands run as.
-    """
-
-    #: What `id` prints in a container whose image declares a non-root `USER`.
-    _APP = {("exec",): _DockerResult(0, b"uid=10001(app) gid=10001(app) groups=10001(app)\n", "")}
-
-    def _sandbox(self, overrides=None):
-        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
-        return asyncio.run(backend.acquire(_KEY, _SPEC)), fake
-
-    def _written(self, fake) -> list[tarfile.TarInfo]:
-        stdin = fake.only("cp", "-").stdin
-        assert stdin is not None
-        with tarfile.open(fileobj=io.BytesIO(stdin)) as archive:
-            return archive.getmembers()
-
-    def test_a_missing_parent_is_named_rather_than_inferred(self):
-        sandbox, fake = self._sandbox()
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/f", "x", working_directory=_WORK))
-        assert [member.name for member in self._written(fake)] == [
-            "maf-sandbox",
-            "maf-sandbox/work",
-            "maf-sandbox/work/f",
-        ]
-
-    def test_the_parents_go_in_as_directories(self):
-        sandbox, fake = self._sandbox()
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/f", "x", working_directory=_WORK))
-        written = self._written(fake)
-        assert [member.isdir() for member in written] == [True, True, False]
-
-    def test_a_parent_that_is_already_there_is_left_alone(self):
-        """An entry for an existing directory would take its ownership and mode over, which is
-        not a write's business — so only what is missing is named."""
-        sandbox, fake = self._sandbox(overrides=_WORK_IS_A_DIRECTORY)
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/f", "x", working_directory=_WORK))
-        assert [member.name for member in self._written(fake)] == ["maf-sandbox/work/f"]
-
-    def test_every_entry_is_owned_by_the_user_commands_run_as(self):
-        sandbox, fake = self._sandbox(overrides=self._APP)
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/f", "x", working_directory=_WORK))
-        assert {(member.uid, member.gid) for member in self._written(fake)} == {(10001, 10001)}
-
-    def test_the_file_is_owned_too_and_not_only_the_directories(self):
-        """The other half of #680: a program cannot modify what it was given if root wrote it."""
-        sandbox, fake = self._sandbox(overrides=self._APP)
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/f", "x", working_directory=_WORK))
-        written = {member.name: member for member in self._written(fake)}
-        assert (written["maf-sandbox/work/f"].uid, written["maf-sandbox/work/f"].gid) == (
-            10001,
-            10001,
-        )
-
-    def test_a_guest_that_cannot_say_is_written_as_root(self):
-        """A distroless image writes files perfectly well and has no `id`. Falling back to what
-        this backend did before is right for the root images that kept #680 hidden."""
-        sandbox, fake = self._sandbox()
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/f", "x", working_directory=_WORK))
-        assert {(member.uid, member.gid) for member in self._written(fake)} == {(0, 0)}
-
-    def test_an_id_that_fails_does_not_fail_the_write(self):
-        overrides = {("exec",): _DockerResult(1, b"", "id: not found")}
-        sandbox, fake = self._sandbox(overrides=overrides)
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/f", "x", working_directory=_WORK))
-        assert {(member.uid, member.gid) for member in self._written(fake)} == {(0, 0)}
-
-    def test_the_user_is_read_once_per_container(self):
-        """A property of the image, and `acquire` hands out a fresh handle every time."""
-        backend, fake = _backend_with(_machine(running=[_NAME], overrides=self._APP))
-        first = asyncio.run(backend.acquire(_KEY, _SPEC))
-        second = asyncio.run(backend.acquire(_KEY, _SPEC))
-        asyncio.run(first.write_file("/maf-sandbox/work/a", "x", working_directory=_WORK))
-        asyncio.run(second.write_file("/maf-sandbox/work/b", "x", working_directory=_WORK))
-        assert len([call for call in fake.matching("exec") if "id" in call.args]) == 1
 
 
 # ---------------------------------------------------------------------------
