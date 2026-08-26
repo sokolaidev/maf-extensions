@@ -176,19 +176,21 @@ class SandboxTransferLimitsNotPermitted(PermissionError):
     """
 
 
-def _coded(backend_name: str, reported: DisposalFailure | str) -> DisposalFailure:
+def _coded(backend_name: str, reported: object) -> DisposalFailure:
     """One backend's answer as a :class:`~maf_sandbox.DisposalFailure`, named by the backend.
 
-    A bare ``str`` is a backend that has not moved to the class yet, and it is read as
-    ``"unknown"`` — the honest code for a sentence nothing can classify, and the one that
-    keeps such a backend inside the vocabulary rather than outside it.
+    ``object``, not the protocol's return type: this is the boundary where a backend's answer
+    stops being trusted, so the annotation has to admit what an untrusted answer can be. A bare
+    ``str`` is a backend that has not moved to the class yet and is read as ``"unknown"`` — the
+    honest code for a sentence nothing can classify, and the one that keeps such a backend
+    inside the vocabulary rather than outside it.
     """
     if isinstance(reported, DisposalFailure):
         return DisposalFailure(reported.code, f"{backend_name}: {reported.detail}")
-    # Anything else — a bool, an exception object, a backend built against a newer protocol —
-    # is still an answer, and reading `.code` off it would raise out of a caller that never
-    # raises. The protocol widened this return type only this release, which is exactly when a
-    # backend is most likely to answer with the wrong shape.
+    # So is anything else — a bool, an exception object, a backend built against a newer
+    # protocol. Reading `.code` off one would raise out of a caller that never raises, and the
+    # protocol widened this return type only this release, which is exactly when a backend is
+    # most likely to answer with the wrong shape.
     return DisposalFailure("unknown", f"{backend_name}: {reported}")
 
 

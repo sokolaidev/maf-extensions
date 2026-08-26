@@ -352,7 +352,7 @@ def test_acquire_is_get_or_create_keyed_by_scope_thread_kind():
     asyncio.run(body())
 
 
-def test_a_work_directory_already_gone_is_a_disposal_that_landed(monkeypatch):
+def test_a_work_directory_already_gone_is_a_disposal_that_landed():
     """`shutil.rmtree` hands `onexc` a `FileNotFoundError` for a missing root, so reading every
     `onexc` call as a failure refuses the key over a sandbox that is already gone — and keeps it
     for a retry that can never succeed. The packaged backends read "no such container" the same
