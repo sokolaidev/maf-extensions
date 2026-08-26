@@ -701,13 +701,18 @@ class SandboxRouter:
         left refused (:meth:`acquire` raises :class:`SandboxUnclean`) until a later disposal — a
         subsequent :meth:`dispose_unclean`, or :meth:`dispose_scope` — lands.
 
-        ``reason`` is quoted back by that refusal.  It does not overwrite one a disposal already
-        recorded: what a backend reported about the sandbox says more than that a cleanup was
-        cut short.
+        The refusal quotes ``reason``'s *code* only.  Its detail is a backend's own sentence and
+        stays in the log, so a host must not expect to read it off :class:`SandboxUnclean`.  A
+        reason does not overwrite one a disposal already recorded: what a backend reported about
+        the sandbox says more than that a cleanup was cut short.
         """
         if self._unclean.get(key) is None:
-            if reason is None or isinstance(reason, DisposalFailure):
-                self._unclean[key] = reason
+            if reason is None:
+                self._unclean[key] = None
+            elif isinstance(reason, DisposalFailure):
+                # Folded rather than stored as given: one place decides what a legal code is,
+                # and every writer of this ledger goes through it.
+                self._unclean[key] = fold_disposal_failures([reason])
             else:
                 # The same one-release grace the protocol grants `dispose`: a sentence is read
                 # as `unknown` rather than refused, so a caller is never forced to import the

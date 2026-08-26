@@ -1226,6 +1226,14 @@ class TestTheDisposalCodeIsWhatACallerBranchesOn:
     def test_nothing_folds_to_nothing(self):
         assert fold_disposal_failures([]) is None
 
+    def test_a_lone_code_outside_the_vocabulary_is_normalised_too(self):
+        """Otherwise the set is closed only when more than one backend failed: a kind branching
+        on the code would see a backend's typo whenever it was the single failure."""
+        folded = fold_disposal_failures([DisposalFailure("wierd", "a")])  # type: ignore[list-item]
+        assert folded is not None
+        assert folded.code == "unknown"
+        assert folded.detail == "a"
+
     def test_a_code_outside_the_vocabulary_does_not_raise(self):
         """`DisposalCode` is a `Literal`, so nothing enforces it at run time - a typo or a
         newer core's word must not raise out of a path that never raises."""
@@ -1304,9 +1312,9 @@ class TestTheDisposalCodeIsWhatACallerBranchesOn:
 
         class _Hangs(InProcessSandboxBackend):
             async def dispose(self, key: SandboxKey) -> DisposalFailure | str | None:
-                if self.dispose_failure is not None:
-                    return self.dispose_failure
-                await asyncio.Event().wait()
+                if self.dispose_failure is None:
+                    await asyncio.Event().wait()  # never returns; the bound expires first
+                return self.dispose_failure
 
         backend = _Hangs(dispose_failure=DisposalFailure("unreachable", "daemon down"))
         router = self._router(backend)
@@ -1377,6 +1385,14 @@ class TestTheRefusalNamesWhy:
         to import the class to close a key."""
         router = self._router(InProcessSandboxBackend())
         router.mark_unclean(_KEY, "the cleanup was cancelled")
+        with pytest.raises(SandboxUnclean, match=r"did not land \(unknown\)"):
+            asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_a_marked_code_outside_the_vocabulary_is_normalised(self):
+        """`mark_unclean` is public, so it is the other way an unrecognised code could reach the
+        field a kind branches on."""
+        router = self._router(InProcessSandboxBackend())
+        router.mark_unclean(_KEY, DisposalFailure("wierd", "a typo"))  # type: ignore[arg-type]
         with pytest.raises(SandboxUnclean, match=r"did not land \(unknown\)"):
             asyncio.run(router.acquire(_KEY, _SPEC))
 

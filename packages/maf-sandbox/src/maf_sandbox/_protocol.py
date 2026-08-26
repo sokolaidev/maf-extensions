@@ -873,24 +873,30 @@ def fold_disposal_failures(failures: Sequence[DisposalFailure]) -> DisposalFailu
     the note on :meth:`SandboxBackend.dispose`.
 
     The code is the most actionable of those reported (:data:`DisposalCode`), and the detail
-    keeps every sentence, so folding loses nothing a log would have shown.
+    keeps every sentence, so folding loses nothing a log would have shown.  A code from outside
+    the vocabulary folds to ``unknown``, which is also how a lone failure is normalised before
+    it reaches anything branching on the closed set.
     """
     if not failures:
         return None
-    if len(failures) == 1:
-        return failures[0]
-    # `detail`, not `str(failure)`: a caller reading this field must get the same shape whether
-    # one backend reported or three, or a log template built against one silently misreads the
-    # other. The code the fold chose is on the result.
     codes: set[DisposalCode] = {failure.code for failure in failures}
-    # A default rather than a bare `next`: `DisposalCode` is a `Literal`, so nothing enforces
-    # it at run time, and a code from outside the vocabulary must not raise out of a caller
-    # that never raises.
+    # A default rather than a bare `next`: `DisposalCode` is a `Literal`, so nothing enforces it
+    # at run time, and a code from outside the vocabulary must neither raise out of a caller that
+    # never raises nor reach one that branches on the set.
     worst: DisposalCode = "unknown"
     for candidate in _DISPOSAL_PRECEDENCE:
         if candidate in codes:
             worst = candidate
             break
+    if len(failures) == 1:
+        # Identity while the code is one of ours, so folding one costs nothing — but a lone
+        # unrecognised code is normalised like several, or the set would be closed only on the
+        # days more than one backend failed.
+        only = failures[0]
+        return only if only.code == worst else DisposalFailure(worst, only.detail)
+    # `detail`, not `str(failure)`: a caller reading this field must get the same shape whether
+    # one backend reported or three, or a log template built against one silently misreads the
+    # other. The code the fold chose is on the result.
     return DisposalFailure(worst, "; ".join(failure.detail for failure in failures))
 
 

@@ -16,7 +16,7 @@ import posixpath
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path, PurePosixPath
 
 from maf_sandbox import (
@@ -280,6 +280,12 @@ class NoIsolationBackend:
         self._seed_files = dict(seed_files or {})
         self._name = name
         self._sandboxes: dict[tuple[SandboxKey, str], NoIsolationSandbox] = {}
+        # Sandboxes whose directory a disposal could not remove. Held apart from `_sandboxes`
+        # because both facts have to hold at once: a later disposal must retry the removal, and
+        # `acquire` must never hand the next call the files this one could not remove. A list,
+        # not a dict keyed by ident: `acquire` reuses an ident, so a second failure on the same
+        # key would overwrite the first entry and its directory would never be retried.
+        self._undeleted: list[tuple[tuple[SandboxKey, str], NoIsolationSandbox]] = []
         self._lock = asyncio.Lock()
 
     @property
@@ -335,6 +341,27 @@ class NoIsolationBackend:
                 self._sandboxes[ident] = sandbox
             return sandbox
 
+    def _remove(self, wanted: Callable[[SandboxKey], bool]) -> tuple[int, list[str]]:
+        """Destroy the matching sandboxes, keeping the ones that would not go. Holds the lock.
+
+        Reporting a failed removal is only half of it: answering ``None`` the *second* time
+        clears the router's refusal over a directory that is still there.
+        """
+        doomed = [(i, self._sandboxes.pop(i)) for i in list(self._sandboxes) if wanted(i[0])]
+        doomed += [(i, s) for i, s in self._undeleted if wanted(i[0])]
+        self._undeleted = [(i, s) for i, s in self._undeleted if not wanted(i[0])]
+
+        removed = 0
+        problems: list[str] = []
+        for ident, sandbox in doomed:
+            problem = sandbox.destroy()
+            if problem is None:
+                removed += 1
+            else:
+                self._undeleted.append((ident, sandbox))
+                problems.append(problem)
+        return removed, problems
+
     async def dispose(self, key: SandboxKey) -> str | None:
         """Delete this key's sandboxes. Never raises; answers why one may still be there.
 
@@ -342,20 +369,11 @@ class NoIsolationBackend:
         serves the next call the files this one could not remove.
         """
         async with self._lock:
-            undeleted = [
-                problem
-                for ident in [i for i in self._sandboxes if i[0] == key]
-                if (problem := self._sandboxes.pop(ident).destroy()) is not None
-            ]
-        return "; ".join(undeleted) or None
+            _, problems = self._remove(lambda k: k == key)
+        return "; ".join(problems) or None
 
     async def dispose_scope(self, scope: str, thread_id: str) -> int:
+        """How many sandboxes went — a directory that would not go is retained, not counted."""
         async with self._lock:
-            doomed = [
-                ident
-                for ident in self._sandboxes
-                if ident[0].scope == scope and ident[0].thread_id == thread_id
-            ]
-            for ident in doomed:
-                self._sandboxes.pop(ident).destroy()
-            return len(doomed)
+            removed, _ = self._remove(lambda k: k.scope == scope and k.thread_id == thread_id)
+            return removed
