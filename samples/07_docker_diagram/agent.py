@@ -64,7 +64,7 @@ from maf_sandbox.maf import (
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
 
 if TYPE_CHECKING:
-    from maf_sandbox import ReclaimFailure, SandboxSpec
+    from maf_sandbox import SandboxSpec
 
 logger = logging.getLogger(__name__)
 
@@ -100,37 +100,6 @@ PROBE_TIMEOUT_SECONDS = 30
 
 
 # --- Host wiring -----------------------------------------------------------------------------
-
-
-async def report_reclaim_failure(failure: ReclaimFailure) -> None:
-    """What this host does when a call's directory could not be removed.
-
-    A notification rather than a decision.  By the time this runs the framework has already
-    disposed the sandbox, and ``failure.disposal`` says whether that landed — so there is
-    nothing to arrange here, and what a host adds is what it does with the fact.  This one
-    prints it; a real one counts it, and pages on ``"failed"``, which is the case where the
-    router goes on refusing the key until a disposal lands.
-
-    Two things the shape obeys.  It does as little as possible, because it runs inside the same
-    ``finally`` that reclaims and is bounded by the same timeout — the framework catches a
-    handler that raises and logs it, but a handler that raises loses its own report.  And it
-    keeps ``failure.path`` out of what it prints: a guest path is host-side detail, and this
-    program's stdout is also the model's transcript.
-
-    **A healthy run never reaches this, and a misassembled one reaches it on the first call.**
-    The removal is ``rm -rf`` run as the image's user, so an image whose ``USER`` cannot write
-    the call directory refuses every one of them — which is what the ``mkdir`` in
-    ``diagram_kind.py`` is there to make impossible, and what this handler is here to report
-    when a kind skips it (#680).
-
-    It cannot stop anything, and that is by design: the body has already returned by the time
-    this runs, so the result has already gone to the model. A handler that raises is logged and
-    contained. The place to refuse is before the work, not after it.
-    """
-    print(
-        f"{MEASURED}The call directory was not reclaimed: {failure.reason} "
-        f"(the framework's disposal: {failure.disposal})."
-    )
 
 
 async def left_in_the_sandbox(router: SandboxRouter, spec: SandboxSpec, key: SandboxKey) -> str:
@@ -186,9 +155,6 @@ async def run() -> int:
         context,
         sink,
         image=env["DIAGRAM_SANDBOX_IMAGE"],
-        # The one call-lifetime decision a host has to make. The framework reclaims the call's
-        # directory whether or not this is wired; this is how the host hears when it could not.
-        on_reclaim_failure=report_reclaim_failure,
     )
     if not tools:
         print("No sandbox backend: render_diagram was not attached.", file=sys.stderr)

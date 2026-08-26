@@ -18,9 +18,8 @@ Four claims, each of which the sample makes in prose and none of which its live 
 * the artifact lands as `diagram.png` however the guest spelled it, because the call-time
   declaration carries `name`.
 
-Two failures the live run cannot reach are staged here instead: a guest that cannot make the
-directory, and a removal that refuses. The sample's own image is root-owned and neither
-happens against it.
+The failure the live run cannot reach is staged here instead: a guest that cannot make the
+directory. The sample's own image is root-owned, so nothing in a healthy run goes near it.
 
 Async tests follow the repo convention: a synchronous `def test_*` driving one `asyncio.run`
 rather than an async marker (no pytest-asyncio).
@@ -42,7 +41,6 @@ from maf_sandbox import (
     Capability,
     ExecResult,
     Isolation,
-    ReclaimFailure,
     SandboxRouter,
     make_file_system_sink,
 )
@@ -93,14 +91,6 @@ class _Renderer(InProcessSandbox):
             argv = list(command)
             self.contents[argv[argv.index("-o") + 1]] = _png(24, 16)
         return result
-
-
-class _RefusingRenderer(_Renderer):
-    """A sandbox that renders and then refuses to clean up — the case a live run cannot stage."""
-
-    async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
-        self.reclaims.append((directory, working_directory, timeout))
-        raise OSError(f"could not reclaim {directory}: rm exited 1")
 
 
 class _NoMkdir(_Renderer):
@@ -297,39 +287,3 @@ class TestTheArtifactLandsUnderTheNameTheSampleChose:
         run_id = call_directory.rsplit("/", 1)[-1]
         assert "diagram.png" in reply
         assert run_id not in reply
-
-
-class TestTheHostHearsWhenTheDirectoryStays:
-    """The failure path, which the live sample cannot stage and the factory must still carry."""
-
-    def test_the_handler_is_called_with_what_was_left(self, out_dir: Path):
-        heard: list[ReclaimFailure] = []
-
-        async def record(failure: ReclaimFailure) -> None:
-            heard.append(failure)
-
-        sandbox = _RefusingRenderer()
-        _render(sandbox, out_dir, on_reclaim_failure=record)
-
-        assert len(heard) == 1
-        assert heard[0].tool == "render_diagram"
-        assert "could not reclaim" in heard[0].reason
-
-    def test_the_framework_disposed_the_sandbox_before_telling_the_host(self, out_dir: Path):
-        """The remedy is not the host's to arrange: by the time it hears, the sandbox holding
-        the model's DOT and the rendered image is gone."""
-        heard: list[ReclaimFailure] = []
-
-        async def record(failure: ReclaimFailure) -> None:
-            heard.append(failure)
-
-        _render(_RefusingRenderer(), out_dir, on_reclaim_failure=record)
-
-        assert heard[0].disposal == "disposed"
-
-    def test_the_render_still_answered(self, out_dir: Path):
-        """A cleanup that failed does not fail the call — the model gets its answer, and the
-        host gets the notification."""
-        reply = _render(_RefusingRenderer(), out_dir, on_reclaim_failure=None)
-
-        assert "diagram.png" in reply

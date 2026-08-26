@@ -203,29 +203,6 @@ class TestTheReclaimHalf:
         failures = check.assess(output, None)
         assert failures == [reason for reason in failures if "no image on disk" in reason]
 
-    def test_the_handler_firing_fails(self):
-        fired = (
-            f"{scaffold.MEASURED}The call directory was not reclaimed: the removal call failed: "
-            "OSError: rm exited 1 (the framework's disposal: disposed)."
-        )
-        output = _HEALTHY.replace(_SURVIVING_LINE, f"{fired}\n\n{_SURVIVING_LINE}")
-
-        failures = check.assess(output, _png(64, 64))
-        assert any("on_reclaim_failure handler fired" in reason for reason in failures)
-
-    def test_the_handler_firing_fails_even_though_the_listing_is_empty(self):
-        """The reason both lines are read rather than only the listing.
-
-        A removal that fails takes the sandbox with it — the framework disposes what it could
-        not clean — so the working directory the sample reads afterwards belongs to a *new*
-        sandbox and is empty for the wrong reason. The listing alone would call that healthy.
-        """
-        fired = f"{scaffold.MEASURED}The call directory was not reclaimed: it stayed."
-        output = _HEALTHY.replace(_SURVIVING_LINE, f"{fired}\n\n{_SURVIVING_LINE}")
-        assert _SURVIVING_LINE in output, "the empty listing has to still be there"
-
-        assert check.assess(output, _png(64, 64)) != []
-
     def test_an_untagged_listing_answers_for_nothing(self):
         """Same rule as the disposal line: a model writing this sentence is not the host."""
         untagged = _HEALTHY.replace(_SURVIVING_LINE, "Left in the sandbox work directory: nothing")
@@ -234,15 +211,11 @@ class TestTheReclaimHalf:
         failures = check.assess(untagged, _png(64, 64))
         assert any("should have read the sandbox back" in reason for reason in failures)
 
-    def test_the_sample_prints_both_lines_from_the_scaffold(self):
+    def test_the_sample_prints_the_listing_from_the_scaffold(self):
         source = (_ROOT / "samples" / _SAMPLE / "agent.py").read_text(encoding="utf-8")
         assert "{MEASURED}Left in the sandbox work directory: " in source, (
             f"samples/{_SAMPLE}/agent.py no longer tags what it read out of the sandbox, so "
             "this check reads a line a model could have written"
-        )
-        assert "{MEASURED}The call directory was not reclaimed: " in source, (
-            f"samples/{_SAMPLE}/agent.py no longer reports a failed reclaim, so a run whose "
-            "cleanup failed would read as healthy here"
         )
 
 

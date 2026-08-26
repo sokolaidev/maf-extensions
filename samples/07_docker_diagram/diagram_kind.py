@@ -35,8 +35,6 @@ from maf_sandbox.maf import SandboxToolSession, sandboxed_tool
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from maf_sandbox import ReclaimFailure
-
 logger = logging.getLogger(__name__)
 
 
@@ -109,7 +107,6 @@ def make_diagram_tools(
     *,
     image: str | None = None,
     exec_timeout_seconds: int = _DEFAULT_TIMEOUT_SECONDS,
-    on_reclaim_failure: Callable[[ReclaimFailure], Awaitable[None]] | None = None,
 ) -> list[Any]:
     """Return the ``[render_diagram]`` tool list, or ``[]`` when no sandbox is available.
 
@@ -124,10 +121,6 @@ def make_diagram_tools(
         image: OCI reference of a sandbox image with ``dot`` on its path.
         exec_timeout_seconds: Per-render bound. A sandbox that stops answering must not hold the
             caller's turn open.
-        on_reclaim_failure: The host's, and passed straight through. A kind that writes under
-            ``guest_call_path()`` has the framework remove that directory for it; this is how
-            the host hears when a removal did not happen. Taken as a parameter rather than
-            wired here because the decision is the deployment's — see ``agent.py``.
     """
     spec = diagram_sandbox_spec(image)
     return sandboxed_tool(
@@ -143,7 +136,6 @@ def make_diagram_tools(
         # reference on success, `dot`'s own diagnostic on failure — the same basis on which the
         # Bicep workload trusts a compiler's output. It is not model-authored content.
         output_sink=sink,
-        on_reclaim_failure=on_reclaim_failure,
         logger=logger,
     )
 

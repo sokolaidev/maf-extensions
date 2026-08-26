@@ -50,11 +50,11 @@ It runs from `/` rather than from `work_dir`, because nothing guarantees `work_d
 
 **The sample reads that back rather than asserting it.** After the turn and before the disposal, `agent.py` reacquires the same sandbox and lists `work_dir` over `exec` — the docker backend serves no `FILES_LIST`, and this is host-side instrumentation rather than something the kind does. A healthy run prints `nothing`, which is the only interesting listing there is. It asks only once an image has landed, because `acquire` is get-or-create: probing a turn that called no tool would *create* the sandbox whose absence the disposal line is evidence of.
 
-**And it wires the failure path**, which a healthy run never reaches and a misassembled one reaches on its first call. `make_diagram_tools` passes the host's `on_reclaim_failure` straight to `sandboxed_tool`; `agent.py` supplies a handler that prints what was left and what the framework did about it. A removal that fails is a data-retention failure rather than an untidy one, and the framework treats it as such: it disposes the sandbox itself, before telling the host, and `ReclaimFailure.disposal` says whether that landed.
+**And it wires no `on_reclaim_failure`, on purpose.** `sandboxed_tool` takes a host callback for a removal that did not happen, and this sample does not pass one, because after the `mkdir` above there is nothing here for it to report. If the guest can make the directory, the removal works. If it cannot, the tool refuses before writing anything — and the framework then reclaims a path that was never created, which is `rm -rf` on a missing directory and succeeds. What is left are accidents below the workload: a container that died mid-call, a control-plane call that timed out, a backend older than `Sandbox.reclaim`.
 
-**The handler is where a host learns, and it is not where anything can be stopped.** Measured, on a hardened image with a kind that skips the `mkdir` above: the call returns `wrote /maf-sandbox/work/…/note` to the model, the handler fires afterwards, and a handler that *raises* changes nothing — the framework logs it and the result still goes back. That is deliberate, since the reclaim runs in a `finally` where raising would replace the call's own answer with a message about cleanup. What a host gets is the fact, in time to count it, alert on it and fix the image; what it does not get is a veto. The veto belongs to the `mkdir`, before the work.
+That is worth being plain about, because the callback is easy to mistake for a control point. **It cannot stop anything.** Measured, on a hardened image with a kind that skips the `mkdir`: the call returns `wrote /maf-sandbox/work/…/note` to the model, the handler fires *afterwards*, and a handler that raises changes nothing — the framework logs it and the result still goes back. That is deliberate, since the reclaim runs in a `finally` where raising would replace the call's own answer with a message about cleanup. A host gets the fact, in time to count it and alert on it; the veto belongs to the `mkdir`, before the work. What a deployment does with the fact — a counter, a page when `ReclaimFailure.disposal` is `"failed"` and the router is refusing the conversation — is three lines of operations code and no part of a kind, which is why none of it is here. `packages/maf-sandbox/README.md` is where that surface is described.
 
-The other thing that misassembly costs is easy to miss and shows up as a bill: the framework disposes the sandbox after every failed reclaim, so **the next call starts cold, every time**. Measured on the same image — `docker ps -a` reports 0 containers after each call, against 1 for a correctly assembled one.
+The other thing a misassembled image costs is easy to miss and shows up as a bill: the framework disposes the sandbox after every failed reclaim, so **the next call starts cold, every time**. Measured on the same image — `docker ps -a` reports 0 containers after each call, against 1 for a correctly assembled one.
 
 ## The boundary is weaker, and the refusal is the feature
 
@@ -101,14 +101,14 @@ The first call pays for creating and starting the container — a few seconds, a
 
 ```
   [measured] installed: maf-sandbox 0.24.0, maf-sandbox-docker 0.8.1
-Rendered diagram.png (image/png); saved under out/.
+The image was saved at `out/diagram.png`.
 
   [measured] Left in the sandbox work directory: nothing
 
   [measured] Disposed 1 sandbox(es).
 ```
 
-That block is one real run, on 2026-08-25. **What the model says varies** — the DOT it writes, whether it labels the edges, how it phrases the reply; this one happened to repeat the tool's own sentence almost word for word, which is its choice and not the sample printing the tool result. **What does not vary** is the tool result underneath it and the file on disk: `render_diagram` returns exactly
+That block is one real run, on 2026-08-26. **What the model says varies** — the DOT it writes, whether it labels the edges, how it phrases the reply, and whether it repeats the tool's own sentence or writes its own as it did here. **What does not vary** is the tool result underneath it and the file on disk: `render_diagram` returns exactly
 
 ```
 Rendered diagram.png (image/png); saved under out/.
@@ -124,7 +124,9 @@ The PNG is git-ignored (`out/`), so a run leaves no tracked file behind.
 
 **Run live**, on 2026-08-11: Docker Engine 29.5.3 with the `diagram-sandbox` image above (Graphviz 2.43.0), and a local tool-calling model behind an OpenAI-compatible endpoint — which is what this sample used at the time. The agent wrote DOT, `render_diagram` rendered it in a `--network none` container at `Isolation.CONTAINER`, and `collect_outputs` landed a valid 4–11 KB PNG at `out/diagram.png` — the full `FILES_IN → exec → FILES_OUT` round trip, end to end.
 
-**Run live again**, on 2026-08-25, on the Azure OpenAI wiring the rest of the set uses and on the call-directory shape above: Docker Engine 29.7.2, `gpt-5.4-mini`, and the **published** wheels the PEP 723 block resolves — `maf-sandbox 0.24.0` and `maf-sandbox-docker 0.8.1`, which is the pair a reader gets today. A 377×59 PNG landed, the working directory read back empty, and `scripts/check_live_diagram_sample.py` passed on that transcript. Worth saying which core that was: everything the new shape uses — `guest_call_path()`, `outputs_named_at_call_time`, `DeclaredOutput.name`, `on_reclaim_failure` — is in 0.24.0 already, so the floor in the script block did not have to move.
+**Run live again**, on 2026-08-26, on the Azure OpenAI wiring the rest of the set uses and on the call-directory shape above: Docker Engine 29.7.2, `gpt-5.4-mini`, and the **published** wheels the PEP 723 block resolves — `maf-sandbox 0.24.0` and `maf-sandbox-docker 0.8.1`, which is the pair a reader gets today. A 371×59 PNG landed, the working directory read back empty, and `scripts/check_live_diagram_sample.py` passed on that transcript. Worth saying which core that was: everything the new shape uses — `guest_call_path()`, `outputs_named_at_call_time` and `DeclaredOutput.name` — is in 0.24.0 already, so the floor in the script block did not have to move.
+
+**Measured separately, and not from this sample**: the ownership behaviour behind the `mkdir` above, on three images (root, non-root, non-root with the work directory pre-owned) against three kind shapes. [#680](https://github.com/sokolaidev/maf-extensions/issues/680) carries that table; nothing in `samples/` reproduces it, because doing so would mean shipping an image built to be wrong.
 
 **Gated in CI.** `verify-live.yml` builds the image above on the runner and runs this sample on demand and once after each release of `maf-sandbox` or `maf-sandbox-docker`. Its check reads the landed PNG's own header rather than the model's account of it (`scripts/check_live_diagram_sample.py`): a turn that describes a diagram it never rendered writes the same paragraph as one that did, so the file is the evidence. The same check reads the sandbox listing, so a run that renders perfectly and leaves the model's DOT source behind goes red on the retention rather than passing on the picture. The docker **backend** beneath it is exercised more often still — `test_docker_e2e.py` runs a real container on every pull request, `FILES_OUT` stat-and-read path included.
 

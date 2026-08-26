@@ -48,16 +48,6 @@ _SURVIVING = re.compile(
     re.MULTILINE | re.IGNORECASE,
 )
 
-#: What the sample's `on_reclaim_failure` handler prints. A healthy run never reaches it — the
-#: docker backend's `reclaim` is `rm -rf` running as root — so its presence is a failure rather
-#: than a detail, and it is also the one thing that makes the listing above meaningless: a
-#: removal that failed takes the sandbox with it, and the empty directory read afterwards is a
-#: **new** sandbox's.
-_NOT_RECLAIMED = re.compile(
-    r"^  (?-i:\[measured\]) The call directory was not reclaimed:\s*(?P<why>.*)$",
-    re.MULTILINE | re.IGNORECASE,
-)
-
 #: What the sample prints for an empty listing.
 _NOTHING = "nothing"
 
@@ -101,13 +91,6 @@ def assess(output: str, image: bytes | None) -> list[str]:
         failures.append(
             "'Disposed 0 sandbox(es)' — no sandbox was ever created, so the model answered "
             "without calling render_diagram"
-        )
-
-    unreclaimed = _NOT_RECLAIMED.search(output)
-    if unreclaimed is not None:
-        failures.append(
-            "the host's on_reclaim_failure handler fired, so the call's directory survived the "
-            f"call: {unreclaimed.group('why').strip()}"
         )
 
     if image is None:
