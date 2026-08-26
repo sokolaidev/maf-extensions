@@ -1498,6 +1498,141 @@ class TestOnlyTheUncleanPathClosesAKey:
         asyncio.run(router.acquire(_KEY, _SPEC))
 
 
+class TestDisposalsForOneKeyDoNotInterleave:
+    """#642 — acquire and disposal for one key were not coordinated at all.
+
+    Only the disposals are serialised. `acquire` takes no lock: its ledger reads carry no
+    await and are already atomic, and a lock held across a cold create would block the very
+    disposal that exists to bound how long a dirty sandbox lives.
+    """
+
+    def _router(self, *backends, **kwargs):
+        return SandboxRouter(list(backends), min_isolation=Isolation.NONE, **kwargs)
+
+    def test_a_fast_disposal_does_not_clear_a_slow_one_underneath_it(self):
+        """Race E. Every disposal marks the key before its first await, so the slow one's mark
+        is already there — and a fast one landing meanwhile used to pop it, reopening the key
+        while the slow disposal was still deleting. An acquire in that window is handed a
+        sandbox the slow disposal then destroys."""
+        inside = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+
+        class _SlowFirst(InProcessSandboxBackend):
+            async def dispose(self, key: SandboxKey) -> DisposalFailure | None:
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    inside.set()
+                    await release.wait()
+                return None
+
+        async def scenario() -> bool:
+            router = self._router(_SlowFirst())
+            slow = asyncio.create_task(router.dispose_unclean(_KEY, timeout=5))
+            await inside.wait()
+            fast = asyncio.create_task(router.dispose_unclean(_KEY, timeout=5))
+            await asyncio.sleep(0.05)
+            open_mid_flight = _KEY not in router._unclean  # noqa: SLF001
+            release.set()
+            await asyncio.gather(slow, fast)
+            return open_mid_flight
+
+        assert asyncio.run(scenario()) is False, "the key was reopened mid-disposal"
+
+    def test_an_acquire_mid_create_is_refused_when_the_key_closes_under_it(self):
+        """Race F. The ledger check runs before the create's await and nothing re-read it
+        after, so a disposal that failed meanwhile left the caller holding a sandbox for a key
+        that is now refused."""
+        creating = asyncio.Event()
+        release = asyncio.Event()
+
+        class _SlowCreate(InProcessSandboxBackend):
+            async def acquire(self, key: SandboxKey, spec: SandboxSpec):
+                creating.set()
+                await release.wait()
+                return await super().acquire(key, spec)
+
+            async def dispose(self, key: SandboxKey) -> DisposalFailure | None:
+                return DisposalFailure("refused", "still there")
+
+        async def scenario() -> None:
+            router = self._router(_SlowCreate())
+            acquiring = asyncio.create_task(router.acquire(_KEY, _SPEC))
+            await creating.wait()
+            await router.dispose_unclean(_KEY, timeout=5)
+            release.set()
+            await acquiring
+
+        with pytest.raises(SandboxUnclean, match="while this acquire was creating it"):
+            asyncio.run(scenario())
+
+    def test_the_sandbox_that_acquire_created_is_disposed_before_it_refuses(self):
+        """A refused acquire owes nothing billable left running — the same rule the reclaim
+        refusal follows, and the reason this does not simply raise."""
+        creating = asyncio.Event()
+        release = asyncio.Event()
+        disposed: list[SandboxKey] = []
+
+        class _SlowCreate(InProcessSandboxBackend):
+            async def acquire(self, key: SandboxKey, spec: SandboxSpec):
+                creating.set()
+                await release.wait()
+                return await super().acquire(key, spec)
+
+            async def dispose(self, key: SandboxKey) -> DisposalFailure | None:
+                disposed.append(key)
+                return DisposalFailure("refused", "still there") if len(disposed) == 1 else None
+
+        async def scenario() -> None:
+            router = self._router(_SlowCreate())
+            acquiring = asyncio.create_task(router.acquire(_KEY, _SPEC))
+            await creating.wait()
+            await router.dispose_unclean(_KEY, timeout=5)
+            release.set()
+            await acquiring
+
+        with pytest.raises(SandboxUnclean):
+            asyncio.run(scenario())
+        assert len(disposed) == 2, "the sandbox created mid-refusal was left running"
+
+    def test_a_slow_create_does_not_hold_up_a_disposal(self):
+        """What `acquire` taking the lock would have cost. `dispose_unclean` runs in a tool
+        call's `finally` under a bound; waiting on a cold create could burn that bound having
+        attempted nothing, and the mechanism that limits a dirty sandbox's life is the one
+        thing a create must never block."""
+        creating = asyncio.Event()
+        release = asyncio.Event()
+
+        class _NeverFinishesCreating(InProcessSandboxBackend):
+            async def acquire(self, key: SandboxKey, spec: SandboxSpec):
+                creating.set()
+                await release.wait()
+                return await super().acquire(key, spec)
+
+        async def scenario() -> bool:
+            router = self._router(_NeverFinishesCreating())
+            acquiring = asyncio.create_task(router.acquire(_KEY, _SPEC))
+            await creating.wait()
+            try:
+                # Far under the create, which never finishes on its own.
+                landed = await asyncio.wait_for(router.dispose_unclean(_KEY, timeout=5), 2)
+            finally:
+                release.set()
+                acquiring.cancel()
+            return landed
+
+        assert asyncio.run(scenario()) is True
+
+    def test_the_lock_does_not_outlive_the_loop_it_was_made_on(self):
+        """An `asyncio.Lock` binds to the loop that first waits on it, so a lock cached across
+        `asyncio.run` calls would raise on the second — the reason the backends key theirs on
+        the running loop and why this one does too."""
+        router = self._router(InProcessSandboxBackend())
+        asyncio.run(router.dispose(_KEY))
+        asyncio.run(router.dispose(_KEY))
+
+
 class TestTheRefusalNamesWhy:
     """A host reading `SandboxUnclean` should learn the code without going to the logs."""
 

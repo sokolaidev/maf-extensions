@@ -13,6 +13,7 @@ import asyncio
 import dataclasses
 import logging
 import math
+import weakref
 from collections.abc import AsyncGenerator, Iterable, Sequence
 from contextlib import asynccontextmanager
 from typing import cast
@@ -324,6 +325,16 @@ class SandboxRouter:
         # of. An entry leaves when a disposal lands; a key that keeps failing stays refused.
         # Keyed, not a set, so a refusal can say why; `None` for a key marked before a try.
         self._unclean: dict[SandboxKey, DisposalFailure | None] = {}
+        # Disposals for one key run one at a time. Only they: a disposal body awaits once per
+        # backend while it rewrites the ledger, and two interleaved leave one clearing the key
+        # while the other is still deleting (#642 race E). `acquire` takes nothing — its ledger
+        # reads carry no await and are already atomic, and a lock held across a cold create
+        # would block the very disposal that exists to bound a dirty sandbox's life.
+        # Per loop, weak-keyed: the shape the docker and wslc backends use, and for the same
+        # reason — an `asyncio.Lock` binds to the loop that first waits on it.
+        self._disposal_locks: weakref.WeakKeyDictionary[
+            asyncio.AbstractEventLoop, dict[SandboxKey, asyncio.Lock]
+        ] = weakref.WeakKeyDictionary()
         self._min_isolation = Isolation(str(min_isolation))
         self._selected_name = selected
         self._denied_capabilities = frozenset(
@@ -537,6 +548,40 @@ class SandboxRouter:
         """
         self._refuse_unless_backend_can_serve(spec)
 
+    def _disposal_lock(self, key: SandboxKey) -> asyncio.Lock:
+        """The disposal lock for one key on the running loop (see ``__init__``)."""
+        per_loop = self._disposal_locks.setdefault(asyncio.get_running_loop(), {})
+        lock = per_loop.get(key)
+        if lock is None:
+            lock = per_loop[key] = asyncio.Lock()
+        return lock
+
+    async def _refuse_a_key_closed_during_the_create(self, key: SandboxKey) -> None:
+        """Dispose what this acquire just created, then raise the refusal it walked into.
+
+        On the selected backend directly, the way the reclaim refusal below does it and for the
+        same reason: a refused acquire owes nothing billable left running.  Not through
+        :meth:`dispose`, which would wait on the disposal still holding the key's lock and then
+        clear the ledger entry this refusal is quoting.
+        """
+        reported = self._unclean[key]
+        try:
+            undisposed = await self._backend.dispose(key) if self._backend else None
+        except Exception as failed:  # noqa: BLE001 — the refusal must reach the caller
+            undisposed = str(failed)
+        if undisposed is not None:
+            logger.warning(
+                "sandbox router: backend %s failed to dispose a sandbox refused mid-create: %s",
+                self._backend.name if self._backend else "?",
+                undisposed,
+            )
+        raise SandboxUnclean(
+            f"the sandbox for {key.scope}/{key.thread_id}/{key.agent_dir} was refused while "
+            "this acquire was creating it — a disposal for the key ran and did not land. The "
+            "sandbox just created has been disposed; the key stays refused until one lands.",
+            code=reported.code if reported is not None else None,
+        )
+
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> Sandbox:
         """Return a running sandbox for ``key``, creating one if needed.
 
@@ -551,7 +596,8 @@ class SandboxRouter:
             SandboxUnclean: when a previous call left this key's sandbox unclean and no disposal
                 has since landed. An expected outcome for a direct consumer, not a backend
                 failure: the refusal persists until :meth:`dispose_unclean` or
-                :meth:`dispose_scope` succeeds for the key.
+                :meth:`dispose_scope` succeeds for the key. Raised for a key closed *while*
+                this call was creating its sandbox too, and that sandbox is disposed first.
             SandboxCapabilityDenied: when the spec requires a capability this host denies.
             SandboxIdentityDenied: when the spec's ``identities`` carry one this host denies.
             SandboxBackendNotPermitted: when the spec raises the floor above what the backend
@@ -585,6 +631,13 @@ class SandboxRouter:
             )
         self._refuse_unless_backend_can_serve(spec)
         sandbox = await self._backend.acquire(key, spec)
+        if key in self._unclean:
+            # Refused while the create was in flight. The check above ran before the await and
+            # nothing re-read the ledger after it, so the caller was handed a sandbox for a key
+            # that is now closed (#642 race F). A disposal that *started* first is already
+            # caught up there — it marks the key before its own first await — so what is left
+            # for here is the one that started during the create.
+            await self._refuse_a_key_closed_during_the_create(key)
         try:
             _refuse_a_sandbox_that_cannot_be_reclaimed(sandbox)
         except TypeError:
@@ -610,7 +663,8 @@ class SandboxRouter:
 
     async def dispose(self, key: SandboxKey) -> None:
         """Delete every kind's sandbox for ``key``. Best-effort across every registered backend."""
-        await self._dispose_each(key)
+        async with self._disposal_lock(key):
+            await self._dispose_each(key)
 
     async def _dispose_each(self, key: SandboxKey, *, refuse: bool = False) -> bool:
         """Ask every backend to dispose ``key``; ``True`` when none refused.
@@ -687,7 +741,11 @@ class SandboxRouter:
             self._unclean.setdefault(key, None)
         try:
             async with asyncio.timeout(timeout):
-                return await self._dispose_each(key, refuse=refuse)
+                # Inside the bound: waiting on another disposal for this key is still the
+                # caller's time, and a bound covering only part of the wait is not the bound
+                # this docstring promises.
+                async with self._disposal_lock(key):
+                    return await self._dispose_each(key, refuse=refuse)
         except TimeoutError:
             logger.warning(
                 "sandbox router: disposing %s/%s/%s did not finish within %ss",
