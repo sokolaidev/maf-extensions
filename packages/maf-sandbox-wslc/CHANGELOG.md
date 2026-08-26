@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.12.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.11.3...maf-sandbox-wslc-v0.12.0) (2026-08-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sandbox:** a failed delete comes back as a code ([#678](https://github.com/sokolaidev/maf-extensions/issues/678))
+
+### Features
+
+* **sandbox:** a failed delete comes back as a code ([#678](https://github.com/sokolaidev/maf-extensions/issues/678)) ([3b14292](https://github.com/sokolaidev/maf-extensions/commit/3b14292c96508e89c182cd760070009f2262867b))
+
+
+### Fixes
+
+* require maf-sandbox 0.25.0 in the dependents and 0.25 in the samples, and admit 0.26 ([#690](https://github.com/sokolaidev/maf-extensions/issues/690)) ([07f4a03](https://github.com/sokolaidev/maf-extensions/commit/07f4a0316acc74b0dc9a71f15dc4b9be943922bd))
+
 ## [0.11.3](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-wslc-v0.11.2...maf-sandbox-wslc-v0.11.3) (2026-08-25)
 
 
