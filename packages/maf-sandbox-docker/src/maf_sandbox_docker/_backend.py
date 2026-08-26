@@ -341,16 +341,11 @@ class _DockerSandbox:
     ) -> ExecResult:
         """One ``docker exec``, as the image's user or as ``--user 0``.
 
-        **The file plane is the host's.**  ``write_file``, ``read_file``, ``stat_file`` and the
-        component walk are ``docker cp``, which the daemon performs as root; ``remove`` and
-        ``reclaim`` are the two file-plane members the engine gives no primitive for, so they
-        borrow ``exec`` and take root with it.  Left as the image's user, deleting would be the
-        one file-plane call that needs the guest to own what the host wrote — which an image
-        with a non-root ``USER`` does not (#680).
-
-        :meth:`exec` and :meth:`run_code` are the guest program's own and stay the image's user.
-        Making *them* root would hand the program the authority to rewrite what the host put
-        beside it, transport files included.
+        The file plane is the host's, and the rest of it is ``docker cp`` — which the daemon
+        performs as root.  :meth:`remove` and :meth:`reclaim` borrow this one for want of an
+        engine primitive, so they ask for that same authority; :meth:`exec` and
+        :meth:`run_code` are the guest program's own and name no user, leaving the image to
+        decide (#680).
         """
         privilege = ("--user", "0") if as_root else ()
         try:
@@ -366,6 +361,25 @@ class _DockerSandbox:
             stderr=result.stderr,
             exit_code=result.returncode,
         )
+
+    async def _removal(
+        self, argv: Sequence[str], *, working_directory: str, timeout: float
+    ) -> ExecResult:
+        """Run a removal as root, and as the image's user if root was refused.
+
+        ``--user 0`` is a uid, not a capability set: with
+        :attr:`~maf_sandbox_docker.DockerSandboxConfig.cap_drop_all` there is no
+        ``CAP_DAC_OVERRIDE``, so root can empty only what it owns.  A directory the image's
+        user owns is the one shape that leaves it, and the one shape the image's user can
+        empty itself — which is what this backend ran as before, so the second attempt takes
+        back an authority rather than adding one (#680).
+        """
+        removed = await self._exec(
+            argv, working_directory=working_directory, timeout=timeout, as_root=True
+        )
+        if removed.exit_code == 0:
+            return removed
+        return await self._exec(argv, working_directory=working_directory, timeout=timeout)
 
     async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
         """Describe ``path``, or return ``None`` when nothing is there.
@@ -408,7 +422,14 @@ class _DockerSandbox:
         makes a missing path succeed and refuses a directory without ``-r``. The image
         dependency is the one :attr:`capabilities` already names for ``EXEC``.
 
-        Runs as root, like every other file-plane call here — see :meth:`_exec`.
+        Goes through :meth:`_removal`, so with the file plane's authority rather than the
+        guest's.
+
+        **Residual.**  The component walk classifies, then ``rm`` resolves again, so a guest
+        that turns a stat-ed component into a symlink between the two wins — the race
+        :meth:`read_file` already names, now with root behind it.  What holds it out of reach
+        is that nothing under ``working_directory`` is guest-writable on this backend; a
+        workspace that is has to close the race before it arrives (#680).
         """
         guest = confine_guest_path(path, working_directory)
         await self._refuse_symlinked_parents(guest, working_directory=working_directory)
@@ -416,11 +437,10 @@ class _DockerSandbox:
             raise ValueError(
                 f"refusing to remove the working directory itself: {working_directory}"
             )
-        removed = await self._exec(
+        removed = await self._removal(
             ["rm", "-rf" if recursive else "-f", "--", guest],
             working_directory=working_directory,
             timeout=self._command_timeout,
-            as_root=True,
         )
         if removed.exit_code != 0:
             raise OSError(
@@ -429,14 +449,22 @@ class _DockerSandbox:
             )
 
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
-        """Remove ``directory`` with ``rm -rf``, as root.
+        """Remove ``directory`` with ``rm -rf``, through :meth:`_removal`.
 
-        No confinement check: the caller made ``directory``. Runs from ``/`` because
-        ``working_directory`` may not exist, and as root for the reason :meth:`_exec` gives.
+        Runs from ``/`` because ``working_directory`` may not exist.
+
+        No confinement check: the caller made ``directory``, and
+        :func:`~maf_sandbox.reclaim_guest_path` is where the policy lives — it refuses a path
+        outside the working directory, the working directory itself, and anything within two
+        components of the root. The floor below is a subset of that last rule, kept here
+        because the command now carries root's: it can only refuse what core would already
+        have refused.
         """
         del working_directory
-        removed = await self._exec(
-            ["rm", "-rf", "--", directory], working_directory="/", timeout=timeout, as_root=True
+        if len([part for part in posixpath.normpath(directory).split("/") if part]) < 2:
+            raise ValueError(f"refusing to reclaim recursively that close to the root: {directory}")
+        removed = await self._removal(
+            ["rm", "-rf", "--", directory], working_directory="/", timeout=timeout
         )
         if removed.exit_code != 0:
             raise OSError(
@@ -587,7 +615,8 @@ class DockerSandboxBackend:
         #
         # It is *not* a claim about the image. The shipped launcher wants `sh`, `nohup`,
         # `printf`, `mv`, `mkdir`, `rm` and `kill` — and `setsid` where the image has it — and a
-        # kind wants whatever interpreter it names — codeact wants
+        # run directory it can create a subdirectory in, which a non-root guest does not have
+        # here (#680) — and a kind wants whatever interpreter it names — codeact wants
         # `python3` — none of which this backend chooses, since `spec.image` does. That gap is
         # #111's axis, and it is the same gap `EXEC` already has: a kind execing `python3`
         # against a distroless image fails inside the sandbox today.

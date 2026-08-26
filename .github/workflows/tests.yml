@@ -351,10 +351,13 @@ jobs:
       # these two variables is what turns the module's skip guard off.
       MAF_SANDBOX_DOCKER_E2E_IMAGE: mcr.microsoft.com/azurelinux/base/core:3.0
       MAF_SANDBOX_DOCKER_E2E_PROXY_IMAGE: maf-sandbox-docker-proxy:ci
-      # The same base with a non-root `USER`, built below. Its own column because every other
-      # image this repository runs — here, in the samples, in verify-live — is root's, and a
-      # deletion that needed the guest to own what the host wrote survived exactly that (#680).
+      # Two non-root guests, built below, differing only in who owns `work_dir`: the image's
+      # build (as `images/bicep-sandbox/Dockerfile` leaves it) or the image's user (as the
+      # hardening advice that produces a non-root `USER` also asks for). Their own column
+      # because every other image this repository runs — here, in the samples, in verify-live —
+      # is root's, and which principal a file-plane call acts as is invisible against those.
       MAF_SANDBOX_DOCKER_E2E_NONROOT_IMAGE: maf-sandbox-docker-nonroot:ci
+      MAF_SANDBOX_DOCKER_E2E_GUEST_OWNED_IMAGE: maf-sandbox-docker-guest-owned:ci
       # The CodeAct kind runs a Python program in the guest, so it needs an interpreter the
       # backend suite's image does not carry. Same registry for the same reason — MCR rather
       # than Docker Hub, whose unauthenticated pull limit is per shared-runner IP — and the
@@ -380,10 +383,20 @@ jobs:
           # asserted at the command-line level offline.
           docker build -t maf-sandbox-docker-proxy:ci \
             packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy
-          # A non-root guest, from the image already pulled above so this adds a layer and not a
-          # download. A numeric USER needs no `useradd`, which the base does not carry.
-          printf 'FROM %s\nUSER 10001:10001\n' "$MAF_SANDBOX_DOCKER_E2E_IMAGE" \
+          # Explicitly, because the proxy image above is pinned by digest and the two builds
+          # below are otherwise the first thing in this job to resolve the tag.
+          docker pull "$MAF_SANDBOX_DOCKER_E2E_IMAGE"
+          # Two non-root guests off that base, so each build adds a layer and no download. A
+          # numeric USER needs no `useradd`, which this base does not carry. Both carry a file
+          # in `work_dir` at build time — the shape a kind's image has — so a reclaim can be
+          # shown to remove its own directory and nothing beside it; they differ only in
+          # whether that directory is root's or the guest's.
+          printf 'FROM %s\nRUN mkdir -p /maf-sandbox/work && echo "{}" > /maf-sandbox/work/carried.json\nUSER 10001:10001\n' \
+            "$MAF_SANDBOX_DOCKER_E2E_IMAGE" \
             | docker build -t "$MAF_SANDBOX_DOCKER_E2E_NONROOT_IMAGE" -
+          printf 'FROM %s\nRUN mkdir -p /maf-sandbox/work && echo "{}" > /maf-sandbox/work/carried.json && chown -R 10001:10001 /maf-sandbox/work\nUSER 10001:10001\n' \
+            "$MAF_SANDBOX_DOCKER_E2E_IMAGE" \
+            | docker build -t "$MAF_SANDBOX_DOCKER_E2E_GUEST_OWNED_IMAGE" -
           # Both live suites in one invocation: the backend's, and the CodeAct kind's on top of
           # it (#397). `-ra` because each skips itself when its image variable is empty, which
           # the env block above has already made impossible — a skip here is a bug, and without

@@ -704,38 +704,90 @@ class TestReclaim:
         assert fake.only("exec").args[-1] == hostile
 
 
-class TestWhoseAuthorityACommandCarries:
+class TestWhichPrincipalACommandCarries:
     """The file plane is the host's; `exec` and `run_code` are the guest program's.
 
-    Every other file-plane member is `docker cp`, which the daemon performs as root. `remove`
-    and `reclaim` have no engine primitive and borrow `exec`, so they borrow `--user 0` with
-    it — unlink permission comes from the containing directory, and on an image with a
-    non-root `USER` that directory is one `cp` created as root (#680). Giving the guest's own
-    commands the same privilege would let a program rewrite what the host put beside it.
+    `TestRemove` and `TestReclaim` above pin the argv each one builds. What is here is the
+    rule those tuples follow, and the one case where root alone is not enough.
+    """
+
+    def _sandbox(self, overrides=None):
+        merged = {
+            **_WORK_IS_A_DIRECTORY,
+            ("cp",): _DockerResult(1, b"", "Error: Could not find the file in container"),
+            **(overrides or {}),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=merged))
+        return asyncio.run(backend.acquire(_KEY, _SPEC)), fake
+
+    def test_a_guest_command_is_the_argv_and_nothing_else(self):
+        """The whole tuple, so the absence of `--user` is asserted rather than searched for:
+        root here would let a model-written program rewrite the transport files the host put
+        in the same directory.
+        """
+        sandbox, fake = self._sandbox()
+        asyncio.run(sandbox.exec(["whoami"], working_directory=_WORK, timeout=5))
+        assert fake.only("exec").args == ("exec", "-w", _WORK, _NAME, "whoami")
+
+    def test_a_refused_removal_is_retried_as_the_image_user(self):
+        """`--user 0` is a uid, not a capability set. With `cap_drop_all` there is no
+        `CAP_DAC_OVERRIDE`, so root can empty only what it owns — and a directory the image's
+        user owns is both what it cannot, and what that user can.
+        """
+        refused = {("exec", "--user", "0"): _DockerResult(1, b"", "rm: Permission denied")}
+        sandbox, fake = self._sandbox(refused)
+        asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
+        assert [call.args[:3] for call in fake.matching("exec")] == [
+            ("exec", "--user", "0"),
+            ("exec", "-w", "/"),
+        ]
+
+    def test_a_removal_root_could_make_is_not_retried(self):
+        sandbox, fake = self._sandbox()
+        asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
+        assert len(fake.matching("exec")) == 1
+
+    def test_a_removal_neither_can_make_raises_with_what_the_guest_said(self):
+        """The fallback must not swallow a failure that is nothing to do with ownership."""
+        both = {("exec",): _DockerResult(1, b"", "rm: read-only file system")}
+        sandbox, _fake = self._sandbox(both)
+        with pytest.raises(OSError, match="read-only file system"):
+            asyncio.run(sandbox.reclaim(f"{_WORK}/x", working_directory=_WORK, timeout=30))
+
+    def test_a_refused_remove_is_retried_the_same_way(self):
+        refused = {("exec", "--user", "0"): _DockerResult(1, b"", "rm: Permission denied")}
+        sandbox, fake = self._sandbox(refused)
+        asyncio.run(sandbox.remove("a.txt", working_directory=_WORK))
+        assert [call.args[:3] for call in fake.matching("exec")] == [
+            ("exec", "--user", "0"),
+            ("exec", "-w", _WORK),
+        ]
+
+
+class TestReclaimKeepsAFloorUnderRoot:
+    """`maf_sandbox.reclaim_guest_path` holds the policy; this is the subset kept here.
+
+    It refuses strictly less than core does, so the two cannot disagree in the direction that
+    matters — but a recursive delete carrying root's authority should not reach the root of a
+    filesystem because a caller skipped the dispatcher.
     """
 
     def _sandbox(self):
-        overrides = {
-            **_WORK_IS_A_DIRECTORY,
-            ("cp",): _DockerResult(1, b"", "Error: Could not find the file in container"),
-        }
-        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        backend, fake = _backend_with(_machine(running=[_NAME]))
         return asyncio.run(backend.acquire(_KEY, _SPEC)), fake
 
-    def test_a_guest_command_names_no_user_so_the_image_decides(self):
+    @pytest.mark.parametrize("directory", ["/", "/etc", "/maf-sandbox/", "//tmp", "/a/.."])
+    def test_a_path_within_two_components_of_the_root_runs_no_command(self, directory):
         sandbox, fake = self._sandbox()
-        asyncio.run(sandbox.exec(["whoami"], working_directory=_WORK, timeout=5))
-        assert "--user" not in fake.only("exec").args
+        with pytest.raises(ValueError, match="close to the root"):
+            asyncio.run(sandbox.reclaim(directory, working_directory=_WORK, timeout=30))
+        assert fake.matching("exec") == []
 
-    def test_remove_runs_as_root(self):
+    def test_a_call_directory_two_components_deep_is_allowed(self):
+        """The floor is a floor: what core dispatches has to go through it unchanged."""
         sandbox, fake = self._sandbox()
-        asyncio.run(sandbox.remove("a.txt", working_directory=_WORK))
-        assert fake.only("exec").args[:3] == ("exec", "--user", "0")
-
-    def test_reclaim_runs_as_root(self):
-        sandbox, fake = self._sandbox()
-        asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
-        assert fake.only("exec").args[:3] == ("exec", "--user", "0")
+        asyncio.run(sandbox.reclaim("/srv/run-a1b2c3", working_directory="/srv", timeout=30))
+        assert fake.only("exec").args[-1] == "/srv/run-a1b2c3"
 
 
 class TestExecDiscardsATimedOutSandbox:
