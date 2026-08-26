@@ -20,6 +20,7 @@ Linux image with ``sh``, ``sleep`` and a way to write a file will do.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import posixpath
 import shutil
@@ -72,6 +73,9 @@ _NONROOT_IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_NONROOT_IMAGE")
 #: The same, but with `work_dir` owned by that user rather than root — the one ownership shape
 #: root cannot empty once the container's capabilities are dropped.
 _GUEST_OWNED_IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_GUEST_OWNED_IMAGE")
+#: The same again, but with the directory *above* `work_dir` given to that user — which is
+#: what `reclaim` checks at acquire, because it owes no walk of its own.
+_LOOSE_PARENT_IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_LOOSE_PARENT_IMAGE")
 #: What the images above put in `work_dir` at build time, so a reclaim can be shown to remove
 #: its own directory and nothing beside it.
 _CARRIED = "carried.json"
@@ -335,6 +339,117 @@ class TestAWorkDirTheImageGaveItsOwnUser:
 
             with pytest.raises(OSError):
                 await sandbox.remove("sub/doomed.txt", working_directory=_WORK)
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+
+@pytest.mark.skipif(
+    not _LOOSE_PARENT_IMAGE,
+    reason="needs MAF_SANDBOX_DOCKER_E2E_LOOSE_PARENT_IMAGE naming an image whose guest owns a "
+    "directory above work_dir",
+)
+class TestAnImageThatGivesAwayADirectoryAboveWorkDir:
+    """`reclaim` removes as root on an argument, and this is the half of it that is checked.
+
+    A guest that can write above `work_dir` can replace `work_dir` itself with a link, and a
+    swapped *parent* is followed rather than unlinked — so root there would delete what the
+    guest could not. The check runs at acquire, because the chain is fixed before any guest
+    does anything.
+    """
+
+    def _spec(self) -> SandboxSpec:
+        return SandboxSpec(kind="e2e-loose", image=_LOOSE_PARENT_IMAGE, work_dir=_WORK)
+
+    def test_reclaim_drops_to_the_guest_authority_and_leaks_rather_than_reaching(self):
+        """The rule's price on this image shape, and it is a real one.
+
+        The call directory arrived through `docker cp`, so it is root's; the guest cannot
+        empty it, and root is not allowed to here because this image lets the guest swap a
+        directory above `work_dir`. So it stays — exactly as it does on `main`, where every
+        removal was the guest's. This is the shape #680 does not fix rather than one it
+        breaks, and the backend logs the reason at acquire.
+        """
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(_key(scope), self._spec())
+            call_directory = f"{_WORK}/abc123def456"
+            await sandbox.write_file(
+                f"{call_directory}/note", "left behind\n", working_directory=_WORK
+            )
+
+            with pytest.raises(OSError):
+                await sandbox.reclaim(call_directory, working_directory=_WORK, timeout=60)
+
+            left = await sandbox.exec(["ls", "-A", _WORK], working_directory="/", timeout=60)
+            assert left.exit_code == 0, left.stderr
+            assert sorted(left.stdout.split()) == sorted([_CARRIED, "abc123def456"])
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+    def test_a_swapped_work_dir_takes_the_removal_nowhere_it_could_not_reach(self):
+        """The attack the check exists for, run for real.
+
+        The guest replaces `work_dir` with a link to a directory it does not own, then the
+        framework reclaims. Because the removal is the guest's rather than root's, what the
+        redirected `rm` can delete is exactly what the guest could have deleted itself.
+        """
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(_key(scope), self._spec())
+            planted = subprocess.run(
+                [
+                    "docker",
+                    "exec",
+                    "--user",
+                    "0",
+                    sandbox.container_name,
+                    "sh",
+                    "-c",
+                    "mkdir -p /victim/abc123def456 && echo treasure > /victim/abc123def456/t "
+                    "&& chmod 755 /victim",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            assert planted.returncode == 0, planted.stderr
+
+            swapped = await sandbox.exec(
+                ["sh", "-c", f"mv {_WORK} {_WORK}.orig && ln -s /victim {_WORK}"],
+                working_directory="/",
+                timeout=60,
+            )
+            assert swapped.exit_code == 0, swapped.stderr
+
+            with contextlib.suppress(OSError):
+                await sandbox.reclaim(f"{_WORK}/abc123def456", working_directory=_WORK, timeout=60)
+
+            survived = subprocess.run(
+                [
+                    "docker",
+                    "exec",
+                    "--user",
+                    "0",
+                    sandbox.container_name,
+                    "test",
+                    "-f",
+                    "/victim/abc123def456/t",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+            assert survived.returncode == 0, "a root removal followed the swapped parent"
 
         try:
             asyncio.run(scenario())

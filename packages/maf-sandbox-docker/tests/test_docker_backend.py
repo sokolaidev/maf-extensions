@@ -140,6 +140,7 @@ class _FakeDocker:
     def __init__(self, responder=None) -> None:
         self.calls: list[_Recorded] = []
         self._responder = responder or (lambda args: _DockerResult(0, b"", ""))
+        self._marked = 0
 
     async def __call__(
         self, *args: str, stdin=None, timeout=None, read_limit=None
@@ -149,6 +150,17 @@ class _FakeDocker:
         if read_limit is not None and len(result.stdout) > read_limit:
             result = _DockerResult(result.returncode, result.stdout[:read_limit], result.stderr)
         return result
+
+    def mark(self) -> None:
+        """Draw a line under what has been recorded, so a later assertion starts from here.
+
+        `acquire` reads a component of its own to answer the reach rule, and a test about what
+        *one operation* fetched should not be counting that one.
+        """
+        self._marked = len(self.calls)
+
+    def cp_since_mark(self) -> list[tuple[str, ...]]:
+        return [call.args for call in self.calls[self._marked :] if call.args[:1] == ("cp",)]
 
     def matching(self, *prefix: str) -> list[_Recorded]:
         return [c for c in self.calls if c.args[: len(prefix)] == prefix]
@@ -861,6 +873,83 @@ class TestTheReachRuleChoosesThePrincipal:
         assert fake.only("exec").args[:3] == ("exec", "--user", "0")
 
 
+class TestTheAncestorsAboveTheWorkDirAreChecked:
+    """`reclaim` owes no walk, so the walk's answer arrives from `acquire` instead.
+
+    Its argument for removing as root has two halves: `rm -rf` unlinks its own operand, and no
+    directory *above* `work_dir` is one the guest could swap. The second is a claim about the
+    image, so it is read rather than asserted — once per container, because the chain is fixed
+    before any guest runs.
+    """
+
+    def _backend(self, parent: bytes | None, image: str = _SPEC.image):
+        overrides = {("cp",): _DockerResult(1, b"", "Error: Could not find the file in container")}
+        if parent is not None:
+            overrides[_cp("/maf-sandbox")] = _DockerResult(0, parent, "")
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        return backend, fake, SandboxSpec(kind=_SPEC.kind, image=image)
+
+    def _reclaimed_as(self, backend, fake, spec) -> tuple[str, ...]:
+        sandbox = asyncio.run(backend.acquire(_KEY, spec))
+        fake.mark()
+        asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
+        return fake.only("exec").args[:3]
+
+    def test_a_host_owned_chain_lets_reclaim_remove_as_root(self):
+        backend, fake, spec = self._backend(_owned_directory_tar("maf-sandbox", 0, 0o755))
+        assert self._reclaimed_as(backend, fake, spec) == ("exec", "--user", "0")
+
+    def test_an_ancestor_the_guest_may_write_keeps_reclaim_at_the_guest_authority(self):
+        """A `0777` directory above `work_dir` is one the guest can swap `work_dir` in, and a
+        swapped parent is followed rather than unlinked — so root there would delete what the
+        guest could not.
+        """
+        backend, fake, spec = self._backend(_owned_directory_tar("maf-sandbox", 0, 0o777))
+        assert "--user" not in self._reclaimed_as(backend, fake, spec)
+
+    def test_an_ancestor_owned_by_someone_else_does_the_same(self):
+        backend, fake, spec = self._backend(_owned_directory_tar("maf-sandbox", 10001, 0o755))
+        assert "--user" not in self._reclaimed_as(backend, fake, spec)
+
+    def test_an_unreadable_ancestor_fails_closed(self):
+        """An engine that will not answer leaves the removal where every backend had it before
+        #680 — the guest's authority, which costs the leak and nothing else.
+        """
+
+        def refuses(args):
+            if args[:2] == ("cp", f"{_NAME}:/maf-sandbox"):
+                raise RuntimeError("the daemon said no")
+            return _machine(running=[_NAME])(args)
+
+        backend, fake = _backend_with(refuses)
+        assert "--user" not in self._reclaimed_as(backend, fake, _SPEC)
+
+    def test_the_answer_is_read_once_per_container(self):
+        backend, fake, spec = self._backend(_owned_directory_tar("maf-sandbox", 0, 0o755))
+        asyncio.run(backend.acquire(_KEY, spec))
+        fake.mark()
+        asyncio.run(backend.acquire(_KEY, spec))
+        assert fake.cp_since_mark() == []
+
+    def test_the_answer_is_re_read_when_the_image_changes(self):
+        """A container name is a digest of scope, thread, agent dir, kind and egress — never of
+        the image — so one name legitimately comes back carrying a different one.
+        """
+        backend, fake, spec = self._backend(_owned_directory_tar("maf-sandbox", 0, 0o755))
+        asyncio.run(backend.acquire(_KEY, spec))
+        fake.mark()
+        asyncio.run(backend.acquire(_KEY, SandboxSpec(kind=_SPEC.kind, image="other:local")))
+        assert fake.cp_since_mark() == [(*_cp("/maf-sandbox"), "-")]
+
+    def test_removing_the_container_forgets_the_answer(self):
+        backend, fake, spec = self._backend(_owned_directory_tar("maf-sandbox", 0, 0o755))
+        asyncio.run(backend.acquire(_KEY, spec))
+        asyncio.run(backend.dispose(_KEY))
+        fake.mark()
+        asyncio.run(backend.acquire(_KEY, spec))
+        assert fake.cp_since_mark() == [(*_cp("/maf-sandbox"), "-")]
+
+
 class TestReclaimKeepsAFloorUnderRoot:
     """`maf_sandbox.reclaim_guest_path` holds the policy; this is the subset kept here.
 
@@ -1113,10 +1202,11 @@ class TestASymlinkedAncestorOfTheWorkingDirectory:
         }
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
         sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        fake.mark()
         with pytest.raises(ValueError, match="real directory"):
             asyncio.run(sandbox.read_file("hostname", working_directory=self._NESTED, max_bytes=99))
         # Stopped at the ancestor: the entry itself was never fetched.
-        assert [c.args for c in fake.matching("cp")] == [(*_cp("/maf-sandbox"), "-")]
+        assert fake.cp_since_mark() == [(*_cp("/maf-sandbox"), "-")]
 
 
 class TestASymlinkedParentEscapesLexicalConfinement:
@@ -1140,7 +1230,9 @@ class TestASymlinkedParentEscapesLexicalConfinement:
             ("cp",): _DockerResult(1, b"", "Error: Could not find the file in container"),
         }
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
-        return asyncio.run(backend.acquire(_KEY, _SPEC)), fake
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        fake.mark()
+        return sandbox, fake
 
     def test_the_engine_answers_from_outside_the_working_directory(self):
         """The premise of the refusals below: the path through the link resolves daemon-side.
@@ -1167,7 +1259,7 @@ class TestASymlinkedParentEscapesLexicalConfinement:
         sandbox, fake = self._sandbox()
         with pytest.raises(ValueError, match="real directory"):
             asyncio.run(sandbox.stat_file("out/hostname", working_directory=_WORK))
-        assert [c.args for c in fake.matching("cp")] == [
+        assert fake.cp_since_mark() == [
             (*_cp("/maf-sandbox"), "-"),
             (*_cp(_WORK), "-"),
             (*_cp(f"{_WORK}/out"), "-"),
@@ -1177,7 +1269,7 @@ class TestASymlinkedParentEscapesLexicalConfinement:
         sandbox, fake = self._sandbox()
         with pytest.raises(ValueError, match="real directory"):
             asyncio.run(sandbox.read_file("out/hostname", working_directory=_WORK, max_bytes=1000))
-        assert [c.args for c in fake.matching("cp")] == [
+        assert fake.cp_since_mark() == [
             (*_cp("/maf-sandbox"), "-"),
             (*_cp(_WORK), "-"),
             (*_cp(f"{_WORK}/out"), "-"),
@@ -1191,9 +1283,10 @@ class TestASymlinkedParentEscapesLexicalConfinement:
         }
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
         sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        fake.mark()
         with pytest.raises(ValueError, match="real directory"):
             asyncio.run(sandbox.read_file("hostname", working_directory=_WORK, max_bytes=1000))
-        assert [c.args for c in fake.matching("cp")] == [
+        assert fake.cp_since_mark() == [
             (*_cp("/maf-sandbox"), "-"),
             (*_cp(_WORK), "-"),
         ]

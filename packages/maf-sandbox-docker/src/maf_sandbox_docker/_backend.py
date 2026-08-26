@@ -51,6 +51,7 @@ from maf_sandbox import (
 from maf_sandbox.paths import (
     confine_guest_path,
     confine_guest_write_path,
+    guest_directory_chain,
     refuse_symlinked_parents,
 )
 
@@ -301,10 +302,14 @@ class _DockerSandbox:
         name: str,
         command_timeout: float,
         cap_drop_all: bool = False,
+        reclaim_as_root: bool = True,
     ) -> None:
         self._run = run
         self._name = name
         self._command_timeout = command_timeout
+        # Whether every directory above `work_dir` is the host's, answered once at acquire.
+        # `reclaim` owes no walk, so this is the walk's answer arriving from outside it.
+        self._reclaim_as_root = reclaim_as_root
         # Whether this container kept `CAP_DAC_OVERRIDE`, which is what decides if a root
         # removal can be refused at all. See `_removal`.
         self._cap_drop_all = cap_drop_all
@@ -385,6 +390,18 @@ class _DockerSandbox:
             stderr=result.stderr,
             exit_code=result.returncode,
         )
+
+    async def ancestors_are_the_hosts(self, work_dir: str) -> bool:
+        """Is every directory *above* ``work_dir`` one the guest program cannot write?
+
+        The question :meth:`reclaim` answers with an argument, asked instead — one tar header
+        per component, over the chain that is fixed before any guest runs.  Raises whatever the
+        stat raises; the caller decides what an unreadable component means.
+        """
+        walked: dict[str, tuple[int, int]] = {}
+        for directory in guest_directory_chain(posixpath.dirname(work_dir), "/"):
+            await self._stat_guest(directory, directory, walked)
+        return _no_component_was_the_guests(walked)
 
     async def _removal(
         self,
@@ -520,12 +537,12 @@ class _DockerSandbox:
         ``work_dir``.  A walk would answer this the way :meth:`remove`'s does, and is the very
         duty this member exists without.
 
-        **That second half is a precondition, and nothing here checks it.**  An image that did
-        grant write on a directory above ``work_dir`` would let the guest swap the component
-        below it, and the removal would follow the link to the named leaf under whatever it
-        points at — measured, and bounded to that leaf rather than the target's whole tree.
-        The argument would fail silently, because the only thing that could catch it is the
-        walk this member does not do (#680).
+        **The second half is checked rather than asserted**, by
+        :meth:`DockerSandboxBackend._ancestors_are_the_hosts` at acquire — the chain above
+        ``work_dir`` is fixed before any guest runs, so it costs one answer per container
+        rather than a walk per call.  An image that grants write above ``work_dir`` gets its
+        removals run as the guest instead, the way :meth:`remove` already handles the same
+        shape (#680).
         """
         del working_directory
         if not directory.startswith("/"):
@@ -536,7 +553,7 @@ class _DockerSandbox:
             ["rm", "-rf", "--", directory],
             working_directory="/",
             timeout=timeout,
-            raise_authority=True,
+            raise_authority=self._reclaim_as_root,
         )
         if removed.exit_code != 0:
             raise OSError(
@@ -667,6 +684,11 @@ class DockerSandboxBackend:
         self._acquire_locks: weakref.WeakKeyDictionary[
             asyncio.AbstractEventLoop, dict[tuple[str, str, str, str], asyncio.Lock]
         ] = weakref.WeakKeyDictionary()
+        # (container, image, work_dir) -> whether every directory above `work_dir` is the
+        # host's. The image is in the key because a container name is a digest of scope,
+        # thread, agent dir, kind and egress and *not* of the image, so one name legitimately
+        # returns carrying a different one. Dropped when the container is removed.
+        self._host_owned_ancestors: dict[tuple[str, str, str], bool] = {}
 
     @property
     def name(self) -> str:
@@ -771,7 +793,43 @@ class DockerSandboxBackend:
                 name,
                 self._config.command_timeout_seconds,
                 self._config.cap_drop_all,
+                await self._ancestors_are_the_hosts(name, spec),
             )
+
+    async def _ancestors_are_the_hosts(self, name: str, spec: SandboxSpec) -> bool:
+        """Could the guest program have swapped a directory *above* ``spec.work_dir``?
+
+        It could not where every one of them is root's and writable by nobody else, and that
+        is what licenses :meth:`_DockerSandbox.reclaim` to remove with root's authority over a
+        path it never walks.  Here rather than in ``reclaim`` because the chain is fixed before
+        any guest runs: one answer per container, not one walk per call.
+
+        Cached, and the cache cannot go stale in a way that matters — the answer changes only
+        if something writes those directories, and the answer itself is that only root can.
+        This backend's own writes create them ``0755`` and root's.
+
+        **Fails closed.**  A component that cannot be read leaves the removal at the guest's
+        authority, which is what every backend did before #680 and costs only the leak.
+        """
+        key = (name, spec.image or "", spec.work_dir)
+        cached = self._host_owned_ancestors.get(key)
+        if cached is not None:
+            return cached
+        probe = _DockerSandbox(self._docker, name, self._config.command_timeout_seconds)
+        try:
+            answer = await probe.ancestors_are_the_hosts(spec.work_dir)
+        except Exception as unreadable:  # noqa: BLE001 — an acquire must not fail over this
+            logger.debug("docker: could not read %s's work dir ancestors (%s)", name, unreadable)
+            answer = False
+        if not answer:
+            logger.info(
+                "docker: %s has a directory above %s the guest may write, so removals run as "
+                "the guest rather than as root",
+                name,
+                spec.work_dir,
+            )
+        self._host_owned_ancestors[key] = answer
+        return answer
 
     async def dispose(self, key: SandboxKey) -> str | None:
         """Delete every container for ``key`` — every kind, closed or allowlisted — with
@@ -1253,6 +1311,10 @@ class DockerSandboxBackend:
         failure: the sweep tries names the registry remembers, and one already gone is the
         ordinary case.
         """
+        # Whatever the engine says, this name no longer refers to the container the ancestor
+        # answer was read from. Dropped before the call so a failure cannot leave it behind.
+        for cached in [key for key in self._host_owned_ancestors if key[0] == target]:
+            del self._host_owned_ancestors[cached]
         try:
             result = await self._docker(
                 "rm", "-f", target, timeout=self._config.command_timeout_seconds
