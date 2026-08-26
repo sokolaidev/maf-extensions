@@ -581,9 +581,9 @@ class AcasSandboxBackend:
         # `dispose_scope` treats this as a fast path, never as the source of truth — see its
         # docstring.
         self._registry: dict[tuple[str, str, str, str], str] = {}
-        #: Sandbox ids a delete could not remove, by key prefix. Disposal-only and deliberately
-        #: apart from the registry, which `acquire` resumes from: a sandbox whose delete failed
-        #: must be retried, never served. An entry lives only while its delete keeps failing.
+        #: Sandbox ids a delete could not remove, by key prefix. Apart from the registry,
+        #: which `acquire` resumes from and `dispose` pops, so a failed delete is retried and
+        #: never served. An entry lives only while its delete keeps failing.
         self._undeleted: dict[tuple[str, str, str], set[str]] = {}
         # Group clients cached per event loop. An azure-core async client binds its transport
         # to the loop that created it, and this host runs some work on a dedicated background
@@ -815,12 +815,10 @@ class AcasSandboxBackend:
         )
         if not wanted:
             return None
-        # Recorded before the first await: the registry no longer holds these ids and this
-        # method has no listing to fall back on, so this is the only place a retry can find
-        # them. Over-retaining is the safe direction — an id already deleted answers
-        # `ResourceNotFoundError` next time and drops out. Merged rather than assigned, here
-        # and below — teardown for one key is not serialized, so another disposal may have
-        # recorded an id this one never saw.
+        # Before the first await: the registry no longer holds these and there is no listing
+        # to fall back on, so a retry finds them only here. Over-retaining is safe — an id
+        # already deleted drops out next attempt. Merged, not assigned: teardown is not
+        # serialized.
         self._undeleted[prefix] = self._undeleted.get(prefix, set()) | set(wanted)
         try:
             gc = self._group_client()
@@ -839,9 +837,8 @@ class AcasSandboxBackend:
                 )
             if deletion.failure is not None:
                 undeleted[sandbox_id] = deletion.failure
-        # Subtracting only what this attempt took away — and reading the map here rather than
-        # trusting `wanted` — leaves an id another disposal recorded meanwhile alone. No await
-        # sits between the read and the write.
+        # Read from the live map, not `wanted`, so an id another disposal recorded survives.
+        # No await between the read and the write.
         still = set(undeleted)
         left = (self._undeleted.get(prefix, set()) | still) - (set(wanted) - still)
         if left:
@@ -852,10 +849,9 @@ class AcasSandboxBackend:
             reasons = "; ".join(undeleted.values())
             return f"sandbox delete failed: {reasons}"
         if left:
-            # Left over means a disposal still in flight wrote these ahead of its own first
-            # await and has not reported yet. Answering `None` would clear the refusal on the
-            # strength of a delete nobody has confirmed; the count rather than the ids, because
-            # they are not this attempt's to describe. The next disposal that lands clears it.
+            # A disposal still in flight wrote these ahead of its own await. `None` would
+            # clear the refusal on a delete nobody confirmed; a count, since the ids are not
+            # this attempt's to describe. The next disposal that lands clears it.
             return f"another disposal has not yet reported on {len(left)} sandbox(es)"
         return None
 
@@ -885,9 +881,7 @@ class AcasSandboxBackend:
             gc = self._group_client()
         except Exception as exc:  # noqa: BLE001 - purge must never fail
             logger.warning("acas backend: could not reach the sandbox group: %s", exc)
-            # The registry entries are gone by now, so the ids this purge was going to delete
-            # live here or nowhere — without this a later `dispose` finds nothing to do, says
-            # nothing, and the router reads that as the sandboxes having gone.
+            # The registry entries are gone by now, so these ids live here or nowhere.
             for key, sandbox_id in known:
                 prefix = (key[0], key[1], key[2])
                 self._undeleted[prefix] = self._undeleted.get(prefix, set()) | {sandbox_id}
@@ -913,20 +907,16 @@ class AcasSandboxBackend:
                 count += 1
             if deletion.failure is not None:
                 undeleted.add(sandbox_id)
-        # Merge-only against the *live* map, never the snapshot above: a `dispose` for one of
-        # these keys can land while the awaits are in flight, and indexing what it may have
-        # removed would raise out of a method that never raises. Only ids this sweep took away
-        # are subtracted, so a newer record it wrote survives.
+        # Merge-only against the *live* map: a `dispose` for one of these keys can land
+        # mid-sweep, and indexing what it removed would raise out of a method that never does.
         for prefix, before in retained.items():
             left = self._undeleted.get(prefix, set()) - (before - undeleted)
             if left:
                 self._undeleted[prefix] = left
             else:
                 self._undeleted.pop(prefix, None)
-        # An id this sweep newly could not delete belongs to whichever key owns it, which the
-        # label listing does not say. Recorded against every key of the thread that still owes
-        # a retry, and against the registry keys this purge popped, so it is retried rather
-        # than lost until a later listing happens to surface it again.
+        # The listing does not say which key owns a failed id, so it is recorded against the
+        # registry keys this purge popped rather than lost.
         for key, sandbox_id in known:
             if sandbox_id in undeleted:
                 prefix = (key[0], key[1], key[2])

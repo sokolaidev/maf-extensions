@@ -71,9 +71,7 @@ class NoIsolationSandbox:
         problems: list[str] = []
 
         def _note(_function: object, path: str, exc: BaseException) -> None:
-            # A path that is not there is a removal that landed, which is how the packaged
-            # backends read "no such container" too. Reporting it would refuse the key over a
-            # sandbox that is already gone, and keep it for a retry that can never succeed.
+            # A path that is not there is a removal that landed — as "no such container" is.
             if not isinstance(exc, FileNotFoundError):
                 problems.append(f"{path}: {exc}")
 
@@ -286,11 +284,9 @@ class NoIsolationBackend:
         self._seed_files = dict(seed_files or {})
         self._name = name
         self._sandboxes: dict[tuple[SandboxKey, str], NoIsolationSandbox] = {}
-        # Sandboxes whose directory a disposal could not remove. Held apart from `_sandboxes`
-        # because both facts have to hold at once: a later disposal must retry the removal, and
-        # `acquire` must never hand the next call the files this one could not remove. A list,
-        # not a dict keyed by ident: `acquire` reuses an ident, so a second failure on the same
-        # key would overwrite the first entry and its directory would never be retried.
+        # Sandboxes whose directory a disposal could not remove: a later disposal retries
+        # them, and `acquire` never hands one back. A list rather than a dict keyed by ident,
+        # because `acquire` reuses an ident and a second failure would evict the first.
         self._undeleted: list[tuple[tuple[SandboxKey, str], NoIsolationSandbox]] = []
         self._lock = asyncio.Lock()
 

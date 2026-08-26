@@ -826,19 +826,14 @@ class Sandbox(Protocol):
 
 #: Why a disposal did not land, in a word a caller may branch on.
 #:
-#: ``"unreachable"``: the engine or service was never reached, so nothing was asked of it.
-#: ``"timeout"``: the attempt did not finish in the time it was given; whether it landed is
-#: not known. ``"refused"``: it answered, and the sandbox is still there. ``"unlisted"``: the
-#: query that enumerates what to delete failed, so the sweep may not have covered everything.
-#: ``"unknown"``: the backend cannot classify it, and is always allowed to say so.
-#:
-#: Closed and small on purpose: a code no backend can honestly assign is one every backend
-#: assigns differently, and a caller branching on it reads a coin toss.
+#: ``"unreachable"``: never reached, so nothing was asked of it. ``"timeout"``: unfinished,
+#: so whether it landed is not known. ``"refused"``: it answered, and the sandbox is still
+#: there. ``"unlisted"``: the query enumerating what to delete failed, so the sweep may be
+#: partial. ``"unknown"``: the backend cannot classify it, and may always say so.
 DisposalCode = Literal["unreachable", "timeout", "refused", "unlisted", "unknown"]
 
-#: Which code survives when one disposal hits several, most actionable first.  ``"unreachable"``
-#: outranks ``"refused"`` because it is the one worth retrying, and a caller that retries on it
-#: should not be talked out of that by a second sandbox whose delete was merely refused.
+#: Which code survives when one disposal hits several, most actionable first: ``"unreachable"``
+#: outranks ``"refused"`` because it is the one worth retrying.
 _DISPOSAL_PRECEDENCE: tuple[DisposalCode, ...] = (
     "unreachable",
     "timeout",
@@ -852,9 +847,8 @@ _DISPOSAL_PRECEDENCE: tuple[DisposalCode, ...] = (
 class DisposalFailure:
     """Why a sandbox may still be there: a code to branch on, and the detail to log.
 
-    The code is the part a caller acts on and the only part this package promises to keep
-    stable.  ``detail`` is a backend's own sentence — an id, an exit status, a service
-    message — and is for a human reading a log or an alert, never for parsing.
+    The code is the part a caller acts on and the only part kept stable. ``detail`` is the
+    backend's own sentence, for a log rather than for parsing.
     """
 
     code: DisposalCode
@@ -868,35 +862,24 @@ def fold_disposal_failures(failures: Sequence[DisposalFailure]) -> DisposalFailu
     """The one failure that stands for several, or ``None`` when there are none.
 
     Lives here because all three shipped backends fold, and a rule three packages implement
-    separately is a rule that drifts. The retry bookkeeping around it is still copied per
-    backend — the layering forbids one importing another — and is owed the same home; see
-    the note on :meth:`SandboxBackend.dispose`.
-
-    The code is the most actionable of those reported (:data:`DisposalCode`), and the detail
-    keeps every sentence, so folding loses nothing a log would have shown.  A code from outside
-    the vocabulary folds to ``unknown``, which is also how a lone failure is normalised before
-    it reaches anything branching on the closed set.
+    separately drifts. The code is the most actionable reported; the detail keeps every
+    sentence. A code from outside the vocabulary folds to ``unknown``, which is also how a
+    lone failure is normalised.
     """
     if not failures:
         return None
     codes: set[DisposalCode] = {failure.code for failure in failures}
-    # A default rather than a bare `next`: `DisposalCode` is a `Literal`, so nothing enforces it
-    # at run time, and a code from outside the vocabulary must neither raise out of a caller that
-    # never raises nor reach one that branches on the set.
+    # Nothing enforces a `Literal` at run time, so default rather than raise on an odd code.
     worst: DisposalCode = "unknown"
     for candidate in _DISPOSAL_PRECEDENCE:
         if candidate in codes:
             worst = candidate
             break
     if len(failures) == 1:
-        # Identity while the code is one of ours, so folding one costs nothing — but a lone
-        # unrecognised code is normalised like several, or the set would be closed only on the
-        # days more than one backend failed.
+        # Identity for a code of ours; a lone unrecognised one is normalised like several.
         only = failures[0]
         return only if only.code == worst else DisposalFailure(worst, only.detail)
-    # `detail`, not `str(failure)`: a caller reading this field must get the same shape whether
-    # one backend reported or three, or a log template built against one silently misreads the
-    # other. The code the fold chose is on the result.
+    # `detail`, not `str(failure)`: one shape whether one backend reported or three.
     return DisposalFailure(worst, "; ".join(failure.detail for failure in failures))
 
 
@@ -978,16 +961,14 @@ class SandboxBackend(Protocol):
         answer is the wrong direction to fail in.
 
         The :data:`DisposalCode` is what a caller branches on and the only half kept stable;
-        ``detail`` is yours, and reaches a log rather than an exception. Reach for
-        ``"unknown"`` rather than guessing between the others.
+        ``detail`` is yours and reaches a log. Reach for ``"unknown"`` rather than guessing.
 
         A bare ``str`` is accepted for one release and read as ``"unknown"``: a backend cannot
         import :class:`DisposalFailure` from a core that has not published it. Return the class.
 
-        A backend that keeps a record of what it could not delete is keeping it *apart from*
-        whatever :meth:`acquire` reuses — a sandbox whose delete failed must be retried, never
-        served. The three in this repository each carry their own copy of that bookkeeping, so
-        a change to one is owed to the others until it has a home in this package.
+        A record of what could not be deleted is retry bookkeeping, not a guard on
+        :meth:`acquire` — refusing to serve is the router's ledger. The three in this
+        repository each carry their own copy of it, so a change to one is owed to the others.
         """
         ...
 

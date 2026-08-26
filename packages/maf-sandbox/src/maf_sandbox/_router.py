@@ -140,17 +140,13 @@ class SandboxUnclean(PermissionError):
     failed run than leaked data. This is in-process knowledge only — another replica holds
     no such record, which is the same bound ``dispose_scope`` exists to reach past.
 
-    :attr:`code` is the :data:`DisposalCode` the last disposal reported, or ``None`` when the
-    key was closed without one.  **Branch on it, not on the message.**  The sentence is prose
-    and may be reworded; putting the code only inside it would hand every host a regex and
-    give back the problem a closed set of codes exists to remove.  The backend's own detail is
-    not here at all — it can carry an endpoint or a raw response body, and it stays in the log.
+    :attr:`code` is the :data:`DisposalCode` the last disposal reported, or ``None``. Branch
+    on it rather than on the message. The backend's detail is not here at all: it can carry an
+    endpoint or a raw response body, and it stays in the log.
     """
 
     def __init__(self, *args: object, code: DisposalCode | None = None) -> None:
-        # `*args`, not a required message: this is an `OSError` subclass, and narrowing the
-        # inherited constructor would break `SandboxUnclean()` and the errno forms for anyone
-        # who builds one — in a test double, say. The code is keyword-only and additive.
+        # `*args` keeps the inherited `OSError` constructors; `code` is keyword-only, additive.
         super().__init__(*args)
         self.code = code
 
@@ -179,18 +175,13 @@ class SandboxTransferLimitsNotPermitted(PermissionError):
 def _coded(backend_name: str, reported: object) -> DisposalFailure:
     """One backend's answer as a :class:`~maf_sandbox.DisposalFailure`, named by the backend.
 
-    ``object``, not the protocol's return type: this is the boundary where a backend's answer
-    stops being trusted, so the annotation has to admit what an untrusted answer can be. A bare
-    ``str`` is a backend that has not moved to the class yet and is read as ``"unknown"`` — the
-    honest code for a sentence nothing can classify, and the one that keeps such a backend
-    inside the vocabulary rather than outside it.
+    ``object`` because this is where a backend's answer stops being trusted. A bare ``str`` is
+    a backend that has not moved to the class yet; anything else — a bool, an exception, a
+    backend built against a newer protocol — broke its own annotation. Both read as
+    ``"unknown"``, because reading ``.code`` off one would raise out of a caller that never does.
     """
     if isinstance(reported, DisposalFailure):
         return DisposalFailure(reported.code, f"{backend_name}: {reported.detail}")
-    # So is anything else — a bool, an exception object, a backend built against a newer
-    # protocol. Reading `.code` off one would raise out of a caller that never raises, and the
-    # protocol widened this return type only this release, which is exactly when a backend is
-    # most likely to answer with the wrong shape.
     return DisposalFailure("unknown", f"{backend_name}: {reported}")
 
 
@@ -324,8 +315,7 @@ class SandboxRouter:
         self._keep_unclean = bool(keep_unclean)
         # Keys whose sandbox holds data the framework could not remove and could not dispose
         # of. An entry leaves when a disposal lands; a key that keeps failing stays refused.
-        # Keyed rather than a set so a refusal can say *why*: the reason is written when the
-        # disposal reports one, and stays `None` for a key marked before anything was tried.
+        # Keyed, not a set, so a refusal can say why; `None` for a key marked before a try.
         self._unclean: dict[SandboxKey, DisposalFailure | None] = {}
         self._min_isolation = Isolation(str(min_isolation))
         self._selected_name = selected
@@ -574,10 +564,8 @@ class SandboxRouter:
         if self._backend is None:
             raise NoSandboxBackend("no sandbox backend is configured")
         if key in self._unclean:
-            # The *code* only. A backend's detail can carry an endpoint, a subscription id or
-            # a raw response body — `error_detail`'s own docstring calls it log-only — and this
-            # message reaches any host that calls `acquire` directly, not just `sandboxed_tool`,
-            # which sanitizes. The detail is in the router's log beside the code.
+            # The code only: a detail can carry an endpoint or a raw response body, and this
+            # message reaches hosts that do not sanitize. The detail is in the log beside it.
             reported = self._unclean[key]
             because = f" ({reported.code})" if reported is not None else ""
             raise SandboxUnclean(
@@ -607,9 +595,8 @@ class SandboxRouter:
                     self._backend.name,
                     reported,
                 )
-                # This method's own contract is that a refused acquire leaves nothing billable
-                # running. It does here, and now the router knows — so the key is closed rather
-                # than served again over a sandbox nothing can reclaim.
+                # A refused acquire owes nothing billable left running. This one does, so
+                # the key is closed rather than served over a sandbox nothing can reclaim.
                 self.mark_unclean(key, _coded(self._backend.name, reported))
             raise
         return sandbox
@@ -622,11 +609,10 @@ class SandboxRouter:
         """Ask every backend to dispose ``key``; ``True`` when none refused.
 
         A landed disposal clears the key from the unclean set: whatever was in that sandbox
-        went with it.  ``refuse`` is what closes the key when one does *not* land, and only
-        :meth:`dispose_unclean` passes it: :meth:`dispose` is best-effort and its caller has
-        made no claim that the sandbox held anything, so a transient failure there must not
-        leave a clean key unservable.  Under ``refuse`` each reason reaches the ledger as its
-        backend answers, because this runs inside a bound that can expire mid-loop.
+        went with it.  ``refuse`` closes the key when one does *not* land, and only
+        :meth:`dispose_unclean` passes it: :meth:`dispose` is best-effort, so a transient
+        failure there must not leave a clean key unservable.  Under ``refuse`` each reason
+        reaches the ledger as its backend answers, because the bound can expire mid-loop.
 
         A backend refuses by *returning* a reason as much as by raising: ``dispose`` never
         raises, so silence is the only thing that may be read as success.
@@ -636,8 +622,7 @@ class SandboxRouter:
             try:
                 undisposed = await backend.dispose(key)
             except Exception as exc:  # noqa: BLE001 - disposal must not fail a caller
-                # A backend that raises broke its own never-raises contract, so nothing it says
-                # can be classified: `unknown` rather than a guess at what went wrong.
+                # Nothing a backend says while breaking never-raises can be classified.
                 reasons.append(DisposalFailure("unknown", f"{backend.name} raised: {exc}"))
                 logger.warning(
                     "sandbox router: backend %s failed to dispose: %s", backend.name, exc
@@ -654,13 +639,10 @@ class SandboxRouter:
                         undisposed,
                     )
             if refuse and reasons:
-                # Written before the next backend is awaited, not after the last one answers:
-                # `dispose_unclean` bounds this with `asyncio.timeout`, so a later backend that
-                # hangs cancels the coroutine and a reason still sitting in this list dies with
-                # it — leaving the timeout handler to record `timeout` over a code that outranks
-                # it. Recorded over whatever marked the key, so the refusal quotes the latest
-                # attempt rather than the sentence that first closed it. No await between the
-                # fold and the write.
+                # As each backend answers, not after the last: the bound can expire mid-loop
+                # and a reason still in this list would die with the cancelled coroutine,
+                # leaving the handler to record `timeout` over a code that outranks it.
+                # Recorded over whatever marked the key. No await between the fold and write.
                 self._unclean[key] = fold_disposal_failures(reasons)
         if reasons:
             return False
@@ -681,8 +663,7 @@ class SandboxRouter:
         refused — otherwise a concurrent :meth:`acquire` passes its ledger check and is handed
         the dirty sandbox. :meth:`_dispose_each` discards the key on a landed disposal, so a
         success clears it while a failure, the bound passing, or a cancellation leaves it
-        refused.  A host that opted down with ``keep_unclean`` gets no ledger write at all — and
-        the same bound, which is not part of what that flag loosens.
+        refused.  ``keep_unclean`` suppresses the ledger writes, not the bound.
 
         Raises:
             ValueError: when ``timeout`` is not a finite positive number of seconds. ``math.inf``
@@ -692,10 +673,8 @@ class SandboxRouter:
         """
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError(f"timeout must be a finite positive number of seconds, not {timeout}")
-        # The host opted down from the framework closing the key, and refusing it is the other
-        # half of that same act — but not from the bound. This still runs after a tool call's
-        # body, and the bound is the only thing between a backend that hangs and a call that
-        # never returns, so it wraps both paths and only the ledger writes are conditional.
+        # The opt-down is from closing the key, not from the bound: this still runs after a
+        # tool call's body. So the bound wraps both paths; only the ledger writes differ.
         refuse = not self._keep_unclean
         if refuse:
             self._unclean.setdefault(key, None)
@@ -711,13 +690,11 @@ class SandboxRouter:
                 timeout,
             )
             if not refuse:
-                # Nothing to record under the opt-down: not closing the key is the whole of what
-                # the host asked for, and a bound that expired does not change that.
+                # Nothing to record: not closing the key is the whole of the opt-down.
                 return False
             expired = DisposalFailure("timeout", f"the disposal did not finish within {timeout}s")
             recorded = self._unclean.get(key)
-            # Folded rather than assigned: a previous attempt may have recorded something more
-            # actionable, and `unreachable` outranks `timeout` for exactly that reason.
+            # Folded, not assigned: an earlier attempt may have recorded something better.
             self._unclean[key] = fold_disposal_failures(
                 [expired] if recorded is None else [recorded, expired]
             )
@@ -731,22 +708,18 @@ class SandboxRouter:
         left refused (:meth:`acquire` raises :class:`SandboxUnclean`) until a later disposal — a
         subsequent :meth:`dispose_unclean`, or :meth:`dispose_scope` — lands.
 
-        The refusal quotes ``reason``'s *code* only.  Its detail is a backend's own sentence and
-        stays in the log, so a host must not expect to read it off :class:`SandboxUnclean`.  A
-        reason does not overwrite one a disposal already recorded: what a backend reported about
-        the sandbox says more than that a cleanup was cut short.
+        The refusal carries ``reason``'s *code* only; the detail stays in the log.  A reason
+        does not overwrite one a disposal already recorded: what a backend said about the
+        sandbox says more than that a cleanup was cut short.
         """
         if self._unclean.get(key) is None:
             if reason is None:
                 self._unclean[key] = None
             elif isinstance(reason, DisposalFailure):
-                # Folded rather than stored as given: one place decides what a legal code is,
-                # and every writer of this ledger goes through it.
+                # Folded, not stored as given: one place decides what a legal code is.
                 self._unclean[key] = fold_disposal_failures([reason])
             else:
-                # The same one-release grace the protocol grants `dispose`: a sentence is read
-                # as `unknown` rather than refused, so a caller is never forced to import the
-                # class to close a key.
+                # The same one-release grace `dispose` gets: a sentence reads as `unknown`.
                 self._unclean[key] = DisposalFailure("unknown", reason)
 
     @asynccontextmanager

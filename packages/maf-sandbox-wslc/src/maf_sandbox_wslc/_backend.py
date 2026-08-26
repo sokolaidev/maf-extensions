@@ -478,13 +478,10 @@ class WslcSandboxBackend:
         # fails, never the truth. Holds the last name acquired per key and kind, which is
         # enough to reclaim them.
         self._registry: dict[tuple[str, str, str, str], str] = {}
-        #: Workload containers a removal could not take away, by key prefix. Disposal-only:
-        #: `dispose` and `dispose_scope` retry these names once the registry entry is gone.
-        #: It does **not** keep one from being served. The name is derived from the key, so
-        #: `acquire` finds the container by asking the engine and consults neither map — what
-        #: refuses to serve a sandbox whose disposal did not land is `SandboxRouter`'s ledger,
-        #: on the path that claims it. An entry lives only while its removal keeps failing, so
-        #: this holds nothing for a key that disposes cleanly.
+        #: Workload containers a removal could not take away, by key prefix. Retry
+        #: bookkeeping only: it does **not** keep one from being served, since the name comes
+        #: from the key and `acquire` asks the engine. Refusing to serve is the router's
+        #: ledger. An entry lives only while its removal keeps failing.
         self._undeleted: dict[tuple[str, str, str], set[str]] = {}
         # Get-or-create serialised per (running loop, key): a create names no container until it
         # returns, so two acquires racing one key would each build a network, a proxy and a
@@ -575,10 +572,8 @@ class WslcSandboxBackend:
         remembered = [self._registry.pop(k) for k in mine]
         candidates = list(dict.fromkeys([*remembered, *sorted(self._undeleted.get(prefix, ()))]))
         if candidates:
-            # Recorded before the first await: the registry no longer holds these names, so
-            # this is the only place a retry can find them if the sweep does not return. Merged
-            # rather than assigned, here and below — teardown for one key is not serialized, so
-            # another disposal may have recorded a name this one never saw.
+            # Before the first await: the registry no longer holds these, so a retry finds
+            # them only here. Merged, not assigned — teardown for one key is not serialized.
             self._undeleted[prefix] = self._undeleted.get(prefix, set()) | set(candidates)
         swept = await self._purge(
             [
@@ -589,13 +584,10 @@ class WslcSandboxBackend:
             fallback=candidates,
             thread_id=key.thread_id,
         )
-        # Reconciled only on a normal return, so a cancelled sweep keeps the whole set.
-        # Over-retaining is the safe direction: a container already gone is reported as such
-        # on the next attempt and drops out. Subtracting only what this sweep took away — and
-        # reading the map here rather than trusting the snapshot above — leaves a name another
-        # disposal recorded meanwhile alone. No await sits between the read and the write.
-        # A name does not identify a generation, so a sweep stale enough to straddle a
-        # re-acquire of the same name subtracts a record the newer disposal wrote: #685.
+        # Only on a normal return, so a cancelled sweep keeps the whole set; over-retaining is
+        # the safe direction, since a container already gone drops out next attempt. Read from
+        # the live map, not the snapshot, with no await between read and write. A name does not
+        # identify a generation, so a stale sweep can still subtract a newer record: #685.
         still = set(swept.undeleted)
         left = (self._undeleted.get(prefix, set()) | still) - (set(candidates) - still)
         if left:
@@ -605,11 +597,9 @@ class WslcSandboxBackend:
         if swept.undeleted:
             return "; ".join(swept.undeleted.values())
         if left:
-            # Left over means a disposal still in flight wrote these ahead of its own first
-            # await and has not reported yet. Answering `None` would clear the refusal on the
-            # strength of a delete nobody has confirmed; the count rather than the names,
-            # because they are not this attempt's to describe. The next disposal that lands
-            # clears it.
+            # A disposal still in flight wrote these ahead of its own await. `None` would
+            # clear the refusal on a delete nobody confirmed; a count, since the names are not
+            # this attempt's to describe. The next disposal that lands clears it.
             return f"another disposal has not yet reported on {len(left)} container(s)"
         return None
 
@@ -637,12 +627,9 @@ class WslcSandboxBackend:
             ),
             thread_id=thread_id,
         )
-        # Merge-only against the *live* map, never the snapshot above: a `dispose` for one of
-        # these keys can land while the sweep is in flight, and indexing what it may have
-        # removed would raise out of a method that never raises. Only names this sweep took
-        # away are subtracted, so a newer record it wrote survives.
-        # A name does not identify a generation, so a sweep stale enough to straddle a
-        # re-acquire of the same name subtracts a record the newer disposal wrote: #685.
+        # Merge-only against the *live* map: a `dispose` for one of these keys can land
+        # mid-sweep, and indexing what it removed would raise out of a method that never does.
+        # Only names this sweep took away are subtracted. A name is not a generation: #685.
         still = set(swept.undeleted)
         for prefix, before in retained.items():
             left = self._undeleted.get(prefix, set()) - (before - still)
