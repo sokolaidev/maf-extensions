@@ -27,8 +27,8 @@ import logging
 import re
 import tarfile
 import weakref
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from hashlib import sha256
 from typing import TYPE_CHECKING, Protocol, cast
 
@@ -235,6 +235,30 @@ class _WslcResult:
     def stderr_text(self) -> str:
         """``stderr`` decoded leniently — a diagnostic should never raise on a stray byte."""
         return self.stderr.decode("utf-8", errors="replace")
+
+
+@dataclass(frozen=True)
+class _Removal:
+    """What one force-remove did: whether a container went away, and why one did not.
+
+    Both, because a container that was already gone is neither — nothing was removed, and
+    nothing is wrong.
+    """
+
+    removed: bool
+    failure: str | None = None
+
+
+@dataclass(frozen=True)
+class _Sweep:
+    """What one label sweep did: sandboxes removed, and the workload containers still there.
+
+    ``undeleted`` maps a container name to why its removal failed, so a caller can report the
+    reason and remember the name to try again.
+    """
+
+    count: int
+    undeleted: Mapping[str, str] = field(default_factory=dict[str, str])
 
 
 class _WslcRunner(Protocol):
@@ -454,6 +478,11 @@ class WslcSandboxBackend:
         # fails, never the truth. Holds the last name acquired per key and kind, which is
         # enough to reclaim them.
         self._registry: dict[tuple[str, str, str, str], str] = {}
+        #: Workload containers a removal could not take away, by key prefix. Retry
+        #: bookkeeping only: it does **not** keep one from being served, since the name comes
+        #: from the key and `acquire` asks the engine. Refusing to serve is the router's
+        #: ledger. An entry lives only while its removal keeps failing.
+        self._undeleted: dict[tuple[str, str, str], set[str]] = {}
         # Get-or-create serialised per (running loop, key): a create names no container until it
         # returns, so two acquires racing one key would each build a network, a proxy and a
         # sandbox. Per loop because an asyncio.Lock binds to the loop that first waits on it, and
@@ -529,26 +558,50 @@ class WslcSandboxBackend:
             self._registry[(key.scope, key.thread_id, key.agent_dir, spec.kind)] = name
             return _WslcSandbox(self._wslc, name, self._config.command_timeout_seconds)
 
-    async def dispose(self, key: SandboxKey) -> None:
+    async def dispose(self, key: SandboxKey) -> str | None:
         """Delete every container for ``key`` — every kind, closed or allowlisted — with
         proxies and networks.
 
         By label, so it reaches a sandbox created under an egress configuration this backend no
         longer runs; the registry name is the fallback for when the listing itself fails. Never
-        raises.
+        raises: a removal that failed comes back as the reason, so the router can refuse a key
+        whose data is still sitting in a container.
         """
         prefix = (key.scope, key.thread_id, key.agent_dir)
         mine = [k for k in list(self._registry) if k[:3] == prefix]
         remembered = [self._registry.pop(k) for k in mine]
-        await self._purge(
+        candidates = list(dict.fromkeys([*remembered, *sorted(self._undeleted.get(prefix, ()))]))
+        if candidates:
+            # Before the first await: the registry no longer holds these, so a retry finds
+            # them only here. Merged, not assigned — teardown for one key is not serialized.
+            self._undeleted[prefix] = self._undeleted.get(prefix, set()) | set(candidates)
+        swept = await self._purge(
             [
                 (_LABEL_SCOPE, key.scope),
                 (_LABEL_THREAD, key.thread_id),
                 (_LABEL_AGENT, key.agent_dir),
             ],
-            fallback=remembered,
+            fallback=candidates,
             thread_id=key.thread_id,
         )
+        # Only on a normal return, so a cancelled sweep keeps the whole set; over-retaining is
+        # the safe direction, since a container already gone drops out next attempt. Read from
+        # the live map, not the snapshot, with no await between read and write. A name does not
+        # identify a generation, so a stale sweep can still subtract a newer record: #685.
+        still = set(swept.undeleted)
+        left = (self._undeleted.get(prefix, set()) | still) - (set(candidates) - still)
+        if left:
+            self._undeleted[prefix] = left
+        else:
+            self._undeleted.pop(prefix, None)
+        if swept.undeleted:
+            return "; ".join(swept.undeleted.values())
+        if left:
+            # A disposal still in flight wrote these ahead of its own await. `None` would
+            # clear the refusal on a delete nobody confirmed; a count, since the names are not
+            # this attempt's to describe. The next disposal that lands clears it.
+            return f"another disposal has not yet reported on {len(left)} container(s)"
+        return None
 
     async def dispose_scope(self, scope: str, thread_id: str) -> int:
         """Delete every container labelled ``(scope, thread_id)``; returns how many sandboxes.
@@ -560,15 +613,35 @@ class WslcSandboxBackend:
         """
         mine = [k for k in list(self._registry) if k[0] == scope and k[1] == thread_id]
         remembered = [self._registry.pop(k) for k in mine]
-        return await self._purge(
+        retained = {
+            p: set(names)
+            for p, names in self._undeleted.items()
+            if p[0] == scope and p[1] == thread_id
+        }
+        swept = await self._purge(
             [(_LABEL_SCOPE, scope), (_LABEL_THREAD, thread_id)],
-            fallback=remembered,
+            fallback=list(
+                dict.fromkeys(
+                    [*remembered, *sorted(n for names in retained.values() for n in names)]
+                )
+            ),
             thread_id=thread_id,
         )
+        # Merge-only against the *live* map: a `dispose` for one of these keys can land
+        # mid-sweep, and indexing what it removed would raise out of a method that never does.
+        # Only names this sweep took away are subtracted. A name is not a generation: #685.
+        still = set(swept.undeleted)
+        for prefix, before in retained.items():
+            left = self._undeleted.get(prefix, set()) - (before - still)
+            if left:
+                self._undeleted[prefix] = left
+            else:
+                self._undeleted.pop(prefix, None)
+        return swept.count
 
     async def _purge(
         self, label_filters: list[tuple[str, str]], fallback: list[str], thread_id: str
-    ) -> int:
+    ) -> _Sweep:
         """Remove the containers a label query returns, plus their proxies and networks.
 
         A proxy carries its sandbox's labels, so it is listed and removed alongside it, but it is
@@ -587,10 +660,16 @@ class WslcSandboxBackend:
         names = [*listed, *stranded]
 
         count = 0
+        undeleted: dict[str, str] = {}
         for target in names:
-            if await self._remove(target) and not target.endswith(_PROXY_SUFFIX):
+            removal = await self._remove(target)
+            if removal.removed and not target.endswith(_PROXY_SUFFIX):
                 logger.info("sandbox released: container=%s thread=%s (purge)", target, thread_id)
                 count += 1
+            # Workload containers only. A proxy and a network carry no guest data, so one left
+            # behind is an infrastructure leak to log rather than a reason to refuse the key.
+            if removal.failure is not None and not target.endswith(_PROXY_SUFFIX):
+                undeleted[target] = removal.failure
 
         networks = {
             _network_name(n.removesuffix(_PROXY_SUFFIX))
@@ -604,7 +683,7 @@ class WslcSandboxBackend:
                 networks.add(_network_name(workload))
         for net in networks:
             await self._remove_network(net)
-        return count
+        return _Sweep(count, undeleted)
 
     # -- internals ----------------------------------------------------------------
 
@@ -874,24 +953,30 @@ class WslcSandboxBackend:
             return True
         return await self._is_listed(name, all_states=True) and await self._restart(name)
 
-    async def _remove(self, target: str) -> bool:
-        """Force-remove ``target``. Returns whether it removed one; never raises."""
+    async def _remove(self, target: str) -> _Removal:
+        """Force-remove ``target``. Never raises; reports what it did.
+
+        A container wslc says it does not have is a removal that has nothing to do, not a
+        failure: the sweep tries names the registry remembers, and one already gone is the
+        ordinary case.
+        """
         try:
             result = await self._wslc(
                 "container", "remove", "-f", target, timeout=self._config.command_timeout_seconds
             )
         except Exception as exc:  # noqa: BLE001 - teardown must never raise
             logger.warning("wslc backend: failed to remove container %s: %s", target, exc)
-            return False
+            return _Removal(removed=False, failure=f"{target}: {exc}")
         if result.returncode == 0:
-            return True
-        if _NOT_FOUND not in result.stderr_text:
-            logger.warning(
-                "wslc backend: failed to remove container %s: %s",
-                target,
-                result.stderr_text.strip(),
-            )
-        return False
+            return _Removal(removed=True)
+        if _NOT_FOUND in result.stderr_text:
+            return _Removal(removed=False)
+        logger.warning(
+            "wslc backend: failed to remove container %s: %s",
+            target,
+            result.stderr_text.strip(),
+        )
+        return _Removal(removed=False, failure=f"{target}: {result.stderr_text.strip()}")
 
     async def _list_names_by_labels(self, label_filters: list[tuple[str, str]]) -> list[str]:
         """Container names matching every ``(label, value)`` filter, read from wslc. Never raises.

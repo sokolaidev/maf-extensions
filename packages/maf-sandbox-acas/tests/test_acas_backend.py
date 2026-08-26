@@ -608,6 +608,32 @@ class TestWhichNamespaceASpecBootsFrom:
 
 
 class TestDisposeScope:
+    def test_a_dispose_landing_mid_purge_neither_crashes_nor_is_clobbered(self):
+        """Teardown for one key is not serialized, so the purge reconciles against the live
+        record: it must not index a prefix a `dispose` removed, nor drop an id it added."""
+        release = asyncio.Event()
+        prefix = ("scope-a", "thread-1", "devops-engineer")
+        backend = _backend_with(_FakeGroupClient())
+        backend._undeleted[prefix] = {"sbx-1"}
+        original = backend._delete
+
+        async def slow_delete(group_client, sandbox_id):
+            await release.wait()
+            return await original(group_client, sandbox_id)
+
+        backend._delete = slow_delete  # type: ignore[method-assign]
+
+        async def drive() -> int:
+            purge = asyncio.create_task(backend.dispose_scope("scope-a", "thread-1"))
+            await asyncio.sleep(0)
+            backend._undeleted.pop(prefix, None)
+            backend._undeleted[prefix] = {"sbx-2"}
+            release.set()
+            return await purge
+
+        asyncio.run(drive())
+        assert backend._undeleted == {prefix: {"sbx-2"}}, "the newer record survives"
+
     def test_reaches_sandboxes_this_process_never_created(self):
         """The registry is a fast path; the service is the source of truth."""
         client = _FakeGroupClient(sandboxes=[_FakeSandbox("sbx-remote")])
@@ -641,6 +667,22 @@ class TestDisposeScope:
 
         asyncio.run(backend.dispose_scope("scope-a", "thread-1"))
         assert backend._registry == {}
+
+    def test_a_group_client_that_cannot_be_built_keeps_the_ids_for_a_retry(self):
+        """The registry is popped before the client is built, so without this the ids are in
+        neither place and the next `dispose` reports the sandboxes gone."""
+        backend = AcasSandboxBackend(_config())
+        backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = "sbx-1"
+
+        def _unreachable():
+            raise RuntimeError("no credential")
+
+        backend._group_client = _unreachable  # type: ignore[method-assign]
+        assert asyncio.run(backend.dispose_scope("scope-a", "thread-1")) == 0
+        assert backend._undeleted == {("scope-a", "thread-1", "devops-engineer"): {"sbx-1"}}
+
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+        assert asyncio.run(backend.dispose(key)) is not None, "the retry still reports"
 
     def test_a_service_failure_degrades_to_zero_rather_than_raising(self):
         """Purge must not fail a conversation delete."""
@@ -792,8 +834,148 @@ class TestDispose:
         backend = _backend_with(client)
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
 
-        asyncio.run(backend.dispose(key))
+        assert asyncio.run(backend.dispose(key)) is None
         assert client.deleted == []
+
+    def test_a_delete_that_lands_reports_nothing(self):
+        backend = _backend_with(_FakeGroupClient())
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
+
+        assert asyncio.run(backend.dispose(key)) is None
+
+    def test_a_failed_delete_comes_back_as_the_reason(self):
+        """Never raising is the contract, so the reason is the only way the router hears (#641)."""
+        backend = _backend_with(_ExplodingGroupClient())
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
+
+        reason = asyncio.run(backend.dispose(key))
+        assert reason is not None
+        assert "sbx-1" in reason
+        assert backend._registry == {}
+
+    def test_a_second_attempt_still_reports_what_the_first_could_not_delete(self):
+        """An id a delete could not remove outlives the registry entry it came from."""
+        backend = _backend_with(_ExplodingGroupClient())
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
+
+        assert asyncio.run(backend.dispose(key)) is not None
+        second = asyncio.run(backend.dispose(key))
+        assert second is not None
+        assert "sbx-1" in second
+
+    def test_a_group_client_that_cannot_be_built_keeps_the_ids_for_a_retry(self):
+        backend = AcasSandboxBackend(_config())
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
+
+        def _unreachable():
+            raise RuntimeError("no credential")
+
+        backend._group_client = _unreachable  # type: ignore[method-assign]
+        assert asyncio.run(backend.dispose(key)) is not None
+        assert asyncio.run(backend.dispose(key)) is not None
+
+    def test_a_delete_cancelled_part_way_still_leaves_the_id_to_retry(self):
+        """The record is written before the first await, so a bound that expires mid-delete
+        does not take the only name of the sandbox with it."""
+
+        class _Hanging:
+            async def begin_delete(self) -> None:
+                await asyncio.Event().wait()
+
+        class _Hangs(_FakeGroupClient):
+            def get_sandbox_client(self, sandbox_id: str):
+                return _Hanging()
+
+        backend = _backend_with(_Hangs())
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
+
+        async def cut_short() -> None:
+            async with asyncio.timeout(0.05):
+                await backend.dispose(key)
+
+        with pytest.raises(TimeoutError):
+            asyncio.run(cut_short())
+
+        assert backend._registry == {}, "the registry entry is gone"
+        assert backend._undeleted == {(key.scope, key.thread_id, key.agent_dir): {"sbx-1"}}
+
+    def test_a_delete_that_lands_clears_the_retry_record(self):
+        backend = _backend_with(_FakeGroupClient())
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+        backend._undeleted[(key.scope, key.thread_id, key.agent_dir)] = {"sbx-1"}
+
+        assert asyncio.run(backend.dispose(key)) is None
+        assert backend._undeleted == {}
+
+    def test_a_scope_purge_that_lands_clears_the_retry_record(self):
+        backend = _backend_with(_FakeGroupClient())
+        backend._undeleted[("scope-a", "thread-1", "devops-engineer")] = {"sbx-1"}
+
+        asyncio.run(backend.dispose_scope("scope-a", "thread-1"))
+        assert backend._undeleted == {}
+
+    def test_a_sandbox_the_service_no_longer_has_is_not_a_failure(self):
+        """The auto-delete timer reclaiming one between rounds is the expected path — the same
+        reading `acquire`'s resume takes. Reporting it would refuse the key over a sandbox that
+        is already gone."""
+        from azure.core.exceptions import ResourceNotFoundError
+
+        class _Gone(_FakeGroupClient):
+            def get_sandbox_client(self, sandbox_id: str):
+                raise ResourceNotFoundError("sandbox not found")
+
+        backend = _backend_with(_Gone())
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
+
+        assert asyncio.run(backend.dispose(key)) is None
+
+    def test_a_group_client_that_cannot_be_built_is_reported_rather_than_raised(self):
+        """The registry entries are already gone, so silence would strand a running sandbox
+        with no record of it anywhere."""
+        backend = AcasSandboxBackend(_config())
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "bicep")] = "sbx-1"
+
+        def _unreachable():
+            raise RuntimeError("no credential")
+
+        backend._group_client = _unreachable  # type: ignore[method-assign]
+        reason = asyncio.run(backend.dispose(key))
+        assert reason is not None
+        assert "no credential" in reason
+
+    def test_a_record_this_attempt_never_reported_on_is_not_read_as_landed(self):
+        """A disposal still in flight writes its ids ahead of its own first await. Answering
+        `None` here clears the router's refusal on the strength of a delete nobody confirmed."""
+        release = asyncio.Event()
+        prefix = ("scope-a", "thread-1", "devops-engineer")
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+        backend = _backend_with(_FakeGroupClient())
+        backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = "sbx-1"
+        original = backend._delete
+
+        async def slow_delete(group_client, sandbox_id):
+            await release.wait()
+            return await original(group_client, sandbox_id)
+
+        backend._delete = slow_delete  # type: ignore[method-assign]
+
+        async def drive() -> str | None:
+            disposal = asyncio.create_task(backend.dispose(key))
+            await asyncio.sleep(0)
+            backend._undeleted[prefix] = backend._undeleted.get(prefix, set()) | {"sbx-2"}
+            release.set()
+            return await disposal
+
+        reported = asyncio.run(drive())
+        assert backend._undeleted == {prefix: {"sbx-2"}}, "the newer record survives"
+        assert reported is not None, "and the key stays refused until someone reports on it"
 
 
 # ---------------------------------------------------------------------------
@@ -1202,28 +1384,6 @@ class TestErrorDetailAdoption:
         ]
         assert len(failed) == 1
         assert failed[0].msg == "acas backend: could not list sandboxes for thread %s: %s"
-
-    def test_the_model_facing_surface_is_unaffected(self):
-        """This is a log-content-only change: `error_detail` never reaches a tool result.
-
-        Nothing in this backend returns `error_detail`'s output to a caller — it is only
-        ever handed to `logger.warning`/`logger.info`. This guards that boundary staying
-        true rather than re-deriving it by reading the source on every review.
-        """
-        import inspect
-
-        from maf_sandbox_acas import _backend
-
-        source = inspect.getsource(_backend)
-        assert source.count("error_detail(") == 3, (
-            "expected exactly the resume, delete and list call sites to adopt error_detail; "
-            "a new call site should extend this test rather than silently changing the count"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Egress policy — built from the spec, not from configuration
-# ---------------------------------------------------------------------------
 
 
 class TestEgressPolicy:

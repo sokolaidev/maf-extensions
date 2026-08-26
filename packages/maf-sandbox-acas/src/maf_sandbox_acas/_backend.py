@@ -16,6 +16,7 @@ import logging
 import posixpath
 import shlex
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from hashlib import sha256
 from typing import TYPE_CHECKING, Any, cast
 
@@ -259,6 +260,18 @@ def _listed_entry_path(payload: Mapping[str, Any], *, listed: str, working_direc
             "its parent, and a listing enumerates one level only"
         )
     return relative
+
+
+@dataclass(frozen=True)
+class _Deletion:
+    """What one delete did: whether a sandbox went away, and why one did not.
+
+    Both, because a sandbox the service no longer has is neither — nothing was deleted, and
+    nothing is wrong.
+    """
+
+    deleted: bool
+    failure: str | None = None
 
 
 class _AcasSandbox:
@@ -568,6 +581,10 @@ class AcasSandboxBackend:
         # `dispose_scope` treats this as a fast path, never as the source of truth — see its
         # docstring.
         self._registry: dict[tuple[str, str, str, str], str] = {}
+        #: Sandbox ids a delete could not remove, by key prefix. Apart from the registry,
+        #: which `acquire` resumes from and `dispose` pops, so a failed delete is retried and
+        #: never served. An entry lives only while its delete keeps failing.
+        self._undeleted: dict[tuple[str, str, str], set[str]] = {}
         # Group clients cached per event loop. An azure-core async client binds its transport
         # to the loop that created it, and this host runs some work on a dedicated background
         # loop, so one shared client would be a cross-loop hazard; one per call would leak a
@@ -775,28 +792,68 @@ class AcasSandboxBackend:
             )
         return _AcasSandbox(sc, self._config.read_timeout_seconds)
 
-    async def dispose(self, key: SandboxKey) -> None:
+    async def dispose(self, key: SandboxKey) -> str | None:
         """Delete every kind's sandbox for ``key`` that this process knows of.
 
         Every kind's, because the key may own one sandbox per kind and this method takes no
         kind — a caller releasing a key means all of it.
+
+        Never raises, and reports the reason a sandbox may still be there. Reaching the group
+        is part of the delete: a client this process cannot build has deleted nothing. Ids a
+        delete could not remove are kept for the next attempt, apart from the registry, which
+        :meth:`acquire` resumes from — a sandbox whose delete failed is retried, never served.
         """
         prefix = (key.scope, key.thread_id, key.agent_dir)
         mine = [k for k in list(self._registry) if k[:3] == prefix]
-        if not mine:
-            return
-        gc = self._group_client()
-        for registry_key in mine:
-            sandbox_id = self._registry.pop(registry_key, None)
-            if sandbox_id is None:
-                continue
-            if await self._delete(gc, sandbox_id):
+        wanted = list(
+            dict.fromkeys(
+                [
+                    *(sid for sid in (self._registry.pop(k, None) for k in mine) if sid),
+                    *sorted(self._undeleted.get(prefix, ())),
+                ]
+            )
+        )
+        if not wanted:
+            return None
+        # Before the first await: the registry no longer holds these and there is no listing
+        # to fall back on, so a retry finds them only here. Over-retaining is safe — an id
+        # already deleted drops out next attempt. Merged, not assigned: teardown is not
+        # serialized.
+        self._undeleted[prefix] = self._undeleted.get(prefix, set()) | set(wanted)
+        try:
+            gc = self._group_client()
+        except Exception as exc:  # noqa: BLE001 - disposal must never raise
+            logger.warning("acas backend: could not reach the sandbox group: %s", error_detail(exc))
+            return f"could not reach the sandbox group: {error_detail(exc)}"
+        undeleted: dict[str, str] = {}
+        for sandbox_id in wanted:
+            deletion = await self._delete(gc, sandbox_id)
+            if deletion.deleted:
                 logger.info(
                     "sandbox released: id=%s thread=%s agent=%s",
                     sandbox_id,
                     key.thread_id,
                     key.agent_dir,
                 )
+            if deletion.failure is not None:
+                undeleted[sandbox_id] = deletion.failure
+        # Read from the live map, not `wanted`, so an id another disposal recorded survives.
+        # No await between the read and the write.
+        still = set(undeleted)
+        left = (self._undeleted.get(prefix, set()) | still) - (set(wanted) - still)
+        if left:
+            self._undeleted[prefix] = left
+        else:
+            self._undeleted.pop(prefix, None)
+        if undeleted:
+            reasons = "; ".join(undeleted.values())
+            return f"sandbox delete failed: {reasons}"
+        if left:
+            # A disposal still in flight wrote these ahead of its own await. `None` would
+            # clear the refusal on a delete nobody confirmed; a count, since the ids are not
+            # this attempt's to describe. The next disposal that lands clears it.
+            return f"another disposal has not yet reported on {len(left)} sandbox(es)"
+        return None
 
     async def dispose_scope(self, scope: str, thread_id: str) -> int:
         """Delete every sandbox labelled ``(scope, thread_id)``; returns how many.
@@ -809,7 +866,8 @@ class AcasSandboxBackend:
 
         Registry entries are dropped up front whether or not the delete succeeds: a stale
         entry pointing at a sandbox that may already be gone is worse than no entry, since
-        the next acquire would try to resume it.
+        the next acquire would try to resume it.  An id a previous :meth:`dispose` could not
+        delete is swept here too, and stops being owed a retry once this takes it away.
         """
         known = [
             (k, sandbox_id)
@@ -823,18 +881,46 @@ class AcasSandboxBackend:
             gc = self._group_client()
         except Exception as exc:  # noqa: BLE001 - purge must never fail
             logger.warning("acas backend: could not reach the sandbox group: %s", exc)
+            # The registry entries are gone by now, so these ids live here or nowhere.
+            for key, sandbox_id in known:
+                prefix = (key[0], key[1], key[2])
+                self._undeleted[prefix] = self._undeleted.get(prefix, set()) | {sandbox_id}
             return 0
 
+        retained = {
+            p: set(names)
+            for p, names in self._undeleted.items()
+            if p[0] == scope and p[1] == thread_id
+        }
         ids = {sandbox_id for _, sandbox_id in known}
+        ids.update(sandbox_id for names in retained.values() for sandbox_id in names)
         ids.update(await self._list_thread_sandbox_ids(gc, scope, thread_id))
 
         count = 0
+        undeleted: set[str] = set()
         for sandbox_id in sorted(ids):
-            if await self._delete(gc, sandbox_id):
+            deletion = await self._delete(gc, sandbox_id)
+            if deletion.deleted:
                 logger.info(
                     "sandbox released: id=%s thread=%s (scope purge)", sandbox_id, thread_id
                 )
                 count += 1
+            if deletion.failure is not None:
+                undeleted.add(sandbox_id)
+        # Merge-only against the *live* map: a `dispose` for one of these keys can land
+        # mid-sweep, and indexing what it removed would raise out of a method that never does.
+        for prefix, before in retained.items():
+            left = self._undeleted.get(prefix, set()) - (before - undeleted)
+            if left:
+                self._undeleted[prefix] = left
+            else:
+                self._undeleted.pop(prefix, None)
+        # The listing does not say which key owns a failed id, so it is recorded against the
+        # registry keys this purge popped rather than lost.
+        for key, sandbox_id in known:
+            if sandbox_id in undeleted:
+                prefix = (key[0], key[1], key[2])
+                self._undeleted[prefix] = self._undeleted.get(prefix, set()) | {sandbox_id}
         return count
 
     # -- internals ----------------------------------------------------------------
@@ -871,16 +957,25 @@ class AcasSandboxBackend:
             )
         )
 
-    async def _delete(self, group_client: Any, sandbox_id: str) -> bool:
-        """Best-effort delete. Returns whether it succeeded; never raises."""
+    async def _delete(self, group_client: Any, sandbox_id: str) -> _Deletion:
+        """Best-effort delete. Never raises; reports what it did.
+
+        A sandbox the service no longer has is a delete with nothing to do, not a failure: the
+        auto-delete timer reclaiming one between rounds is the expected path, the same reading
+        the resume above takes of it.
+        """
+        from azure.core.exceptions import ResourceNotFoundError
+
         try:
             await group_client.get_sandbox_client(sandbox_id).begin_delete()
-            return True
+            return _Deletion(deleted=True)
+        except ResourceNotFoundError:
+            return _Deletion(deleted=False)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "acas backend: failed to delete sandbox %s: %s", sandbox_id, error_detail(exc)
             )
-            return False
+            return _Deletion(deleted=False, failure=f"{sandbox_id}: {error_detail(exc)}")
 
     async def _list_thread_sandbox_ids(
         self, group_client: Any, scope: str, thread_id: str

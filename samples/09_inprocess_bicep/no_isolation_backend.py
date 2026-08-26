@@ -16,7 +16,7 @@ import posixpath
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path, PurePosixPath
 
 from maf_sandbox import (
@@ -62,9 +62,21 @@ class NoIsolationSandbox:
         self._host_root = host_root
         self._guest_work_dir = guest_work_dir
 
-    def destroy(self) -> None:
-        """Remove the host work directory. Best-effort: never raises."""
-        shutil.rmtree(self._host_root, ignore_errors=True)
+    def destroy(self) -> str | None:
+        """Remove the host work directory. Never raises; answers why it could not.
+
+        ``ignore_errors`` would make this quiet about a directory it failed to remove, and a
+        disposal that cannot say so is read as one that landed.
+        """
+        problems: list[str] = []
+
+        def _note(_function: object, path: str, exc: BaseException) -> None:
+            # A path that is not there is a removal that landed — as "no such container" is.
+            if not isinstance(exc, FileNotFoundError):
+                problems.append(f"{path}: {exc}")
+
+        shutil.rmtree(self._host_root, onexc=_note)
+        return "; ".join(problems) or None
 
     def _host_path(self, guest_path: str) -> Path:
         """Translate a guest path under ``work_dir`` to a path under the host root.
@@ -272,6 +284,10 @@ class NoIsolationBackend:
         self._seed_files = dict(seed_files or {})
         self._name = name
         self._sandboxes: dict[tuple[SandboxKey, str], NoIsolationSandbox] = {}
+        # Sandboxes whose directory a disposal could not remove: a later disposal retries
+        # them, and `acquire` never hands one back. A list rather than a dict keyed by ident,
+        # because `acquire` reuses an ident and a second failure would evict the first.
+        self._undeleted: list[tuple[tuple[SandboxKey, str], NoIsolationSandbox]] = []
         self._lock = asyncio.Lock()
 
     @property
@@ -327,18 +343,39 @@ class NoIsolationBackend:
                 self._sandboxes[ident] = sandbox
             return sandbox
 
-    async def dispose(self, key: SandboxKey) -> None:
+    def _remove(self, wanted: Callable[[SandboxKey], bool]) -> tuple[int, list[str]]:
+        """Destroy the matching sandboxes, keeping the ones that would not go. Holds the lock.
+
+        Reporting a failed removal is only half of it: answering ``None`` the *second* time
+        clears the router's refusal over a directory that is still there.
+        """
+        doomed = [(i, self._sandboxes.pop(i)) for i in list(self._sandboxes) if wanted(i[0])]
+        doomed += [(i, s) for i, s in self._undeleted if wanted(i[0])]
+        self._undeleted = [(i, s) for i, s in self._undeleted if not wanted(i[0])]
+
+        removed = 0
+        problems: list[str] = []
+        for ident, sandbox in doomed:
+            problem = sandbox.destroy()
+            if problem is None:
+                removed += 1
+            else:
+                self._undeleted.append((ident, sandbox))
+                problems.append(problem)
+        return removed, problems
+
+    async def dispose(self, key: SandboxKey) -> str | None:
+        """Delete this key's sandboxes. Never raises; answers why one may still be there.
+
+        A backend that swallows the failure is read as having disposed, and the router then
+        serves the next call the files this one could not remove.
+        """
         async with self._lock:
-            for ident in [i for i, s in self._sandboxes.items() if i[0] == key]:
-                self._sandboxes.pop(ident).destroy()
+            _, problems = self._remove(lambda k: k == key)
+        return "; ".join(problems) or None
 
     async def dispose_scope(self, scope: str, thread_id: str) -> int:
+        """How many sandboxes went — a directory that would not go is retained, not counted."""
         async with self._lock:
-            doomed = [
-                ident
-                for ident in self._sandboxes
-                if ident[0].scope == scope and ident[0].thread_id == thread_id
-            ]
-            for ident in doomed:
-                self._sandboxes.pop(ident).destroy()
-            return len(doomed)
+            removed, _ = self._remove(lambda k: k.scope == scope and k.thread_id == thread_id)
+            return removed

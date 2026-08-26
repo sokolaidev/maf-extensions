@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 __all__ = [
     "DEFAULT_CAPABILITIES",
@@ -25,6 +25,8 @@ __all__ = [
     "ISOLATION_RANK",
     "Capability",
     "DeclaredOutput",
+    "DisposalCode",
+    "DisposalFailure",
     "Egress",
     "EntryKind",
     "ExecResult",
@@ -40,6 +42,7 @@ __all__ = [
     "SandboxSpec",
     "SourceIntegrity",
     "TransferLimits",
+    "fold_disposal_failures",
     "CallerContext",
     "meets_floor",
 ]
@@ -821,6 +824,65 @@ class Sandbox(Protocol):
         ...
 
 
+#: Why a disposal did not land, in a word a caller may branch on.
+#:
+#: ``"unreachable"``: never reached, so nothing was asked of it. ``"timeout"``: unfinished,
+#: so whether it landed is not known. ``"refused"``: it answered, and the sandbox is still
+#: there. ``"unlisted"``: the query enumerating what to delete failed, so the sweep may be
+#: partial. ``"unknown"``: the backend cannot classify it, and may always say so.
+DisposalCode = Literal["unreachable", "timeout", "refused", "unlisted", "unknown"]
+
+#: Which code survives when one disposal hits several, most actionable first: ``"unreachable"``
+#: outranks ``"refused"`` because it is the one worth retrying.
+_DISPOSAL_PRECEDENCE: tuple[DisposalCode, ...] = (
+    "unreachable",
+    "timeout",
+    "refused",
+    "unlisted",
+    "unknown",
+)
+
+
+@dataclass(frozen=True)
+class DisposalFailure:
+    """Why a sandbox may still be there: a code to branch on, and the detail to log.
+
+    The code is the part a caller acts on and the only part kept stable. ``detail`` is the
+    backend's own sentence, for a log rather than for parsing.
+    """
+
+    code: DisposalCode
+    detail: str
+
+    def __str__(self) -> str:
+        return f"{self.code}: {self.detail}"
+
+
+def fold_disposal_failures(failures: Sequence[DisposalFailure]) -> DisposalFailure | None:
+    """The one failure that stands for several, or ``None`` when there are none.
+
+    Lives here because all three shipped backends fold, and a rule three packages implement
+    separately drifts. The code is the most actionable reported; the detail keeps every
+    sentence. A code from outside the vocabulary folds to ``unknown``, which is also how a
+    lone failure is normalised.
+    """
+    if not failures:
+        return None
+    codes: set[DisposalCode] = {failure.code for failure in failures}
+    # Nothing enforces a `Literal` at run time, so default rather than raise on an odd code.
+    worst: DisposalCode = "unknown"
+    for candidate in _DISPOSAL_PRECEDENCE:
+        if candidate in codes:
+            worst = candidate
+            break
+    if len(failures) == 1:
+        # Identity for a code of ours; a lone unrecognised one is normalised like several.
+        only = failures[0]
+        return only if only.code == worst else DisposalFailure(worst, only.detail)
+    # `detail`, not `str(failure)`: one shape whether one backend reported or three.
+    return DisposalFailure(worst, "; ".join(failure.detail for failure in failures))
+
+
 @runtime_checkable
 class SandboxBackend(Protocol):
     """A provider that can hand out sandboxes.
@@ -887,11 +949,26 @@ class SandboxBackend(Protocol):
         """
         ...
 
-    async def dispose(self, key: SandboxKey) -> None:
+    async def dispose(self, key: SandboxKey) -> DisposalFailure | str | None:
         """Delete every kind's sandbox for ``key``, if any. Best-effort: never raises.
 
         Every kind's, because a key may own one sandbox per kind and this method takes no
         kind: a caller releasing a key means all of it.
+
+        **Return a :class:`DisposalFailure` when a sandbox may still be there, or ``None``.**
+        ``None`` is read as disposed, and a backend with no way to check returns it too — the
+        conflation is with success, because refusing every key served by a backend that cannot
+        answer is the wrong direction to fail in.
+
+        The :data:`DisposalCode` is what a caller branches on and the only half kept stable;
+        ``detail`` is yours and reaches a log. Reach for ``"unknown"`` rather than guessing.
+
+        A bare ``str`` is accepted for one release and read as ``"unknown"``: a backend cannot
+        import :class:`DisposalFailure` from a core that has not published it. Return the class.
+
+        A record of what could not be deleted is retry bookkeeping, not a guard on
+        :meth:`acquire` — refusing to serve is the router's ledger. The three in this
+        repository each carry their own copy of it, so a change to one is owed to the others.
         """
         ...
 

@@ -352,6 +352,107 @@ def test_acquire_is_get_or_create_keyed_by_scope_thread_kind():
     asyncio.run(body())
 
 
+def test_a_work_directory_already_gone_is_a_disposal_that_landed():
+    """`shutil.rmtree` hands `onexc` a `FileNotFoundError` for a missing root, so reading every
+    `onexc` call as a failure refuses the key over a sandbox that is already gone — and keeps it
+    for a retry that can never succeed. The packaged backends read "no such container" the same
+    way this now reads a missing path."""
+
+    async def body() -> None:
+        backend, sandbox = await _fresh()
+        shutil.rmtree(sandbox._host_root)  # noqa: SLF001  # gone behind the backend's back
+        try:
+            assert await backend.dispose(_key()) is None, "a path that is not there has landed"
+            assert backend._undeleted == [], "and nothing is owed a retry"  # noqa: SLF001
+        finally:
+            await _drop(backend)
+
+    asyncio.run(body())
+
+
+def test_dispose_keeps_reporting_a_work_directory_it_could_not_remove(monkeypatch):
+    """A sample is code an adopter copies, so it must not model the silent failure the router
+    exists to catch. Reporting once is not enough: a second disposal answering ``None`` clears
+    the router's refusal over a directory that is still on disk."""
+
+    async def body() -> None:
+        backend, sandbox = await _fresh()
+        host_root = sandbox._host_root  # noqa: SLF001
+
+        def _refuses(path, onexc=None, **kwargs):
+            assert onexc is not None, "the sample must ask to hear about a failed removal"
+            onexc(None, str(path), PermissionError("held open by a child"))
+
+        monkeypatch.setattr("no_isolation_backend.shutil.rmtree", _refuses)
+        try:
+            first = await backend.dispose(_key())
+            second = await backend.dispose(_key())
+        finally:
+            monkeypatch.undo()
+        assert first is not None and "held open by a child" in first
+        assert second is not None, "a retained failure has to keep answering until it lands"
+
+        assert host_root.exists()
+        await _drop(backend)
+        assert not host_root.exists(), "and the retry removes it once the removal can land"
+
+    asyncio.run(body())
+
+
+def test_a_second_failure_does_not_lose_the_first_directory(monkeypatch):
+    """`acquire` reuses the ident, so a retained failure held under it would be overwritten by
+    the next sandbox that also would not go — and the first directory, still on disk, would
+    never be retried by anything."""
+
+    async def body() -> None:
+        backend, first = await _fresh()
+
+        def _refuses(path, onexc=None, **kwargs):
+            assert onexc is not None, "the sample must ask to hear about a failed removal"
+            onexc(None, str(path), PermissionError("busy"))
+
+        monkeypatch.setattr("no_isolation_backend.shutil.rmtree", _refuses)
+        try:
+            assert await backend.dispose(_key()) is not None
+            second = await backend.acquire(_key(), _spec())
+            assert second is not first
+            assert await backend.dispose(_key()) is not None
+        finally:
+            monkeypatch.undo()
+
+        assert first._host_root.exists() and second._host_root.exists()  # noqa: SLF001
+        await _drop(backend)
+        assert not first._host_root.exists(), "the first is still owed a retry"  # noqa: SLF001
+        assert not second._host_root.exists()  # noqa: SLF001
+
+    asyncio.run(body())
+
+
+def test_a_sandbox_that_would_not_go_is_never_served_again(monkeypatch):
+    """The retained directory must not come back through get-or-create: `acquire` handing back
+    the same sandbox is the leak the disposal was trying to prevent."""
+
+    async def body() -> None:
+        backend, sandbox = await _fresh()
+
+        def _refuses(path, onexc=None, **kwargs):
+            assert onexc is not None, "the sample must ask to hear about a failed removal"
+            onexc(None, str(path), PermissionError("busy"))
+
+        monkeypatch.setattr("no_isolation_backend.shutil.rmtree", _refuses)
+        try:
+            assert await backend.dispose(_key()) is not None
+        finally:
+            monkeypatch.undo()
+        try:
+            assert await backend.acquire(_key(), _spec()) is not sandbox
+        finally:
+            await _drop(backend)
+            shutil.rmtree(sandbox._host_root, ignore_errors=True)  # noqa: SLF001
+
+    asyncio.run(body())
+
+
 def test_dispose_scope_removes_sandboxes_and_returns_count():
     """``dispose_scope`` drops every sandbox under the (scope, thread_id) pair and counts them."""
 

@@ -727,6 +727,82 @@ class TestDispose:
         backend, _ = _backend_with(_explodes)
         asyncio.run(backend.dispose(_KEY))
 
+    def test_a_removal_that_lands_reports_nothing(self):
+        backend, _ = _backend_with(_machine(running=[_NAME]))
+        assert asyncio.run(backend.dispose(_KEY)) is None
+
+    def test_a_failed_removal_comes_back_as_the_reason(self):
+        """Never raising is the contract, so the reason is the only way the router hears (#641)."""
+        failed = _WslcResult(1, b"", b"WSLC_E_SERVICE_UNAVAILABLE")
+        backend, _ = _backend_with(
+            _machine(running=[_NAME], overrides={("container", "remove"): failed})
+        )
+        reason = asyncio.run(backend.dispose(_KEY))
+        assert reason is not None
+        assert "WSLC_E_SERVICE_UNAVAILABLE" in reason
+        assert _NAME in reason
+
+    def test_a_second_attempt_still_reports_what_the_first_could_not_remove(self):
+        """A name a removal could not take away outlives the registry entry it came from."""
+        overrides = {
+            ("container", "remove"): _WslcResult(1, b"", b"WSLC_E_SERVICE_UNAVAILABLE"),
+            ("container", "list"): _WslcResult(1, b"", b"WSLC_E_SERVICE_UNAVAILABLE"),
+        }
+        backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = _NAME  # noqa: SLF001
+
+        assert asyncio.run(backend.dispose(_KEY)) is not None
+        second = asyncio.run(backend.dispose(_KEY))
+        assert second is not None
+        assert _NAME in second
+
+    def test_a_sweep_cancelled_part_way_still_leaves_the_name_to_retry(self):
+        """The record is written before the first await, so a bound that expires mid-sweep does
+        not take the only name of the container with it."""
+        backend, _ = _backend_with(_machine(running=[_NAME]))
+        backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = _NAME  # noqa: SLF001
+        inner = backend._wslc  # noqa: SLF001
+
+        async def hangs_on_remove(*args: str, **kwargs: object) -> _WslcResult:
+            if args[:2] == ("container", "remove"):
+                await asyncio.Event().wait()
+            return await inner(*args, **kwargs)  # type: ignore[arg-type]
+
+        backend._wslc = hangs_on_remove  # type: ignore[method-assign]  # noqa: SLF001
+
+        async def cut_short() -> None:
+            async with asyncio.timeout(0.05):
+                await backend.dispose(_KEY)
+
+        with pytest.raises(TimeoutError):
+            asyncio.run(cut_short())
+
+        assert backend._undeleted == {  # noqa: SLF001
+            ("scope-a", "thread-1", "devops-engineer"): {_NAME}
+        }
+
+    def test_a_removal_that_lands_clears_the_retry_record(self):
+        overrides = {("container", "list"): _WslcResult(1, b"", b"WSLC_E_SERVICE_UNAVAILABLE")}
+        backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        backend._undeleted[("scope-a", "thread-1", "devops-engineer")] = {_NAME}  # noqa: SLF001
+
+        assert asyncio.run(backend.dispose(_KEY)) is None
+        assert backend._undeleted == {}  # noqa: SLF001
+
+    def test_a_container_that_is_already_gone_reports_nothing(self):
+        not_found = _WslcResult(1, b"", b"Error code: WSLC_E_CONTAINER_NOT_FOUND\n")
+        backend, _ = _backend_with(
+            _machine(running=[_NAME], overrides={("container", "remove"): not_found})
+        )
+        assert asyncio.run(backend.dispose(_KEY)) is None
+
+    def test_a_runner_that_raises_comes_back_as_the_reason(self):
+        backend, _ = _backend_with(_explodes)
+        backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = _NAME
+        reason = asyncio.run(backend.dispose(_KEY))
+        assert reason is not None
+        assert _NAME in reason
+
     def test_the_fallback_reaches_every_kind_this_process_remembers(self):
         """One key may own one container per kind; a dispose with a failing listing must
         reclaim all of them, not whichever one a single-slot registry kept last."""
@@ -743,8 +819,77 @@ class TestDispose:
         ]
         assert backend._registry == {}
 
+    def test_a_record_this_sweep_never_reported_on_is_not_read_as_landed(self):
+        """A disposal still in flight writes its names ahead of its own first await. Answering
+        `None` here clears the router's refusal on the strength of a delete nobody confirmed."""
+        listing = asyncio.Event()
+        release = asyncio.Event()
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
+
+        async def slow_listing(*args: str, **kwargs: object) -> _WslcResult:
+            if args[:2] == ("container", "list"):
+                listing.set()
+                await release.wait()
+            return _WslcResult(0, b"", b"")
+
+        backend, _ = _backend_with(_machine())
+        backend._wslc = slow_listing  # type: ignore[method-assign]  # noqa: SLF001
+
+        async def drive() -> str | None:
+            disposal = asyncio.create_task(backend.dispose(_KEY))
+            await listing.wait()
+            backend._undeleted[prefix] = {"c-2"}  # a later disposal's own  # noqa: SLF001
+            release.set()
+            return await disposal
+
+        reported = asyncio.run(drive())
+        assert backend._undeleted == {prefix: {"c-2"}}, "the newer record survives"  # noqa: SLF001
+        assert reported is not None, "and the key stays refused until someone reports on it"
+
+    def test_a_container_a_failed_removal_left_behind_is_still_served_here(self):
+        """Pins what the retry record does rather than what its name suggests: it is disposal
+        bookkeeping, and `acquire` still reuses the container, because the name comes from the
+        key and the engine is what gets asked. Refusing to serve is the router's ledger."""
+        overrides = {("container", "remove"): _WslcResult(1, b"", b"engine error")}
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert asyncio.run(backend.dispose(_KEY)) is not None
+
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
+        assert backend._undeleted[prefix] == {_NAME}, "the name is owed a retry"  # noqa: SLF001
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert fake.matching("container", "run") == [], "the same container is handed back"
+
 
 class TestDisposeScope:
+    def test_a_dispose_landing_mid_purge_neither_crashes_nor_is_clobbered(self):
+        """Teardown for one key is not serialized, so the purge reconciles against the live
+        record: it must not index a prefix a `dispose` removed, nor drop a name it added."""
+        listing = asyncio.Event()
+        release = asyncio.Event()
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
+
+        async def slow_listing(*args: str, **kwargs: object) -> _WslcResult:
+            if args[:2] == ("container", "list"):
+                listing.set()
+                await release.wait()
+            return _WslcResult(0, b"", b"")
+
+        backend, _ = _backend_with(_machine())
+        backend._wslc = slow_listing  # type: ignore[method-assign]  # noqa: SLF001
+        backend._undeleted[prefix] = {"c-1"}  # noqa: SLF001
+
+        async def drive() -> int:
+            purge = asyncio.create_task(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
+            await listing.wait()
+            backend._undeleted.pop(prefix, None)  # noqa: SLF001
+            backend._undeleted[prefix] = {"c-2"}  # a later disposal's own  # noqa: SLF001
+            release.set()
+            return await purge
+
+        asyncio.run(drive())
+        assert backend._undeleted == {prefix: {"c-2"}}, "the newer record survives"  # noqa: SLF001
+
     def test_selects_on_both_labels_and_on_stopped_containers_too(self):
         backend, fake = _backend_with(_machine(stopped=["a", "b"]))
         asyncio.run(backend.dispose_scope("scope-a", "thread-1"))

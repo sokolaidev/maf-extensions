@@ -1052,8 +1052,147 @@ class TestDispose:
         backend, _ = _backend_with(_machine(overrides=overrides))
         asyncio.run(backend.dispose(_KEY))  # does not raise
 
+    def test_a_removal_that_lands_reports_nothing(self):
+        backend, _ = _backend_with(_machine(running=[_NAME]))
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert asyncio.run(backend.dispose(_KEY)) is None
+
+    def test_a_failed_removal_comes_back_as_the_reason(self):
+        """Never raising is the contract, so the reason is the only way the router hears (#641)."""
+        overrides = {("rm",): _DockerResult(1, b"", "daemon error")}
+        backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        reason = asyncio.run(backend.dispose(_KEY))
+        assert reason is not None
+        assert "daemon error" in reason
+        assert _NAME in reason
+
+    def test_a_second_attempt_still_reports_what_the_first_could_not_remove(self):
+        """A name a removal could not take away outlives the registry entry it came from."""
+        overrides = {
+            ("rm",): _DockerResult(1, b"", "daemon error"),
+            ("ps",): _DockerResult(1, b"", "daemon down"),
+        }
+        backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+
+        assert asyncio.run(backend.dispose(_KEY)) is not None
+        second = asyncio.run(backend.dispose(_KEY))
+        assert second is not None
+        assert _NAME in second
+
+    def test_a_sweep_cancelled_part_way_still_leaves_the_name_to_retry(self):
+        """The record is written before the first await, so a bound that expires mid-sweep does
+        not take the only name of the container with it."""
+        backend, _ = _backend_with(_machine(running=[_NAME]))
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        inner = backend._docker  # noqa: SLF001
+
+        async def hangs_on_rm(*args: str, **kwargs: object) -> _DockerResult:
+            if args[:1] == ("rm",):
+                await asyncio.Event().wait()
+            return await inner(*args, **kwargs)  # type: ignore[arg-type]
+
+        backend._docker = hangs_on_rm  # type: ignore[method-assign]  # noqa: SLF001
+
+        async def cut_short() -> None:
+            async with asyncio.timeout(0.05):
+                await backend.dispose(_KEY)
+
+        with pytest.raises(TimeoutError):
+            asyncio.run(cut_short())
+
+        assert backend._registry == {}, "the registry entry is gone"  # noqa: SLF001
+        assert backend._undeleted == {  # noqa: SLF001
+            (_KEY.scope, _KEY.thread_id, _KEY.agent_dir): {_NAME}
+        }
+
+    def test_a_removal_that_lands_clears_the_retry_record(self):
+        overrides = {("ps",): _DockerResult(1, b"", "daemon down")}
+        backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        backend._undeleted[(_KEY.scope, _KEY.thread_id, _KEY.agent_dir)] = {_NAME}  # noqa: SLF001
+
+        assert asyncio.run(backend.dispose(_KEY)) is None
+        assert backend._undeleted == {}  # noqa: SLF001
+
+    def test_a_container_docker_does_not_have_is_not_a_failure(self):
+        overrides = {("rm",): _DockerResult(1, b"", f"Error: No such container: {_NAME}")}
+        backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert asyncio.run(backend.dispose(_KEY)) is None
+
+    def test_a_record_this_sweep_never_reported_on_is_not_read_as_landed(self):
+        """A disposal still in flight writes its names ahead of its own first await. Answering
+        `None` here clears the router's refusal on the strength of a delete nobody confirmed."""
+        listing = asyncio.Event()
+        release = asyncio.Event()
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
+
+        async def slow_listing(*args: str, **kwargs: object) -> _DockerResult:
+            if args[:1] == ("ps",):
+                listing.set()
+                await release.wait()
+            return _DockerResult(0, b"", "")
+
+        backend, _ = _backend_with(_machine())
+        backend._docker = slow_listing  # type: ignore[method-assign]  # noqa: SLF001
+
+        async def drive() -> str | None:
+            disposal = asyncio.create_task(backend.dispose(_KEY))
+            await listing.wait()
+            backend._undeleted[prefix] = {"c-2"}  # a later disposal's own  # noqa: SLF001
+            release.set()
+            return await disposal
+
+        reported = asyncio.run(drive())
+        assert backend._undeleted == {prefix: {"c-2"}}, "the newer record survives"  # noqa: SLF001
+        assert reported is not None, "and the key stays refused until someone reports on it"
+
+    def test_a_container_a_failed_removal_left_behind_is_still_served_here(self):
+        """Pins what the retry record does rather than what its name suggests: it is disposal
+        bookkeeping, and `acquire` still reuses the container, because the name comes from the
+        key and the engine is what gets asked. Refusing to serve is the router's ledger."""
+        overrides = {("rm",): _DockerResult(1, b"", "daemon error")}
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert asyncio.run(backend.dispose(_KEY)) is not None
+
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
+        assert backend._undeleted[prefix] == {_NAME}, "the name is owed a retry"  # noqa: SLF001
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert fake.matching("run") == [], "and the same container is handed back, not replaced"
+
 
 class TestDisposeScope:
+    def test_a_dispose_landing_mid_purge_neither_crashes_nor_is_clobbered(self):
+        """Teardown for one key is not serialized, so the purge reconciles against the live
+        record: it must not index a prefix a `dispose` removed, nor drop a name it added."""
+        listing = asyncio.Event()
+        release = asyncio.Event()
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
+
+        async def slow_listing(*args: str, **kwargs: object) -> _DockerResult:
+            if args[:1] == ("ps",):
+                listing.set()
+                await release.wait()
+            return _DockerResult(0, b"", "")
+
+        backend, _ = _backend_with(_machine())
+        backend._docker = slow_listing  # type: ignore[method-assign]  # noqa: SLF001
+        backend._undeleted[prefix] = {"c-1"}  # noqa: SLF001
+
+        async def drive() -> int:
+            purge = asyncio.create_task(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
+            await listing.wait()
+            backend._undeleted.pop(prefix, None)  # noqa: SLF001
+            backend._undeleted[prefix] = {"c-2"}  # a later disposal's own  # noqa: SLF001
+            release.set()
+            return await purge
+
+        asyncio.run(drive())
+        assert backend._undeleted == {prefix: {"c-2"}}, "the newer record survives"  # noqa: SLF001
+
     def test_selects_on_labels_and_returns_the_count(self):
         listed = [_NAME]
         overrides = {("ps",): _DockerResult(0, "".join(f"{n}\n" for n in listed).encode(), "")}
