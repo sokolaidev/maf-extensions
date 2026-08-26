@@ -989,6 +989,68 @@ class TestTheHardeningIsReadFromTheContainer:
         assert len(fake.matching("exec")) == 2
 
 
+class TestAContainerThatVanishedBehindThisBackend:
+    """A name is not a container: a `docker rm` this backend did not run invalidates the facts.
+
+    `_remove` drops them, but nothing outside this process goes through it — a `docker rm` at
+    a terminal, a pruned daemon, a host reboot. The create branch is where that is noticed.
+    """
+
+    _CALL = f"{_WORK}/call-a1b2c3"
+
+    def _backend(self, present: set[str], hardening: list[bytes]):
+        base = _machine(
+            running=[_NAME],
+            overrides={
+                **_WORK_IS_A_DIRECTORY,
+                ("cp",): _DockerResult(1, b"", "Error: Could not find the file in container"),
+                ("exec", "--user", "0"): _DockerResult(1, b"", "rm: Permission denied"),
+            },
+        )
+
+        def respond(args):
+            if args[:3] == ("inspect", "-f", "{{.HostConfig.CapDrop}}"):
+                return _DockerResult(0, hardening[0], "")
+            if args[0] == "inspect" and args[-1] not in present:
+                return _DockerResult(1, b"", f"Error: No such object: {args[-1]}")
+            return base(args)
+
+        return _backend_with(respond)
+
+    def test_the_replacement_container_decides_its_own_removals(self):
+        """The consequence, not the cache: a root refusal is retried only where the container
+        holds no `CAP_DAC_OVERRIDE`, so stale facts leave a hardened container unable to remove.
+        """
+        present, hardening = {_NAME}, [b"[]\n"]
+        backend, fake = self._backend(present, hardening)
+
+        keeps_capabilities = asyncio.run(backend.acquire(_KEY, _SPEC))
+        with pytest.raises(OSError, match="Permission denied"):
+            asyncio.run(keeps_capabilities.reclaim(self._CALL, working_directory=_WORK, timeout=30))
+
+        # Removed by something that is not this backend, and the name taken by a hardened one.
+        present.discard(_NAME)
+        hardening[0] = b"[ALL]\n"
+
+        replaced = asyncio.run(backend.acquire(_KEY, _SPEC))
+        fake.mark()
+        asyncio.run(replaced.reclaim(self._CALL, working_directory=_WORK, timeout=30))
+        assert [call.args[:3] for call in fake.matching("exec")][-2:] == [
+            ("exec", "--user", "0"),
+            ("exec", "-w", "/"),
+        ]
+
+    def test_the_ancestors_of_the_replacement_are_read_again(self):
+        present, hardening = {_NAME}, [b"[]\n"]
+        backend, fake = self._backend(present, hardening)
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+
+        present.discard(_NAME)
+        fake.mark()
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert fake.cp_since_mark() == [(*_cp("/maf-sandbox"), "-")]
+
+
 class TestReclaimKeepsAFloorUnderRoot:
     """`maf_sandbox.reclaim_guest_path` holds the policy; this is the subset kept here."""
 

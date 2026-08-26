@@ -750,6 +750,9 @@ class DockerSandboxBackend:
             elif stopped and await self._restart(name):
                 verb = "restarted"
             else:
+                # A create means this name is about to be a different container, whether the
+                # last one was removed through this backend or vanished behind its back.
+                self._forget_facts(name)
                 image = await self._create_workload(name, key, spec, allowlisting=bool(egress_id))
                 logger.info(
                     "sandbox created: container=%s kind=%s image=%s thread=%s agent=%s",
@@ -829,6 +832,16 @@ class DockerSandboxBackend:
         )
         self._facts[key] = facts
         return facts
+
+    def _forget_facts(self, container: str) -> None:
+        """Drop what ``container`` said about itself, whatever key it was read under.
+
+        A name is not a container.  Every entry for one has to go the moment this backend
+        knows the name will mean a different container, or a removal decides its principal
+        from a container that no longer exists.
+        """
+        for cached in [key for key in self._facts if key[0] == container]:
+            del self._facts[cached]
 
     async def dispose(self, key: SandboxKey) -> str | None:
         """Delete every container for ``key`` — every kind, closed or allowlisted — with
@@ -1311,8 +1324,7 @@ class DockerSandboxBackend:
         ordinary case.
         """
         # Dropped before the call, so a failed removal cannot leave stale facts behind.
-        for cached in [key for key in self._facts if key[0] == target]:
-            del self._facts[cached]
+        self._forget_facts(target)
         try:
             result = await self._docker(
                 "rm", "-f", target, timeout=self._config.command_timeout_seconds
