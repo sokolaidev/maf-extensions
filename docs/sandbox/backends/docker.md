@@ -38,6 +38,14 @@ Docker has **no engine-level primitive for enumerating a directory**. A *named* 
 
 `reclaim` is mandatory and gated by no capability, and this backend serves it with `rm -rf` over its own `exec` — the mechanism `remove` already uses recursively, minus the parent walk. It needs none: what it removes is a directory the framework created under `working_directory` with an unguessable name, so there is no attacker-chosen component to walk. `-f` is again what makes an already-gone directory a success, which is the contract's rule rather than a convenience, and anything else raises for the caller to report. The declaration is beside the point: this backend would serve `reclaim` while withholding `FILES_DELETE`, as the other two do.
 
+## A write is owned by whoever runs the commands
+
+`write_file` is one `docker cp` of a tar on stdin, and the tar decides ownership: every entry carries the **uid and gid `exec` runs as**, read once per container with `id` and cached. A guest that cannot answer — a distroless image writes files perfectly well without an `id` binary — falls back to root, which is what this backend did before and is right for a root image.
+
+Each parent directory that is not there yet gets an **entry of its own** rather than being left for docker to infer. An inferred parent is created as root whatever the tar says, and a removal needs write permission on the directory it is emptying rather than on the files in it — so on an image with a non-root `USER`, directories created here could never be emptied by the guest, and every call's files stayed for the life of the conversation while the framework disposed the sandbox after each failed reclaim ([#680](https://github.com/sokolaidev/maf-extensions/issues/680)). The same ownership answers the other half: a program cannot modify a file it was given if root wrote it.
+
+Only **missing** parents are named. An entry for a directory that already exists would take its ownership and mode over, which is not a write's business, and the confinement walk has already stated which ones are there — so the answer is free rather than a second walk.
+
 ## `run_code` answers by refusing
 
 `run_code` is a `Sandbox` method, so this backend implements it — as a raise naming the backend and the reason. Not for want of an interpreter, since the image may well carry one, but because *which* runtime an image carries is a property of the image, and this backend hands an unparsed reference to `docker run`. Declaring `RUN_CODE` would be a claim about someone else's artefact. A workload that wants a runtime by name invokes it through `exec` and owns that assumption itself; the router refuses a spec requiring the capability before any caller arrives, so the `NotImplementedError` is the honest floor under a caller that skipped the check — the same shape `list_dir` already has.
@@ -69,6 +77,7 @@ Names are **derived** from a digest of scope, thread, agent dir, kind and egress
 | `egress_modes = {CLOSED}`, or `{CLOSED, ALLOWLIST}` with a proxy image; a mode outside the set is refused rather than degraded | shipped | [#530](https://github.com/sokolaidev/maf-extensions/pull/530) (merged) under [#265](https://github.com/sokolaidev/maf-extensions/issues/265) (closed) |
 | `run_code` implemented as a refusal, `RUN_CODE` undeclared | shipped — the image's runtime is the image's property, and this backend does not parse the reference | [#531](https://github.com/sokolaidev/maf-extensions/pull/531) (merged) |
 | `FILES_DELETE` over `rm`, held to the ten probes | shipped | — |
+| A write owns what it creates: entries carry the guest's uid and gid, and every missing parent is named rather than inferred | shipped — an inferred parent is root's whatever the tar says, which left a non-root guest unable to remove its own call directory and unable to modify what it was given | [#680](https://github.com/sokolaidev/maf-extensions/issues/680) |
 | `reclaim` over `rm -rf`, mandatory and gated by no capability | shipped — the same `rm -rf` behind a `--` that `remove` runs, without the confinement walk and without the capability gate | [#477](https://github.com/sokolaidev/maf-extensions/issues/477) |
 | The egress proxy is a byte copy of wslc's, pinned by test rather than hoisted into core | shipped, by maintainer ruling | — |
 | Live e2e on every pull request as the repository's acceptance gate | shipped | — |

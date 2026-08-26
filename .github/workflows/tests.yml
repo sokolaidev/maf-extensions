@@ -351,6 +351,10 @@ jobs:
       # these two variables is what turns the module's skip guard off.
       MAF_SANDBOX_DOCKER_E2E_IMAGE: mcr.microsoft.com/azurelinux/base/core:3.0
       MAF_SANDBOX_DOCKER_E2E_PROXY_IMAGE: maf-sandbox-docker-proxy:ci
+      # The same base with a non-root `USER`, built below. Its own column because every other
+      # image this repository runs — here, in the samples, in verify-live — is root's, and an
+      # ownership bug in the write path all of them exercise survived exactly that (#680).
+      MAF_SANDBOX_DOCKER_E2E_NONROOT_IMAGE: maf-sandbox-docker-nonroot:ci
       # The CodeAct kind runs a Python program in the guest, so it needs an interpreter the
       # backend suite's image does not carry. Same registry for the same reason — MCR rather
       # than Docker Hub, whose unauthenticated pull limit is per shared-runner IP — and the
@@ -376,6 +380,10 @@ jobs:
           # asserted at the command-line level offline.
           docker build -t maf-sandbox-docker-proxy:ci \
             packages/maf-sandbox-docker/src/maf_sandbox_docker/_proxy
+          # A non-root guest, from the image already pulled above so this adds a layer and not a
+          # download. A numeric USER needs no `useradd`, which the base does not carry.
+          printf 'FROM %s\nUSER 10001:10001\n' "$MAF_SANDBOX_DOCKER_E2E_IMAGE" \
+            | docker build -t "$MAF_SANDBOX_DOCKER_E2E_NONROOT_IMAGE" -
           # Both live suites in one invocation: the backend's, and the CodeAct kind's on top of
           # it (#397). `-ra` because each skips itself when its image variable is empty, which
           # the env block above has already made impossible — a skip here is a bug, and without

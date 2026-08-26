@@ -65,6 +65,10 @@ from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
 
 _IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_IMAGE")
 _PROXY_IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_PROXY_IMAGE")
+#: An image whose `USER` is not root. Its own variable because every other image this suite and
+#: the sample set run is root's, which is how an ownership bug lived in the write path that all
+#: of them exercise (#680).
+_NONROOT_IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_NONROOT_IMAGE")
 
 pytestmark = pytest.mark.skipif(
     shutil.which("docker") is None or not _IMAGE,
@@ -92,6 +96,123 @@ def _names_on_the_machine(name: str) -> list[str]:
         check=True,
     ).stdout
     return [line for line in out.splitlines() if line == name]
+
+
+@pytest.mark.skipif(
+    not _NONROOT_IMAGE,
+    reason="needs MAF_SANDBOX_DOCKER_E2E_NONROOT_IMAGE naming an image whose USER is not root",
+)
+class TestAGuestThatIsNotRoot:
+    """What a write leaves behind when commands do not run as the user that wrote it.
+
+    `docker cp` writes as whoever the tar says and creates an *inferred* parent as root whatever
+    it says, while a removal needs write permission on the directory it is emptying. Before
+    #680 that combination meant a hardened image kept every call's files for the life of the
+    conversation, and handed the guest program read-only copies of what it was given — in a
+    write path every other suite here exercises, all of them as root.
+    """
+
+    def _nonroot_spec(self) -> SandboxSpec:
+        return SandboxSpec(kind="e2e-nonroot", image=_NONROOT_IMAGE, work_dir=_WORK)
+
+    def test_the_guest_can_remove_what_a_write_created(self):
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(_key(scope), self._nonroot_spec())
+            call_directory = f"{_WORK}/abc123def456"
+            await sandbox.write_file(
+                f"{call_directory}/note", "left behind\n", working_directory=_WORK
+            )
+
+            # Through the protocol member the framework calls, not a command of this suite's:
+            # what fails here is exactly what fails after a real tool call.
+            await sandbox.reclaim(call_directory, working_directory=_WORK, timeout=60)
+
+            gone = await sandbox.exec(["ls", "-A", _WORK], working_directory="/", timeout=60)
+            assert gone.exit_code == 0, gone.stderr
+            assert gone.stdout.strip() == ""
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+    def test_the_guest_can_modify_a_file_the_host_wrote(self):
+        """The other half: a program given a file it cannot write to cannot do its work."""
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(_key(scope), self._nonroot_spec())
+            await sandbox.write_file(f"{_WORK}/shared.csv", "a,b\n", working_directory=_WORK)
+
+            appended = await sandbox.exec(
+                ["sh", "-c", f"echo 1,2 >> {_WORK}/shared.csv"], working_directory=_WORK, timeout=60
+            )
+            assert appended.exit_code == 0, appended.stderr
+
+            read_back = await sandbox.exec(
+                ["cat", "shared.csv"], working_directory=_WORK, timeout=60
+            )
+            assert read_back.stdout == "a,b\n1,2\n"
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+    def test_a_directory_that_was_already_there_keeps_its_owner(self):
+        """Only *missing* parents are named. Taking over one that exists is not a write's job."""
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(_key(scope), self._nonroot_spec())
+            made = subprocess.run(
+                [
+                    "docker",
+                    "exec",
+                    "--user",
+                    "0",
+                    sandbox.container_name,
+                    "sh",
+                    "-c",
+                    f"mkdir -p {_WORK} && chown 0:0 {_WORK} && chmod 755 {_WORK}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=True,
+            )
+            assert made.returncode == 0
+
+            await sandbox.write_file(f"{_WORK}/nested/note", "x", working_directory=_WORK)
+
+            owner = subprocess.run(
+                [
+                    "docker",
+                    "exec",
+                    "--user",
+                    "0",
+                    sandbox.container_name,
+                    "stat",
+                    "-c",
+                    "%u:%g",
+                    _WORK,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=True,
+            ).stdout.strip()
+            assert owner == "0:0"
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
 
 class TestALiveContainer:

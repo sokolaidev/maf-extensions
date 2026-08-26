@@ -50,6 +50,7 @@ from maf_sandbox import (
 from maf_sandbox.paths import (
     confine_guest_path,
     confine_guest_write_path,
+    guest_directory_chain,
     refuse_symlinked_parents,
 )
 
@@ -117,6 +118,11 @@ _PROXY_SUFFIX = "-proxy"
 #: entry-type flag and a link target before any content byte, which is how this backend stats
 #: a path without a stat command.
 _TAR_BLOCK = 512
+
+#: `id`'s first two fields, whatever names follow them: `uid=10001(app) gid=10001(app) groups=…`.
+#: Read rather than assumed, because who commands run as decides who can remove what this
+#: backend writes (#680).
+_OWNER = re.compile(r"uid=(?P<uid>\d+).*?gid=(?P<gid>\d+)")
 
 #: This backend's own transfer ceilings, per direction. Named constants, not config: nothing
 #: in the tar transport imposes a hard limit, so a ceiling is a policy statement about
@@ -200,6 +206,22 @@ def _proxy_name(container: str) -> str:
     return f"{container}{_PROXY_SUFFIX}"
 
 
+def _absent_parents(
+    guest: str, working_directory: str, seen: dict[str, SandboxEntry | None]
+) -> tuple[str, ...]:
+    """Every directory above ``guest`` that is not there, outermost first.
+
+    ``seen`` is what the confinement walk found. It stops at the first component that is not
+    there, so anything it never reached is below that one and is missing too — which is why an
+    unseen component counts the same as one seen to be absent.
+    """
+    return tuple(
+        directory
+        for directory in guest_directory_chain(posixpath.dirname(guest), working_directory)
+        if seen.get(directory) is None
+    )
+
+
 def _stat_from_tar_header(block: bytes, rel_path: str) -> SandboxEntry:
     """Read one ``docker cp`` tar header into a :class:`~maf_sandbox.SandboxEntry`.
 
@@ -280,10 +302,19 @@ class _DockerRunner(Protocol):
 class _DockerSandbox:
     """A running container, narrowed to the :class:`~maf_sandbox.Sandbox` protocol."""
 
-    def __init__(self, run: _DockerRunner, name: str, command_timeout: float) -> None:
+    def __init__(
+        self,
+        run: _DockerRunner,
+        name: str,
+        command_timeout: float,
+        owners: dict[str, tuple[int, int]] | None = None,
+    ) -> None:
         self._run = run
         self._name = name
         self._command_timeout = command_timeout
+        # Shared with the backend and keyed by container, because `acquire` hands out a fresh
+        # handle over the same container and the answer is a property of the container.
+        self._owners = {} if owners is None else owners
 
     @property
     def container_name(self) -> str:
@@ -292,19 +323,44 @@ class _DockerSandbox:
     async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
         """Write ``content`` to ``path`` inside the container, parents included.
 
-        Sent as a one-entry tar on stdin.  A ``cp`` destination must already exist and ``/`` is
-        the only path that always does, so the entry name carries the whole path and docker
-        creates the missing directories from it.
+        Sent as a tar on stdin.  A ``cp`` destination must already exist and ``/`` is the only
+        path that always does, so the entry name carries the whole path.
+
+        **Every entry is owned by the user commands run as**, and each parent that is not there
+        yet gets an entry of its own rather than being left for docker to infer.  Docker creates
+        an inferred parent as ``root`` whatever the tar says, and a removal needs write
+        permission on the directory it is emptying — so on an image with a non-root ``USER``,
+        directories made here could never be emptied by the guest and every call's files stayed
+        for the life of the conversation (#680).  Owning the file matters for the same reason in
+        the other direction: a program cannot modify what it was given if root wrote it.
+
+        Only *missing* parents are named.  An entry for a directory that already exists would
+        take its ownership over, which is not a write's business.
         """
-        guest = await confine_guest_write_path(
-            lambda p: self._stat_guest(p, p), path, working_directory
-        )
+        seen: dict[str, SandboxEntry | None] = {}
+
+        async def stat(candidate: str) -> SandboxEntry | None:
+            # The confinement walk already stats every parent; remembering what it saw is what
+            # makes the missing ones free rather than a second walk.
+            entry = await self._stat_guest(candidate, candidate)
+            seen[candidate] = entry
+            return entry
+
+        guest = await confine_guest_write_path(stat, path, working_directory)
+        uid, gid = await self._guest_owner()
         data = content.encode("utf-8") if isinstance(content, str) else content
         buffer = io.BytesIO()
         with tarfile.open(fileobj=buffer, mode="w") as archive:
+            for directory in _absent_parents(guest, working_directory, seen):
+                parent = tarfile.TarInfo(directory.lstrip("/"))
+                parent.type = tarfile.DIRTYPE
+                parent.mode = 0o755
+                parent.uid, parent.gid = uid, gid
+                archive.addfile(parent)
             entry = tarfile.TarInfo(guest.lstrip("/"))
             entry.size = len(data)
             entry.mode = 0o644
+            entry.uid, entry.gid = uid, gid
             archive.addfile(entry, io.BytesIO(data))
 
         result = await self._run(
@@ -312,6 +368,33 @@ class _DockerSandbox:
         )
         if result.returncode != 0:
             raise RuntimeError(f"docker could not write {path}: {result.stderr.strip()}")
+
+    async def _guest_owner(self) -> tuple[int, int]:
+        """The uid and gid commands run as, or ``(0, 0)`` when the guest cannot say.
+
+        One ``id`` per container, cached: the answer is a property of the image, and a fresh
+        handle over the same container must not pay for it again.
+
+        **Never raises.**  A guest without ``id`` — a distroless image writes files perfectly
+        well without one — falls back to what this backend did before, which is right for the
+        root images that are the reason it went unnoticed.
+        """
+        if self._name in self._owners:
+            return self._owners[self._name]
+        owner = (0, 0)
+        try:
+            told = await self.exec(["id"], working_directory="/", timeout=self._command_timeout)
+            found = _OWNER.search(told.stdout) if told.exit_code == 0 else None
+            if found is not None:
+                owner = (int(found.group("uid")), int(found.group("gid")))
+            else:
+                logger.debug("docker: %s did not answer `id`, writing as root", self._name)
+        except Exception as unanswered:  # noqa: BLE001 — a write must not fail over this
+            logger.debug(
+                "docker: could not read %s's user (%s), writing as root", self._name, unanswered
+            )
+        self._owners[self._name] = owner
+        return owner
 
     async def exec(
         self, command: str | Sequence[str], *, working_directory: str, timeout: float
@@ -516,6 +599,9 @@ class DockerSandboxBackend:
         #: from the key and `acquire` asks the engine. Refusing to serve is the router's
         #: ledger. An entry lives only while its removal keeps failing.
         self._undeleted: dict[tuple[str, str, str], set[str]] = {}
+        # container name -> the uid and gid its commands run as. Here rather than on the handle
+        # because `acquire` hands out a fresh one over the same container every time.
+        self._owners: dict[str, tuple[int, int]] = {}
         # Get-or-create serialised per (running loop, key, kind), for the same reason wslc does
         # it: a create names no container until it returns, so two acquires racing one key would
         # each build a network, a proxy and a sandbox. Per loop because an asyncio.Lock binds to
@@ -622,7 +708,9 @@ class DockerSandboxBackend:
                 )
 
             self._registry[(key.scope, key.thread_id, key.agent_dir, spec.kind)] = name
-            return _DockerSandbox(self._docker, name, self._config.command_timeout_seconds)
+            return _DockerSandbox(
+                self._docker, name, self._config.command_timeout_seconds, self._owners
+            )
 
     async def dispose(self, key: SandboxKey) -> str | None:
         """Delete every container for ``key`` — every kind, closed or allowlisted — with
