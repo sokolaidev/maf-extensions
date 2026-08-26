@@ -194,7 +194,9 @@ def main(argv: list[str]) -> int:
         if at + 1 >= len(arguments):
             print(_USAGE.format(program=argv[0]), file=sys.stderr)
             return 2
-        local_core = Path(arguments[at + 1])
+        # Resolved: the workflow passes `dist/...`, and `as_uri()` below needs an absolute
+        # path. Done here rather than at the call site so any caller may pass either.
+        local_core = Path(arguments[at + 1]).resolve()
         arguments = arguments[:at] + arguments[at + 2 :]
         if not local_core.is_file():
             print(f"no core wheel at {local_core}", file=sys.stderr)

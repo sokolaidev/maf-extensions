@@ -221,6 +221,17 @@ class TestTheCoreThisCheckoutBuilt:
         assert check.main(["prog", "maf-sandbox-bicep", str(wheel), "--local-core", str(core)]) == 0
         assert seen == ["0.25.0"], "resolved from the index, not the local wheel"
 
+    def test_a_relative_path_is_accepted(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """The workflow passes `dist/...`, and the override needs a file URI, which a relative
+        path cannot express — it reached CI as a `ValueError` rather than a verdict."""
+        wheel, core = self._wheel_and_index(tmp_path, monkeypatch, "maf-sandbox>=0.26.0,<0.28")
+        monkeypatch.chdir(tmp_path)
+        seen: list[Path] = []
+        monkeypatch.setattr(check, "run_suite", lambda w, c, t: (seen.append(c), (True, "ok"))[1])
+        code = check.main(["prog", "maf-sandbox-bicep", str(wheel), "--local-core", core.name])
+        assert code == 0
+        assert seen[0].is_absolute() and seen[0].as_uri()
+
     def test_a_core_wheel_that_is_not_there_is_a_usage_error(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ):
