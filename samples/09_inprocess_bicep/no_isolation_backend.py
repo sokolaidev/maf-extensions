@@ -23,6 +23,7 @@ from maf_sandbox import (
     DEFAULT_CAPABILITIES,
     DEFAULT_SANDBOX_LIMITS,
     Capability,
+    DisposalFailure,
     Egress,
     ExecResult,
     Isolation,
@@ -30,7 +31,17 @@ from maf_sandbox import (
     SandboxKey,
     SandboxLimits,
     SandboxSpec,
+    ScopePurge,
 )
+
+
+def _refused(problems: list[str]) -> DisposalFailure | None:
+    """The reason a removal did not land, or ``None`` when every one did.
+
+    ``refused`` rather than ``unreachable``: the removal ran, here on this host, and the
+    directory is still there.
+    """
+    return DisposalFailure("refused", "; ".join(problems)) if problems else None
 
 
 class NoIsolationSandbox:
@@ -364,7 +375,7 @@ class NoIsolationBackend:
                 problems.append(problem)
         return removed, problems
 
-    async def dispose(self, key: SandboxKey) -> str | None:
+    async def dispose(self, key: SandboxKey) -> DisposalFailure | None:
         """Delete this key's sandboxes. Never raises; answers why one may still be there.
 
         A backend that swallows the failure is read as having disposed, and the router then
@@ -372,10 +383,13 @@ class NoIsolationBackend:
         """
         async with self._lock:
             _, problems = self._remove(lambda k: k == key)
-        return "; ".join(problems) or None
+        return _refused(problems)
 
-    async def dispose_scope(self, scope: str, thread_id: str) -> int:
-        """How many sandboxes went — a directory that would not go is retained, not counted."""
+    async def dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:
+        """How many went, and why any is still there. A directory that would not go is retained
+        for a later retry rather than counted as reclaimed."""
         async with self._lock:
-            removed, _ = self._remove(lambda k: k.scope == scope and k.thread_id == thread_id)
-            return removed
+            removed, problems = self._remove(
+                lambda k: k.scope == scope and k.thread_id == thread_id
+            )
+        return ScopePurge(removed, _refused(problems))

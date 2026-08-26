@@ -40,6 +40,7 @@ __all__ = [
     "SandboxKey",
     "SandboxLimits",
     "SandboxSpec",
+    "ScopePurge",
     "SourceIntegrity",
     "TransferLimits",
     "fold_disposal_failures",
@@ -883,6 +884,23 @@ def fold_disposal_failures(failures: Sequence[DisposalFailure]) -> DisposalFailu
     return DisposalFailure(worst, "; ".join(failure.detail for failure in failures))
 
 
+@dataclass(frozen=True)
+class ScopePurge:
+    """What one conversation's purge did: how many sandboxes went, and why any is still there.
+
+    ``undisposed`` follows :meth:`SandboxBackend.dispose`'s reading — a
+    :class:`DisposalFailure`, or ``None`` for nothing reported, which a backend unable to check
+    also returns.
+
+    It replaced a bare ``int``, so a caller that only ever wanted the count now reads
+    :attr:`disposed`. Watch for ``if await purger.purge_scoped_thread(...)``: an instance is
+    always truthy, where the count it replaced was not.
+    """
+
+    disposed: int = 0
+    undisposed: DisposalFailure | None = None
+
+
 @runtime_checkable
 class SandboxBackend(Protocol):
     """A provider that can hand out sandboxes.
@@ -949,7 +967,7 @@ class SandboxBackend(Protocol):
         """
         ...
 
-    async def dispose(self, key: SandboxKey) -> DisposalFailure | str | None:
+    async def dispose(self, key: SandboxKey) -> DisposalFailure | None:
         """Delete every kind's sandbox for ``key``, if any. Best-effort: never raises.
 
         Every kind's, because a key may own one sandbox per kind and this method takes no
@@ -963,17 +981,19 @@ class SandboxBackend(Protocol):
         The :data:`DisposalCode` is what a caller branches on and the only half kept stable;
         ``detail`` is yours and reaches a log. Reach for ``"unknown"`` rather than guessing.
 
-        A bare ``str`` is accepted for one release and read as ``"unknown"``: a backend cannot
-        import :class:`DisposalFailure` from a core that has not published it. Return the class.
-
         A record of what could not be deleted is retry bookkeeping, not a guard on
         :meth:`acquire` — refusing to serve is the router's ledger. The three in this
         repository each carry their own copy of it, so a change to one is owed to the others.
         """
         ...
 
-    async def dispose_scope(self, scope: str, thread_id: str) -> int:
-        """Delete every sandbox for ``(scope, thread_id)``, returning how many. Never raises."""
+    async def dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:
+        """Delete every sandbox for ``(scope, thread_id)``. Never raises.
+
+        Returns how many went and, like :meth:`dispose`, why any is still there. A conversation
+        delete that silently deleted nothing would otherwise read as a clean sweep, and the
+        router would reopen every key it had refused for that conversation.
+        """
         ...
 
 

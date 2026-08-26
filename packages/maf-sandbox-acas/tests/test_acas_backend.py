@@ -12,7 +12,15 @@ import logging
 import posixpath
 
 import pytest
-from maf_sandbox import Capability, Egress, Isolation, SandboxBackend, SandboxKey, SandboxRouter
+from maf_sandbox import (
+    Capability,
+    DisposalFailure,
+    Egress,
+    Isolation,
+    SandboxBackend,
+    SandboxKey,
+    SandboxRouter,
+)
 
 from maf_sandbox_acas import (
     BACKEND_NAME,
@@ -623,13 +631,13 @@ class TestDisposeScope:
 
         backend._delete = slow_delete  # type: ignore[method-assign]
 
-        async def drive() -> int:
+        async def drive() -> None:
             purge = asyncio.create_task(backend.dispose_scope("scope-a", "thread-1"))
             await asyncio.sleep(0)
             backend._undeleted.pop(prefix, None)
             backend._undeleted[prefix] = {"sbx-2"}
             release.set()
-            return await purge
+            await purge
 
         asyncio.run(drive())
         assert backend._undeleted == {prefix: {"sbx-2"}}, "the newer record survives"
@@ -639,7 +647,7 @@ class TestDisposeScope:
         client = _FakeGroupClient(sandboxes=[_FakeSandbox("sbx-remote")])
         backend = _backend_with(client)
 
-        assert asyncio.run(backend.dispose_scope("scope-a", "thread-1")) == 1
+        assert asyncio.run(backend.dispose_scope("scope-a", "thread-1")).disposed == 1
         assert client.deleted == ["sbx-remote"]
         assert client.last_labels == {"scope": "scope-a", "thread": "thread-1"}
 
@@ -648,7 +656,7 @@ class TestDisposeScope:
         backend = _backend_with(client)
         backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = "sbx-local"
 
-        assert asyncio.run(backend.dispose_scope("scope-a", "thread-1")) == 2
+        assert asyncio.run(backend.dispose_scope("scope-a", "thread-1")).disposed == 2
         assert sorted(client.deleted) == ["sbx-local", "sbx-remote"]
 
     def test_does_not_delete_another_scopes_sandbox(self):
@@ -656,7 +664,7 @@ class TestDisposeScope:
         backend = _backend_with(client)
         backend._registry[("scope-b", "thread-1", "devops-engineer", "bicep")] = "sbx-other"
 
-        assert asyncio.run(backend.dispose_scope("scope-a", "thread-1")) == 0
+        assert asyncio.run(backend.dispose_scope("scope-a", "thread-1")).disposed == 0
         assert client.deleted == []
         assert ("scope-b", "thread-1", "devops-engineer", "bicep") in backend._registry
 
@@ -668,9 +676,19 @@ class TestDisposeScope:
         asyncio.run(backend.dispose_scope("scope-a", "thread-1"))
         assert backend._registry == {}
 
-    def test_a_group_client_that_cannot_be_built_keeps_the_ids_for_a_retry(self):
-        """The registry is popped before the client is built, so without this the ids are in
-        neither place and the next `dispose` reports the sandboxes gone."""
+    def test_a_failing_listing_says_the_sweep_may_be_partial(self):
+        """The registry still names what this process created, but a purge that could not read
+        the labels cannot claim to have reached another replica's sandbox."""
+        backend = _backend_with(_ExplodingGroupClient())
+        purge = asyncio.run(backend.dispose_scope("scope-a", "thread-1"))
+        assert purge.undisposed is not None
+        assert purge.undisposed.code == "unlisted"
+        assert "partial" in purge.undisposed.detail
+
+    def test_a_group_client_that_cannot_be_built_is_reported_and_keeps_the_ids(self):
+        """Both, or the purge is dishonest one way or the other: it has to say it never reached
+        the service, and keep the ids — the registry is popped before the client is built, so
+        without the record they are in neither place and the next `dispose` reports them gone."""
         backend = AcasSandboxBackend(_config())
         backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = "sbx-1"
 
@@ -678,7 +696,11 @@ class TestDisposeScope:
             raise RuntimeError("no credential")
 
         backend._group_client = _unreachable  # type: ignore[method-assign]
-        assert asyncio.run(backend.dispose_scope("scope-a", "thread-1")) == 0
+        purge = asyncio.run(backend.dispose_scope("scope-a", "thread-1"))
+        assert purge.disposed == 0
+        assert purge.undisposed is not None
+        assert purge.undisposed.code == "unreachable"
+        assert "no credential" in purge.undisposed.detail
         assert backend._undeleted == {("scope-a", "thread-1", "devops-engineer"): {"sbx-1"}}
 
         key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
@@ -687,7 +709,7 @@ class TestDisposeScope:
     def test_a_service_failure_degrades_to_zero_rather_than_raising(self):
         """Purge must not fail a conversation delete."""
         backend = _backend_with(_ExplodingGroupClient())
-        assert asyncio.run(backend.dispose_scope("scope-a", "thread-1")) == 0
+        assert asyncio.run(backend.dispose_scope("scope-a", "thread-1")).disposed == 0
 
 
 class TestFileWrites:
@@ -852,7 +874,8 @@ class TestDispose:
 
         reason = asyncio.run(backend.dispose(key))
         assert reason is not None
-        assert "sbx-1" in reason
+        assert reason.code == "refused", "the service answered and the sandbox stayed"
+        assert "sbx-1" in reason.detail
         assert backend._registry == {}
 
     def test_a_second_attempt_still_reports_what_the_first_could_not_delete(self):
@@ -864,7 +887,7 @@ class TestDispose:
         assert asyncio.run(backend.dispose(key)) is not None
         second = asyncio.run(backend.dispose(key))
         assert second is not None
-        assert "sbx-1" in second
+        assert "sbx-1" in second.detail
 
     def test_a_group_client_that_cannot_be_built_keeps_the_ids_for_a_retry(self):
         backend = AcasSandboxBackend(_config())
@@ -948,7 +971,8 @@ class TestDispose:
         backend._group_client = _unreachable  # type: ignore[method-assign]
         reason = asyncio.run(backend.dispose(key))
         assert reason is not None
-        assert "no credential" in reason
+        assert reason.code == "unreachable", "no client was ever built"
+        assert "no credential" in reason.detail
 
     def test_a_record_this_attempt_never_reported_on_is_not_read_as_landed(self):
         """A disposal still in flight writes its ids ahead of its own first await. Answering
@@ -966,7 +990,7 @@ class TestDispose:
 
         backend._delete = slow_delete  # type: ignore[method-assign]
 
-        async def drive() -> str | None:
+        async def drive() -> DisposalFailure | None:
             disposal = asyncio.create_task(backend.dispose(key))
             await asyncio.sleep(0)
             backend._undeleted[prefix] = backend._undeleted.get(prefix, set()) | {"sbx-2"}
@@ -976,6 +1000,7 @@ class TestDispose:
         reported = asyncio.run(drive())
         assert backend._undeleted == {prefix: {"sbx-2"}}, "the newer record survives"
         assert reported is not None, "and the key stays refused until someone reports on it"
+        assert reported.code == "unknown", "the other attempt's outcome is not ours to name"
 
 
 # ---------------------------------------------------------------------------
@@ -1088,7 +1113,7 @@ class TestLifecycleLogging:
         backend = _backend_with(client)
 
         with caplog.at_level(logging.INFO, logger="maf_sandbox_acas"):
-            count = asyncio.run(backend.dispose_scope("scope-a", "thread-1"))
+            count = asyncio.run(backend.dispose_scope("scope-a", "thread-1")).disposed
 
         assert count == 2
         released = [r for r in caplog.records if "sandbox released" in r.getMessage()]

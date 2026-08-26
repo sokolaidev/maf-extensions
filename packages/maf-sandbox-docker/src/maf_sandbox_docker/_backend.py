@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Protocol, cast
 
 from maf_sandbox import (
     Capability,
+    DisposalFailure,
     Egress,
     EntryKind,
     ExecResult,
@@ -46,7 +47,9 @@ from maf_sandbox import (
     SandboxLimits,
     SandboxSpec,
     SandboxTransferCapExceeded,
+    ScopePurge,
     TransferLimits,
+    fold_disposal_failures,
 )
 from maf_sandbox.paths import (
     confine_guest_path,
@@ -276,7 +279,7 @@ class _Removal:
     """
 
     removed: bool
-    failure: str | None = None
+    failure: DisposalFailure | None = None
 
 
 @dataclass(frozen=True)
@@ -284,11 +287,21 @@ class _Sweep:
     """What one label sweep did: sandboxes removed, and the workload containers still there.
 
     ``undeleted`` maps a container name to why its removal failed, so a caller can report the
-    reason and remember the name to try again.
+    reason and remember the name to try again.  ``unlisted`` is the one thing with no name
+    behind it: the label query itself failed, so the sweep cannot claim to have covered
+    containers another replica created.
     """
 
     count: int
-    undeleted: Mapping[str, str] = field(default_factory=dict[str, str])
+    undeleted: Mapping[str, DisposalFailure] = field(default_factory=dict[str, DisposalFailure])
+    unlisted: DisposalFailure | None = None
+
+    @property
+    def reason(self) -> DisposalFailure | None:
+        """Everything this sweep could not do, as one sentence, or ``None`` when it is clean."""
+        return fold_disposal_failures(
+            [*([self.unlisted] if self.unlisted is not None else []), *self.undeleted.values()]
+        )
 
 
 class _DockerRunner(Protocol):
@@ -843,7 +856,7 @@ class DockerSandboxBackend:
         for cached in [key for key in self._facts if key[0] == container]:
             del self._facts[cached]
 
-    async def dispose(self, key: SandboxKey) -> str | None:
+    async def dispose(self, key: SandboxKey) -> DisposalFailure | None:
         """Delete every container for ``key`` — every kind, closed or allowlisted — with
         proxies and networks.
 
@@ -879,17 +892,20 @@ class DockerSandboxBackend:
             self._undeleted[prefix] = left
         else:
             self._undeleted.pop(prefix, None)
-        if swept.undeleted:
-            return "; ".join(swept.undeleted.values())
+        reported = swept.reason
+        if reported is not None:
+            return reported
         if left:
             # A disposal still in flight wrote these ahead of its own await. `None` would
-            # clear the refusal on a delete nobody confirmed; a count, since the names are not
-            # this attempt's to describe. The next disposal that lands clears it.
-            return f"another disposal has not yet reported on {len(left)} container(s)"
+            # clear the refusal on a delete nobody confirmed; `unknown` and a count, since
+            # neither the outcome nor the names are this attempt's to describe.
+            return DisposalFailure(
+                "unknown", f"another disposal has not yet reported on {len(left)} container(s)"
+            )
         return None
 
-    async def dispose_scope(self, scope: str, thread_id: str) -> int:
-        """Delete every container labelled ``(scope, thread_id)``; returns how many sandboxes.
+    async def dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:
+        """Delete every container labelled ``(scope, thread_id)``: how many, and what stayed.
 
         The labels are the source of truth, because a conversation delete has to reach
         containers this process never created. The registry is the fallback for when the listing
@@ -921,7 +937,7 @@ class DockerSandboxBackend:
                 self._undeleted[prefix] = left
             else:
                 self._undeleted.pop(prefix, None)
-        return swept.count
+        return ScopePurge(swept.count, swept.reason)
 
     async def _purge(
         self, label_filters: list[tuple[str, str]], fallback: list[str], thread_id: str
@@ -938,13 +954,22 @@ class DockerSandboxBackend:
         removal helpers treat a missing proxy or network as a no-op, so the extra attempts on a
         genuinely closed sandbox cost nothing but a call.
         """
-        listed = await self._list_names_by_labels(label_filters)
+        queried = await self._list_names_by_labels(label_filters)
+        listed = queried if queried is not None else []
         listed_set = set(listed)
         stranded = [n for n in fallback if n not in listed_set]
         names = [*listed, *stranded]
 
         count = 0
-        undeleted: dict[str, str] = {}
+        undeleted: dict[str, DisposalFailure] = {}
+        unlisted = None
+        if queried is None:
+            # The registry fallback still names what this process created, so those are swept.
+            # A sweep that could not read the labels cannot claim to have reached a container
+            # another replica created, which is the gap the labels exist to close.
+            unlisted = DisposalFailure(
+                "unlisted", "could not list containers, so the sweep may be partial"
+            )
         for target in names:
             removal = await self._remove(target)
             if removal.removed and not target.endswith(_PROXY_SUFFIX):
@@ -966,7 +991,7 @@ class DockerSandboxBackend:
             networks.add(_network_name(workload))
         for net in networks:
             await self._remove_network(net)
-        return _Sweep(count, undeleted)
+        return _Sweep(count, undeleted, unlisted)
 
     # -- internals ----------------------------------------------------------------
 
@@ -1331,7 +1356,10 @@ class DockerSandboxBackend:
             )
         except Exception as exc:  # noqa: BLE001 - teardown must never raise
             logger.warning("docker backend: failed to remove container %s: %s", target, exc)
-            return _Removal(removed=False, failure=f"{target}: {exc}")
+            # The invocation itself failed, so nothing was asked of the engine.
+            return _Removal(
+                removed=False, failure=DisposalFailure("unreachable", f"{target}: {exc}")
+            )
         if result.returncode == 0:
             return _Removal(removed=True)
         if _NO_SUCH in result.stderr.lower():
@@ -1339,10 +1367,17 @@ class DockerSandboxBackend:
         logger.warning(
             "docker backend: failed to remove container %s: %s", target, result.stderr.strip()
         )
-        return _Removal(removed=False, failure=f"{target}: {result.stderr.strip()}")
+        # The engine answered and the container is still there.
+        return _Removal(
+            removed=False, failure=DisposalFailure("refused", f"{target}: {result.stderr.strip()}")
+        )
 
-    async def _list_names_by_labels(self, label_filters: list[tuple[str, str]]) -> list[str]:
-        """Container names matching every ``(label, value)`` filter, read from docker. Never raises.
+    async def _list_names_by_labels(self, label_filters: list[tuple[str, str]]) -> list[str] | None:
+        """Container names matching every filter, or ``None`` when the query failed.
+
+        Read from docker; never raises.  Told apart because the paragraph below is otherwise
+        the whole record: a failed listing and a conversation with nothing in it both come
+        back empty, and only one of them means the sweep covered everything.
 
         ``docker ps -a --filter label=k=v --format '{{.Names}}'`` selects by label and returns
         the names directly, newline-delimited.  ``_label_value`` on both sides, always: these
@@ -1357,12 +1392,12 @@ class DockerSandboxBackend:
             result = await self._docker(*args, timeout=self._config.command_timeout_seconds)
         except Exception as exc:  # noqa: BLE001 - purge must never fail
             logger.warning("docker backend: could not list containers to purge: %s", exc)
-            return []
+            return None
         if result.returncode != 0:
             logger.warning(
                 "docker backend: could not list containers to purge: %s", result.stderr.strip()
             )
-            return []
+            return None
         return [line for line in result.stdout.decode("utf-8", "replace").splitlines() if line]
 
     async def _remove_network(self, net: str) -> bool:

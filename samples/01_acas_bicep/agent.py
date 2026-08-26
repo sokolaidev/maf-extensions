@@ -196,8 +196,10 @@ async def run() -> int:
         # suspends, stopped ten more and it goes.  A sandbox per agent per
         # conversation left to run that course adds up.  `dispose_scope` deletes
         # by service-side label, so it reclaims sandboxes this process never saw.
-        deleted = await router.dispose_scope(SCOPE, THREAD_ID)
-        print(f"\n{MEASURED}Disposed {deleted} sandbox(es).")
+        purge = await router.dispose_scope(SCOPE, THREAD_ID)
+        print(f"\n{MEASURED}Disposed {purge.disposed} sandbox(es).")
+        if purge.undisposed is not None:
+            print(f"{MEASURED}Not fully disposed: {purge.undisposed}")
         await backend.aclose()
         await credential.close()
 

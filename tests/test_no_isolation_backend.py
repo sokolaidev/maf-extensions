@@ -389,7 +389,8 @@ def test_dispose_keeps_reporting_a_work_directory_it_could_not_remove(monkeypatc
             second = await backend.dispose(_key())
         finally:
             monkeypatch.undo()
-        assert first is not None and "held open by a child" in first
+        assert first is not None and "held open by a child" in first.detail
+        assert first.code == "refused", "the removal ran, here, and the directory is still there"
         assert second is not None, "a retained failure has to keep answering until it lands"
 
         assert host_root.exists()
@@ -468,11 +469,11 @@ def test_dispose_scope_removes_sandboxes_and_returns_count():
             )
             await backend.acquire(other_key, _spec(kind="bicep"))
 
-            deleted = await backend.dispose_scope("test-scope", "test-thread")
+            deleted = (await backend.dispose_scope("test-scope", "test-thread")).disposed
             assert deleted == 2
             # The other-scope sandbox survives.
             assert (other_key, "bicep") in backend._sandboxes  # noqa: SLF001
-            remaining = await backend.dispose_scope("other-scope", "other-thread")
+            remaining = (await backend.dispose_scope("other-scope", "other-thread")).disposed
             assert remaining == 1
         finally:
             await _drop(backend)

@@ -423,12 +423,14 @@ async def act_five_disposal_reaches_everyone() -> tuple[int, int]:
         result = await sandbox.exec("cat marker", working_directory=spec.work_dir, timeout=60)
         print(f"{MEASURED}it runs: {result.stdout.strip()!r}\n")
     finally:
-        disposed = await router.dispose_scope(KEY.scope, KEY.thread_id)
-        print(f"{MEASURED}dispose_scope reached both backends and disposed {disposed} sandbox(es).")
+        purge = await router.dispose_scope(KEY.scope, KEY.thread_id)
+        print(
+            f"{MEASURED}dispose_scope reached both backends and disposed {purge.disposed} sandbox(es)."
+        )
     print("  Not only the serving one — which is the point: a host that changes `selected=`")
     print("  would otherwise leak whatever the previous choice left running, and on a")
     print("  billable backend that leak has a price.\n")
-    return disposed, len(registered)
+    return purge.disposed, len(registered)
 
 
 async def main() -> int:

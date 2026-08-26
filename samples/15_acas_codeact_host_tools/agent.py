@@ -829,13 +829,15 @@ async def run() -> int:
         # on docker a label-based purge or nothing at all — see sample 01's README. It is also
         # what removes whatever act 5 counted, and the last resort for a program the transport
         # reported it could not signal.
-        deleted = sum(
-            [
-                await router.dispose_scope(SCOPE, HOST_TOOL_CALL_THREAD),
-                await router.dispose_scope(SCOPE, DIRECT_THREAD),
-            ]
-        )
+        purges = [
+            await router.dispose_scope(SCOPE, HOST_TOOL_CALL_THREAD),
+            await router.dispose_scope(SCOPE, DIRECT_THREAD),
+        ]
+        deleted = sum(purge.disposed for purge in purges)
+        stayed = [str(purge.undisposed) for purge in purges if purge.undisposed is not None]
         print(f"{MEASURED}Disposed {deleted} sandbox(es).")
+        if stayed:
+            print(f"{MEASURED}Not fully disposed: {'; '.join(stayed)}")
         # The ACAS backend holds pooled clients of its own, so disposing the sandbox is not the
         # whole teardown — samples 01, 03 and 14 close it the same way. The docker backend holds
         # none (samples 06 and 08 close the same way, without this call).

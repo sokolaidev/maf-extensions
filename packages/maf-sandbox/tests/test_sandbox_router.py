@@ -53,6 +53,7 @@ from maf_sandbox import (
     SandboxSpec,
     SandboxTransferLimitsNotPermitted,
     SandboxUnclean,
+    ScopePurge,
     TransferLimits,
     fold_disposal_failures,
     fold_host_tool_call_transfer_limits,
@@ -999,14 +1000,14 @@ class TestPurge:
             InProcessSandboxBackend(name="second"),
         )
         router = SandboxRouter([first, second], min_isolation=Isolation.NONE)
-        total = asyncio.run(router.dispose_scope("scope-a", "thread-1"))
+        total = asyncio.run(router.dispose_scope("scope-a", "thread-1")).disposed
         assert total == 2
         assert first.purged == second.purged == [("scope-a", "thread-1")]
 
     def test_a_failing_backend_does_not_stop_the_others(self):
         good = InProcessSandboxBackend(name="good")
         router = SandboxRouter([_ExplodingBackend(name="bad"), good], min_isolation=Isolation.NONE)
-        total = asyncio.run(router.dispose_scope("scope-a", "thread-1"))
+        total = asyncio.run(router.dispose_scope("scope-a", "thread-1")).disposed
         assert total == 1
         assert good.purged == [("scope-a", "thread-1")]
 
@@ -1018,7 +1019,7 @@ class TestPurge:
         """The host awaits this without importing the class, so the name is the contract."""
         backend = InProcessSandboxBackend()
         purger = SandboxPurger(SandboxRouter([backend], min_isolation=Isolation.NONE))
-        assert asyncio.run(purger.purge_scoped_thread("scope-a", "thread-1")) == 1
+        assert asyncio.run(purger.purge_scoped_thread("scope-a", "thread-1")).disposed == 1
         assert backend.purged == [("scope-a", "thread-1")]
 
 
@@ -1147,7 +1148,11 @@ class TestABackendReportsAFailedDeleteWithoutRaising:
         return SandboxRouter(list(backends), min_isolation=Isolation.NONE)
 
     def test_a_reported_reason_refuses_the_key(self):
-        router = self._router(InProcessSandboxBackend(dispose_failure="container 7 still running"))
+        router = self._router(
+            InProcessSandboxBackend(
+                dispose_failure=DisposalFailure("refused", "container 7 still running")
+            )
+        )
         assert asyncio.run(router.dispose_unclean(_KEY, timeout=1.0)) is False
         with pytest.raises(SandboxUnclean, match="refused until a disposal lands"):
             asyncio.run(router.acquire(_KEY, _SPEC))
@@ -1161,7 +1166,11 @@ class TestABackendReportsAFailedDeleteWithoutRaising:
         asyncio.run(router.acquire(_KEY, _SPEC))
 
     def test_the_reason_and_the_backend_that_gave_it_are_logged(self, caplog):
-        router = self._router(InProcessSandboxBackend(name="acas", dispose_failure="403 denied"))
+        router = self._router(
+            InProcessSandboxBackend(
+                name="acas", dispose_failure=DisposalFailure("refused", "403 denied")
+            )
+        )
         with caplog.at_level("WARNING"):
             asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
         assert "acas" in caplog.text
@@ -1169,7 +1178,10 @@ class TestABackendReportsAFailedDeleteWithoutRaising:
 
     def test_one_backend_reporting_is_enough_and_the_rest_are_still_asked(self):
         good = InProcessSandboxBackend(name="good")
-        router = self._router(InProcessSandboxBackend(name="bad", dispose_failure="no"), good)
+        router = self._router(
+            InProcessSandboxBackend(name="bad", dispose_failure=DisposalFailure("refused", "no")),
+            good,
+        )
         assert asyncio.run(router.dispose_unclean(_KEY, timeout=1.0)) is False
         assert good.disposed == [_KEY]
 
@@ -1179,18 +1191,89 @@ class TestABackendReportsAFailedDeleteWithoutRaising:
         router = self._router(backend)
         asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
         backend.dispose_error = None
-        backend.dispose_failure = "delete accepted but the sandbox is still listed"
+        backend.dispose_failure = DisposalFailure(
+            "refused", "delete accepted but the sandbox is still listed"
+        )
         asyncio.run(router.dispose(_KEY))
         with pytest.raises(SandboxUnclean):
             asyncio.run(router.acquire(_KEY, _SPEC))
 
     def test_a_later_disposal_that_says_nothing_reopens_it(self):
-        backend = InProcessSandboxBackend(dispose_failure="still there")
+        backend = InProcessSandboxBackend(dispose_failure=DisposalFailure("refused", "still there"))
         router = self._router(backend)
         asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
         backend.dispose_failure = None
         asyncio.run(router.dispose(_KEY))
         asyncio.run(router.acquire(_KEY, _SPEC))
+
+
+class TestAScopePurgeReportsWhatItCouldNotDelete:
+    """A conversation delete that deleted nothing must not reopen the keys it refused (#641).
+
+    `dispose_scope` clears the ledger for the whole conversation, so reading only the raise
+    here loses more than `dispose` does: every agent's key under that thread, not one.
+    """
+
+    def _router(self, *backends):
+        return SandboxRouter(list(backends), min_isolation=Isolation.NONE)
+
+    def test_a_reported_purge_failure_leaves_the_conversation_refused(self):
+        backend = InProcessSandboxBackend(
+            dispose_failure=DisposalFailure("refused", "down"),
+            purge_failure=DisposalFailure("unlisted", "the label query failed"),
+        )
+        router = self._router(backend)
+        asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
+        purge = asyncio.run(router.dispose_scope("scope-a", "thread-1"))
+        assert purge.undisposed is not None
+        assert purge.undisposed.code == "unlisted"
+        assert "the label query failed" in purge.undisposed.detail
+        with pytest.raises(SandboxUnclean):
+            asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_a_purge_that_says_nothing_still_reopens_them(self):
+        backend = InProcessSandboxBackend(dispose_failure=DisposalFailure("refused", "down"))
+        router = self._router(backend)
+        asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
+        assert asyncio.run(router.dispose_scope("scope-a", "thread-1")).undisposed is None
+        asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_the_backend_that_reported_is_named(self):
+        router = self._router(
+            InProcessSandboxBackend(
+                name="acas", purge_failure=DisposalFailure("refused", "403 denied")
+            ),
+            InProcessSandboxBackend(name="docker"),
+        )
+        purge = asyncio.run(router.dispose_scope("scope-a", "thread-1"))
+        assert purge.undisposed == DisposalFailure("refused", "acas: 403 denied")
+        assert purge.disposed == 2, "a backend that reported still deleted what it could"
+
+    def test_the_scope_context_manager_carries_it_out_of_the_block(self):
+        backend = InProcessSandboxBackend(
+            purge_failure=DisposalFailure("unreachable", "the group was unreachable")
+        )
+
+        async def scenario():
+            router = self._router(backend)
+            async with router.scope("scope-a", "thread-1") as disposal:
+                assert disposal.undisposed is None, "it means nothing until the block ends"
+            return disposal
+
+        assert asyncio.run(scenario()).undisposed == DisposalFailure(
+            "unreachable", "in-process: the group was unreachable"
+        )
+
+    def test_the_purger_hands_a_host_the_same_answer(self):
+        purger = SandboxPurger(
+            self._router(
+                InProcessSandboxBackend(
+                    purge_failure=DisposalFailure("unlisted", "the label query failed")
+                )
+            )
+        )
+        purge = asyncio.run(purger.purge_scoped_thread("scope-a", "thread-1"))
+        assert purge.undisposed == DisposalFailure("unlisted", "in-process: the label query failed")
 
 
 class TestTheDisposalCodeIsWhatACallerBranchesOn:
@@ -1287,19 +1370,10 @@ class TestTheDisposalCodeIsWhatACallerBranchesOn:
         assert "refused" in str(refusal.value), "the code is what a caller branches on"
         assert secret in caplog.text, "and the operator still gets it, in the log"
 
-    def test_a_backend_still_answering_with_a_sentence_is_unknown(self):
-        """The shipped backends answer this way until they can import the class from a
-        published core. `unknown` keeps them in the vocabulary instead of outside it."""
-        router = self._router(InProcessSandboxBackend(name="docker", dispose_failure="still there"))
-        asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
-        with pytest.raises(SandboxUnclean) as refusal:
-            asyncio.run(router.acquire(_KEY, _SPEC))
-        assert refusal.value.code == "unknown"
-
     def test_a_backend_answering_with_neither_shape_does_not_raise(self):
-        """The protocol widened this return only this release, which is when a backend is most
-        likely to answer with the wrong thing. Reading `.code` off it would raise out of a
-        `finally`."""
+        """The annotation binds nobody at run time, and this release narrows it — a backend
+        built against the previous one still answers with whatever it answered before. Reading
+        `.code` off that would raise out of a `finally`."""
 
         class _Odd(InProcessSandboxBackend):
             async def dispose(self, key: SandboxKey):  # type: ignore[override]
@@ -1313,7 +1387,7 @@ class TestTheDisposalCodeIsWhatACallerBranchesOn:
 
     def test_a_bound_that_expired_is_a_timeout_not_a_guess(self):
         class _Hangs(InProcessSandboxBackend):
-            async def dispose(self, key: SandboxKey) -> DisposalFailure | str | None:
+            async def dispose(self, key: SandboxKey) -> DisposalFailure | None:
                 await asyncio.Event().wait()
 
         router = self._router(_Hangs())
@@ -1327,7 +1401,7 @@ class TestTheDisposalCodeIsWhatACallerBranchesOn:
         bound expiring must not discard it."""
 
         class _Hangs(InProcessSandboxBackend):
-            async def dispose(self, key: SandboxKey) -> DisposalFailure | str | None:
+            async def dispose(self, key: SandboxKey) -> DisposalFailure | None:
                 if self.dispose_failure is None:
                     await asyncio.Event().wait()  # never returns; the bound expires first
                 return self.dispose_failure
@@ -1444,15 +1518,6 @@ class TestTheRefusalNamesWhy:
         with pytest.raises(SandboxUnclean) as refusal:
             asyncio.run(router.acquire(_KEY, _SPEC))
         assert refusal.value.code is None, "nothing reported a code, so there is none to give"
-
-    def test_a_marked_sentence_is_read_as_unknown(self):
-        """The same one-release grace the protocol grants `dispose`, so a caller is never made
-        to import the class to close a key."""
-        router = self._router(InProcessSandboxBackend())
-        router.mark_unclean(_KEY, "the cleanup was cancelled")
-        with pytest.raises(SandboxUnclean) as refusal:
-            asyncio.run(router.acquire(_KEY, _SPEC))
-        assert refusal.value.code == "unknown"
 
     def test_a_marked_code_outside_the_vocabulary_is_normalised(self):
         """`mark_unclean` is public, so it is the other way an unrecognised code could reach the
@@ -2008,9 +2073,9 @@ class _CountingBackend(InProcessSandboxBackend):
         self._reclaims = reclaims
         self.purged: list[tuple[str, str]] = []
 
-    async def dispose_scope(self, scope: str, thread_id: str) -> int:
+    async def dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:
         self.purged.append((scope, thread_id))
-        return self._reclaims
+        return ScopePurge(self._reclaims)
 
 
 class TestScope:

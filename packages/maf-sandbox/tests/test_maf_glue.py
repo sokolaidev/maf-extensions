@@ -1864,7 +1864,7 @@ class TestPurgerReExport:
     def test_a_host_can_wire_the_whole_maf_surface_from_this_one_module(self):
         backend = InProcessSandboxBackend()
         purger = SandboxPurger(_router(backend))
-        assert asyncio.run(purger.purge_scoped_thread("scope-a", "thread-1")) == 1
+        assert asyncio.run(purger.purge_scoped_thread("scope-a", "thread-1")).disposed == 1
 
 
 @dataclasses.dataclass(frozen=True)
