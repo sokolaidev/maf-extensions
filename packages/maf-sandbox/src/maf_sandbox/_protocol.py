@@ -762,6 +762,10 @@ class Sandbox(Protocol):
         ``path`` is **model-supplied**, which is what buys the confinement duty and the
         capability gate. :meth:`reclaim` is the other half of that split and is neither.
 
+        The reach rule stated on :meth:`reclaim` binds here too, and harder: ``path`` names
+        components a guest program may own, and a removal resolves every parent even where it
+        unlinks its own operand.
+
         Raises:
             ValueError: A path outside ``working_directory``, one reached through a link, or
                 the working directory itself — the confinement refusal the pull surface makes.
@@ -778,10 +782,17 @@ class Sandbox(Protocol):
 
         Three rules. The caller created ``directory`` under ``working_directory`` with an
         unguessable name, so no parent walk is owed — stated, not checked. The premise is
-        not stable: a guest that ran can have swapped the path or a parent for a link. So a
-        backend must not remove with more authority than the guest had — in-tree, the
-        removal runs over the same ``exec`` the guest did, and a swap reaches nothing the
-        guest could not already delete. What more the contract promises is #584's question.
+        not stable: the **guest program** — the payload a kind ran, not the transport files a
+        backend put beside it — can have swapped the path, or a parent, for a link before the
+        call returned.
+
+        What the contract holds is **reach**, not the mechanism that bounds it: a swap must
+        not let the removal delete anything that program could not have deleted itself.
+        Removing as the principal the program ran under satisfies that everywhere. Removing
+        with more authority satisfies it only where no component of the path was writable by
+        that program, and a backend that does so owes the argument for why. What more the
+        contract promises is #584's question.
+
         A directory that is not there is success: this runs in a ``finally``. Anything else
         raises.
 
