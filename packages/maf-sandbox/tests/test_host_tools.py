@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import importlib
 import inspect
 import json
 import logging
@@ -23,12 +24,10 @@ import pytest
 
 import maf_sandbox._host_tools as host_tools_module
 from maf_sandbox import (
-    DEFAULT_MAX_DISPATCHES_PER_RUN,
     DEFAULT_MAX_HOST_TOOL_CALLS_PER_RUN,
     DEFAULT_TRANSFER_LIMITS,
     FLOW_DECLARED_KEY,
     INTEGRITY_RANK,
-    DispatchResult,
     HostToolCallResult,
     HostToolDeclaration,
     HostToolIdentityNotAllowed,
@@ -41,10 +40,6 @@ from maf_sandbox import (
     SourceIntegrity,
     TransferLimits,
     declaration_of,
-    dispatch_over_exec,
-    fold_dispatch_transfer_limits,
-    fold_host_tool_call_transfer_limits,
-    host_tool_calls_over_exec,
     sandbox_tool,
 )
 
@@ -1585,62 +1580,45 @@ class TestTheRegistryObservesEveryHostToolCall:
         assert _call_host_tool(HostToolRun(registry), "doubled", {"x": 1}).ok
 
 
-class TestThePreRenameSpellingStillResolves:
-    """Every old name, exercised — the compatibility claim, made falsifiable.
+#: Every name 0.25 removed, against the module a dependent imported it from — the package for a
+#: public name, the defining module for the path that skips ``__init__``.
+_REMOVED_NAMES = [
+    ("maf_sandbox", "DEFAULT_MAX_DISPATCHES_PER_RUN"),
+    ("maf_sandbox", "DispatchResult"),
+    ("maf_sandbox", "dispatch_over_exec"),
+    ("maf_sandbox", "fold_dispatch_transfer_limits"),
+    ("maf_sandbox._host_tools", "DEFAULT_MAX_DISPATCHES_PER_RUN"),
+    ("maf_sandbox._host_tools", "DispatchResult"),
+    ("maf_sandbox._host_tools_over_exec", "dispatch_over_exec"),
+    ("maf_sandbox._host_tools_over_exec", "fold_dispatch_transfer_limits"),
+]
 
-    The old spelling is kept for one release so a dependent resolves against this core and
-    the one before it. Module names, keywords, properties and methods each need their own
-    check: aliasing one kind does not alias another.
+
+class TestThePreRenameSpellingIsGone:
+    """The mirror of the alias tests 0.24 carried: every old name fails, and names what it wanted.
+
+    A name, a member and a keyword each need their own check — removing one kind does not
+    remove another, which is why the aliases needed four shapes to add.
     """
 
-    def test_the_module_level_names_are_the_new_objects(self):
-        assert DispatchResult is HostToolCallResult
-        assert DEFAULT_MAX_DISPATCHES_PER_RUN == DEFAULT_MAX_HOST_TOOL_CALLS_PER_RUN
-        assert dispatch_over_exec is host_tool_calls_over_exec
-        assert fold_dispatch_transfer_limits is fold_host_tool_call_transfer_limits
+    @pytest.mark.parametrize(("module", "name"), _REMOVED_NAMES)
+    def test_the_removed_names_do_not_resolve(self, module: str, name: str):
+        imported = importlib.import_module(module)
+        assert not hasattr(imported, name)
+        assert name not in getattr(imported, "__all__", ())
 
-    def test_the_cap_reads_under_both_spellings(self):
-        registry = HostToolRegistry(max_host_tool_calls_per_run=5)
-        assert registry.max_dispatches_per_run == 5
-        assert registry.max_host_tool_calls_per_run == 5
+    @pytest.mark.parametrize("name", ["max_dispatches_per_run", "dispatch_observer"])
+    def test_the_removed_registry_properties_are_gone(self, name: str):
+        assert not hasattr(HostToolRegistry(), name)
 
-    def test_the_cap_is_settable_under_the_old_keyword(self):
-        registry = HostToolRegistry(max_dispatches_per_run=5)
-        assert registry.max_host_tool_calls_per_run == 5
-        assert registry.max_dispatches_per_run == 5
+    def test_the_removed_run_method_is_gone(self):
+        assert not hasattr(HostToolRun(HostToolRegistry()), "dispatch")
 
-    def test_the_observer_reads_under_both_spellings(self):
-        observer = lambda run, name: contextlib.nullcontext()  # noqa: E731
-        registry = HostToolRegistry(dispatch_observer=observer)
-        assert registry.dispatch_observer is observer
-        assert registry.host_tool_calls_observer is observer
-
-    def test_one_spelling_at_a_time(self):
-        with pytest.raises(TypeError, match="not both"):
-            HostToolRegistry(max_host_tool_calls_per_run=5, max_dispatches_per_run=5)
-
-    def test_dispatch_reaches_the_tool(self):
-        registry = HostToolRegistry()
-        registry.register(_stamped_pure())
-        result = asyncio.run(HostToolRun(registry).dispatch("doubled", {"x": 1}))
-        assert result.ok
-        assert result.value_json == "2"
-
-    def test_dispatch_delegates_rather_than_copying_call(self):
-        """A subclass overriding ``call`` is what an old caller must still reach.
-
-        Delegation is what makes that hold: a ``dispatch`` bound to the base function would
-        resolve to the base ``call`` and skip the override.
-        """
-        seen: list[str] = []
-
-        class Watched(HostToolRun):
-            async def call(self, name, arguments=None, *, framing_bytes=0):
-                seen.append(name)
-                return await super().call(name, arguments, framing_bytes=framing_bytes)
-
-        registry = HostToolRegistry()
-        registry.register(_stamped_pure())
-        result = asyncio.run(Watched(registry).dispatch("doubled", {"x": 1}))
-        assert result.ok
-        assert seen == ["doubled"]
+    @pytest.mark.parametrize(
+        ("keyword", "value"), [("max_dispatches_per_run", 5), ("dispatch_observer", None)]
+    )
+    def test_the_removed_keywords_are_refused_by_name(self, keyword: str, value: object):
+        # Passed as a mapping, not as a literal keyword: a literal is a call a static analyser
+        # has to flag as a wrong argument name, which is the very thing being asserted.
+        with pytest.raises(TypeError, match=f"unexpected keyword argument '{keyword}'"):
+            HostToolRegistry(**{keyword: value})
