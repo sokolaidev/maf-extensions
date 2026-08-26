@@ -262,13 +262,13 @@ class TestAGuestThatIsNotRoot:
     not _GUEST_OWNED_IMAGE,
     reason="needs MAF_SANDBOX_DOCKER_E2E_GUEST_OWNED_IMAGE naming a non-root image owning work_dir",
 )
-class TestAContainerWithNoCapabilities:
-    """``--user 0`` is a uid, not a capability set.
+class TestAWorkDirTheImageGaveItsOwnUser:
+    """The ownership shape the hardening advice behind a non-root ``USER`` also asks for.
 
-    With ``cap_drop_all`` there is no ``CAP_DAC_OVERRIDE``, so root can empty only what it
-    owns. An image that gives its own user ``work_dir`` — which the hardening advice that
-    produces a non-root ``USER`` also tells you to do — is the shape that leaves it, and the
-    shape that user can empty itself.
+    Two rules meet here. ``reclaim`` raises authority whatever the walk would say, so with
+    ``cap_drop_all`` it meets a root that holds no ``CAP_DAC_OVERRIDE`` and can empty only
+    what it owns — the case the retry exists for. ``remove`` owes a walk, which finds a
+    component the guest owns and keeps the removal at the guest's own authority.
     """
 
     def _spec(self) -> SandboxSpec:
@@ -296,7 +296,11 @@ class TestAContainerWithNoCapabilities:
         finally:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
-    def test_remove_falls_back_the_same_way(self):
+    def test_remove_runs_at_the_guest_authority_and_still_deletes(self):
+        """`work_dir` is the guest's here, so the reach rule keeps the removal at the guest's
+        own authority — and loses nothing by it, because a directory the guest can swap is one
+        it can empty. No fallback is involved: root is never asked.
+        """
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig(cap_drop_all=True))
 
@@ -307,6 +311,30 @@ class TestAContainerWithNoCapabilities:
             await sandbox.remove("doomed.txt", working_directory=_WORK)
 
             assert await sandbox.stat_file("doomed.txt", working_directory=_WORK) is None
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+    def test_remove_refuses_to_raise_authority_under_a_directory_the_guest_could_swap(self):
+        """The rule's price, pinned rather than left implicit.
+
+        A host-written subdirectory inside a guest-owned `work_dir` is one the guest could
+        replace between the walk and the `rm`, so the removal stays at the guest's authority —
+        which cannot empty it. It fails on `main` too, for the older reason that the removal
+        was always the guest's; what is new is that this is now a decision rather than an
+        accident of which principal happened to run.
+        """
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(_key(scope), self._spec())
+            await sandbox.write_file(f"{_WORK}/sub/doomed.txt", "x", working_directory=_WORK)
+
+            with pytest.raises(OSError):
+                await sandbox.remove("sub/doomed.txt", working_directory=_WORK)
 
         try:
             asyncio.run(scenario())

@@ -225,6 +225,20 @@ def _stat_from_tar_header(block: bytes, rel_path: str) -> SandboxEntry:
     return SandboxEntry(path=rel_path, kind=EntryKind.OTHER, size_bytes=None)
 
 
+def _no_component_was_the_guests(walked: Mapping[str, tuple[int, int]]) -> bool:
+    """Could the guest program have swapped any directory on this path?
+
+    It could not where every one is root's and writable by nobody else — which is what a
+    ``docker cp`` creates and what an image's own build leaves, unless that build hands
+    ``work_dir`` to the user it runs as.  Answered without knowing which uid the guest is: a
+    directory root owns and no one else may write is beyond every other principal, and where
+    the guest *is* root there is no authority to raise and nothing to extend.
+
+    Empty is ``True`` — a walk that reached nothing found nothing writable.
+    """
+    return all(uid == 0 and not mode & 0o022 for uid, mode in walked.values())
+
+
 @dataclass(frozen=True)
 class _DockerResult:
     """What one ``docker`` invocation returned. ``stdout`` is bytes: the read path streams a tar
@@ -373,9 +387,19 @@ class _DockerSandbox:
         )
 
     async def _removal(
-        self, argv: Sequence[str], *, working_directory: str, timeout: float
+        self,
+        argv: Sequence[str],
+        *,
+        working_directory: str,
+        timeout: float,
+        raise_authority: bool,
     ) -> ExecResult:
-        """Run a removal as root, and again as the image's user where root can be refused.
+        """Run a removal, as root where the caller says the reach rule allows it.
+
+        ``raise_authority`` is the protocol's reach rule answered by the caller: a swap must
+        not let the removal delete what the guest program could not delete itself, so root is
+        for paths the guest could not have swapped.  Without it this is one ``exec`` as the
+        image's user, which is the authority the guest program itself had.
 
         ``--user 0`` is a uid, not a capability set.  Holding ``CAP_DAC_OVERRIDE`` — which a
         container does unless :attr:`~maf_sandbox_docker.DockerSandboxConfig.cap_drop_all`
@@ -393,6 +417,8 @@ class _DockerSandbox:
         was promised for the whole call.  A first attempt that spends it leaves nothing to
         retry with, and its own result is the answer.
         """
+        if not raise_authority:
+            return await self._exec(argv, working_directory=working_directory, timeout=timeout)
         started = time.monotonic()
         removed = await self._exec(
             argv, working_directory=working_directory, timeout=timeout, as_root=True
@@ -445,19 +471,18 @@ class _DockerSandbox:
         makes a missing path succeed and refuses a directory without ``-r``. The image
         dependency is the one :attr:`capabilities` already names for ``EXEC``.
 
-        Goes through :meth:`_removal`, so with the file plane's authority rather than the
-        guest's.
-
-        **Residual, and unmitigated.**  The component walk classifies, then ``rm`` resolves
-        again, so a guest that turns a stat-ed component into a symlink between the two wins —
-        the race :meth:`read_file` already names, now with root behind it rather than the
-        guest's own authority.  It needs a guest-writable directory on the path, which an
-        image whose build gives ``work_dir`` to its own user has: on those, this widens what a
-        won race reaches.  Closing it needs a removal that does not re-resolve, or a refusal
-        to raise authority over a path whose components are not all the host's (#680).
+        Runs as root only where the protocol's reach rule allows it, and the component walk
+        this already owes is what answers: ``rm`` unlinks its own operand but resolves every
+        parent, so a guest that swapped one between the walk and the command redirects the
+        removal.  Root there would delete what that guest could not.  Where a component is
+        the guest's, the removal runs as the guest — which is the authority it had, and
+        enough, since a directory it can swap is one it can empty (#680).
         """
         guest = confine_guest_path(path, working_directory)
-        await self._refuse_symlinked_parents(guest, working_directory=working_directory)
+        walked: dict[str, tuple[int, int]] = {}
+        await self._refuse_symlinked_parents(
+            guest, working_directory=working_directory, walked=walked
+        )
         if posixpath.normpath(guest) == posixpath.normpath(working_directory):
             raise ValueError(
                 f"refusing to remove the working directory itself: {working_directory}"
@@ -466,6 +491,7 @@ class _DockerSandbox:
             ["rm", "-rf" if recursive else "-f", "--", guest],
             working_directory=working_directory,
             timeout=self._command_timeout,
+            raise_authority=_no_component_was_the_guests(walked),
         )
         if removed.exit_code != 0:
             raise OSError(
@@ -485,6 +511,14 @@ class _DockerSandbox:
         those, kept because the command carries root's authority and runs from ``/``: a
         relative path would resolve against the filesystem root, so ``etc/ssh`` reaching here
         from a caller that skipped the dispatcher must not become ``rm -rf /etc/ssh``.
+
+        **Why root is allowed here**, which the reach rule asks a backend to argue rather than
+        assume.  Only two things on this path are swappable, and neither is the guest's: the
+        operand, which ``rm -rf`` unlinks instead of resolving, so a link planted there takes
+        its target nowhere; and the parents, which are ``working_directory`` and above —
+        swapping one needs write on *its* parent, and no image hands out a directory above
+        ``work_dir``.  A walk would answer this the way :meth:`remove`'s does, and is the very
+        duty this member exists without.
         """
         del working_directory
         if not directory.startswith("/"):
@@ -492,7 +526,10 @@ class _DockerSandbox:
         if len([part for part in posixpath.normpath(directory).split("/") if part]) < 2:
             raise ValueError(f"refusing to reclaim recursively that close to the root: {directory}")
         removed = await self._removal(
-            ["rm", "-rf", "--", directory], working_directory="/", timeout=timeout
+            ["rm", "-rf", "--", directory],
+            working_directory="/",
+            timeout=timeout,
+            raise_authority=True,
         )
         if removed.exit_code != 0:
             raise OSError(
@@ -500,7 +537,9 @@ class _DockerSandbox:
                 f"{f' — {removed.stderr.strip()}' if removed.stderr else ''}"
             )
 
-    async def _stat_guest(self, guest: str, rel: str) -> SandboxEntry | None:
+    async def _stat_guest(
+        self, guest: str, rel: str, walked: dict[str, tuple[int, int]] | None = None
+    ) -> SandboxEntry | None:
         """Stat an absolute guest path, with no confinement check of its own.
 
         Split out because the component walk stats the working directory's own ancestors, which
@@ -515,9 +554,21 @@ class _DockerSandbox:
             raise RuntimeError(f"docker could not stat {rel}: {result.stderr.strip()}")
         if len(result.stdout) < _TAR_BLOCK:
             raise RuntimeError(f"docker returned no tar header for {rel}")
-        return _stat_from_tar_header(result.stdout[:_TAR_BLOCK], rel)
+        block = result.stdout[:_TAR_BLOCK]
+        if walked is not None:
+            # The same header the classification reads. Ownership is the other half of what a
+            # component walk can answer, and asking for it separately would be a second `cp`.
+            info = tarfile.TarInfo.frombuf(block, encoding="utf-8", errors="surrogateescape")
+            walked[guest] = (info.uid, info.mode)
+        return _stat_from_tar_header(block, rel)
 
-    async def _refuse_symlinked_parents(self, guest: str, *, working_directory: str) -> None:
+    async def _refuse_symlinked_parents(
+        self,
+        guest: str,
+        *,
+        working_directory: str,
+        walked: dict[str, tuple[int, int]] | None = None,
+    ) -> None:
         """The protocol's component walk, over this backend's own unconfined stat.
 
         The :func:`~maf_sandbox.paths.confine_guest_path` paired with it at every call site is
@@ -528,7 +579,9 @@ class _DockerSandbox:
         read per component.
         """
         await refuse_symlinked_parents(
-            lambda directory: self._stat_guest(directory, directory), guest, working_directory
+            lambda directory: self._stat_guest(directory, directory, walked),
+            guest,
+            working_directory,
         )
 
     async def read_file(self, path: str, *, working_directory: str, max_bytes: int) -> bytes:

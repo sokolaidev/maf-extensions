@@ -90,6 +90,17 @@ def _directory_tar(path: str) -> bytes:
     return buffer.getvalue()
 
 
+def _owned_directory_tar(path: str, uid: int, mode: int) -> bytes:
+    """A directory entry with an owner and a mode, which is what the reach rule reads."""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        entry = tarfile.TarInfo(path)
+        entry.type = tarfile.DIRTYPE
+        entry.uid, entry.mode = uid, mode
+        archive.addfile(entry)
+    return buffer.getvalue()
+
+
 def _cp(guest: str) -> tuple[str, ...]:
     """The ``docker cp`` argv prefix for one guest path — the key a per-path override needs."""
     return ("cp", f"{_NAME}:{guest}")
@@ -801,6 +812,53 @@ class TestWhichPrincipalACommandCarries:
             ("exec", "--user", "0"),
             ("exec", "-w", _WORK),
         ]
+
+
+class TestTheReachRuleChoosesThePrincipal:
+    """`Sandbox.remove`'s contract: a swap must not let a removal delete what the guest
+    program could not delete itself.
+
+    `rm` unlinks its own operand but resolves every parent, so the walk `remove` already owes
+    is what decides. Root is for paths with no component the guest could have swapped.
+    """
+
+    def _sandbox(self, work_dir_entry: bytes):
+        overrides = {
+            _cp("/maf-sandbox"): _DockerResult(0, _directory_tar("maf-sandbox"), ""),
+            _cp(_WORK): _DockerResult(0, work_dir_entry, ""),
+            ("cp",): _DockerResult(1, b"", "Error: Could not find the file in container"),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        return asyncio.run(backend.acquire(_KEY, _SPEC)), fake
+
+    def test_a_path_the_guest_could_not_have_touched_is_removed_as_root(self):
+        sandbox, fake = self._sandbox(_owned_directory_tar(_WORK.lstrip("/"), 0, 0o755))
+        asyncio.run(sandbox.remove("a.txt", working_directory=_WORK))
+        assert fake.only("exec").args[:3] == ("exec", "--user", "0")
+
+    def test_a_component_the_guest_owns_keeps_the_removal_at_the_guest_authority(self):
+        """The guest can swap what it owns, so root here would delete what it could not.
+
+        It loses nothing: a directory it can swap is one it can empty.
+        """
+        sandbox, fake = self._sandbox(_owned_directory_tar(_WORK.lstrip("/"), 10001, 0o755))
+        asyncio.run(sandbox.remove("a.txt", working_directory=_WORK))
+        assert "--user" not in fake.only("exec").args
+
+    def test_a_root_owned_component_anyone_may_write_is_the_guests_too(self):
+        """Ownership alone is not the question — `0777` under root is writable by the guest."""
+        sandbox, fake = self._sandbox(_owned_directory_tar(_WORK.lstrip("/"), 0, 0o777))
+        asyncio.run(sandbox.remove("a.txt", working_directory=_WORK))
+        assert "--user" not in fake.only("exec").args
+
+    def test_reclaim_raises_authority_without_a_walk(self):
+        """`reclaim` owes no walk, and argues instead: `rm -rf` unlinks its operand rather
+        than resolving it, and its parents are `work_dir` and above, which no image hands to
+        the guest.
+        """
+        sandbox, fake = self._sandbox(_owned_directory_tar(_WORK.lstrip("/"), 10001, 0o755))
+        asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
+        assert fake.only("exec").args[:3] == ("exec", "--user", "0")
 
 
 class TestReclaimKeepsAFloorUnderRoot:
