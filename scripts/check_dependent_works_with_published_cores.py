@@ -25,9 +25,12 @@ Two failures are worth telling apart, and both exit non-zero:
 
 The second is right before an upload and wrong on a pull request, where a change that uses a
 new core symbol from a dependent must floor it on a release that does not exist yet (#681).
-``--unreleased-core`` lifts that one refusal when the core the range waits for is one this
-branch already carries or would cut. Nothing is waived: with nothing published there is no
-artifact to install. `publish-packages.yml` passes no flag.
+``--local-core`` answers it with the artifact instead of an argument: when nothing published
+is admitted, the suite runs against the core this checkout built, forced past the range with
+an override. The claim being tested moves from *"this works beside a core somebody published"*
+to *"this works beside the core it ships with"*, which is the only one a pull request can
+settle. `publish-packages.yml` passes no flag, so an upload still requires a published core
+the range admits.
 
 A network failure is fatal rather than skipped, the same stance as the admit and work checks:
 passing because PyPI could not be reached is the one outcome that would make this worthless.
@@ -43,15 +46,7 @@ import zipfile
 from pathlib import Path
 
 from check_published_dependents_work import fetch_requires_dist_for_version
-from check_release_order import (
-    admits,
-    core_version,
-    fetch_published_versions,
-    next_version,
-    touches_core,
-    version,
-)
-from check_title_diff import is_package_test_path
+from check_release_order import admits, fetch_published_versions, version
 
 _CORE = "maf-sandbox"
 _ROOT = Path(__file__).resolve().parent.parent
@@ -65,50 +60,12 @@ _RANGE = re.compile(
 
 #: Spelled once: two call sites print it, and a usage message that has drifted from the parser
 #: is worse than none.
-_USAGE = "usage: {program} <distribution> <wheel> [--unreleased-core <title>]"
+_USAGE = "usage: {program} <distribution> <wheel> [--local-core <wheel>]"
 
 #: What running a suite needs beyond whatever the wheel drags in. The package tests import their
 #: own distribution and `maf_sandbox`, both installed here; no suite in this repository uses an
 #: async plugin, so pytest alone is the whole of it.
 _TEST_REQUIREMENTS = ("pytest",)
-
-
-def _shown(release: tuple[int, ...]) -> str:
-    """The dotted spelling, as the index and the range both write it."""
-    return ".".join(str(part) for part in release)
-
-
-def _wanted(release: tuple[int, ...], floor: tuple[int, ...], ceiling: tuple[int, ...]) -> bool:
-    """Whether ``release`` falls inside both ends: a floor above it is still uninstallable."""
-    return release >= floor and admits(release, ceiling)
-
-
-def pending_core_release(
-    title: str,
-    changed: list[str],
-    floor: tuple[int, ...],
-    ceiling: tuple[int, ...],
-) -> str | None:
-    """The core release the range is waiting on, or ``None`` when it is waiting on nothing.
-
-    Two ways a core can be about to exist. Release-please may have merged the bump already, so
-    the branch carries a version the index has not seen — that one is a fact, and needs no
-    title.  Otherwise this pull request is what would cut it, which is a prediction from the
-    title and the changed paths, with `check_release_order.py`'s blind spot: a
-    ``BREAKING CHANGE:`` typed into the squash box is not visible here.  Either is enough,
-    because the strict reading still runs before the upload.
-    """
-    published = fetch_published_versions(_CORE) or []
-    carried = core_version(_ROOT)
-    if _shown(carried) not in published and _wanted(carried, floor, ceiling):
-        return _shown(carried)
-    # A package's own tests are `exclude-paths` in release-please-config.json, so a core test
-    # edit attributes to nothing and cuts no release. `touches_core` counts it — harmless where
-    # it is used to *warn*, an invented release here — so the same exclusion is applied first.
-    if not touches_core([path for path in changed if not is_package_test_path(path)]):
-        return None
-    proposed = next_version(carried, title)
-    return _shown(proposed) if proposed and _wanted(proposed, floor, ceiling) else None
 
 
 def declared_range(wheel: Path) -> tuple[tuple[int, ...], tuple[int, ...]]:
@@ -171,8 +128,14 @@ def sibling_wheels(wheel: Path) -> list[Path]:
     return [found[0] for found in by_distribution.values()]
 
 
-def run_suite(wheel: Path, core: str, tests: Path) -> tuple[bool, str]:
-    """Install ``wheel`` beside ``core`` in a throwaway environment and run ``tests`` there."""
+def run_suite(wheel: Path, core: str | Path, tests: Path) -> tuple[bool, str]:
+    """Install ``wheel`` beside ``core`` in a throwaway environment and run ``tests`` there.
+
+    ``core`` is a published version to resolve, or a wheel this checkout built. The wheel is
+    forced with ``--overrides``: it carries the version it had before release-please bumped it,
+    which is by definition below a floor waiting on the release, and the point is to test the
+    code rather than the number.
+    """
     with tempfile.TemporaryDirectory() as directory:
         environment = Path(directory) / "venv"
         created = subprocess.run(
@@ -186,6 +149,12 @@ def run_suite(wheel: Path, core: str, tests: Path) -> tuple[bool, str]:
             / ("Scripts" if windows else "bin")
             / ("python.exe" if windows else "python")
         )
+        if isinstance(core, Path):
+            override = Path(directory) / "override.txt"
+            override.write_text(f"{_CORE} @ {core.as_uri()}\n", encoding="utf-8")
+            pinned = ["--overrides", str(override)]
+        else:
+            pinned = [f"{_CORE}=={core}"]
         installed = subprocess.run(
             [
                 "uv",
@@ -195,7 +164,7 @@ def run_suite(wheel: Path, core: str, tests: Path) -> tuple[bool, str]:
                 str(python),
                 str(wheel),
                 *(str(sibling) for sibling in sibling_wheels(wheel)),
-                f"{_CORE}=={core}",
+                *pinned,
                 *_TEST_REQUIREMENTS,
             ],
             capture_output=True,
@@ -219,14 +188,17 @@ def run_suite(wheel: Path, core: str, tests: Path) -> tuple[bool, str]:
 def main(argv: list[str]) -> int:
     """CLI entry: run ``distribution``'s suite against every published core its wheel admits."""
     arguments = argv[1:]
-    title: str | None = None
-    if "--unreleased-core" in arguments:
-        at = arguments.index("--unreleased-core")
+    local_core: Path | None = None
+    if "--local-core" in arguments:
+        at = arguments.index("--local-core")
         if at + 1 >= len(arguments):
             print(_USAGE.format(program=argv[0]), file=sys.stderr)
             return 2
-        title = arguments[at + 1]
+        local_core = Path(arguments[at + 1])
         arguments = arguments[:at] + arguments[at + 2 :]
+        if not local_core.is_file():
+            print(f"no core wheel at {local_core}", file=sys.stderr)
+            return 2
     if len(arguments) != 2:
         print(_USAGE.format(program=argv[0]), file=sys.stderr)
         return 2
@@ -245,25 +217,26 @@ def main(argv: list[str]) -> int:
     cores = admitted_published_cores(floor, ceiling)
     span = f">={'.'.join(map(str, floor))},<{'.'.join(map(str, ceiling))}"
     if not cores:
-        # Changed paths on stdin, the same shape `check_release_order.py` takes them in. Read
-        # only under the flag, so the publish-time call is never left waiting on a pipe.
-        pending = (
-            pending_core_release(title, sys.stdin.read().split(), floor, ceiling)
-            if title is not None
-            else None
-        )
-        if pending is not None:
+        if local_core is None:
             print(
-                f"OK  {distribution} declares {_CORE}{span}, which nothing published satisfies "
-                f"yet — this branch is waiting on {_CORE} {pending}, which it admits. Re-checked "
-                "against the index before the upload."
+                f"{distribution} declares {_CORE}{span} and no published {_CORE} satisfies it — "
+                "the wheel is uninstallable as declared",
+                file=sys.stderr,
+            )
+            return 1
+        passed, output = run_suite(wheel, local_core, tests)
+        tail = output.splitlines()[-1] if output else ""
+        print(
+            f"{'ok  ' if passed else 'FAIL'} {distribution} on the {_CORE} this checkout built "
+            f"({local_core.name}): {tail}"
+        )
+        if passed:
+            print(
+                f"     nothing published satisfies {_CORE}{span} yet, so the pairing tested is "
+                "this code against its own core. The index is what the upload is checked against."
             )
             return 0
-        print(
-            f"{distribution} declares {_CORE}{span} and no published {_CORE} satisfies it — the "
-            "wheel is uninstallable as declared",
-            file=sys.stderr,
-        )
+        print(output, file=sys.stderr)
         return 1
 
     failures = 0
