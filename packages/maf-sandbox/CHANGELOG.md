@@ -2,6 +2,24 @@
 
 All notable changes to `maf-sandbox` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this project has not yet reached a stable API, so every release before `1.0.0` may include breaking changes.
 
+## [0.25.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.24.0...maf-sandbox-v0.25.0) (2026-08-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sandbox:** a failed delete comes back as a code ([#678](https://github.com/sokolaidev/maf-extensions/issues/678))
+* **sandbox:** remove the pre-rename dispatch spelling ([#676](https://github.com/sokolaidev/maf-extensions/issues/676))
+
+### Features
+
+* **sandbox:** a failed delete comes back as a code ([#678](https://github.com/sokolaidev/maf-extensions/issues/678)) ([3b14292](https://github.com/sokolaidev/maf-extensions/commit/3b14292c96508e89c182cd760070009f2262867b))
+* **sandbox:** remove the pre-rename dispatch spelling ([#676](https://github.com/sokolaidev/maf-extensions/issues/676)) ([8a4d5da](https://github.com/sokolaidev/maf-extensions/commit/8a4d5dacd017757dd0a02b3ff05f50515f81c92a))
+
+
+### Documentation
+
+* **sandbox:** a removal is bounded by what a swap can reach, not by which principal runs it ([#686](https://github.com/sokolaidev/maf-extensions/issues/686)) ([7f1e117](https://github.com/sokolaidev/maf-extensions/commit/7f1e117970acb0c55e87f59671bd723ea139d958))
+
 ## [0.24.0](https://github.com/sokolaidev/maf-extensions/compare/maf-sandbox-v0.23.1...maf-sandbox-v0.24.0) (2026-08-25)
 
 
