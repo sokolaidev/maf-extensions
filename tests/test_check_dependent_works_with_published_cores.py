@@ -215,6 +215,33 @@ class TestTheReleaseTheRangeIsWaitingOn:
             is None
         )
 
+    def test_a_core_test_edit_attributes_to_nothing(self, monkeypatch):
+        """`packages/<name>/tests` is `exclude-paths` in release-please-config.json, so a core
+        test edit cuts no core release — and a dependent floored on one it invented would ship
+        uninstallable. `touches_core` alone counts it, which is safe where it only warns."""
+        self._branch(monkeypatch, "0.25.0", ["0.25.0"])
+        assert (
+            check.pending_core_release(
+                "feat: a dependent feature that also adjusts a core test",
+                ["packages/maf-sandbox/tests/test_sandbox_router.py", _BACKEND_PATH],
+                (0, 26, 0),
+                (0, 28),
+            )
+            is None
+        )
+
+    def test_a_core_source_change_still_counts_beside_a_core_test_edit(self, monkeypatch):
+        self._branch(monkeypatch, "0.25.0", ["0.25.0"])
+        assert (
+            check.pending_core_release(
+                "feat: x",
+                [_CORE_PATH, "packages/maf-sandbox/tests/test_sandbox_router.py"],
+                (0, 26, 0),
+                (0, 28),
+            )
+            == "0.26.0"
+        )
+
     def test_a_title_that_releases_nothing_justifies_nothing(self, monkeypatch):
         self._branch(monkeypatch, "0.25.0", ["0.25.0"])
         assert check.pending_core_release("chore: tidy", [_CORE_PATH], (0, 26, 0), (0, 28)) is None

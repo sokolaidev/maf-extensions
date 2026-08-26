@@ -51,6 +51,7 @@ from check_release_order import (
     touches_core,
     version,
 )
+from check_title_diff import is_package_test_path
 
 _CORE = "maf-sandbox"
 _ROOT = Path(__file__).resolve().parent.parent
@@ -101,7 +102,10 @@ def pending_core_release(
     carried = core_version(_ROOT)
     if _shown(carried) not in published and _wanted(carried, floor, ceiling):
         return _shown(carried)
-    if not touches_core(changed):
+    # A package's own tests are `exclude-paths` in release-please-config.json, so a core test
+    # edit attributes to nothing and cuts no release. `touches_core` counts it — harmless where
+    # it is used to *warn*, an invented release here — so the same exclusion is applied first.
+    if not touches_core([path for path in changed if not is_package_test_path(path)]):
         return None
     proposed = next_version(carried, title)
     return _shown(proposed) if proposed and _wanted(proposed, floor, ceiling) else None
