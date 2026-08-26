@@ -166,7 +166,7 @@ async def act_four_thread_delete(router: SandboxRouter) -> tuple[int, int]:
     tidy = "t-tidy"
     async with router.scope(SCOPE, tidy):
         await one_turn(router, SandboxKey(scope=SCOPE, thread_id=tidy, agent_dir=AGENT_DIR))
-    tidy_found = await purger.purge_scoped_thread(SCOPE, tidy)
+    tidy_found = (await purger.purge_scoped_thread(SCOPE, tidy)).disposed
     print(f"  a thread already purged per turn -> purger found {tidy_found}")
     print("  Zero is the right answer, not a broken hook. A host that purges at end of turn")
     print("  should expect the delete path to find nothing almost every time.\n")
@@ -176,7 +176,7 @@ async def act_four_thread_delete(router: SandboxRouter) -> tuple[int, int]:
     unscoped = "t-unscoped"
     await one_turn(router, SandboxKey(scope=SCOPE, thread_id=unscoped, agent_dir=AGENT_DIR))
     print(f"  a thread never scoped per turn -> containers: {containers(unscoped)}")
-    unscoped_found = await purger.purge_scoped_thread(SCOPE, unscoped)
+    unscoped_found = (await purger.purge_scoped_thread(SCOPE, unscoped)).disposed
     print(f"  user deletes the conversation  -> purger found {unscoped_found}")
     print(f"  and docker agrees, after purge -> containers: {containers(unscoped)}")
     print("  Nothing else would have reclaimed this one, and no turn is coming back for it.")

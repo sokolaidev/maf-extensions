@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from maf_sandbox import (
     Capability,
+    DisposalFailure,
     Egress,
     EntryKind,
     ExecResult,
@@ -35,8 +36,10 @@ from maf_sandbox import (
     SandboxOutputSizeUnknown,
     SandboxSpec,
     SandboxTransferCapExceeded,
+    ScopePurge,
     TransferLimits,
     error_detail,
+    fold_disposal_failures,
 )
 from maf_sandbox.paths import (
     confine_guest_path,
@@ -271,7 +274,7 @@ class _Deletion:
     """
 
     deleted: bool
-    failure: str | None = None
+    failure: DisposalFailure | None = None
 
 
 class _AcasSandbox:
@@ -792,7 +795,7 @@ class AcasSandboxBackend:
             )
         return _AcasSandbox(sc, self._config.read_timeout_seconds)
 
-    async def dispose(self, key: SandboxKey) -> str | None:
+    async def dispose(self, key: SandboxKey) -> DisposalFailure | None:
         """Delete every kind's sandbox for ``key`` that this process knows of.
 
         Every kind's, because the key may own one sandbox per kind and this method takes no
@@ -824,8 +827,10 @@ class AcasSandboxBackend:
             gc = self._group_client()
         except Exception as exc:  # noqa: BLE001 - disposal must never raise
             logger.warning("acas backend: could not reach the sandbox group: %s", error_detail(exc))
-            return f"could not reach the sandbox group: {error_detail(exc)}"
-        undeleted: dict[str, str] = {}
+            return DisposalFailure(
+                "unreachable", f"could not reach the sandbox group: {error_detail(exc)}"
+            )
+        undeleted: dict[str, DisposalFailure] = {}
         for sandbox_id in wanted:
             deletion = await self._delete(gc, sandbox_id)
             if deletion.deleted:
@@ -845,18 +850,20 @@ class AcasSandboxBackend:
             self._undeleted[prefix] = left
         else:
             self._undeleted.pop(prefix, None)
-        if undeleted:
-            reasons = "; ".join(undeleted.values())
-            return f"sandbox delete failed: {reasons}"
+        reported = fold_disposal_failures(list(undeleted.values()))
+        if reported is not None:
+            return reported
         if left:
             # A disposal still in flight wrote these ahead of its own await. `None` would
-            # clear the refusal on a delete nobody confirmed; a count, since the ids are not
-            # this attempt's to describe. The next disposal that lands clears it.
-            return f"another disposal has not yet reported on {len(left)} sandbox(es)"
+            # clear the refusal on a delete nobody confirmed; `unknown` and a count, since
+            # neither the outcome nor the ids are this attempt's to describe.
+            return DisposalFailure(
+                "unknown", f"another disposal has not yet reported on {len(left)} sandbox(es)"
+            )
         return None
 
-    async def dispose_scope(self, scope: str, thread_id: str) -> int:
-        """Delete every sandbox labelled ``(scope, thread_id)``; returns how many.
+    async def dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:
+        """Delete every sandbox labelled ``(scope, thread_id)``: how many, and what stayed.
 
         The registry is consulted first but is **not** the source of truth: it only knows
         what this process created, so a conversation delete served by another replica — or
@@ -868,6 +875,11 @@ class AcasSandboxBackend:
         entry pointing at a sandbox that may already be gone is worse than no entry, since
         the next acquire would try to resume it.  An id a previous :meth:`dispose` could not
         delete is swept here too, and stops being owed a retry once this takes it away.
+
+        A listing that failed is reported, not just logged.  The registry still names what this
+        process created, so those are deleted — but a purge that could not read the labels
+        cannot claim to have reached a sandbox another replica created, which is the very gap
+        the labels exist to close.
         """
         known = [
             (k, sandbox_id)
@@ -885,16 +897,31 @@ class AcasSandboxBackend:
             for key, sandbox_id in known:
                 prefix = (key[0], key[1], key[2])
                 self._undeleted[prefix] = self._undeleted.get(prefix, set()) | {sandbox_id}
-            return 0
+            return ScopePurge(
+                0,
+                DisposalFailure(
+                    "unreachable", f"could not reach the sandbox group: {error_detail(exc)}"
+                ),
+            )
 
         retained = {
             p: set(names)
             for p, names in self._undeleted.items()
             if p[0] == scope and p[1] == thread_id
         }
+        undisposed: list[DisposalFailure] = []
         ids = {sandbox_id for _, sandbox_id in known}
         ids.update(sandbox_id for names in retained.values() for sandbox_id in names)
-        ids.update(await self._list_thread_sandbox_ids(gc, scope, thread_id))
+        listed = await self._list_thread_sandbox_ids(gc, scope, thread_id)
+        if listed is None:
+            undisposed.append(
+                DisposalFailure(
+                    "unlisted",
+                    "could not list the thread's sandboxes, so the sweep may be partial",
+                )
+            )
+        else:
+            ids.update(listed)
 
         count = 0
         undeleted: set[str] = set()
@@ -907,6 +934,7 @@ class AcasSandboxBackend:
                 count += 1
             if deletion.failure is not None:
                 undeleted.add(sandbox_id)
+                undisposed.append(deletion.failure)
         # Merge-only against the *live* map: a `dispose` for one of these keys can land
         # mid-sweep, and indexing what it removed would raise out of a method that never does.
         for prefix, before in retained.items():
@@ -921,7 +949,7 @@ class AcasSandboxBackend:
             if sandbox_id in undeleted:
                 prefix = (key[0], key[1], key[2])
                 self._undeleted[prefix] = self._undeleted.get(prefix, set()) | {sandbox_id}
-        return count
+        return ScopePurge(count, fold_disposal_failures(undisposed))
 
     # -- internals ----------------------------------------------------------------
 
@@ -964,23 +992,42 @@ class AcasSandboxBackend:
         auto-delete timer reclaiming one between rounds is the expected path, the same reading
         the resume above takes of it.
         """
-        from azure.core.exceptions import ResourceNotFoundError
+        from azure.core.exceptions import ResourceNotFoundError, ServiceRequestError
 
         try:
             await group_client.get_sandbox_client(sandbox_id).begin_delete()
             return _Deletion(deleted=True)
         except ResourceNotFoundError:
             return _Deletion(deleted=False)
-        except Exception as exc:  # noqa: BLE001
+        except ServiceRequestError as exc:
+            # The request never reached the service, so the sandbox was never asked about.
             logger.warning(
                 "acas backend: failed to delete sandbox %s: %s", sandbox_id, error_detail(exc)
             )
-            return _Deletion(deleted=False, failure=f"{sandbox_id}: {error_detail(exc)}")
+            return _Deletion(
+                deleted=False,
+                failure=DisposalFailure("unreachable", f"{sandbox_id}: {error_detail(exc)}"),
+            )
+        except Exception as exc:  # noqa: BLE001
+            # The service answered and the sandbox is still there — a role the principal lacks
+            # far more often than anything transient.
+            logger.warning(
+                "acas backend: failed to delete sandbox %s: %s", sandbox_id, error_detail(exc)
+            )
+            return _Deletion(
+                deleted=False,
+                failure=DisposalFailure("refused", f"{sandbox_id}: {error_detail(exc)}"),
+            )
 
     async def _list_thread_sandbox_ids(
         self, group_client: Any, scope: str, thread_id: str
-    ) -> list[str]:
-        """Sandbox ids labelled ``(scope, thread_id)``, read from the service."""
+    ) -> list[str] | None:
+        """Sandbox ids labelled ``(scope, thread_id)``, or ``None`` when the query failed.
+
+        Told apart, because the sentence below is otherwise the whole record: a listing that
+        failed and a conversation with nothing in it both come back empty, and only one of
+        them means the purge covered everything.
+        """
         ids: list[str] = []
         try:
             # `_label_value` on both sides, always: these have to be the same strings the
@@ -1002,6 +1049,7 @@ class AcasSandboxBackend:
                 thread_id,
                 error_detail(exc),
             )
+            return None
         return ids
 
 

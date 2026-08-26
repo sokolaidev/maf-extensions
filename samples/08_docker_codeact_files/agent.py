@@ -175,8 +175,10 @@ async def run() -> int:
         print(quoted(response.text))
     finally:
         # Deletes rather than relying on the container living on — see sample 01's README.
-        deleted = await router.dispose_scope(SCOPE, THREAD_ID)
-        print(f"\n{MEASURED}Disposed {deleted} sandbox(es).")
+        purge = await router.dispose_scope(SCOPE, THREAD_ID)
+        print(f"\n{MEASURED}Disposed {purge.disposed} sandbox(es).")
+        if purge.undisposed is not None:
+            print(f"{MEASURED}Not fully disposed: {purge.undisposed}")
         await credential.close()
 
     # JSON, not a comma-joined sentence: an artifact name may legally contain a comma, so

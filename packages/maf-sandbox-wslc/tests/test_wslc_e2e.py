@@ -119,7 +119,8 @@ class TestALiveContainer:
             # Purged through a second backend: the labels on the container, not this
             # process's memory, are what a conversation delete has to find.
             purged = await WslcSandboxBackend(WslcSandboxConfig()).dispose_scope(scope, "thread-1")
-            assert purged >= 1
+            assert purged.disposed >= 1
+            assert purged.undisposed is None
             return sandbox.container_name
 
         try:
@@ -198,7 +199,7 @@ class TestAllowlistEgress:
             _, denied_status = self._curl_status(sandbox, "https://pypi.org/simple/")
             assert denied_status == "000", denied_status
         finally:
-            purged = asyncio.run(backend.dispose_scope(scope, "thread-1"))
+            purged = asyncio.run(backend.dispose_scope(scope, "thread-1")).disposed
         assert purged == 1
         assert _names_on_the_machine(sandbox.container_name) == []
         assert not _network_present(net)

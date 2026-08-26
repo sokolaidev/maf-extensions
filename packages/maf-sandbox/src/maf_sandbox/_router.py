@@ -34,6 +34,7 @@ from ._protocol import (
     SandboxKey,
     SandboxLimits,
     SandboxSpec,
+    ScopePurge,
     TransferLimits,
     fold_disposal_failures,
     meets_floor,
@@ -63,9 +64,15 @@ class ScopeDisposal:
     Mutable and read afterwards rather than returned, because a context manager's value is
     bound before the work it wraps has happened.  Inside the block it reads zero and means
     nothing.
+
+    ``undisposed`` is a :class:`~maf_sandbox.DisposalFailure` when a sandbox is still there,
+    or ``None``.  A conversation whose delete
+    did not land is the case a host most needs to hear about, and the count alone cannot say
+    it: zero reclaimed reads the same whether there was nothing to reclaim or nothing worked.
     """
 
     disposed: int = 0
+    undisposed: DisposalFailure | None = None
 
 
 #: The rungs, weakest first, rendered once for the refusal messages.
@@ -700,7 +707,7 @@ class SandboxRouter:
             )
             return False
 
-    def mark_unclean(self, key: SandboxKey, reason: DisposalFailure | str | None = None) -> None:
+    def mark_unclean(self, key: SandboxKey, reason: DisposalFailure | None = None) -> None:
         """Refuse ``key`` without disposing — for a cleanup cancelled before it could dispose.
 
         Synchronous, because it is called while a :class:`~asyncio.CancelledError` is propagating
@@ -713,14 +720,8 @@ class SandboxRouter:
         sandbox says more than that a cleanup was cut short.
         """
         if self._unclean.get(key) is None:
-            if reason is None:
-                self._unclean[key] = None
-            elif isinstance(reason, DisposalFailure):
-                # Folded, not stored as given: one place decides what a legal code is.
-                self._unclean[key] = fold_disposal_failures([reason])
-            else:
-                # The same one-release grace `dispose` gets: a sentence reads as `unknown`.
-                self._unclean[key] = DisposalFailure("unknown", reason)
+            # Folded, not stored as given: one place decides what a legal code is.
+            self._unclean[key] = None if reason is None else fold_disposal_failures([reason])
 
     @asynccontextmanager
     async def scope(self, scope: str, thread_id: str) -> AsyncGenerator[ScopeDisposal, None]:
@@ -735,39 +736,62 @@ class SandboxRouter:
         on its way past — which is the property that makes putting it in a ``finally`` safe.
 
         The yielded object carries the count *after* the block, because a host that reports
-        what it reclaimed is the one that notices the day the number is zero.
+        what it reclaimed is the one that notices the day the number is zero — and, beside it,
+        the reason a sandbox is still there, because a host that deleted a conversation and did
+        not is owed more than a number that happens to be lower than usual.
         """
         disposal = ScopeDisposal()
         try:
             yield disposal
         finally:
-            disposal.disposed = await self.dispose_scope(scope, thread_id)
+            purge = await self.dispose_scope(scope, thread_id)
+            disposal.disposed = purge.disposed
+            disposal.undisposed = purge.undisposed
 
-    async def dispose_scope(self, scope: str, thread_id: str) -> int:
-        """Delete every sandbox for ``(scope, thread_id)``, returning how many.
+    async def dispose_scope(self, scope: str, thread_id: str) -> ScopePurge:
+        """Delete every sandbox for ``(scope, thread_id)``, returning how many, and what stayed.
 
         Every registered backend is asked, not only the selected one: a conversation may have
         been served while a different backend was configured, and a sandbox nobody reclaims
         is a sandbox somebody pays for.
+
+        A backend refuses by returning a reason as much as by raising, the same reading
+        :meth:`_dispose_each` takes and for the same reason. Only a purge that landed reopens
+        the conversation's refused keys: the one that did not is precisely the one whose
+        sandboxes still hold the data those keys were refused over.
         """
         total = 0
-        landed = True
+        undisposed: list[DisposalFailure] = []
         for backend in self._backends:
             try:
-                total += await backend.dispose_scope(scope, thread_id)
+                purged = await backend.dispose_scope(scope, thread_id)
             except Exception as exc:  # noqa: BLE001 - purge must never fail
-                landed = False
+                undisposed.append(DisposalFailure("unknown", f"{backend.name} raised: {exc}"))
                 logger.warning(
                     "sandbox router: backend %s failed to purge thread %s: %s",
                     backend.name,
                     thread_id,
                     exc,
                 )
-        if landed:
+            else:
+                total += purged.disposed
+                if purged.undisposed is not None:
+                    undisposed.append(
+                        DisposalFailure(
+                            purged.undisposed.code, f"{backend.name}: {purged.undisposed.detail}"
+                        )
+                    )
+                    logger.warning(
+                        "sandbox router: backend %s did not purge thread %s: %s",
+                        backend.name,
+                        thread_id,
+                        purged.undisposed,
+                    )
+        if not undisposed:
             # The conversation's sandboxes are gone, so nothing under it holds data any more.
             self._unclean = {
                 key: reason
                 for key, reason in self._unclean.items()
                 if (key.scope, key.thread_id) != (scope, thread_id)
             }
-        return total
+        return ScopePurge(total, fold_disposal_failures(undisposed))

@@ -453,7 +453,7 @@ async def run() -> int:
             f"{MEASURED}faults introduced:  {len(introduced)} — {'; '.join(introduced) or 'none'}\n"
         )
     finally:
-        disposed = await router.dispose_scope(SCOPE, THREAD_ID)
+        disposed = (await router.dispose_scope(SCOPE, THREAD_ID)).disposed
         if credential is not None:
             await credential.close()
 

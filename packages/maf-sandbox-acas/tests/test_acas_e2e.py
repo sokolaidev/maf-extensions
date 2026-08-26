@@ -196,7 +196,7 @@ async def _drains_to_empty(
     What must not happen is that it never empties.
     """
     for round_number in range(1, attempts + 1):
-        if await backend.dispose_scope(scope, "thread-1") == 0:
+        if (await backend.dispose_scope(scope, "thread-1")).disposed == 0:
             return round_number
         await asyncio.sleep(delay)
     raise AssertionError(

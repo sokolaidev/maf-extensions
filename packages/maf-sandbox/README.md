@@ -147,6 +147,36 @@ The contract says what may be called; it does not say how a host-tool call *reac
 
 It costs round trips — several backend calls per host-tool call, plus polling, plus one on every return to reclaim, and one more to stop the program on a run that overran. It serves one outstanding call at a time. This module's own docstring counts those costs exactly, beside the code that decides them; whether the trade is worth it is a measurement rather than an assumption.
 
+## Upgrading to 0.26
+
+**A backend says a delete failed by returning, not by raising.** `dispose` is contractually best-effort and never raises, so the refusal 0.23 shipped — a key held closed until its disposal lands — could never fire against a compliant backend: each swallowed its delete error, said nothing, and was read as having disposed. Both disposal methods now carry the answer back:
+
+| Was | Is |
+| --- | --- |
+| `async def dispose(key) -> None` | `-> DisposalFailure \| None` — a code to branch on, and a detail to log |
+| `async def dispose_scope(scope, thread) -> int` | `-> ScopePurge` — `.disposed` is the old count, `.undisposed` the failure |
+| `router.dispose_scope(...)` → `int` | → `ScopePurge` |
+| `purger.purge_scoped_thread(...)` → `int` | → `ScopePurge` |
+
+**The code is the contract; the detail is not.** `DisposalCode` is a closed set — `unreachable`, `timeout`, `refused`, `unlisted`, `unknown` — and it is what a caller acts on: retry an `unreachable`, raise the bound on a `timeout`, put a `refused` in front of a human, since it is a missing role far more often than anything transient. `detail` is the backend's own sentence, for a log, never to be parsed.
+
+```python
+async def dispose(self, key: SandboxKey) -> DisposalFailure | None:
+    try:
+        gone = await self._client.delete(key)
+    except TransportError as exc:                     # never reached the service
+        return DisposalFailure("unreachable", f"{key}: {exc}")
+    return None if gone else DisposalFailure("refused", f"{key}: the service kept it")
+```
+
+**Reach for `unknown` rather than guessing between the others.** A code chosen to look precise is worse than one that admits the backend cannot tell, because a caller branches on it either way. Several failures fold to the most actionable code — `fold_disposal_failures` — keeping every detail.
+
+**A third-party backend must return the new type.** `dispose`'s reason was a `str`; wrap it in a `DisposalFailure` with the code that fits. `dispose_scope` changes shape too: return `ScopePurge(count)` where you returned `count`.
+
+**A caller reading the count reads `.disposed`.** Watch for `if await purger.purge_scoped_thread(...)`: a `ScopePurge` is always truthy where the count it replaced was not. `router.scope(...)`'s record gains `undisposed` beside `disposed`, which is additive.
+
+**`None` means nothing was reported, not that the delete provably happened** — a backend with no way to check returns it too. The conflation is with success on purpose: the alternative refuses every key served by a backend that cannot answer. Say something whenever the delete is *known* not to have landed, and the router will refuse the key and quote you in `SandboxUnclean`.
+
 ## Upgrading to 0.25
 
 **The `dispatch` spelling is gone.** 0.24 added the `host_tool_call` names beside the old ones so a dependent could move in its own release; this removes what was kept.
@@ -325,6 +355,8 @@ Implement `name`, `isolation`, `egress_modes`, `acquire`, `dispose`, `dispose_sc
 **`os_families` is optional and means nothing about what is installed.** Declare the guest shapes this instance hands out — `posix`, `windows` — when your guest has an operating system at all; a backend serving a language runtime has no answer and gives none, which refuses a spec that asks and leaves every other spec untouched. It says nothing about whether the image has a shell.
 
 **`acquire` is get-or-create.** A workload's fix-round loop calls it every iteration; returning a cold sandbox each time turns a seconds-long loop into a minutes-long one.
+
+**`dispose_scope` returns a `ScopePurge`, and both disposal methods report rather than raise.** They are best-effort and never raise, so a delete that failed has no other way out: `dispose` returns the reason, `dispose_scope` puts it beside the count. Say nothing and the router reads it as disposed, reopens the key it had refused, and hands the next call a sandbox still holding the last one's data.
 
 **`dispose_scope` must not consult only your process's memory.** A multi-replica host serves a conversation delete wherever it lands, so the replica that created the sandbox is usually not the one deleting it. Derive the set from the service — labels, a listing, whatever your provider offers. A backend that skips this leaves billable compute running and the bug is invisible on a single-replica dev box.
 

@@ -188,14 +188,14 @@ class TestInProcessSandboxBackend:
 
     def test_dispose_scope_records_and_returns_the_purge_count(self):
         backend = InProcessSandboxBackend()
-        result = asyncio.run(backend.dispose_scope("scope-a", "thread-1"))
+        result = asyncio.run(backend.dispose_scope("scope-a", "thread-1")).disposed
         assert result == 1
         assert backend.purged == [("scope-a", "thread-1")]
 
     def test_purge_count_is_settable(self):
         backend = InProcessSandboxBackend()
         backend.purge_count = 3
-        assert asyncio.run(backend.dispose_scope("scope-a", "thread-1")) == 3
+        assert asyncio.run(backend.dispose_scope("scope-a", "thread-1")).disposed == 3
 
 
 class TestInMemoryStore:

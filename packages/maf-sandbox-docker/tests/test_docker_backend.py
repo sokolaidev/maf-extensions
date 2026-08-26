@@ -22,6 +22,7 @@ from collections.abc import Sequence
 import pytest
 from maf_sandbox import (
     Capability,
+    DisposalFailure,
     Egress,
     EntryKind,
     Isolation,
@@ -1450,8 +1451,9 @@ class TestDispose:
         asyncio.run(backend.acquire(_KEY, _SPEC))
         reason = asyncio.run(backend.dispose(_KEY))
         assert reason is not None
-        assert "daemon error" in reason
-        assert _NAME in reason
+        assert reason.code == "refused", "the engine answered and the container stayed"
+        assert "daemon error" in reason.detail
+        assert _NAME in reason.detail
 
     def test_a_second_attempt_still_reports_what_the_first_could_not_remove(self):
         """A name a removal could not take away outlives the registry entry it came from."""
@@ -1465,7 +1467,7 @@ class TestDispose:
         assert asyncio.run(backend.dispose(_KEY)) is not None
         second = asyncio.run(backend.dispose(_KEY))
         assert second is not None
-        assert _NAME in second
+        assert _NAME in second.detail
 
     def test_a_sweep_cancelled_part_way_still_leaves_the_name_to_retry(self):
         """The record is written before the first await, so a bound that expires mid-sweep does
@@ -1494,8 +1496,7 @@ class TestDispose:
         }
 
     def test_a_removal_that_lands_clears_the_retry_record(self):
-        overrides = {("ps",): _DockerResult(1, b"", "daemon down")}
-        backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        backend, _ = _backend_with(_machine(running=[_NAME]))
         asyncio.run(backend.acquire(_KEY, _SPEC))
         backend._undeleted[(_KEY.scope, _KEY.thread_id, _KEY.agent_dir)] = {_NAME}  # noqa: SLF001
 
@@ -1524,7 +1525,7 @@ class TestDispose:
         backend, _ = _backend_with(_machine())
         backend._docker = slow_listing  # type: ignore[method-assign]  # noqa: SLF001
 
-        async def drive() -> str | None:
+        async def drive() -> DisposalFailure | None:
             disposal = asyncio.create_task(backend.dispose(_KEY))
             await listing.wait()
             backend._undeleted[prefix] = {"c-2"}  # a later disposal's own  # noqa: SLF001
@@ -1534,6 +1535,7 @@ class TestDispose:
         reported = asyncio.run(drive())
         assert backend._undeleted == {prefix: {"c-2"}}, "the newer record survives"  # noqa: SLF001
         assert reported is not None, "and the key stays refused until someone reports on it"
+        assert reported.code == "unknown", "the other attempt's outcome is not ours to name"
 
     def test_a_container_a_failed_removal_left_behind_is_still_served_here(self):
         """Pins what the retry record does rather than what its name suggests: it is disposal
@@ -1568,13 +1570,13 @@ class TestDisposeScope:
         backend._docker = slow_listing  # type: ignore[method-assign]  # noqa: SLF001
         backend._undeleted[prefix] = {"c-1"}  # noqa: SLF001
 
-        async def drive() -> int:
+        async def drive() -> None:
             purge = asyncio.create_task(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
             await listing.wait()
             backend._undeleted.pop(prefix, None)  # noqa: SLF001
             backend._undeleted[prefix] = {"c-2"}  # a later disposal's own  # noqa: SLF001
             release.set()
-            return await purge
+            await purge
 
         asyncio.run(drive())
         assert backend._undeleted == {prefix: {"c-2"}}, "the newer record survives"  # noqa: SLF001
@@ -1583,7 +1585,7 @@ class TestDisposeScope:
         listed = [_NAME]
         overrides = {("ps",): _DockerResult(0, "".join(f"{n}\n" for n in listed).encode(), "")}
         backend, fake = _backend_with(_machine(overrides=overrides))
-        count = asyncio.run(backend.dispose_scope("scope-a", "thread-1"))
+        count = asyncio.run(backend.dispose_scope("scope-a", "thread-1")).disposed
         assert count == 1
         ps = fake.matching("ps", "-a")[0]
         assert any("label=maf-sandbox.scope=scope-a" in a for a in ps.args)
@@ -1591,12 +1593,26 @@ class TestDisposeScope:
 
     def test_nothing_to_purge_is_zero_not_an_error(self):
         backend, _ = _backend_with(_machine())
-        assert asyncio.run(backend.dispose_scope("s", "t")) == 0
+        assert asyncio.run(backend.dispose_scope("s", "t")).disposed == 0
 
     def test_a_failing_listing_degrades_to_zero(self):
         overrides = {("ps",): _DockerResult(1, b"", "daemon down")}
         backend, _ = _backend_with(_machine(overrides=overrides))
-        assert asyncio.run(backend.dispose_scope("s", "t")) == 0
+        assert asyncio.run(backend.dispose_scope("s", "t")).disposed == 0
+
+    def test_a_failing_listing_says_the_sweep_may_be_partial(self):
+        """ "found none" and "could not look" are one empty list, and only one of them means
+        the purge covered the containers another replica created."""
+        overrides = {("ps",): _DockerResult(1, b"", "daemon down")}
+        backend, _ = _backend_with(_machine(overrides=overrides))
+        purge = asyncio.run(backend.dispose_scope("s", "t"))
+        assert purge.undisposed is not None
+        assert purge.undisposed.code == "unlisted"
+        assert "partial" in purge.undisposed.detail
+
+    def test_a_listing_that_worked_says_nothing(self):
+        backend, _ = _backend_with(_machine())
+        assert asyncio.run(backend.dispose_scope("s", "t")).undisposed is None
 
 
 # ---------------------------------------------------------------------------
