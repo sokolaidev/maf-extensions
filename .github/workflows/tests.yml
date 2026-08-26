@@ -254,8 +254,28 @@ jobs:
 
       # `--find-links dist/` resolves intra-family deps against the wheels just built, not
       # PyPI — deliberately opposite of publish-packages.yml's copy of this gate.
+      # The core this checkout built, named once. A dependent floored on the release this
+      # branch cuts resolves against neither the index nor `dist/`, where the core still
+      # carries its pre-bump version, so the steps below are handed it directly. The loop
+      # bodies may not name a package (#450), which is why this is its own step.
+      - name: Pin the core this checkout built
+        if: needs.changes.outputs.code == 'true'
+        run: |
+          set -euo pipefail
+          wheel="$(ls dist/maf_sandbox-*.whl)"
+          override="$RUNNER_TEMP/core-override.txt"
+          echo "maf-sandbox @ file://$(readlink -f "$wheel")" > "$override"
+          echo "CORE_WHEEL=$wheel" >> "$GITHUB_ENV"
+          echo "CORE_OVERRIDE=$override" >> "$GITHUB_ENV"
+
       - name: Install + use each wheel in a clean environment
         if: needs.changes.outputs.code == 'true'
+        # The core is overridden to the one this checkout built. A dependent whose floor waits
+        # on the release this branch cuts cannot resolve against the index or against `dist/`,
+        # where the core still carries its pre-bump version — and what this step asks is
+        # whether the wheel installs and works, not whether that number exists yet. Pairing
+        # against a *published* core is the published-cores gate's question, and the upload is
+        # checked without any of this.
         run: |
           set -euo pipefail
           for package_dir in packages/*/; do
@@ -263,7 +283,8 @@ jobs:
             module="${package//-/_}"
             venv="/tmp/smoke-${package}"
             uv venv "$venv"
-            uv pip install --python "$venv/bin/python" --find-links dist/ dist/${module}-*.whl
+            uv pip install --python "$venv/bin/python" --find-links dist/ \
+              --overrides "$CORE_OVERRIDE" dist/${module}-*.whl
             "$venv/bin/python" scripts/smoke_install.py "$package"
           done
 
@@ -274,7 +295,7 @@ jobs:
         if: needs.changes.outputs.code == 'true'
         run: |
           set -euo pipefail
-          python3 scripts/check_suite_installs_together.py --whole-set
+          python3 scripts/check_suite_installs_together.py --whole-set --local-core
 
       # The gate publish-packages.yml runs before an upload, brought forward to the pull
       # request. It reads each range off the wheel `dist/` already holds and runs that
@@ -289,34 +310,16 @@ jobs:
       # the last word before a merge that publishes.
       - name: Each dependent against the published cores it admits
         if: needs.changes.outputs.code == 'true'
-        # `--unreleased-core` on a pull request only: it lets a range wait on a core this
-        # branch carries or would cut, which is what a change spanning core and dependent
-        # needs. publish-packages.yml passes no flag, where the core is already up.
-        #
-        # `PR_TITLE` is attacker-controlled, so it is read from the environment rather than
-        # interpolated into this script — the rule pr-title.yml follows.
-        env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        # `--local-core` is the fallback when nothing published satisfies a dependent's range:
+        # the suite runs against the core this checkout built instead of refusing. Only here.
+        # publish-packages.yml passes no flag, so an upload still needs a published core.
         run: |
           set -euo pipefail
-          changed=""
-          if [ -n "${PR_TITLE:-}" ]; then
-            # Three dots: from the merge base, so a base that has moved on does not hand this
-            # another pull request's changes as this one's.
-            changed="$(git diff --name-only "$BASE_SHA...HEAD")"
-          fi
           for package_dir in packages/*/; do
             package="$(basename "$package_dir")"
             if [ "$package" != "maf-sandbox" ]; then
-              if [ -n "${PR_TITLE:-}" ]; then
-                printf '%s\n' "$changed" |
-                  python3 scripts/check_dependent_works_with_published_cores.py \
-                    "$package" dist/"${package//-/_}"-*.whl --unreleased-core "$PR_TITLE"
-              else
-                python3 scripts/check_dependent_works_with_published_cores.py \
-                  "$package" dist/"${package//-/_}"-*.whl
-              fi
+              python3 scripts/check_dependent_works_with_published_cores.py \
+                "$package" dist/"${package//-/_}"-*.whl --local-core "$CORE_WHEEL"
             fi
           done
 

@@ -8,7 +8,6 @@ the wheel declares, which published cores that admits, and which sibling wheels 
 from __future__ import annotations
 
 import importlib.util
-import io
 import sys
 import zipfile
 from pathlib import Path
@@ -161,154 +160,78 @@ class TestTheCli:
         assert "uninstallable as declared" in capsys.readouterr().err
 
 
-_CORE_PATH = "packages/maf-sandbox/src/maf_sandbox/_protocol.py"
-_BACKEND_PATH = "packages/maf-sandbox-bicep/src/maf_sandbox_bicep/_kind.py"
+class TestTheCoreThisCheckoutBuilt:
+    """`--local-core` — the fallback when nothing published satisfies the range.
 
-
-class TestTheReleaseTheRangeIsWaitingOn:
-    """`pending_core_release` — the branch reading behind `--unreleased-core`."""
+    A change that uses a new core symbol from a dependent has to floor it on a release that
+    does not exist yet, so the index can offer nothing to test against. The artifact this
+    checkout built can, and the claim it settles — this code beside its own core — is the one
+    a pull request is in a position to settle at all.
+    """
 
     @staticmethod
-    def _branch(monkeypatch: pytest.MonkeyPatch, carries: str, published: list[str]) -> None:
-        monkeypatch.setattr(check, "core_version", lambda _: check.version(carries))
-        monkeypatch.setattr(check, "fetch_published_versions", lambda _: list(published))
-
-    def test_the_release_this_pull_request_would_cut_counts(self, monkeypatch):
-        """`bump-minor-pre-major`, so below 1.0.0 a `feat!` is a minor like any feature."""
-        self._branch(monkeypatch, "0.25.0", ["0.25.0"])
-        assert (
-            check.pending_core_release(
-                "feat!: a scope purge", [_CORE_PATH, _BACKEND_PATH], (0, 26, 0), (0, 28)
-            )
-            == "0.26.0"
-        )
-
-    def test_a_bump_already_merged_counts_without_a_prediction(self, monkeypatch):
-        """Release-please merges the bump before the tag publishes, so a rebased branch carries
-        a version the index has not seen. That is a fact, not a guess — and it does not need
-        this pull request to touch the core."""
-        self._branch(monkeypatch, "0.26.0", ["0.25.0"])
-        assert (
-            check.pending_core_release("fix: unrelated", [_BACKEND_PATH], (0, 26, 0), (0, 27))
-            == "0.26.0"
-        )
-
-    def test_what_the_branch_carries_is_preferred_to_what_it_would_cut(self, monkeypatch):
-        """A ceiling of `<0.27` admits the pending 0.26.0 and not the 0.27.0 a further `feat!`
-        would cut, so reading the prediction first would refuse a range that is about to hold."""
-        self._branch(monkeypatch, "0.26.0", ["0.25.0"])
-        assert (
-            check.pending_core_release("feat!: more", [_CORE_PATH], (0, 26, 0), (0, 27)) == "0.26.0"
-        )
-
-    def test_a_carried_version_the_index_already_has_is_not_pending(self, monkeypatch):
-        """In range *and* published, which is a yanked release reaching here: nothing is pending
-        on it, so this falls through to what the pull request would cut instead."""
-        self._branch(monkeypatch, "0.25.0", ["0.25.0"])
-        assert check.pending_core_release("feat!: x", [_CORE_PATH], (0, 25, 0), (0, 27)) == "0.26.0"
-
-    def test_a_change_that_does_not_touch_the_core_cuts_no_core_release(self, monkeypatch):
-        """Or a dependent-only pull request could floor itself past every artifact."""
-        self._branch(monkeypatch, "0.25.0", ["0.25.0"])
-        assert (
-            check.pending_core_release("feat!: backend only", [_BACKEND_PATH], (0, 26, 0), (0, 28))
-            is None
-        )
-
-    def test_a_core_test_edit_attributes_to_nothing(self, monkeypatch):
-        """`packages/<name>/tests` is `exclude-paths` in release-please-config.json, so a core
-        test edit cuts no core release — and a dependent floored on one it invented would ship
-        uninstallable. `touches_core` alone counts it, which is safe where it only warns."""
-        self._branch(monkeypatch, "0.25.0", ["0.25.0"])
-        assert (
-            check.pending_core_release(
-                "feat: a dependent feature that also adjusts a core test",
-                ["packages/maf-sandbox/tests/test_sandbox_router.py", _BACKEND_PATH],
-                (0, 26, 0),
-                (0, 28),
-            )
-            is None
-        )
-
-    def test_a_core_source_change_still_counts_beside_a_core_test_edit(self, monkeypatch):
-        self._branch(monkeypatch, "0.25.0", ["0.25.0"])
-        assert (
-            check.pending_core_release(
-                "feat: x",
-                [_CORE_PATH, "packages/maf-sandbox/tests/test_sandbox_router.py"],
-                (0, 26, 0),
-                (0, 28),
-            )
-            == "0.26.0"
-        )
-
-    def test_a_title_that_releases_nothing_justifies_nothing(self, monkeypatch):
-        self._branch(monkeypatch, "0.25.0", ["0.25.0"])
-        assert check.pending_core_release("chore: tidy", [_CORE_PATH], (0, 26, 0), (0, 28)) is None
-
-    def test_a_floor_above_the_release_is_still_uninstallable(self, monkeypatch):
-        self._branch(monkeypatch, "0.25.0", ["0.25.0"])
-        assert check.pending_core_release("feat!: x", [_CORE_PATH], (0, 27, 0), (0, 28)) is None
-
-    def test_a_release_above_the_ceiling_is_refused_too(self, monkeypatch):
-        self._branch(monkeypatch, "0.25.0", ["0.25.0"])
-        assert check.pending_core_release("feat!: x", [_CORE_PATH], (0, 26, 0), (0, 26)) is None
-
-    def test_a_patch_release_counts_when_the_floor_waits_on_it(self, monkeypatch):
-        self._branch(monkeypatch, "0.25.0", ["0.25.0"])
-        assert (
-            check.pending_core_release("fix: a code", [_CORE_PATH], (0, 25, 1), (0, 27)) == "0.25.1"
-        )
-
-
-class TestTheCliReadsTheBranchOnlyWhenAsked:
-    @staticmethod
-    def _wheel_and_index(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, requirement: str) -> Path:
+    def _wheel_and_index(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, requirement: str):
         wheel = _wheel(tmp_path, "maf_sandbox_bicep-0.9.3-py3-none-any.whl", [requirement])
         monkeypatch.setattr(check, "fetch_published_versions", lambda _: ["0.25.0"])
         monkeypatch.setattr(check, "fetch_requires_dist_for_version", lambda *_: [])
-        monkeypatch.setattr(check, "core_version", lambda _: (0, 25, 0))
-        return wheel
+        core = tmp_path / "maf_sandbox-0.25.0-py3-none-any.whl"
+        core.write_bytes(b"")
+        return wheel, core
 
-    def test_the_flag_accepts_a_range_only_this_branch_will_satisfy(
+    def test_the_suite_runs_against_it_when_nothing_published_is_admitted(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ):
-        """The shape #681 needs: a floor on the release this merge would cut."""
-        wheel = self._wheel_and_index(tmp_path, monkeypatch, "maf-sandbox>=0.26.0,<0.28")
-        monkeypatch.setattr("sys.stdin", io.StringIO(f"{_CORE_PATH}\n{_BACKEND_PATH}\n"))
-        code = check.main(
-            [
-                "prog",
-                "maf-sandbox-bicep",
-                str(wheel),
-                "--unreleased-core",
-                "feat!: a scope purge reports what it could not delete",
-            ]
+        wheel, core = self._wheel_and_index(tmp_path, monkeypatch, "maf-sandbox>=0.26.0,<0.28")
+        seen: list[object] = []
+        monkeypatch.setattr(
+            check, "run_suite", lambda w, c, t: (seen.append(c), (True, "12 passed"))[1]
         )
+        code = check.main(["prog", "maf-sandbox-bicep", str(wheel), "--local-core", str(core)])
         assert code == 0
-        assert "waiting on maf-sandbox 0.26.0" in capsys.readouterr().out
+        assert seen == [core], "the wheel this checkout built, not a version to resolve"
+        out = capsys.readouterr().out
+        assert "maf_sandbox-0.25.0-py3-none-any.whl" in out
+        assert "12 passed" in out
+
+    def test_a_suite_that_fails_against_it_is_still_a_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ):
+        """The fallback changes which core is tested, not whether the result counts."""
+        wheel, core = self._wheel_and_index(tmp_path, monkeypatch, "maf-sandbox>=0.26.0,<0.28")
+        monkeypatch.setattr(check, "run_suite", lambda *_: (False, "1 failed"))
+        code = check.main(["prog", "maf-sandbox-bicep", str(wheel), "--local-core", str(core)])
+        assert code == 1
+        assert "FAIL" in capsys.readouterr().out
 
     def test_without_the_flag_the_same_range_is_refused(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ):
-        """What `publish-packages.yml` calls, where the core is already up."""
-        wheel = self._wheel_and_index(tmp_path, monkeypatch, "maf-sandbox>=0.26.0,<0.28")
+        """What `publish-packages.yml` calls: an upload needs a published core."""
+        wheel, _ = self._wheel_and_index(tmp_path, monkeypatch, "maf-sandbox>=0.26.0,<0.28")
         assert check.main(["prog", "maf-sandbox-bicep", str(wheel)]) == 1
         assert "uninstallable as declared" in capsys.readouterr().err
 
-    def test_the_flag_does_not_rescue_a_floor_the_release_will_not_reach(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    def test_the_fallback_is_not_reached_while_a_published_core_is_admitted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):
-        wheel = self._wheel_and_index(tmp_path, monkeypatch, "maf-sandbox>=9.0.0,<9.1")
-        monkeypatch.setattr("sys.stdin", io.StringIO(f"{_CORE_PATH}\n"))
-        code = check.main(
-            ["prog", "maf-sandbox-bicep", str(wheel), "--unreleased-core", "feat!: a change"]
-        )
-        assert code == 1
-        assert "uninstallable as declared" in capsys.readouterr().err
+        """The flag adds a fallback, it does not replace the index."""
+        wheel, core = self._wheel_and_index(tmp_path, monkeypatch, "maf-sandbox>=0.25.0,<0.28")
+        seen: list[object] = []
+        monkeypatch.setattr(check, "run_suite", lambda w, c, t: (seen.append(c), (True, "ok"))[1])
+        assert check.main(["prog", "maf-sandbox-bicep", str(wheel), "--local-core", str(core)]) == 0
+        assert seen == ["0.25.0"], "resolved from the index, not the local wheel"
 
-    def test_a_missing_title_after_the_flag_is_a_usage_error(
+    def test_a_core_wheel_that_is_not_there_is_a_usage_error(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ):
+        code = check.main(
+            ["prog", "maf-sandbox-bicep", "w.whl", "--local-core", str(tmp_path / "absent.whl")]
+        )
+        assert code == 2
+        assert "no core wheel at" in capsys.readouterr().err
+
+    def test_a_missing_path_after_the_flag_is_a_usage_error(
         self, capsys: pytest.CaptureFixture[str]
     ):
-        assert check.main(["prog", "maf-sandbox-bicep", "w.whl", "--unreleased-core"]) == 2
-        assert "--unreleased-core <title>" in capsys.readouterr().err
+        assert check.main(["prog", "maf-sandbox-bicep", "w.whl", "--local-core"]) == 2
+        assert "--local-core <wheel>" in capsys.readouterr().err

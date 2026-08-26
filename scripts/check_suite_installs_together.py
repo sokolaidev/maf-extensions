@@ -1,6 +1,11 @@
 """Prove the suite still forms a set somebody can install, and say which set that is.
 
-    python scripts/check_suite_installs_together.py [--dist-dir dist] [--whole-set]
+    python scripts/check_suite_installs_together.py [--dist-dir dist] [--whole-set] [--local-core]
+
+``--local-core`` forces the core to the wheel in ``--dist-dir`` rather than letting the range
+decide. A dependent whose floor waits on the release this branch cuts cannot resolve otherwise,
+and the question here is whether the *set* combines, not whether a version number exists yet.
+It is passed on a pull request and never before an upload.
 
 The dependents are installed together, not one at a time: `samples/03` takes
 `maf-sandbox-acas` and `maf-sandbox-codeact` beside the core, `samples/11` takes
@@ -79,7 +84,12 @@ def wheels_in(dist_dir: Path) -> dict[str, Path]:
     return {name: paths[0] for name, paths in found.items()}
 
 
-def install(requirements: list[str]) -> tuple[bool, dict[str, str], str]:
+def local_core(wheels: dict[str, Path]) -> Path | None:
+    """The core wheel among ``wheels``, when one was built."""
+    return wheels.get(_CORE)
+
+
+def install(requirements: list[str], core: Path | None = None) -> tuple[bool, dict[str, str], str]:
     """Install ``requirements`` into a throwaway environment; return what landed in it."""
     with tempfile.TemporaryDirectory() as directory:
         environment = Path(directory) / "venv"
@@ -89,8 +99,17 @@ def install(requirements: list[str]) -> tuple[bool, dict[str, str], str]:
         if created.returncode != 0:
             return False, {}, created.stderr.strip()
         python = _python_in(environment)
+        pinned: list[str] = []
+        if core is not None:
+            # The core in `dist/` still carries its pre-bump version, so a dependent floored on
+            # the release this branch cuts cannot resolve against it. Forced rather than
+            # resolved: the question is whether the set combines, not whether that number is
+            # on the index yet.
+            override = Path(directory) / "override.txt"
+            override.write_text(f"{_CORE} @ {core.as_uri()}\n", encoding="utf-8")
+            pinned = ["--overrides", str(override)]
         installed = subprocess.run(
-            ["uv", "pip", "install", "--python", str(python), *requirements],
+            ["uv", "pip", "install", "--python", str(python), *pinned, *requirements],
             capture_output=True,
             text=True,
             check=False,
@@ -202,6 +221,7 @@ def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dist-dir", type=Path, default=_ROOT / "dist")
     parser.add_argument("--whole-set", action="store_true")
+    parser.add_argument("--local-core", action="store_true")
     parsed = parser.parse_args(argv[1:])
 
     wheels = wheels_in(parsed.dist_dir)
@@ -211,7 +231,10 @@ def main(argv: list[str]) -> int:
     newest = latest_published()
 
     if parsed.whole_set:
-        passed, resolved, error = install([str(path) for path in wheels.values()])
+        passed, resolved, error = install(
+            [str(path) for path in wheels.values()],
+            local_core(wheels) if parsed.local_core else None,
+        )
         print(f"{'ok  ' if passed else 'FAIL'} whole set: {len(wheels)} wheel(s) together")
         print(
             "\n".join(report(resolved, newest)) if passed else error,
