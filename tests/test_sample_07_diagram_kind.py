@@ -4,22 +4,19 @@ The sample is a worked example of writing a kind, so the parts a reader would co
 pinning. `test_sample_modules_import.py` proves the module imports; this suite drives the tool
 it builds, against the in-process backend, with no container and no model.
 
-Four claims, each of which the sample makes in prose and none of which its live run can show:
+Three claims, each of which the sample makes in prose and none of which its live run can show:
 
 * the DOT source and the PNG are written **inside the call's own directory**, so two calls in
   one assistant message share no path — which is why the kind needs no lock;
-* the **guest** makes that directory, before anything is written into it. `write_file` would
-  create it as root while commands run as the image's `USER`, and a removal needs write
-  permission on the directory it is emptying — so a host-created one can never be reclaimed on
-  a hardened image (#680);
 * the framework removes it when the body returns, so nothing the call wrote is readable by the
   next one — the sample's live check reads the same fact out of the guest, but only for a run
   that reclaimed successfully;
 * the artifact lands as `diagram.png` however the guest spelled it, because the call-time
   declaration carries `name`.
 
-The failure the live run cannot reach is staged here instead: a guest that cannot make the
-directory. The sample's own image is root-owned, so nothing in a healthy run goes near it.
+The reclaim is read here off the fake's own store, which is the only place this suite can see
+it: the live run reads the landed PNG and the disposal, and nothing about what the sandbox
+still holds.
 
 Async tests follow the repo convention: a synchronous `def test_*` driving one `asyncio.run`
 rather than an async marker (no pytest-asyncio).
@@ -28,7 +25,6 @@ rather than an async marker (no pytest-asyncio).
 from __future__ import annotations
 
 import asyncio
-import shlex
 import struct
 import sys
 import zlib
@@ -39,7 +35,6 @@ import pytest
 from maf_sandbox import (
     DEFAULT_CAPABILITIES,
     Capability,
-    ExecResult,
     Isolation,
     SandboxRouter,
     make_file_system_sink,
@@ -49,6 +44,8 @@ from maf_sandbox.testing import InProcessSandbox, InProcessSandboxBackend
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+    from maf_sandbox import ExecResult
 
 _SAMPLE = Path(__file__).resolve().parent.parent / "samples" / "07_docker_diagram"
 sys.path.insert(0, str(_SAMPLE))
@@ -91,25 +88,6 @@ class _Renderer(InProcessSandbox):
             argv = list(command)
             self.contents[argv[argv.index("-o") + 1]] = _png(24, 16)
         return result
-
-
-class _NoMkdir(_Renderer):
-    """A guest that cannot create a directory under its working directory.
-
-    What a hardened image does to a kind: `docker cp` writes as root, commands run as the
-    image's ``USER``, and the workload cannot make a directory it would later be asked to
-    remove (#680). The kind's own ``mkdir`` is where that is found out.
-    """
-
-    async def exec(
-        self, command: str | Sequence[str], *, working_directory: str, timeout: float
-    ) -> ExecResult:
-        if not isinstance(command, str) and list(command[:1]) == ["mkdir"]:
-            self.commands.append((shlex.join(command), working_directory, timeout))
-            return ExecResult(
-                stdout="", stderr="mkdir: cannot create directory: Permission denied", exit_code=1
-            )
-        return await super().exec(command, working_directory=working_directory, timeout=timeout)
 
 
 def _fn(tool):
@@ -198,51 +176,6 @@ class TestTheCallWritesInsideItsOwnDirectory:
         assert first != second
         assert not first.startswith(f"{second}/")
         assert not second.startswith(f"{first}/")
-
-
-class TestTheGuestMakesTheDirectoryBeforeAnythingIsWrittenIntoIt:
-    """The load-bearing line, and the reason it is not left to `write_file`.
-
-    `write_file` creates what it creates as root while commands run as the image's `USER`, and
-    a removal needs write permission on the directory it is emptying — so a call directory the
-    host created can never be reclaimed on a hardened image (#680).
-    """
-
-    def test_the_guest_is_asked_to_make_it(self, out_dir: Path):
-        sandbox = _Renderer()
-        _render(sandbox, out_dir)
-
-        call_directory, _, _ = sandbox.reclaims[0]
-        made = [command for command, _, _ in sandbox.commands if command.startswith("mkdir ")]
-        assert made == [f"mkdir -p {call_directory}"]
-
-    def test_it_runs_from_a_directory_that_exists(self, out_dir: Path):
-        """`work_dir` may not be there yet (#466), and a missing working directory fails the
-        command before it starts — which is why the backend's own reclaim runs from `/` too."""
-        sandbox = _Renderer()
-        _render(sandbox, out_dir)
-
-        where = [cwd for command, cwd, _ in sandbox.commands if command.startswith("mkdir ")]
-        assert where == ["/"]
-
-    def test_a_guest_that_cannot_make_it_is_refused_before_any_work(self, out_dir: Path):
-        """The one place a workload can refuse over this. The reclaim runs after the body has
-        returned, so by the time a removal is known to have failed the answer is already gone."""
-        sandbox = _NoMkdir()
-        reply = _render(sandbox, out_dir)
-
-        assert "does not let the workload create" in reply
-        assert sandbox.contents == {}, "the refusal must come before anything is written"
-        assert not any(command.startswith("dot ") for command, _, _ in sandbox.commands)
-        assert not out_dir.exists() or list(out_dir.iterdir()) == []
-
-    def test_a_refused_call_leaves_nothing_for_the_framework_to_reclaim(self, out_dir: Path):
-        """Refusing early is also what makes the failure harmless: nothing was written, so the
-        directory the framework would have removed does not exist."""
-        sandbox = _NoMkdir()
-        _render(sandbox, out_dir)
-
-        assert [path for path in sandbox.contents if path.startswith(f"{_WORK_DIR}/")] == []
 
 
 class TestNothingSurvivesTheCall:

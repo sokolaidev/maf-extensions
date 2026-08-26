@@ -52,11 +52,9 @@ _RENDERER = "dot"
 _OUTPUT_FORMAT = "png"
 _FORMAT_FLAG = f"-T{_OUTPUT_FORMAT}"
 _OUTPUT_FLAG = "-o"
-#: One name each, and both live inside the call's own directory rather than at a fixed place
-#: under `work_dir`. The sandbox is reused across calls, so a fixed path belongs to every call
-#: in the conversation at once: two renders in one assistant message overwrite each other's
-#: source mid-render, and each of them leaves its DOT and its PNG behind for every later call
-#: to read. `guest_call_path()` is the answer to both — see `_render_diagram_tool`.
+#: One name each, both inside the call's own directory. A fixed path under `work_dir` is
+#: shared by every call in the conversation, which costs a collision and a leak — see the
+#: README.
 _SOURCE_FILENAME = "diagram.dot"
 _OUTPUT_FILENAME = f"diagram.{_OUTPUT_FORMAT}"
 _OUTPUT_MEDIA_TYPE = "image/png"
@@ -80,13 +78,9 @@ def diagram_sandbox_spec(image: str | None = None) -> SandboxSpec:
     given and writes an image, and reaches nothing.
 
     ``outputs_named_at_call_time`` because the image is produced inside the call's own
-    directory, whose name is allocated per call, so its path cannot be written down here.  What
-    *is* written down here is that this workload lands something at all, and that is what keeps
-    the attach-time checks honest: ``sandboxed_tool`` still refuses to attach without a sink,
-    and still refuses a spec that declares an output without requiring ``FILES_OUT``.  The
-    declaration itself is built in the tool body — ``required=False``, because a ``dot`` that
-    rejects malformed source produces no file, and that absence is a diagnostic the model
-    should fix rather than a transfer error.
+    directory, whose name is allocated per call.  It still declares that this workload lands
+    *something*, which is what keeps the attach-time refusals — no sink, or no ``FILES_OUT`` in
+    ``requires`` — doing their job.  The declaration itself is built in the tool body.
     """
     return SandboxSpec(
         kind=DIAGRAM_KIND,
@@ -153,13 +147,9 @@ def _render_diagram_tool(
     re-indent every line of what the model reads.
     """
 
-    # Nothing to serialise, and that is a consequence of where the files go rather than luck.
-    # The function calls in one assistant message run concurrently, so two `render_diagram`
-    # calls can drive the same sandbox at once — `maf_sandbox._protocol.Sandbox.acquire`
-    # documents this. At a fixed path under `work_dir` both calls would write one `diagram.dot`
-    # and read one `diagram.png`, so one could collect the other's image, and the only defence
-    # is a lock that makes the second render wait for the first. Under `guest_call_path()` they
-    # share no path, so both renders run at once and neither can see the other's files.
+    # No lock, and that is where the files go rather than luck: the calls in one assistant
+    # message run concurrently (`Sandbox.acquire` documents it), and under `guest_call_path()`
+    # two renders share no path to collide on.
 
     async def render_diagram(dot: str) -> str:
         """Render a Graphviz diagram from DOT source and save it as a PNG image.
@@ -193,42 +183,14 @@ def _render_diagram_tool(
         if isinstance(sandbox, str):
             return sandbox
 
-        # This call's own directory inside the sandbox. Asking for it is what puts it on the
-        # framework's list: a body that never asks has nothing reclaimed, and one that does has
-        # this path — and everything under it — removed when the body returns, after a result, a
-        # refusal and an exception alike. Nothing here has to remember that.
+        # This call's own directory. Asking for it is what puts it on the framework's list:
+        # the path, and everything under it, is removed when the body returns.
         call_directory = session.guest_call_path()
         # What `collect_outputs` resolves is relative to `work_dir`, and the call directory sits
         # directly under it, so its last component is the whole of the prefix.
         run_id = call_directory.rsplit("/", 1)[-1]
         source_path = f"{call_directory}/{_SOURCE_FILENAME}"
         output_path = f"{call_directory}/{_OUTPUT_FILENAME}"
-
-        # Made by the *guest*, before anything is written into it, and this is the load-bearing
-        # line of the whole file. `write_file` would create it too — but it creates what it
-        # creates as `root`, while commands run as whatever the image's `USER` says, and a
-        # removal needs write permission on the directory it is emptying. So on an image
-        # hardened the way every guide asks, a call directory made by `write_file` can never be
-        # reclaimed, and every call's source and image stay readable by the next one (#680).
-        # One `mkdir` from the guest settles it: where the image allows it, the directory
-        # belongs to the user that will remove it; where it does not, this fails and the tool
-        # refuses below, before it has written anything or produced any result.
-        #
-        # Run from `/`, not from `work_dir`: nothing guarantees `work_dir` exists yet (#466),
-        # and a command whose working directory is missing fails before it starts.
-        made = await sandbox.exec(
-            ["mkdir", "-p", call_directory], working_directory="/", timeout=timeout
-        )
-        if made.exit_code != 0:
-            logger.warning(
-                "render_diagram: the guest could not make the call directory: %s",
-                (made.stderr or "").strip(),
-            )
-            return (
-                "Error: this sandbox image does not let the workload create a directory under "
-                "its working directory, so nothing it wrote could be cleaned up afterwards. "
-                "Nothing was run."
-            )
 
         try:
             await sandbox.write_file(source_path, dot, working_directory=session.spec.work_dir)
@@ -268,10 +230,8 @@ def _render_diagram_tool(
                 sandbox,
                 session.spec,
                 sink=sink,
-                # Declared here rather than in the spec because the path carries this call's
-                # run id, which did not exist when the tool was built. `name` is what keeps the
-                # run id out of host storage: the artifact lands as `diagram.png` however many
-                # calls precede it, so nothing downstream has to know the guest's layout.
+                # Declared here because the path carries this call's run id. `name` keeps
+                # that id out of host storage and out of what the model is shown.
                 outputs=(
                     DeclaredOutput(
                         path=f"{run_id}/{_OUTPUT_FILENAME}",

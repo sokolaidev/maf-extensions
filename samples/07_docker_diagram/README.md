@@ -32,29 +32,17 @@ Write at a fixed path under `work_dir` and both halves of that reuse work agains
 
 - **No lock.** Two renders share no path, so they cannot collide, and the kind needs nothing to make that true. An earlier version of this sample held an `asyncio.Lock` around `write → exec → collect`; the lock was the price of the fixed path, and it is gone with it.
 - **Nothing to clean up.** The kind calls no removal of its own. `Sandbox.remove` is a capability (`FILES_DELETE`) that only some backends serve; the reclaim of a call's own directory is not — every backend does it, and a kind that writes here gets it for free.
-- **The guest makes the directory, not `write_file`.** One `mkdir` before the first write, and it is the load-bearing line in the file. See below.
 - **The landed name stays `diagram.png`.** The guest path carries a run id; host storage should not. `DeclaredOutput(path=f"{run_id}/diagram.png", name="diagram.png")` is what splits the two — `path` is where to read it in the guest, `name` is what it lands as, and without the second the run id ends up in `out/` and in the sentence the model is shown.
 
 The price is that the spec no longer names the file at attach time. `outputs_named_at_call_time=True` says *this kind lands something* without saying what, which is weaker as documentation and exactly as strong as a check: `sandboxed_tool` still refuses to attach without an `OutputSink`, and still refuses a spec that lands anything without requiring `FILES_OUT`. Nothing moved out of the attach gate — only the filename did.
 
-### Who creates the directory decides whether it can ever be removed
+### One thing this kind does not do, and cannot
 
-`write_file` would create the call directory on its way to writing the source into it, and that is the version of this kind you should not copy. On `maf-sandbox-docker`, `write_file` is `docker cp`, which creates what it creates as **root**; commands run as whatever the image's `USER` declares; and a removal needs write permission on the directory it is emptying, not on the files in it. So on an image hardened the way every container guide asks — a non-root `USER`, which you should want — a call directory made by `write_file` **can never be reclaimed**. Measured: `rm: cannot remove '…/note': Permission denied`, on every call, for the life of the conversation ([#680](https://github.com/sokolaidev/maf-extensions/issues/680)).
+A call directory that `write_file` created cannot be reclaimed on a guest image with a non-root `USER`. `write_file` is `docker cp` on this backend, which creates what it creates as **root**; commands run as whatever the image declares; and a removal needs write permission on the directory it is emptying rather than on the files in it. Measured, on an image whose only unusual line is `USER app`: `rm: cannot remove '…/note': Permission denied`, on every call, for the life of the conversation. The framework then disposes the sandbox after each failed reclaim, so the next call starts cold as well.
 
-One `mkdir` from the guest, before the first write, settles it in both directions:
+**That is a backend defect and it is tracked as one** ([#680](https://github.com/sokolaidev/maf-extensions/issues/680)). A kind can work around it — one `mkdir` from the guest before the first write, and the directory belongs to the user that will remove it — and this sample deliberately does not, because the workaround puts an OS command and a POSIX assumption inside a kind. [#585](https://github.com/sokolaidev/maf-extensions/issues/585) is the standing argument for taking those *out* of the layers above the backend, not adding more; `SandboxSpec.requires_os_family` exists because the guest's OS is a declared axis rather than something a workload may assume. Every image this repository ships runs as root, so nothing here is broken today — and when #680 is settled, the fix belongs in one backend rather than in every kind that writes a file.
 
-- where the image lets the workload create the directory, it belongs to the user that will later remove it — and a root-owned *file* inside a guest-owned *directory* removes fine, which is the asymmetry that makes this work at all;
-- where it does not, the `mkdir` fails and **the tool refuses there**, having written nothing and produced no result. That is the only place a workload can refuse over this: the reclaim runs after the body has returned, so by the time anything knows the removal failed, the answer has already gone to the model.
-
-It runs from `/` rather than from `work_dir`, because nothing guarantees `work_dir` exists yet ([#466](https://github.com/sokolaidev/maf-extensions/issues/466)) and a command whose working directory is missing fails before it starts. The backend's own `reclaim` runs from `/` for the same reason.
-
-**The sample reads that back rather than asserting it.** After the turn and before the disposal, `agent.py` reacquires the same sandbox and lists `work_dir` over `exec` — the docker backend serves no `FILES_LIST`, and this is host-side instrumentation rather than something the kind does. A healthy run prints `nothing`, which is the only interesting listing there is. It asks only once an image has landed, because `acquire` is get-or-create: probing a turn that called no tool would *create* the sandbox whose absence the disposal line is evidence of.
-
-**And it wires no `on_reclaim_failure`, on purpose.** `sandboxed_tool` takes a host callback for a removal that did not happen, and this sample does not pass one, because after the `mkdir` above there is nothing here for it to report. If the guest can make the directory, the removal works. If it cannot, the tool refuses before writing anything — and the framework then reclaims a path that was never created, which is `rm -rf` on a missing directory and succeeds. What is left are accidents below the workload: a container that died mid-call, a control-plane call that timed out, a backend older than `Sandbox.reclaim`.
-
-That is worth being plain about, because the callback is easy to mistake for a control point. **It cannot stop anything.** Measured, on a hardened image with a kind that skips the `mkdir`: the call returns `wrote /maf-sandbox/work/…/note` to the model, the handler fires *afterwards*, and a handler that raises changes nothing — the framework logs it and the result still goes back. That is deliberate, since the reclaim runs in a `finally` where raising would replace the call's own answer with a message about cleanup. A host gets the fact, in time to count it and alert on it; the veto belongs to the `mkdir`, before the work. What a deployment does with the fact — a counter, a page when `ReclaimFailure.disposal` is `"failed"` and the router is refusing the conversation — is three lines of operations code and no part of a kind, which is why none of it is here. `packages/maf-sandbox/README.md` is where that surface is described.
-
-The other thing a misassembled image costs is easy to miss and shows up as a bill: the framework disposes the sandbox after every failed reclaim, so **the next call starts cold, every time**. Measured on the same image — `docker ps -a` reports 0 containers after each call, against 1 for a correctly assembled one.
+**And it wires no `on_reclaim_failure`.** `sandboxed_tool` takes a host callback for a removal that did not happen, and this sample passes none. The callback is a notification and not a control point: the body has returned by the time it runs, so the answer has already gone to the model, and a handler that raises is logged and contained. Measured, on that same hardened image: the call returned `wrote /maf-sandbox/work/…/note`, the handler fired afterwards, and raising from it changed nothing. What a deployment does with the fact — count it, page when `ReclaimFailure.disposal` is `"failed"` and the router is refusing the conversation until a disposal lands — is operations code, and `packages/maf-sandbox/README.md` is where that surface is described.
 
 ## The boundary is weaker, and the refusal is the feature
 
@@ -97,13 +85,11 @@ With `DIAGRAM_SANDBOX_IMAGE` or either required model variable unset, the progra
 
 ## Run
 
-The first call pays for creating and starting the container — a few seconds, against the minutes a microVM-isolated sandbox needs. `agent.py` prints the model's reply and its own three tagged lines — what it resolved, what was left in the sandbox, and what it disposed — and never `render_diagram`'s own result, so what you see looks something like this:
+The first call pays for creating and starting the container — a few seconds, against the minutes a microVM-isolated sandbox needs. `agent.py` prints the model's reply and its own two tagged lines — what it resolved, and what it disposed — and never `render_diagram`'s own result, so what you see looks something like this:
 
 ```
   [measured] installed: maf-sandbox 0.24.0, maf-sandbox-docker 0.8.1
-The image was saved at `out/diagram.png`.
-
-  [measured] Left in the sandbox work directory: nothing
+The image was saved under `out/diagram.png`.
 
   [measured] Disposed 1 sandbox(es).
 ```
@@ -114,9 +100,9 @@ That block is one real run, on 2026-08-26. **What the model says varies** — th
 Rendered diagram.png (image/png); saved under out/.
 ```
 
-every time — a host-authored line, not the model's — and a valid PNG appears at `out/diagram.png` (`89 50 4E 47` — the PNG magic — as its first bytes). The disposal line prints only once `render_diagram` has actually created and torn down a container; a `Disposed 0` would mean the model answered without rendering anything, the T0 behaviour this sample exists to contrast with. The listing above it is what was still in the sandbox at that moment, read out of the guest rather than assumed — `nothing`, because the framework removed the call's directory when the tool returned.
+every time — a host-authored line, not the model's — and a valid PNG appears at `out/diagram.png` (`89 50 4E 47` — the PNG magic — as its first bytes). The disposal line prints only once `render_diagram` has actually created and torn down a container; a `Disposed 0` would mean the model answered without rendering anything, the T0 behaviour this sample exists to contrast with.
 
-Both carry `[measured]` because they are the sample's reports rather than the model's, and the reply is filtered before printing so a line of it starting with that tag comes out quoted, `> [measured] …` — otherwise a reply writing "Disposed 1 sandbox(es)." would answer for the router ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)).
+It carries `[measured]` because it is the sample's report rather than the model's, and the reply is filtered before printing so a line of it starting with that tag comes out quoted, `> [measured] …` — otherwise a reply writing "Disposed 1 sandbox(es)." would answer for the router ([#314](https://github.com/sokolaidev/maf-extensions/issues/314)).
 
 The PNG is git-ignored (`out/`), so a run leaves no tracked file behind.
 
@@ -124,11 +110,11 @@ The PNG is git-ignored (`out/`), so a run leaves no tracked file behind.
 
 **Run live**, on 2026-08-11: Docker Engine 29.5.3 with the `diagram-sandbox` image above (Graphviz 2.43.0), and a local tool-calling model behind an OpenAI-compatible endpoint — which is what this sample used at the time. The agent wrote DOT, `render_diagram` rendered it in a `--network none` container at `Isolation.CONTAINER`, and `collect_outputs` landed a valid 4–11 KB PNG at `out/diagram.png` — the full `FILES_IN → exec → FILES_OUT` round trip, end to end.
 
-**Run live again**, on 2026-08-26, on the Azure OpenAI wiring the rest of the set uses and on the call-directory shape above: Docker Engine 29.7.2, `gpt-5.4-mini`, and the **published** wheels the PEP 723 block resolves — `maf-sandbox 0.24.0` and `maf-sandbox-docker 0.8.1`, which is the pair a reader gets today. A 371×59 PNG landed, the working directory read back empty, and `scripts/check_live_diagram_sample.py` passed on that transcript. Worth saying which core that was: everything the new shape uses — `guest_call_path()`, `outputs_named_at_call_time` and `DeclaredOutput.name` — is in 0.24.0 already, so the floor in the script block did not have to move.
+**Run live again**, on 2026-08-26, on the Azure OpenAI wiring the rest of the set uses and on the call-directory shape above: Docker Engine 29.7.2, `gpt-5.4-mini`, and the **published** wheels the PEP 723 block resolves — `maf-sandbox 0.24.0` and `maf-sandbox-docker 0.8.1`, which is the pair a reader gets today. A 353×59 PNG landed and `scripts/check_live_diagram_sample.py` passed on that transcript. Worth saying which core that was: everything the new shape uses — `guest_call_path()`, `outputs_named_at_call_time` and `DeclaredOutput.name` — is in 0.24.0 already, so the floor in the script block did not have to move.
 
-**Measured separately, and not from this sample**: the ownership behaviour behind the `mkdir` above, on three images (root, non-root, non-root with the work directory pre-owned) against three kind shapes. [#680](https://github.com/sokolaidev/maf-extensions/issues/680) carries that table; nothing in `samples/` reproduces it, because doing so would mean shipping an image built to be wrong.
+**Measured separately, and not from this sample**: the ownership behaviour above, on three images (root, non-root, non-root with the work directory pre-owned) against three kind shapes. [#680](https://github.com/sokolaidev/maf-extensions/issues/680) carries that table; nothing in `samples/` reproduces it, because doing so would mean shipping an image built to be wrong.
 
-**Gated in CI.** `verify-live.yml` builds the image above on the runner and runs this sample on demand and once after each release of `maf-sandbox` or `maf-sandbox-docker`. Its check reads the landed PNG's own header rather than the model's account of it (`scripts/check_live_diagram_sample.py`): a turn that describes a diagram it never rendered writes the same paragraph as one that did, so the file is the evidence. The same check reads the sandbox listing, so a run that renders perfectly and leaves the model's DOT source behind goes red on the retention rather than passing on the picture. The docker **backend** beneath it is exercised more often still — `test_docker_e2e.py` runs a real container on every pull request, `FILES_OUT` stat-and-read path included.
+**Gated in CI.** `verify-live.yml` builds the image above on the runner and runs this sample on demand and once after each release of `maf-sandbox` or `maf-sandbox-docker`. Its check reads the landed PNG's own header rather than the model's account of it (`scripts/check_live_diagram_sample.py`): a turn that describes a diagram it never rendered writes the same paragraph as one that did, so the file is the evidence. The docker **backend** beneath it is exercised more often still — `test_docker_e2e.py` runs a real container on every pull request, `FILES_OUT` stat-and-read path included.
 
 ## Troubleshooting
 
