@@ -67,8 +67,7 @@ from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
 _IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_IMAGE")
 _PROXY_IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_PROXY_IMAGE")
 #: An image whose `USER` is not root and whose `work_dir` the build already carries, the shape
-#: `images/bicep-sandbox/Dockerfile` has. Its own variable because every other image this suite
-#: and the sample set run is root's (#680).
+#: `images/bicep-sandbox/Dockerfile` has. Every other image this suite runs is root's (#680).
 _NONROOT_IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_NONROOT_IMAGE")
 #: The same, but with `work_dir` owned by that user rather than root — the one ownership shape
 #: root cannot empty once the container's capabilities are dropped.
@@ -76,8 +75,7 @@ _GUEST_OWNED_IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_GUEST_OWNED_IMAGE")
 #: The same again, but with the directory *above* `work_dir` given to that user — which is
 #: what `reclaim` checks at acquire, because it owes no walk of its own.
 _LOOSE_PARENT_IMAGE = os.environ.get("MAF_SANDBOX_DOCKER_E2E_LOOSE_PARENT_IMAGE")
-#: What the images above put in `work_dir` at build time, so a reclaim can be shown to remove
-#: its own directory and nothing beside it.
+#: What the images above put in `work_dir` at build time: the control for a reclaim.
 _CARRIED = "carried.json"
 
 pytestmark = pytest.mark.skipif(
@@ -113,12 +111,7 @@ def _names_on_the_machine(name: str) -> list[str]:
     reason="needs MAF_SANDBOX_DOCKER_E2E_NONROOT_IMAGE naming an image whose USER is not root",
 )
 class TestAGuestThatIsNotRoot:
-    """The file plane against an image whose ``USER`` is not root.
-
-    Everything under ``work_dir`` arrives through ``docker cp`` or comes with the image, so it
-    is root's; unlink permission comes from the containing directory. The cases below are the
-    ownership shapes a call directory can have, plus the two properties that must not move.
-    """
+    """The file plane against an image whose ``USER`` is not root."""
 
     def _spec(self, image: str | None = None) -> SandboxSpec:
         return SandboxSpec(kind="e2e-nonroot", image=image or _NONROOT_IMAGE, work_dir=_WORK)
@@ -135,9 +128,8 @@ class TestAGuestThatIsNotRoot:
         return done.stdout.strip()
 
     def test_reclaim_removes_a_call_directory_under_a_work_dir_the_image_carries(self):
-        """The directory the image brought is root's before any write happens, so who created
-        it is not what decides whether the call directory below it can be emptied. The file
-        beside it is the control: `reclaim` promises its own directory and nothing else.
+        """`reclaim` promises its own directory and nothing beside it; `_CARRIED` is the
+        control.
         """
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig())
@@ -149,8 +141,7 @@ class TestAGuestThatIsNotRoot:
                 f"{call_directory}/note", "left behind\n", working_directory=_WORK
             )
 
-            # The protocol member the framework calls in its `finally`, not a command of this
-            # suite's: what fails here is exactly what fails after a real tool call.
+            # The member the framework calls in its `finally`, not a command of this suite's.
             await sandbox.reclaim(call_directory, working_directory=_WORK, timeout=60)
 
             assert self._as_root(sandbox.container_name, f"ls -A {_WORK}").split() == [_CARRIED]
@@ -161,9 +152,7 @@ class TestAGuestThatIsNotRoot:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
     def test_reclaim_removes_a_tree_the_two_principals_share(self):
-        """The shape a real call leaves once a guest can write at all: the host's files beside
-        the guest's, under one directory, removed in one walk.
-        """
+        """The host's files beside the guest's, under one directory, removed in one walk."""
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig())
 
@@ -194,9 +183,7 @@ class TestAGuestThatIsNotRoot:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
     def test_remove_deletes_a_file_the_host_wrote(self):
-        """The `FILES_DELETE` conformance probes all delete host-written files, which is why a
-        root-only image set never showed which principal `remove` was running as.
-        """
+        """What the `FILES_DELETE` probes ask for, against a guest that owns none of it."""
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig())
 
@@ -230,10 +217,8 @@ class TestAGuestThatIsNotRoot:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
     def test_the_guest_cannot_rewrite_or_delete_what_the_host_wrote(self):
-        """What the host puts in the call directory — the transport shim, the request and
-        response files, the inputs a model was given — stays the host's. Rewriting the shim
-        would be rewriting the mechanism the *next* call dispatches through, in the same warm
-        sandbox.
+        """The transport shim, the request and response files and the inputs stay the host's:
+        rewriting the shim would rewrite what the *next* call dispatches through.
         """
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig())
@@ -267,13 +252,7 @@ class TestAGuestThatIsNotRoot:
     reason="needs MAF_SANDBOX_DOCKER_E2E_GUEST_OWNED_IMAGE naming a non-root image owning work_dir",
 )
 class TestAWorkDirTheImageGaveItsOwnUser:
-    """The ownership shape the hardening advice behind a non-root ``USER`` also asks for.
-
-    Two rules meet here. ``reclaim`` raises authority whatever the walk would say, so with
-    ``cap_drop_all`` it meets a root that holds no ``CAP_DAC_OVERRIDE`` and can empty only
-    what it owns — the case the retry exists for. ``remove`` owes a walk, which finds a
-    component the guest owns and keeps the removal at the guest's own authority.
-    """
+    """``work_dir`` owned by the image's own user: the retry's case, and the walk's."""
 
     def _spec(self) -> SandboxSpec:
         return SandboxSpec(kind="e2e-nocaps", image=_GUEST_OWNED_IMAGE, work_dir=_WORK)
@@ -301,9 +280,8 @@ class TestAWorkDirTheImageGaveItsOwnUser:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
     def test_remove_runs_at_the_guest_authority_and_still_deletes(self):
-        """`work_dir` is the guest's here, so the reach rule keeps the removal at the guest's
-        own authority — and loses nothing by it, because a directory the guest can swap is one
-        it can empty. No fallback is involved: root is never asked.
+        """`work_dir` is the guest's, so the reach rule keeps the removal there — and root is
+        never asked, so no fallback is involved.
         """
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig(cap_drop_all=True))
@@ -322,13 +300,8 @@ class TestAWorkDirTheImageGaveItsOwnUser:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
     def test_remove_refuses_to_raise_authority_under_a_directory_the_guest_could_swap(self):
-        """The rule's price, pinned rather than left implicit.
-
-        A host-written subdirectory inside a guest-owned `work_dir` is one the guest could
-        replace between the walk and the `rm`, so the removal stays at the guest's authority —
-        which cannot empty it. It fails on `main` too, for the older reason that the removal
-        was always the guest's; what is new is that this is now a decision rather than an
-        accident of which principal happened to run.
+        """The rule's price, pinned rather than left implicit: a host-written subdirectory
+        under a guest-owned `work_dir` stays at the guest's authority, which cannot empty it.
         """
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig())
@@ -352,25 +325,16 @@ class TestAWorkDirTheImageGaveItsOwnUser:
     "directory above work_dir",
 )
 class TestAnImageThatGivesAwayADirectoryAboveWorkDir:
-    """`reclaim` removes as root on an argument, and this is the half of it that is checked.
-
-    A guest that can write above `work_dir` can replace `work_dir` itself with a link, and a
-    swapped *parent* is followed rather than unlinked — so root there would delete what the
-    guest could not. The check runs at acquire, because the chain is fixed before any guest
-    does anything.
+    """An image that lets the guest swap `work_dir` itself, which is what the acquire-time
+    check is for.
     """
 
     def _spec(self) -> SandboxSpec:
         return SandboxSpec(kind="e2e-loose", image=_LOOSE_PARENT_IMAGE, work_dir=_WORK)
 
     def test_reclaim_drops_to_the_guest_authority_and_leaks_rather_than_reaching(self):
-        """The rule's price on this image shape, and it is a real one.
-
-        The call directory arrived through `docker cp`, so it is root's; the guest cannot
-        empty it, and root is not allowed to here because this image lets the guest swap a
-        directory above `work_dir`. So it stays — exactly as it does on `main`, where every
-        removal was the guest's. This is the shape #680 does not fix rather than one it
-        breaks, and the backend logs the reason at acquire.
+        """The price on this image shape: the call directory is root's, the guest cannot empty
+        it and root is not allowed to, so it stays. See `docs/sandbox/backends/docker.md`.
         """
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig())
@@ -395,19 +359,14 @@ class TestAnImageThatGivesAwayADirectoryAboveWorkDir:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
     def test_a_swapped_work_dir_takes_the_removal_nowhere_it_could_not_reach(self):
-        """The attack the check exists for, run for real.
-
-        The guest replaces `work_dir` with a link to a directory it does not own, then the
-        framework reclaims. Because the removal is the guest's rather than root's, what the
-        redirected `rm` can delete is exactly what the guest could have deleted itself.
+        """The attack the check exists for, run for real: the guest swaps `work_dir` for a link
+        to a directory it does not own, and the redirected `rm` reaches nothing new.
         """
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig())
 
         async def scenario() -> None:
             sandbox = await backend.acquire(_key(scope), self._spec())
-            # Named rather than wrapped inside the argv list: two adjacent literals there are
-            # the shape a missing comma takes, and a reader cannot tell the two apart.
             plant_the_target = (
                 "mkdir -p /victim/abc123def456"
                 " && echo treasure > /victim/abc123def456/t"

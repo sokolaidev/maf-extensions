@@ -205,9 +205,8 @@ def _proxy_name(container: str) -> str:
 def _image_reference(spec: SandboxSpec) -> str:
     """The reference this backend will actually run, or ``""`` when the spec names none.
 
-    ``image_id`` wins over ``image``: it is the escape hatch for a caller pinning a digest, and
-    a spec can carry it alone.  Anything keyed on which image a container holds has to key on
-    this, not on ``spec.image``, or two different images collapse to one key.
+    ``image_id`` wins over ``image`` and can be the only one set, so anything keyed on which
+    image a container holds keys on this.
     """
     return spec.image_id or spec.image or ""
 
@@ -238,13 +237,8 @@ def _stat_from_tar_header(info: tarfile.TarInfo, rel_path: str) -> SandboxEntry:
 def _no_component_was_the_guests(walked: Mapping[str, tuple[int, int]]) -> bool:
     """Could the guest program have swapped any directory on this path?
 
-    It could not where every one is root's and writable by nobody else — which is what a
-    ``docker cp`` creates and what an image's own build leaves, unless that build hands
-    ``work_dir`` to the user it runs as.  Answered without knowing which uid the guest is: a
-    directory root owns and no one else may write is beyond every other principal, and where
-    the guest *is* root there is no authority to raise and nothing to extend.
-
-    Empty is ``True`` — a walk that reached nothing found nothing writable.
+    Not where every one is root's and writable by nobody else.  Empty is ``True``: a walk that
+    reached nothing found nothing writable.  See ``docs/sandbox/backends/docker.md``.
     """
     return all(uid == 0 and not mode & 0o022 for uid, mode in walked.values())
 
@@ -253,16 +247,13 @@ def _no_component_was_the_guests(walked: Mapping[str, tuple[int, int]]) -> bool:
 class _ContainerFacts:
     """What a running container says about itself, as against what this backend asked for.
 
-    ``acquire`` reuses a container by a name derived from scope, thread, agent dir, kind and
-    egress — never from the image or the hardening — so a running one can predate any change to
-    either, and the config is not evidence about it.
+    A container name carries neither the image nor the hardening, so a reused container can
+    predate a change to either and this backend's config is not evidence about it.
     """
 
-    #: Every directory above ``work_dir`` is root's and writable by nobody else, so the guest
-    #: could not have swapped one. What licenses `reclaim` to remove with root's authority.
+    #: Every directory above ``work_dir`` is root's and writable by nobody else.
     host_owned_ancestors: bool
-    #: This container runs with ``--cap-drop ALL``, so root holds no ``CAP_DAC_OVERRIDE`` and
-    #: can empty only what it owns.
+    #: Runs with ``--cap-drop ALL``, so root holds no ``CAP_DAC_OVERRIDE``.
     capabilities_dropped: bool
 
 
@@ -333,11 +324,8 @@ class _DockerSandbox:
         self._run = run
         self._name = name
         self._command_timeout = command_timeout
-        # Whether every directory above `work_dir` is the host's, answered once at acquire.
-        # `reclaim` owes no walk, so this is the walk's answer arriving from outside it.
+        # Both read from the container at acquire, not taken from this backend's config.
         self._reclaim_as_root = reclaim_as_root
-        # Whether this container kept `CAP_DAC_OVERRIDE`, which is what decides if a root
-        # removal can be refused at all. See `_removal`.
         self._cap_drop_all = cap_drop_all
 
     @property
@@ -396,11 +384,8 @@ class _DockerSandbox:
     ) -> ExecResult:
         """One ``docker exec``, as the image's user or as ``--user 0``.
 
-        The file plane is the host's, and the rest of it is ``docker cp`` — which the daemon
-        performs as root.  :meth:`remove` and :meth:`reclaim` borrow this one for want of an
-        engine primitive, so they ask for that same authority; :meth:`exec` and
-        :meth:`run_code` are the guest program's own and name no user, leaving the image to
-        decide (#680).
+        :meth:`remove` and :meth:`reclaim` ask for root; :meth:`exec` and :meth:`run_code` are
+        the guest program's own and name no user.  See ``docs/sandbox/backends/docker.md``.
         """
         privilege = ("--user", "0") if as_root else ()
         try:
@@ -420,9 +405,8 @@ class _DockerSandbox:
     async def ancestors_are_the_hosts(self, work_dir: str) -> bool:
         """Is every directory *above* ``work_dir`` one the guest program cannot write?
 
-        The question :meth:`reclaim` answers with an argument, asked instead — one tar header
-        per component, over the chain that is fixed before any guest runs.  Raises whatever the
-        stat raises; the caller decides what an unreadable component means.
+        One tar header per component.  Raises whatever the stat raises; the caller decides what
+        an unreadable component means.
         """
         walked: dict[str, tuple[int, int]] = {}
         for directory in guest_directory_chain(posixpath.dirname(work_dir), "/"):
@@ -439,14 +423,9 @@ class _DockerSandbox:
     ) -> ExecResult:
         """Run a removal, as root where ``raise_authority`` says the reach rule allows it.
 
-        Without it, one ``exec`` as the image's user.  With it, root — and a refusal is
-        retried as the image's user where this container holds no ``CAP_DAC_OVERRIDE``, since
-        root can then empty only what it owns.  Which of those a refusal was is not read from
-        ``rm``'s message, which belongs to the guest's ``rm`` and its locale — so a failure
-        that was nothing to do with ownership is retried too, and **both attempts' messages
-        reach the caller** rather than the second one silently replacing the first.
-
-        ``timeout`` is one deadline across both attempts, not one each.
+        A root refusal is retried as the image's user where this container holds no
+        ``CAP_DAC_OVERRIDE``, and both attempts' messages reach the caller.  ``timeout`` is one
+        deadline across both, not one each.  See ``docs/sandbox/backends/docker.md``.
         """
         if not raise_authority:
             return await self._exec(argv, working_directory=working_directory, timeout=timeout)
@@ -515,12 +494,8 @@ class _DockerSandbox:
         makes a missing path succeed and refuses a directory without ``-r``. The image
         dependency is the one :attr:`capabilities` already names for ``EXEC``.
 
-        Runs as root only where the protocol's reach rule allows it, and the component walk
-        this already owes is what answers: ``rm`` unlinks its own operand but resolves every
-        parent, so a guest that swapped one between the walk and the command redirects the
-        removal.  Root there would delete what that guest could not.  Where a component is
-        the guest's, the removal runs as the guest — which is the authority it had, and
-        enough, since a directory it can swap is one it can empty (#680).
+        Runs as root only where no component of the path was the guest's, which the walk this
+        already owes answers.  See ``docs/sandbox/backends/docker.md``.
         """
         guest = confine_guest_path(path, working_directory)
         walked: dict[str, tuple[int, int]] = {}
@@ -546,30 +521,13 @@ class _DockerSandbox:
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
         """Remove ``directory`` with ``rm -rf``, through :meth:`_removal`.
 
-        Runs from ``/`` because ``working_directory`` may not exist.
+        Runs from ``/`` because ``working_directory`` may not exist, and takes no confinement
+        check: the caller made ``directory``, and :func:`~maf_sandbox.reclaim_guest_path` is
+        where that policy lives.  The floor below re-refuses a subset of it, because this
+        command runs from ``/`` and can carry root's authority.
 
-        No confinement check: the caller made ``directory``, and
-        :func:`~maf_sandbox.reclaim_guest_path` is where the policy lives — it resolves the
-        path against the working directory and refuses one outside it, the working directory
-        itself, and anything within two components of the root. The floor below is a subset of
-        those, kept because the command carries root's authority and runs from ``/``: a
-        relative path would resolve against the filesystem root, so ``etc/ssh`` reaching here
-        from a caller that skipped the dispatcher must not become ``rm -rf /etc/ssh``.
-
-        **Why root is allowed here**, which the reach rule asks a backend to argue rather than
-        assume.  Only two things on this path are swappable, and neither is the guest's: the
-        operand, which ``rm -rf`` unlinks instead of resolving, so a link planted there takes
-        its target nowhere; and the parents, which are ``working_directory`` and above —
-        swapping one needs write on *its* parent, and no image hands out a directory above
-        ``work_dir``.  A walk would answer this the way :meth:`remove`'s does, and is the very
-        duty this member exists without.
-
-        **The second half is checked rather than asserted**, by
-        :meth:`DockerSandboxBackend._ancestors_are_the_hosts` at acquire — the chain above
-        ``work_dir`` is fixed before any guest runs, so it costs one answer per container
-        rather than a walk per call.  An image that grants write above ``work_dir`` gets its
-        removals run as the guest instead, the way :meth:`remove` already handles the same
-        shape (#680).
+        Why root is allowed without a walk, and which half of the argument is checked at
+        acquire rather than asserted: ``docs/sandbox/backends/docker.md``.
         """
         del working_directory
         if not directory.startswith("/"):
@@ -609,8 +567,7 @@ class _DockerSandbox:
             result.stdout[:_TAR_BLOCK], encoding="utf-8", errors="surrogateescape"
         )
         if walked is not None:
-            # Ownership is the other half of what one header can answer, and a walk that wants
-            # both should not fetch — or parse — the block twice.
+            # The same header answers ownership, so a walk that wants both parses it once.
             walked[guest] = (info.uid, info.mode)
         return _stat_from_tar_header(info, rel)
 
@@ -712,10 +669,8 @@ class DockerSandboxBackend:
         self._acquire_locks: weakref.WeakKeyDictionary[
             asyncio.AbstractEventLoop, dict[tuple[str, str, str, str], asyncio.Lock]
         ] = weakref.WeakKeyDictionary()
-        # (container, image, work_dir) -> what the container itself says. The image is in the
-        # key because a container name is a digest of scope, thread, agent dir, kind and egress
-        # and *not* of the image, so one name legitimately returns carrying a different one.
-        # Dropped when the container is removed.
+        # (container, image, work_dir) -> what the container itself says. Keyed on the image
+        # because a container name is not, so one name can come back carrying a different one.
         self._facts: dict[tuple[str, str, str], _ContainerFacts] = {}
 
     @property
@@ -753,8 +708,8 @@ class DockerSandboxBackend:
         #
         # It is *not* a claim about the image. The shipped launcher wants `sh`, `nohup`,
         # `printf`, `mv`, `mkdir`, `rm` and `kill` — and `setsid` where the image has it — and a
-        # run directory it can create a subdirectory in, which a non-root guest does not have
-        # here (#680) — and a kind wants whatever interpreter it names — codeact wants
+        # run directory it can write, which a non-root guest does not have here (#680) — and a
+        # kind wants whatever interpreter it names — codeact wants
         # `python3` — none of which this backend chooses, since `spec.image` does. That gap is
         # #111's axis, and it is the same gap `EXEC` already has: a kind execing `python3`
         # against a distroless image fails inside the sandbox today.
@@ -828,11 +783,9 @@ class DockerSandboxBackend:
     async def _capabilities_dropped(self, name: str) -> bool:
         """Does this container run without ``CAP_DAC_OVERRIDE``?
 
-        Read from the container, never from :attr:`DockerSandboxConfig.cap_drop_all`: the name
-        ``acquire`` reuses carries no hardening, so a running container can predate a change to
-        it and the config would describe a different one.  **Unknown counts as dropped**, which
-        costs one extra ``exec`` on a removal that failed anyway, where the other direction
-        costs the leak.
+        Read from the container, never from :attr:`DockerSandboxConfig.cap_drop_all`, which
+        describes what this backend would create rather than what it reused.  Unknown counts as
+        dropped.
         """
         result = await self._docker(
             "inspect",
@@ -846,19 +799,12 @@ class DockerSandboxBackend:
         return "ALL" in result.stdout.decode("utf-8", errors="replace").upper()
 
     async def _container_facts(self, name: str, spec: SandboxSpec) -> _ContainerFacts:
-        """Could the guest program have swapped a directory *above* ``spec.work_dir``?
+        """Read what ``name`` says about itself, once per container.
 
-        It could not where every one of them is root's and writable by nobody else, and that
-        is what licenses :meth:`_DockerSandbox.reclaim` to remove with root's authority over a
-        path it never walks.  Here rather than in ``reclaim`` because the chain is fixed before
-        any guest runs: one answer per container, not one walk per call.
-
-        Cached, and the cache cannot go stale in a way that matters — the answer changes only
-        if something writes those directories, and the answer itself is that only root can.
-        This backend's own writes create them ``0755`` and root's.
-
-        **Fails closed.**  A component that cannot be read leaves the removal at the guest's
-        authority, which is what every backend did before #680 and costs only the leak.
+        Here rather than in :meth:`_DockerSandbox.reclaim` because the ancestor chain is fixed
+        before any guest runs: one answer per container, not one walk per call.  **Fails
+        closed** — an unreadable component leaves removals at the guest's authority.  See
+        ``docs/sandbox/backends/docker.md``.
         """
         key = (name, _image_reference(spec), spec.work_dir)
         cached = self._facts.get(key)
@@ -1364,8 +1310,7 @@ class DockerSandboxBackend:
         failure: the sweep tries names the registry remembers, and one already gone is the
         ordinary case.
         """
-        # Whatever the engine says, this name no longer refers to the container those facts
-        # were read from. Dropped before the call so a failure cannot leave them behind.
+        # Dropped before the call, so a failed removal cannot leave stale facts behind.
         for cached in [key for key in self._facts if key[0] == target]:
             del self._facts[cached]
         try:

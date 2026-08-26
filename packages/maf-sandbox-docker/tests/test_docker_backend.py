@@ -109,14 +109,13 @@ def _cp(guest: str) -> tuple[str, ...]:
 #: Every stat and every read walks the components from the root down: `/maf-sandbox` then
 #: `/maf-sandbox/work`. A fake engine that cannot answer for either refuses both as a path
 #: through a non-directory, so both are seeded as directories here.
-#: What `docker inspect -f {{.HostConfig.CapDrop}}` prints for a container created with
-#: `--cap-drop ALL`, which is where the retry decision is read from.
-_CAPS_DROPPED = {("inspect", "-f", "{{.HostConfig.CapDrop}}"): _DockerResult(0, b"[ALL]\n", "")}
-
 _WORK_IS_A_DIRECTORY = {
     _cp("/maf-sandbox"): _DockerResult(0, _directory_tar("maf-sandbox"), ""),
     _cp(_WORK): _DockerResult(0, _directory_tar(_WORK.lstrip("/")), ""),
 }
+
+#: What `docker inspect` prints for a container created with `--cap-drop ALL`.
+_CAPS_DROPPED = {("inspect", "-f", "{{.HostConfig.CapDrop}}"): _DockerResult(0, b"[ALL]\n", "")}
 
 
 class _Recorded:
@@ -156,11 +155,7 @@ class _FakeDocker:
         return result
 
     def mark(self) -> None:
-        """Draw a line under what has been recorded, so a later assertion starts from here.
-
-        `acquire` reads a component of its own to answer the reach rule, and a test about what
-        *one operation* fetched should not be counting that one.
-        """
+        """Draw a line under what has been recorded, so a later assertion starts from here."""
         self._marked = len(self.calls)
 
     def cp_since_mark(self) -> list[tuple[str, ...]]:
@@ -733,11 +728,7 @@ class TestReclaim:
 
 
 class TestWhichPrincipalACommandCarries:
-    """The file plane is the host's; `exec` and `run_code` are the guest program's.
-
-    `TestRemove` and `TestReclaim` above pin the argv each one builds. What is here is the
-    rule those tuples follow, and the one case where root alone is not enough.
-    """
+    """The file plane is the host's; `exec` and `run_code` are the guest program's."""
 
     def _sandbox(self, overrides=None, *, capabilities_dropped=False):
         merged = {
@@ -750,18 +741,14 @@ class TestWhichPrincipalACommandCarries:
         return asyncio.run(backend.acquire(_KEY, _SPEC)), fake
 
     def test_a_guest_command_is_the_argv_and_nothing_else(self):
-        """The whole tuple, so the absence of `--user` is asserted rather than searched for:
-        root here would let a model-written program rewrite the transport files the host put
-        in the same directory.
-        """
+        """The whole tuple, so the absence of `--user` is asserted rather than searched for."""
         sandbox, fake = self._sandbox()
         asyncio.run(sandbox.exec(["whoami"], working_directory=_WORK, timeout=5))
         assert fake.only("exec").args == ("exec", "-w", _WORK, _NAME, "whoami")
 
     def test_a_refused_removal_is_retried_when_capabilities_were_dropped(self):
-        """`--user 0` is a uid, not a capability set. Without `CAP_DAC_OVERRIDE` root empties
-        only what it owns — and a directory the image's user owns is both what it cannot, and
-        what that user can.
+        """`--user 0` is a uid, not a capability set: without `CAP_DAC_OVERRIDE` root empties
+        only what it owns.
         """
         refused = {("exec", "--user", "0"): _DockerResult(1, b"", "rm: Permission denied")}
         sandbox, fake = self._sandbox(refused, capabilities_dropped=True)
@@ -773,8 +760,7 @@ class TestWhichPrincipalACommandCarries:
 
     def test_a_refused_removal_is_not_retried_while_root_keeps_its_capabilities(self):
         """With `CAP_DAC_OVERRIDE` root empties anything, so a refusal is not about ownership
-        and a less privileged retry could only fail again — and would report its own error
-        over the one that mattered.
+        and a retry would report its own error over the one that mattered.
         """
         refused = {("exec",): _DockerResult(1, b"", "rm: read-only file system")}
         sandbox, fake = self._sandbox(refused)
@@ -796,10 +782,8 @@ class TestWhichPrincipalACommandCarries:
         assert len(fake.matching("exec")) == 2
 
     def test_the_retry_gets_what_is_left_of_the_one_deadline(self):
-        """`reclaim(timeout=T)` promises the caller completion within T, not within 2T.
-
-        Two attempts each handed the full timeout is the shape that breaks it, and nothing
-        above would notice: both calls succeed, just twice as late as the contract allows.
+        """`reclaim(timeout=T)` promises completion within T, not 2T — two attempts each handed
+        the full timeout still succeed, just twice as late as the contract allows.
         """
         spent = 0.05
         base = _machine(running=[_NAME], overrides={**_WORK_IS_A_DIRECTORY, **_CAPS_DROPPED})
@@ -841,12 +825,7 @@ class TestWhichPrincipalACommandCarries:
 
 
 class TestTheReachRuleChoosesThePrincipal:
-    """`Sandbox.remove`'s contract: a swap must not let a removal delete what the guest
-    program could not delete itself.
-
-    `rm` unlinks its own operand but resolves every parent, so the walk `remove` already owes
-    is what decides. Root is for paths with no component the guest could have swapped.
-    """
+    """The reach rule: root is for paths with no component the guest could have swapped."""
 
     def _sandbox(self, work_dir_entry: bytes):
         overrides = {
@@ -863,10 +842,7 @@ class TestTheReachRuleChoosesThePrincipal:
         assert fake.only("exec").args[:3] == ("exec", "--user", "0")
 
     def test_a_component_the_guest_owns_keeps_the_removal_at_the_guest_authority(self):
-        """The guest can swap what it owns, so root here would delete what it could not.
-
-        It loses nothing: a directory it can swap is one it can empty.
-        """
+        """The guest can swap what it owns, so root here would delete what it could not."""
         sandbox, fake = self._sandbox(_owned_directory_tar(_WORK.lstrip("/"), 10001, 0o755))
         asyncio.run(sandbox.remove("a.txt", working_directory=_WORK))
         assert "--user" not in fake.only("exec").args
@@ -878,23 +854,14 @@ class TestTheReachRuleChoosesThePrincipal:
         assert "--user" not in fake.only("exec").args
 
     def test_reclaim_raises_authority_without_a_walk(self):
-        """`reclaim` owes no walk, and argues instead: `rm -rf` unlinks its operand rather
-        than resolving it, and its parents are `work_dir` and above, which no image hands to
-        the guest.
-        """
+        """`reclaim` owes no walk, so the argument stands in for one."""
         sandbox, fake = self._sandbox(_owned_directory_tar(_WORK.lstrip("/"), 10001, 0o755))
         asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
         assert fake.only("exec").args[:3] == ("exec", "--user", "0")
 
 
 class TestTheAncestorsAboveTheWorkDirAreChecked:
-    """`reclaim` owes no walk, so the walk's answer arrives from `acquire` instead.
-
-    Its argument for removing as root has two halves: `rm -rf` unlinks its own operand, and no
-    directory *above* `work_dir` is one the guest could swap. The second is a claim about the
-    image, so it is read rather than asserted — once per container, because the chain is fixed
-    before any guest runs.
-    """
+    """The half of `reclaim`'s argument that is read rather than asserted, once per container."""
 
     def _backend(self, parent: bytes | None, image: str = _SPEC.image):
         overrides = {("cp",): _DockerResult(1, b"", "Error: Could not find the file in container")}
@@ -914,9 +881,8 @@ class TestTheAncestorsAboveTheWorkDirAreChecked:
         assert self._reclaimed_as(backend, fake, spec) == ("exec", "--user", "0")
 
     def test_an_ancestor_the_guest_may_write_keeps_reclaim_at_the_guest_authority(self):
-        """A `0777` directory above `work_dir` is one the guest can swap `work_dir` in, and a
-        swapped parent is followed rather than unlinked — so root there would delete what the
-        guest could not.
+        """A swapped parent is followed rather than unlinked, so root there would delete what
+        the guest could not.
         """
         backend, fake, spec = self._backend(_owned_directory_tar("maf-sandbox", 0, 0o777))
         assert "--user" not in self._reclaimed_as(backend, fake, spec)
@@ -926,9 +892,7 @@ class TestTheAncestorsAboveTheWorkDirAreChecked:
         assert "--user" not in self._reclaimed_as(backend, fake, spec)
 
     def test_an_unreadable_ancestor_fails_closed(self):
-        """An engine that will not answer leaves the removal where every backend had it before
-        #680 — the guest's authority, which costs the leak and nothing else.
-        """
+        """An engine that will not answer leaves the removal at the guest's authority."""
 
         def refuses(args):
             if args[:2] == ("cp", f"{_NAME}:/maf-sandbox"):
@@ -946,9 +910,7 @@ class TestTheAncestorsAboveTheWorkDirAreChecked:
         assert fake.cp_since_mark() == []
 
     def test_the_answer_is_re_read_when_the_image_changes(self):
-        """A container name is a digest of scope, thread, agent dir, kind and egress — never of
-        the image — so one name legitimately comes back carrying a different one.
-        """
+        """A container name never carries the image, so one can come back with a different one."""
         backend, fake, spec = self._backend(_owned_directory_tar("maf-sandbox", 0, 0o755))
         asyncio.run(backend.acquire(_KEY, spec))
         fake.mark()
@@ -957,8 +919,7 @@ class TestTheAncestorsAboveTheWorkDirAreChecked:
 
     def test_a_changed_image_id_re_reads_even_where_the_image_name_holds_still(self):
         """`image_id` is what `_create_workload` runs when a spec carries one, so it is what
-        the key has to follow — a spec naming only `image_id`, or changing it under a constant
-        `image`, would otherwise share one entry across two different images.
+        the key has to follow.
         """
         backend, fake, _ = self._backend(_owned_directory_tar("maf-sandbox", 0, 0o755))
         pinned = SandboxSpec(kind=_SPEC.kind, image="same:local", image_id="sha256:aaa")
@@ -989,12 +950,8 @@ class TestTheAncestorsAboveTheWorkDirAreChecked:
 
 
 class TestTheHardeningIsReadFromTheContainer:
-    """`acquire` reuses a container by a name that carries no hardening.
-
-    `_container_name` is a digest of scope, thread, agent dir, kind and egress — so a running
-    container can predate any change to `cap_drop_all`, and this backend's own config is not
-    evidence about it. Reading the config instead would suppress the retry on a container that
-    really does lack `CAP_DAC_OVERRIDE`, which is the leak the retry exists to prevent.
+    """`acquire` reuses a container by a name that carries no hardening, so the config is not
+    evidence about the container it got.
     """
 
     def _reclaim_calls(self, config, container_says_dropped: bool) -> list[tuple[str, ...]]:
@@ -1019,9 +976,7 @@ class TestTheHardeningIsReadFromTheContainer:
             self._reclaim_calls(backend_config, False)
 
     def test_a_container_that_will_not_say_is_treated_as_hardened(self):
-        """Unknown costs one extra `exec` on a removal that failed anyway; the other direction
-        costs the leak.
-        """
+        """Unknown costs one extra `exec` on a removal that failed anyway."""
         overrides = {
             **_WORK_IS_A_DIRECTORY,
             ("exec", "--user", "0"): _DockerResult(1, b"", "rm: Permission denied"),
@@ -1035,12 +990,7 @@ class TestTheHardeningIsReadFromTheContainer:
 
 
 class TestReclaimKeepsAFloorUnderRoot:
-    """`maf_sandbox.reclaim_guest_path` holds the policy; this is the subset kept here.
-
-    It refuses strictly less than core does, so the two cannot disagree in the direction that
-    matters — but a recursive delete carrying root's authority should not reach the root of a
-    filesystem because a caller skipped the dispatcher.
-    """
+    """`maf_sandbox.reclaim_guest_path` holds the policy; this is the subset kept here."""
 
     def _sandbox(self):
         backend, fake = _backend_with(_machine(running=[_NAME]))
@@ -1055,10 +1005,8 @@ class TestReclaimKeepsAFloorUnderRoot:
 
     @pytest.mark.parametrize("directory", ["etc/ssh", "a/b", "./x/y", "../../etc/ssh"])
     def test_a_relative_path_runs_no_command(self, directory):
-        """The removal runs from `/`, so a relative path resolves against the filesystem
-        root: `etc/ssh` would be `rm -rf /etc/ssh`, as root. Core resolves against the
-        working directory before dispatching, which is why only a caller that skipped it
-        gets here.
+        """The removal runs from `/`, so a relative path resolves against the filesystem root:
+        `etc/ssh` would be `rm -rf /etc/ssh`, as root.
         """
         sandbox, fake = self._sandbox()
         with pytest.raises(ValueError, match="not absolute"):
