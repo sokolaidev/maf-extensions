@@ -24,6 +24,7 @@ from maf_sandbox import (
     CallerContext,
     Capability,
     DeclaredOutput,
+    DisposalFailure,
     Egress,
     Isolation,
     LandedArtifact,
@@ -992,6 +993,28 @@ class TestTheFrameworkDisposesWhatItCouldNotClean:
         assert second.startswith("Error: the sandbox for this conversation is closed")
         with pytest.raises(SandboxUnclean):
             asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_a_backends_detail_never_reaches_the_model(self, caplog):
+        """A disposal reason can carry an endpoint, a subscription id or a raw response body —
+        `error_detail`'s own docstring calls it log-only. The refusal a kind returns must not
+        carry it, and neither must the exception the router raises."""
+        secret = "https://tenant-7.internal.example/subscriptions/abc-123"
+        backend = InProcessSandboxBackend(
+            dispose_failure=DisposalFailure("refused", secret),
+        )
+        router = _router(backend)
+        asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
+
+        with caplog.at_level(logging.WARNING):
+            answer = _call(_attach_with(_returning_body, router)[0], target="x")
+
+        assert secret not in answer, "the model must not read a backend's detail"
+        assert answer.startswith("Error: the sandbox for this conversation is closed")
+        with pytest.raises(SandboxUnclean) as refusal:
+            asyncio.run(router.acquire(_KEY, _SPEC))
+        assert secret not in str(refusal.value), "nor may a host calling acquire directly"
+        assert "refused" in str(refusal.value), "the code is what both of them get"
+        assert secret in caplog.text, "and the operator still has it, in the log"
 
     def test_a_landed_disposal_reopens_the_key(self):
         backend = InProcessSandboxBackend(

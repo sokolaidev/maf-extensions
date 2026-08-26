@@ -826,21 +826,14 @@ class Sandbox(Protocol):
 
 #: Why a disposal did not land, in a word a caller may branch on.
 #:
-#: A closed set, deliberately small: a code no backend can honestly assign is a code every
-#: backend assigns differently, and a caller branching on it would be reading a coin toss.
-#: Each member is something all three shipped backends can tell apart from the others.
+#: ``"unreachable"``: the engine or service was never reached, so nothing was asked of it.
+#: ``"timeout"``: the attempt did not finish in the time it was given; whether it landed is
+#: not known. ``"refused"``: it answered, and the sandbox is still there. ``"unlisted"``: the
+#: query that enumerates what to delete failed, so the sweep may not have covered everything.
+#: ``"unknown"``: the backend cannot classify it, and is always allowed to say so.
 #:
-#: ``"unreachable"``: the engine or service could not be reached at all — the invocation
-#: itself failed. Ordinarily transient, and the one a caller may sensibly retry.
-#: ``"refused"``: it answered, and the sandbox is still there. A permission or policy problem
-#: far more often than a transient one, so retrying alone rarely clears it.
-#: ``"timeout"``: the attempt did not finish in the time it was given, so whether it landed is
-#: not known. Retryable like ``"unreachable"``, and told apart from it because the caller set
-#: the bound and may want to raise it rather than retry into the same wall.
-#: ``"unlisted"``: the delete that ran may not have covered everything — the query that
-#: enumerates what to delete failed, so a sandbox another replica created was never seen.
-#: ``"unknown"``: the backend could not classify it. Always available, so a backend never has
-#: to invent one of the others to stay in the vocabulary.
+#: Closed and small on purpose: a code no backend can honestly assign is one every backend
+#: assigns differently, and a caller branching on it reads a coin toss.
 DisposalCode = Literal["unreachable", "timeout", "refused", "unlisted", "unknown"]
 
 #: Which code survives when one disposal hits several, most actionable first.  ``"unreachable"``
@@ -874,6 +867,11 @@ class DisposalFailure:
 def fold_disposal_failures(failures: Sequence[DisposalFailure]) -> DisposalFailure | None:
     """The one failure that stands for several, or ``None`` when there are none.
 
+    Lives here because all three shipped backends fold, and a rule three packages implement
+    separately is a rule that drifts. The retry bookkeeping around it is still copied per
+    backend — the layering forbids one importing another — and is owed the same home; see
+    the note on :meth:`SandboxBackend.dispose`.
+
     The code is the most actionable of those reported (:data:`DisposalCode`), and the detail
     keeps every sentence, so folding loses nothing a log would have shown.
     """
@@ -881,9 +879,19 @@ def fold_disposal_failures(failures: Sequence[DisposalFailure]) -> DisposalFailu
         return None
     if len(failures) == 1:
         return failures[0]
+    # `detail`, not `str(failure)`: a caller reading this field must get the same shape whether
+    # one backend reported or three, or a log template built against one silently misreads the
+    # other. The code the fold chose is on the result.
     codes: set[DisposalCode] = {failure.code for failure in failures}
-    worst: DisposalCode = next(code for code in _DISPOSAL_PRECEDENCE if code in codes)
-    return DisposalFailure(worst, "; ".join(str(failure) for failure in failures))
+    # A default rather than a bare `next`: `DisposalCode` is a `Literal`, so nothing enforces
+    # it at run time, and a code from outside the vocabulary must not raise out of a caller
+    # that never raises.
+    worst: DisposalCode = "unknown"
+    for candidate in _DISPOSAL_PRECEDENCE:
+        if candidate in codes:
+            worst = candidate
+            break
+    return DisposalFailure(worst, "; ".join(failure.detail for failure in failures))
 
 
 @runtime_checkable
@@ -959,27 +967,21 @@ class SandboxBackend(Protocol):
         kind: a caller releasing a key means all of it.
 
         **Return a :class:`DisposalFailure` when a sandbox may still be there, or ``None``.**
-        Never raising is what makes this safe to call from a ``finally``, and it is also what
-        leaves a caller unable to tell a delete that worked from one that failed — so the
-        answer comes back as a value instead.  A backend that swallows its delete error and
-        returns ``None`` is read as having disposed, which is what
-        :meth:`SandboxRouter.dispose_unclean` then reports to a host that asked for a sandbox
-        holding unremovable data to be destroyed.
+        ``None`` is read as disposed, and a backend with no way to check returns it too — the
+        conflation is with success, because refusing every key served by a backend that cannot
+        answer is the wrong direction to fail in.
 
-        ``None`` says only that nothing was reported: a backend with no way to check returns it
-        too.  The conflation is deliberate — the alternative refuses every key served by a
-        backend that cannot answer — and it fixes the direction this fails in.  Say something
-        whenever the delete is known not to have landed.
+        The :data:`DisposalCode` is what a caller branches on and the only half kept stable;
+        ``detail`` is yours, and reaches a log rather than an exception. Reach for
+        ``"unknown"`` rather than guessing between the others.
 
-        The :data:`DisposalCode` is the half a caller branches on and the half this package
-        keeps stable; ``detail`` is yours and is for a log.  Reach for ``"unknown"`` rather
-        than guessing between the others: a code chosen to look precise is worse than one that
-        says the backend does not know.
+        A bare ``str`` is accepted for one release and read as ``"unknown"``: a backend cannot
+        import :class:`DisposalFailure` from a core that has not published it. Return the class.
 
-        **A bare ``str`` is still accepted, and read as ``"unknown"``.**  The shipped backends
-        still answer that way for one release — a backend cannot import
-        :class:`DisposalFailure` from a core that has not published it yet — and the union goes
-        away once they have moved.  A backend written today should return the class.
+        A backend that keeps a record of what it could not delete is keeping it *apart from*
+        whatever :meth:`acquire` reuses — a sandbox whose delete failed must be retried, never
+        served. The three in this repository each carry their own copy of that bookkeeping, so
+        a change to one is owed to the others until it has a home in this package.
         """
         ...
 

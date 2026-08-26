@@ -62,9 +62,17 @@ class NoIsolationSandbox:
         self._host_root = host_root
         self._guest_work_dir = guest_work_dir
 
-    def destroy(self) -> None:
-        """Remove the host work directory. Best-effort: never raises."""
-        shutil.rmtree(self._host_root, ignore_errors=True)
+    def destroy(self) -> str | None:
+        """Remove the host work directory. Never raises; answers why it could not.
+
+        ``ignore_errors`` would make this quiet about a directory it failed to remove, and a
+        disposal that cannot say so is read as one that landed.
+        """
+        problems: list[str] = []
+        shutil.rmtree(
+            self._host_root, onexc=lambda _f, path, exc: problems.append(f"{path}: {exc}")
+        )
+        return "; ".join(problems) or None
 
     def _host_path(self, guest_path: str) -> Path:
         """Translate a guest path under ``work_dir`` to a path under the host root.
@@ -327,10 +335,19 @@ class NoIsolationBackend:
                 self._sandboxes[ident] = sandbox
             return sandbox
 
-    async def dispose(self, key: SandboxKey) -> None:
+    async def dispose(self, key: SandboxKey) -> str | None:
+        """Delete this key's sandboxes. Never raises; answers why one may still be there.
+
+        A backend that swallows the failure is read as having disposed, and the router then
+        serves the next call the files this one could not remove.
+        """
         async with self._lock:
-            for ident in [i for i, s in self._sandboxes.items() if i[0] == key]:
-                self._sandboxes.pop(ident).destroy()
+            undeleted = [
+                problem
+                for ident in [i for i in self._sandboxes if i[0] == key]
+                if (problem := self._sandboxes.pop(ident).destroy()) is not None
+            ]
+        return "; ".join(undeleted) or None
 
     async def dispose_scope(self, scope: str, thread_id: str) -> int:
         async with self._lock:

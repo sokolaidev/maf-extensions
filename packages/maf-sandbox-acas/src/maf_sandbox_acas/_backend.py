@@ -877,6 +877,12 @@ class AcasSandboxBackend:
             gc = self._group_client()
         except Exception as exc:  # noqa: BLE001 - purge must never fail
             logger.warning("acas backend: could not reach the sandbox group: %s", exc)
+            # The registry entries are gone by now, so the ids this purge was going to delete
+            # live here or nowhere — without this a later `dispose` finds nothing to do, says
+            # nothing, and the router reads that as the sandboxes having gone.
+            for key, sandbox_id in known:
+                prefix = (key[0], key[1], key[2])
+                self._undeleted[prefix] = self._undeleted.get(prefix, set()) | {sandbox_id}
             return 0
 
         retained = {
@@ -909,6 +915,14 @@ class AcasSandboxBackend:
                 self._undeleted[prefix] = left
             else:
                 self._undeleted.pop(prefix, None)
+        # An id this sweep newly could not delete belongs to whichever key owns it, which the
+        # label listing does not say. Recorded against every key of the thread that still owes
+        # a retry, and against the registry keys this purge popped, so it is retried rather
+        # than lost until a later listing happens to surface it again.
+        for key, sandbox_id in known:
+            if sandbox_id in undeleted:
+                prefix = (key[0], key[1], key[2])
+                self._undeleted[prefix] = self._undeleted.get(prefix, set()) | {sandbox_id}
         return count
 
     # -- internals ----------------------------------------------------------------

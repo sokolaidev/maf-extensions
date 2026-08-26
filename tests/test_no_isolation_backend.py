@@ -352,6 +352,29 @@ def test_acquire_is_get_or_create_keyed_by_scope_thread_kind():
     asyncio.run(body())
 
 
+def test_dispose_reports_a_work_directory_it_could_not_remove(monkeypatch):
+    """A sample is code an adopter copies, so it must not model the silent failure the router
+    exists to catch: a removal that did not happen has to come back as the reason."""
+
+    async def body() -> None:
+        backend, _ = await _fresh()
+
+        def _refuses(path, onexc=None, **kwargs):
+            assert onexc is not None, "the sample must ask to hear about a failed removal"
+            onexc(None, str(path), PermissionError("held open by a child"))
+
+        monkeypatch.setattr("no_isolation_backend.shutil.rmtree", _refuses)
+        try:
+            reason = await backend.dispose(_key())
+        finally:
+            monkeypatch.undo()
+            await _drop(backend)
+        assert reason is not None
+        assert "held open by a child" in reason
+
+    asyncio.run(body())
+
+
 def test_dispose_scope_removes_sandboxes_and_returns_count():
     """``dispose_scope`` drops every sandbox under the (scope, thread_id) pair and counts them."""
 

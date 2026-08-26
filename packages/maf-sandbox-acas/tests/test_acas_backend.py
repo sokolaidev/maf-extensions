@@ -668,6 +668,22 @@ class TestDisposeScope:
         asyncio.run(backend.dispose_scope("scope-a", "thread-1"))
         assert backend._registry == {}
 
+    def test_a_group_client_that_cannot_be_built_keeps_the_ids_for_a_retry(self):
+        """The registry is popped before the client is built, so without this the ids are in
+        neither place and the next `dispose` reports the sandboxes gone."""
+        backend = AcasSandboxBackend(_config())
+        backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = "sbx-1"
+
+        def _unreachable():
+            raise RuntimeError("no credential")
+
+        backend._group_client = _unreachable  # type: ignore[method-assign]
+        assert asyncio.run(backend.dispose_scope("scope-a", "thread-1")) == 0
+        assert backend._undeleted == {("scope-a", "thread-1", "devops-engineer"): {"sbx-1"}}
+
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+        assert asyncio.run(backend.dispose(key)) is not None, "the retry still reports"
+
     def test_a_service_failure_degrades_to_zero_rather_than_raising(self):
         """Purge must not fail a conversation delete."""
         backend = _backend_with(_ExplodingGroupClient())
@@ -1341,30 +1357,6 @@ class TestErrorDetailAdoption:
         ]
         assert len(failed) == 1
         assert failed[0].msg == "acas backend: could not list sandboxes for thread %s: %s"
-
-    def test_the_model_facing_surface_is_unaffected(self):
-        """`error_detail` reaches logs and the router, never a tool result.
-
-        Four call sites hand it to `logger.warning`/`logger.info`; the other two are `dispose`
-        and `_delete` reporting why a sandbox may still be there (#641), which the router logs
-        and keeps out of the `SandboxUnclean` sentence a model would see. This guards that
-        boundary rather than re-deriving it by reading the source on every review.
-        """
-        import inspect
-
-        from maf_sandbox_acas import _backend
-
-        source = inspect.getsource(_backend)
-        assert source.count("error_detail(") == 6, (
-            "expected the resume, delete, list and dispose log sites plus the two disposal "
-            "reasons; a new call site should extend this test rather than silently changing "
-            "the count"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Egress policy — built from the spec, not from configuration
-# ---------------------------------------------------------------------------
 
 
 class TestEgressPolicy:

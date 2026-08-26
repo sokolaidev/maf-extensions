@@ -1208,13 +1208,16 @@ class TestTheDisposalCodeIsWhatACallerBranchesOn:
         assert folded is not None
         assert folded.code == "unreachable"
 
-    def test_a_fold_keeps_every_detail(self):
-        folded = fold_disposal_failures(
+    def test_a_fold_keeps_every_detail_in_one_shape(self):
+        """One shape whether one backend reported or three: a log template built against the
+        single-failure form must not silently misread the folded one."""
+        one_only = fold_disposal_failures([DisposalFailure("refused", "a")])
+        several = fold_disposal_failures(
             [DisposalFailure("refused", "a"), DisposalFailure("unlisted", "b")]
         )
-        assert folded is not None
-        assert "a" in folded.detail
-        assert "b" in folded.detail
+        assert one_only is not None and several is not None
+        assert one_only.detail == "a"
+        assert several.detail == "a; b"
 
     def test_one_failure_folds_to_itself_unchanged(self):
         only = DisposalFailure("refused", "a")
@@ -1222,6 +1225,15 @@ class TestTheDisposalCodeIsWhatACallerBranchesOn:
 
     def test_nothing_folds_to_nothing(self):
         assert fold_disposal_failures([]) is None
+
+    def test_a_code_outside_the_vocabulary_does_not_raise(self):
+        """`DisposalCode` is a `Literal`, so nothing enforces it at run time - a typo or a
+        newer core's word must not raise out of a path that never raises."""
+        folded = fold_disposal_failures(
+            [DisposalFailure("weird", "a"), DisposalFailure("odd", "b")]  # type: ignore[arg-type]
+        )
+        assert folded is not None
+        assert folded.code == "unknown"
 
     @pytest.mark.parametrize(
         ("reported", "expected"),
@@ -1232,19 +1244,48 @@ class TestTheDisposalCodeIsWhatACallerBranchesOn:
             (DisposalFailure("unknown", "no idea"), "unknown"),
         ],
     )
-    def test_a_backends_code_reaches_the_ledger_intact(self, reported, expected):
-        """The router prefixes the backend's name onto the detail and leaves the code alone."""
+    def test_a_backends_code_reaches_the_refusal_intact(self, reported, expected):
         router = self._router(InProcessSandboxBackend(name="acas", dispose_failure=reported))
         asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
-        with pytest.raises(SandboxUnclean, match=rf"{expected}: acas: "):
+        with pytest.raises(SandboxUnclean, match=rf"did not land \({expected}\)"):
             asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_the_detail_stays_out_of_the_refusal_and_in_the_log(self, caplog):
+        """A backend's detail can carry an endpoint, a subscription id or a raw response body,
+        and `acquire` reaches any host directly - not only `sandboxed_tool`, which sanitizes."""
+        secret = "https://tenant-7.internal.example/subscriptions/abc-123"
+        router = self._router(
+            InProcessSandboxBackend(name="acas", dispose_failure=DisposalFailure("refused", secret))
+        )
+        with caplog.at_level("WARNING"):
+            asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
+        with pytest.raises(SandboxUnclean) as refusal:
+            asyncio.run(router.acquire(_KEY, _SPEC))
+
+        assert secret not in str(refusal.value), "the detail must not ride the exception"
+        assert "refused" in str(refusal.value), "the code is what a caller branches on"
+        assert secret in caplog.text, "and the operator still gets it, in the log"
 
     def test_a_backend_still_answering_with_a_sentence_is_unknown(self):
         """The shipped backends answer this way until they can import the class from a
         published core. `unknown` keeps them in the vocabulary instead of outside it."""
         router = self._router(InProcessSandboxBackend(name="docker", dispose_failure="still there"))
         asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
-        with pytest.raises(SandboxUnclean, match="unknown: docker: still there"):
+        with pytest.raises(SandboxUnclean, match=r"did not land \(unknown\)"):
+            asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_a_backend_answering_with_neither_shape_does_not_raise(self):
+        """The protocol widened this return only this release, which is when a backend is most
+        likely to answer with the wrong thing. Reading `.code` off it would raise out of a
+        `finally`."""
+
+        class _Odd(InProcessSandboxBackend):
+            async def dispose(self, key: SandboxKey):  # type: ignore[override]
+                return True
+
+        router = self._router(_Odd())
+        assert asyncio.run(router.dispose_unclean(_KEY, timeout=1.0)) is False
+        with pytest.raises(SandboxUnclean, match=r"did not land \(unknown\)"):
             asyncio.run(router.acquire(_KEY, _SPEC))
 
     def test_a_bound_that_expired_is_a_timeout_not_a_guess(self):
@@ -1254,7 +1295,25 @@ class TestTheDisposalCodeIsWhatACallerBranchesOn:
 
         router = self._router(_Hangs())
         asyncio.run(router.dispose_unclean(_KEY, timeout=0.05))
-        with pytest.raises(SandboxUnclean, match="timeout: the disposal did not finish"):
+        with pytest.raises(SandboxUnclean, match=r"did not land \(timeout\)"):
+            asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_a_timeout_does_not_outrank_what_a_previous_attempt_reported(self):
+        """`unreachable` is first in the precedence because it is the most actionable; a later
+        bound expiring must not discard it."""
+
+        class _Hangs(InProcessSandboxBackend):
+            async def dispose(self, key: SandboxKey) -> DisposalFailure | str | None:
+                if self.dispose_failure is not None:
+                    return self.dispose_failure
+                await asyncio.Event().wait()
+
+        backend = _Hangs(dispose_failure=DisposalFailure("unreachable", "daemon down"))
+        router = self._router(backend)
+        asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
+        backend.dispose_failure = None
+        asyncio.run(router.dispose_unclean(_KEY, timeout=0.05))
+        with pytest.raises(SandboxUnclean, match=r"did not land \(unreachable\)"):
             asyncio.run(router.acquire(_KEY, _SPEC))
 
     def test_a_backend_that_breaks_its_contract_and_raises_is_unknown(self):
@@ -1263,50 +1322,78 @@ class TestTheDisposalCodeIsWhatACallerBranchesOn:
             InProcessSandboxBackend(name="bad", dispose_error=RuntimeError("boom"))
         )
         asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
-        with pytest.raises(SandboxUnclean, match="unknown: bad raised: boom"):
+        with pytest.raises(SandboxUnclean, match=r"did not land \(unknown\)"):
             asyncio.run(router.acquire(_KEY, _SPEC))
 
 
+class TestOnlyTheUncleanPathClosesAKey:
+    """`dispose` is best-effort and claims nothing about what the sandbox held."""
+
+    def _router(self, *backends, **kwargs):
+        return SandboxRouter(list(backends), min_isolation=Isolation.NONE, **kwargs)
+
+    def test_a_plain_dispose_that_fails_leaves_the_key_servable(self):
+        """Its caller never said the sandbox was unclean, so a transient failure here must not
+        make the key unservable - and `dispose` returns nothing, so nobody would know why."""
+        router = self._router(
+            InProcessSandboxBackend(dispose_failure=DisposalFailure("unreachable", "transient"))
+        )
+        asyncio.run(router.dispose(_KEY))
+        asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_a_plain_dispose_still_clears_a_refusal_when_it_lands(self):
+        backend = InProcessSandboxBackend(dispose_failure=DisposalFailure("refused", "down"))
+        router = self._router(backend)
+        asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
+        backend.dispose_failure = None
+        asyncio.run(router.dispose(_KEY))
+        asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_keep_unclean_opts_down_from_the_refusal_too(self):
+        """The host asked the framework not to destroy a sandbox it could not clean; closing
+        the key is the other half of that same act."""
+        router = self._router(
+            InProcessSandboxBackend(dispose_failure=DisposalFailure("refused", "down")),
+            keep_unclean=True,
+        )
+        assert asyncio.run(router.dispose_unclean(_KEY, timeout=1.0)) is False
+        asyncio.run(router.acquire(_KEY, _SPEC))
+
+
 class TestTheRefusalNamesWhy:
-    """A host reading `SandboxUnclean` should not have to go to the logs to learn what broke."""
+    """A host reading `SandboxUnclean` should learn the code without going to the logs."""
 
     def _router(self, *backends):
         return SandboxRouter(list(backends), min_isolation=Isolation.NONE)
 
-    def test_the_backend_reason_is_quoted(self):
-        router = self._router(InProcessSandboxBackend(name="acas", dispose_failure="403 denied"))
-        asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
-        with pytest.raises(SandboxUnclean, match=r"acas: 403 denied"):
-            asyncio.run(router.acquire(_KEY, _SPEC))
-
-    def test_a_bare_mark_still_refuses_without_one(self):
+    def test_a_bare_mark_still_refuses_without_a_code(self):
         router = self._router(InProcessSandboxBackend())
         router.mark_unclean(_KEY)
         with pytest.raises(SandboxUnclean, match="did not land. It is refused"):
             asyncio.run(router.acquire(_KEY, _SPEC))
 
-    def test_a_marked_reason_is_quoted_too(self):
+    def test_a_marked_sentence_is_read_as_unknown(self):
+        """The same one-release grace the protocol grants `dispose`, so a caller is never made
+        to import the class to close a key."""
         router = self._router(InProcessSandboxBackend())
         router.mark_unclean(_KEY, "the cleanup was cancelled")
-        with pytest.raises(SandboxUnclean, match=r"the cleanup was cancelled"):
+        with pytest.raises(SandboxUnclean, match=r"did not land \(unknown\)"):
+            asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_a_marked_failure_keeps_its_code(self):
+        router = self._router(InProcessSandboxBackend())
+        router.mark_unclean(_KEY, DisposalFailure("timeout", "the cleanup was cancelled"))
+        with pytest.raises(SandboxUnclean, match=r"did not land \(timeout\)"):
             asyncio.run(router.acquire(_KEY, _SPEC))
 
     def test_a_mark_does_not_overwrite_what_a_disposal_reported(self):
-        """What a backend said about the sandbox outranks "a cleanup was cut short"."""
-        router = self._router(InProcessSandboxBackend(dispose_failure="container 7 still running"))
+        """What a backend said about the sandbox outranks a cleanup that was cut short."""
+        router = self._router(
+            InProcessSandboxBackend(dispose_failure=DisposalFailure("refused", "container 7"))
+        )
         asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
-        router.mark_unclean(_KEY, "the cleanup was cancelled")
-        with pytest.raises(SandboxUnclean, match=r"container 7 still running"):
-            asyncio.run(router.acquire(_KEY, _SPEC))
-
-    def test_a_timeout_says_so(self):
-        class _Hangs(InProcessSandboxBackend):
-            async def dispose(self, key: SandboxKey) -> str | None:
-                await asyncio.Event().wait()
-
-        router = self._router(_Hangs())
-        asyncio.run(router.dispose_unclean(_KEY, timeout=0.05))
-        with pytest.raises(SandboxUnclean, match="did not finish within 0.05s"):
+        router.mark_unclean(_KEY, DisposalFailure("unknown", "the cleanup was cancelled"))
+        with pytest.raises(SandboxUnclean, match=r"did not land \(refused\)"):
             asyncio.run(router.acquire(_KEY, _SPEC))
 
 
