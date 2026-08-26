@@ -3,6 +3,6 @@
   "packages/maf-sandbox-acas": "0.13.1",
   "packages/maf-sandbox-bicep": "0.9.7",
   "packages/maf-sandbox-codeact": "0.7.6",
-  "packages/maf-sandbox-docker": "0.8.2",
+  "packages/maf-sandbox-docker": "0.9.0",
   "packages/maf-sandbox-wslc": "0.12.0"
 }
