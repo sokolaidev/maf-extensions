@@ -23,6 +23,7 @@ from ._protocol import (
     DEFAULT_SANDBOX_LIMITS,
     ISOLATION_RANK,
     Capability,
+    DisposalCode,
     DisposalFailure,
     Egress,
     Identity,
@@ -138,7 +139,17 @@ class SandboxUnclean(PermissionError):
     the key would hand the next call everything the last one could not take back. Better a
     failed run than leaked data. This is in-process knowledge only — another replica holds
     no such record, which is the same bound ``dispose_scope`` exists to reach past.
+
+    :attr:`code` is the :data:`DisposalCode` the last disposal reported, or ``None`` when the
+    key was closed without one.  **Branch on it, not on the message.**  The sentence is prose
+    and may be reworded; putting the code only inside it would hand every host a regex and
+    give back the problem a closed set of codes exists to remove.  The backend's own detail is
+    not here at all — it can carry an endpoint or a raw response body, and it stays in the log.
     """
+
+    def __init__(self, message: str, *, code: DisposalCode | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class SandboxEgressNotEnforced(PermissionError):
@@ -569,7 +580,8 @@ class SandboxRouter:
                 "a tool call's data could not be removed, or a program it started may still be "
                 f"running — and disposing it did not land{because}. It is refused until a "
                 "disposal lands — dispose(key) or dispose_scope(scope, thread_id) — rather than "
-                "served unclean."
+                "served unclean.",
+                code=reported.code if reported is not None else None,
             )
         self._refuse_unless_backend_can_serve(spec)
         sandbox = await self._backend.acquire(key, spec)
