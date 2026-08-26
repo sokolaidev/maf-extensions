@@ -519,6 +519,13 @@ class _DockerSandbox:
         swapping one needs write on *its* parent, and no image hands out a directory above
         ``work_dir``.  A walk would answer this the way :meth:`remove`'s does, and is the very
         duty this member exists without.
+
+        **That second half is a precondition, and nothing here checks it.**  An image that did
+        grant write on a directory above ``work_dir`` would let the guest swap the component
+        below it, and the removal would follow the link to the named leaf under whatever it
+        points at — measured, and bounded to that leaf rather than the target's whole tree.
+        The argument would fail silently, because the only thing that could catch it is the
+        walk this member does not do (#680).
         """
         del working_directory
         if not directory.startswith("/"):
