@@ -846,6 +846,20 @@ class TestDispose:
         assert backend._undeleted == {prefix: {"c-2"}}, "the newer record survives"  # noqa: SLF001
         assert reported is not None, "and the key stays refused until someone reports on it"
 
+    def test_a_container_a_failed_removal_left_behind_is_still_served_here(self):
+        """Pins what the retry record does rather than what its name suggests: it is disposal
+        bookkeeping, and `acquire` still reuses the container, because the name comes from the
+        key and the engine is what gets asked. Refusing to serve is the router's ledger."""
+        overrides = {("container", "remove"): _WslcResult(1, b"", b"engine error")}
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert asyncio.run(backend.dispose(_KEY)) is not None
+
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
+        assert backend._undeleted[prefix] == {_NAME}, "the name is owed a retry"  # noqa: SLF001
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert fake.matching("container", "run") == [], "the same container is handed back"
+
 
 class TestDisposeScope:
     def test_a_dispose_landing_mid_purge_neither_crashes_nor_is_clobbered(self):

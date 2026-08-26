@@ -1430,6 +1430,14 @@ class TestTheRefusalNamesWhy:
     def _router(self, *backends):
         return SandboxRouter(list(backends), min_isolation=Isolation.NONE)
 
+    def test_the_inherited_constructor_survives_the_new_keyword(self):
+        """An `OSError` subclass carries a flexible constructor, and a host builds one — in a
+        test double, say. Adding `code` must not take the inherited forms away with it."""
+        assert SandboxUnclean().code is None
+        assert str(SandboxUnclean(2, "no such file")) == "[Errno 2] no such file"
+        assert str(SandboxUnclean("plain message")) == "plain message"
+        assert SandboxUnclean("m", code="refused").code == "refused"
+
     def test_a_bare_mark_still_refuses_without_a_code(self):
         router = self._router(InProcessSandboxBackend())
         router.mark_unclean(_KEY)

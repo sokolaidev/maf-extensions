@@ -511,10 +511,13 @@ class DockerSandboxBackend:
         # (scope, thread_id, agent_dir, kind) -> name: a purge fallback for when the listing
         # fails, never the truth. Holds the last name acquired per key and kind.
         self._registry: dict[tuple[str, str, str, str], str] = {}
-        #: Workload containers a removal could not take away, by key prefix. Disposal-only and
-        #: deliberately apart from the registry, which `acquire` reuses: a container whose
-        #: delete failed must be retried, never served. An entry lives only while its removal
-        #: keeps failing, so this holds nothing for a key that disposes cleanly.
+        #: Workload containers a removal could not take away, by key prefix. Disposal-only:
+        #: `dispose` and `dispose_scope` retry these names once the registry entry is gone.
+        #: It does **not** keep one from being served. The name is derived from the key, so
+        #: `acquire` finds the container by asking the engine and consults neither map — what
+        #: refuses to serve a sandbox whose disposal did not land is `SandboxRouter`'s ledger,
+        #: on the path that claims it. An entry lives only while its removal keeps failing, so
+        #: this holds nothing for a key that disposes cleanly.
         self._undeleted: dict[tuple[str, str, str], set[str]] = {}
         # Get-or-create serialised per (running loop, key, kind), for the same reason wslc does
         # it: a create names no container until it returns, so two acquires racing one key would

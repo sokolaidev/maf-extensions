@@ -147,8 +147,11 @@ class SandboxUnclean(PermissionError):
     not here at all — it can carry an endpoint or a raw response body, and it stays in the log.
     """
 
-    def __init__(self, message: str, *, code: DisposalCode | None = None) -> None:
-        super().__init__(message)
+    def __init__(self, *args: object, code: DisposalCode | None = None) -> None:
+        # `*args`, not a required message: this is an `OSError` subclass, and narrowing the
+        # inherited constructor would break `SandboxUnclean()` and the errno forms for anyone
+        # who builds one — in a test double, say. The code is keyword-only and additive.
+        super().__init__(*args)
         self.code = code
 
 
