@@ -676,7 +676,8 @@ class SandboxRouter:
         refused — otherwise a concurrent :meth:`acquire` passes its ledger check and is handed
         the dirty sandbox. :meth:`_dispose_each` discards the key on a landed disposal, so a
         success clears it while a failure, the bound passing, or a cancellation leaves it
-        refused.
+        refused.  A host that opted down with ``keep_unclean`` gets no ledger write at all — and
+        the same bound, which is not part of what that flag loosens.
 
         Raises:
             ValueError: when ``timeout`` is not a finite positive number of seconds. ``math.inf``
@@ -686,14 +687,16 @@ class SandboxRouter:
         """
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError(f"timeout must be a finite positive number of seconds, not {timeout}")
-        if self._keep_unclean:
-            # The host opted down from the framework destroying a sandbox it could not clean,
-            # and refusing the key is the other half of that same act.
-            return await self._dispose_each(key)
-        self._unclean.setdefault(key, None)
+        # The host opted down from the framework closing the key, and refusing it is the other
+        # half of that same act — but not from the bound. This still runs after a tool call's
+        # body, and the bound is the only thing between a backend that hangs and a call that
+        # never returns, so it wraps both paths and only the ledger writes are conditional.
+        refuse = not self._keep_unclean
+        if refuse:
+            self._unclean.setdefault(key, None)
         try:
             async with asyncio.timeout(timeout):
-                return await self._dispose_each(key, refuse=True)
+                return await self._dispose_each(key, refuse=refuse)
         except TimeoutError:
             logger.warning(
                 "sandbox router: disposing %s/%s/%s did not finish within %ss",
@@ -702,6 +705,10 @@ class SandboxRouter:
                 key.agent_dir,
                 timeout,
             )
+            if not refuse:
+                # Nothing to record under the opt-down: not closing the key is the whole of what
+                # the host asked for, and a bound that expired does not change that.
+                return False
             expired = DisposalFailure("timeout", f"the disposal did not finish within {timeout}s")
             recorded = self._unclean.get(key)
             # Folded rather than assigned: a previous attempt may have recorded something more

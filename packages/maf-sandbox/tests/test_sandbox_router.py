@@ -1395,6 +1395,24 @@ class TestOnlyTheUncleanPathClosesAKey:
         asyncio.run(router.dispose(_KEY))
         asyncio.run(router.acquire(_KEY, _SPEC))
 
+    def test_the_opt_down_does_not_loosen_the_bound(self):
+        """`keep_unclean` is about not closing the key. The bound is about not hanging the call
+        that asked — and this method validates `timeout` precisely so it always holds."""
+
+        class _Hangs(InProcessSandboxBackend):
+            async def dispose(self, key: SandboxKey) -> DisposalFailure | str | None:
+                await asyncio.Event().wait()
+
+        router = self._router(_Hangs(), keep_unclean=True)
+
+        async def scenario() -> bool:
+            # `wait_for` well past the bound, so a regression fails the test rather than hanging
+            # the suite on a backend that never returns.
+            return await asyncio.wait_for(router.dispose_unclean(_KEY, timeout=0.05), timeout=5)
+
+        assert asyncio.run(scenario()) is False
+        asyncio.run(router.acquire(_KEY, _SPEC))  # and the opt-down still leaves the key servable
+
     def test_keep_unclean_opts_down_from_the_refusal_too(self):
         """The host asked the framework not to destroy a sandbox it could not clean; closing
         the key is the other half of that same act."""
