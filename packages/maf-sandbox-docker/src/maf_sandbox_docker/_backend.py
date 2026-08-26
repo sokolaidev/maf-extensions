@@ -241,6 +241,23 @@ def _no_component_was_the_guests(walked: Mapping[str, tuple[int, int]]) -> bool:
 
 
 @dataclass(frozen=True)
+class _ContainerFacts:
+    """What a running container says about itself, as against what this backend asked for.
+
+    ``acquire`` reuses a container by a name derived from scope, thread, agent dir, kind and
+    egress — never from the image or the hardening — so a running one can predate any change to
+    either, and the config is not evidence about it.
+    """
+
+    #: Every directory above ``work_dir`` is root's and writable by nobody else, so the guest
+    #: could not have swapped one. What licenses `reclaim` to remove with root's authority.
+    host_owned_ancestors: bool
+    #: This container runs with ``--cap-drop ALL``, so root holds no ``CAP_DAC_OVERRIDE`` and
+    #: can empty only what it owns.
+    capabilities_dropped: bool
+
+
+@dataclass(frozen=True)
 class _DockerResult:
     """What one ``docker`` invocation returned. ``stdout`` is bytes: the read path streams a tar
     through this seam, and decoding it would corrupt every artifact that is not text."""
@@ -411,28 +428,14 @@ class _DockerSandbox:
         timeout: float,
         raise_authority: bool,
     ) -> ExecResult:
-        """Run a removal, as root where the caller says the reach rule allows it.
+        """Run a removal, as root where ``raise_authority`` says the reach rule allows it.
 
-        ``raise_authority`` is the protocol's reach rule answered by the caller: a swap must
-        not let the removal delete what the guest program could not delete itself, so root is
-        for paths the guest could not have swapped.  Without it this is one ``exec`` as the
-        image's user, which is the authority the guest program itself had.
+        Without it, one ``exec`` as the image's user.  With it, root — and a refusal is
+        retried as the image's user where this container holds no ``CAP_DAC_OVERRIDE``, since
+        root can then empty only what it owns.  Which of those a refusal was is not read from
+        ``rm``'s message, which belongs to the guest's ``rm`` and its locale.
 
-        ``--user 0`` is a uid, not a capability set.  Holding ``CAP_DAC_OVERRIDE`` — which a
-        container does unless :attr:`~maf_sandbox_docker.DockerSandboxConfig.cap_drop_all`
-        takes it away — root empties anything, so a refusal there is never about ownership and
-        a *less* privileged second attempt could not help.  Without it root empties only what
-        it owns, and a directory the image's user owns is both what root cannot empty and what
-        that user can — which is what this backend ran as before, so the retry takes back an
-        authority rather than adding one (#680).
-
-        Gated on the configuration rather than on what ``rm`` printed: which message means a
-        permission refusal is the guest's ``rm`` and its locale talking, and this backend
-        chooses neither.
-
-        ``timeout`` is one deadline across both attempts, not one each: it is what the caller
-        was promised for the whole call.  A first attempt that spends it leaves nothing to
-        retry with, and its own result is the answer.
+        ``timeout`` is one deadline across both attempts, not one each.
         """
         if not raise_authority:
             return await self._exec(argv, working_directory=working_directory, timeout=timeout)
@@ -684,11 +687,11 @@ class DockerSandboxBackend:
         self._acquire_locks: weakref.WeakKeyDictionary[
             asyncio.AbstractEventLoop, dict[tuple[str, str, str, str], asyncio.Lock]
         ] = weakref.WeakKeyDictionary()
-        # (container, image, work_dir) -> whether every directory above `work_dir` is the
-        # host's. The image is in the key because a container name is a digest of scope,
-        # thread, agent dir, kind and egress and *not* of the image, so one name legitimately
-        # returns carrying a different one. Dropped when the container is removed.
-        self._host_owned_ancestors: dict[tuple[str, str, str], bool] = {}
+        # (container, image, work_dir) -> what the container itself says. The image is in the
+        # key because a container name is a digest of scope, thread, agent dir, kind and egress
+        # and *not* of the image, so one name legitimately returns carrying a different one.
+        # Dropped when the container is removed.
+        self._facts: dict[tuple[str, str, str], _ContainerFacts] = {}
 
     @property
     def name(self) -> str:
@@ -788,15 +791,36 @@ class DockerSandboxBackend:
                 )
 
             self._registry[(key.scope, key.thread_id, key.agent_dir, spec.kind)] = name
+            facts = await self._container_facts(name, spec)
             return _DockerSandbox(
                 self._docker,
                 name,
                 self._config.command_timeout_seconds,
-                self._config.cap_drop_all,
-                await self._ancestors_are_the_hosts(name, spec),
+                facts.capabilities_dropped,
+                facts.host_owned_ancestors,
             )
 
-    async def _ancestors_are_the_hosts(self, name: str, spec: SandboxSpec) -> bool:
+    async def _capabilities_dropped(self, name: str) -> bool:
+        """Does this container run without ``CAP_DAC_OVERRIDE``?
+
+        Read from the container, never from :attr:`DockerSandboxConfig.cap_drop_all`: the name
+        ``acquire`` reuses carries no hardening, so a running container can predate a change to
+        it and the config would describe a different one.  **Unknown counts as dropped**, which
+        costs one extra ``exec`` on a removal that failed anyway, where the other direction
+        costs the leak.
+        """
+        result = await self._docker(
+            "inspect",
+            "-f",
+            "{{.HostConfig.CapDrop}}",
+            name,
+            timeout=self._config.command_timeout_seconds,
+        )
+        if result.returncode != 0:
+            return True
+        return "ALL" in result.stdout.decode("utf-8", errors="replace").upper()
+
+    async def _container_facts(self, name: str, spec: SandboxSpec) -> _ContainerFacts:
         """Could the guest program have swapped a directory *above* ``spec.work_dir``?
 
         It could not where every one of them is root's and writable by nobody else, and that
@@ -812,7 +836,7 @@ class DockerSandboxBackend:
         authority, which is what every backend did before #680 and costs only the leak.
         """
         key = (name, spec.image or "", spec.work_dir)
-        cached = self._host_owned_ancestors.get(key)
+        cached = self._facts.get(key)
         if cached is not None:
             return cached
         probe = _DockerSandbox(self._docker, name, self._config.command_timeout_seconds)
@@ -828,8 +852,12 @@ class DockerSandboxBackend:
                 name,
                 spec.work_dir,
             )
-        self._host_owned_ancestors[key] = answer
-        return answer
+        facts = _ContainerFacts(
+            host_owned_ancestors=answer,
+            capabilities_dropped=await self._capabilities_dropped(name),
+        )
+        self._facts[key] = facts
+        return facts
 
     async def dispose(self, key: SandboxKey) -> str | None:
         """Delete every container for ``key`` — every kind, closed or allowlisted — with
@@ -1311,10 +1339,10 @@ class DockerSandboxBackend:
         failure: the sweep tries names the registry remembers, and one already gone is the
         ordinary case.
         """
-        # Whatever the engine says, this name no longer refers to the container the ancestor
-        # answer was read from. Dropped before the call so a failure cannot leave it behind.
-        for cached in [key for key in self._host_owned_ancestors if key[0] == target]:
-            del self._host_owned_ancestors[cached]
+        # Whatever the engine says, this name no longer refers to the container those facts
+        # were read from. Dropped before the call so a failure cannot leave them behind.
+        for cached in [key for key in self._facts if key[0] == target]:
+            del self._facts[cached]
         try:
             result = await self._docker(
                 "rm", "-f", target, timeout=self._config.command_timeout_seconds

@@ -109,6 +109,10 @@ def _cp(guest: str) -> tuple[str, ...]:
 #: Every stat and every read walks the components from the root down: `/maf-sandbox` then
 #: `/maf-sandbox/work`. A fake engine that cannot answer for either refuses both as a path
 #: through a non-directory, so both are seeded as directories here.
+#: What `docker inspect -f {{.HostConfig.CapDrop}}` prints for a container created with
+#: `--cap-drop ALL`, which is where the retry decision is read from.
+_CAPS_DROPPED = {("inspect", "-f", "{{.HostConfig.CapDrop}}"): _DockerResult(0, b"[ALL]\n", "")}
+
 _WORK_IS_A_DIRECTORY = {
     _cp("/maf-sandbox"): _DockerResult(0, _directory_tar("maf-sandbox"), ""),
     _cp(_WORK): _DockerResult(0, _directory_tar(_WORK.lstrip("/")), ""),
@@ -735,16 +739,14 @@ class TestWhichPrincipalACommandCarries:
     rule those tuples follow, and the one case where root alone is not enough.
     """
 
-    def _sandbox(self, overrides=None, *, cap_drop_all=False):
+    def _sandbox(self, overrides=None, *, capabilities_dropped=False):
         merged = {
             **_WORK_IS_A_DIRECTORY,
             ("cp",): _DockerResult(1, b"", "Error: Could not find the file in container"),
+            **(_CAPS_DROPPED if capabilities_dropped else {}),
             **(overrides or {}),
         }
-        backend, fake = _backend_with(
-            _machine(running=[_NAME], overrides=merged),
-            DockerSandboxConfig(cap_drop_all=cap_drop_all),
-        )
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=merged))
         return asyncio.run(backend.acquire(_KEY, _SPEC)), fake
 
     def test_a_guest_command_is_the_argv_and_nothing_else(self):
@@ -762,7 +764,7 @@ class TestWhichPrincipalACommandCarries:
         what that user can.
         """
         refused = {("exec", "--user", "0"): _DockerResult(1, b"", "rm: Permission denied")}
-        sandbox, fake = self._sandbox(refused, cap_drop_all=True)
+        sandbox, fake = self._sandbox(refused, capabilities_dropped=True)
         asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
         assert [call.args[:3] for call in fake.matching("exec")] == [
             ("exec", "--user", "0"),
@@ -781,14 +783,14 @@ class TestWhichPrincipalACommandCarries:
         assert len(fake.matching("exec")) == 1
 
     def test_a_removal_root_could_make_is_not_retried(self):
-        sandbox, fake = self._sandbox(cap_drop_all=True)
+        sandbox, fake = self._sandbox(capabilities_dropped=True)
         asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
         assert len(fake.matching("exec")) == 1
 
     def test_a_removal_neither_can_make_raises_with_what_the_guest_said(self):
         """The fallback must not swallow a failure that is nothing to do with ownership."""
         both = {("exec",): _DockerResult(1, b"", "rm: read-only file system")}
-        sandbox, fake = self._sandbox(both, cap_drop_all=True)
+        sandbox, fake = self._sandbox(both, capabilities_dropped=True)
         with pytest.raises(OSError, match="read-only file system"):
             asyncio.run(sandbox.reclaim(f"{_WORK}/x", working_directory=_WORK, timeout=30))
         assert len(fake.matching("exec")) == 2
@@ -800,7 +802,7 @@ class TestWhichPrincipalACommandCarries:
         above would notice: both calls succeed, just twice as late as the contract allows.
         """
         spent = 0.05
-        base = _machine(running=[_NAME], overrides=dict(_WORK_IS_A_DIRECTORY))
+        base = _machine(running=[_NAME], overrides={**_WORK_IS_A_DIRECTORY, **_CAPS_DROPPED})
 
         def slow(args):
             if args[:3] == ("exec", "--user", "0"):
@@ -808,7 +810,7 @@ class TestWhichPrincipalACommandCarries:
                 return _DockerResult(1, b"", "rm: Permission denied")
             return base(args)
 
-        backend, fake = _backend_with(slow, DockerSandboxConfig(cap_drop_all=True))
+        backend, fake = _backend_with(slow)
         sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
         asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
 
@@ -818,7 +820,7 @@ class TestWhichPrincipalACommandCarries:
 
     def test_a_refused_remove_is_retried_the_same_way(self):
         refused = {("exec", "--user", "0"): _DockerResult(1, b"", "rm: Permission denied")}
-        sandbox, fake = self._sandbox(refused, cap_drop_all=True)
+        sandbox, fake = self._sandbox(refused, capabilities_dropped=True)
         asyncio.run(sandbox.remove("a.txt", working_directory=_WORK))
         assert [call.args[:3] for call in fake.matching("exec")] == [
             ("exec", "--user", "0"),
@@ -948,6 +950,52 @@ class TestTheAncestorsAboveTheWorkDirAreChecked:
         fake.mark()
         asyncio.run(backend.acquire(_KEY, spec))
         assert fake.cp_since_mark() == [(*_cp("/maf-sandbox"), "-")]
+
+
+class TestTheHardeningIsReadFromTheContainer:
+    """`acquire` reuses a container by a name that carries no hardening.
+
+    `_container_name` is a digest of scope, thread, agent dir, kind and egress — so a running
+    container can predate any change to `cap_drop_all`, and this backend's own config is not
+    evidence about it. Reading the config instead would suppress the retry on a container that
+    really does lack `CAP_DAC_OVERRIDE`, which is the leak the retry exists to prevent.
+    """
+
+    def _reclaim_calls(self, config, container_says_dropped: bool) -> list[tuple[str, ...]]:
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("exec", "--user", "0"): _DockerResult(1, b"", "rm: Permission denied"),
+            **(_CAPS_DROPPED if container_says_dropped else {}),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides), config)
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        fake.mark()
+        asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
+        return [call.args[:3] for call in fake.matching("exec")]
+
+    def test_a_hardened_container_retries_even_though_this_config_is_not(self):
+        calls = self._reclaim_calls(DockerSandboxConfig(cap_drop_all=False), True)
+        assert calls == [("exec", "--user", "0"), ("exec", "-w", "/")]
+
+    def test_an_unhardened_container_does_not_retry_even_though_this_config_would(self):
+        backend_config = DockerSandboxConfig(cap_drop_all=True)
+        with pytest.raises(OSError):
+            self._reclaim_calls(backend_config, False)
+
+    def test_a_container_that_will_not_say_is_treated_as_hardened(self):
+        """Unknown costs one extra `exec` on a removal that failed anyway; the other direction
+        costs the leak.
+        """
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("exec", "--user", "0"): _DockerResult(1, b"", "rm: Permission denied"),
+            ("inspect", "-f", "{{.HostConfig.CapDrop}}"): _DockerResult(1, b"", "no such object"),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        fake.mark()
+        asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
+        assert len(fake.matching("exec")) == 2
 
 
 class TestReclaimKeepsAFloorUnderRoot:
