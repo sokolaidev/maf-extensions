@@ -69,9 +69,15 @@ class NoIsolationSandbox:
         disposal that cannot say so is read as one that landed.
         """
         problems: list[str] = []
-        shutil.rmtree(
-            self._host_root, onexc=lambda _f, path, exc: problems.append(f"{path}: {exc}")
-        )
+
+        def _note(_function: object, path: str, exc: BaseException) -> None:
+            # A path that is not there is a removal that landed, which is how the packaged
+            # backends read "no such container" too. Reporting it would refuse the key over a
+            # sandbox that is already gone, and keep it for a retry that can never succeed.
+            if not isinstance(exc, FileNotFoundError):
+                problems.append(f"{path}: {exc}")
+
+        shutil.rmtree(self._host_root, onexc=_note)
         return "; ".join(problems) or None
 
     def _host_path(self, guest_path: str) -> Path:

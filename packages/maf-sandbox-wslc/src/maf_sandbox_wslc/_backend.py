@@ -591,13 +591,24 @@ class WslcSandboxBackend:
         # on the next attempt and drops out. Subtracting only what this sweep took away — and
         # reading the map here rather than trusting the snapshot above — leaves a name another
         # disposal recorded meanwhile alone. No await sits between the read and the write.
+        # A name does not identify a generation, so a sweep stale enough to straddle a
+        # re-acquire of the same name subtracts a record the newer disposal wrote: #685.
         still = set(swept.undeleted)
         left = (self._undeleted.get(prefix, set()) | still) - (set(candidates) - still)
         if left:
             self._undeleted[prefix] = left
         else:
             self._undeleted.pop(prefix, None)
-        return "; ".join(swept.undeleted.values()) or None
+        if swept.undeleted:
+            return "; ".join(swept.undeleted.values())
+        if left:
+            # Left over means a disposal still in flight wrote these ahead of its own first
+            # await and has not reported yet. Answering `None` would clear the refusal on the
+            # strength of a delete nobody has confirmed; the count rather than the names,
+            # because they are not this attempt's to describe. The next disposal that lands
+            # clears it.
+            return f"another disposal has not yet reported on {len(left)} container(s)"
+        return None
 
     async def dispose_scope(self, scope: str, thread_id: str) -> int:
         """Delete every container labelled ``(scope, thread_id)``; returns how many sandboxes.
@@ -627,6 +638,8 @@ class WslcSandboxBackend:
         # these keys can land while the sweep is in flight, and indexing what it may have
         # removed would raise out of a method that never raises. Only names this sweep took
         # away are subtracted, so a newer record it wrote survives.
+        # A name does not identify a generation, so a sweep stale enough to straddle a
+        # re-acquire of the same name subtracts a record the newer disposal wrote: #685.
         still = set(swept.undeleted)
         for prefix, before in retained.items():
             left = self._undeleted.get(prefix, set()) - (before - still)

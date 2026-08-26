@@ -950,6 +950,33 @@ class TestDispose:
         assert reason is not None
         assert "no credential" in reason
 
+    def test_a_record_this_attempt_never_reported_on_is_not_read_as_landed(self):
+        """A disposal still in flight writes its ids ahead of its own first await. Answering
+        `None` here clears the router's refusal on the strength of a delete nobody confirmed."""
+        release = asyncio.Event()
+        prefix = ("scope-a", "thread-1", "devops-engineer")
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+        backend = _backend_with(_FakeGroupClient())
+        backend._registry[("scope-a", "thread-1", "devops-engineer", "bicep")] = "sbx-1"
+        original = backend._delete
+
+        async def slow_delete(group_client, sandbox_id):
+            await release.wait()
+            return await original(group_client, sandbox_id)
+
+        backend._delete = slow_delete  # type: ignore[method-assign]
+
+        async def drive() -> str | None:
+            disposal = asyncio.create_task(backend.dispose(key))
+            await asyncio.sleep(0)
+            backend._undeleted[prefix] = backend._undeleted.get(prefix, set()) | {"sbx-2"}
+            release.set()
+            return await disposal
+
+        reported = asyncio.run(drive())
+        assert backend._undeleted == {prefix: {"sbx-2"}}, "the newer record survives"
+        assert reported is not None, "and the key stays refused until someone reports on it"
+
 
 # ---------------------------------------------------------------------------
 # Lifecycle visibility — a sandbox started or reclaimed must leave a record

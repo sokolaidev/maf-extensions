@@ -819,6 +819,33 @@ class TestDispose:
         ]
         assert backend._registry == {}
 
+    def test_a_record_this_sweep_never_reported_on_is_not_read_as_landed(self):
+        """A disposal still in flight writes its names ahead of its own first await. Answering
+        `None` here clears the router's refusal on the strength of a delete nobody confirmed."""
+        listing = asyncio.Event()
+        release = asyncio.Event()
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
+
+        async def slow_listing(*args: str, **kwargs: object) -> _WslcResult:
+            if args[:2] == ("container", "list"):
+                listing.set()
+                await release.wait()
+            return _WslcResult(0, b"", b"")
+
+        backend, _ = _backend_with(_machine())
+        backend._wslc = slow_listing  # type: ignore[method-assign]  # noqa: SLF001
+
+        async def drive() -> str | None:
+            disposal = asyncio.create_task(backend.dispose(_KEY))
+            await listing.wait()
+            backend._undeleted[prefix] = {"c-2"}  # a later disposal's own  # noqa: SLF001
+            release.set()
+            return await disposal
+
+        reported = asyncio.run(drive())
+        assert backend._undeleted == {prefix: {"c-2"}}, "the newer record survives"  # noqa: SLF001
+        assert reported is not None, "and the key stays refused until someone reports on it"
+
 
 class TestDisposeScope:
     def test_a_dispose_landing_mid_purge_neither_crashes_nor_is_clobbered(self):

@@ -848,8 +848,16 @@ class AcasSandboxBackend:
             self._undeleted[prefix] = left
         else:
             self._undeleted.pop(prefix, None)
-        reasons = "; ".join(undeleted.values())
-        return f"sandbox delete failed: {reasons}" if undeleted else None
+        if undeleted:
+            reasons = "; ".join(undeleted.values())
+            return f"sandbox delete failed: {reasons}"
+        if left:
+            # Left over means a disposal still in flight wrote these ahead of its own first
+            # await and has not reported yet. Answering `None` would clear the refusal on the
+            # strength of a delete nobody has confirmed; the count rather than the ids, because
+            # they are not this attempt's to describe. The next disposal that lands clears it.
+            return f"another disposal has not yet reported on {len(left)} sandbox(es)"
+        return None
 
     async def dispose_scope(self, scope: str, thread_id: str) -> int:
         """Delete every sandbox labelled ``(scope, thread_id)``; returns how many.

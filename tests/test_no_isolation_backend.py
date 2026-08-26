@@ -352,6 +352,24 @@ def test_acquire_is_get_or_create_keyed_by_scope_thread_kind():
     asyncio.run(body())
 
 
+def test_a_work_directory_already_gone_is_a_disposal_that_landed(monkeypatch):
+    """`shutil.rmtree` hands `onexc` a `FileNotFoundError` for a missing root, so reading every
+    `onexc` call as a failure refuses the key over a sandbox that is already gone — and keeps it
+    for a retry that can never succeed. The packaged backends read "no such container" the same
+    way this now reads a missing path."""
+
+    async def body() -> None:
+        backend, sandbox = await _fresh()
+        shutil.rmtree(sandbox._host_root)  # noqa: SLF001  # gone behind the backend's back
+        try:
+            assert await backend.dispose(_key()) is None, "a path that is not there has landed"
+            assert backend._undeleted == [], "and nothing is owed a retry"  # noqa: SLF001
+        finally:
+            await _drop(backend)
+
+    asyncio.run(body())
+
+
 def test_dispose_keeps_reporting_a_work_directory_it_could_not_remove(monkeypatch):
     """A sample is code an adopter copies, so it must not model the silent failure the router
     exists to catch. Reporting once is not enough: a second disposal answering ``None`` clears
