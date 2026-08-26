@@ -16,6 +16,7 @@ import io
 import logging
 import sys
 import tarfile
+import time
 from collections.abc import Sequence
 
 import pytest
@@ -768,6 +769,29 @@ class TestWhichPrincipalACommandCarries:
         with pytest.raises(OSError, match="read-only file system"):
             asyncio.run(sandbox.reclaim(f"{_WORK}/x", working_directory=_WORK, timeout=30))
         assert len(fake.matching("exec")) == 2
+
+    def test_the_retry_gets_what_is_left_of_the_one_deadline(self):
+        """`reclaim(timeout=T)` promises the caller completion within T, not within 2T.
+
+        Two attempts each handed the full timeout is the shape that breaks it, and nothing
+        above would notice: both calls succeed, just twice as late as the contract allows.
+        """
+        spent = 0.05
+        base = _machine(running=[_NAME], overrides=dict(_WORK_IS_A_DIRECTORY))
+
+        def slow(args):
+            if args[:3] == ("exec", "--user", "0"):
+                time.sleep(spent)
+                return _DockerResult(1, b"", "rm: Permission denied")
+            return base(args)
+
+        backend, fake = _backend_with(slow, DockerSandboxConfig(cap_drop_all=True))
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
+
+        first, second = fake.matching("exec")
+        assert first.timeout == 30
+        assert second.timeout is not None and second.timeout <= 30 - spent
 
     def test_a_refused_remove_is_retried_the_same_way(self):
         refused = {("exec", "--user", "0"): _DockerResult(1, b"", "rm: Permission denied")}

@@ -26,6 +26,7 @@ import logging
 import posixpath
 import re
 import tarfile
+import time
 import weakref
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -387,13 +388,21 @@ class _DockerSandbox:
         Gated on the configuration rather than on what ``rm`` printed: which message means a
         permission refusal is the guest's ``rm`` and its locale talking, and this backend
         chooses neither.
+
+        ``timeout`` is one deadline across both attempts, not one each: it is what the caller
+        was promised for the whole call.  A first attempt that spends it leaves nothing to
+        retry with, and its own result is the answer.
         """
+        started = time.monotonic()
         removed = await self._exec(
             argv, working_directory=working_directory, timeout=timeout, as_root=True
         )
         if removed.exit_code == 0 or not self._cap_drop_all:
             return removed
-        return await self._exec(argv, working_directory=working_directory, timeout=timeout)
+        left = timeout - (time.monotonic() - started)
+        if left <= 0:
+            return removed
+        return await self._exec(argv, working_directory=working_directory, timeout=left)
 
     async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
         """Describe ``path``, or return ``None`` when nothing is there.
@@ -439,11 +448,13 @@ class _DockerSandbox:
         Goes through :meth:`_removal`, so with the file plane's authority rather than the
         guest's.
 
-        **Residual.**  The component walk classifies, then ``rm`` resolves again, so a guest
-        that turns a stat-ed component into a symlink between the two wins — the race
-        :meth:`read_file` already names, now with root behind it.  What holds it out of reach
-        is that nothing under ``working_directory`` is guest-writable on this backend; a
-        workspace that is has to close the race before it arrives (#680).
+        **Residual, and unmitigated.**  The component walk classifies, then ``rm`` resolves
+        again, so a guest that turns a stat-ed component into a symlink between the two wins —
+        the race :meth:`read_file` already names, now with root behind it rather than the
+        guest's own authority.  It needs a guest-writable directory on the path, which an
+        image whose build gives ``work_dir`` to its own user has: on those, this widens what a
+        won race reaches.  Closing it needs a removal that does not re-resolve, or a refusal
+        to raise authority over a path whose components are not all the host's (#680).
         """
         guest = confine_guest_path(path, working_directory)
         await self._refuse_symlinked_parents(guest, working_directory=working_directory)
