@@ -818,8 +818,10 @@ class AcasSandboxBackend:
         # Recorded before the first await: the registry no longer holds these ids and this
         # method has no listing to fall back on, so this is the only place a retry can find
         # them. Over-retaining is the safe direction — an id already deleted answers
-        # `ResourceNotFoundError` next time and drops out.
-        self._undeleted[prefix] = set(wanted)
+        # `ResourceNotFoundError` next time and drops out. Merged rather than assigned, here
+        # and below — teardown for one key is not serialized, so another disposal may have
+        # recorded an id this one never saw.
+        self._undeleted[prefix] = self._undeleted.get(prefix, set()) | set(wanted)
         try:
             gc = self._group_client()
         except Exception as exc:  # noqa: BLE001 - disposal must never raise
@@ -837,8 +839,13 @@ class AcasSandboxBackend:
                 )
             if deletion.failure is not None:
                 undeleted[sandbox_id] = deletion.failure
-        if undeleted:
-            self._undeleted[prefix] = set(undeleted)
+        # Subtracting only what this attempt took away — and reading the map here rather than
+        # trusting `wanted` — leaves an id another disposal recorded meanwhile alone. No await
+        # sits between the read and the write.
+        still = set(undeleted)
+        left = (self._undeleted.get(prefix, set()) | still) - (set(wanted) - still)
+        if left:
+            self._undeleted[prefix] = left
         else:
             self._undeleted.pop(prefix, None)
         reasons = "; ".join(undeleted.values())
@@ -872,9 +879,13 @@ class AcasSandboxBackend:
             logger.warning("acas backend: could not reach the sandbox group: %s", exc)
             return 0
 
-        stuck = [p for p in self._undeleted if p[0] == scope and p[1] == thread_id]
+        retained = {
+            p: set(names)
+            for p, names in self._undeleted.items()
+            if p[0] == scope and p[1] == thread_id
+        }
         ids = {sandbox_id for _, sandbox_id in known}
-        ids.update(sandbox_id for p in stuck for sandbox_id in self._undeleted[p])
+        ids.update(sandbox_id for names in retained.values() for sandbox_id in names)
         ids.update(await self._list_thread_sandbox_ids(gc, scope, thread_id))
 
         count = 0
@@ -888,12 +899,16 @@ class AcasSandboxBackend:
                 count += 1
             if deletion.failure is not None:
                 undeleted.add(sandbox_id)
-        for prefix in stuck:
-            left = self._undeleted[prefix] & undeleted
+        # Merge-only against the *live* map, never the snapshot above: a `dispose` for one of
+        # these keys can land while the awaits are in flight, and indexing what it may have
+        # removed would raise out of a method that never raises. Only ids this sweep took away
+        # are subtracted, so a newer record it wrote survives.
+        for prefix, before in retained.items():
+            left = self._undeleted.get(prefix, set()) - (before - undeleted)
             if left:
                 self._undeleted[prefix] = left
             else:
-                del self._undeleted[prefix]
+                self._undeleted.pop(prefix, None)
         return count
 
     # -- internals ----------------------------------------------------------------

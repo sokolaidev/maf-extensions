@@ -1124,6 +1124,34 @@ class TestDispose:
 
 
 class TestDisposeScope:
+    def test_a_dispose_landing_mid_purge_neither_crashes_nor_is_clobbered(self):
+        """Teardown for one key is not serialized, so the purge reconciles against the live
+        record: it must not index a prefix a `dispose` removed, nor drop a name it added."""
+        listing = asyncio.Event()
+        release = asyncio.Event()
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
+
+        async def slow_listing(*args: str, **kwargs: object) -> _DockerResult:
+            if args[:1] == ("ps",):
+                listing.set()
+                await release.wait()
+            return _DockerResult(0, b"", "")
+
+        backend, _ = _backend_with(_machine())
+        backend._docker = slow_listing  # type: ignore[method-assign]  # noqa: SLF001
+        backend._undeleted[prefix] = {"c-1"}  # noqa: SLF001
+
+        async def drive() -> int:
+            purge = asyncio.create_task(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
+            await listing.wait()
+            backend._undeleted.pop(prefix, None)  # noqa: SLF001
+            backend._undeleted[prefix] = {"c-2"}  # a later disposal's own  # noqa: SLF001
+            release.set()
+            return await purge
+
+        asyncio.run(drive())
+        assert backend._undeleted == {prefix: {"c-2"}}, "the newer record survives"  # noqa: SLF001
+
     def test_selects_on_labels_and_returns_the_count(self):
         listed = [_NAME]
         overrides = {("ps",): _DockerResult(0, "".join(f"{n}\n" for n in listed).encode(), "")}

@@ -572,9 +572,11 @@ class WslcSandboxBackend:
         remembered = [self._registry.pop(k) for k in mine]
         candidates = list(dict.fromkeys([*remembered, *sorted(self._undeleted.get(prefix, ()))]))
         if candidates:
-            # Recorded before the first await: the registry no longer holds these names,
-            # so this is the only place a retry can find them if the sweep does not return.
-            self._undeleted[prefix] = set(candidates)
+            # Recorded before the first await: the registry no longer holds these names, so
+            # this is the only place a retry can find them if the sweep does not return. Merged
+            # rather than assigned, here and below — teardown for one key is not serialized, so
+            # another disposal may have recorded a name this one never saw.
+            self._undeleted[prefix] = self._undeleted.get(prefix, set()) | set(candidates)
         swept = await self._purge(
             [
                 (_LABEL_SCOPE, key.scope),
@@ -586,9 +588,13 @@ class WslcSandboxBackend:
         )
         # Reconciled only on a normal return, so a cancelled sweep keeps the whole set.
         # Over-retaining is the safe direction: a container already gone is reported as such
-        # on the next attempt and drops out.
-        if swept.undeleted:
-            self._undeleted[prefix] = set(swept.undeleted)
+        # on the next attempt and drops out. Subtracting only what this sweep took away — and
+        # reading the map here rather than trusting the snapshot above — leaves a name another
+        # disposal recorded meanwhile alone. No await sits between the read and the write.
+        still = set(swept.undeleted)
+        left = (self._undeleted.get(prefix, set()) | still) - (set(candidates) - still)
+        if left:
+            self._undeleted[prefix] = left
         else:
             self._undeleted.pop(prefix, None)
         return "; ".join(swept.undeleted.values()) or None
@@ -603,22 +609,31 @@ class WslcSandboxBackend:
         """
         mine = [k for k in list(self._registry) if k[0] == scope and k[1] == thread_id]
         remembered = [self._registry.pop(k) for k in mine]
-        stuck = [p for p in self._undeleted if p[0] == scope and p[1] == thread_id]
+        retained = {
+            p: set(names)
+            for p, names in self._undeleted.items()
+            if p[0] == scope and p[1] == thread_id
+        }
         swept = await self._purge(
             [(_LABEL_SCOPE, scope), (_LABEL_THREAD, thread_id)],
             fallback=list(
-                dict.fromkeys([*remembered, *sorted(n for p in stuck for n in self._undeleted[p])])
+                dict.fromkeys(
+                    [*remembered, *sorted(n for names in retained.values() for n in names)]
+                )
             ),
             thread_id=thread_id,
         )
-        # Whatever this sweep took away stops being owed a retry; what it still could not
-        # remove keeps its place, so a conversation delete that failed does not look clean.
-        for prefix in stuck:
-            left = self._undeleted[prefix] & set(swept.undeleted)
+        # Merge-only against the *live* map, never the snapshot above: a `dispose` for one of
+        # these keys can land while the sweep is in flight, and indexing what it may have
+        # removed would raise out of a method that never raises. Only names this sweep took
+        # away are subtracted, so a newer record it wrote survives.
+        still = set(swept.undeleted)
+        for prefix, before in retained.items():
+            left = self._undeleted.get(prefix, set()) - (before - still)
             if left:
                 self._undeleted[prefix] = left
             else:
-                del self._undeleted[prefix]
+                self._undeleted.pop(prefix, None)
         return swept.count
 
     async def _purge(

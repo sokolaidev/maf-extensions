@@ -608,6 +608,32 @@ class TestWhichNamespaceASpecBootsFrom:
 
 
 class TestDisposeScope:
+    def test_a_dispose_landing_mid_purge_neither_crashes_nor_is_clobbered(self):
+        """Teardown for one key is not serialized, so the purge reconciles against the live
+        record: it must not index a prefix a `dispose` removed, nor drop an id it added."""
+        release = asyncio.Event()
+        prefix = ("scope-a", "thread-1", "devops-engineer")
+        backend = _backend_with(_FakeGroupClient())
+        backend._undeleted[prefix] = {"sbx-1"}
+        original = backend._delete
+
+        async def slow_delete(group_client, sandbox_id):
+            await release.wait()
+            return await original(group_client, sandbox_id)
+
+        backend._delete = slow_delete  # type: ignore[method-assign]
+
+        async def drive() -> int:
+            purge = asyncio.create_task(backend.dispose_scope("scope-a", "thread-1"))
+            await asyncio.sleep(0)
+            backend._undeleted.pop(prefix, None)
+            backend._undeleted[prefix] = {"sbx-2"}
+            release.set()
+            return await purge
+
+        asyncio.run(drive())
+        assert backend._undeleted == {prefix: {"sbx-2"}}, "the newer record survives"
+
     def test_reaches_sandboxes_this_process_never_created(self):
         """The registry is a fast path; the service is the source of truth."""
         client = _FakeGroupClient(sandboxes=[_FakeSandbox("sbx-remote")])
