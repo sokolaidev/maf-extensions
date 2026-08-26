@@ -289,13 +289,34 @@ jobs:
       # the last word before a merge that publishes.
       - name: Each dependent against the published cores it admits
         if: needs.changes.outputs.code == 'true'
+        # `--unreleased-core` on a pull request only: it lets a range wait on a core this
+        # branch carries or would cut, which is what a change spanning core and dependent
+        # needs. publish-packages.yml passes no flag, where the core is already up.
+        #
+        # `PR_TITLE` is attacker-controlled, so it is read from the environment rather than
+        # interpolated into this script — the rule pr-title.yml follows.
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
+          changed=""
+          if [ -n "${PR_TITLE:-}" ]; then
+            # Three dots: from the merge base, so a base that has moved on does not hand this
+            # another pull request's changes as this one's.
+            changed="$(git diff --name-only "$BASE_SHA...HEAD")"
+          fi
           for package_dir in packages/*/; do
             package="$(basename "$package_dir")"
             if [ "$package" != "maf-sandbox" ]; then
-              python3 scripts/check_dependent_works_with_published_cores.py \
-                "$package" dist/"${package//-/_}"-*.whl
+              if [ -n "${PR_TITLE:-}" ]; then
+                printf '%s\n' "$changed" |
+                  python3 scripts/check_dependent_works_with_published_cores.py \
+                    "$package" dist/"${package//-/_}"-*.whl --unreleased-core "$PR_TITLE"
+              else
+                python3 scripts/check_dependent_works_with_published_cores.py \
+                  "$package" dist/"${package//-/_}"-*.whl
+              fi
             fi
           done
 
