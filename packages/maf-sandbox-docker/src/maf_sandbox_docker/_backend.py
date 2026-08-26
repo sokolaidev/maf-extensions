@@ -280,10 +280,19 @@ class _DockerRunner(Protocol):
 class _DockerSandbox:
     """A running container, narrowed to the :class:`~maf_sandbox.Sandbox` protocol."""
 
-    def __init__(self, run: _DockerRunner, name: str, command_timeout: float) -> None:
+    def __init__(
+        self,
+        run: _DockerRunner,
+        name: str,
+        command_timeout: float,
+        cap_drop_all: bool = False,
+    ) -> None:
         self._run = run
         self._name = name
         self._command_timeout = command_timeout
+        # Whether this container kept `CAP_DAC_OVERRIDE`, which is what decides if a root
+        # removal can be refused at all. See `_removal`.
+        self._cap_drop_all = cap_drop_all
 
     @property
     def container_name(self) -> str:
@@ -365,19 +374,24 @@ class _DockerSandbox:
     async def _removal(
         self, argv: Sequence[str], *, working_directory: str, timeout: float
     ) -> ExecResult:
-        """Run a removal as root, and as the image's user if root was refused.
+        """Run a removal as root, and again as the image's user where root can be refused.
 
-        ``--user 0`` is a uid, not a capability set: with
-        :attr:`~maf_sandbox_docker.DockerSandboxConfig.cap_drop_all` there is no
-        ``CAP_DAC_OVERRIDE``, so root can empty only what it owns.  A directory the image's
-        user owns is the one shape that leaves it, and the one shape the image's user can
-        empty itself — which is what this backend ran as before, so the second attempt takes
-        back an authority rather than adding one (#680).
+        ``--user 0`` is a uid, not a capability set.  Holding ``CAP_DAC_OVERRIDE`` — which a
+        container does unless :attr:`~maf_sandbox_docker.DockerSandboxConfig.cap_drop_all`
+        takes it away — root empties anything, so a refusal there is never about ownership and
+        a *less* privileged second attempt could not help.  Without it root empties only what
+        it owns, and a directory the image's user owns is both what root cannot empty and what
+        that user can — which is what this backend ran as before, so the retry takes back an
+        authority rather than adding one (#680).
+
+        Gated on the configuration rather than on what ``rm`` printed: which message means a
+        permission refusal is the guest's ``rm`` and its locale talking, and this backend
+        chooses neither.
         """
         removed = await self._exec(
             argv, working_directory=working_directory, timeout=timeout, as_root=True
         )
-        if removed.exit_code == 0:
+        if removed.exit_code == 0 or not self._cap_drop_all:
             return removed
         return await self._exec(argv, working_directory=working_directory, timeout=timeout)
 
@@ -454,13 +468,16 @@ class _DockerSandbox:
         Runs from ``/`` because ``working_directory`` may not exist.
 
         No confinement check: the caller made ``directory``, and
-        :func:`~maf_sandbox.reclaim_guest_path` is where the policy lives — it refuses a path
-        outside the working directory, the working directory itself, and anything within two
-        components of the root. The floor below is a subset of that last rule, kept here
-        because the command now carries root's: it can only refuse what core would already
-        have refused.
+        :func:`~maf_sandbox.reclaim_guest_path` is where the policy lives — it resolves the
+        path against the working directory and refuses one outside it, the working directory
+        itself, and anything within two components of the root. The floor below is a subset of
+        those, kept because the command carries root's authority and runs from ``/``: a
+        relative path would resolve against the filesystem root, so ``etc/ssh`` reaching here
+        from a caller that skipped the dispatcher must not become ``rm -rf /etc/ssh``.
         """
         del working_directory
+        if not directory.startswith("/"):
+            raise ValueError(f"refusing to reclaim a path that is not absolute: {directory}")
         if len([part for part in posixpath.normpath(directory).split("/") if part]) < 2:
             raise ValueError(f"refusing to reclaim recursively that close to the root: {directory}")
         removed = await self._removal(
@@ -678,7 +695,12 @@ class DockerSandboxBackend:
                 )
 
             self._registry[(key.scope, key.thread_id, key.agent_dir, spec.kind)] = name
-            return _DockerSandbox(self._docker, name, self._config.command_timeout_seconds)
+            return _DockerSandbox(
+                self._docker,
+                name,
+                self._config.command_timeout_seconds,
+                self._config.cap_drop_all,
+            )
 
     async def dispose(self, key: SandboxKey) -> str | None:
         """Delete every container for ``key`` — every kind, closed or allowlisted — with

@@ -711,13 +711,16 @@ class TestWhichPrincipalACommandCarries:
     rule those tuples follow, and the one case where root alone is not enough.
     """
 
-    def _sandbox(self, overrides=None):
+    def _sandbox(self, overrides=None, *, cap_drop_all=False):
         merged = {
             **_WORK_IS_A_DIRECTORY,
             ("cp",): _DockerResult(1, b"", "Error: Could not find the file in container"),
             **(overrides or {}),
         }
-        backend, fake = _backend_with(_machine(running=[_NAME], overrides=merged))
+        backend, fake = _backend_with(
+            _machine(running=[_NAME], overrides=merged),
+            DockerSandboxConfig(cap_drop_all=cap_drop_all),
+        )
         return asyncio.run(backend.acquire(_KEY, _SPEC)), fake
 
     def test_a_guest_command_is_the_argv_and_nothing_else(self):
@@ -729,34 +732,46 @@ class TestWhichPrincipalACommandCarries:
         asyncio.run(sandbox.exec(["whoami"], working_directory=_WORK, timeout=5))
         assert fake.only("exec").args == ("exec", "-w", _WORK, _NAME, "whoami")
 
-    def test_a_refused_removal_is_retried_as_the_image_user(self):
-        """`--user 0` is a uid, not a capability set. With `cap_drop_all` there is no
-        `CAP_DAC_OVERRIDE`, so root can empty only what it owns — and a directory the image's
-        user owns is both what it cannot, and what that user can.
+    def test_a_refused_removal_is_retried_when_capabilities_were_dropped(self):
+        """`--user 0` is a uid, not a capability set. Without `CAP_DAC_OVERRIDE` root empties
+        only what it owns — and a directory the image's user owns is both what it cannot, and
+        what that user can.
         """
         refused = {("exec", "--user", "0"): _DockerResult(1, b"", "rm: Permission denied")}
-        sandbox, fake = self._sandbox(refused)
+        sandbox, fake = self._sandbox(refused, cap_drop_all=True)
         asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
         assert [call.args[:3] for call in fake.matching("exec")] == [
             ("exec", "--user", "0"),
             ("exec", "-w", "/"),
         ]
 
+    def test_a_refused_removal_is_not_retried_while_root_keeps_its_capabilities(self):
+        """With `CAP_DAC_OVERRIDE` root empties anything, so a refusal is not about ownership
+        and a less privileged retry could only fail again — and would report its own error
+        over the one that mattered.
+        """
+        refused = {("exec",): _DockerResult(1, b"", "rm: read-only file system")}
+        sandbox, fake = self._sandbox(refused)
+        with pytest.raises(OSError, match="read-only file system"):
+            asyncio.run(sandbox.reclaim(f"{_WORK}/x", working_directory=_WORK, timeout=30))
+        assert len(fake.matching("exec")) == 1
+
     def test_a_removal_root_could_make_is_not_retried(self):
-        sandbox, fake = self._sandbox()
+        sandbox, fake = self._sandbox(cap_drop_all=True)
         asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
         assert len(fake.matching("exec")) == 1
 
     def test_a_removal_neither_can_make_raises_with_what_the_guest_said(self):
         """The fallback must not swallow a failure that is nothing to do with ownership."""
         both = {("exec",): _DockerResult(1, b"", "rm: read-only file system")}
-        sandbox, _fake = self._sandbox(both)
+        sandbox, fake = self._sandbox(both, cap_drop_all=True)
         with pytest.raises(OSError, match="read-only file system"):
             asyncio.run(sandbox.reclaim(f"{_WORK}/x", working_directory=_WORK, timeout=30))
+        assert len(fake.matching("exec")) == 2
 
     def test_a_refused_remove_is_retried_the_same_way(self):
         refused = {("exec", "--user", "0"): _DockerResult(1, b"", "rm: Permission denied")}
-        sandbox, fake = self._sandbox(refused)
+        sandbox, fake = self._sandbox(refused, cap_drop_all=True)
         asyncio.run(sandbox.remove("a.txt", working_directory=_WORK))
         assert [call.args[:3] for call in fake.matching("exec")] == [
             ("exec", "--user", "0"),
@@ -780,6 +795,18 @@ class TestReclaimKeepsAFloorUnderRoot:
     def test_a_path_within_two_components_of_the_root_runs_no_command(self, directory):
         sandbox, fake = self._sandbox()
         with pytest.raises(ValueError, match="close to the root"):
+            asyncio.run(sandbox.reclaim(directory, working_directory=_WORK, timeout=30))
+        assert fake.matching("exec") == []
+
+    @pytest.mark.parametrize("directory", ["etc/ssh", "a/b", "./x/y", "../../etc/ssh"])
+    def test_a_relative_path_runs_no_command(self, directory):
+        """The removal runs from `/`, so a relative path resolves against the filesystem
+        root: `etc/ssh` would be `rm -rf /etc/ssh`, as root. Core resolves against the
+        working directory before dispatching, which is why only a caller that skipped it
+        gets here.
+        """
+        sandbox, fake = self._sandbox()
+        with pytest.raises(ValueError, match="not absolute"):
             asyncio.run(sandbox.reclaim(directory, working_directory=_WORK, timeout=30))
         assert fake.matching("exec") == []
 
