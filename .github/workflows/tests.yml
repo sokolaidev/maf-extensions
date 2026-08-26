@@ -289,13 +289,38 @@ jobs:
       # the last word before a merge that publishes.
       - name: Each dependent against the published cores it admits
         if: needs.changes.outputs.code == 'true'
+        # `--unreleased-core` on a pull request, and there only. A change that adds something to
+        # the core and uses it from a dependent has to raise that dependent's floor to a release
+        # that does not exist yet; refusing that would split every such change across two
+        # releases. With the flag the gate reads the branch as well as the index and accepts a
+        # range nothing published satisfies when the release *this branch would cut* falls
+        # inside it. A push passes nothing, and neither does publish-packages.yml, where the
+        # core is already up and the strict reading is the point.
+        #
+        # `PR_TITLE` is attacker-controlled text, so it is read from the environment rather than
+        # interpolated into this script — the same rule pr-title.yml follows.
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
+          changed=""
+          if [ -n "${PR_TITLE:-}" ]; then
+            # Three dots: from the merge base, so a base that has moved on does not hand this
+            # another pull request's changes as this one's.
+            changed="$(git diff --name-only "$BASE_SHA...HEAD")"
+          fi
           for package_dir in packages/*/; do
             package="$(basename "$package_dir")"
             if [ "$package" != "maf-sandbox" ]; then
-              python3 scripts/check_dependent_works_with_published_cores.py \
-                "$package" dist/"${package//-/_}"-*.whl
+              if [ -n "${PR_TITLE:-}" ]; then
+                printf '%s\n' "$changed" |
+                  python3 scripts/check_dependent_works_with_published_cores.py \
+                    "$package" dist/"${package//-/_}"-*.whl --unreleased-core "$PR_TITLE"
+              else
+                python3 scripts/check_dependent_works_with_published_cores.py \
+                  "$package" dist/"${package//-/_}"-*.whl
+              fi
             fi
           done
 

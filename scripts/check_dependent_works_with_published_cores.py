@@ -23,6 +23,21 @@ Two failures are worth telling apart, and both exit non-zero:
 - **No published core is admitted at all.** The wheel is uninstallable as declared, which is
   the shape #175 describes: a range whose ends have drifted past every artifact that exists.
 
+The second one has a legitimate case behind it, and ``--unreleased-core`` is how a pull request
+says so. A change that adds something to the core *and* uses it from a dependent has to raise
+that dependent's floor to a release that does not exist yet, so no published core is admitted
+and the wheel is uninstallable — until the core uploads, minutes later, from the same merge.
+Refusing that would mean splitting every such change across two releases; #681 is the one that
+made the cost plain.
+
+So with the flag, and only then, this reads the branch as well as the index: given the pull
+request title and its changed paths — the same two inputs `check_release_order.py` predicts a
+release from — a range that admits nothing published is accepted when the release *this branch
+would cut* falls inside it. Nothing is waived that could have been checked: there is no
+artifact to install, and the pairing of this code against this core is what the offline suite
+runs on every commit. What the flag does not do is soften anything at publish time, where the
+core is already up and `publish-packages.yml` passes no flag.
+
 A network failure is fatal rather than skipped, the same stance as the admit and work checks:
 passing because PyPI could not be reached is the one outcome that would make this worthless.
 """
@@ -37,7 +52,14 @@ import zipfile
 from pathlib import Path
 
 from check_published_dependents_work import fetch_requires_dist_for_version
-from check_release_order import admits, fetch_published_versions, version
+from check_release_order import (
+    admits,
+    core_version,
+    fetch_published_versions,
+    next_version,
+    touches_core,
+    version,
+)
 
 _CORE = "maf-sandbox"
 _ROOT = Path(__file__).resolve().parent.parent
@@ -49,10 +71,40 @@ _RANGE = re.compile(
     rf"{re.escape(_CORE)}\s*>=\s*(?P<floor>\d+(?:\.\d+)*)\s*,\s*<\s*(?P<ceiling>\d+(?:\.\d+)*)"
 )
 
+#: Spelled once: two call sites print it, and a usage message that has drifted from the parser
+#: is worse than none.
+_USAGE = "usage: {program} <distribution> <wheel> [--unreleased-core <title>]"
+
 #: What running a suite needs beyond whatever the wheel drags in. The package tests import their
 #: own distribution and `maf_sandbox`, both installed here; no suite in this repository uses an
 #: async plugin, so pytest alone is the whole of it.
 _TEST_REQUIREMENTS = ("pytest",)
+
+
+def pending_core_release(
+    title: str,
+    changed: list[str],
+    floor: tuple[int, ...],
+    ceiling: tuple[int, ...],
+) -> str | None:
+    """The core release this branch would cut, when the range admits it and nothing published is.
+
+    Three things have to hold, and each is a way the answer could be a wish rather than a fact.
+    The change has to touch the core, or release-please cuts no core release for it to resolve
+    to.  The title has to name a type that releases at all, since a ``chore:`` publishes
+    nothing.  And the version that would result has to fall inside the range — a floor above it
+    is still uninstallable, just later.
+
+    The title is a prediction, the same one `check_release_order.py` makes and with the same
+    blind spot: a ``BREAKING CHANGE:`` written in the squash box at merge time is not visible
+    here.  A prediction is enough, because the strict reading still runs before the upload.
+    """
+    if not touches_core(changed):
+        return None
+    proposed = next_version(core_version(_ROOT), title)
+    if proposed is None or proposed < floor or not admits(proposed, ceiling):
+        return None
+    return ".".join(str(part) for part in proposed)
 
 
 def declared_range(wheel: Path) -> tuple[tuple[int, ...], tuple[int, ...]]:
@@ -162,10 +214,19 @@ def run_suite(wheel: Path, core: str, tests: Path) -> tuple[bool, str]:
 
 def main(argv: list[str]) -> int:
     """CLI entry: run ``distribution``'s suite against every published core its wheel admits."""
-    if len(argv) != 3:
-        print(f"usage: {argv[0]} <distribution> <wheel>", file=sys.stderr)
+    arguments = argv[1:]
+    title: str | None = None
+    if "--unreleased-core" in arguments:
+        at = arguments.index("--unreleased-core")
+        if at + 1 >= len(arguments):
+            print(_USAGE.format(program=argv[0]), file=sys.stderr)
+            return 2
+        title = arguments[at + 1]
+        arguments = arguments[:at] + arguments[at + 2 :]
+    if len(arguments) != 2:
+        print(_USAGE.format(program=argv[0]), file=sys.stderr)
         return 2
-    distribution, wheel = argv[1], Path(argv[2])
+    distribution, wheel = arguments[0], Path(arguments[1])
     if distribution == _CORE:
         # A usage error, not a pass: core declares no range on itself, so there is nothing here
         # to check, and exiting 0 would report a check that never ran as a check that succeeded.
@@ -180,6 +241,20 @@ def main(argv: list[str]) -> int:
     cores = admitted_published_cores(floor, ceiling)
     span = f">={'.'.join(map(str, floor))},<{'.'.join(map(str, ceiling))}"
     if not cores:
+        # Changed paths on stdin, the same shape `check_release_order.py` takes them in. Read
+        # only under the flag, so the publish-time call is never left waiting on a pipe.
+        pending = (
+            pending_core_release(title, sys.stdin.read().split(), floor, ceiling)
+            if title is not None
+            else None
+        )
+        if pending is not None:
+            print(
+                f"OK  {distribution} declares {_CORE}{span}, which nothing published satisfies "
+                f"yet — this branch would release {_CORE} {pending}, which it admits. The "
+                "pairing is re-checked against the index before the upload."
+            )
+            return 0
         print(
             f"{distribution} declares {_CORE}{span} and no published {_CORE} satisfies it — the "
             "wheel is uninstallable as declared",
