@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
 
 __all__ = [
     "DEFAULT_CAPABILITIES",
@@ -25,6 +25,8 @@ __all__ = [
     "ISOLATION_RANK",
     "Capability",
     "DeclaredOutput",
+    "DisposalCode",
+    "DisposalFailure",
     "Egress",
     "EntryKind",
     "ExecResult",
@@ -40,6 +42,7 @@ __all__ = [
     "SandboxSpec",
     "SourceIntegrity",
     "TransferLimits",
+    "fold_disposal_failures",
     "CallerContext",
     "meets_floor",
 ]
@@ -821,6 +824,68 @@ class Sandbox(Protocol):
         ...
 
 
+#: Why a disposal did not land, in a word a caller may branch on.
+#:
+#: A closed set, deliberately small: a code no backend can honestly assign is a code every
+#: backend assigns differently, and a caller branching on it would be reading a coin toss.
+#: Each member is something all three shipped backends can tell apart from the others.
+#:
+#: ``"unreachable"``: the engine or service could not be reached at all — the invocation
+#: itself failed. Ordinarily transient, and the one a caller may sensibly retry.
+#: ``"refused"``: it answered, and the sandbox is still there. A permission or policy problem
+#: far more often than a transient one, so retrying alone rarely clears it.
+#: ``"timeout"``: the attempt did not finish in the time it was given, so whether it landed is
+#: not known. Retryable like ``"unreachable"``, and told apart from it because the caller set
+#: the bound and may want to raise it rather than retry into the same wall.
+#: ``"unlisted"``: the delete that ran may not have covered everything — the query that
+#: enumerates what to delete failed, so a sandbox another replica created was never seen.
+#: ``"unknown"``: the backend could not classify it. Always available, so a backend never has
+#: to invent one of the others to stay in the vocabulary.
+DisposalCode = Literal["unreachable", "timeout", "refused", "unlisted", "unknown"]
+
+#: Which code survives when one disposal hits several, most actionable first.  ``"unreachable"``
+#: outranks ``"refused"`` because it is the one worth retrying, and a caller that retries on it
+#: should not be talked out of that by a second sandbox whose delete was merely refused.
+_DISPOSAL_PRECEDENCE: tuple[DisposalCode, ...] = (
+    "unreachable",
+    "timeout",
+    "refused",
+    "unlisted",
+    "unknown",
+)
+
+
+@dataclass(frozen=True)
+class DisposalFailure:
+    """Why a sandbox may still be there: a code to branch on, and the detail to log.
+
+    The code is the part a caller acts on and the only part this package promises to keep
+    stable.  ``detail`` is a backend's own sentence — an id, an exit status, a service
+    message — and is for a human reading a log or an alert, never for parsing.
+    """
+
+    code: DisposalCode
+    detail: str
+
+    def __str__(self) -> str:
+        return f"{self.code}: {self.detail}"
+
+
+def fold_disposal_failures(failures: Sequence[DisposalFailure]) -> DisposalFailure | None:
+    """The one failure that stands for several, or ``None`` when there are none.
+
+    The code is the most actionable of those reported (:data:`DisposalCode`), and the detail
+    keeps every sentence, so folding loses nothing a log would have shown.
+    """
+    if not failures:
+        return None
+    if len(failures) == 1:
+        return failures[0]
+    codes: set[DisposalCode] = {failure.code for failure in failures}
+    worst: DisposalCode = next(code for code in _DISPOSAL_PRECEDENCE if code in codes)
+    return DisposalFailure(worst, "; ".join(str(failure) for failure in failures))
+
+
 @runtime_checkable
 class SandboxBackend(Protocol):
     """A provider that can hand out sandboxes.
@@ -887,23 +952,34 @@ class SandboxBackend(Protocol):
         """
         ...
 
-    async def dispose(self, key: SandboxKey) -> str | None:
+    async def dispose(self, key: SandboxKey) -> DisposalFailure | str | None:
         """Delete every kind's sandbox for ``key``, if any. Best-effort: never raises.
 
         Every kind's, because a key may own one sandbox per kind and this method takes no
         kind: a caller releasing a key means all of it.
 
-        **Return the reason a sandbox may still be there, or ``None``.** Never raising is what
-        makes this safe to call from a ``finally``, and it is also what leaves a caller unable
-        to tell a delete that worked from one that failed — so the reason comes back as a value
-        instead.  A backend that swallows its delete error and returns ``None`` is read as
-        having disposed, which is what :meth:`SandboxRouter.dispose_unclean` then reports to a
-        host that asked for a sandbox holding unremovable data to be destroyed.
+        **Return a :class:`DisposalFailure` when a sandbox may still be there, or ``None``.**
+        Never raising is what makes this safe to call from a ``finally``, and it is also what
+        leaves a caller unable to tell a delete that worked from one that failed — so the
+        answer comes back as a value instead.  A backend that swallows its delete error and
+        returns ``None`` is read as having disposed, which is what
+        :meth:`SandboxRouter.dispose_unclean` then reports to a host that asked for a sandbox
+        holding unremovable data to be destroyed.
 
         ``None`` says only that nothing was reported: a backend with no way to check returns it
         too.  The conflation is deliberate — the alternative refuses every key served by a
         backend that cannot answer — and it fixes the direction this fails in.  Say something
         whenever the delete is known not to have landed.
+
+        The :data:`DisposalCode` is the half a caller branches on and the half this package
+        keeps stable; ``detail`` is yours and is for a log.  Reach for ``"unknown"`` rather
+        than guessing between the others: a code chosen to look precise is worse than one that
+        says the backend does not know.
+
+        **A bare ``str`` is still accepted, and read as ``"unknown"``.**  The shipped backends
+        still answer that way for one release — a backend cannot import
+        :class:`DisposalFailure` from a core that has not published it yet — and the union goes
+        away once they have moved.  A backend written today should return the class.
         """
         ...
 

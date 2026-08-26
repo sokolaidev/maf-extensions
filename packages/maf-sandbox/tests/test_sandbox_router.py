@@ -29,6 +29,7 @@ from maf_sandbox import (
     ISOLATION_RANK,
     Capability,
     DeclaredOutput,
+    DisposalFailure,
     Egress,
     EntryKind,
     HostToolAggregate,
@@ -53,6 +54,7 @@ from maf_sandbox import (
     SandboxTransferLimitsNotPermitted,
     SandboxUnclean,
     TransferLimits,
+    fold_disposal_failures,
     fold_host_tool_call_transfer_limits,
     meets_floor,
 )
@@ -1189,6 +1191,80 @@ class TestABackendReportsAFailedDeleteWithoutRaising:
         backend.dispose_failure = None
         asyncio.run(router.dispose(_KEY))
         asyncio.run(router.acquire(_KEY, _SPEC))
+
+
+class TestTheDisposalCodeIsWhatACallerBranchesOn:
+    """The code is the contract; the detail is for a log. Folding several keeps both."""
+
+    def _router(self, *backends):
+        return SandboxRouter(list(backends), min_isolation=Isolation.NONE)
+
+    def test_the_most_actionable_code_wins_a_fold(self):
+        """A caller that retries on `unreachable` should not be talked out of it by a second
+        sandbox whose delete was merely refused."""
+        folded = fold_disposal_failures(
+            [DisposalFailure("refused", "a"), DisposalFailure("unreachable", "b")]
+        )
+        assert folded is not None
+        assert folded.code == "unreachable"
+
+    def test_a_fold_keeps_every_detail(self):
+        folded = fold_disposal_failures(
+            [DisposalFailure("refused", "a"), DisposalFailure("unlisted", "b")]
+        )
+        assert folded is not None
+        assert "a" in folded.detail
+        assert "b" in folded.detail
+
+    def test_one_failure_folds_to_itself_unchanged(self):
+        only = DisposalFailure("refused", "a")
+        assert fold_disposal_failures([only]) is only
+
+    def test_nothing_folds_to_nothing(self):
+        assert fold_disposal_failures([]) is None
+
+    @pytest.mark.parametrize(
+        ("reported", "expected"),
+        [
+            (DisposalFailure("unreachable", "the daemon is down"), "unreachable"),
+            (DisposalFailure("refused", "403"), "refused"),
+            (DisposalFailure("unlisted", "the query failed"), "unlisted"),
+            (DisposalFailure("unknown", "no idea"), "unknown"),
+        ],
+    )
+    def test_a_backends_code_reaches_the_ledger_intact(self, reported, expected):
+        """The router prefixes the backend's name onto the detail and leaves the code alone."""
+        router = self._router(InProcessSandboxBackend(name="acas", dispose_failure=reported))
+        asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
+        with pytest.raises(SandboxUnclean, match=rf"{expected}: acas: "):
+            asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_a_backend_still_answering_with_a_sentence_is_unknown(self):
+        """The shipped backends answer this way until they can import the class from a
+        published core. `unknown` keeps them in the vocabulary instead of outside it."""
+        router = self._router(InProcessSandboxBackend(name="docker", dispose_failure="still there"))
+        asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
+        with pytest.raises(SandboxUnclean, match="unknown: docker: still there"):
+            asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_a_bound_that_expired_is_a_timeout_not_a_guess(self):
+        class _Hangs(InProcessSandboxBackend):
+            async def dispose(self, key: SandboxKey) -> DisposalFailure | str | None:
+                await asyncio.Event().wait()
+
+        router = self._router(_Hangs())
+        asyncio.run(router.dispose_unclean(_KEY, timeout=0.05))
+        with pytest.raises(SandboxUnclean, match="timeout: the disposal did not finish"):
+            asyncio.run(router.acquire(_KEY, _SPEC))
+
+    def test_a_backend_that_breaks_its_contract_and_raises_is_unknown(self):
+        """Nothing a backend says while violating never-raises can be classified."""
+        router = self._router(
+            InProcessSandboxBackend(name="bad", dispose_error=RuntimeError("boom"))
+        )
+        asyncio.run(router.dispose_unclean(_KEY, timeout=1.0))
+        with pytest.raises(SandboxUnclean, match="unknown: bad raised: boom"):
+            asyncio.run(router.acquire(_KEY, _SPEC))
 
 
 class TestTheRefusalNamesWhy:

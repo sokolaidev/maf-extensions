@@ -120,6 +120,8 @@ from ._protocol import (
     CallerContext,
     Capability,
     DeclaredOutput,
+    DisposalCode,
+    DisposalFailure,
     Egress,
     EntryKind,
     ExecResult,
@@ -136,6 +138,7 @@ from ._protocol import (
     SandboxSpec,
     SourceIntegrity,
     TransferLimits,
+    fold_disposal_failures,
     meets_floor,
 )
 from ._purger import SandboxPurger
@@ -170,6 +173,8 @@ __all__ = [
     "Artifact",
     "Capability",
     "DeclaredOutput",
+    "DisposalCode",
+    "DisposalFailure",
     "HostToolCallResult",
     "Egress",
     "EntryKind",
@@ -230,6 +235,7 @@ __all__ = [
     "CallerContext",
     "collect_outputs",
     "declaration_of",
+    "fold_disposal_failures",
     "host_tool_calls_over_exec",
     "error_detail",
     "fold_host_tool_call_transfer_limits",

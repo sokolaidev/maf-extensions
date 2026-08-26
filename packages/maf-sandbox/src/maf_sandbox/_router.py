@@ -23,6 +23,7 @@ from ._protocol import (
     DEFAULT_SANDBOX_LIMITS,
     ISOLATION_RANK,
     Capability,
+    DisposalFailure,
     Egress,
     Identity,
     Isolation,
@@ -33,6 +34,7 @@ from ._protocol import (
     SandboxLimits,
     SandboxSpec,
     TransferLimits,
+    fold_disposal_failures,
     meets_floor,
 )
 
@@ -158,6 +160,18 @@ class SandboxTransferLimitsNotPermitted(PermissionError):
     undeclared ``capabilities`` is read charitably.  Also raised for a ``limits`` this package
     cannot read at all — a declaration nobody can compare against is refused, not guessed at.
     """
+
+
+def _coded(backend_name: str, reported: DisposalFailure | str) -> DisposalFailure:
+    """One backend's answer as a :class:`~maf_sandbox.DisposalFailure`, named by the backend.
+
+    A bare ``str`` is a backend that has not moved to the class yet, and it is read as
+    ``"unknown"`` — the honest code for a sentence nothing can classify, and the one that
+    keeps such a backend inside the vocabulary rather than outside it.
+    """
+    if isinstance(reported, str):
+        return DisposalFailure("unknown", f"{backend_name}: {reported}")
+    return DisposalFailure(reported.code, f"{backend_name}: {reported.detail}")
 
 
 def _refuse_a_sandbox_that_cannot_be_reclaimed(sandbox: Sandbox) -> None:
@@ -292,7 +306,7 @@ class SandboxRouter:
         # of. An entry leaves when a disposal lands; a key that keeps failing stays refused.
         # Keyed rather than a set so a refusal can say *why*: the reason is written when the
         # disposal reports one, and stays `None` for a key marked before anything was tried.
-        self._unclean: dict[SandboxKey, str | None] = {}
+        self._unclean: dict[SandboxKey, DisposalFailure | None] = {}
         self._min_isolation = Isolation(str(min_isolation))
         self._selected_name = selected
         self._denied_capabilities = frozenset(
@@ -587,18 +601,20 @@ class SandboxRouter:
         A backend refuses by *returning* a reason as much as by raising: ``dispose`` never
         raises, so silence is the only thing that may be read as success.
         """
-        reasons: list[str] = []
+        reasons: list[DisposalFailure] = []
         for backend in self._backends:
             try:
                 undisposed = await backend.dispose(key)
             except Exception as exc:  # noqa: BLE001 - disposal must not fail a caller
-                reasons.append(f"{backend.name}: {exc}")
+                # A backend that raises broke its own never-raises contract, so nothing it says
+                # can be classified: `unknown` rather than a guess at what went wrong.
+                reasons.append(DisposalFailure("unknown", f"{backend.name} raised: {exc}"))
                 logger.warning(
                     "sandbox router: backend %s failed to dispose: %s", backend.name, exc
                 )
             else:
                 if undisposed is not None:
-                    reasons.append(f"{backend.name}: {undisposed}")
+                    reasons.append(_coded(backend.name, undisposed))
                     logger.warning(
                         "sandbox router: backend %s did not dispose %s/%s/%s: %s",
                         backend.name,
@@ -610,7 +626,7 @@ class SandboxRouter:
         if reasons:
             # Recorded over whatever marked the key, so the refusal quotes the latest attempt
             # rather than the sentence that first closed it.
-            self._unclean[key] = "; ".join(reasons)
+            self._unclean[key] = fold_disposal_failures(reasons)
             return False
         self._unclean.pop(key, None)
         return True
@@ -651,10 +667,12 @@ class SandboxRouter:
                 key.agent_dir,
                 timeout,
             )
-            self._unclean[key] = f"the disposal did not finish within {timeout}s"
+            self._unclean[key] = DisposalFailure(
+                "timeout", f"the disposal did not finish within {timeout}s"
+            )
             return False
 
-    def mark_unclean(self, key: SandboxKey, reason: str | None = None) -> None:
+    def mark_unclean(self, key: SandboxKey, reason: DisposalFailure | None = None) -> None:
         """Refuse ``key`` without disposing — for a cleanup cancelled before it could dispose.
 
         Synchronous, because it is called while a :class:`~asyncio.CancelledError` is propagating

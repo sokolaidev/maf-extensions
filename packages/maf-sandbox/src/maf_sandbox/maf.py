@@ -46,6 +46,7 @@ from ._outputs import OutputSink, landing_outputs, missing_sink_refusal, spec_la
 from ._protocol import (
     CallerContext,
     Capability,
+    DisposalFailure,
     Sandbox,
     SandboxKey,
     SandboxSpec,
@@ -542,7 +543,14 @@ def _refuse_not_yet_reclaimed(
     if router.keep_unclean:
         return
     for key, _ in acquired[start:]:
-        router.mark_unclean(key, "the tool call's cleanup was cancelled before it could dispose")
+        router.mark_unclean(
+            key,
+            # `unknown`, not a guess: the cleanup stopped before anything could observe the
+            # sandbox, so nothing here knows whether a delete would have landed.
+            DisposalFailure(
+                "unknown", "the tool call's cleanup was cancelled before it could dispose"
+            ),
+        )
 
 
 async def _reclaim_the_call(
