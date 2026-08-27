@@ -62,6 +62,7 @@ from maf_sandbox import (
 from maf_sandbox.conformance import (
     FILES_DELETE_PROBES,
     FILES_OUT_PROBES,
+    ConformancePaths,
     PosixGuestSubject,
     assert_egress_conformance,
     assert_exec_conformance,
@@ -291,6 +292,143 @@ def files_delete_measurement(live):
     over: read transient-or-structural into its results before choosing a callback layer.
     """
     return live.run(measure_files_delete_probes(_subject(live)))
+
+
+@pytest.fixture(scope="module")
+def service_link_delete(live):
+    """What the *service* does with a link on delete, measured below :meth:`remove`.
+
+    ``remove`` refuses a link before the service is ever called, so the gated probe
+    ``a-link-is-removed-never-followed`` measures that refusal rather than the service — and
+    the refusal exists because nothing had measured the service. Only a call to the SDK's own
+    ``delete_file`` breaks that circle, so this reaches past the backend to make it.
+
+    One dictionary of measured facts, asserted by the class below.
+    """
+    paths = ConformancePaths.under(_WORK)
+    sc = live.sandbox._sc  # noqa: SLF001 — reaching past the backend is the whole measurement
+
+    async def sh(*argv: str) -> int:
+        result = await live.sandbox.exec(list(argv), working_directory="/", timeout=_EXEC_TIMEOUT)
+        return result.exit_code
+
+    async def survives(path: str) -> bool:
+        return await sh("test", "-e", path) == 0
+
+    async def plant_link(link: str, target: str) -> None:
+        made = await live.sandbox.exec(
+            ["ln", "-s", target, link], working_directory="/", timeout=_EXEC_TIMEOUT
+        )
+        assert made.exit_code == 0, f"could not plant {link}: {made.stderr}"
+        # Proven, never assumed: a delete measured over a *copy* of the target would report
+        # "the target survived" for the wrong reason and read as the safe answer.
+        read_back = await live.sandbox.exec(
+            ["readlink", link], working_directory="/", timeout=_EXEC_TIMEOUT
+        )
+        assert read_back.exit_code == 0 and read_back.stdout.strip() == target, (
+            f"{link} is not a symlink to {target}: {read_back.stdout!r}"
+        )
+
+    async def scenario() -> dict[str, bool]:
+        measured: dict[str, bool] = {}
+        # Its own layout: this fixture must not depend on another module fixture having run,
+        # and `ln` needs the directory before `write_file` has had cause to create it.
+        assert await sh("mkdir", "-p", paths.work, paths.outside) == 0
+
+        # Both flag values: `recursive` may select a different server-side operation entirely,
+        # so a service that unlinks safely on one and resolves on the other would pass a
+        # measurement that only asked once.
+        for name, recursive in (("svc-link-file", False), ("svc-link-file-rec", True)):
+            target = f"{paths.outside}/{name}-target.txt"
+            await sc.write_file(target, b"outside the working directory\n")
+            await plant_link(f"{paths.work}/{name}", target)
+            await sc.delete_file(f"{paths.work}/{name}", recursive=recursive)
+            measured[f"{name}-link-gone"] = not await survives(f"{paths.work}/{name}")
+            measured[f"{name}-target-survives"] = await survives(target)
+
+        # A link to a directory, where a resolving recursive delete would empty the target.
+        await sc.write_file(f"{paths.outside}/svc-linked-dir/inside.txt", b"in the linked dir\n")
+        await plant_link(f"{paths.work}/svc-link-dir", f"{paths.outside}/svc-linked-dir")
+        await sc.delete_file(f"{paths.work}/svc-link-dir", recursive=True)
+        measured["dir-link-gone"] = not await survives(f"{paths.work}/svc-link-dir")
+        measured["dir-survives"] = await survives(f"{paths.outside}/svc-linked-dir")
+        measured["dir-contents-survive"] = await survives(
+            f"{paths.outside}/svc-linked-dir/inside.txt"
+        )
+
+        # The link as a *parent* component. POSIX resolves every component but the last, so a
+        # service that did not would be the surprise here.
+        await sc.write_file(f"{paths.outside}/svc-parent/child.txt", b"through a linked parent\n")
+        await plant_link(f"{paths.work}/svc-link-parent", f"{paths.outside}/svc-parent")
+        await sc.delete_file(f"{paths.work}/svc-link-parent/child.txt", recursive=False)
+        measured["linked-parent-resolved"] = not await survives(
+            f"{paths.outside}/svc-parent/child.txt"
+        )
+
+        # A link *inside* a recursively deleted tree: the shape `reclaim` actually faces, and
+        # the one no argument the backend passes can name.
+        await sc.write_file(f"{paths.outside}/svc-interior.txt", b"pointed at from inside\n")
+        await sc.write_file(f"{paths.work}/svc-tree/leaf.txt", b"in the tree\n")
+        await plant_link(f"{paths.work}/svc-tree/inside-link", f"{paths.outside}/svc-interior.txt")
+        await sc.delete_file(f"{paths.work}/svc-tree", recursive=True)
+        measured["tree-gone"] = not await survives(f"{paths.work}/svc-tree")
+        measured["interior-target-survives"] = await survives(f"{paths.outside}/svc-interior.txt")
+        return measured
+
+    return live.run(scenario())
+
+
+class TestWhatTheServiceDoesWithALinkOnDelete:
+    """The measurement `FILES_DELETE` and `reclaim` are both waiting on.
+
+    Read below the backend, because `remove` refuses a link before the service sees one — so
+    the gated probe measures the guard. What this says decides two open questions: whether
+    `FILES_DELETE` can ever be declared (#589), and whether `reclaim` could move off `exec` to
+    the data plane, which is the only plane here that already acts as root and therefore the
+    only in-backend answer to the principal split (#695, #477).
+
+    Measured green means the service unlinks rather than resolves. A failure here is not a
+    flake: it is the service having changed under a decision that rests on this behaviour.
+    """
+
+    def test_a_link_named_directly_is_unlinked_and_its_target_kept(self, service_link_delete):
+        """Both flag values — `recursive` may reach a different operation on the service."""
+        for name in ("svc-link-file", "svc-link-file-rec"):
+            assert service_link_delete[f"{name}-link-gone"], f"{name}: the link is still there"
+            assert service_link_delete[f"{name}-target-survives"], (
+                f"{name}: the service resolved the link and deleted the target — a guest "
+                "choosing that target unlinks a file outside the working directory, and "
+                "nothing may declare FILES_DELETE while this is true"
+            )
+
+    def test_a_link_to_a_directory_is_unlinked_rather_than_emptied(self, service_link_delete):
+        """The `rm -rf <link>/` shape: resolving here empties a tree the guest chose."""
+        assert service_link_delete["dir-link-gone"], "the link to the directory is still there"
+        assert service_link_delete["dir-survives"], "the linked directory itself was removed"
+        assert service_link_delete["dir-contents-survive"], (
+            "the service emptied the directory the link pointed at"
+        )
+
+    def test_a_linked_parent_is_resolved_which_is_why_the_backend_refuses_one(
+        self, service_link_delete
+    ):
+        """Not a defect — POSIX resolves every component but the last, and so does this.
+
+        It is the reason `_refuse_symlinked_parents` runs before the delete: the walk is the
+        backend's to refuse, because the service will follow it.
+        """
+        assert service_link_delete["linked-parent-resolved"], (
+            "the service did NOT resolve a linked parent — surprising rather than unsafe, but "
+            "the backend's parent refusal is written against the opposite, so say so"
+        )
+
+    def test_a_link_inside_a_recursive_delete_is_unlinked_not_followed(self, service_link_delete):
+        """What `reclaim` would face on the data plane: a link the caller never names."""
+        assert service_link_delete["tree-gone"], "the recursively deleted tree is still there"
+        assert service_link_delete["interior-target-survives"], (
+            "a recursive delete resolved an interior link and removed a file outside the "
+            "tree — the escape that keeps `reclaim` on `rm -rf` over `exec`"
+        )
 
 
 class TestFilesOutAgainstTheRealService:
