@@ -1538,9 +1538,8 @@ class TestDispose:
         assert reported.code == "unknown", "the other attempt's outcome is not ours to name"
 
     def test_a_purge_does_not_subtract_a_record_written_beside_it(self):
-        """#685. The purge removes the container, the same name is recreated, and a `dispose`
-        beside it records that new generation. Subtracting what the purge took away removes the
-        newer record too: the names are equal and nothing here tells the generations apart."""
+        """A scope purge takes nothing away from the retry record: the container it removed
+        and one recorded beside it carry the same name, so subtracting one drops the other."""
         listing = asyncio.Event()
         release = asyncio.Event()
         prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
@@ -1560,7 +1559,7 @@ class TestDispose:
             await listing.wait()
             backend._undeleted[prefix] = {_NAME}  # the newer generation  # noqa: SLF001
             release.set()
-            await purge
+            assert (await purge).undisposed is None, "the purge itself has to land"
 
         asyncio.run(drive())
         assert backend._undeleted == {prefix: {_NAME}}, "the newer record was subtracted"  # noqa: SLF001

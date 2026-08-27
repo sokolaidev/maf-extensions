@@ -672,7 +672,8 @@ class DockerSandboxBackend:
         #: Workload containers a removal could not take away, by key prefix. Retry
         #: bookkeeping only: it does **not** keep one from being served, since the name comes
         #: from the key and `acquire` asks the engine. Refusing to serve is the router's
-        #: ledger. An entry lives only while its removal keeps failing.
+        #: ledger. A `dispose` clears an entry once the removal lands; a scope purge never
+        #: does, because a name is not a generation and it cannot tell the two apart.
         self._undeleted: dict[tuple[str, str, str], set[str]] = {}
         # Get-or-create serialised per (running loop, key, kind), for the same reason wslc does
         # it: a create names no container until it returns, so two acquires racing one key would
@@ -927,11 +928,8 @@ class DockerSandboxBackend:
             ),
             thread_id=thread_id,
         )
-        # Nothing is subtracted here, on purpose. A name is not a generation, so a purge that
-        # straddles a re-acquire cannot tell the container it removed from the one recorded
-        # since, and taking one away loses the other's record (#685). Over-retaining is the
-        # direction `dispose` already fails in: a name already gone answers "no such" there,
-        # which is not a failure, and drops out.
+        # Nothing is subtracted here: the container this sweep removed and one recorded since
+        # carry the same name, so taking one away drops the other.
         return ScopePurge(swept.count, swept.reason)
 
     async def _purge(

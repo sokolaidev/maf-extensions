@@ -935,11 +935,16 @@ class AcasSandboxBackend:
             if deletion.failure is not None:
                 undeleted.add(sandbox_id)
                 undisposed.append(deletion.failure)
-        # Nothing is subtracted here, on purpose. An id is recorded against every key of the
-        # thread that owes a retry, so a purge cannot tell whose it is, and taking one away
-        # loses a record a `dispose` running beside it may have just written (#685).
-        # Over-retaining is the direction `dispose` already fails in: an id already deleted
-        # answers `ResourceNotFoundError` there, which is not a failure, and drops out.
+        # Merge-only against the *live* map: a `dispose` for one of these keys can land
+        # mid-sweep, and indexing what it removed would raise out of a method that never does.
+        # Only ids this sweep deleted come off — sound here, unlike the name-derived backends,
+        # because the service assigns a fresh id per create.
+        for prefix, before in retained.items():
+            left = self._undeleted.get(prefix, set()) - (before - undeleted)
+            if left:
+                self._undeleted[prefix] = left
+            else:
+                self._undeleted.pop(prefix, None)
         # The listing does not say which key owns a failed id, so it is recorded against the
         # registry keys this purge popped rather than lost.
         for key, sandbox_id in known:
