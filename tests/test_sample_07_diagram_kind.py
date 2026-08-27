@@ -9,8 +9,7 @@ Three claims, each of which the sample makes in prose and none of which its live
 * the DOT source and the PNG are written **inside the call's own directory**, so two calls in
   one assistant message share no path — which is why the kind needs no lock;
 * the framework removes it when the body returns, so nothing the call wrote is readable by the
-  next one — the sample's live check reads the same fact out of the guest, but only for a run
-  that reclaimed successfully;
+  next one;
 * the artifact lands as `diagram.png` however the guest spelled it, because the call-time
   declaration carries `name`.
 
@@ -180,7 +179,7 @@ class TestTheCallWritesInsideItsOwnDirectory:
 
 class TestNothingSurvivesTheCall:
     def test_the_work_directory_is_empty_afterwards(self, out_dir: Path):
-        """What the sample's live run reads out of the guest, asserted here without one."""
+        """Nothing the call wrote outlives it — which only the fake's store can show."""
         sandbox = _Renderer()
         _render(sandbox, out_dir)
 
