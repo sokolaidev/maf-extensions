@@ -68,7 +68,7 @@ Everything in this table is a live claim about the guest, made by code that has 
 | `_host_tools_over_exec.py`, `launcher_script` | `command -v setsid`, then `setsid nohup sh -c` — `setsid` optional, `nohup` and `sh` not |
 | `_host_tools_over_exec.py`, `_stop_the_program` | `kill -KILL … 2>/dev/null` |
 | `maf-sandbox-docker`, `_backend.py`, `remove` and `reclaim` | It is `rm -rf` / `rm -f`, *"since the engine has no delete primitive"* |
-| `maf-sandbox-acas`, `_backend.py`, `reclaim` | `rm -rf` over `exec`, on the backend whose `remove` needs no shell at all |
+| `maf-sandbox-acas`, `_backend.py`, `reclaim` | It is `delete_file` on the data plane — no shell, no `rm`. `exec` runs as the image's `USER` and the SDK exposes no selector ([#707](https://github.com/sokolaidev/maf-extensions/pull/707)), so the data plane, which acts as the host, is the removal |
 | `maf-sandbox-wslc`, `_backend.py`, `reclaim` | `rm -rf` over `exec`, the only delete this backend has |
 | `maf-sandbox-codeact` | The interpreter is spelled `python3` |
 | `maf-sandbox-bicep` | POSIX command templates |

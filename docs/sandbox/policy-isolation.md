@@ -103,7 +103,7 @@ Shipped rows are the declarations in the code; the rest is orientation. The egre
 
 | System | Fits as | Isolation | Capabilities | Egress |
 |---|---|---|---|---|
-| ACA Sandboxes (`maf-sandbox-acas`) | backend, shipped | `microvm` | `EXEC, FILES_IN, FILES_OUT, FILES_LIST, HOST_TOOLS` | `{ALLOWLIST, CLOSED}` — the group's policy denies by default and cannot be told to allow everything |
+| ACA Sandboxes (`maf-sandbox-acas`) | backend, shipped | `microvm` | `EXEC, FILES_IN, FILES_OUT, FILES_LIST, FILES_DELETE, HOST_TOOLS` | `{ALLOWLIST, CLOSED}` — the group's policy denies by default and cannot be told to allow everything |
 | Docker (`maf-sandbox-docker`) | backend, shipped | `container` | `EXEC, FILES_IN, FILES_OUT, FILES_DELETE, HOST_TOOLS` | `{CLOSED}`; `{ALLOWLIST, CLOSED}` when an egress proxy image is configured |
 | `wslc` (`maf-sandbox-wslc`) | backend, shipped | `container` | `EXEC, FILES_IN` | `{CLOSED}`; `{ALLOWLIST, CLOSED}` when an egress proxy image is configured |
 | `InProcessSandboxBackend` (`maf_sandbox.testing`) | backend, shipped | `none` | `DEFAULT_CAPABILITIES` — the fake implements `run_code` for real but does not declare `RUN_CODE` unless a test asks | `{ALLOWLIST, CLOSED}` — and every declaration is constructor-overridable, which is what makes it a policy test fixture |
