@@ -531,10 +531,10 @@ class TestSpeculativeRequestDiscovery:
     def test_a_request_waiting_behind_a_gap_is_never_read_twice(self):
         """The #659 budget: a request is read once — when it is served.
 
-        Two calls where the second publishes late, so a poll sees 0002 present behind an
-        answered 0001 frontier. Whatever the interleaving, the whole run reads each served
-        request exactly once — stat-only discovery never turns a present stat into a read
-        until the identifier is the one being served.
+        Whatever interleaving a run takes, each served request is read exactly once —
+        stat-only discovery never turns a present stat into a read until the identifier is
+        the one being served. The window is already at its widest when every request is
+        present from launch, which is the most reading a legal window can be tempted into.
         """
         reads: list[str] = []
 

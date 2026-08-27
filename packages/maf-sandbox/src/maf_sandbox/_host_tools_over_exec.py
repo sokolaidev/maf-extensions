@@ -1693,16 +1693,6 @@ async def _probe_exit_and_requests(
             exact=True,
         )
     )
-    if count <= 1:
-        try:
-            finished = await marker_probe
-        except BaseException:
-            await _cancel_and_drain((marker_probe, frontier))
-            raise
-        if finished is not None:
-            await _cancel_and_drain((frontier,))
-            return finished, ()
-        return None, (frontier,)
     request_probes: tuple[asyncio.Task[str | bool | _TooLarge | _NotText | None], ...] = (
         frontier,
     ) + tuple(
