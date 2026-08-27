@@ -3,11 +3,11 @@
     python samples/07_docker_diagram/agent.py | tee out.txt
     python scripts/check_live_diagram_sample.py out.txt samples/07_docker_diagram/out/diagram.png
 
-Everything this sample prints except one line is model prose, and prose is not evidence that a
-renderer ran: an agent describing the picture it would have drawn writes the same paragraph as
-one that drew it. So the assertion is the two things the host produced itself — the sample's
-own disposal line, which is non-zero only if a sandbox was created to serve a tool call, and
-the file the sink wrote.
+Everything this sample prints except its own tagged lines is model prose, and prose is not
+evidence that a renderer ran: an agent describing the picture it would have drawn writes the
+same paragraph as one that drew it. So the assertion is what the host produced itself — the
+sample's own disposal line, which is non-zero only if a sandbox was created to serve a tool
+call, and the file the sink wrote.
 
 The image is read structurally rather than compared: a PNG signature, then the dimensions out
 of the IHDR chunk. The model writes the DOT, so what the graph contains and how large it comes

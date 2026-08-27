@@ -43,7 +43,6 @@ import asyncio
 import logging
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from _scaffold import MEASURED, installed_versions, quoted, require_env_vars
 from agent_framework import Agent
@@ -60,9 +59,6 @@ from maf_sandbox.maf import (
     make_caller_context,
 )
 from maf_sandbox_docker import DockerSandboxBackend, DockerSandboxConfig
-
-if TYPE_CHECKING:
-    pass
 
 logger = logging.getLogger(__name__)
 

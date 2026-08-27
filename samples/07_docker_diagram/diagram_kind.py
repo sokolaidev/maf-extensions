@@ -16,7 +16,6 @@ files need. `sys.path[0]` is the script's directory, which is what lets `agent.p
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -53,9 +52,9 @@ _RENDERER = "dot"
 _OUTPUT_FORMAT = "png"
 _FORMAT_FLAG = f"-T{_OUTPUT_FORMAT}"
 _OUTPUT_FLAG = "-o"
-#: One fixed name each. The sandbox is reused across calls, so concurrent calls would share
-#: these paths — the render is serialised per attached tool (see `_render_diagram_tool`) so one
-#: call's source and image are never overwritten by another's mid-render.
+#: One name each, both inside the call's own directory. A fixed path under `work_dir` is
+#: shared by every call in the conversation, which costs a collision and a leak — see the
+#: README.
 _SOURCE_FILENAME = "diagram.dot"
 _OUTPUT_FILENAME = f"diagram.{_OUTPUT_FORMAT}"
 _OUTPUT_MEDIA_TYPE = "image/png"
@@ -76,9 +75,12 @@ def diagram_sandbox_spec(image: str | None = None) -> SandboxSpec:
     """The sandbox a diagram render needs, in backend-neutral terms.
 
     ``egress_allow=()`` because rendering is pure computation — ``dot`` reads the source it was
-    given and writes an image, and reaches nothing.  The one declared output lands (``FILES_OUT``)
-    and is ``required=False``: a ``dot`` that rejects malformed source produces no file, and that
-    absence is a diagnostic the model should fix rather than a transfer error.
+    given and writes an image, and reaches nothing.
+
+    ``outputs_named_at_call_time`` because the image is produced inside the call's own
+    directory, whose name is allocated per call.  It still declares that this workload lands
+    *something*, which is what keeps the attach-time refusals — no sink, or no ``FILES_OUT`` in
+    ``requires`` — doing their job.  The declaration itself is built in the tool body.
     """
     return SandboxSpec(
         kind=DIAGRAM_KIND,
@@ -86,13 +88,7 @@ def diagram_sandbox_spec(image: str | None = None) -> SandboxSpec:
         egress_allow=(),
         work_dir=_WORK_DIR,
         requires=frozenset({Capability.EXEC, Capability.FILES_IN, Capability.FILES_OUT}),
-        declared_outputs=(
-            DeclaredOutput(
-                path=_OUTPUT_FILENAME,
-                media_type=_OUTPUT_MEDIA_TYPE,
-                required=False,
-            ),
-        ),
+        outputs_named_at_call_time=True,
         files_out=_FILES_OUT_LIMITS,
     )
 
@@ -151,18 +147,9 @@ def _render_diagram_tool(
     re-indent every line of what the model reads.
     """
 
-    # The function calls in one assistant message run concurrently, so two `render_diagram`
-    # calls can drive the same sandbox at once — `maf_sandbox._protocol.Sandbox.acquire`
-    # documents this. Both write `diagram.dot` and read `diagram.png` at the fixed paths below,
-    # so without guarding, one call could collect the other's image. This lock serialises the
-    # write -> exec -> collect sequence per attached tool.
-    #
-    # A FILES_OUT kind could instead build its `DeclaredOutput` per call under
-    # `guest_call_path()`: `outputs_named_at_call_time` is what admits that, and `name`
-    # keeps the landed artifact name stable while the framework reclaims the call path.
-    # This sample keeps the output in the spec so a first-custom-kind reader sees the
-    # contract at attach time; the lock is that choice's price.
-    render_lock = asyncio.Lock()
+    # No lock, and that is where the files go rather than luck: the calls in one assistant
+    # message run concurrently (`Sandbox.acquire` documents it), and under `guest_call_path()`
+    # two renders share no path to collide on.
 
     async def render_diagram(dot: str) -> str:
         """Render a Graphviz diagram from DOT source and save it as a PNG image.
@@ -196,53 +183,73 @@ def _render_diagram_tool(
         if isinstance(sandbox, str):
             return sandbox
 
-        source_path = f"{session.spec.work_dir}/{_SOURCE_FILENAME}"
-        output_path = f"{session.spec.work_dir}/{_OUTPUT_FILENAME}"
+        # This call's own directory. Asking for it is what puts it on the framework's list:
+        # the path, and everything under it, is removed when the body returns.
+        guest_call_directory = session.guest_call_path()
+        # What `collect_outputs` resolves is relative to `work_dir`, and the call directory sits
+        # directly under it, so its last component is the whole of the prefix.
+        call_id = guest_call_directory.rsplit("/", 1)[-1]
+        guest_source_path = f"{guest_call_directory}/{_SOURCE_FILENAME}"
+        guest_output_path = f"{guest_call_directory}/{_OUTPUT_FILENAME}"
 
-        # One call's write -> exec -> collect must complete before the next touches the shared
-        # paths — see the note where `render_lock` is created.
-        async with render_lock:
-            try:
-                await sandbox.write_file(source_path, dot, working_directory=session.spec.work_dir)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "render_diagram: could not write the DOT source into the sandbox: %s",
-                    error_detail(exc),
-                )
-                return "Error: could not write the diagram source into the sandbox"
+        try:
+            await sandbox.write_file(
+                guest_source_path, dot, working_directory=session.spec.work_dir
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "render_diagram: could not write the DOT source into the sandbox: %s",
+                error_detail(exc),
+            )
+            return "Error: could not write the diagram source into the sandbox"
 
-            try:
-                # An argv sequence, never a command line: the source is a written file and the
-                # renderer's arguments are fixed, so nothing the model wrote reaches a shell.
-                result = await sandbox.exec(
-                    [_RENDERER, _FORMAT_FLAG, source_path, _OUTPUT_FLAG, output_path],
-                    working_directory=session.spec.work_dir,
-                    timeout=timeout,
-                )
-            except TimeoutError:
-                logger.warning("render_diagram: dot timed out after %ss", timeout)
-                return f"Error: rendering timed out after {timeout}s"
-            except Exception as exc:  # noqa: BLE001
-                # Provider/transport detail can carry account ids — must not reach the transcript.
-                logger.warning("render_diagram: exec failed: %s", error_detail(exc))
-                return "Error: could not run the renderer in the sandbox"
+        try:
+            # An argv sequence, never a command line: the source is a written file and the
+            # renderer's arguments are fixed, so nothing the model wrote reaches a shell.
+            result = await sandbox.exec(
+                [_RENDERER, _FORMAT_FLAG, guest_source_path, _OUTPUT_FLAG, guest_output_path],
+                working_directory=session.spec.work_dir,
+                timeout=timeout,
+            )
+        except TimeoutError:
+            logger.warning("render_diagram: dot timed out after %ss", timeout)
+            return f"Error: rendering timed out after {timeout}s"
+        except Exception as exc:  # noqa: BLE001
+            # Provider/transport detail can carry account ids — must not reach the transcript.
+            logger.warning("render_diagram: exec failed: %s", error_detail(exc))
+            return "Error: could not run the renderer in the sandbox"
 
-            if result.exit_code != 0:
-                # dot rejects malformed DOT with a diagnostic on stderr. That is the model's to
-                # fix, not a transport failure — hand it back so the next attempt can correct the
-                # source. The declared output is required=False, so an absent file here is not a
-                # transfer error.
-                logger.info("render_diagram: dot exited %d", result.exit_code)
-                return _render_failed(result.exit_code, (result.stderr or "").rstrip("\n"))
+        if result.exit_code != 0:
+            # dot rejects malformed DOT with a diagnostic on stderr. That is the model's to
+            # fix, not a transport failure — hand it back so the next attempt can correct the
+            # source. The declared output is required=False, so an absent file here is not a
+            # transfer error.
+            logger.info("render_diagram: dot exited %d", result.exit_code)
+            return _render_failed(result.exit_code, (result.stderr or "").rstrip("\n"))
 
-            try:
-                landed = await collect_outputs(sandbox, session.spec, sink=sink)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "render_diagram: could not land the rendered image: %s",
-                    error_detail(exc),
-                )
-                return "Error: the diagram rendered but could not be saved"
+        try:
+            landed = await collect_outputs(
+                sandbox,
+                session.spec,
+                sink=sink,
+                # Declared here because the path carries this call's own id. `name` keeps
+                # that id out of host storage and out of what the model is shown, at the cost
+                # of a landed name every call shares — see the README.
+                outputs=(
+                    DeclaredOutput(
+                        path=f"{call_id}/{_OUTPUT_FILENAME}",
+                        media_type=_OUTPUT_MEDIA_TYPE,
+                        required=False,
+                        name=_OUTPUT_FILENAME,
+                    ),
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "render_diagram: could not land the rendered image: %s",
+                error_detail(exc),
+            )
+            return "Error: the diagram rendered but could not be saved"
 
         if not landed:
             # dot exited 0 but produced no file — required=False, so collect_outputs returned
