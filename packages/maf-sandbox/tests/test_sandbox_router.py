@@ -1732,7 +1732,7 @@ class TestDisposalsForOneKeyDoNotInterleave:
             release.set()
             with pytest.raises(SandboxUnclean):
                 await acquiring
-            await disposing
+            assert await disposing is False, "the holder refused, so the key stays closed"
             return during
 
         assert asyncio.run(scenario()) == ["holder"], "the cleanup deleted beside the disposal"
