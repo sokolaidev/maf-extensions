@@ -155,6 +155,13 @@ class TestSelection:
                 reclaim=ReclaimConfig(timeout=bad_timeout),
             )
 
+    def test_reclaim_config_policy_string_is_normalized_to_enum(self):
+        backend = InProcessSandboxBackend()
+        config = ReclaimConfig(failed_reclaim_policy="keep")  # type: ignore[arg-type]
+        assert config.failed_reclaim_policy is FailedReclaimPolicy.KEEP
+        router = SandboxRouter([backend], min_isolation=Isolation.NONE, reclaim=config)
+        assert router.reclaim.failed_reclaim_policy is FailedReclaimPolicy.KEEP
+
     def test_reclaim_config_policy_validation(self):
         backend = InProcessSandboxBackend()
         with pytest.raises(ValueError):

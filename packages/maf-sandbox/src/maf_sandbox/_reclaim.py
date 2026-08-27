@@ -58,6 +58,13 @@ class ReclaimConfig:
     failed_reclaim_policy: FailedReclaimPolicy = FailedReclaimPolicy.DISPOSE
     on_failure: Callable[[ReclaimFailure], Awaitable[None]] | None = None
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "failed_reclaim_policy",
+            FailedReclaimPolicy(str(self.failed_reclaim_policy)),
+        )
+
 
 DEFAULT_RECLAIM_CONFIG = ReclaimConfig()
 
