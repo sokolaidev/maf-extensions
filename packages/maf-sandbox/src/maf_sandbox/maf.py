@@ -54,6 +54,7 @@ from ._protocol import (
 from ._purger import SandboxPurger
 from ._reclaim import (
     DisposalOutcome,
+    FailedReclaimPolicy,
     ReclaimFailure,
     close_unclean_notes,
     open_unclean_notes,
@@ -498,11 +499,11 @@ async def _dispose_the_unclean(
     wait on a callback's time budget. Cancellation passes through with the key recorded on
     the router first, so the next call is refused rather than served the leftovers.
     """
-    if router.keep_unclean:
+    if router.reclaim.failed_reclaim_policy is FailedReclaimPolicy.KEEP:
         # Every record here carries an argument, so the prefix's doubled `%` interpolates.
         logger.warning(
             f"{prefix}: the sandbox for %s is kept with the data in it — this host opted down "
-            "with keep_unclean",
+            "with FailedReclaimPolicy.KEEP",
             key.thread_id,
         )
         return "kept"
@@ -537,10 +538,10 @@ def _refuse_not_yet_reclaimed(
     not finish reclaiming.
 
     Called synchronously while a cancellation is propagating out of the cleanup, where awaiting a
-    disposal is not reliable. A no-op when the host opted down with ``keep_unclean``: it asked to
-    keep the data, so refusing the key would contradict that.
+    disposal is not reliable. A no-op when the host opted down with ``FailedReclaimPolicy.KEEP``:
+    it asked to keep the data, so refusing the key would contradict that.
     """
-    if router.keep_unclean:
+    if router.reclaim.failed_reclaim_policy is FailedReclaimPolicy.KEEP:
         return
     for key, _ in acquired[start:]:
         router.mark_unclean(
@@ -683,7 +684,7 @@ def sandboxed_tool(
     output_sink: OutputSink | None = None,
     also_carries_out: bool = False,
     on_reclaim_failure: Callable[[ReclaimFailure], Awaitable[None]] | None = None,
-    reclaim_timeout: float = 30.0,
+    reclaim_timeout: float | None = None,
     logger: logging.Logger | None = None,
 ) -> list[Any]:
     """Return the one-tool list for a sandbox workload, or ``[]`` when no sandbox is available.
@@ -769,14 +770,16 @@ def sandboxed_tool(
             stopped may have left something running — **after** the framework has disposed
             that sandbox. The failure says what the disposal did. This is notification: where
             a host logs, alerts or counts. It is not where safety is wired; that is the
-            router's, and a host opts down from it with ``SandboxRouter(keep_unclean=True)``,
-            never from here. Default ``None`` leaves the log as the record. Its own failure is
+            router's, and a host opts down from it with
+            ``ReclaimConfig(failed_reclaim_policy=FailedReclaimPolicy.KEEP)``, never from here.
+            Default ``None`` falls back to the router's ``reclaim.on_failure``. Its own failure is
             logged and swallowed — it runs in a ``finally``, over a call that may already be
             failing.
         reclaim_timeout: Seconds the removal gets, per sandbox the call acquired — ordinarily
             one — and separately the seconds the disposal gets, and again the seconds
-            ``on_reclaim_failure`` gets, so a sandbox whose removal fails can cost three times
-            it. Spent after the body has returned, so it is added
+            the failure hook gets, so a sandbox whose removal fails can cost three times
+            it. Default ``None`` falls back to the router's ``reclaim.timeout`` (which defaults to
+            ``30.0``). Spent after the body has returned, so it is added
             to the call's own latency and an outer deadline should allow for it. A body that
             was **cancelled** gets :data:`_CANCELLED_CALL_GRACE` instead, or this, whichever is
             smaller: its caller's deadline has already passed, and the removal must not extend
@@ -809,12 +812,16 @@ def sandboxed_tool(
             "router's capability match never asks whether this backend has one — leaving the "
             "failure to happen inside the sandbox, where the reason is hardest to see."
         )
-    if not math.isfinite(reclaim_timeout) or reclaim_timeout <= 0:
+    effective_timeout = reclaim_timeout if reclaim_timeout is not None else router.reclaim.timeout
+    if not math.isfinite(effective_timeout) or effective_timeout <= 0:
         raise ValueError(
             f"{name}: reclaim_timeout must be a finite positive number of seconds, not "
-            f"{reclaim_timeout}. It bounds a removal that runs in a `finally`, so an infinite "
+            f"{effective_timeout}. It bounds a removal that runs in a `finally`, so an infinite "
             "one is a tool call that never returns."
         )
+    effective_on_failure = (
+        on_reclaim_failure if on_reclaim_failure is not None else router.reclaim.on_failure
+    )
     router.ensure_can_serve(spec)
 
     records = logger if logger is not None else _DEFAULT_LOGGER
@@ -885,16 +892,16 @@ def sandboxed_tool(
             # Closed before the removal, not after: a task the body left running would otherwise
             # be handed this path while it is being deleted.
             call.closed = True
-            bound = reclaim_timeout
+            bound = effective_timeout
             if isinstance(sys.exception(), (asyncio.CancelledError, GeneratorExit)):
-                bound = min(reclaim_timeout, _CANCELLED_CALL_GRACE)
+                bound = min(effective_timeout, _CANCELLED_CALL_GRACE)
             await _reclaim_the_call(
                 call,
                 router=router,
                 spec=spec,
                 tool=name,
                 logger=records,
-                on_failure=on_reclaim_failure,
+                on_failure=effective_on_failure,
                 timeout=bound,
                 unclean=unclean,
             )

@@ -25,6 +25,7 @@ import pytest
 
 from maf_sandbox import (
     DEFAULT_CAPABILITIES,
+    DEFAULT_RECLAIM_CONFIG,
     DEFAULT_SANDBOX_LIMITS,
     DEFAULT_TRANSFER_LIMITS,
     ISOLATION_RANK,
@@ -33,12 +34,14 @@ from maf_sandbox import (
     DisposalFailure,
     Egress,
     EntryKind,
+    FailedReclaimPolicy,
     HostToolAggregate,
     Identity,
     Isolation,
     NoSandboxBackend,
     OsFamily,
     OutputDisposition,
+    ReclaimConfig,
     SandboxBackend,
     SandboxBackendNotPermitted,
     SandboxCapabilityDenied,
@@ -123,6 +126,50 @@ class TestSelection:
         sandbox = asyncio.run(router.acquire(_KEY, _SPEC))
         assert backend.keys == [_KEY]
         assert sandbox is backend.sandbox
+
+    def test_default_reclaim_config_is_applied(self):
+        backend = InProcessSandboxBackend()
+        router = SandboxRouter([backend], min_isolation=Isolation.NONE)
+        assert router.reclaim == DEFAULT_RECLAIM_CONFIG
+        assert router.reclaim.timeout == 30.0
+        assert router.reclaim.failed_reclaim_policy is FailedReclaimPolicy.DISPOSE
+        assert router.reclaim.on_failure is None
+
+    def test_custom_reclaim_config_is_stored(self):
+        backend = InProcessSandboxBackend()
+        custom = ReclaimConfig(
+            timeout=15.0,
+            failed_reclaim_policy=FailedReclaimPolicy.KEEP,
+            on_failure=lambda failure: asyncio.sleep(0),
+        )
+        router = SandboxRouter([backend], min_isolation=Isolation.NONE, reclaim=custom)
+        assert router.reclaim is custom
+
+    @pytest.mark.parametrize("bad_timeout", [math.inf, math.nan, 0.0, -10.0])
+    def test_reclaim_config_timeout_validation(self, bad_timeout):
+        backend = InProcessSandboxBackend()
+        with pytest.raises(ValueError, match="reclaim.timeout must be a finite positive number"):
+            SandboxRouter(
+                [backend],
+                min_isolation=Isolation.NONE,
+                reclaim=ReclaimConfig(timeout=bad_timeout),
+            )
+
+    def test_reclaim_config_policy_string_is_normalized_to_enum(self):
+        backend = InProcessSandboxBackend()
+        config = ReclaimConfig(failed_reclaim_policy="keep")  # type: ignore[arg-type]
+        assert config.failed_reclaim_policy is FailedReclaimPolicy.KEEP
+        router = SandboxRouter([backend], min_isolation=Isolation.NONE, reclaim=config)
+        assert router.reclaim.failed_reclaim_policy is FailedReclaimPolicy.KEEP
+
+    def test_reclaim_config_policy_validation(self):
+        backend = InProcessSandboxBackend()
+        with pytest.raises(ValueError):
+            SandboxRouter(
+                [backend],
+                min_isolation=Isolation.NONE,
+                reclaim=ReclaimConfig(failed_reclaim_policy="unsupported_policy"),  # type: ignore[arg-type]
+            )
 
 
 class TestIsolationLadder:
@@ -501,11 +548,14 @@ class TestFileTransferVocabulary:
     @pytest.mark.parametrize(
         "name",
         [
+            "DEFAULT_RECLAIM_CONFIG",
             "DEFAULT_SANDBOX_LIMITS",
             "DEFAULT_TRANSFER_LIMITS",
             "DeclaredOutput",
             "EntryKind",
+            "FailedReclaimPolicy",
             "OutputDisposition",
+            "ReclaimConfig",
             "SandboxEntry",
             "SandboxLimits",
             "SandboxTransferLimitsNotPermitted",
@@ -1471,14 +1521,17 @@ class TestOnlyTheUncleanPathClosesAKey:
         asyncio.run(router.acquire(_KEY, _SPEC))
 
     def test_the_opt_down_does_not_loosen_the_bound(self):
-        """`keep_unclean` is about not closing the key. The bound is about not hanging the call
+        """`FailedReclaimPolicy.KEEP` is about not closing the key. The bound is about not hanging the call
         that asked — and this method validates `timeout` precisely so it always holds."""
 
         class _Hangs(InProcessSandboxBackend):
             async def dispose(self, key: SandboxKey) -> DisposalFailure | str | None:
                 await asyncio.Event().wait()
 
-        router = self._router(_Hangs(), keep_unclean=True)
+        router = self._router(
+            _Hangs(),
+            reclaim=ReclaimConfig(failed_reclaim_policy=FailedReclaimPolicy.KEEP),
+        )
 
         async def scenario() -> bool:
             # `wait_for` well past the bound, so a regression fails the test rather than hanging
@@ -1488,12 +1541,12 @@ class TestOnlyTheUncleanPathClosesAKey:
         assert asyncio.run(scenario()) is False
         asyncio.run(router.acquire(_KEY, _SPEC))  # and the opt-down still leaves the key servable
 
-    def test_keep_unclean_opts_down_from_the_refusal_too(self):
+    def test_keep_policy_opts_down_from_the_refusal_too(self):
         """The host asked the framework not to destroy a sandbox it could not clean; closing
         the key is the other half of that same act."""
         router = self._router(
             InProcessSandboxBackend(dispose_failure=DisposalFailure("refused", "down")),
-            keep_unclean=True,
+            reclaim=ReclaimConfig(failed_reclaim_policy=FailedReclaimPolicy.KEEP),
         )
         assert asyncio.run(router.dispose_unclean(_KEY, timeout=1.0)) is False
         asyncio.run(router.acquire(_KEY, _SPEC))

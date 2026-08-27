@@ -40,6 +40,7 @@ from ._protocol import (
     fold_disposal_failures,
     meets_floor,
 )
+from ._reclaim import DEFAULT_RECLAIM_CONFIG, FailedReclaimPolicy, ReclaimConfig
 
 logger = logging.getLogger(__name__)
 
@@ -288,13 +289,11 @@ class SandboxRouter:
             spec whose ``identities`` carries one is refused at attach.
             ``denied_identities={Identity.USER}`` is how a host forbids model-orchestrated
             user authority in one statement instead of auditing each registration.
-        keep_unclean: Opt down from the framework disposing a sandbox it could not clean.
-            ``False`` by default, the way ``min_isolation`` defaults to the production
-            posture: when a tool call's directory could not be removed, or a program it
-            stopped may have left something running, ``sandboxed_tool`` disposes that
-            sandbox before the next call can reuse it. ``True`` keeps it warm with the data
-            in it, and the host's ``on_reclaim_failure`` is told so. A kind cannot set this:
-            it is the host's call to loosen, never a workload's.
+        reclaim: Host-wide policy and handlers for tool call reclaim (timeout, failure policy,
+            and failure callback). Defaults to :data:`~maf_sandbox.DEFAULT_RECLAIM_CONFIG`
+            (:class:`~maf_sandbox.ReclaimConfig` with ``timeout=30.0``,
+            ``failed_reclaim_policy=FailedReclaimPolicy.DISPOSE``, and no callback). A kind
+            cannot set the policy: it is the host's call to loosen, never a workload's.
 
     Raises:
         SandboxBackendNotPermitted: at construction, when the selected backend declares a
@@ -306,7 +305,8 @@ class SandboxRouter:
             bare ``KeyError`` out of a rank comparison, which would only happen once a backend
             was registered and a floor was actually compared against — or when a denied
             capability or identity is not a member this package recognises: a deny list that
-            silently never matches would read as protection and provide none.
+            silently never matches would read as protection and provide none; or when
+            ``reclaim.timeout`` is not a finite positive number.
     """
 
     def __init__(
@@ -317,10 +317,15 @@ class SandboxRouter:
         selected: str | None = None,
         denied_capabilities: Iterable[Capability] = (),
         denied_identities: Iterable[Identity] = (),
-        keep_unclean: bool = False,
+        reclaim: ReclaimConfig = DEFAULT_RECLAIM_CONFIG,
     ) -> None:
         self._backends = list(backends)
-        self._keep_unclean = bool(keep_unclean)
+        if not math.isfinite(reclaim.timeout) or reclaim.timeout <= 0:
+            raise ValueError(
+                f"reclaim.timeout must be a finite positive number of seconds, not "
+                f"{reclaim.timeout}."
+            )
+        self._reclaim = reclaim
         # Keys whose sandbox holds data the framework could not remove and could not dispose
         # of. An entry leaves when a disposal lands; a key that keeps failing stays refused.
         # Keyed, not a set, so a refusal can say why; `None` for a key marked before a try.
@@ -385,9 +390,9 @@ class SandboxRouter:
         return self._backend is not None
 
     @property
-    def keep_unclean(self) -> bool:
-        """Whether this host opted down from disposing a sandbox the framework could not clean."""
-        return self._keep_unclean
+    def reclaim(self) -> ReclaimConfig:
+        """Host-wide policy and handlers for tool call reclaim."""
+        return self._reclaim
 
     def _effective_floor(self, spec: SandboxSpec) -> Isolation:
         """The stricter of the host's floor and the spec's — a spec may raise, never lower."""
@@ -736,7 +741,7 @@ class SandboxRouter:
         refused — otherwise a concurrent :meth:`acquire` passes its ledger check and is handed
         the dirty sandbox. :meth:`_dispose_each` discards the key on a landed disposal, so a
         success clears it while a failure, the bound passing, or a cancellation leaves it
-        refused.  ``keep_unclean`` suppresses the ledger writes, not the bound.
+        refused.  ``FailedReclaimPolicy.KEEP`` suppresses the ledger writes, not the bound.
 
         Raises:
             ValueError: when ``timeout`` is not a finite positive number of seconds. ``math.inf``
@@ -748,7 +753,7 @@ class SandboxRouter:
             raise ValueError(f"timeout must be a finite positive number of seconds, not {timeout}")
         # The opt-down is from closing the key, not from the bound: this still runs after a
         # tool call's body. So the bound wraps both paths; only the ledger writes differ.
-        refuse = not self._keep_unclean
+        refuse = self._reclaim.failed_reclaim_policy is not FailedReclaimPolicy.KEEP
         if refuse:
             self._unclean.setdefault(key, None)
         try:
