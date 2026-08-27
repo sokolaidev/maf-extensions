@@ -37,6 +37,10 @@ from maf_sandbox_wslc import WslcSandboxBackend, WslcSandboxConfig
 
 _IMAGE = os.environ.get("MAF_SANDBOX_WSLC_E2E_IMAGE")
 _PROXY_IMAGE = os.environ.get("MAF_SANDBOX_WSLC_E2E_PROXY_IMAGE")
+#: An image whose ``USER`` is not root. Every image this suite otherwise runs is root's, which is
+#: what keeps the two-principal split invisible: the file plane writes as root and so does the
+#: guest. A non-root image separates them, and is what ``reclaim``'s ``--user 0`` raise exists for.
+_NONROOT_IMAGE = os.environ.get("MAF_SANDBOX_WSLC_E2E_NONROOT_IMAGE")
 
 _WORK = "/maf-sandbox/work"
 
@@ -317,6 +321,151 @@ class TestTheSharedConformanceSuites:
                         capabilities=backend.capabilities,
                     )
                 )
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+
+@pytest.mark.skipif(
+    not _NONROOT_IMAGE,
+    reason="needs MAF_SANDBOX_WSLC_E2E_NONROOT_IMAGE naming an image whose USER is not root",
+)
+class TestAGuestThatIsNotRoot:
+    """The file plane against an image whose ``USER`` is not root.
+
+    Every other image this suite runs is root's, so the file plane (``write_file`` writes as the
+    host authority, root) and the guest (``exec`` runs as the image's ``USER``) are the same
+    principal and the split is invisible. A non-root image separates them, and is what
+    ``reclaim``'s ``--user 0`` raise is for: the guest cannot remove what the file plane wrote, so
+    ``reclaim`` raises authority to root to take the call directory back.
+    """
+
+    def _spec(self, image: str | None = None) -> SandboxSpec:
+        return SandboxSpec(kind="e2e-nonroot", image=image or _NONROOT_IMAGE, work_dir=_WORK)
+
+    def _as_root(self, container: str, script: str) -> str:
+        """One command in the container with root's authority, from outside the backend."""
+        done = subprocess.run(
+            ["wslc", "container", "exec", "--user", "0", container, "sh", "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert done.returncode == 0, done.stderr
+        return done.stdout.strip()
+
+    def test_reclaim_removes_a_call_directory_the_file_plane_wrote(self):
+        """The file plane writes as root; ``reclaim`` raises to ``--user 0`` to remove it."""
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = WslcSandboxBackend(WslcSandboxConfig())
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(_key(scope), self._spec())
+            call_directory = f"{_WORK}/abc123def456"
+            await sandbox.write_file(
+                f"{call_directory}/note", "left behind\n", working_directory=_WORK
+            )
+
+            # The framework's own ``finally`` member, now raised to root. Without the raise this
+            # raises OSError (rm exits 1, the directory leaks); with it the tree is gone.
+            await sandbox.reclaim(call_directory, working_directory=_WORK, timeout=60)
+
+            assert (
+                self._as_root(
+                    sandbox.container_name, f"test -d {call_directory} && echo yes || echo no"
+                )
+                == "no"
+            )
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+    def test_a_guest_command_still_runs_as_the_image_user(self):
+        """The half that must not move: ``exec`` is the guest program's own."""
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = WslcSandboxBackend(WslcSandboxConfig())
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(_key(scope), self._spec())
+            whoami = await sandbox.exec(["id", "-u"], working_directory="/", timeout=60)
+            assert whoami.exit_code == 0, whoami.stderr
+            assert whoami.stdout.strip() not in ("", "0")
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+    def test_the_guest_cannot_rewrite_what_the_host_wrote(self):
+        """A file the file plane planted as root stays the host's: the non-root guest can
+        neither rewrite nor delete it, so a call's inputs survive the guest that read them.
+        """
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = WslcSandboxBackend(WslcSandboxConfig())
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(_key(scope), self._spec())
+            planted = f"{_WORK}/call-a1b2c3/host_note"
+            await sandbox.write_file(planted, "# the host wrote this\n", working_directory=_WORK)
+
+            rewritten = await sandbox.exec(
+                ["sh", "-c", f"echo '# tampered' > {planted}"], working_directory="/", timeout=60
+            )
+            assert rewritten.exit_code != 0
+
+            deleted = await sandbox.exec(
+                ["sh", "-c", f"rm -f {planted}"], working_directory="/", timeout=60
+            )
+            assert deleted.exit_code != 0
+
+            # The guest can still *read* what it could not rewrite or delete (the file is the
+            # host's, mode 0644), which is the half that makes the call's inputs survivable.
+            intact = await sandbox.exec(["cat", planted], working_directory="/", timeout=60)
+            assert intact.exit_code == 0, intact.stderr
+            assert intact.stdout == "# the host wrote this\n"
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+    def test_reclaim_removes_a_tree_the_two_principals_share(self):
+        """The host's files beside the guest's, under one directory, removed in one walk."""
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = WslcSandboxBackend(WslcSandboxConfig())
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(_key(scope), self._spec())
+            call_directory = f"{_WORK}/abc123def456"
+            await sandbox.write_file(
+                f"{call_directory}/program.py", "print(1)\n", working_directory=_WORK
+            )
+            guest = await sandbox.exec(["id", "-u"], working_directory="/", timeout=60)
+            guest_uid = guest.stdout.strip()
+            chown = (
+                f"mkdir -p {call_directory}/work && "
+                f"chown -R {guest_uid}:{guest_uid} {call_directory}/work"
+            )
+            self._as_root(sandbox.container_name, chown)
+            wrote = await sandbox.exec(
+                ["sh", "-c", f"echo mine > {call_directory}/work/output.txt"],
+                working_directory="/",
+                timeout=60,
+            )
+            assert wrote.exit_code == 0, wrote.stderr
+
+            await sandbox.reclaim(call_directory, working_directory=_WORK, timeout=60)
+
+            assert (
+                self._as_root(
+                    sandbox.container_name, f"test -d {call_directory} && echo yes || echo no"
+                )
+                == "no"
+            )
 
         try:
             asyncio.run(scenario())

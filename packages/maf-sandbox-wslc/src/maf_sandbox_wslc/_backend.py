@@ -373,7 +373,7 @@ class _WslcSandbox:
     async def exec(
         self, command: str | Sequence[str], *, working_directory: str, timeout: float
     ) -> ExecResult:
-        """Run ``command``, bounded by ``timeout``.
+        """Run ``command`` as the image's user, bounded by ``timeout``.
 
         ``wslc exec`` takes argv natively, so a sequence goes through element for element with
         no shell and nothing to quote; a string is a shell command line and runs as ``sh -c``.
@@ -386,9 +386,34 @@ class _WslcSandbox:
         but keeps the sandbox: the in-container command runs on until the sandbox is disposed.
         """
         argv = ["sh", "-c", command] if isinstance(command, str) else list(command)
+        return await self._exec(argv, working_directory=working_directory, timeout=timeout)
+
+    async def _exec(
+        self,
+        argv: Sequence[str],
+        *,
+        working_directory: str,
+        timeout: float,
+        as_root: bool = False,
+    ) -> ExecResult:
+        """One ``wslc container exec``, as the image's user or as ``--user 0``.
+
+        :meth:`exec` is the guest program's own and names no user; :meth:`reclaim` asks for root,
+        because the file plane (:meth:`write_file`) writes as the host authority and the image's
+        user cannot remove what a call left behind on a non-root image.  See
+        ``docs/sandbox/backends/wslc.md``.
+        """
+        privilege = ("--user", "0") if as_root else ()
         try:
             result = await self._run(
-                "container", "exec", "-w", working_directory, self._name, *argv, timeout=timeout
+                "container",
+                "exec",
+                *privilege,
+                "-w",
+                working_directory,
+                self._name,
+                *argv,
+                timeout=timeout,
             )
         except TimeoutError:
             with contextlib.suppress(Exception):
@@ -465,15 +490,19 @@ class _WslcSandbox:
         )
 
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
-        """Remove ``directory`` with ``rm -rf`` over :meth:`exec`.
+        """Remove ``directory`` with ``rm -rf`` over :meth:`_exec`, as ``--user 0``.
 
-        Served where :meth:`remove` refuses: the caller made ``directory``, so no parent walk
-        is owed, and that walk is what this backend cannot build (#125). Runs from ``/``
-        because ``working_directory`` may not exist.
+        The file plane (:meth:`write_file`) writes as the host authority, so on a non-root image
+        the image's user cannot remove what a call left behind.  Root is always correct here
+        because the caller made ``directory``: no parent walk is owed, and that walk is what this
+        backend cannot build (#125). Runs from ``/`` because ``working_directory`` may not exist.
         """
         del working_directory
-        removed = await self.exec(
-            ["rm", "-rf", "--", directory], working_directory="/", timeout=timeout
+        removed = await self._exec(
+            ["rm", "-rf", "--", directory],
+            working_directory="/",
+            timeout=timeout,
+            as_root=True,
         )
         if removed.exit_code != 0:
             raise OSError(
