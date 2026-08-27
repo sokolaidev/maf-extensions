@@ -417,11 +417,16 @@ class _AcasSandbox:
         The reach argument the protocol asks of a backend that removes with more authority
         than the guest ran with: a guest that swaps ``directory`` itself gains nothing, because
         this mechanism unlinks a directly-named link instead of following it. A swapped
-        *ancestor* is resolved, so the argument rests on the working directory and its parents,
-        which the file plane creates as root wherever a kind shares any file at all. Where a
-        kind shares none, the launcher creates them over ``exec`` as the guest, and that is the
-        residual this cannot close from here — the removal still lands on the unguessable name
-        the framework chose, which the guest cannot plant under a directory it may not write.
+        *ancestor* **is followed**, so the argument there rests on who owns the component, not
+        on what the mechanism does with it. Where a kind shares any file, the file plane creates
+        the working directory and its parents as root, so a guest-writable ancestor is a link
+        planted under a directory the guest could not write in. Where a kind shares none, the
+        launcher creates the tree over ``exec`` as the guest, the premise can fail, and the
+        residual is [#710](https://github.com/sokolaidev/maf-extensions/issues/710)'s: the
+        resolved path still ends in the unguessable name the framework chose, which the guest
+        cannot plant under a directory it may not write, so the delete lands on a name that is
+        not there and answers ``ResourceNotFoundError`` — no escalation is demonstrated, but the
+        premise of the reach argument is not universally true on this backend either.
         """
         from azure.core.exceptions import ResourceNotFoundError
 

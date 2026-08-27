@@ -2639,3 +2639,16 @@ class TestReclaim:
         sandbox = _AcasSandbox(client, 30.0)
         asyncio.run(sandbox.reclaim(hostile, working_directory=_WORK_DIR, timeout=30))
         assert client.deletes == [(hostile, True)]
+
+    def test_a_working_directory_swap_for_a_link_does_not_change_the_call(self):
+        """`working_directory` is a reach argument, not a confinement one: `reclaim` owes no
+        walk of it, so a caller cannot smuggle a swap past the call and a link planted at that
+        name does not steer the delete — the call goes to the directory the framework created,
+        as a path, whatever `working_directory` now says."""
+        from maf_sandbox_acas._backend import _AcasSandbox
+
+        directory = "/maf-sandbox/work/call-a1b2c3"
+        client = _FakeDataPlaneClient()
+        sandbox = _AcasSandbox(client, 30.0)
+        asyncio.run(sandbox.reclaim(directory, working_directory="/elsewhere/now", timeout=30))
+        assert client.deletes == [(directory, True)]
