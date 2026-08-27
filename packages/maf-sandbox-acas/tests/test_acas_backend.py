@@ -935,12 +935,20 @@ class TestDispose:
         assert asyncio.run(backend.dispose(key)) is None
         assert backend._undeleted == {}
 
-    def test_a_scope_purge_that_lands_clears_the_retry_record(self):
+    def test_a_scope_purge_that_lands_leaves_the_retry_record_for_dispose_to_clear(self):
+        """The purge cannot tell whose id it deleted, so it takes none away (#685). The record
+        outlives it and the next `dispose` drops it, because an id the service no longer has is
+        not a failed delete."""
+        prefix = ("scope-a", "thread-1", "devops-engineer")
         backend = _backend_with(_FakeGroupClient())
-        backend._undeleted[("scope-a", "thread-1", "devops-engineer")] = {"sbx-1"}
+        backend._undeleted[prefix] = {"sbx-1"}
 
         asyncio.run(backend.dispose_scope("scope-a", "thread-1"))
-        assert backend._undeleted == {}
+        assert backend._undeleted == {prefix: {"sbx-1"}}, "the purge subtracts nothing"
+
+        key = SandboxKey(scope="scope-a", thread_id="thread-1", agent_dir="devops-engineer")
+        assert asyncio.run(backend.dispose(key)) is None
+        assert backend._undeleted == {}, "and the next dispose is what clears it"
 
     def test_a_sandbox_the_service_no_longer_has_is_not_a_failure(self):
         """The auto-delete timer reclaiming one between rounds is the expected path — the same

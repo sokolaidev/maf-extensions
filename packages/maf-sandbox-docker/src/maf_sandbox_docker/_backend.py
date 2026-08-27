@@ -927,16 +927,11 @@ class DockerSandboxBackend:
             ),
             thread_id=thread_id,
         )
-        # Merge-only against the *live* map: a `dispose` for one of these keys can land
-        # mid-sweep, and indexing what it removed would raise out of a method that never does.
-        # Only names this sweep took away are subtracted. A name is not a generation: #685.
-        still = set(swept.undeleted)
-        for prefix, before in retained.items():
-            left = self._undeleted.get(prefix, set()) - (before - still)
-            if left:
-                self._undeleted[prefix] = left
-            else:
-                self._undeleted.pop(prefix, None)
+        # Nothing is subtracted here, on purpose. A name is not a generation, so a purge that
+        # straddles a re-acquire cannot tell the container it removed from the one recorded
+        # since, and taking one away loses the other's record (#685). Over-retaining is the
+        # direction `dispose` already fails in: a name already gone answers "no such" there,
+        # which is not a failure, and drops out.
         return ScopePurge(swept.count, swept.reason)
 
     async def _purge(

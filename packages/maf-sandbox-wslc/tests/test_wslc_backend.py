@@ -849,6 +849,34 @@ class TestDispose:
         assert reported is not None, "and the key stays refused until someone reports on it"
         assert reported.code == "unknown", "the other attempt's outcome is not ours to name"
 
+    def test_a_purge_does_not_subtract_a_record_written_beside_it(self):
+        """#685. The purge removes the container, the same name is recreated, and a `dispose`
+        beside it records that new generation. Subtracting what the purge took away removes the
+        newer record too: the names are equal and nothing here tells the generations apart."""
+        listing = asyncio.Event()
+        release = asyncio.Event()
+        prefix = (_KEY.scope, _KEY.thread_id, _KEY.agent_dir)
+
+        async def slow_listing(*args: str, **kwargs: object) -> _WslcResult:
+            if args[:2] == ("container", "list"):
+                listing.set()
+                await release.wait()
+            return _WslcResult(0, b"", b"")
+
+        backend, _ = _backend_with(_machine())
+        backend._wslc = slow_listing  # type: ignore[method-assign]  # noqa: SLF001
+        backend._undeleted[prefix] = {_NAME}  # noqa: SLF001
+
+        async def drive() -> None:
+            purge = asyncio.create_task(backend.dispose_scope(_KEY.scope, _KEY.thread_id))
+            await listing.wait()
+            backend._undeleted[prefix] = {_NAME}  # the newer generation  # noqa: SLF001
+            release.set()
+            await purge
+
+        asyncio.run(drive())
+        assert backend._undeleted == {prefix: {_NAME}}, "the newer record was subtracted"  # noqa: SLF001
+
     def test_a_container_a_failed_removal_left_behind_is_still_served_here(self):
         """Pins what the retry record does rather than what its name suggests: it is disposal
         bookkeeping, and `acquire` still reuses the container, because the name comes from the
