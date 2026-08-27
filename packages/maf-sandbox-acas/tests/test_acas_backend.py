@@ -2609,6 +2609,28 @@ class TestReclaim:
             )
         assert isinstance(raised.value.__cause__, _ServiceDown)
 
+    def test_the_failure_message_carries_the_service_detail(self):
+        """`reclaim_guest_path` serializes this wrapper into `ReclaimFailure.reason` without
+        traversing `__cause__`, and `str()` on an azure-core `HttpResponseError` is just
+        "invalid status" — the body, which says *why* (an unauthorized identity, a service
+        refusal), would never reach the host's cleanup alert. So the detail rides in the
+        message itself, the way `remove`'s comment promises and the old `rm` path's exit code
+        and stderr did."""
+        from maf_sandbox_acas._backend import _AcasSandbox
+
+        class _RefusingClient:
+            async def delete_file(self, path, *, recursive: bool = False) -> None:
+                class _Unauthorized(OSError):
+                    status_code = 401
+
+                raise _Unauthorized("Operation returned an invalid status 'Unauthorized'")
+
+        sandbox = _AcasSandbox(_RefusingClient(), 30.0)
+        with pytest.raises(OSError, match=r"could not reclaim.*status=401"):
+            asyncio.run(
+                sandbox.reclaim("/maf-sandbox/work/x", working_directory=_WORK_DIR, timeout=30)
+            )
+
     def test_the_timeout_bounds_the_call(self):
         """``delete_file`` is a direct SDK call that does not bound itself; ``reclaim`` bounds it
         with its own ``timeout`` contract parameter, the way ``exec`` bounds the SDK's ``exec``,

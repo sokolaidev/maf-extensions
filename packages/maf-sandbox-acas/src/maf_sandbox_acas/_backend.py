@@ -409,24 +409,15 @@ class _AcasSandbox:
             raise OSError(f"could not remove {path}: {type(refused).__name__}") from refused
 
     async def reclaim(self, directory: str, *, working_directory: str, timeout: float) -> None:
-        """Remove ``directory`` through the data plane's ``delete_file``.
+        """Remove ``directory`` through the data plane's ``delete_file``, which acts as the
+        host rather than as the image's ``USER`` — so a file the file plane wrote as root is
+        removable on an image whose guest is not root, where ``rm`` over ``exec`` could not.
 
-        ``delete_file`` acts as the host rather than as the image's ``USER``, so a file the
-        file plane wrote as root is removable on an image whose guest is not root.
-
-        The reach argument the protocol asks of a backend that removes with more authority
-        than the guest ran with: a guest that swaps ``directory`` itself gains nothing, because
-        this mechanism unlinks a directly-named link instead of following it. A swapped
-        *ancestor* **is followed**, so the argument there rests on who owns the component, not
-        on what the mechanism does with it. Where a kind shares any file, the file plane creates
-        the working directory and its parents as root, so a guest-writable ancestor is a link
-        planted under a directory the guest could not write in. Where a kind shares none, the
-        launcher creates the tree over ``exec`` as the guest, the premise can fail, and the
-        residual is [#710](https://github.com/sokolaidev/maf-extensions/issues/710)'s: the
-        resolved path still ends in the unguessable name the framework chose, which the guest
-        cannot plant under a directory it may not write, so the delete lands on a name that is
-        not there and answers ``ResourceNotFoundError`` — no escalation is demonstrated, but the
-        premise of the reach argument is not universally true on this backend either.
+        Reach: a guest that swaps ``directory`` itself gains nothing — this mechanism unlinks a
+        directly-named link instead of following it — but a swapped *ancestor* **is followed**,
+        so the argument there rests on who owns the component. The full argument, and the
+        launcher-created residual, is [`acas.md`](../../../../docs/sandbox/backends/acas.md)'s
+        to carry; the guards below refuse what this backend cannot place.
         """
         from azure.core.exceptions import ResourceNotFoundError
 
@@ -440,8 +431,8 @@ class _AcasSandbox:
             raise ValueError(f"refusing to reclaim recursively that close to the root: {target}")
         try:
             # Bounded like every other call on this data plane: this one runs from a `finally`,
-            # where a wedged service would otherwise hold the caller's turn open with the run's
-            # own failure still unreported.
+            # where a wedged service would otherwise hold the caller's turn open with the
+            # caller's own failure still unreported.
             await asyncio.wait_for(self._sc.delete_file(target, recursive=True), timeout=timeout)
         except ResourceNotFoundError:
             # A directory already gone is success — `reclaim` runs from a `finally`, and a
@@ -452,8 +443,10 @@ class _AcasSandbox:
         except Exception as refused:
             # `azure.core` raises its own hierarchy, and `HttpResponseError` is no `OSError`.
             # Translated the way `remove` translates, so a caller catching what the docstring
-            # says catches a transport failure too.
-            raise OSError(f"could not reclaim {directory}: {type(refused).__name__}") from refused
+            # says catches a transport failure too. `error_detail` carries the response body,
+            # which `str()` drops — `ReclaimFailure.reason` serializes this wrapper without
+            # traversing `__cause__`, so the detail has to ride in the message itself.
+            raise OSError(f"could not reclaim {directory}: {error_detail(refused)}") from refused
 
     async def _stat_guest(self, guest: str, relative: str) -> SandboxEntry | None:
         """Stat an absolute guest path, with no confinement check of its own.
