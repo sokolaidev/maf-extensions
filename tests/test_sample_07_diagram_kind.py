@@ -1,24 +1,8 @@
-"""What sample 07's kind does with the call's own directory — and what it leaves behind.
+"""Sample 07's kind, driven against the in-process backend with no container and no model.
 
-The sample is a worked example of writing a kind, so the parts a reader would copy are worth
-pinning. `test_sample_modules_import.py` proves the module imports; this suite drives the tool
-it builds, against the in-process backend, with no container and no model.
-
-Three claims, each of which the sample makes in prose and none of which its live run can show:
-
-* the DOT source and the PNG are written **inside the call's own directory**, so two calls in
-  one assistant message share no path — which is why the kind needs no lock;
-* the framework removes it when the body returns, so nothing the call wrote is readable by the
-  next one;
-* the artifact lands as `diagram.png` however the guest spelled it, because the call-time
-  declaration carries `name`.
-
-The reclaim is read here off the fake's own store, which is the only place this suite can see
-it: the live run reads the landed PNG and the disposal, and nothing about what the sandbox
-still holds.
-
-Async tests follow the repo convention: a synchronous `def test_*` driving one `asyncio.run`
-rather than an async marker (no pytest-asyncio).
+What the sample claims in prose its live run cannot show — the reclaim is visible only in the
+fake's own store. Async tests follow the repo convention: a synchronous `def test_*` driving
+one `asyncio.run`, no pytest-asyncio.
 """
 
 from __future__ import annotations
@@ -74,18 +58,22 @@ def _png(width: int, height: int) -> bytes:
 class _Renderer(InProcessSandbox):
     """An in-process sandbox where ``dot -Tpng <source> -o <output>`` really produces a file.
 
-    The fake's ``exec`` returns canned stdout and creates nothing, so a collection would have
-    nothing to stat. Only ``dot`` is special-cased and only its ``-o`` argument is read;
-    everything else — the recording, the reclaim, the store — is the fake's own behaviour.
+    It refuses a source that is not in the store, the way ``dot`` refuses one that is not on
+    disk — without that, a kind that never wrote its source, or wrote it somewhere else, still
+    collects an image and every test here stays green.
     """
 
     async def exec(
         self, command: str | Sequence[str], *, working_directory: str, timeout: float
     ) -> ExecResult:
         result = await super().exec(command, working_directory=working_directory, timeout=timeout)
-        if not isinstance(command, str) and list(command[:1]) == ["dot"]:
-            argv = list(command)
-            self.contents[argv[argv.index("-o") + 1]] = _png(24, 16)
+        if isinstance(command, str) or list(command[:1]) != ["dot"]:
+            return result
+        argv = list(command)
+        source = argv[argv.index("-Tpng") + 1]
+        if source not in self.contents:
+            return ExecResult(stdout="", stderr=f"dot: can't open {source}", exit_code=2)
+        self.contents[argv[argv.index("-o") + 1]] = _png(24, 16)
         return result
 
 
@@ -164,12 +152,27 @@ class TestTheCallWritesInsideItsOwnDirectory:
         assert call_directory.startswith(f"{_WORK_DIR}/")
         assert call_directory.count("/") == _WORK_DIR.count("/") + 1
 
-    def test_two_calls_never_share_a_path(self, out_dir: Path):
-        """The claim the missing lock rests on. Two calls, two directories, neither inside the
-        other — so one render cannot overwrite the other's source or collect its image."""
+    def test_two_concurrent_calls_never_share_a_path(self, out_dir: Path):
+        """The claim the missing lock rests on, in the shape the lock guarded.
+
+        One attached tool, both calls in flight at once. Sequential calls through separate
+        tools would have passed against the locked version too, and prove nothing about it.
+        """
         sandbox = _Renderer()
-        _render(sandbox, out_dir)
-        _render(sandbox, out_dir)
+        tools = _tools(sandbox, out_dir)
+        assert len(tools) == 1, tools
+        render = _fn(tools[0])
+
+        async def both() -> None:
+            await asyncio.gather(render(dot=_DOT), render(dot=_DOT))
+
+        asyncio.run(both())
+
+        # The argv is the kind's own choice; the reclaims below are the framework's, and would
+        # differ even from a kind that wrote both renders to one fixed path.
+        rendered = [command for command, _, _ in sandbox.commands if command.startswith("dot ")]
+        assert len(rendered) == 2
+        assert rendered[0] != rendered[1]
 
         first, second = (directory for directory, _, _ in sandbox.reclaims)
         assert first != second

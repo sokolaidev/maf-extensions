@@ -185,15 +185,17 @@ def _render_diagram_tool(
 
         # This call's own directory. Asking for it is what puts it on the framework's list:
         # the path, and everything under it, is removed when the body returns.
-        call_directory = session.guest_call_path()
+        guest_call_directory = session.guest_call_path()
         # What `collect_outputs` resolves is relative to `work_dir`, and the call directory sits
         # directly under it, so its last component is the whole of the prefix.
-        run_id = call_directory.rsplit("/", 1)[-1]
-        source_path = f"{call_directory}/{_SOURCE_FILENAME}"
-        output_path = f"{call_directory}/{_OUTPUT_FILENAME}"
+        call_id = guest_call_directory.rsplit("/", 1)[-1]
+        guest_source_path = f"{guest_call_directory}/{_SOURCE_FILENAME}"
+        guest_output_path = f"{guest_call_directory}/{_OUTPUT_FILENAME}"
 
         try:
-            await sandbox.write_file(source_path, dot, working_directory=session.spec.work_dir)
+            await sandbox.write_file(
+                guest_source_path, dot, working_directory=session.spec.work_dir
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "render_diagram: could not write the DOT source into the sandbox: %s",
@@ -205,7 +207,7 @@ def _render_diagram_tool(
             # An argv sequence, never a command line: the source is a written file and the
             # renderer's arguments are fixed, so nothing the model wrote reaches a shell.
             result = await sandbox.exec(
-                [_RENDERER, _FORMAT_FLAG, source_path, _OUTPUT_FLAG, output_path],
+                [_RENDERER, _FORMAT_FLAG, guest_source_path, _OUTPUT_FLAG, guest_output_path],
                 working_directory=session.spec.work_dir,
                 timeout=timeout,
             )
@@ -230,11 +232,12 @@ def _render_diagram_tool(
                 sandbox,
                 session.spec,
                 sink=sink,
-                # Declared here because the path carries this call's run id. `name` keeps
-                # that id out of host storage and out of what the model is shown.
+                # Declared here because the path carries this call's own id. `name` keeps
+                # that id out of host storage and out of what the model is shown, at the cost
+                # of a landed name every call shares — see the README.
                 outputs=(
                     DeclaredOutput(
-                        path=f"{run_id}/{_OUTPUT_FILENAME}",
+                        path=f"{call_id}/{_OUTPUT_FILENAME}",
                         media_type=_OUTPUT_MEDIA_TYPE,
                         required=False,
                         name=_OUTPUT_FILENAME,
