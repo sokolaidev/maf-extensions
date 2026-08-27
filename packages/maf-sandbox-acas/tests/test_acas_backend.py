@@ -2611,11 +2611,8 @@ class TestReclaim:
 
     def test_the_failure_message_carries_the_service_detail(self):
         """`reclaim_guest_path` serializes this wrapper into `ReclaimFailure.reason` without
-        traversing `__cause__`, and `str()` on an azure-core `HttpResponseError` is just
-        "invalid status" — the body, which says *why* (an unauthorized identity, a service
-        refusal), would never reach the host's cleanup alert. So the detail rides in the
-        message itself, the way `remove`'s comment promises and the old `rm` path's exit code
-        and stderr did."""
+        traversing `__cause__`, so the service detail has to ride in the message itself: the
+        body is what says *why* the removal failed."""
         from maf_sandbox_acas._backend import _AcasSandbox
 
         class _RefusingClient:
