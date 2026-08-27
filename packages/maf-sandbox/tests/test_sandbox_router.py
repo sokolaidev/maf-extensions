@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import gc
 import math
 import typing
 
@@ -1496,6 +1497,285 @@ class TestOnlyTheUncleanPathClosesAKey:
         )
         assert asyncio.run(router.dispose_unclean(_KEY, timeout=1.0)) is False
         asyncio.run(router.acquire(_KEY, _SPEC))
+
+
+class _BlocksUntilReleased(InProcessSandboxBackend):
+    """A backend whose `dispose` parks until let go, so two can be made to contend."""
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.reset()
+
+    def reset(self) -> None:
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def dispose(self, key: SandboxKey) -> DisposalFailure | None:
+        self.entered.set()
+        await self.release.wait()
+        return None
+
+
+class TestDisposalsForOneKeyDoNotInterleave:
+    """#642 — acquire and disposal for one key were not coordinated at all.
+
+    Only the disposals are serialised. `acquire` takes no lock: its ledger reads carry no
+    await and are already atomic, and a lock held across a cold create would block the very
+    disposal that exists to bound how long a dirty sandbox lives.
+    """
+
+    def _router(self, *backends, **kwargs):
+        return SandboxRouter(list(backends), min_isolation=Isolation.NONE, **kwargs)
+
+    def test_a_fast_disposal_does_not_clear_a_slow_one_underneath_it(self):
+        """A disposal must not clear the key while another is still deleting it. Each marks the
+        key before its first await, so the one that lands first would otherwise pop a mark that
+        belongs to the one still running, and an acquire in that window is served a sandbox the
+        other is about to destroy."""
+        inside = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+
+        class _SlowFirst(InProcessSandboxBackend):
+            async def dispose(self, key: SandboxKey) -> DisposalFailure | None:
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    inside.set()
+                    await release.wait()
+                return None
+
+        async def scenario() -> bool:
+            router = self._router(_SlowFirst())
+            slow = asyncio.create_task(router.dispose_unclean(_KEY, timeout=5))
+            await inside.wait()
+            fast = asyncio.create_task(router.dispose_unclean(_KEY, timeout=5))
+            await asyncio.sleep(0.05)
+            open_mid_flight = _KEY not in router._unclean  # noqa: SLF001
+            release.set()
+            await asyncio.gather(slow, fast)
+            return open_mid_flight
+
+        assert asyncio.run(scenario()) is False, "the key was reopened mid-disposal"
+
+    def test_an_acquire_mid_create_is_refused_when_the_key_closes_under_it(self):
+        """Race F. The ledger check runs before the create's await and nothing re-read it
+        after, so a disposal that failed meanwhile left the caller holding a sandbox for a key
+        that is now refused."""
+        creating = asyncio.Event()
+        release = asyncio.Event()
+
+        class _SlowCreate(InProcessSandboxBackend):
+            async def acquire(self, key: SandboxKey, spec: SandboxSpec):
+                creating.set()
+                await release.wait()
+                return await super().acquire(key, spec)
+
+            async def dispose(self, key: SandboxKey) -> DisposalFailure | None:
+                return DisposalFailure("refused", "still there")
+
+        async def scenario() -> None:
+            router = self._router(_SlowCreate())
+            acquiring = asyncio.create_task(router.acquire(_KEY, _SPEC))
+            await creating.wait()
+            await router.dispose_unclean(_KEY, timeout=5)
+            release.set()
+            with pytest.raises(SandboxUnclean, match="while this acquire was creating it"):
+                await acquiring
+
+        asyncio.run(scenario())
+
+    def test_the_sandbox_that_acquire_created_is_disposed_before_it_refuses(self):
+        """A refused acquire owes nothing billable left running — the same rule the reclaim
+        refusal follows, and the reason this does not simply raise."""
+        creating = asyncio.Event()
+        release = asyncio.Event()
+        disposed: list[SandboxKey] = []
+
+        class _SlowCreate(InProcessSandboxBackend):
+            async def acquire(self, key: SandboxKey, spec: SandboxSpec):
+                creating.set()
+                await release.wait()
+                return await super().acquire(key, spec)
+
+            async def dispose(self, key: SandboxKey) -> DisposalFailure | None:
+                disposed.append(key)
+                return DisposalFailure("refused", "still there") if len(disposed) == 1 else None
+
+        async def scenario() -> None:
+            router = self._router(_SlowCreate())
+            acquiring = asyncio.create_task(router.acquire(_KEY, _SPEC))
+            await creating.wait()
+            await router.dispose_unclean(_KEY, timeout=5)
+            release.set()
+            with pytest.raises(SandboxUnclean):
+                await acquiring
+
+        asyncio.run(scenario())
+        assert len(disposed) == 2, "the sandbox created mid-refusal was left running"
+
+    def test_a_slow_create_does_not_hold_up_a_disposal(self):
+        """What `acquire` taking the lock would have cost. `dispose_unclean` runs in a tool
+        call's `finally` under a bound; waiting on a cold create could burn that bound having
+        attempted nothing, and the mechanism that limits a dirty sandbox's life is the one
+        thing a create must never block."""
+        creating = asyncio.Event()
+        release = asyncio.Event()
+
+        class _NeverFinishesCreating(InProcessSandboxBackend):
+            async def acquire(self, key: SandboxKey, spec: SandboxSpec):
+                creating.set()
+                await release.wait()
+                return await super().acquire(key, spec)
+
+        async def scenario() -> bool:
+            router = self._router(_NeverFinishesCreating())
+            acquiring = asyncio.create_task(router.acquire(_KEY, _SPEC))
+            await creating.wait()
+            try:
+                # Far under the create, which never finishes on its own.
+                landed = await asyncio.wait_for(router.dispose_unclean(_KEY, timeout=5), 2)
+            finally:
+                release.set()
+                acquiring.cancel()
+            return landed
+
+        assert asyncio.run(scenario()) is True
+
+    def test_the_refusal_says_when_it_could_not_dispose_what_it_created(self):
+        """An operator who reads "disposed" stops looking, and what is still running bills."""
+        creating = asyncio.Event()
+        release = asyncio.Event()
+
+        class _NothingGoes(InProcessSandboxBackend):
+            async def acquire(self, key: SandboxKey, spec: SandboxSpec):
+                creating.set()
+                await release.wait()
+                return await super().acquire(key, spec)
+
+            async def dispose(self, key: SandboxKey) -> DisposalFailure | None:
+                return DisposalFailure("refused", "still there")
+
+        async def scenario() -> None:
+            router = self._router(_NothingGoes())
+            acquiring = asyncio.create_task(router.acquire(_KEY, _SPEC))
+            await creating.wait()
+            await router.dispose_unclean(_KEY, timeout=5)
+            release.set()
+            with pytest.raises(SandboxUnclean, match="could not be disposed either"):
+                await acquiring
+
+        asyncio.run(scenario())
+
+    def test_a_bound_that_expires_does_not_refuse_a_key_another_disposal_cleaned(self):
+        """A landed disposal clears the key — including the mark a second one wrote before
+        queueing behind it. If that second one then times out, the ledger has no entry for the
+        key, and `get` flattens absent to marked-with-no-reason: the timeout is written and a
+        key whose sandbox is gone stays refused for ever."""
+        first = asyncio.Event()
+        release = asyncio.Event()
+
+        class _LandsThenHangs(InProcessSandboxBackend):
+            async def dispose(self, key: SandboxKey) -> DisposalFailure | None:
+                if first.is_set():
+                    await asyncio.Event().wait()  # the second disposal runs into its bound
+                first.set()
+                await release.wait()
+                return None
+
+        async def scenario() -> bool:
+            router = self._router(_LandsThenHangs())
+            lands = asyncio.create_task(router.dispose(_KEY))
+            await first.wait()
+            times_out = asyncio.create_task(router.dispose_unclean(_KEY, timeout=0.1))
+            await asyncio.sleep(0)  # it marks the key, then queues behind the lock
+            release.set()  # the first lands and pops the mark with it
+            assert await lands is None, "the first disposal has to land, or nothing pops"
+            assert await times_out is False
+            return _KEY in router._unclean  # noqa: SLF001
+
+        assert asyncio.run(scenario()) is False, "a key another disposal cleaned was refused"
+
+    def test_the_mid_create_cleanup_waits_for_the_disposal_that_refused_the_key(self):
+        """Two deletes for one key at once are what the lock exists to prevent, and this
+        cleanup would otherwise be the exception to it — running beside the very disposal whose
+        mark sent it here."""
+        creating = asyncio.Event()
+        created = asyncio.Event()
+        holding = asyncio.Event()
+        release = asyncio.Event()
+        calls: list[str] = []
+
+        class _Backend(InProcessSandboxBackend):
+            async def acquire(self, key: SandboxKey, spec: SandboxSpec):
+                creating.set()
+                await created.wait()
+                return await super().acquire(key, spec)
+
+            async def dispose(self, key: SandboxKey) -> DisposalFailure | None:
+                calls.append("holder" if not holding.is_set() else "cleanup")
+                if not holding.is_set():
+                    holding.set()
+                    await release.wait()
+                    return DisposalFailure("refused", "still there")
+                return None
+
+        async def scenario() -> list[str]:
+            router = self._router(_Backend())
+            acquiring = asyncio.create_task(router.acquire(_KEY, _SPEC))
+            await creating.wait()  # in flight before the key is marked, or it refuses at the top
+            disposing = asyncio.create_task(router.dispose_unclean(_KEY, timeout=5))
+            await holding.wait()  # the disposal has marked the key and holds the lock
+            created.set()
+            await asyncio.sleep(0.05)  # the acquire sees the mark and reaches for the lock
+            during = list(calls)
+            release.set()
+            with pytest.raises(SandboxUnclean):
+                await acquiring
+            assert await disposing is False, "the holder refused, so the key stays closed"
+            return during
+
+        assert asyncio.run(scenario()) == ["holder"], "the cleanup deleted beside the disposal"
+
+    def test_the_lock_does_not_outlive_the_loop_it_was_made_on(self):
+        """A lock binds to the loop that first *waits* on it, so one cached across `asyncio.run`
+        calls raises on the second. Contention on each run is what makes that true: an
+        uncontended acquire never binds, and a test that only disposes twice passes with a
+        single lock shared by every loop."""
+        backend = _BlocksUntilReleased()
+        router = self._router(backend)
+
+        async def contend() -> None:
+            backend.reset()
+            held = asyncio.create_task(router.dispose(_KEY))
+            await backend.entered.wait()
+            waiting = asyncio.create_task(router.dispose(_KEY))
+            await asyncio.sleep(0)  # `waiting` reaches the lock and blocks on it
+            backend.release.set()
+            await asyncio.gather(held, waiting)
+
+        asyncio.run(contend())
+        asyncio.run(contend())
+
+    def test_an_idle_key_keeps_no_lock_and_no_loop(self):
+        """One lock per key held for ever would grow without bound, and a contended lock
+        references its loop — through a strong value that would pin the loop in the weak-keyed
+        table too. Both go when the disposals holding it do.
+
+        Counted from inside the loop: `asyncio.run` drops it on the way out, which empties the
+        weak-keyed table and makes the same assertion true of any implementation.
+        """
+        router = self._router(InProcessSandboxBackend())
+
+        async def scenario() -> tuple[int, int]:
+            await router.dispose(_KEY)
+            gc.collect()
+            tables = list(router._disposal_locks.values())  # noqa: SLF001
+            return len(tables), sum(len(per_loop) for per_loop in tables)
+
+        tables, locks = asyncio.run(scenario())
+        assert tables == 1, "the loop's table went before the assertion could see it"
+        assert locks == 0, "the lock outlived the disposal that needed it"
 
 
 class TestTheRefusalNamesWhy:
