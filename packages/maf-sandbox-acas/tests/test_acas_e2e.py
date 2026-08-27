@@ -66,9 +66,9 @@ from maf_sandbox.conformance import (
     PosixGuestSubject,
     assert_egress_conformance,
     assert_exec_conformance,
+    assert_files_delete_conformance,
     assert_files_in_conformance,
     assert_files_out_conformance,
-    measure_files_delete_probes,
 )
 
 # Feature-detected, not floored: the published-cores gate runs this suite against every
@@ -281,17 +281,9 @@ def files_in_results(live):
 
 
 @pytest.fixture(scope="module")
-def files_delete_measurement(live):
-    """The FILES_DELETE probes, measured against the mechanism this backend withholds.
-
-    `measure_files_delete_probes` runs every probe with no declaration gate and no verdict:
-    a failure is a finding about the mechanism, not a broken promise. This is what breaks the
-    loop the withholding was stuck in — the capability is undeclared because nothing has
-    measured the service, and nothing could measure it because every gated suite refuses an
-    undeclared subject (#450). The measurement's verdict is the artefact #435 and #438 argue
-    over: read transient-or-structural into its results before choosing a callback layer.
-    """
-    return live.run(measure_files_delete_probes(_subject(live)))
+def files_delete_results(live):
+    """The FILES_DELETE probes, against the capability this backend declares."""
+    return live.run(assert_files_delete_conformance(_subject(live)))
 
 
 @pytest.fixture(scope="module")
@@ -379,17 +371,7 @@ def service_link_delete(live):
 
 
 class TestWhatTheServiceDoesWithALinkOnDelete:
-    """The measurement `FILES_DELETE` and `reclaim` are both waiting on.
-
-    Read below the backend, because `remove` refuses a link before the service sees one — so
-    the gated probe measures the guard. What this says decides two open questions: whether
-    `FILES_DELETE` can ever be declared (#589), and whether `reclaim` could move off `exec` to
-    the data plane, which is the only plane here that already acts as root and therefore the
-    only in-backend answer to the principal split (#695, #477).
-
-    Measured green means the service unlinks rather than resolves. A failure here is not a
-    flake: it is the service having changed under a decision that rests on this behaviour.
-    """
+    """Regression coverage for the service link semantics behind FILES_DELETE and reclaim."""
 
     def test_a_link_named_directly_is_unlinked_and_its_target_kept(self, service_link_delete):
         """Both flag values — `recursive` may reach a different operation on the service."""
@@ -397,8 +379,7 @@ class TestWhatTheServiceDoesWithALinkOnDelete:
             assert service_link_delete[f"{name}-link-gone"], f"{name}: the link is still there"
             assert service_link_delete[f"{name}-target-survives"], (
                 f"{name}: the service resolved the link and deleted the target — a guest "
-                "choosing that target unlinks a file outside the working directory, and "
-                "nothing may declare FILES_DELETE while this is true"
+                "choosing that target would delete outside the working directory"
             )
 
     def test_a_link_to_a_directory_is_unlinked_rather_than_emptied(self, service_link_delete):
@@ -530,76 +511,14 @@ class TestFilesInAgainstTheRealService:
 
 
 class TestFilesDeleteAgainstTheRealService:
-    """The removal probes, measured — the capability this backend withholds, and why.
+    """The declared FILES_DELETE capability is exercised by the shared probes."""
 
-    This backend refuses a link where the protocol says a link is removed and never followed,
-    so `a-link-is-removed-never-followed` is *expected to fail* here with the ValueError the
-    offline `TestRemove` pins: the honest measurement, and possibly the permanent answer —
-    under the rule as written, this service may never declare FILES_DELETE. That is a useful
-    outcome rather than a blocked one, and this is where it gets decided on evidence.
-
-    What the other probes say matters just as much, because their verdict is the
-    transient-or-structural question #435 and #438 argue over without data: a service that
-    deletes files and trees cleanly but refuses links is *structural* — a capability gap whose
-    answer is the router refusing the spec up front through `requires` — while one that
-    intermittently fails deletions is *transient*, an exceptional path, where the callback
-    belongs. Read the results below into that argument before choosing a layer.
-    """
-
-    def test_every_delete_probe_reached_a_verdict(self, files_delete_measurement):
-        """No skips and no exceptions in the runner itself: every probe answered, one way or the other."""
-        results = files_delete_measurement
-        assert results, "the FILES_DELETE measurement returned no results"
+    def test_every_delete_probe_reached_a_verdict(self, files_delete_results):
+        results = files_delete_results
+        assert results, "the FILES_DELETE conformance run returned no results"
         assert all(result.skipped is None for result in results)
+        assert all(result.failure is None for result in results)
         assert len(results) == len(FILES_DELETE_PROBES)
-
-    def test_the_mechanism_deletes_what_the_capability_promises(self, files_delete_measurement):
-        """The probes that pass are the mechanism working; the ones that fail are the record.
-
-        Every probe is classified by this test into expected-pass or expected-fail — a result
-        in neither column fails the run, so an unclassified finding cannot sit green in a
-        scheduled job with no visible artefact. When a probe's column legitimately changes,
-        move it here and name the change in the PR that moves it, citing that run.
-        """
-        results = files_delete_measurement
-        failed = {r.probe.name: r.failure for r in results if r.failure is not None}
-        passed = {r.probe.name for r in results if r.failure is None}
-
-        # The refusal the offline TestRemove pins: an expected failure, not a regression.
-        assert "a-link-is-removed-never-followed" in failed, (
-            "this backend refuses a link on remove — the offline TestRemove pins it. A pass "
-            "here means the service unlinked rather than followed, and the capability "
-            "conversation changes: say so, citing this run."
-        )
-        assert "ValueError" in failed["a-link-is-removed-never-followed"]
-
-        # The expected columns for everything else.
-        expected_pass = {
-            "a-removal-removes",
-            "a-missing-path-is-success",
-            "recursive-removes-the-tree",
-            "the-working-directory-is-refused",
-            "a-path-outside-is-refused",
-            "a-path-through-a-linked-parent-is-refused",
-            "a-directory-needs-recursive",
-            "an-empty-directory-needs-recursive",
-            "a-link-inside-a-recursive-removal-is-unlinked-not-followed",
-        }
-        unclassified = (passed | set(failed)) - expected_pass - {"a-link-is-removed-never-followed"}
-        missing_pass = expected_pass - passed
-        # Both in one assertion, because the unclassified set is meant to be non-empty on the
-        # first live run: anything asserted after it would never run on the one run this exists
-        # to produce evidence from, and a probe that should pass and did not would be missing
-        # from the only artifact.
-        assert not unclassified and not missing_pass, (
-            f"unclassified delete-probe results: {sorted(unclassified)} "
-            f"(outcome: {sorted((n, failed.get(n, 'passed')) for n in unclassified)}); "
-            f"probes that should pass and failed: "
-            f"{sorted((n, failed.get(n, 'no result')) for n in missing_pass)}. "
-            "This measurement exists to produce evidence for #435/#438 — classify each result "
-            "in this test (expected pass, expected fail with its reason) or the scheduled run "
-            "reports nothing a decision can cite."
-        )
 
 
 class TestWhatOnlyTheServiceCanSay:
