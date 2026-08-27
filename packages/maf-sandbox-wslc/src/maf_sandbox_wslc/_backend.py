@@ -500,9 +500,7 @@ class _WslcSandbox:
 
         Raises:
             ValueError: A path that is not absolute, or fewer than two components from the
-                root — the guards the docker and acas backends carry, standing on their own
-                rather than trusting the caller's, because this removal is recursive,
-                irreversible, and runs as root.
+                root.
         """
         del working_directory
         if not directory.startswith("/"):
