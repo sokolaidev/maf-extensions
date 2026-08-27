@@ -157,19 +157,13 @@ class TestBackendIdentity:
                 Capability.FILES_IN,
                 Capability.FILES_OUT,
                 Capability.FILES_LIST,
+                Capability.FILES_DELETE,
                 Capability.HOST_TOOLS,
             }
         )
 
-    def test_does_not_declare_files_delete_it_cannot_honour(self):
-        """`remove` is implemented and the capability is withheld, which is not an oversight.
-
-        The protocol has a removal take the link and leave its target; this service follows a
-        final link on a read and gives no promise about a delete, so `remove` refuses one
-        instead. A backend advertising a capability it satisfies only in part is worse than one
-        that waits — the router would route cleanup here and the cleanup would not happen.
-        """
-        assert Capability.FILES_DELETE not in AcasSandboxBackend(_config()).capabilities
+    def test_declares_files_delete(self):
+        assert Capability.FILES_DELETE in AcasSandboxBackend(_config()).capabilities
 
     def test_is_the_only_backend_that_can_declare_files_list(self):
         """Native enumeration is the split's own test — name the backend that lacks it."""
@@ -2490,13 +2484,11 @@ class TestRemove:
         asyncio.run(sandbox.remove("real.txt", working_directory=_WORK_DIR))
         assert client.deletes == [(f"{_WORK_DIR}/real.txt", False)]
 
-    def test_a_link_is_refused_before_the_call_is_made(self):
-        """This service follows a final link on a read; a delete that did would take the target."""
+    def test_a_final_link_reaches_the_data_plane(self):
         client = _FakeDataPlaneClient()
         sandbox = _sandbox(client)
-        with pytest.raises(ValueError):
-            asyncio.run(sandbox.remove("link-out.txt", working_directory=_WORK_DIR))
-        assert client.deletes == [], "a link reached the data plane"
+        asyncio.run(sandbox.remove("link-out.txt", working_directory=_WORK_DIR))
+        assert client.deletes == [(f"{_WORK_DIR}/link-out.txt", False)]
 
     def test_a_directory_is_refused_without_recursive(self):
         """The rule is on the kind, not on children: the data plane accepts an empty one."""
@@ -2506,15 +2498,13 @@ class TestRemove:
             asyncio.run(sandbox.remove("sub", working_directory=_WORK_DIR))
         assert client.deletes == [], "a directory reached the data plane without recursive"
 
-    def test_a_link_to_a_directory_is_refused_as_a_link_not_as_a_directory(self):
-        """The order, pinned: `recursive` must not carry a link past the link guard."""
+    def test_a_final_link_to_a_directory_reaches_the_data_plane(self):
         client = _FakeDataPlaneClient(
             entries={**_GUEST_FILESYSTEM, "/maf-sandbox/work/out": _LIVE_SYMLINK_DIR}
         )
         sandbox = _sandbox(client)
-        with pytest.raises(ValueError):
-            asyncio.run(sandbox.remove("out", working_directory=_WORK_DIR, recursive=True))
-        assert client.deletes == [], "a link reached the data plane"
+        asyncio.run(sandbox.remove("out", working_directory=_WORK_DIR, recursive=True))
+        assert client.deletes == [(f"{_WORK_DIR}/out", True)]
 
     def test_the_working_directory_itself_is_refused(self):
         client = _FakeDataPlaneClient()

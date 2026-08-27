@@ -374,17 +374,10 @@ class _AcasSandbox:
     async def remove(self, path: str, *, working_directory: str, recursive: bool = False) -> None:
         """Delete ``path`` through the data plane's own ``delete_file`` — no shell, no ``rm``.
 
-        **A link is refused rather than removed**, which the protocol does not allow — so this
-        backend does not declare :data:`~maf_sandbox.Capability.FILES_DELETE`. :meth:`read_file`
-        records that the service follows a link in the final component as much as in the
-        parents, and an HTTP ``DELETE`` promises nothing else, so removing one could delete
-        what the guest pointed at. The mechanism is here and unadvertised; a capability is a
-        promise, and this one cannot be kept while the service's behaviour on a link is
-        unmeasured. :func:`~maf_sandbox.conformance.measure_files_delete_probes` exists for
-        exactly that decision — see #438 and #450 for where its verdict lands.
-
-        A directory is refused without ``recursive`` whatever it holds: the rule is on the
-        entry's kind, because a backend that cannot enumerate cannot tell empty from full.
+        The service unlinks a final symlink component, but resolves symlinked parents, so the
+        parent walk remains refused before the delete. A directory is refused without
+        ``recursive`` whatever it holds: the rule is on the entry's kind, because a backend
+        that cannot enumerate cannot tell empty from full.
         """
         from azure.core.exceptions import ResourceNotFoundError
 
@@ -395,13 +388,6 @@ class _AcasSandbox:
                 f"refusing to remove the working directory itself: {working_directory}"
             )
         planted = await self._stat_guest(guest, posixpath.normpath(path))
-        if planted is not None and planted.kind is EntryKind.SYMLINK:
-            raise ValueError(
-                f"refusing to remove {path!r}: it is a link, and whether this service unlinks "
-                "one or follows it on a delete is unverified — it follows one on a read"
-            )
-        # After the link refusal, never before: a link is one entry whatever it points at, so
-        # `recursive` must not carry one past the guard above.
         if planted is not None and planted.kind is EntryKind.DIRECTORY and not recursive:
             raise OSError(f"refusing to remove a directory without recursive: {path}")
         try:
@@ -641,6 +627,7 @@ class AcasSandboxBackend:
                 Capability.FILES_IN,
                 Capability.FILES_OUT,
                 Capability.FILES_LIST,
+                Capability.FILES_DELETE,
                 Capability.HOST_TOOLS,
             }
         )
