@@ -805,6 +805,11 @@ class Sandbox(Protocol):
         confinement, and sits behind :data:`Capability.FILES_DELETE`.
 
         Raises:
+            ValueError: A path that is not absolute, or fewer than two components from the
+                root — a backend refusing a path it cannot place. The guards in this module
+                refuse the same shapes, and a backend that repeats them stands on its own:
+                this removal is recursive and irreversible, and neither guard should depend
+                on the caller having derived the path correctly.
             OSError: The removal was refused or failed.
             TimeoutError: ``timeout`` expired. A subclass of :class:`OSError`.
         """
