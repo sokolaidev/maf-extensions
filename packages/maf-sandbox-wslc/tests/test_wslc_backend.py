@@ -522,6 +522,39 @@ class TestReclaim:
             f"{_WORK}/call-a1b2c3",
         )
 
+    def test_a_relative_path_is_refused_before_the_call(self):
+        """The removal is recursive and runs as root, so a path the backend cannot place is
+        refused here rather than resolved against whatever the container considers the root."""
+        sandbox, fake = self._sandbox()
+        seen = len(fake.calls)
+        for directory in ("work/call-a1b2c3", "etc/ssh", "./x/y", "../../etc/ssh"):
+            with pytest.raises(ValueError, match="not absolute"):
+                asyncio.run(sandbox.reclaim(directory, working_directory=_WORK, timeout=30))
+        assert len(fake.calls) == seen, "the refusal has to land before the engine is called"
+
+    @pytest.mark.parametrize(
+        "directory", ["/tmp", "/", "/etc", "/maf-sandbox/", "//tmp", "/a/..", "/tmp/."]
+    )
+    def test_a_path_too_close_to_the_root_is_refused_before_the_call(self, directory):
+        """`/` and `/tmp` are the shapes that turn a cleanup into an outage, and this one
+        carries root's authority on a recursive delete. The written-spelling cases — `//tmp`,
+        `/a/..`, `/tmp/.` — hold only if the count reads the normalized form: counting the
+        raw input would pass them as two components and send `rm -rf /` as root.
+        """
+        sandbox, fake = self._sandbox()
+        seen = len(fake.calls)
+        with pytest.raises(ValueError, match="close to the root"):
+            asyncio.run(sandbox.reclaim(directory, working_directory=_WORK, timeout=30))
+        assert len(fake.calls) == seen, "the refusal has to land before the engine is called"
+
+    def test_a_trailing_slash_is_normalized_away(self):
+        """Whether a trailing slash changes `rm`'s answer on a name is not worth a probe: the
+        command runs against one form, so the same directory arrives as one argument whatever
+        the caller passed."""
+        sandbox, fake = self._sandbox()
+        asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3/", working_directory=_WORK, timeout=30))
+        assert fake.only("container", "exec").args[-1] == f"{_WORK}/call-a1b2c3"
+
     def test_a_missing_directory_is_success(self):
         """`rm -rf` already exits 0 on a path that is not there; this pins that no raise follows."""
         sandbox, fake = self._sandbox()
