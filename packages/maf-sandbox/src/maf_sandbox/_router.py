@@ -306,8 +306,7 @@ class SandboxRouter:
             was registered and a floor was actually compared against — or when a denied
             capability or identity is not a member this package recognises: a deny list that
             silently never matches would read as protection and provide none; or when
-            ``reclaim.timeout`` is not a finite positive number, or
-            ``reclaim.failed_reclaim_policy`` is not a member this package recognises.
+            ``reclaim.timeout`` is not a finite positive number.
     """
 
     def __init__(
@@ -326,8 +325,6 @@ class SandboxRouter:
                 f"reclaim.timeout must be a finite positive number of seconds, not "
                 f"{reclaim.timeout}."
             )
-        # Validates that failed_reclaim_policy is a recognised member:
-        FailedReclaimPolicy(str(reclaim.failed_reclaim_policy))
         self._reclaim = reclaim
         # Keys whose sandbox holds data the framework could not remove and could not dispose
         # of. An entry leaves when a disposal lands; a key that keeps failing stays refused.
