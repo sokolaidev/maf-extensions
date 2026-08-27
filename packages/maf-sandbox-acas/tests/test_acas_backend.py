@@ -2534,75 +2534,50 @@ class TestRemove:
 
 
 class TestReclaim:
-    """`rm -rf` over `exec`, not `remove`'s data-plane delete: see the method's own docstring
-    for why — the service's link semantics on delete are unverified, and `rm -rf` unlinks
-    rather than follows."""
+    """``reclaim`` removes through the data plane's ``delete_file``, not over ``exec``: the data
+    plane acts as the host — the same principal the file plane writes as — so a root-written call
+    directory is removable on an image whose ``USER`` is not root. See the method's docstring."""
 
-    class _RecordingClient:
-        def __init__(self, exit_code: int = 0, stderr: str = "") -> None:
-            self.calls: list[tuple[str, str]] = []
-            self._exit_code = exit_code
-            self._stderr = stderr
-
-        async def exec(self, command: str, *, working_directory: str):
-            from maf_sandbox import ExecResult
-
-            self.calls.append((command, working_directory))
-            return ExecResult(stdout="", stderr=self._stderr, exit_code=self._exit_code)
-
-    def test_a_directory_is_removed_via_rm_rf(self):
-        import shlex
-
+    def test_a_directory_is_removed_via_delete_file(self):
         from maf_sandbox_acas._backend import _AcasSandbox
 
-        client = self._RecordingClient()
+        directory = "/maf-sandbox/work/call-a1b2c3/"
+        client = _FakeDataPlaneClient()
         sandbox = _AcasSandbox(client, 30.0)
-        asyncio.run(
-            sandbox.reclaim(
-                "/maf-sandbox/work/call-a1b2c3", working_directory=_WORK_DIR, timeout=30
-            )
-        )
-        command, _ = client.calls[0]
-        assert shlex.split(command) == ["rm", "-rf", "--", "/maf-sandbox/work/call-a1b2c3"]
+        asyncio.run(sandbox.reclaim(directory, working_directory=_WORK_DIR, timeout=30))
+        # normpath strips the trailing slash before the call: `delete_file` takes a path, and a
+        # trailing slash on a link is a POSIX shell hazard (`rm -rf link/` empties the target
+        # rather than unlinking it), so sending one form only removes that question.
+        assert client.deletes == [(posixpath.normpath(directory), True)]
 
     def test_a_missing_directory_is_success(self):
-        """`rm -rf` exits 0 on a path that is not there; this pins that no raise follows."""
+        """``delete_file`` raises where ``rm -rf`` exited 0; this turns the raise into the same
+        no-op, so a cleanup in a `finally` does not bury the error that brought the caller here."""
+        from azure.core.exceptions import ResourceNotFoundError
+
         from maf_sandbox_acas._backend import _AcasSandbox
 
-        client = self._RecordingClient(exit_code=0)
+        client = _FakeDataPlaneClient()
+        client.delete_raises = ResourceNotFoundError(message="no such path")
         sandbox = _AcasSandbox(client, 30.0)
         asyncio.run(
             sandbox.reclaim(
                 "/maf-sandbox/work/never-there", working_directory=_WORK_DIR, timeout=30
             )
         )
-
-    def test_a_nonzero_exit_raises_with_the_exit_code_and_what_the_guest_said(self):
-        """The message is the whole diagnosis a host gets: core turns it into
-        `ReclaimFailure.reason` and hands that to `on_reclaim_failure`. A read-only
-        filesystem, a full disk and a permission denial are told apart only by these two.
-        """
-        from maf_sandbox_acas._backend import _AcasSandbox
-
-        client = self._RecordingClient(exit_code=1, stderr="rm: permission denied")
-        sandbox = _AcasSandbox(client, 30.0)
-        with pytest.raises(OSError, match=r"rm exited 1.*rm: permission denied"):
-            asyncio.run(
-                sandbox.reclaim("/maf-sandbox/work/x", working_directory=_WORK_DIR, timeout=30)
-            )
+        assert client.deletes == [("/maf-sandbox/work/never-there", True)]
 
     def test_a_service_failure_is_answered_as_the_documented_oserror(self):
-        """The SDK raises `azure.core`'s hierarchy, and the contract names `OSError`: a
-        caller catching what the docstring says must catch a transport failure too,
-        the same translation `remove` already performs.
-        """
+        """The SDK raises `azure.core`'s hierarchy, and the contract names `OSError`: a caller
+        catching what the docstring says must catch a transport failure too, the same translation
+        `remove` already performs."""
         from maf_sandbox_acas._backend import _AcasSandbox
 
         class _ServiceDown(Exception):
             """Stands in for `azure.core`'s hierarchy: not an `OSError`."""
 
         class _RefusingClient:
-            async def exec(self, command: str, *, working_directory: str):
+            async def delete_file(self, path, *, recursive: bool = False) -> None:
                 raise _ServiceDown("502 from the data plane")
 
         sandbox = _AcasSandbox(_RefusingClient(), 30.0)
@@ -2613,12 +2588,13 @@ class TestReclaim:
         assert isinstance(raised.value.__cause__, _ServiceDown)
 
     def test_the_timeout_bounds_the_call(self):
-        """`reclaim`'s `timeout` is read the way `exec`'s is — `asyncio.wait_for`, not a kwarg
-        the SDK client takes — so this proves the value given actually bounds the call."""
+        """``delete_file`` is a direct SDK call that does not bound itself; ``reclaim`` bounds it
+        with its own ``timeout`` contract parameter, the way ``exec`` bounds the SDK's ``exec``,
+        so this proves the value given actually bounds the call."""
         from maf_sandbox_acas._backend import _AcasSandbox
 
         class _HangingClient:
-            async def exec(self, command: str, *, working_directory: str):
+            async def delete_file(self, path, *, recursive: bool = False) -> None:
                 await asyncio.sleep(10)
                 raise AssertionError("should have been cancelled by the timeout")
 
@@ -2628,37 +2604,16 @@ class TestReclaim:
                 sandbox.reclaim("/maf-sandbox/work/x", working_directory=_WORK_DIR, timeout=0.05)
             )
 
-    def test_reclaim_execs_from_root_not_the_uncreated_working_directory(self):
-        """`working_directory` says where the directory sits, not where to run the removal
-        from: no backend creates a spec's `work_dir`, so this must run from `/` even when the
-        caller's working directory was never written."""
-        from maf_sandbox_acas._backend import _AcasSandbox
-
-        client = self._RecordingClient()
-        sandbox = _AcasSandbox(client, 30.0)
-        asyncio.run(
-            sandbox.reclaim(
-                "/maf-sandbox/work/never-created/call-a1b2c3",
-                working_directory="/maf-sandbox/work/never-created",
-                timeout=30,
-            )
-        )
-        _, working_directory = client.calls[0]
-        assert working_directory == "/"
-
-    def test_a_name_a_shell_would_read_survives_the_join(self):
-        """Core dispatches the path unaltered; this backend builds the argv, and its `exec`'s
-        `shlex.join` is the real quoting step, because the SDK takes a string only. A
-        `work_dir` is host-supplied, so a name holding a space or a `;` is reachable, and one
-        that split would have `rm -rf` delete something else.
-        """
-        import shlex
-
+    def test_a_hostile_name_reaches_delete_file_verbatim(self):
+        """Core dispatches the path unaltered; this backend hands it to ``delete_file`` as a
+        path, not as a shell argv, so there is no ``shlex.join`` to split on. A ``work_dir`` is
+        host-supplied, so a name holding a space or a `;` is reachable — and one that reached the
+        service shell-split would have `rm` delete something else; the path argument removes that
+        whole class."""
         from maf_sandbox_acas._backend import _AcasSandbox
 
         hostile = "/maf-sandbox/work/a b; touch pwned"
-        client = self._RecordingClient()
+        client = _FakeDataPlaneClient()
         sandbox = _AcasSandbox(client, 30.0)
         asyncio.run(sandbox.reclaim(hostile, working_directory=_WORK_DIR, timeout=30))
-        command, _ = client.calls[0]
-        assert shlex.split(command) == ["rm", "-rf", "--", hostile]
+        assert client.deletes == [(hostile, True)]
