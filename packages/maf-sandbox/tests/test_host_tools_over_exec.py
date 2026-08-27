@@ -462,6 +462,7 @@ class TestTheOverlappedProbes:
 class TestSpeculativeRequestDiscovery:
     def test_a_contiguous_prefix_widens_the_bounded_window(self):
         looks: list[str] = []
+        reads: list[str] = []
         dispatched: list[int] = []
 
         @sandbox_tool(source=SourceIntegrity.TRUSTED, sink=None, identity=Identity.APP)
@@ -475,6 +476,13 @@ class TestSpeculativeRequestDiscovery:
                     looks.append(posixpath.basename(path))
                 return await super().stat_file(path, working_directory=working_directory)
 
+            async def read_file(self, path: str, *, working_directory: str, max_bytes: int):
+                if path.endswith(".request.json"):
+                    reads.append(posixpath.basename(path))
+                return await super().read_file(
+                    path, working_directory=working_directory, max_bytes=max_bytes
+                )
+
         registry = HostToolRegistry()
         registry.register(record)
         guest = _RecordsRequests([("record", {"value": value}) for value in range(6)])
@@ -487,12 +495,17 @@ class TestSpeculativeRequestDiscovery:
             "0001.request.json",
             "0002.request.json",
             "0003.request.json",
+            # 0003 is looked at twice: served as the frontier of a 2-window, then probed
+            # again as the tail of the next one — discovery is by stat, never by read.
+            "0003.request.json",
             "0004.request.json",
             "0005.request.json",
             "0006.request.json",
-            "0007.request.json",
         ]
         assert not any(name >= "0008.request.json" for name in looks)
+        # The fold budgets one read per served request, so a speculative stat that says
+        # present must not become a read until the identifier is the one being served (#659).
+        assert sorted(reads) == [f"{n:04d}.request.json" for n in range(1, 7)]
 
     def test_a_speculative_miss_collapses_the_next_window(self):
         looks: list[str] = []
@@ -514,6 +527,31 @@ class TestSpeculativeRequestDiscovery:
             "0004.request.json",
             "0005.request.json",
         ]
+
+    def test_a_request_waiting_behind_a_gap_is_never_read_twice(self):
+        """The #659 budget: a request is read once — when it is served.
+
+        Two calls where the second publishes late, so a poll sees 0002 present behind an
+        answered 0001 frontier. Whatever the interleaving, the whole run reads each served
+        request exactly once — stat-only discovery never turns a present stat into a read
+        until the identifier is the one being served.
+        """
+        reads: list[str] = []
+
+        class _RecordingReads(_ConcurrentGuest):
+            async def read_file(self, path: str, *, working_directory: str, max_bytes: int):
+                if path.endswith(".request.json"):
+                    reads.append(posixpath.basename(path))
+                return await super().read_file(
+                    path, working_directory=working_directory, max_bytes=max_bytes
+                )
+
+        guest = _RecordingReads([("add", {"left": value, "right": 1}) for value in range(6)])
+        result = _run(guest, HostToolRun(_registry()))
+
+        assert result.exit_code == 0
+        assert len(guest.answers) == 6
+        assert sorted(reads) == [f"{n:04d}.request.json" for n in range(1, 7)]
 
     def test_a_future_probe_error_waits_for_the_replay_frontier(self):
         class _SecondProbeFails(_ScriptedGuest):
