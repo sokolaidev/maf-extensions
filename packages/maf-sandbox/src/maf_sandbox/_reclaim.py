@@ -13,22 +13,53 @@ whose contract is likewise ``path`` and everything under it.
 from __future__ import annotations
 
 import posixpath
+from collections.abc import Awaitable, Callable
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Literal
 
 from ._error_detail import error_detail
 from ._protocol import Sandbox, SandboxKey
 from .paths import confine_guest_path
 
-__all__ = ["DisposalOutcome", "ReclaimFailure", "note_unclean", "reclaim_guest_path"]
+__all__ = [
+    "DEFAULT_RECLAIM_CONFIG",
+    "DisposalOutcome",
+    "FailedReclaimPolicy",
+    "ReclaimConfig",
+    "ReclaimFailure",
+    "note_unclean",
+    "reclaim_guest_path",
+]
 
 #: What the framework did about a sandbox it could not clean, as ``ReclaimFailure`` reports
 #: it. ``"disposed"``: the sandbox is gone, and the conversation's next call starts cold.
 #: ``"failed"``: the disposal did not land, and the router refuses that key until one does.
-#: ``"kept"``: the host opted down with ``SandboxRouter(keep_unclean=True)``, so the sandbox
+#: ``"kept"``: the host opted down with ``FailedReclaimPolicy.KEEP``, so the sandbox
 #: stays warm with the data in it.
 DisposalOutcome = Literal["disposed", "failed", "kept"]
+
+
+class FailedReclaimPolicy(StrEnum):
+    """What the framework does when a tool call cannot leave its sandbox clean."""
+
+    #: Discard the sandbox to prevent data leaks across turns (the default posture).
+    DISPOSE = "dispose"
+    #: Preserve the sandbox with the data in it for debugging or forensic inspection.
+    KEEP = "keep"
+
+
+@dataclass(frozen=True)
+class ReclaimConfig:
+    """Host-wide policy and handlers for tool call reclaim."""
+
+    timeout: float = 30.0
+    failed_reclaim_policy: FailedReclaimPolicy = FailedReclaimPolicy.DISPOSE
+    on_failure: Callable[[ReclaimFailure], Awaitable[None]] | None = None
+
+
+DEFAULT_RECLAIM_CONFIG = ReclaimConfig()
 
 #: One note about a sandbox left unclean in a way no removal can answer: the sandbox it is
 #: about (by identity) and why. Kept per note so a call that acquired more than one disposes
@@ -73,7 +104,7 @@ class ReclaimFailure:
     A data-retention failure rather than a tidiness one: ``acquire`` is get-or-create, so what
     is left stays readable by every later call in that sandbox, and disposal is the only
     remedy. The framework disposes by default and says so in :attr:`disposal`; a host that
-    opted down with ``SandboxRouter(keep_unclean=True)`` is told the sandbox was kept.
+    opted down with ``FailedReclaimPolicy.KEEP`` is told the sandbox was kept.
     """
 
     #: The tool whose call left it, as the model sees the name.

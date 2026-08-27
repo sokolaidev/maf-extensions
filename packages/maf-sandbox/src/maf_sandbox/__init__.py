@@ -143,7 +143,13 @@ from ._protocol import (
     meets_floor,
 )
 from ._purger import SandboxPurger
-from ._reclaim import DisposalOutcome, ReclaimFailure
+from ._reclaim import (
+    DEFAULT_RECLAIM_CONFIG,
+    DisposalOutcome,
+    FailedReclaimPolicy,
+    ReclaimConfig,
+    ReclaimFailure,
+)
 from ._router import (
     NoSandboxBackend,
     SandboxBackendNotPermitted,
@@ -163,6 +169,7 @@ __all__ = [
     "CALLS_DIRECTORY",
     "DEFAULT_CAPABILITIES",
     "DEFAULT_MAX_HOST_TOOL_CALLS_PER_RUN",
+    "DEFAULT_RECLAIM_CONFIG",
     "DEFAULT_SANDBOX_LIMITS",
     "DEFAULT_TRANSFER_LIMITS",
     "FLOW_DECLARED_KEY",
@@ -180,6 +187,7 @@ __all__ = [
     "Egress",
     "EntryKind",
     "ExecResult",
+    "FailedReclaimPolicy",
     "GuestRunLayout",
     "HostToolAggregate",
     "HostToolDeclaration",
@@ -198,6 +206,7 @@ __all__ = [
     "OutputDisposition",
     "OutputSink",
     "DisposalOutcome",
+    "ReclaimConfig",
     "ReclaimFailure",
     "Sandbox",
     "SandboxArtifactNameCollision",

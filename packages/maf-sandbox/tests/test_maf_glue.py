@@ -26,11 +26,13 @@ from maf_sandbox import (
     DeclaredOutput,
     DisposalFailure,
     Egress,
+    FailedReclaimPolicy,
     Isolation,
     LandedArtifact,
     NoSandboxBackend,
     OutputDisposition,
     OutputSink,
+    ReclaimConfig,
     ReclaimFailure,
     SandboxBackendNotPermitted,
     SandboxEgressNotEnforced,
@@ -966,14 +968,91 @@ class TestTheFrameworkDisposesWhatItCouldNotClean:
     def test_a_host_that_opted_down_keeps_the_sandbox_and_is_told_so(self):
         backend = InProcessSandboxBackend(_RefusesToRemove())
         heard: list[ReclaimFailure] = []
-        _, tool = self._attach(backend, heard=heard, keep_unclean=True)
+        _, tool = self._attach(
+            backend,
+            heard=heard,
+            reclaim=ReclaimConfig(failed_reclaim_policy=FailedReclaimPolicy.KEEP),
+        )
         _call(tool, target="x")
         assert backend.disposed == []
         assert [f.disposal for f in heard] == ["kept"]
 
-    def test_the_opt_down_is_the_routers_and_reads_back(self):
-        assert _router(InProcessSandboxBackend()).keep_unclean is False
-        assert _router(InProcessSandboxBackend(), keep_unclean=True).keep_unclean is True
+    def test_the_reclaim_config_is_the_routers_and_reads_back(self):
+        assert (
+            _router(InProcessSandboxBackend()).reclaim.failed_reclaim_policy
+            is FailedReclaimPolicy.DISPOSE
+        )
+        custom_router = _router(
+            InProcessSandboxBackend(),
+            reclaim=ReclaimConfig(failed_reclaim_policy=FailedReclaimPolicy.KEEP),
+        )
+        assert custom_router.reclaim.failed_reclaim_policy is FailedReclaimPolicy.KEEP
+
+    def test_sandboxed_tool_uses_router_on_reclaim_failure_when_not_passed(self):
+        backend = InProcessSandboxBackend(_RefusesToRemove())
+        heard: list[ReclaimFailure] = []
+
+        async def router_hook(failure: ReclaimFailure) -> None:
+            heard.append(failure)
+
+        router = _router(backend, reclaim=ReclaimConfig(on_failure=router_hook))
+        tool = _attach_with(_reclaiming_body, router)[0]
+        _call(tool, target="x")
+        assert len(heard) == 1
+        assert heard[0].tool == "widget_run"
+        assert heard[0].key == _KEY
+        assert backend.disposed == [_KEY]
+
+    def test_sandboxed_tool_explicit_on_reclaim_failure_overrides_router(self):
+        backend = InProcessSandboxBackend(_RefusesToRemove())
+        router_heard: list[ReclaimFailure] = []
+        tool_heard: list[ReclaimFailure] = []
+
+        async def router_hook(failure: ReclaimFailure) -> None:
+            router_heard.append(failure)
+
+        async def tool_hook(failure: ReclaimFailure) -> None:
+            tool_heard.append(failure)
+
+        router = _router(backend, reclaim=ReclaimConfig(on_failure=router_hook))
+        tool = _attach_with(_reclaiming_body, router, on_reclaim_failure=tool_hook)[0]
+        _call(tool, target="x")
+        assert router_heard == []
+        assert len(tool_heard) == 1
+
+    def test_sandboxed_tool_uses_router_reclaim_timeout_when_not_passed(self, caplog):
+        class _HangsOnDispose(InProcessSandboxBackend):
+            async def dispose(self, key):
+                await asyncio.Event().wait()
+
+        backend = _HangsOnDispose(_RefusesToRemove())
+        heard: list[ReclaimFailure] = []
+        router = _router(
+            backend,
+            reclaim=ReclaimConfig(timeout=0.05, on_failure=lambda f: _record(heard, f)),
+        )
+        tool = _attach_with(_reclaiming_body, router)[0]
+        with caplog.at_level(logging.WARNING, logger="test_workload"):
+            assert _call(tool, target="x").startswith("/maf-sandbox/work/")
+        assert [f.disposal for f in heard] == ["failed"]
+        assert any("did not finish within" in r.message for r in caplog.records)
+
+    def test_sandboxed_tool_explicit_reclaim_timeout_overrides_router(self, caplog):
+        class _HangsOnDispose(InProcessSandboxBackend):
+            async def dispose(self, key):
+                await asyncio.Event().wait()
+
+        backend = _HangsOnDispose(_RefusesToRemove())
+        heard: list[ReclaimFailure] = []
+        router = _router(
+            backend,
+            reclaim=ReclaimConfig(timeout=30.0, on_failure=lambda f: _record(heard, f)),
+        )
+        tool = _attach_with(_reclaiming_body, router, reclaim_timeout=0.05)[0]
+        with caplog.at_level(logging.WARNING, logger="test_workload"):
+            assert _call(tool, target="x").startswith("/maf-sandbox/work/")
+        assert [f.disposal for f in heard] == ["failed"]
+        assert any("did not finish within" in r.message for r in caplog.records)
 
     def test_a_disposal_that_does_not_land_is_reported_and_the_key_refused(self, caplog):
         backend = InProcessSandboxBackend(
