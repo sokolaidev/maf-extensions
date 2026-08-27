@@ -24,6 +24,7 @@ import contextlib
 import io
 import json
 import logging
+import posixpath
 import re
 import tarfile
 import weakref
@@ -496,10 +497,21 @@ class _WslcSandbox:
         the image's user cannot remove what a call left behind.  Root is always correct here
         because the caller made ``directory``: no parent walk is owed, and that walk is what this
         backend cannot build (#125). Runs from ``/`` because ``working_directory`` may not exist.
+
+        Raises:
+            ValueError: A path that is not absolute, or fewer than two components from the
+                root — the guards the docker and acas backends carry, standing on their own
+                rather than trusting the caller's, because this removal is recursive,
+                irreversible, and runs as root.
         """
         del working_directory
+        if not directory.startswith("/"):
+            raise ValueError(f"refusing to reclaim a path that is not absolute: {directory}")
+        target = posixpath.normpath(directory)
+        if len([part for part in target.split("/") if part]) < 2:
+            raise ValueError(f"refusing to reclaim recursively that close to the root: {target}")
         removed = await self._exec(
-            ["rm", "-rf", "--", directory],
+            ["rm", "-rf", "--", target],
             working_directory="/",
             timeout=timeout,
             as_root=True,
