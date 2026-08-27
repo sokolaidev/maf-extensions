@@ -2545,10 +2545,32 @@ class TestReclaim:
         client = _FakeDataPlaneClient()
         sandbox = _AcasSandbox(client, 30.0)
         asyncio.run(sandbox.reclaim(directory, working_directory=_WORK_DIR, timeout=30))
-        # normpath strips the trailing slash before the call: `delete_file` takes a path, and a
-        # trailing slash on a link is a POSIX shell hazard (`rm -rf link/` empties the target
-        # rather than unlinking it), so sending one form only removes that question.
+        # One form only: whether a trailing slash changes the service's unlink-or-resolve
+        # answer on a link is unmeasured, so normpath settles it here rather than at the API.
         assert client.deletes == [(posixpath.normpath(directory), True)]
+
+    def test_a_relative_path_is_refused_before_the_call(self):
+        """The removal is recursive and runs as the host, so a path the backend cannot place
+        is refused here rather than resolved against whatever the service considers the root."""
+        from maf_sandbox_acas._backend import _AcasSandbox
+
+        client = _FakeDataPlaneClient()
+        sandbox = _AcasSandbox(client, 30.0)
+        with pytest.raises(ValueError, match="not absolute"):
+            asyncio.run(
+                sandbox.reclaim("work/call-a1b2c3", working_directory=_WORK_DIR, timeout=30)
+            )
+        assert client.deletes == [], "the refusal has to land before the service is called"
+
+    def test_a_path_too_close_to_the_root_is_refused_before_the_call(self):
+        """`/` and `/tmp` are the shapes that turn a cleanup into an outage."""
+        from maf_sandbox_acas._backend import _AcasSandbox
+
+        client = _FakeDataPlaneClient()
+        sandbox = _AcasSandbox(client, 30.0)
+        with pytest.raises(ValueError, match="close to the root"):
+            asyncio.run(sandbox.reclaim("/tmp", working_directory=_WORK_DIR, timeout=30))
+        assert client.deletes == [], "the refusal has to land before the service is called"
 
     def test_a_missing_directory_is_success(self):
         """``delete_file`` raises where ``rm -rf`` exited 0; this turns the raise into the same

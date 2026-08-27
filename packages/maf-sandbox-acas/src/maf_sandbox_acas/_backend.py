@@ -413,11 +413,26 @@ class _AcasSandbox:
 
         ``delete_file`` acts as the host rather than as the image's ``USER``, so a file the
         file plane wrote as root is removable on an image whose guest is not root.
+
+        The reach argument the protocol asks of a backend that removes with more authority
+        than the guest ran with: a guest that swaps ``directory`` itself gains nothing, because
+        this mechanism unlinks a directly-named link instead of following it. A swapped
+        *ancestor* is resolved, so the argument rests on the working directory and its parents,
+        which the file plane creates as root wherever a kind shares any file at all. Where a
+        kind shares none, the launcher creates them over ``exec`` as the guest, and that is the
+        residual this cannot close from here — the removal still lands on the unguessable name
+        the framework chose, which the guest cannot plant under a directory it may not write.
         """
         from azure.core.exceptions import ResourceNotFoundError
 
         del working_directory
+        # Both refusals stand on their own rather than trusting the caller's, because this
+        # removal is recursive, irreversible, and now runs with the host's authority.
+        if not directory.startswith("/"):
+            raise ValueError(f"refusing to reclaim a path that is not absolute: {directory}")
         target = posixpath.normpath(directory)
+        if len([part for part in target.split("/") if part]) < 2:
+            raise ValueError(f"refusing to reclaim recursively that close to the root: {target}")
         try:
             # Bounded like every other call on this data plane: this one runs from a `finally`,
             # where a wedged service would otherwise hold the caller's turn open with the run's
