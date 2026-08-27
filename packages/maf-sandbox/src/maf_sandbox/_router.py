@@ -330,10 +330,12 @@ class SandboxRouter:
         # while the other is still deleting (#642 race E). `acquire` takes nothing — its ledger
         # reads carry no await and are already atomic, and a lock held across a cold create
         # would block the very disposal that exists to bound a dirty sandbox's life.
-        # Per loop, weak-keyed: the shape the docker and wslc backends use, and for the same
-        # reason — an `asyncio.Lock` binds to the loop that first waits on it.
+        # Per loop, because an `asyncio.Lock` binds to the loop it first waits on. Weak on both
+        # sides: a lock lives only while a disposal holds it, so keys do not accumulate one
+        # apiece — and a *contended* lock references its loop, which through a strong value
+        # would keep that loop alive in the weak-keyed table for ever.
         self._disposal_locks: weakref.WeakKeyDictionary[
-            asyncio.AbstractEventLoop, dict[SandboxKey, asyncio.Lock]
+            asyncio.AbstractEventLoop, weakref.WeakValueDictionary[SandboxKey, asyncio.Lock]
         ] = weakref.WeakKeyDictionary()
         self._min_isolation = Isolation(str(min_isolation))
         self._selected_name = selected
@@ -550,35 +552,46 @@ class SandboxRouter:
 
     def _disposal_lock(self, key: SandboxKey) -> asyncio.Lock:
         """The disposal lock for one key on the running loop (see ``__init__``)."""
-        per_loop = self._disposal_locks.setdefault(asyncio.get_running_loop(), {})
+        per_loop = self._disposal_locks.setdefault(
+            asyncio.get_running_loop(), weakref.WeakValueDictionary()
+        )
         lock = per_loop.get(key)
         if lock is None:
             lock = per_loop[key] = asyncio.Lock()
+        # Returned, so the caller's reference is what keeps it in the table: two disposals
+        # overlapping both hold it and share it, and it goes when neither does.
         return lock
 
     async def _refuse_a_key_closed_during_the_create(self, key: SandboxKey) -> None:
         """Dispose what this acquire just created, then raise the refusal it walked into.
 
-        On the selected backend directly, the way the reclaim refusal below does it and for the
-        same reason: a refused acquire owes nothing billable left running.  Not through
-        :meth:`dispose`, which would wait on the disposal still holding the key's lock and then
-        clear the ledger entry this refusal is quoting.
+        Under the key's disposal lock, so it cannot overlap the disposal whose mark sent it
+        here: two deletes for one key at once are what that lock exists to prevent, and this
+        one would otherwise be the exception.  On the selected backend directly rather than
+        through :meth:`dispose`, which would take the same lock again and clear the ledger
+        entry this refusal quotes.
         """
-        reported = self._unclean[key]
-        try:
-            undisposed = await self._backend.dispose(key) if self._backend else None
-        except Exception as failed:  # noqa: BLE001 — the refusal must reach the caller
-            undisposed = str(failed)
-        if undisposed is not None:
+        async with self._disposal_lock(key):
+            try:
+                undisposed = await self._backend.dispose(key) if self._backend else None
+            except Exception as failed:  # noqa: BLE001 — the refusal must reach the caller
+                undisposed = str(failed)
+        reported = self._unclean.get(key)
+        if undisposed is None:
+            outcome = "The sandbox just created has been disposed"
+        else:
             logger.warning(
                 "sandbox router: backend %s failed to dispose a sandbox refused mid-create: %s",
                 self._backend.name if self._backend else "?",
                 undisposed,
             )
+            # Said out loud, not only logged: an operator who reads "disposed" stops looking,
+            # and what is still running is billable.
+            outcome = "The sandbox just created could not be disposed either"
         raise SandboxUnclean(
             f"the sandbox for {key.scope}/{key.thread_id}/{key.agent_dir} was refused while "
-            "this acquire was creating it — a disposal for the key ran and did not land. The "
-            "sandbox just created has been disposed; the key stays refused until one lands.",
+            f"this acquire was creating it — a disposal for the key ran and did not land. "
+            f"{outcome}; the key stays refused until a disposal lands.",
             code=reported.code if reported is not None else None,
         )
 
@@ -632,11 +645,10 @@ class SandboxRouter:
         self._refuse_unless_backend_can_serve(spec)
         sandbox = await self._backend.acquire(key, spec)
         if key in self._unclean:
-            # Refused while the create was in flight. The check above ran before the await and
-            # nothing re-read the ledger after it, so the caller was handed a sandbox for a key
-            # that is now closed (#642 race F). A disposal that *started* first is already
-            # caught up there — it marks the key before its own first await — so what is left
-            # for here is the one that started during the create.
+            # Read again after the create: the check above is only as fresh as the moment
+            # before the await, and a disposal that begins during it closes the key without
+            # this call ever seeing the mark. One that began earlier is caught above, since a
+            # disposal marks the key before its own first await.
             await self._refuse_a_key_closed_during_the_create(key)
         try:
             _refuse_a_sandbox_that_cannot_be_reclaimed(sandbox)
@@ -756,6 +768,12 @@ class SandboxRouter:
             )
             if not refuse:
                 # Nothing to record: not closing the key is the whole of the opt-down.
+                return False
+            if key not in self._unclean:
+                # The bound can now expire waiting for another disposal's lock, and that
+                # disposal may have landed and taken the key with it. Absent is not the same as
+                # marked-with-no-reason, which is what `get` would flatten it to: recording a
+                # timeout over it refuses a key whose sandbox is gone.
                 return False
             expired = DisposalFailure("timeout", f"the disposal did not finish within {timeout}s")
             recorded = self._unclean.get(key)
