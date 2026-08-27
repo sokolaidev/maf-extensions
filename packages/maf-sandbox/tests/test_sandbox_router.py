@@ -1742,15 +1742,16 @@ class TestDisposalsForOneKeyDoNotInterleave:
         calls raises on the second. Contention on each run is what makes that true: an
         uncontended acquire never binds, and a test that only disposes twice passes with a
         single lock shared by every loop."""
-        router = self._router(_BlocksUntilReleased())
+        backend = _BlocksUntilReleased()
+        router = self._router(backend)
 
         async def contend() -> None:
-            router._backends[0].reset()  # noqa: SLF001
+            backend.reset()
             held = asyncio.create_task(router.dispose(_KEY))
-            await router._backends[0].entered.wait()  # noqa: SLF001
+            await backend.entered.wait()
             waiting = asyncio.create_task(router.dispose(_KEY))
             await asyncio.sleep(0)  # `waiting` reaches the lock and blocks on it
-            router._backends[0].release.set()  # noqa: SLF001
+            backend.release.set()
             await asyncio.gather(held, waiting)
 
         asyncio.run(contend())
