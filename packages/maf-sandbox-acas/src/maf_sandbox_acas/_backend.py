@@ -937,8 +937,6 @@ class AcasSandboxBackend:
                 undisposed.append(deletion.failure)
         # Merge-only against the *live* map: a `dispose` for one of these keys can land
         # mid-sweep, and indexing what it removed would raise out of a method that never does.
-        # Only ids this sweep deleted come off — sound here, unlike the name-derived backends,
-        # because the service assigns a fresh id per create.
         for prefix, before in retained.items():
             left = self._undeleted.get(prefix, set()) - (before - undeleted)
             if left:
