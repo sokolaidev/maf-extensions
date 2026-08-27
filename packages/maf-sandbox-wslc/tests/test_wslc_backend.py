@@ -505,12 +505,14 @@ class TestReclaim:
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
         return asyncio.run(backend.acquire(_KEY, _SPEC)), fake
 
-    def test_a_directory_is_removed_via_rm_rf_behind_a_double_dash(self):
+    def test_a_directory_is_removed_as_root_via_rm_rf_behind_a_double_dash(self):
         sandbox, fake = self._sandbox()
         asyncio.run(sandbox.reclaim(f"{_WORK}/call-a1b2c3", working_directory=_WORK, timeout=30))
         assert fake.only("container", "exec").args == (
             "container",
             "exec",
+            "--user",
+            "0",
             "-w",
             "/",
             _NAME,
@@ -554,7 +556,8 @@ class TestReclaim:
                 timeout=30,
             )
         )
-        assert fake.only("container", "exec").args[:4] == ("container", "exec", "-w", "/")
+        args = fake.only("container", "exec").args
+        assert args[args.index("-w") + 1] == "/"
 
     def test_a_name_a_shell_would_read_stays_one_argument(self):
         """Core dispatches the path unaltered; this backend's argv `exec` is what keeps the
