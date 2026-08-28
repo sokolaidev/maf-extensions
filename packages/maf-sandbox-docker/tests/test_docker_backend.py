@@ -200,6 +200,8 @@ def _machine(
                 if image in images
                 else _DockerResult(1, b"", "No such image")
             )
+        if args[:3] == ("inspect", "-f", "{{.Config.User}}"):
+            return _DockerResult(0, b"\n", "")
         if args[0] == "inspect":
             name = args[-1]
             if name not in present:
@@ -1164,6 +1166,33 @@ class TestWriteFile:
             asyncio.run(sandbox.write_file("../escape", "x", working_directory=_WORK))
         assert fake.matching("cp", "-") == []
 
+    def test_the_entry_carries_the_container_user(self):
+        """A non-root image gets tar entries under its own uid, so `docker cp` creates the
+        file *and* every missing parent directory as the user that will run the program.
+        """
+        overrides = {
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"10001\n", ""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        asyncio.run(sandbox.write_file("/maf-sandbox/work/f", "x", working_directory=_WORK))
+        stdin = fake.only("cp", "-").stdin
+        assert stdin is not None
+        with tarfile.open(fileobj=io.BytesIO(stdin)) as archive:
+            member = archive.getmember("maf-sandbox/work/f")
+            assert (member.uid, member.gid) == (10001, 10001)
+
+    def test_a_root_image_keeps_the_default_ownership(self):
+        """`Config.User` unset means root: the tar entries stay uid 0, as they always were."""
+        backend, fake = _backend_with(_machine(running=[_NAME]))
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        asyncio.run(sandbox.write_file("/maf-sandbox/work/f", "x", working_directory=_WORK))
+        stdin = fake.only("cp", "-").stdin
+        assert stdin is not None
+        with tarfile.open(fileobj=io.BytesIO(stdin)) as archive:
+            member = archive.getmember("maf-sandbox/work/f")
+            assert (member.uid, member.gid) == (0, 0)
+
 
 # ---------------------------------------------------------------------------
 # FILES_OUT — stat and read from the docker cp tar stream
@@ -1420,6 +1449,70 @@ class TestListDirIsRefused:
         sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
         with pytest.raises(NotImplementedError, match="FILES_LIST"):
             asyncio.run(sandbox.list_dir(".", working_directory=_WORK))
+
+
+class TestTheGuestIdentityIsReadFromTheContainer:
+    """`Config.User` says who runs the container's default command; `write_file`'s tar entries
+    have to answer to the same principal, since a reused container can predate a config change.
+    """
+
+    def _facts(self, user: bytes, name: str = _NAME):
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, user, ""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        facts = asyncio.run(backend._container_facts(name, _SPEC))
+        return facts, fake
+
+    def test_an_unset_user_reads_as_root(self):
+        facts, _ = self._facts(b"\n")
+        assert (facts.guest_uid, facts.guest_gid) == (0, 0)
+
+    def test_a_numeric_user_is_read_without_asking_the_guest(self):
+        facts, fake = self._facts(b"10001\n")
+        assert (facts.guest_uid, facts.guest_gid) == (10001, 10001)
+        assert fake.matching("exec") == []
+
+    def test_a_uid_gid_pair_is_split(self):
+        facts, _ = self._facts(b"10001:20001\n")
+        assert (facts.guest_uid, facts.guest_gid) == (10001, 20001)
+
+    def test_a_named_user_is_resolved_through_the_guest(self):
+        """A name in `Config.User` is resolved with `id` inside the container, which runs as
+        the image's user, not as root.
+        """
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"app\n", ""),
+            ("exec", "-w", "/", _NAME, "sh", "-c", "id -u; id -g"): _DockerResult(
+                0, b"10001\n10001\n", ""
+            ),
+        }
+        backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        assert (facts.guest_uid, facts.guest_gid) == (10001, 10001)
+
+    def test_an_unreadable_user_fails_open_to_root(self):
+        """An image this backend cannot ask keeps today's behaviour: root-owned entries."""
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(1, b"", "daemon error"),
+        }
+        backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        assert (facts.guest_uid, facts.guest_gid) == (0, 0)
+
+    def test_the_answer_is_read_once_per_container(self):
+        backend, fake = _backend_with(_machine(running=[_NAME]))
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        fake.mark()
+        asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert [
+            c.args
+            for c in fake.calls[fake._marked :]
+            if c.args[:3] == ("inspect", "-f", "{{.Config.User}}")
+        ] == []
 
 
 # ---------------------------------------------------------------------------

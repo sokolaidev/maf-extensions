@@ -258,6 +258,10 @@ class _ContainerFacts:
     host_owned_ancestors: bool
     #: Runs with ``--cap-drop ALL``, so root holds no ``CAP_DAC_OVERRIDE``.
     capabilities_dropped: bool
+    #: The default user UID, or 0 when unknown.
+    guest_uid: int = 0
+    #: The default user GID, or 0 when unknown.
+    guest_gid: int = 0
 
 
 @dataclass(frozen=True)
@@ -333,6 +337,8 @@ class _DockerSandbox:
         command_timeout: float,
         cap_drop_all: bool = False,
         reclaim_as_root: bool = True,
+        guest_uid: int = 0,
+        guest_gid: int = 0,
     ) -> None:
         self._run = run
         self._name = name
@@ -340,6 +346,8 @@ class _DockerSandbox:
         # Both read from the container at acquire, not taken from this backend's config.
         self._reclaim_as_root = reclaim_as_root
         self._cap_drop_all = cap_drop_all
+        self._guest_uid = guest_uid
+        self._guest_gid = guest_gid
 
     @property
     def container_name(self) -> str:
@@ -361,6 +369,8 @@ class _DockerSandbox:
             entry = tarfile.TarInfo(guest.lstrip("/"))
             entry.size = len(data)
             entry.mode = 0o644
+            entry.uid = self._guest_uid
+            entry.gid = self._guest_gid
             archive.addfile(entry, io.BytesIO(data))
 
         result = await self._run(
@@ -795,6 +805,8 @@ class DockerSandboxBackend:
                 self._config.command_timeout_seconds,
                 facts.capabilities_dropped,
                 facts.host_owned_ancestors,
+                facts.guest_uid,
+                facts.guest_gid,
             )
 
     async def _capabilities_dropped(self, name: str) -> bool:
@@ -814,6 +826,61 @@ class DockerSandboxBackend:
         if result.returncode != 0:
             return True
         return "ALL" in result.stdout.decode("utf-8", errors="replace").upper()
+
+    async def _guest_identity(self, name: str, probe: _DockerSandbox) -> tuple[int, int]:
+        """Read the container's default user UID and GID.
+
+        Inspects the container's configured user and resolves it via ``id`` when given as a
+        name. Fails gracefully to ``(0, 0)`` when unknown or unreadable.
+        """
+        try:
+            result = await self._docker(
+                "inspect",
+                "-f",
+                "{{.Config.User}}",
+                name,
+                timeout=self._config.command_timeout_seconds,
+            )
+            raw = (
+                result.stdout.decode("utf-8", errors="replace").strip()
+                if result.returncode == 0
+                else ""
+            )
+            if not raw or raw == "0" or raw == "0:0":
+                return 0, 0
+            if ":" in raw:
+                u, _, g = raw.partition(":")
+                if u.isdigit() and g.isdigit():
+                    return int(u), int(g)
+            elif raw.isdigit():
+                return int(raw), int(raw)
+            id_res = await probe.exec(
+                ["sh", "-c", "id -u; id -g"],
+                working_directory="/",
+                timeout=self._config.command_timeout_seconds,
+            )
+            if id_res.exit_code == 0:
+                lines = [
+                    line.strip() for line in id_res.stdout.strip().splitlines() if line.strip()
+                ]
+                if len(lines) >= 2 and lines[0].isdigit() and lines[1].isdigit():
+                    return int(lines[0]), int(lines[1])
+            u_res = await probe.exec(
+                ["id", "-u"],
+                working_directory="/",
+                timeout=self._config.command_timeout_seconds,
+            )
+            g_res = await probe.exec(
+                ["id", "-g"],
+                working_directory="/",
+                timeout=self._config.command_timeout_seconds,
+            )
+            if u_res.exit_code == 0 and g_res.exit_code == 0:
+                if u_res.stdout.strip().isdigit() and g_res.stdout.strip().isdigit():
+                    return int(u_res.stdout.strip()), int(g_res.stdout.strip())
+        except Exception as unreadable:  # noqa: BLE001 — an acquire must not fail over this
+            logger.debug("docker: could not read %s's guest identity (%s)", name, unreadable)
+        return 0, 0
 
     async def _container_facts(self, name: str, spec: SandboxSpec) -> _ContainerFacts:
         """Read what ``name`` says about itself, once per container.
@@ -840,9 +907,12 @@ class DockerSandboxBackend:
                 name,
                 spec.work_dir,
             )
+        guest_uid, guest_gid = await self._guest_identity(name, probe)
         facts = _ContainerFacts(
             host_owned_ancestors=answer,
             capabilities_dropped=await self._capabilities_dropped(name),
+            guest_uid=guest_uid,
+            guest_gid=guest_gid,
         )
         self._facts[key] = facts
         return facts

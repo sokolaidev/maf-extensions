@@ -217,8 +217,8 @@ class TestAGuestThatIsNotRoot:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
     def test_the_guest_cannot_rewrite_or_delete_what_the_host_wrote(self):
-        """The transport shim, the request and response files and the inputs stay the host's:
-        rewriting the shim would rewrite what the *next* call dispatches through.
+        """A root image: what the host wrote stays beyond the guest, so the transport shim,
+        the request and response files and the inputs cannot be rewritten by it.
         """
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig())
@@ -240,6 +240,69 @@ class TestAGuestThatIsNotRoot:
 
             intact = await sandbox.read_file(shim, working_directory=_WORK, max_bytes=4096)
             assert intact == b"# the real shim\n"
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+    def test_a_nonroot_guest_can_rewrite_and_delete_what_the_host_wrote(self):
+        """The other half of #680: on a non-root image the tar entries carry the image's user,
+        so what the host writes in is the guest program's to modify — the way it is on a
+        root image for root. In-guest files are not controls; every gate is host-side.
+        """
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(_key(scope), self._spec(_NONROOT_IMAGE))
+            shared = f"{_WORK}/inputs/shared.csv"
+            await sandbox.write_file(shared, "a,b\n1,2\n", working_directory=_WORK)
+
+            appended = await sandbox.exec(
+                ["sh", "-c", f"echo 3,4 >> {shared}"], working_directory="/", timeout=60
+            )
+            assert appended.exit_code == 0, appended.stderr
+
+            read_back = await sandbox.read_file(shared, working_directory=_WORK, max_bytes=4096)
+            assert read_back == b"a,b\n1,2\n3,4\n"
+
+            created = await sandbox.exec(
+                ["sh", "-c", f"echo mine > {_WORK}/abc123def456/mine.txt"],
+                working_directory="/",
+                timeout=60,
+            )
+            assert created.exit_code == 0, created.stderr
+
+        try:
+            asyncio.run(scenario())
+        finally:
+            asyncio.run(backend.dispose_scope(scope, "thread-1"))
+
+    def test_a_nonroot_guest_owns_what_write_file_created(self):
+        """The ownership itself, read back from the container: the file and the call directory
+        under it are the image user's, so `reclaim` as that user can take the tree away.
+        """
+        scope = f"e2e-{uuid.uuid4()}"
+        backend = DockerSandboxBackend(DockerSandboxConfig())
+
+        async def scenario() -> None:
+            sandbox = await backend.acquire(_key(scope), self._spec(_NONROOT_IMAGE))
+            call_directory = f"{_WORK}/abc123def456"
+            await sandbox.write_file(
+                f"{call_directory}/note", "left behind\n", working_directory=_WORK
+            )
+
+            owner = await sandbox.exec(
+                ["sh", "-c", f"stat -c '%u:%g' {call_directory} {call_directory}/note"],
+                working_directory="/",
+                timeout=60,
+            )
+            assert owner.exit_code == 0, owner.stderr
+            uid = (
+                await sandbox.exec(["id", "-u"], working_directory="/", timeout=60)
+            ).stdout.strip()
+            assert owner.stdout.split() == [f"{uid}:{uid}", f"{uid}:{uid}"]
 
         try:
             asyncio.run(scenario())
