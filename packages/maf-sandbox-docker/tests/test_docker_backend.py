@@ -1246,7 +1246,9 @@ class TestWriteFile:
     def test_a_root_working_directory_keeps_its_components_whole(self):
         """`working_directory = "/"` must not lose the first character of the leaf — a
         string-offset slice turns `/tmp` into `mp`, and docker would create `/mp` beside
-        the real `/tmp`.
+        the real `/tmp`.  The subtree rule keeps every entry inside the work directory:
+        `/` is the cp destination and needs no entry, and `tmp` under it is a
+        `working_directory` descendant here, so the entries run `tmp`, `tmp/run-1`, file.
         """
         overrides = {
             ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"10001\n", ""),
