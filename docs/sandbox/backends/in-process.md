@@ -4,6 +4,8 @@
 
 ## What it declares
 
+The four below `isolation` are fields of one `declarations`, overridden together by passing a `BackendDeclarations` to the constructor.
+
 | Declaration | Default | Overridable |
 |---|---|---|
 | `isolation` | `Isolation.NONE` | yes |
@@ -16,7 +18,7 @@
 
 `egress_modes` defaults to `{ALLOWLIST, CLOSED}` rather than to silence so a workload under test **attaches** as it would against a proxy-capable live backend: the default `CLOSED` spec and an `ALLOWLIST` spec both resolve, instead of every offline test becoming a test of the attach refusal. A test *of* the refusal passes a narrower set: `frozenset()` for a backend that enforces nothing, `{UNRESTRICTED}` for the no-confinement shape — which is what the no-isolation backend in [`samples/09_inprocess_bicep`](../../../samples/09_inprocess_bicep) now declares, honestly, and it is served only by a workload that asked to run open.
 
-`capabilities` still defaults to `DEFAULT_CAPABILITIES` even though the sandbox genuinely implements the pull surface: widening the default would change what a bare `InProcessSandboxBackend()` attaches against for every existing caller that never asked for `FILES_OUT` or `FILES_LIST`. A test that wants the pull surface asks for it. `os_families` defaults to `frozenset()` — exactly what the router reads from a backend that declares nothing, so a test written before the axis existed is unaffected and one exercising it states a family.
+`capabilities` still defaults to `DEFAULT_CAPABILITIES` even though the sandbox genuinely implements the pull surface: widening the default would change what a bare `InProcessSandboxBackend()` attaches against for every existing caller that never asked for `FILES_OUT` or `FILES_LIST`. A test that wants the pull surface asks for it. `os_families` defaults to `frozenset()` — exactly what the router reads from a backend that declares nothing, so a test written before the axis existed is unaffected and one exercising it states a family. `FAKE_BACKEND_DECLARATIONS` is the whole default object, and `egress_modes` is the one field it departs from `DEFAULT_BACKEND_DECLARATIONS` on.
 
 ## Overridable declarations are what make it a policy fixture
 

@@ -8,6 +8,8 @@ A `docker`-compatible command-line client talking to a Docker-API-compatible soc
 
 ## What it declares
 
+The four below `isolation` are fields of this backend's `declarations`.
+
 | Declaration | Value |
 |---|---|
 | `isolation` | `Isolation.CONTAINER` |

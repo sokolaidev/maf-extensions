@@ -34,6 +34,7 @@ from hashlib import sha256
 from typing import TYPE_CHECKING, Protocol, cast
 
 from maf_sandbox import (
+    BackendDeclarations,
     Capability,
     DisposalFailure,
     Egress,
@@ -554,16 +555,21 @@ class WslcSandboxBackend:
         return Isolation.CONTAINER
 
     @property
-    def egress_modes(self) -> frozenset[Egress]:
-        # With a proxy image it can allowlist named hosts or deny all; without one it can only
-        # close. Never UNRESTRICTED: a container backend always cuts or proxies.
-        if self._config.egress_proxy_image:
-            return frozenset({Egress.ALLOWLIST, Egress.CLOSED})
-        return frozenset({Egress.CLOSED})
-
-    @property
-    def capabilities(self) -> frozenset[Capability]:
-        return frozenset({Capability.EXEC, Capability.FILES_IN})
+    def declarations(self) -> BackendDeclarations:
+        # Only `egress_modes` reads the config: with a proxy image this backend can allowlist
+        # named hosts or deny all, and without one it can only close. Never UNRESTRICTED — a
+        # container backend always cuts or proxies.
+        #
+        # `limits` is left at its default, which is the ceiling this backend accepts.
+        egress_modes = (
+            frozenset({Egress.ALLOWLIST, Egress.CLOSED})
+            if self._config.egress_proxy_image
+            else frozenset({Egress.CLOSED})
+        )
+        return BackendDeclarations(
+            capabilities=frozenset({Capability.EXEC, Capability.FILES_IN}),
+            egress_modes=egress_modes,
+        )
 
     # -- SandboxBackend -----------------------------------------------------------
 

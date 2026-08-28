@@ -20,13 +20,12 @@ from typing import cast
 
 from ._host_tools_over_exec import fold_host_tool_call_transfer_limits
 from ._protocol import (
-    DEFAULT_CAPABILITIES,
-    DEFAULT_SANDBOX_LIMITS,
+    DEFAULT_BACKEND_DECLARATIONS,
     ISOLATION_RANK,
+    BackendDeclarations,
     Capability,
     DisposalCode,
     DisposalFailure,
-    Egress,
     Identity,
     Isolation,
     OsFamily,
@@ -252,31 +251,61 @@ def _declared_isolation(backend: SandboxBackend) -> Isolation:
         ) from exc
 
 
-def _declared_os_families(backend: SandboxBackend) -> frozenset[OsFamily]:
-    """The guest shapes ``backend`` claims it hands out, empty when it claims none.
+#: The attributes :class:`~maf_sandbox.BackendDeclarations` replaced. A backend still carrying
+#: one is refused rather than read as silent: nothing in the type system marks the migration —
+#: none of the four was ever a Protocol member, so ``isinstance`` holds either way — and a
+#: missed ``egress_modes`` reads as "enforces nothing", which refuses every spec.
+_SUPERSEDED_DECLARATIONS = ("capabilities", "limits", "egress_modes", "os_families")
 
-    Silence is neither a functionality default nor a safety one, which is why this reads
-    nothing like :func:`_declared_limits`. It is *absence of an answer*: a backend serving a
-    language runtime has no operating system to name, and a backend written before this axis
-    existed never considered the question. Both are read as ``frozenset()``, which refuses a
-    spec that asks for a family and leaves every spec that does not exactly as it was.
 
-    A declaration that is not a set of :class:`~maf_sandbox.OsFamily` is read as empty rather
-    than refused, deliberately, and this is the one place that choice is made: unlike a
-    mis-shaped ``limits``, a mis-shaped value here cannot widen anything — the worst it does is
-    refuse a workload that would have been served, loudly, with the declaration named.
+def _declarations(backend: SandboxBackend) -> BackendDeclarations:
+    """The one object every optional declaration is read from: one ``getattr``, four fields.
+
+    Not a Protocol member, so declaring nothing is legal and reads as
+    :data:`~maf_sandbox.DEFAULT_BACKEND_DECLARATIONS`.  Declaring nothing *while still carrying*
+    one of the attributes this object replaced is a half-migrated backend rather than an old
+    one, and is refused with the attribute named.
     """
-    declared: object = getattr(backend, "os_families", None)
-    if not isinstance(declared, frozenset | set):
+    declared: object = getattr(backend, "declarations", None)
+    if isinstance(declared, BackendDeclarations):
+        return declared
+    if declared is not None:
+        raise SandboxBackendNotPermitted(
+            f"sandbox backend {backend.name!r} declares declarations as "
+            f"{type(declared).__name__}, and only {BackendDeclarations.__name__} can be read "
+            "as one. Declare nothing at all to accept every default."
+        )
+    superseded = [name for name in _SUPERSEDED_DECLARATIONS if hasattr(backend, name)]
+    if superseded:
+        raise SandboxBackendNotPermitted(
+            f"sandbox backend {backend.name!r} declares {', '.join(superseded)} directly, "
+            f"which {BackendDeclarations.__name__} replaced. Move each value into a "
+            "`declarations` attribute holding one, under the same field name. Refused rather "
+            "than ignored: nothing reads those attributes now, so the backend would be served "
+            "as if it had declared nothing and would refuse every workload."
+        )
+    return DEFAULT_BACKEND_DECLARATIONS
+
+
+def _declared_os_families(declared: BackendDeclarations) -> frozenset[OsFamily]:
+    """The guest shapes a backend claims it hands out, empty when it claims none.
+
+    A value that is not a set of :class:`~maf_sandbox.OsFamily` is read as empty rather than
+    refused, deliberately, and this is the one place that choice is made: unlike a mis-shaped
+    ``limits``, a mis-shaped value here cannot widen anything — the worst it does is refuse a
+    workload that would have been served, loudly, with the declaration named.
+    """
+    # Read as `object` rather than at the field's own type: a frozen dataclass validates no
+    # field, so an out-of-tree backend puts whatever it likes here and every element is checked.
+    families = cast("object", declared.os_families)
+    if not isinstance(families, frozenset | set):
         return frozenset()
-    # `object` throughout rather than a set type: this is an undeclared attribute off an
-    # arbitrary backend, so every element is checked and nothing is assumed about the shape.
-    members = cast("Iterable[object]", declared)
+    members = cast("Iterable[object]", families)
     return frozenset(family for family in members if isinstance(family, OsFamily))
 
 
-def _declared_limits(backend: SandboxBackend) -> SandboxLimits:
-    """The ceilings ``backend`` claims, refusing a declaration that is not the right shape.
+def _declared_limits(backend: SandboxBackend, declared: BackendDeclarations) -> SandboxLimits:
+    """The ceilings a backend claims, refusing a declaration that is not the right shape.
 
     Same policy as :func:`_declared_isolation`, for the same reason: a declaration this package
     cannot read is refused rather than guessed at.  The mistake worth naming is the adjacent
@@ -284,12 +313,15 @@ def _declared_limits(backend: SandboxBackend) -> SandboxLimits:
     :class:`~maf_sandbox.SandboxLimits` is the pair, both exported from one module, and the
     wrong one here used to surface as a bare ``AttributeError`` out of a host's agent factory.
     """
-    declared = getattr(backend, "limits", DEFAULT_SANDBOX_LIMITS)
-    if isinstance(declared, SandboxLimits):
-        return declared
+    # As `object` for the reason :func:`_declared_os_families` gives: a backend pyright never
+    # saw can still hand over the adjacent type.
+    limits = cast("object", declared.limits)
+    if isinstance(limits, SandboxLimits):
+        return limits
     raise SandboxTransferLimitsNotPermitted(
-        f"sandbox backend {backend.name!r} declares limits as {type(declared).__name__}, and "
-        f"only {SandboxLimits.__name__} can be read as one — it carries a "
+        f"sandbox backend {backend.name!r} declares limits as "
+        f"{type(limits).__name__}, and only {SandboxLimits.__name__} can be read as "
+        f"one — it carries a "
         f"{TransferLimits.__name__} per direction ({', '.join(_DIRECTION_FIELDS)}), where a "
         f"bare {TransferLimits.__name__} is one direction's caps and says nothing about the "
         "other. Declare nothing at all to accept the default ceilings."
@@ -392,6 +424,7 @@ class SandboxRouter:
                 )
             backend = matches[0]
 
+        _declarations(backend)
         declared = _declared_isolation(backend)
         if not meets_floor(declared, self._min_isolation):
             raise SandboxBackendNotPermitted(
@@ -457,6 +490,7 @@ class SandboxRouter:
                 "serve it on a host whose posture permits them."
             )
 
+        declarations = _declarations(self._backend)
         floor = self._effective_floor(spec)
         declared = _declared_isolation(self._backend)
         if not meets_floor(declared, floor):
@@ -468,9 +502,7 @@ class SandboxRouter:
                 "boundary it was written not to trust."
             )
 
-        capabilities: frozenset[Capability] = getattr(
-            self._backend, "capabilities", DEFAULT_CAPABILITIES
-        )
+        capabilities = declarations.capabilities
         missing = spec.requires - capabilities
         if missing:
             raise SandboxCapabilityNotSupported(
@@ -486,7 +518,7 @@ class SandboxRouter:
         # question the capability match asks — can this backend serve this workload at all —
         # and a workload refused for the wrong guest shape was never going to reach a transfer.
         if spec.requires_os_family is not None:
-            families = _declared_os_families(self._backend)
+            families = _declared_os_families(declarations)
             if spec.requires_os_family not in families:
                 served = ", ".join(sorted(str(family) for family in families))
                 raise SandboxOsFamilyNotSupported(
@@ -499,9 +531,7 @@ class SandboxRouter:
                     "workload written for the one this backend has."
                 )
 
-        # Silence is a safety claim here, not a functionality one: an undeclared ceiling is
-        # the default ceiling, and a spec asking above it is refused rather than believed.
-        limits = _declared_limits(self._backend)
+        limits = _declared_limits(self._backend, declarations)
         asked_in, asked_out = spec.files_in, spec.files_out
         if spec.host_tools is not None:
             # The transport moves its own files, bounded by the registry rather than by what the
@@ -538,10 +568,9 @@ class SandboxRouter:
 
         # Egress is resolved, not matched: the workload runs in exactly one mode, and the
         # backend must be able to enforce it. Refuse, never degrade — no more-open substitute
-        # (a silent widening) and no more-isolated one (a quietly different posture). Silence is
-        # the empty set: a backend that declares nothing enforces nothing. See
+        # (a silent widening) and no more-isolated one (a quietly different posture). See
         # docs/sandbox/research/egress-resolution.md.
-        modes: frozenset[Egress] = getattr(self._backend, "egress_modes", frozenset())
+        modes = declarations.egress_modes
         if spec.egress not in modes:
             enforced = ", ".join(sorted(modes)) or "nothing"
             raise SandboxEgressNotEnforced(

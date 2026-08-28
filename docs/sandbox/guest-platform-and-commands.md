@@ -95,7 +95,7 @@ This is not a defect. It is a true statement a backend can make about itself, wr
 
 The timing constrains every option below, so it is worth stating exactly.
 
-- Backend declarations are read **synchronously**, with `getattr`, all of them inside `_refuse_unless_backend_can_serve`: `capabilities`, `limits` in `_declared_limits`, `egress_modes` — the set of modes a backend can enforce, not a single declared posture — and `os_families` in `_declared_os_families`. A declaration must therefore be a plain attribute settled by the time the router asks — never an `async` query.
+- Backend declarations are read **synchronously**, with one `getattr` for the whole `BackendDeclarations`, inside `_refuse_unless_backend_can_serve`: `capabilities`, `limits` through `_declared_limits`, `egress_modes` — the set of modes a backend can enforce, not a single declared posture — and `os_families` through `_declared_os_families`. The object must therefore be a plain attribute, or a property over configuration, settled by the time the router asks — never an `async` query.
 - `ensure_can_serve` runs at **attach**, called from `sandboxed_tool` in `maf.py`, before any sandbox exists.
 - The same checks run **again** inside `SandboxRouter.acquire`, immediately before it calls `self._backend.acquire(key, spec)` — its docstring says *"before ever reaching the backend"*, so that a caller skipping `ensure_can_serve` is still refused.
 
@@ -111,7 +111,7 @@ class OsFamily(StrEnum):
     WINDOWS = "windows"
 
 
-# On the backend, read with getattr beside `capabilities`, `limits` and `egress_modes`:
+# On the backend's `BackendDeclarations`, beside `capabilities`, `limits` and `egress_modes`:
 os_families: frozenset[OsFamily]
 
 # On SandboxSpec:

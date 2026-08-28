@@ -189,7 +189,7 @@ class TestAllowlistEgress:
             subject = PosixGuestSubject(
                 sandbox=sandbox,
                 working_directory=_WORK,
-                capabilities=backend.capabilities,
+                capabilities=backend.declarations.capabilities,
             )
             asyncio.run(
                 assert_egress_conformance(
@@ -238,7 +238,7 @@ class TestTheSharedConformanceSuites:
                 PosixGuestSubject(
                     sandbox=sandbox,
                     working_directory=_WORK,
-                    capabilities=backend.capabilities,
+                    capabilities=backend.declarations.capabilities,
                 )
             )
             assert not [r for r in results if r.skipped]
@@ -263,7 +263,7 @@ class TestTheSharedConformanceSuites:
                 PosixGuestSubject(
                     sandbox=sandbox,
                     working_directory=_WORK,
-                    capabilities=backend.capabilities,
+                    capabilities=backend.declarations.capabilities,
                 )
             )
             assert not [r for r in results if r.skipped]
@@ -288,7 +288,7 @@ class TestTheSharedConformanceSuites:
                 PosixGuestSubject(
                     sandbox=sandbox,
                     working_directory=_WORK,
-                    capabilities=backend.capabilities,
+                    capabilities=backend.declarations.capabilities,
                 )
             )
             assert not [r for r in results if r.skipped]
@@ -318,7 +318,7 @@ class TestTheSharedConformanceSuites:
                     PosixGuestSubject(
                         sandbox=sandbox,
                         working_directory=_WORK,
-                        capabilities=backend.capabilities,
+                        capabilities=backend.declarations.capabilities,
                     )
                 )
 

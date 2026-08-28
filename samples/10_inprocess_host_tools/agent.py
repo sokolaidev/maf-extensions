@@ -28,7 +28,9 @@ from host_tools import (
 )
 from maf_sandbox import (
     DEFAULT_CAPABILITIES,
+    BackendDeclarations,
     Capability,
+    Egress,
     HostToolAggregate,
     HostToolIdentityNotAllowed,
     HostToolNotDeclared,
@@ -53,6 +55,14 @@ from maf_sandbox.testing import InProcessSandboxBackend
 _ROOMY = SandboxLimits(
     files_in=TransferLimits(1 << 26, 1 << 31, 4096),
     files_out=TransferLimits(1 << 26, 1 << 31, 4096),
+)
+
+#: What a backend that would serve this sample's workload declares: the capability the surface
+#: needs, and ceilings the fold fits inside.
+_DECLARES_HOST_TOOLS = BackendDeclarations(
+    capabilities=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
+    limits=_ROOMY,
+    egress_modes=frozenset({Egress.ALLOWLIST, Egress.CLOSED}),
 )
 
 #: The kind this host would be attaching. Named once; every act below builds a spec for it.
@@ -151,13 +161,12 @@ def act_three_permitted(surface: HostToolAggregate) -> InProcessSandboxBackend:
     print("== 3. A host that permits it ==\n")
 
     # Docker and ACAS declare HOST_TOOLS, but reaching either needs an engine or a subscription
-    # and this sample needs neither. `InProcessSandboxBackend` takes its capabilities as an
+    # and this sample needs neither. `InProcessSandboxBackend` takes its declarations as an
     # argument, so the permitted shape can be shown with nothing installed. The router does not
     # know the difference — a declaration is a declaration, whoever made it.
     backend = InProcessSandboxBackend(
         name="in-process (host tools declared by hand)",
-        capabilities=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
-        limits=_ROOMY,
+        declarations=_DECLARES_HOST_TOOLS,
     )
     router = SandboxRouter([backend], min_isolation=backend.isolation)
     spec = SandboxSpec(
@@ -181,10 +190,7 @@ def act_four_refused(surface: HostToolAggregate) -> InProcessSandboxBackend:
     """The two ways a host says no, on the two axes, both before a sandbox exists."""
     print("== 4. The two refusals ==\n")
 
-    backend = InProcessSandboxBackend(
-        capabilities=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
-        limits=_ROOMY,
-    )
+    backend = InProcessSandboxBackend(declarations=_DECLARES_HOST_TOOLS)
     spec = SandboxSpec(
         kind=KIND,
         requires=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},

@@ -20,16 +20,13 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path, PurePosixPath
 
 from maf_sandbox import (
-    DEFAULT_CAPABILITIES,
-    DEFAULT_SANDBOX_LIMITS,
-    Capability,
+    BackendDeclarations,
     DisposalFailure,
     Egress,
     ExecResult,
     Isolation,
     SandboxEntry,
     SandboxKey,
-    SandboxLimits,
     SandboxSpec,
     ScopePurge,
 )
@@ -310,19 +307,13 @@ class NoIsolationBackend:
         return Isolation.NONE
 
     @property
-    def egress_modes(self) -> frozenset[Egress]:
-        # Honest — see the class docstring. No boundary means the only enforceable mode is
-        # UNRESTRICTED; the router refuses any workload that asked for confinement this cannot
-        # deliver, rather than accepting a CLOSED it could not keep.
-        return frozenset({Egress.UNRESTRICTED})
-
-    @property
-    def capabilities(self) -> frozenset[Capability]:
-        return DEFAULT_CAPABILITIES
-
-    @property
-    def limits(self) -> SandboxLimits:
-        return DEFAULT_SANDBOX_LIMITS
+    def declarations(self) -> BackendDeclarations:
+        # `egress_modes` is the honest one — see the class docstring. No boundary means the
+        # only enforceable mode is UNRESTRICTED; the router refuses any workload that asked
+        # for confinement this cannot deliver, rather than accepting a CLOSED it could not
+        # keep. The other fields are left at their defaults, which is what this backend
+        # would have said anyway.
+        return BackendDeclarations(egress_modes=frozenset({Egress.UNRESTRICTED}))
 
     async def acquire(self, key: SandboxKey, spec: SandboxSpec) -> NoIsolationSandbox:
         async with self._lock:
