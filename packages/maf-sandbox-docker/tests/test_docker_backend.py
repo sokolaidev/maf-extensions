@@ -1510,6 +1510,20 @@ class TestTheGuestIdentityIsReadFromTheContainer:
         facts, _ = self._facts(b"\n")
         assert (facts.guest_uid, facts.guest_gid) == (0, 0)
 
+    def test_a_bare_zero_is_resolved_like_any_other_bare_uid(self):
+        """`USER 0` with no passwd entry runs as root with root's gid, but an image whose
+        passwd entry gives uid 0 another primary group must not be short-circuited to
+        `0:0` — the gid is asked for the same way it is for any bare uid.
+        """
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"0\n", ""),
+            ("exec", "-w", "/", _NAME, "id", "-g"): _DockerResult(0, b"20001\n", ""),
+        }
+        backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        assert (facts.guest_uid, facts.guest_gid) == (0, 20001)
+
     def test_a_numeric_user_with_no_passwd_entry_keeps_gids_zero(self):
         """A bare uid keeps root's gid when the guest cannot answer: with no `/etc/passwd`
         entry the runtime itself picks gid 0, so that is the honest fallback.

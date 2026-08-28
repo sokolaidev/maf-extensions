@@ -217,10 +217,9 @@ class TestAGuestThatIsNotRoot:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
     def test_a_nonroot_guest_can_rewrite_and_delete_what_the_host_wrote(self):
-        """The other half of #680: on a non-root image the tar entries carry the image's
-        user, so what the host writes in is the guest program's to modify — appended,
-        overwritten and removed — the way it is on a root image for root.  In-guest files
-        are not controls; every gate is host-side.
+        """What `write_file` lands on a non-root image is the image user's, so the guest
+        program can append to it, write beside it, and take it away — the file plane a
+        root guest has always had.
         """
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig())
@@ -238,9 +237,8 @@ class TestAGuestThatIsNotRoot:
             read_back = await sandbox.read_file(shared, working_directory=_WORK, max_bytes=4096)
             assert read_back == b"a,b\n1,2\n3,4\n"
 
-            # `inputs/` itself is the guest's now, so the program can create beside what
-            # the host put there — inside a directory the host wrote, not the root-owned
-            # `work` above it.
+            # The directory `write_file` made is the guest's too, so the program can
+            # create beside what the host put there.
             created = await sandbox.exec(
                 ["sh", "-c", f"echo mine > {_WORK}/inputs/mine.txt"],
                 working_directory="/",
@@ -252,12 +250,13 @@ class TestAGuestThatIsNotRoot:
             )
             assert mine == b"mine\n"
 
-            # And take a host-written file away — the delete half the name promises.
+            # The delete half, on the file the host wrote — the one thing the old
+            # ownership made impossible for a non-root guest.
             removed = await sandbox.exec(
-                ["sh", "-c", f"rm {_WORK}/inputs/mine.txt"], working_directory="/", timeout=60
+                ["sh", "-c", f"rm {shared}"], working_directory="/", timeout=60
             )
             assert removed.exit_code == 0, removed.stderr
-            assert await sandbox.stat_file("inputs/mine.txt", working_directory=_WORK) is None
+            assert await sandbox.stat_file("inputs/shared.csv", working_directory=_WORK) is None
 
         try:
             asyncio.run(scenario())
@@ -350,9 +349,9 @@ class TestAWorkDirTheImageGaveItsOwnUser:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
     def test_remove_of_a_host_written_subdirectory_runs_at_the_guest_and_succeeds(self):
-        """A subdirectory under a guest-owned `work_dir` stays at the guest's authority —
-        the walk finds a component the guest could have swapped — and with #680's write
-        half landed that removal succeeds: the subdirectory is the guest's too.
+        """The walk finds a component of the path the guest could have swapped, so the
+        removal stays at the guest's authority — and it succeeds, because the parent it
+        empties is one `write_file` made guest-owned.
         """
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig())
@@ -385,10 +384,10 @@ class TestAnImageThatGivesAwayADirectoryAboveWorkDir:
         return SandboxSpec(kind="e2e-loose", image=_LOOSE_PARENT_IMAGE, work_dir=_WORK)
 
     def test_reclaim_drops_to_the_guest_authority_and_succeeds(self):
-        """Root is never asked here — the chain above `work_dir` is the guest's, and a
-        redirected root removal is the risk the acquire-time check exists for (pinned by
-        the swap test below).  The removal is the guest's, and since #680's write half
-        landed, the call directory is the guest's too: it empties cleanly.
+        """The chain above `work_dir` is the guest's, so root is never asked over this path
+        — that is the boundary the acquire-time check exists to hold (pinned by the swap
+        test below).  The guest's `rm` still empties the call directory, because
+        `write_file` made it and its parents guest-owned.
         """
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig())

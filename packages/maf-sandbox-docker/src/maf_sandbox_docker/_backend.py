@@ -849,11 +849,12 @@ class DockerSandboxBackend:
     async def _guest_identity(self, name: str, probe: _DockerSandbox) -> tuple[int, int]:
         """Read the container's default user's uid and gid.
 
-        A ``uid:gid`` pair is taken from the config as-is; anything else — a bare uid or a
-        named user — is resolved with ``id`` inside the container, because the primary gid
-        comes from the container's own ``/etc/passwd`` and is not the uid's to guess.  A
-        bare uid that no ``id`` answers keeps gid ``0``, what the runtime picks when the
-        uid has no passwd entry; a named user no ``id`` answers fails open to ``(0, 0)``.
+        An unset user is root by definition, and an explicit ``0:0`` pair is taken as-is;
+        anything else is resolved with ``id`` inside the container, because the primary gid
+        comes from the container's own ``/etc/passwd`` and is not the uid's to guess — a
+        bare ``0`` no more implies gid ``0`` than ``10001`` implies ``10001``.  A bare uid
+        no ``id`` answers keeps gid ``0``, what the runtime picks when the uid has no
+        passwd entry; a named user no ``id`` answers fails open to ``(0, 0)``.
         """
         try:
             result = await self._docker(
@@ -868,7 +869,7 @@ class DockerSandboxBackend:
                 if result.returncode == 0
                 else ""
             )
-            if not raw or raw == "0" or raw == "0:0":
+            if not raw or raw == "0:0":
                 return 0, 0
             if ":" in raw:
                 u, _, g = raw.partition(":")
