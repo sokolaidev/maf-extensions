@@ -387,7 +387,7 @@ class _AcasSandbox:
         """Describe ``path``, or return ``None`` when nothing is there.
 
         Stat is ``lstat``-like: a symlink is described as itself, never as its target.  Its
-        *parents* are walked first, exactly as a read walks them: no byte of ``/etc`` crosses
+        *ancestors* are checked first, exactly as a read checks them: no byte of ``/etc`` crosses
         when ``out -> /etc`` is statted through, but its type and size do, and that is
         metadata from outside the boundary.
 
@@ -418,7 +418,7 @@ class _AcasSandbox:
         """Delete ``path`` through the data plane's own ``delete_file`` — no shell, no ``rm``.
 
         The service unlinks a final symlink component, but resolves symlinked parents, so the
-        parent walk remains refused before the delete. A directory is refused without
+        filesystem path check still runs before the delete. A directory is refused without
         ``recursive`` whatever it holds: the rule is on the entry's kind, because a backend
         that cannot enumerate cannot tell empty from full.
         """
@@ -494,8 +494,9 @@ class _AcasSandbox:
     async def _stat_guest(self, guest: str, relative: str) -> SandboxEntry | None:
         """Stat an absolute guest path, with no confinement check of its own.
 
-        Split out because the component walk stats the working directory's own ancestors, which
-        by definition sit outside it — confining here would refuse the very check being made.
+        Split out because the filesystem path check stats the working directory's own
+        ancestors, which by definition sit outside it — confining here would refuse the
+        very check being made.
         """
         from azure.core.exceptions import ResourceNotFoundError
 
@@ -508,7 +509,7 @@ class _AcasSandbox:
     async def _refuse_symlinked_parents(
         self, guest: str, *, working_directory: str, include_guest: bool = False
     ) -> None:
-        """The protocol's component walk, over this backend's own unconfined stat.
+        """The protocol's filesystem path check, over this backend's own unconfined stat.
 
         A symlinked *parent* is invisible in the final entry's stat — with
         ``/maf-sandbox/work/out -> /etc``, ``out/hostname`` stats as a regular 12-byte file and
@@ -544,7 +545,7 @@ class _AcasSandbox:
 
         guest, relative = _confined(path, working_directory)
         await self._refuse_symlinked_parents(guest, working_directory=working_directory)
-        # `_stat_guest` rather than `stat_file`, which would walk the same parents a second time.
+        # `_stat_guest` rather than `stat_file`, which would check the same ancestors a second time.
         entry = await self._stat_guest(guest, relative)
         if entry is None:
             raise FileNotFoundError(f"no such file: {path!r}")

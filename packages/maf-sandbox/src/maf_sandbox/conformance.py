@@ -266,7 +266,7 @@ class ConformancePaths:
     def under_linked_directory(self) -> str:
         """A working directory one level *inside* the link — the ``/maf-sandbox -> /`` case.
 
-        Distinct from making the work dir itself the link: an implementation whose walk starts
+        Distinct from making the work dir itself the link: an implementation whose check starts
         at the work dir passes that one and still reads straight through this.
         """
         return f"{self.linked_directory}/sub"
@@ -508,7 +508,7 @@ async def _probe_a_listing_names_its_links(
 
 
 #: The probes, in the order a reader should meet them: the positive control first, then what a
-#: backend can say about a link, then the component walk, then enumeration.
+#: backend can say about a link, then the filesystem path check, then enumeration.
 FILES_OUT_PROBES: tuple[Probe, ...] = (
     Probe(
         name="a-legitimate-read-still-works",

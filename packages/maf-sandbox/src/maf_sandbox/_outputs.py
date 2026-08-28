@@ -243,8 +243,8 @@ def make_file_system_sink(
     The refusal is why this exists; the writing is three lines.
     :func:`validate_artifact_name` is **lexical** — it bounds the name and says nothing about
     what is already sitting at the path that name resolves to — so a symlink in ``root`` carries
-    a write straight out of it, the host-side twin of the symlinked parent a guest path is
-    walked for.  Every host that lands to a filesystem has to make this check.
+    a write straight out of it, the host-side twin of the symlinked ancestor a guest path is
+    checked for.  Every host that lands to a filesystem has to make this check.
 
     It stays a check rather than a guarantee: resolving and writing are two calls, so a
     destination replaced in between is followed, and a host landing genuinely hostile output

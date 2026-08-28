@@ -256,7 +256,7 @@ class EntryKind(StrEnum):
     ``ModeSymlink`` bit and an explicit link target.  One vocabulary covers both.
 
     The four members are the four answers
-    :func:`~maf_sandbox.paths.refuse_symlinked_parents` needs per ancestor: keep walking, or
+    :func:`~maf_sandbox.paths.refuse_symlinked_parents` needs per ancestor: keep checking, or
     refuse — as an escape for :data:`SYMLINK`, as ``ENOTDIR`` for anything else non-regular.
     Both are refused either way, so what the split buys is the *reason*, which is the part a
     caller above the backend cannot reconstruct.  A backend that cannot recognise a link
@@ -633,7 +633,7 @@ class Sandbox(Protocol):
     **Confinement is a duty of all five, and it is not a check on the argument string.**  A
     path whose *parent* is a link satisfies every lexical test and still reads outside: with
     ``out -> /etc``, ``out/hostname`` stats as a regular 12-byte file.  Discharge it with
-    :func:`~maf_sandbox.paths.refuse_symlinked_parents` rather than by writing the walk again —
+    :func:`~maf_sandbox.paths.refuse_symlinked_parents` rather than by writing that check again —
     it is where the two refusals a caller must be able to tell apart are defined, and
     :mod:`maf_sandbox.conformance` is the same duty as probes, for holding a backend that
     writes its own.  **The stat you hand it must not be answered by the guest** wherever your
@@ -649,7 +649,7 @@ class Sandbox(Protocol):
         ``path`` is POSIX-shaped and relative to ``working_directory``; an absolute path resolving
         inside it is accepted. ``str`` means UTF-8 whatever the host's locale says; ``bytes`` is
         written as given, and is what an in-door carrying a PNG or a spreadsheet needs. Parent
-        directories are created as needed. A missing component ends the walk, so nothing created
+        directories are created as needed. A missing component ends the check, so nothing created
         by this call can be a link.
 
         Raises:
@@ -657,7 +657,7 @@ class Sandbox(Protocol):
                 working directory itself.
             NotADirectoryError: If a parent is neither a directory nor a link.
 
-        The walk and write are not atomic on any shipped backend; a guest that turns a checked
+        The check and the write are not atomic on any shipped backend; a guest that turns a checked
         component into a link in between wins.
         """
         ...
@@ -729,7 +729,7 @@ class Sandbox(Protocol):
 
         Stat is ``lstat``-like: the **final** component is described rather than refused —
         :data:`EntryKind.SYMLINK` is how a caller learns it is a link.  Its *parents* are still
-        walked, because a stat through one reports a type and a size from outside the working
+        checked, because a stat through one reports a type and a size from outside the working
         directory even though no byte crosses.
         """
         ...
@@ -742,7 +742,7 @@ class Sandbox(Protocol):
         symlink is refused whether or not its target would have resolved somewhere legitimate,
         because that judgement is made with the guest's filesystem in view and answered with
         whichever one the reader can actually see.  Anything else is refused with an
-        :class:`OSError`, and every parent is walked first.
+        :class:`OSError`, and every ancestor is checked first.
 
         ``max_bytes`` is a **refusal, never a truncation**: half a PNG returned as success is
         an artifact the host cannot tell from a whole one.  Refuse with
@@ -784,7 +784,7 @@ class Sandbox(Protocol):
         The framework's cleanup. Mandatory, and behind no :class:`Capability`.
 
         Three rules. The caller created ``directory`` under ``working_directory`` with an
-        unguessable name, so no parent walk is owed — stated, not checked. The premise is
+        unguessable name, so no filesystem path check is owed — stated, not checked. The premise is
         not stable: the **guest program** — the payload a kind ran, not the transport files a
         backend put beside it — can have swapped the path, or a parent, for a link before the
         call returned.
@@ -821,7 +821,7 @@ class Sandbox(Protocol):
         allowlist and the most trusted enumeration in the system, this is the least trusted
         one, and both are in scope inside a kind's tool body.
 
-        The walk runs one component deeper here — ``include_self`` — because an enumeration
+        The check runs one component deeper here — ``include_self`` — because an enumeration
         passes through a link as readily as a read does.  A listed link is reported as
         :data:`EntryKind.SYMLINK`, not hidden: a name handed back with its type erased is a
         name read without the warning.
