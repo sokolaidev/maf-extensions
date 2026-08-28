@@ -1316,6 +1316,21 @@ class TestReclaimConformance:
             "an-absent-working-directory-still-succeeds"
         ]
 
+    def test_a_guest_whose_test_binary_is_missing_fails_the_absence_only_probe(self):
+        """Read 127 as "absent" and every probe asking only what *went* is vacuously green."""
+
+        class _NoTestBinary(_SimulatedGuest):
+            async def exec(self, command, *, working_directory, timeout):
+                if list(command)[0:1] == ["test"]:
+                    return ExecResult(stdout="", stderr="test: not found", exit_code=127)
+                return await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+
+        failures = self._failures(_NoTestBinary())
+        assert failures["nested-content-goes-with-it"] is not None
+        assert "exited 127" in failures["nested-content-goes-with-it"]
+
     def test_a_backend_with_no_exec_and_no_write_file_answers_every_probe(self):
         """The suite is mandatory, so a runtime-only backend has to be able to sit it (#639)."""
         results = asyncio.run(assert_reclaim_conformance(_RuntimeOnlySubject(_RuntimeOnlyGuest())))
@@ -1366,23 +1381,27 @@ class _ScriptedTest(InProcessSandbox):
     `test` does not: `-e` is false for it and `-L` true.
     """
 
-    def __init__(self, *true_flags: str) -> None:
+    def __init__(self, *true_flags: str, otherwise: int = 1) -> None:
         super().__init__()
         self.true_flags = frozenset(true_flags)
+        self.otherwise = otherwise
         self.asked: list[str] = []
 
     async def exec(self, command, *, working_directory, timeout):
         del working_directory, timeout
         argv = list(command)
         self.asked.append(argv[1])
-        return ExecResult(stdout="", exit_code=0 if argv[1] in self.true_flags else 1)
+        code = 0 if argv[1] in self.true_flags else self.otherwise
+        return ExecResult(stdout="", stderr="" if code < 2 else "test: not found", exit_code=code)
 
 
 class TestPosixGuestSubjectSees:
     """`exists` asks `test -e`, then `test -L`. The second call is the whole no-follow claim."""
 
-    def _seeing(self, *true_flags: str) -> tuple[PosixGuestSubject, _ScriptedTest]:
-        sandbox = _ScriptedTest(*true_flags)
+    def _seeing(
+        self, *true_flags: str, otherwise: int = 1
+    ) -> tuple[PosixGuestSubject, _ScriptedTest]:
+        sandbox = _ScriptedTest(*true_flags, otherwise=otherwise)
         subject = PosixGuestSubject(
             sandbox=sandbox, working_directory=_WORK, capabilities=frozenset()
         )
@@ -1403,6 +1422,14 @@ class TestPosixGuestSubjectSees:
         subject, sandbox = self._seeing()
         assert asyncio.run(subject.exists(f"{_WORK}/gone")) is False
         assert sandbox.asked == ["-e", "-L"]
+
+    def test_a_test_that_could_not_run_raises_rather_than_answering_absent(self):
+        """127 is a missing binary, and reading it as "absent" is a probe that verified nothing."""
+        subject, sandbox = self._seeing(otherwise=127)
+        with pytest.raises(RuntimeError, match="could not see whether"):
+            asyncio.run(subject.exists(f"{_WORK}/note.txt"))
+        # Raised on the first flag: a `test` that cannot run will not run for `-L` either.
+        assert sandbox.asked == ["-e"]
 
 
 def test_assert_reclaim_answers_a_conforming_subject():

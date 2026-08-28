@@ -187,8 +187,11 @@ class PosixGuestSubject:
         """``test -e``, then ``test -L`` — a dangling link is a name that is still there.
 
         Two calls rather than one ``test -e X -o -L X``: the ``-o`` form is obsolescent in XSI
-        and a path that looks like an operator is enough to make a shell read it wrongly.  A
-        non-zero exit is the answer "absent", not a failure.
+        and a path that looks like an operator is enough to make a shell read it wrongly.
+
+        Exit 1 is the answer "absent".  Anything above it is ``test`` failing to run at all — a
+        missing binary exits 127 — and that is raised rather than read as absence, because a
+        probe asking whether a removal happened would take the silence for success.
         """
         for flag in ("-e", "-L"):
             result = await self.sandbox.exec(
@@ -198,6 +201,11 @@ class PosixGuestSubject:
             )
             if result.exit_code == 0:
                 return True
+            if result.exit_code > 1:
+                raise RuntimeError(
+                    f"could not see whether {path!r} is there "
+                    f"(`test {flag}` exited {result.exit_code}): {result.stderr.strip()}"
+                )
         return False
 
 
