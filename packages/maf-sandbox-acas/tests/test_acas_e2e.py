@@ -823,9 +823,11 @@ _NONROOT_IMAGE = os.environ.get("MAF_SANDBOX_ACAS_E2E_NONROOT_IMAGE")
 class TestAnImageWhoseGuestIsNotRoot:
     """The acquire-time gate, and the wall it rests on, against the service (#722).
 
-    Costs **one more billable sandbox** when the environment names such an image, and nothing
-    otherwise. The refusal itself pays for no sandbox at all: the uid is remembered per image,
-    so the acquire that is refused never reaches a create.
+    Costs **two more billable sandboxes** when the environment names such an image, and nothing
+    otherwise: the fixture's, and one `test_a_cold_refusal_deletes_the_sandbox_it_had_to_create`
+    creates on a backend of its own. A warm refusal pays for neither — the uid is remembered per
+    image, so the acquire that is refused never reaches a create — which is why the cold path
+    cannot borrow the fixture's.
     """
 
     @pytest.fixture(scope="class")

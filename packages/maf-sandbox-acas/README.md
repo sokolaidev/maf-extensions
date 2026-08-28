@@ -51,7 +51,7 @@ router = SandboxRouter([backend])  # microVM isolation meets the router's defaul
 | `dispose_scope(scope, thread)` | delete every sandbox for a conversation — **from the service, by label**, not from process memory |
 | `stat_file` / `read_file` / `list_dir` | the pull surface — reads confined to the call's `working_directory`, symlinks and directories refused, a size over the caller's cap refused rather than truncated. Regularity itself cannot be proven here — see below |
 | `isolation` | `microvm` — the router's default floor, so a host that configures nothing already permits this backend |
-| `capabilities` | `EXEC, FILES_IN, FILES_OUT, FILES_LIST, FILES_DELETE, HOST_TOOLS` — declares only what it implements today, and the last two are a ceiling `acquire` withdraws on an image whose guest is not root |
+| `capabilities` | `EXEC, FILES_IN, FILES_OUT, FILES_LIST, FILES_DELETE, HOST_TOOLS` — declares only what it implements today, and `FILES_OUT` and `HOST_TOOLS` are a ceiling `acquire` withdraws on an image whose guest is not root |
 | `limits` | the transfer ceilings a spec may not exceed, per direction |
 
 **Two image namespaces, and `spec.image` says which by whether it carries a tag.** The service prebuilds images and keeps them Ready for every sandbox group — `python-3.13`, `node-22`, `ubuntu` and a dozen more — and a spec reaches them by naming one, with **no registry and no tag**, because the version is part of the name. Anything else is the `repository:tag` the rest of this package is written around: qualified by the configured `registry` and resolved against the disk images this deployment imported with `scripts/import_disk_image.py`.
