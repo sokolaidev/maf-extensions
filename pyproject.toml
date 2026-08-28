@@ -160,6 +160,13 @@ cmd = "python scripts/check_doc_paths.py"
 help = "Refuse a Status row whose tracker has closed or is annotated wrongly (needs a GitHub token)"
 cmd = "python scripts/check_doc_trackers.py"
 
+# Outside `gate` for the reason the two above are: it reads the index and builds an environment
+# per declared floor, where the gate is hermetic and offline. This is the contributor-side form
+# of the tests.yml step, which passes `--local-core` because `dist/` is built by then.
+[tool.poe.tasks.sample-floors]
+help = "Refuse a sample that cannot run on the core its own PEP 723 block names"
+cmd = "python scripts/check_samples_against_declared_core.py"
+
 [tool.poe.tasks.gate]
 help = "The full pre-PR gate: tests, lint, format, both pyright passes, doc references"
 sequence = ["test", "lint", "format", "types-packages", "types", "doc-paths"]

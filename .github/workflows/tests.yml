@@ -323,6 +323,23 @@ jobs:
             fi
           done
 
+      # The same question asked of `samples/`, where nothing asked it (#725). A sample declares
+      # its dependencies in a PEP 723 block rather than a range, so no gate above reaches it:
+      # `test_sample_metadata.py` reads the floor's shape and window without the imports, and
+      # `test_sample_modules_import.py` imports the samples against the *workspace* core. A
+      # sample naming a floor that does not carry what it uses was green in both.
+      #
+      # `--local-core` on the same terms as the step above — it fires only when nothing
+      # published satisfies a floor, the window between a Release PR merging and the upload —
+      # except that it substitutes every wheel `dist/` holds, not the core alone. A published
+      # backend cannot implement a protocol it predates, and pairing one with an unreleased core
+      # reports a packaging cause as a sample error.
+      - name: Each sample against the core its own block names
+        if: needs.changes.outputs.code == 'true'
+        run: |
+          set -euo pipefail
+          python3 scripts/check_samples_against_declared_core.py --local-core "$CORE_WHEEL"
+
   # The required context, and the only job here whose name `main`'s ruleset knows. It runs no
   # checks of its own: it fails unless every shard above succeeded, so the shards stay free to
   # be renamed or resharded without a ruleset edit.
