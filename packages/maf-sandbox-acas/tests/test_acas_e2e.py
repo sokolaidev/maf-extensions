@@ -31,7 +31,9 @@ what this package believes, and #139 and #142 were both the package believing wr
 :class:`TestFilesOutAgainstTheRealService` asserts that none of them skipped here, because a
 suite that quietly skips a third of itself is the shape of a green run that attacked nothing.
 
-**Cost discipline.** Four sandboxes for the whole module. The probes and refusals share one,
+**Cost discipline.** Four sandboxes for the whole module, and two more only where
+``MAF_SANDBOX_ACAS_E2E_NONROOT_IMAGE`` names one whose guest is not root — the non-root class
+shares one, and the cold-refusal probe creates a second that the backend under test deletes. The probes and refusals share one,
 acquired by a module-scoped fixture and disposed at the end; the lifecycle test needs its own
 because it disposes as the thing under test; the prebuilt-image test needs its own because a
 bare catalogue name is only evidence if it boots one; the egress leg needs its own because only
@@ -43,6 +45,7 @@ build a second transport against the same sandbox.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import uuid
 from collections.abc import Coroutine
@@ -127,6 +130,11 @@ def _spec(**overrides: Any) -> SandboxSpec:
             "needs MAF_SANDBOX_ACAS_E2E_IMAGE — a repository:tag imported into the sandbox group"
         )
     return SandboxSpec(kind="e2e", image=_IMAGE, work_dir=_WORK, **overrides)
+
+
+def _logged_sandbox_id(message: str) -> str:
+    """The id out of a lifecycle line, which spells it `id=<sandbox>` before its other fields."""
+    return message.split("id=", 1)[1].split(" ", 1)[0]
 
 
 def _key(scope: str) -> SandboxKey:
@@ -800,6 +808,156 @@ class TestBootingAnImageTheServiceProvides:
         )
         assert result.exit_code == 0, result.stderr
         assert result.stdout.strip().startswith("Python 3."), result.stdout
+
+
+# ---------------------------------------------------------------------------
+# The image nothing else in this suite runs — one whose guest is not root
+# ---------------------------------------------------------------------------
+
+#: A `repository:tag` imported into the group whose `USER` is not root. Unset for almost every
+#: deployment, and the leg skips: every sample and every other sandbox in this module runs a
+#: root image, which is why nothing surfaced #722 until a probe went looking for it.
+_NONROOT_IMAGE = os.environ.get("MAF_SANDBOX_ACAS_E2E_NONROOT_IMAGE")
+
+
+class TestAnImageWhoseGuestIsNotRoot:
+    """The acquire-time gate, and the wall it rests on, against the service (#722).
+
+    Costs **two more billable sandboxes** when the environment names such an image, and nothing
+    otherwise: the fixture's, and one `test_a_cold_refusal_deletes_the_sandbox_it_had_to_create`
+    creates on a backend of its own. A warm refusal pays for neither — the uid is remembered per
+    image, so the acquire that is refused never reaches a create — which is why the cold path
+    cannot borrow the fixture's.
+    """
+
+    @pytest.fixture(scope="class")
+    def nonroot(self, loop):
+        if not _NONROOT_IMAGE:
+            pytest.skip(
+                "needs MAF_SANDBOX_ACAS_E2E_NONROOT_IMAGE — a repository:tag imported into the "
+                "sandbox group whose USER is not root"
+            )
+        backend = AcasSandboxBackend(_config())
+        scope = f"e2e-nonroot-{uuid.uuid4()}"
+        key = _key(scope)
+        spec = SandboxSpec(
+            kind="e2e-nonroot",
+            image=_NONROOT_IMAGE,
+            work_dir=_WORK,
+            requires=frozenset({Capability.EXEC, Capability.FILES_IN}),
+        )
+        try:
+            # Inside the guard for the reason the shared fixture gives.
+            sandbox = loop.run_until_complete(backend.acquire(key, spec))
+            yield _Live(loop, backend, key, sandbox)
+        finally:
+            loop.run_until_complete(backend.dispose_scope(scope, "thread-1"))
+            loop.run_until_complete(backend.aclose())
+
+    def test_the_image_this_leg_names_really_is_someone_elses(self, nonroot: _Live):
+        """The control. Pointed at a root image, everything below would pass for free."""
+        answered = nonroot.run(
+            nonroot.sandbox.exec("id -u", working_directory="/", timeout=_EXEC_TIMEOUT)
+        )
+        assert answered.exit_code == 0, answered.stderr
+        assert answered.stdout.strip() != "0", (
+            "MAF_SANDBOX_ACAS_E2E_NONROOT_IMAGE names an image whose guest is root, so this "
+            "leg would assert nothing"
+        )
+
+    def test_the_guest_cannot_create_anything_inside_what_the_file_plane_made(self, nonroot: _Live):
+        """The wall itself, measured rather than quoted: one host write, one guest `mkdir`.
+
+        This is the launcher's own first two steps, which is why the transport cannot start
+        here — the call directory arrives root-owned and the run's work directory goes inside it.
+        """
+        guest_call = f"{_WORK}/{uuid.uuid4().hex[:12]}"
+        nonroot.run(
+            nonroot.sandbox.write_file(f"{guest_call}/given.txt", "in\n", working_directory=_WORK)
+        )
+
+        refused = nonroot.run(
+            nonroot.sandbox.exec(
+                ["mkdir", f"{guest_call}/work"], working_directory="/", timeout=_EXEC_TIMEOUT
+            )
+        )
+
+        assert refused.exit_code != 0, "the guest created a directory the file plane owns"
+        assert "denied" in refused.stderr.lower(), refused.stderr
+
+    def test_a_workload_collecting_outputs_is_refused_at_acquire(self, nonroot: _Live):
+        """And refused without a second sandbox: the uid the fixture's acquire read is what
+        answers here, before any create."""
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        collecting = SandboxSpec(
+            kind="e2e-nonroot-outputs",
+            image=_NONROOT_IMAGE,
+            work_dir=_WORK,
+            requires=frozenset({Capability.EXEC, Capability.FILES_OUT}),
+        )
+
+        with pytest.raises(SandboxCapabilityNotSupported, match="files_out"):
+            nonroot.run(nonroot.backend.acquire(nonroot.key, collecting))
+
+    def test_a_cold_refusal_deletes_the_sandbox_it_had_to_create(self, nonroot: _Live, caplog):
+        """A refusal that had to create a sandbox to reach its verdict still deletes it.
+
+        Needs a backend of its own: the memo is per instance, so the fixture's has already
+        probed and could not reach the cold path. The create is asserted rather than assumed —
+        every other check here is equally true of a run that created nothing.
+        """
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        cold = AcasSandboxBackend(_config())
+        scope = f"e2e-nonroot-cold-{uuid.uuid4()}"
+        key = _key(scope)
+        collecting = SandboxSpec(
+            kind="e2e-nonroot-cold",
+            image=_NONROOT_IMAGE,
+            work_dir=_WORK,
+            requires=frozenset({Capability.EXEC, Capability.FILES_OUT}),
+        )
+
+        async def scenario() -> None:
+            with pytest.raises(SandboxCapabilityNotSupported, match="files_out"):
+                await cold.acquire(key, collecting)
+
+            # The service accepted the delete: `_undeleted` is where an id whose delete failed
+            # is kept, so an empty record is the backend saying the removal landed. Asserted
+            # before the listing because it carries no eventual-consistency race.
+            assert cold._registry == {}
+            assert cold._undeleted == {}
+
+            # And it really went away. Polled, not asserted once: `_delete` starts the deletion
+            # without awaiting the poller, so a sandbox still terminating is legitimately still
+            # listed. Read-only — a purge here would delete the very leak it is looking for.
+            gc = cold._group_client()
+            for _ in range(10):
+                left = await cold._list_thread_sandbox_ids(gc, scope, "thread-1")
+                if left == []:
+                    return
+                await asyncio.sleep(6.0)
+            raise AssertionError(f"{scope} still has sandboxes: a refused acquire leaked one")
+
+        try:
+            with caplog.at_level(logging.INFO, logger="maf_sandbox_acas"):
+                nonroot.run(scenario())
+            created = [
+                r.getMessage() for r in caplog.records if "sandbox created" in r.getMessage()
+            ]
+            released = [
+                r.getMessage() for r in caplog.records if "sandbox released" in r.getMessage()
+            ]
+            assert len(created) == 1, f"the refusal created no sandbox: {caplog.text}"
+            assert len(released) == 1, f"the sandbox it created was not released: {caplog.text}"
+            # `sandbox released` is logged only where `_delete` reported no failure, so the
+            # pair naming one id is the service agreeing that the removal landed.
+            assert _logged_sandbox_id(created[0]) == _logged_sandbox_id(released[0])
+        finally:
+            # Belt and braces: if the assertions above failed, something is still running.
+            nonroot.run(cold.dispose_scope(scope, "thread-1"))
+            nonroot.run(cold.aclose())
 
 
 @pytest.fixture(scope="module")
