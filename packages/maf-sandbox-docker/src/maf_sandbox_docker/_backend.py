@@ -368,13 +368,15 @@ class _DockerSandbox:
         every directory from ``working_directory`` itself down to the entry's parent
         travels as its own explicit entry stamped with the container's user when missing —
         that is what makes a call directory one the image's user can later empty, on every
-        image shape including one whose ``work_dir`` is absent.  Ancestors above
-        ``working_directory`` stay out of the tar: the reach rule lets a root removal
-        through exactly there, and stamping them would hand the guest what only the host
-        may hold.  An entry naming a directory that already exists extracts with the
-        entry's mode (measured, ``/tmp`` losing its sticky bit to a ``755`` entry), which
-        is why existing parents are skipped rather than re-stamped — read from the
-        confinement walk this call already paid for, not statted a second time.
+        image shape including one whose ``work_dir`` is absent.  The entries cover
+        ``working_directory`` and its descendants only: an ancestor above it that is absent
+        is docker's to create implicitly as root, because the acquire-time facts judged
+        that chain host-safe and a guest-owned entry here would turn it into a redirect
+        the reach rule never cleared — and the filesystem root is the cp destination, so
+        it never needs an entry.  An entry naming a directory that already exists extracts
+        with the entry's mode (measured, ``/tmp`` losing its sticky bit to a ``755``
+        entry), which is why existing parents are skipped rather than re-stamped — read
+        from the confinement walk this call already paid for, not statted a second time.
         """
         walked: dict[str, tuple[int, int]] = {}
         guest = await confine_guest_write_path(
@@ -385,13 +387,6 @@ class _DockerSandbox:
         leaf = posixpath.dirname(guest)
         buffer = io.BytesIO()
         with tarfile.open(fileobj=buffer, mode="w") as archive:
-            # The confinement walk has already statted every component from the root down
-            # and stopped at the first absent one, so what exists is known here without a
-            # `working_directory` and its descendants only: an ancestor above it that is
-            # absent is docker's to create implicitly as root, because the acquire-time
-            # facts judged that chain host-safe and a guest-owned entry here would turn it
-            # into a redirect the reach rule never cleared.  The filesystem root itself is
-            # the cp destination and never needs an entry.
             missing = [
                 d
                 for d in guest_directory_chain(leaf, base)
