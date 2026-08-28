@@ -55,7 +55,6 @@ from maf_sandbox.paths import (
     confine_guest_path,
     confine_guest_write_path,
     guest_directory_chain,
-    guest_path_relative_to,
     refuse_symlinked_parents,
 )
 
@@ -366,45 +365,41 @@ class _DockerSandbox:
         path that always does, so the entries carry the whole path and docker creates the
         missing directories from them.  The load-bearing constraint: an **implicit**
         intermediate is created as ``root`` whatever the file entry's ownership says, so
-        every directory from ``working_directory`` itself down to the entry's parent is
-        statted first and travels as its own explicit entry stamped with the container's
-        user when missing — that is what makes a call directory one the image's user can
-        later empty, on every image shape including one whose ``work_dir`` is absent.
-        Ancestors above ``working_directory`` stay out of the tar: the reach rule lets a
-        root removal through exactly there, and stamping them would hand the guest what
-        only the host may hold.  An entry naming a directory that already exists extracts
-        with the entry's mode (measured, ``/tmp`` losing its sticky bit to a ``755``
-        entry), which is why existing parents are skipped rather than re-stamped.
+        every directory from ``working_directory`` itself down to the entry's parent
+        travels as its own explicit entry stamped with the container's user when missing —
+        that is what makes a call directory one the image's user can later empty, on every
+        image shape including one whose ``work_dir`` is absent.  Ancestors above
+        ``working_directory`` stay out of the tar: the reach rule lets a root removal
+        through exactly there, and stamping them would hand the guest what only the host
+        may hold.  An entry naming a directory that already exists extracts with the
+        entry's mode (measured, ``/tmp`` losing its sticky bit to a ``755`` entry), which
+        is why existing parents are skipped rather than re-stamped — read from the
+        confinement walk this call already paid for, not statted a second time.
         """
+        walked: dict[str, tuple[int, int]] = {}
         guest = await confine_guest_write_path(
-            lambda p: self._stat_guest(p, p), path, working_directory
+            lambda p: self._stat_guest(p, p, walked), path, working_directory
         )
         data = content.encode("utf-8") if isinstance(content, str) else content
         base = posixpath.normpath(working_directory)
         leaf = posixpath.dirname(guest)
         buffer = io.BytesIO()
         with tarfile.open(fileobj=buffer, mode="w") as archive:
-            relative = guest_path_relative_to(leaf, base)
-            walked = base
-            while True:
-                # The walk starts at `base` itself: an absent work_dir is also created
-                # implicitly as root by docker, and its ancestors are the only directories
-                # the reach rule lets a root reclaim through — a root-owned work_dir under
-                # a guest-writable parent is the leak the missing entry would leave.  The
-                # filesystem root needs no entry — it is the cp destination — so the walk
-                # never emits one for it.
-                if walked != "/" and await self._stat_guest(walked, walked) is None:
-                    entry = tarfile.TarInfo(walked.lstrip("/") + "/")
-                    entry.type = tarfile.DIRTYPE
-                    entry.mode = 0o755
-                    entry.uid = self._guest_uid
-                    entry.gid = self._guest_gid
-                    archive.addfile(entry)
-                if not relative:
-                    break
-                first, _, rest = relative.partition("/")
-                walked = posixpath.join(walked, first)
-                relative = rest or None
+            # The confinement walk has already statted every component from the root down
+            # and stopped at the first absent one, so what exists is known here without a
+            # second round of `docker cp` per component: the entries run from the first
+            # missing directory — `working_directory` itself when the image carries none —
+            # to the entry's parent, each stamped with the container's user.  Ancestors
+            # above `working_directory` stay out of the tar, and an existing directory
+            # never travels: docker extracts a present one with the entry's mode.
+            missing = [d for d in guest_directory_chain(leaf, base) if d not in walked and d != "/"]
+            for directory in missing:
+                entry = tarfile.TarInfo(directory.lstrip("/") + "/")
+                entry.type = tarfile.DIRTYPE
+                entry.mode = 0o755
+                entry.uid = self._guest_uid
+                entry.gid = self._guest_gid
+                archive.addfile(entry)
             entry = tarfile.TarInfo(guest.lstrip("/"))
             entry.size = len(data)
             entry.mode = 0o644
