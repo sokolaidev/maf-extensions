@@ -597,7 +597,61 @@ class TestSpeculativeRequestDiscovery:
             "0003.request.json",
         ]
 
-    def test_a_future_probe_error_waits_for_the_replay_frontier(self):
+    def test_a_spent_allowance_polls_the_marker_through_the_bounded_read(self):
+        """Once the allowance is spent, the marker poll must not swallow errors.
+
+        The spent branch polls every interval, so it cannot use the one-shot final
+        look whose broad except exists to keep a diagnostic from replacing the run's
+        own reason. A backend that fails the marker stat/read after the allowance is
+        spent must reach the caller as the transport failure it is — not surface as
+        a guest timeout after retries the last look was never meant to make.
+        """
+
+        @sandbox_tool(source=SourceIntegrity.TRUSTED, sink=None, identity=Identity.APP)
+        def add(value: int) -> int:
+            return value
+
+        registry = HostToolRegistry(max_host_tool_calls_per_run=16)
+        registry.register(add)
+        failing = {"armed": False}
+
+        class _ExhaustedGuest(_ScriptedGuest):
+            def __init__(self) -> None:
+                super().__init__([("add", {"value": n}) for n in range(20)], finish=False)
+                # A claim on 0002 forces the claim-hole path once the frontier sits
+                # on it — the ordinary way a run reaches a spent allowance while the
+                # guest keeps calling.
+                self.files[posixpath.join(_LAYOUT.calls, "0002.claim")] = b""
+
+            async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
+                if failing["armed"] and path.endswith("program_exit_code"):
+                    raise RuntimeError("the marker read keeps failing at the transport")
+                entry = await super().stat_file(path, working_directory=working_directory)
+                # Once the refusal past the cap has landed, the allowance is spent and
+                # the supervisor is polling the marker — arm the transport failure now.
+                if self.files.get(self._response_path(17)) is not None:
+                    failing["armed"] = True
+                return entry
+
+            def _issue_next(self) -> None:
+                super()._issue_next()
+                if self._issued >= 3 and self._request_path(3) not in self.files:
+                    # The rest of the calls publish behind the claim on 0002: 0003+
+                    # are visible to the window while the frontier is stuck.
+                    for index in range(3, len(self.calls) + 1):
+                        payload: dict[str, Any] = {
+                            "id": f"{index:04d}",
+                            "name": "add",
+                            "arguments": {"value": index},
+                        }
+                        self.files[self._request_path(index)] = json.dumps(payload).encode()
+
+        guest = _ExhaustedGuest()
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(host_tools_over_exec, "_CLAIM_HOLE_GRACE", 0.0)
+            with pytest.raises(RuntimeError, match="marker read keeps failing"):
+                _run(guest, HostToolRun(registry), timeout=10.0)
+
         class _SecondProbeFails(_ScriptedGuest):
             async def stat_file(self, path: str, *, working_directory: str):
                 if path.endswith("0002.request.json"):
