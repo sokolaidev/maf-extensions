@@ -45,6 +45,7 @@ from ._reclaim import DEFAULT_RECLAIM_CONFIG, FailedReclaimPolicy, ReclaimConfig
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "ATTACH_REFUSALS",
     "NoSandboxBackend",
     "SandboxBackendNotPermitted",
     "SandboxCapabilityDenied",
@@ -179,6 +180,30 @@ class SandboxTransferLimitsNotPermitted(PermissionError):
     undeclared ``capabilities`` is read charitably.  Also raised for a ``limits`` this package
     cannot read at all — a declaration nobody can compare against is refused, not guessed at.
     """
+
+
+#: Every refusal this package authors before a workload runs: the ones a spec meets at attach,
+#: and the ones a backend raises out of `acquire` once it has met the image it was handed.
+#:
+#: Their text is this stack's own — it names the backend, the kind, the capabilities asked for
+#: and the image reference, and carries no endpoint, subscription or tenant — so `maf.py` hands
+#: it to the caller verbatim instead of the fixed sentence a provider failure gets. Named without
+#: an underscore because `maf.py` reads it and this package's strict pyright refuses a private
+#: name across modules; it is not re-exported from `__init__`, so it stays internal. Living here
+#: rather than there is the point: a refusal added above is one line from the tuple that decides
+#: whether anyone but the log ever reads it.
+#:
+#: `SandboxUnclean` is deliberately absent. It is a refusal, but it answers with a sentence of
+#: its own: what the model may hear is that the sandbox is closed, never whose files are in it.
+ATTACH_REFUSALS: tuple[type[Exception], ...] = (
+    SandboxBackendNotPermitted,
+    SandboxCapabilityDenied,
+    SandboxCapabilityNotSupported,
+    SandboxEgressNotEnforced,
+    SandboxIdentityDenied,
+    SandboxOsFamilyNotSupported,
+    SandboxTransferLimitsNotPermitted,
+)
 
 
 def _coded(backend_name: str, reported: object) -> DisposalFailure:

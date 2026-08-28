@@ -35,6 +35,7 @@ from maf_sandbox import (
     ReclaimConfig,
     ReclaimFailure,
     SandboxBackendNotPermitted,
+    SandboxCapabilityNotSupported,
     SandboxEgressNotEnforced,
     SandboxKey,
     SandboxOutputSinkRequired,
@@ -43,6 +44,7 @@ from maf_sandbox import (
     SandboxUnclean,
 )
 from maf_sandbox._reclaim import note_unclean
+from maf_sandbox._router import ATTACH_REFUSALS
 from maf_sandbox.maf import (
     SandboxPurger,
     SandboxToolSession,
@@ -361,6 +363,41 @@ class TestSessionAcquire:
             InProcessSandboxBackend(acquire_error=ValueError("No disk image for 'bicep:1'"))
         )
         assert asyncio.run(session.acquire(_KEY)) == "Error: No disk image for 'bicep:1'"
+
+    @pytest.mark.parametrize("refusal", ATTACH_REFUSALS, ids=lambda cls: cls.__name__)
+    def test_every_refusal_this_stack_authors_is_surfaced_verbatim(self, refusal, caplog):
+        """Parametrised over the family itself, so a refusal added to it is surfaced or this
+        test is the thing that says it was forgotten.
+
+        The text is the whole value of refusing early: it names what was asked for and which
+        backend or posture would not serve it. Delivered to the log alone, an attach-time
+        refusal reads to the caller exactly like an outage.
+        """
+        session = _session(InProcessSandboxBackend(acquire_error=refusal("wants files_out")))
+        with caplog.at_level(logging.WARNING, logger="test_workload"):
+            assert asyncio.run(session.acquire(_KEY)) == "Error: wants files_out"
+        assert "wants files_out" in caplog.text
+
+    def test_a_backend_withdrawing_a_capability_at_acquire_reaches_the_caller(self):
+        """The shape that motivated the branch: a backend meets its image inside `acquire` and
+        finds it cannot serve what the router matched, which nothing earlier could know."""
+        refused = SandboxCapabilityNotSupported(
+            "sandbox backend 'acas' cannot serve files_out from 'python-nonroot:3.13': its "
+            "guest runs as uid 10001"
+        )
+        session = _session(InProcessSandboxBackend(acquire_error=refused))
+        answer = asyncio.run(session.acquire(_KEY))
+        assert isinstance(answer, str)
+        assert "uid 10001" in answer
+
+    def test_an_unclean_sandbox_keeps_its_own_sentence(self):
+        """Absent from the family on purpose: the caller hears that the sandbox is closed, and
+        never whose files could not be removed."""
+        assert SandboxUnclean not in ATTACH_REFUSALS
+        session = _session(InProcessSandboxBackend(acquire_error=SandboxUnclean("alice's data")))
+        answer = asyncio.run(session.acquire(_KEY))
+        assert isinstance(answer, str)
+        assert "alice" not in answer
 
     def test_a_provider_failure_reaches_the_log_and_never_the_model(self, caplog):
         """Tool results are persisted into the transcript; SDK errors carry account detail."""

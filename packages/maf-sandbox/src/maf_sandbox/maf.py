@@ -60,7 +60,7 @@ from ._reclaim import (
     open_unclean_notes,
     reclaim_guest_path,
 )
-from ._router import NoSandboxBackend, SandboxRouter, SandboxUnclean
+from ._router import ATTACH_REFUSALS, NoSandboxBackend, SandboxRouter, SandboxUnclean
 
 #: Fallback for :func:`sandboxed_tool`'s ``logger`` argument. Named apart from the usual
 #: module-level ``logger`` because that argument is the whole point: a workload passes its
@@ -434,8 +434,8 @@ class SandboxToolSession:
     async def acquire(self, key: SandboxKey) -> Sandbox | str:
         """A running sandbox for ``key``, or the message to return when there is none.
 
-        The four-branch ladder is this method's whole point, and the line it draws is a
-        security one rather than a stylistic one:
+        The ladder is this method's whole point, and the line it draws is a security one
+        rather than a stylistic one:
 
         - a **missing SDK** is a host-side install problem, actionable and carrying no
           account detail;
@@ -443,6 +443,11 @@ class SandboxToolSession:
         - a :class:`ValueError` is a message this stack authored (image resolution raises
           them), so it is surfaced verbatim — that is what makes it actionable for whoever is
           enabling the feature;
+        - a **refusal** — every member of ``_router``'s ``ATTACH_REFUSALS`` — is this stack's
+          own sentence for the same reason, and the one a caller can act on: what was asked
+          for, and which backend or posture would not serve it. A backend that meets its image
+          in ``acquire`` and withdraws a capability answers here too, which is the only way
+          that reason reaches anyone but the log;
         - anything else is a provider or transport failure whose text can carry endpoint,
           subscription and tenant ids.  Tool results are persisted into the transcript, so
           that detail goes to the log — with :func:`~maf_sandbox.error_detail`, because
@@ -461,6 +466,13 @@ class SandboxToolSession:
         except ValueError as exc:
             # Raised by image resolution: a configuration message we author, safe to
             # surface, and actionable for whoever is enabling the feature.
+            self._logger.warning(f"{self._log_prefix}: %s", exc)
+            return f"Error: {exc}"
+        except ATTACH_REFUSALS as exc:
+            # A refusal this stack authored, at attach or from a backend that has now seen its
+            # image. The same reasoning as the ValueError above: it names the backend, the kind
+            # and what was asked, and carries no account detail. Without this branch it falls to
+            # the catch-all and the caller is told only that the sandbox is unavailable.
             self._logger.warning(f"{self._log_prefix}: %s", exc)
             return f"Error: {exc}"
         except SandboxUnclean as exc:
