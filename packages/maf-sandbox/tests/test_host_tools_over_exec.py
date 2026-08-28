@@ -534,23 +534,30 @@ class TestSpeculativeRequestDiscovery:
         """The #659 budget over the shape that names the issue: a frontier held by a
         claimed-but-unpublished number while a later request sits published behind it.
 
-        0002 is published before supervision begins; 0001 arrives only after 0002's
-        answer has landed, the way a multi-worker guest's blocked caller catches up.
-        The gap lasts long enough for the dead-claim grace to step the frontier over
-        it, and 0002 still costs exactly one read — when it is served.
+        0001 is served first, widening the window to two slots — that is what makes the
+        shape bite: 0002 is then withheld across multiple polls while 0003 sits published
+        inside the window, present to every speculative stat. It is read exactly once,
+        when the gap closes and it is served.
         """
         reads: list[str] = []
 
-        class _GapGuest(_ScriptedGuest):
+        class _GapGuest(_ConcurrentGuest):
             def __init__(self) -> None:
                 super().__init__([], finish=False)
-                self.published_0001 = False
-                # The multi-worker state: 0002 published at launch, a worker's claim on
-                # 0001, and 0001 itself withheld until 0002's answer has landed.
-                self.files[self._request_path(2)] = json.dumps(
-                    {"id": "0002", "name": "add", "arguments": {"left": 2, "right": 2}}
+                self.published_0002 = False
+                self._polls_after_0001 = 0
+                # The multi-worker state: 0001 and 0003 published at launch, a worker's
+                # claim on 0002, and 0002 itself withheld until 0001's answer has been
+                # read. `_issued` counts what the double has published, so the tail
+                # files are planted directly rather than through `_issue_next`.
+                self._issued = 2
+                self.files[self._request_path(1)] = json.dumps(
+                    {"id": "0001", "name": "add", "arguments": {"left": 1, "right": 1}}
                 ).encode()
-                self.files[posixpath.join(_LAYOUT.calls, "0001.claim")] = b""
+                self.files[self._request_path(3)] = json.dumps(
+                    {"id": "0003", "name": "add", "arguments": {"left": 3, "right": 0}}
+                ).encode()
+                self.files[posixpath.join(_LAYOUT.calls, "0002.claim")] = b""
 
             async def exec(
                 self, command: str | Any, *, working_directory: str, timeout: float
@@ -561,14 +568,24 @@ class TestSpeculativeRequestDiscovery:
 
             async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
                 entry = await super().stat_file(path, working_directory=working_directory)
-                # The worker that took 0001 publishes it once 0002's answer proves the
-                # sequence moved on — but too late for the grace, which has stepped over.
-                if self._collected >= 1 and not self.published_0001:
-                    self.published_0001 = True
-                    self.files[self._request_path(1)] = json.dumps(
-                        {"id": "0001", "name": "add", "arguments": {"left": 1, "right": 1}}
-                    ).encode()
+                # 0002 stays claimed-but-unpublished for several polls after 0001's
+                # answer lands — longer than the zeroed grace, so the hole is stepped
+                # over while 0003 waits published behind it. It is released once the
+                # poll count passes, and the run ends like a real one: the marker goes
+                # down only after the collector has every answer.
+                answered_0001 = self.files.get(self._response_path(1))
+                if answered_0001 is not None:
+                    self._polls_after_0001 += 1
+                    if self._polls_after_0001 >= 3 and not self.published_0002:
+                        self.published_0002 = True
+                        self._issued = 3
+                        self.files[self._request_path(2)] = json.dumps(
+                            {"id": "0002", "name": "add", "arguments": {"left": 2, "right": 2}}
+                        ).encode()
                 self._collect_answers()
+                if self._collected == 3 and self.published_0002:
+                    self.files[_LAYOUT.output] = b"done"
+                    self.files[_LAYOUT.exit_code] = b"0"
                 return entry
 
             async def read_file(self, path: str, *, working_directory: str, max_bytes: int):
@@ -581,13 +598,17 @@ class TestSpeculativeRequestDiscovery:
         guest = _GapGuest()
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(host_tools_over_exec, "_CLAIM_HOLE_GRACE", 0.0)
-            with pytest.raises(SandboxProgramTimeout):
-                _run(guest, HostToolRun(_registry()), timeout=3.0)
+            result = _run(guest, HostToolRun(_registry()), timeout=3.0)
 
-        # 0001 was published after the grace had stepped over it, so the replay order is
-        # gone — the run stalls with 0002 answered and the stale 0001 unanswered. What the
-        # budget pins: the whole stall read 0002 exactly once, on the poll that served it.
-        assert reads == ["0002.request.json"]
+        assert result.exit_code == 0
+        assert [answer["value"] for answer in guest.answers] == [2, 4, 3]
+        # One read each across the whole run: 0003 sat published inside a wide window
+        # for every poll of the gap and was read only when it reached the frontier.
+        assert reads == [
+            "0001.request.json",
+            "0002.request.json",
+            "0003.request.json",
+        ]
 
     def test_a_future_probe_error_waits_for_the_replay_frontier(self):
         class _SecondProbeFails(_ScriptedGuest):

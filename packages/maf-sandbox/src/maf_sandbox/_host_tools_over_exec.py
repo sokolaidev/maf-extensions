@@ -1106,12 +1106,11 @@ async def _supervise(
                 if served != before:
                     # The frontier moved, so any absence timing was for a number now behind us.
                     hole_since = None
-                if not full_prefix and served + len(request_probes) <= allowance:
+                if not full_prefix:
                     # A genuinely absent frontier request resets the window to one and
-                    # starts the dead-claim clock. When the serving bound clamped the walk
-                    # instead — the window reached past the allowance — the frontier is
-                    # served and there is no hole to time; resetting here would re-probe
-                    # past-bound numbers every poll for the rest of the run.
+                    # starts the dead-claim clock. The walk cannot reach past the
+                    # allowance — `request_count` is clamped to what is left before the
+                    # probes are created — so every non-full prefix is a real miss.
                     request_window = 1
                     now = time.monotonic()
                     if hole_since is None:
@@ -1730,10 +1729,8 @@ async def _serve_request_probes(
 ) -> tuple[int, bool]:
     """Serve the contiguous discovered prefix in identifier order.
 
-    Each probe result is one window slot in identifier order: the frontier's is a body (or
-    ``None``), the speculative ones are stat answers. Serving walks the slots, reading a
-    speculative slot's body only when every slot before it was served — that read is the
-    one the fold budgets, and the only one a request gets (#659).
+    The frontier's slot is a body (or ``None``); the speculative ones are stat answers,
+    read as bodies in walk order as the frontier advances.
     """
     full_prefix = True
     try:
@@ -1743,12 +1740,6 @@ async def _serve_request_probes(
             # the window, not by the live frontier — `served` advances below as slots are
             # served, and deriving the identifier from it would skip every second number.
             identifier = base + 1 + offset
-            if identifier > _serving_bound(run):
-                # `_serving_bound` counts readable requests and identifiers start at 1: the
-                # bound-th request is the refusal past the cap, and anything beyond it is
-                # neither read nor answered. The exit-marker poll is all that is still owed.
-                full_prefix = False
-                break
             outcome = await probe
             if isinstance(outcome, bool):
                 # A stat-only probe past the frontier: present means the body is read now,
