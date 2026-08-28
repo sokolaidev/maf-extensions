@@ -383,19 +383,24 @@ class _DockerSandbox:
             lambda p: self._stat_guest(p, p, walked), path, working_directory
         )
         data = content.encode("utf-8") if isinstance(content, str) else content
-        base = posixpath.normpath(working_directory)
-        leaf = posixpath.dirname(guest)
+        guest_work_dir = posixpath.normpath(working_directory)
+        guest_leaf_dir = posixpath.dirname(guest)
         buffer = io.BytesIO()
         with tarfile.open(fileobj=buffer, mode="w") as archive:
             missing = [
-                d
-                for d in guest_directory_chain(leaf, base)
-                if d not in walked
-                and d != "/"
-                and (d == base or d.startswith(base if base == "/" else base + "/"))
+                guest_dir
+                for guest_dir in guest_directory_chain(guest_leaf_dir, guest_work_dir)
+                if guest_dir not in walked
+                and guest_dir != "/"
+                and (
+                    guest_dir == guest_work_dir
+                    or guest_dir.startswith(
+                        guest_work_dir if guest_work_dir == "/" else guest_work_dir + "/"
+                    )
+                )
             ]
-            for directory in missing:
-                entry = tarfile.TarInfo(directory.lstrip("/") + "/")
+            for guest_directory in missing:
+                entry = tarfile.TarInfo(guest_directory.lstrip("/") + "/")
                 entry.type = tarfile.DIRTYPE
                 entry.mode = 0o755
                 entry.uid = self._guest_uid

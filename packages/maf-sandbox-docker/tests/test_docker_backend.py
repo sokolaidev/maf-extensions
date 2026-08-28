@@ -1093,9 +1093,6 @@ class TestExecDiscardsATimedOutSandbox:
 
         def responder(args):
             if args[0] == "exec":
-                # The acquire path probes the guest identity — `id -g` when `Config.User`
-                # is a bare uid — and the probe must succeed for a sandbox to come back at
-                # all; every exec after acquire is the sandbox's own and times out.
                 if len(args) > 4 and args[4] == "id":
                     return _DockerResult(0, b"20001\n", "")
                 raise TimeoutError
@@ -1271,11 +1268,9 @@ class TestWriteFile:
             assert work_dir.isdir() and (work_dir.uid, work_dir.gid) == (10001, 10001)
 
     def test_a_root_working_directory_keeps_its_components_whole(self):
-        """`working_directory = "/"` must not lose the first character of the leaf — a
-        string-offset slice turns `/tmp` into `mp`, and docker would create `/mp` beside
-        the real `/tmp`.  The subtree rule keeps every entry inside the work directory:
-        `/` is the cp destination and needs no entry, and `tmp` under it is a
-        `working_directory` descendant here, so the entries run `tmp`, `tmp/run-1`, file.
+        """The subtree rule on `working_directory = "/"`: `/` is the cp destination and
+        needs no entry, and `tmp` under it is a `working_directory` descendant here, so
+        the entries run `tmp`, `tmp/run-1`, file.
         """
         overrides = {
             ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"10001\n", ""),
@@ -1622,9 +1617,9 @@ class TestTheGuestIdentityIsReadFromTheContainer:
         assert (facts.guest_uid, facts.guest_gid) == (0, 20001)
 
     def test_a_bare_uid_resolves_its_gid_from_id_when_passwd_is_unreadable(self):
-        """The `id` fallback: with `/etc/passwd` unreadable, a bare uid's primary gid is
-        asked from the guest, and only a guest that cannot answer leaves gid 0 — what the
-        runtime picks for a uid with no passwd entry.
+        """The gid-0 fallback: with `/etc/passwd` unreadable and an `id` that answers
+        nothing, a bare uid's gid stays 0 — what the runtime picks for a uid with no
+        passwd entry.
         """
         facts, fake = self._facts(b"10001\n")
         assert (facts.guest_uid, facts.guest_gid) == (10001, 0)
@@ -1634,8 +1629,9 @@ class TestTheGuestIdentityIsReadFromTheContainer:
         ]
 
     def test_a_uid_with_a_passwd_entry_takes_the_entrys_gid(self):
-        """A uid-only `Config.User` does not imply `gid == uid`: the primary gid comes from
-        the container's `/etc/passwd`, so it is asked for rather than guessed.
+        """The `id` fallback when the guest answers: with `/etc/passwd` unreadable, a bare
+        uid's primary gid is asked from the guest — and `id` resolving both sides is what
+        supplies the expected pair, since the fake carries no passwd tar for this test.
         """
         overrides = {
             **_WORK_IS_A_DIRECTORY,
