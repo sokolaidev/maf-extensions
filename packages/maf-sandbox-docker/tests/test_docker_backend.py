@@ -1526,6 +1526,28 @@ class TestListDirIsRefused:
             asyncio.run(sandbox.list_dir(".", working_directory=_WORK))
 
 
+def _passwd_responder(
+    running: list[str], overrides: dict[tuple[str, ...], _DockerResult], passwd: bytes
+):
+    """A responder that answers the `/etc/passwd` pull with a one-entry tar carrying
+    ``passwd``, and everything else from ``running``/``overrides`` via the machine.
+    """
+
+    def respond(args):
+        if args[0] == "cp" and args[1].endswith(":/etc/passwd"):
+            buffer = io.BytesIO()
+            with tarfile.open(fileobj=buffer, mode="w") as archive:
+                entry = tarfile.TarInfo("passwd")
+                entry.size = len(passwd)
+                entry.mode = 0o644
+                archive.addfile(entry, io.BytesIO(passwd))
+            return _DockerResult(0, buffer.getvalue(), "")
+        machine = _machine(running=running, overrides=overrides)
+        return machine(args)
+
+    return respond
+
+
 class TestTheGuestIdentityIsReadFromTheContainer:
     """`Config.User` says who runs the container's default command; `write_file`'s tar entries
     have to answer to the same principal, since a reused container can predate a config change.
@@ -1583,19 +1605,64 @@ class TestTheGuestIdentityIsReadFromTheContainer:
         facts, _ = self._facts(b"10001:20001\n")
         assert (facts.guest_uid, facts.guest_gid) == (10001, 20001)
 
-    def test_a_named_user_is_resolved_through_the_guest(self):
-        """A name in `Config.User` is resolved with `id` inside the container, which runs as
-        the image's user, not as root.
+    def test_a_named_user_is_resolved_from_the_passwd_file(self):
+        """A name in `Config.User` is resolved against the container's `/etc/passwd`, read
+        host-side over the pull surface — no guest utility needed, so an image without
+        `id` (or without a shell to reach it through) still resolves.
         """
+        passwd = b"root:x:0:0:root:/root:/bin/bash\napp:x:10001:20001::/home/app:/bin/sh\n"
         overrides = {
             **_WORK_IS_A_DIRECTORY,
             ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"app\n", ""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        fake._responder = _passwd_responder([_NAME], overrides, passwd)
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        assert (facts.guest_uid, facts.guest_gid) == (10001, 20001)
+        assert fake.matching("exec") == []
+
+    def test_a_named_user_falls_back_to_id_when_passwd_is_unreadable(self):
+        """A passwd file that will not come over the wire leaves `id` as the resolver."""
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"app\n", ""),
+            ("cp", f"{_NAME}:/etc/passwd"): _DockerResult(1, b"", "no such file"),
             ("exec", "-w", "/", _NAME, "id", "-g"): _DockerResult(0, b"20001\n", ""),
             ("exec", "-w", "/", _NAME, "id", "-u"): _DockerResult(0, b"10001\n", ""),
         }
         backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
         facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
         assert (facts.guest_uid, facts.guest_gid) == (10001, 20001)
+
+    def test_a_bare_uid_takes_its_gid_from_the_passwd_entry(self):
+        """A bare uid's primary gid is the one its `/etc/passwd` entry names."""
+        passwd = b"root:x:0:0:root:/root:/bin/bash\napp:x:10001:20001::/home/app:/bin/sh\n"
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"10001\n", ""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        fake._responder = _passwd_responder([_NAME], overrides, passwd)
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        assert (facts.guest_uid, facts.guest_gid) == (10001, 20001)
+        assert fake.matching("exec") == []
+
+    def test_an_unresolvable_identity_fails_open_to_root(self):
+        """A named user with neither a passwd answer nor `id` keeps the pre-#680 behavior:
+        root-owned entries, and the reach rule deciding the removals.  Guessing an
+        arbitrary ownership could stamp a stranger's identity on the files.
+        """
+        passwd = b"root:x:0:0:root:/root:/bin/bash\n"
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"ghost\n", ""),
+            ("exec", "-w", "/", _NAME, "id", "-g"): _DockerResult(1, b"", "id: not found"),
+            ("exec", "-w", "/", _NAME, "id", "-u"): _DockerResult(1, b"", "id: not found"),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        fake._responder = _passwd_responder([_NAME], overrides, passwd)
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        assert (facts.guest_uid, facts.guest_gid) == (0, 0)
 
     def test_an_unreadable_user_fails_open_to_root(self):
         """An image this backend cannot ask keeps today's behaviour: root-owned entries."""

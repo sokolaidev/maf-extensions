@@ -124,6 +124,11 @@ _PROXY_SUFFIX = "-proxy"
 #: a path without a stat command.
 _TAR_BLOCK = 512
 
+#: How much of `/etc/passwd` the identity read will take off the wire: the header plus a
+#: body big enough for any real passwd file, so a host that answers keeps the whole file
+#: and a pathological one cannot stream unbounded.
+_PASSWD_READ_LIMIT = _TAR_BLOCK + 64 * 1024
+
 #: This backend's own transfer ceilings, per direction. Named constants, not config: nothing
 #: in the tar transport imposes a hard limit, so a ceiling is a policy statement about
 #: streaming cost. Set generously above the protocol's spec-side defaults so a spec that says
@@ -855,11 +860,14 @@ class DockerSandboxBackend:
         """Read the container's default user's uid and gid.
 
         An unset user is root by definition, and an explicit ``0:0`` pair is taken as-is;
-        anything else is resolved with ``id`` inside the container, because the primary gid
-        comes from the container's own ``/etc/passwd`` and is not the uid's to guess — a
-        bare ``0`` no more implies gid ``0`` than ``10001`` implies ``10001``.  A bare uid
-        no ``id`` answers keeps gid ``0``, what the runtime picks when the uid has no
-        passwd entry; a named user no ``id`` answers fails open to ``(0, 0)``.
+        anything else is resolved against the container's own ``/etc/passwd``, read over
+        the same ``docker cp`` pull surface every other fact uses, because the primary gid
+        comes from that file and is not the uid's to guess — a bare ``0`` no more implies
+        gid ``0`` than ``10001`` implies ``10001``.  ``id`` inside the container answers a
+        named user when the passwd file cannot be read, and the gid for a bare uid.  When
+        neither answers, the write falls back to root's ``0:0`` — the pre-#680 behavior
+        for an image that positively identifies nothing, rather than a guess that could
+        stamp a stranger's ownership.
 
         A ``TimeoutError`` propagates: the timed-out probe removes the container on its way
         out, so this is not an unreadable identity but a dying sandbox, and caching
@@ -885,31 +893,87 @@ class DockerSandboxBackend:
                 if u.isdigit() and g.isdigit():
                     return int(u), int(g)
             uid = int(raw) if raw.isdigit() else None
+            user_name = None if uid is not None else raw
+            gid: int | None = None
+            passwd = await self._passwd_entry(name)
+            if passwd is not None:
+                for line in passwd.splitlines():
+                    fields = line.strip().split(":")
+                    if len(fields) < 4:
+                        continue
+                    if user_name is not None and fields[0] == user_name:
+                        uid, gid = int(fields[2]), int(fields[3])
+                        break
+                    if uid is not None and fields[2] == str(uid) and fields[3].isdigit():
+                        gid = int(fields[3])
+                        break
+            if uid is not None:
+                if gid is not None:
+                    return uid, gid
+                g_res = await probe.exec(
+                    ["id", "-g"],
+                    working_directory="/",
+                    timeout=self._config.command_timeout_seconds,
+                )
+                if g_res.exit_code == 0 and g_res.stdout.strip().isdigit():
+                    return uid, int(g_res.stdout.strip())
+                return uid, 0
             g_res = await probe.exec(
                 ["id", "-g"],
                 working_directory="/",
                 timeout=self._config.command_timeout_seconds,
             )
-            gid = (
-                int(g_res.stdout.strip())
-                if g_res.exit_code == 0 and g_res.stdout.strip().isdigit()
-                else None
+            u_res = await probe.exec(
+                ["id", "-u"],
+                working_directory="/",
+                timeout=self._config.command_timeout_seconds,
             )
-            if uid is not None:
-                return uid, gid if gid is not None else 0
-            if gid is not None:
-                u_res = await probe.exec(
-                    ["id", "-u"],
-                    working_directory="/",
-                    timeout=self._config.command_timeout_seconds,
-                )
-                if u_res.exit_code == 0 and u_res.stdout.strip().isdigit():
-                    return int(u_res.stdout.strip()), gid
+            if (
+                g_res.exit_code == 0
+                and u_res.exit_code == 0
+                and g_res.stdout.strip().isdigit()
+                and u_res.stdout.strip().isdigit()
+            ):
+                return int(u_res.stdout.strip()), int(g_res.stdout.strip())
         except TimeoutError:
             raise
         except Exception as unreadable:  # noqa: BLE001 — an acquire must not fail over this
             logger.debug("docker: could not read %s's guest identity (%s)", name, unreadable)
         return 0, 0
+
+    async def _passwd_entry(self, name: str) -> str | None:
+        """The container's ``/etc/passwd``, over the pull surface, or ``None`` when unreadable.
+
+        Read host-side so a named user resolves on an image carrying no ``id`` (or no shell
+        to run it through) — the same ``docker cp`` stat_file uses, minus the header cap.
+        """
+        try:
+            result = await self._docker(
+                "cp",
+                f"{name}:/etc/passwd",
+                "-",
+                timeout=self._config.command_timeout_seconds,
+                read_limit=_PASSWD_READ_LIMIT,
+            )
+        except Exception as unreadable:  # noqa: BLE001 — an acquire must not fail over this
+            logger.debug("docker: could not read %s's /etc/passwd (%s)", name, unreadable)
+            return None
+        if result.returncode != 0 or not result.stdout:
+            return None
+        if len(result.stdout) < _TAR_BLOCK:
+            return None
+        try:
+            info = tarfile.TarInfo.frombuf(
+                result.stdout[:_TAR_BLOCK], encoding="utf-8", errors="surrogateescape"
+            )
+        except (tarfile.TarError, EOFError, ValueError):
+            return None
+        if not info.isreg():
+            return None
+        body = result.stdout[_TAR_BLOCK : _TAR_BLOCK + info.size]
+        if len(body) < info.size:
+            return None
+        return body.decode("utf-8", errors="replace")
 
     async def _container_facts(self, name: str, spec: SandboxSpec) -> _ContainerFacts:
         """Read what ``name`` says about itself, once per container.
