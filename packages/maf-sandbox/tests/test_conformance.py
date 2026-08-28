@@ -1358,6 +1358,53 @@ class TestReclaimConformance:
             asyncio.run(assert_reclaim_conformance(_FakeSubject(InProcessSandbox(), _EVERYTHING)))
 
 
+class _ScriptedTest(InProcessSandbox):
+    """The fake with `test` scripted: exit 0 for the flags named here, 1 for the rest.
+
+    Scripted rather than simulated because no specimen in this file tells `-e` and `-L` apart —
+    `_SimulatedGuest` reads both the same way, and a dangling link is exactly where a real
+    `test` does not: `-e` is false for it and `-L` true.
+    """
+
+    def __init__(self, *true_flags: str) -> None:
+        super().__init__()
+        self.true_flags = frozenset(true_flags)
+        self.asked: list[str] = []
+
+    async def exec(self, command, *, working_directory, timeout):
+        del working_directory, timeout
+        argv = list(command)
+        self.asked.append(argv[1])
+        return ExecResult(stdout="", exit_code=0 if argv[1] in self.true_flags else 1)
+
+
+class TestPosixGuestSubjectSees:
+    """`exists` asks `test -e`, then `test -L`. The second call is the whole no-follow claim."""
+
+    def _seeing(self, *true_flags: str) -> tuple[PosixGuestSubject, _ScriptedTest]:
+        sandbox = _ScriptedTest(*true_flags)
+        subject = PosixGuestSubject(
+            sandbox=sandbox, working_directory=_WORK, capabilities=frozenset()
+        )
+        return subject, sandbox
+
+    def test_a_path_the_first_flag_answers_for_is_there_and_costs_one_call(self):
+        subject, sandbox = self._seeing("-e")
+        assert asyncio.run(subject.exists(f"{_WORK}/note.txt")) is True
+        assert sandbox.asked == ["-e"]
+
+    def test_a_dangling_link_is_there_though_only_the_second_flag_answers(self):
+        """No probe reaches this: the reclaim link points at a target planted beside it."""
+        subject, sandbox = self._seeing("-L")
+        assert asyncio.run(subject.exists(f"{_WORK}/dangling")) is True
+        assert sandbox.asked == ["-e", "-L"]
+
+    def test_a_path_neither_flag_answers_for_is_absent(self):
+        subject, sandbox = self._seeing()
+        assert asyncio.run(subject.exists(f"{_WORK}/gone")) is False
+        assert sandbox.asked == ["-e", "-L"]
+
+
 def test_assert_reclaim_answers_a_conforming_subject():
     """Called by name: the coverage test reads this module's AST."""
     results = asyncio.run(assert_reclaim_conformance(_sim_subject()))
