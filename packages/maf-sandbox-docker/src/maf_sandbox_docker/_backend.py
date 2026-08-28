@@ -55,6 +55,7 @@ from maf_sandbox.paths import (
     confine_guest_path,
     confine_guest_write_path,
     guest_directory_chain,
+    guest_path_relative_to,
     refuse_symlinked_parents,
 )
 
@@ -358,17 +359,12 @@ class _DockerSandbox:
 
         Sent as a tar on stdin.  A ``cp`` destination must already exist and ``/`` is the only
         path that always does, so the entries carry the whole path and docker creates the
-        missing directories from them — *as explicit directory entries* rather than leaving
-        them implicit, because docker creates an implicit intermediate as ``root`` regardless
-        of the file entry's ownership (measured: a file entry alone lands ``uid=0`` parents)
-        while an explicit entry's uid is honoured.  A directory docker would otherwise create
-        root-owned is stamped with the container's user, so a call directory the framework
-        later reclaims is one the image's user can empty; the ancestor chain above
-        ``working_directory`` stays out of the tar, and an entry naming a directory that
-        already exists is extracted as a no-op rather than a re-own, so nothing an image's
-        build or a previous write put there is touched.  The removal authority rules read the
-        container's real ownership through the walk and the acquire-time facts, so they keep
-        deciding as before.
+        missing directories from them.  The load-bearing constraint: an **implicit**
+        intermediate is created as ``root`` whatever the file entry's ownership says, so any
+        directory docker would otherwise have to invent travels as its own explicit entry
+        stamped with the container's user — that is what makes a call directory one the
+        image's user can later empty.  Entries naming directories that already exist extract
+        as no-ops, so nothing an image's build or a previous write put there is re-owned.
         """
         guest = await confine_guest_write_path(
             lambda p: self._stat_guest(p, p), path, working_directory
@@ -378,8 +374,8 @@ class _DockerSandbox:
         leaf = posixpath.dirname(guest)
         buffer = io.BytesIO()
         with tarfile.open(fileobj=buffer, mode="w") as archive:
-            if posixpath.normpath(leaf) != base:
-                relative = posixpath.normpath(leaf)[len(base) + 1 :]
+            relative = guest_path_relative_to(leaf, base)
+            if relative:
                 walked = base
                 for segment in relative.split("/"):
                     walked = posixpath.join(walked, segment)
@@ -851,10 +847,13 @@ class DockerSandboxBackend:
         return "ALL" in result.stdout.decode("utf-8", errors="replace").upper()
 
     async def _guest_identity(self, name: str, probe: _DockerSandbox) -> tuple[int, int]:
-        """Read the container's default user UID and GID.
+        """Read the container's default user's uid and gid.
 
-        Inspects the container's configured user and resolves it via ``id`` when given as a
-        name. Fails gracefully to ``(0, 0)`` when unknown or unreadable.
+        A ``uid:gid`` pair is taken from the config as-is; anything else — a bare uid or a
+        named user — is resolved with ``id`` inside the container, because the primary gid
+        comes from the container's own ``/etc/passwd`` and is not the uid's to guess.  A
+        bare uid that no ``id`` answers keeps gid ``0``, what the runtime picks when the
+        uid has no passwd entry; a named user no ``id`` answers fails open to ``(0, 0)``.
         """
         try:
             result = await self._docker(
@@ -875,32 +874,27 @@ class DockerSandboxBackend:
                 u, _, g = raw.partition(":")
                 if u.isdigit() and g.isdigit():
                     return int(u), int(g)
-            elif raw.isdigit():
-                return int(raw), int(raw)
-            id_res = await probe.exec(
-                ["sh", "-c", "id -u; id -g"],
-                working_directory="/",
-                timeout=self._config.command_timeout_seconds,
-            )
-            if id_res.exit_code == 0:
-                lines = [
-                    line.strip() for line in id_res.stdout.strip().splitlines() if line.strip()
-                ]
-                if len(lines) >= 2 and lines[0].isdigit() and lines[1].isdigit():
-                    return int(lines[0]), int(lines[1])
-            u_res = await probe.exec(
-                ["id", "-u"],
-                working_directory="/",
-                timeout=self._config.command_timeout_seconds,
-            )
+            uid = int(raw) if raw.isdigit() else None
             g_res = await probe.exec(
                 ["id", "-g"],
                 working_directory="/",
                 timeout=self._config.command_timeout_seconds,
             )
-            if u_res.exit_code == 0 and g_res.exit_code == 0:
-                if u_res.stdout.strip().isdigit() and g_res.stdout.strip().isdigit():
-                    return int(u_res.stdout.strip()), int(g_res.stdout.strip())
+            gid = (
+                int(g_res.stdout.strip())
+                if g_res.exit_code == 0 and g_res.stdout.strip().isdigit()
+                else None
+            )
+            if uid is not None:
+                return uid, gid if gid is not None else 0
+            if gid is not None:
+                u_res = await probe.exec(
+                    ["id", "-u"],
+                    working_directory="/",
+                    timeout=self._config.command_timeout_seconds,
+                )
+                if u_res.exit_code == 0 and u_res.stdout.strip().isdigit():
+                    return int(u_res.stdout.strip()), gid
         except Exception as unreadable:  # noqa: BLE001 — an acquire must not fail over this
             logger.debug("docker: could not read %s's guest identity (%s)", name, unreadable)
         return 0, 0

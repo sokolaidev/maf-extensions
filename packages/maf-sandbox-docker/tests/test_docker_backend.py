@@ -1174,6 +1174,7 @@ class TestWriteFile:
         """
         overrides = {
             ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"10001\n", ""),
+            ("exec", "-w", "/", _NAME, "id", "-g"): _DockerResult(0, b"10001\n", ""),
         }
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
         sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
@@ -1202,6 +1203,23 @@ class TestWriteFile:
         assert stdin is not None
         with tarfile.open(fileobj=io.BytesIO(stdin)) as archive:
             assert archive.getnames() == ["maf-sandbox/work/note"]
+
+    def test_a_root_working_directory_keeps_its_components_whole(self):
+        """`working_directory = "/"` must not lose the first character of the leaf — a
+        string-offset slice turns `/tmp` into `mp`, and docker would create `/mp` beside
+        the real `/tmp`.
+        """
+        overrides = {
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"10001\n", ""),
+            ("exec", "-w", "/", _NAME, "id", "-g"): _DockerResult(0, b"10001\n", ""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        asyncio.run(sandbox.write_file("/tmp/run-1/note", "x", working_directory="/"))
+        stdin = fake.only("cp", "-").stdin
+        assert stdin is not None
+        with tarfile.open(fileobj=io.BytesIO(stdin)) as archive:
+            assert archive.getnames() == ["tmp", "tmp/run-1", "tmp/run-1/note"]
 
     def test_a_root_image_keeps_the_default_ownership(self):
         """`Config.User` unset means root: the tar entries stay uid 0, as they always were."""
@@ -1492,10 +1510,26 @@ class TestTheGuestIdentityIsReadFromTheContainer:
         facts, _ = self._facts(b"\n")
         assert (facts.guest_uid, facts.guest_gid) == (0, 0)
 
-    def test_a_numeric_user_is_read_without_asking_the_guest(self):
+    def test_a_numeric_user_with_no_passwd_entry_keeps_gids_zero(self):
+        """A bare uid keeps root's gid when the guest cannot answer: with no `/etc/passwd`
+        entry the runtime itself picks gid 0, so that is the honest fallback.
+        """
         facts, fake = self._facts(b"10001\n")
-        assert (facts.guest_uid, facts.guest_gid) == (10001, 10001)
-        assert fake.matching("exec") == []
+        assert (facts.guest_uid, facts.guest_gid) == (10001, 0)
+        assert [c.args for c in fake.matching("exec")] == [("exec", "-w", "/", _NAME, "id", "-g")]
+
+    def test_a_uid_with_a_passwd_entry_takes_the_entrys_gid(self):
+        """A uid-only `Config.User` does not imply `gid == uid`: the primary gid comes from
+        the container's `/etc/passwd`, so it is asked for rather than guessed.
+        """
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"10001\n", ""),
+            ("exec", "-w", "/", _NAME, "id", "-g"): _DockerResult(0, b"20001\n", ""),
+        }
+        backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        assert (facts.guest_uid, facts.guest_gid) == (10001, 20001)
 
     def test_a_uid_gid_pair_is_split(self):
         facts, _ = self._facts(b"10001:20001\n")
@@ -1508,13 +1542,12 @@ class TestTheGuestIdentityIsReadFromTheContainer:
         overrides = {
             **_WORK_IS_A_DIRECTORY,
             ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"app\n", ""),
-            ("exec", "-w", "/", _NAME, "sh", "-c", "id -u; id -g"): _DockerResult(
-                0, b"10001\n10001\n", ""
-            ),
+            ("exec", "-w", "/", _NAME, "id", "-g"): _DockerResult(0, b"20001\n", ""),
+            ("exec", "-w", "/", _NAME, "id", "-u"): _DockerResult(0, b"10001\n", ""),
         }
         backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
         facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
-        assert (facts.guest_uid, facts.guest_gid) == (10001, 10001)
+        assert (facts.guest_uid, facts.guest_gid) == (10001, 20001)
 
     def test_an_unreadable_user_fails_open_to_root(self):
         """An image this backend cannot ask keeps today's behaviour: root-owned entries."""
