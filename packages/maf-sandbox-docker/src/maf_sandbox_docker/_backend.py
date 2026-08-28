@@ -382,11 +382,7 @@ class _DockerSandbox:
                 walked = base
                 for segment in relative.split("/"):
                     walked = posixpath.join(walked, segment)
-                    # Stat before stamping: a directory that already exists gets no entry,
-                    # because docker extracts a present one with the entry's mode rather
-                    # than leaving it alone — measured, `/tmp` lost its 1777 to a 755 entry.
-                    walked_entry = await self._stat_guest(walked, walked)
-                    if walked_entry is not None:
+                    if await self._stat_guest(walked, walked) is not None:
                         continue
                     entry = tarfile.TarInfo(walked.lstrip("/") + "/")
                     entry.type = tarfile.DIRTYPE
@@ -910,8 +906,6 @@ class DockerSandboxBackend:
                 if u_res.exit_code == 0 and u_res.stdout.strip().isdigit():
                     return int(u_res.stdout.strip()), gid
         except TimeoutError:
-            # The timed-out probe removed the container on its way out: not an unreadable
-            # identity but a dying sandbox, so the caller must not cache fallback facts.
             raise
         except Exception as unreadable:  # noqa: BLE001 — an acquire must not fail over this
             logger.debug("docker: could not read %s's guest identity (%s)", name, unreadable)
@@ -933,8 +927,6 @@ class DockerSandboxBackend:
         try:
             answer = await probe.ancestors_are_the_hosts(spec.work_dir)
         except TimeoutError:
-            # The timed-out stat removed the container on its way out; treat it as the
-            # identity probe treats one — a dying sandbox, not an unreadable ancestor.
             raise
         except Exception as unreadable:  # noqa: BLE001 — an acquire must not fail over this
             logger.debug("docker: could not read %s's work dir ancestors (%s)", name, unreadable)
@@ -949,8 +941,6 @@ class DockerSandboxBackend:
         try:
             guest_uid, guest_gid = await self._guest_identity(name, probe)
         except TimeoutError:
-            # The probe's exec removed the container on its way out; caching fallback facts
-            # against a container that no longer exists would hand `acquire` a dead sandbox.
             raise
         except Exception as unreadable:  # noqa: BLE001 — an acquire must not fail over this
             logger.debug("docker: could not read %s's guest identity (%s)", name, unreadable)
