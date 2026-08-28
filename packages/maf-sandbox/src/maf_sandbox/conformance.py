@@ -5,7 +5,7 @@
 **Run it against a real instance.**  A backend's own suite fakes its provider seam, and a faked
 seam agrees with whatever its author believed; these probes plant a hostile layout through the
 public surface and attack it there, so what passes is the provider's real behaviour.
-:class:`ConformanceSubject` is the seam — a sandbox, plus the planting and the seeing the
+:class:`ConformanceSubject` is the seam — a sandbox, plus the planting and seeing operations the
 protocol has no word for and never will.
 
 Two things it does not do.  It does not prove the *premise*, that the provider really resolves
@@ -1173,7 +1173,7 @@ EXEC_PROBES: tuple[Probe, ...] = (
 
 
 async def _plant_nothing(subject: ConformanceSubject) -> ConformancePaths:
-    """Plant the working directory the probes run in — see the module docstring for why."""
+    """Plant the working directory the probes resolve against — see the module docstring."""
     paths = ConformancePaths.under(subject.working_directory)
     await subject.plant_file(f"{paths.work}/.probe-cwd", b"")
     return paths
