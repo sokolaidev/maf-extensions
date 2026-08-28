@@ -1074,7 +1074,10 @@ async def _supervise(
         try:
             remaining_allowance = allowance - served
             if remaining_allowance <= 0:
-                # The allowance is spent: no probe, no read. Only the exit marker is awaited.
+                # The allowance is spent: no probe, no read. Only the exit marker is
+                # awaited — through the same bounded read every poll uses, so a backend
+                # failure here still reaches the handler below instead of being swallowed
+                # into a timeout that would blame the guest for the transport.
                 if not spent:
                     spent = True
                     logger.warning(
@@ -1082,9 +1085,11 @@ async def _supervise(
                         "allowance; the supervisor will not read further requests",
                         allowance,
                     )
-                landed = await _marker_if_present(sandbox, layout, deadline)
-                if landed is not None:
-                    return await _completed(sandbox, run, layout, landed, deadline, output_limit)
+                finished = await _read_if_present(
+                    sandbox, layout, layout.exit_code, cap=_MARKER_CEILING, deadline=deadline
+                )
+                if finished is not None:
+                    return await _completed(sandbox, run, layout, finished, deadline, output_limit)
                 await asyncio.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
                 continue
             request_count = min(request_window, remaining_allowance)

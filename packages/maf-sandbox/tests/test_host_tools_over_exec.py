@@ -530,14 +530,12 @@ class TestSpeculativeRequestDiscovery:
         ]
 
     def test_a_request_waiting_behind_a_gap_is_never_read_twice(self):
-        """The #659 budget over the shape that names the issue: a frontier held by a
-        claimed-but-unpublished number while a later request sits published behind it.
+        """The #659 budget: a request is read once — when it is served.
 
-        0001 is served first, widening the window to two slots — that is what makes the
-        shape bite: 0002's worker then dies mid-publish (its claim never resolves) while
-        0003 sits published inside the window, present to the speculative stat. The
-        dead-claim grace steps the frontier over the hole and 0003 is served; it was
-        read exactly once — when it reached the frontier, never while it waited.
+        The fixture holds a claimed-but-unpublished frontier (0002) with 0003 published
+        behind it, and the dead-claim grace steps the frontier over the hole. Whatever
+        the interleaving, each served request is read exactly once; 0002 — a claim with
+        no request behind it — is read never.
         """
         reads: list[str] = []
 
@@ -545,8 +543,7 @@ class TestSpeculativeRequestDiscovery:
             def __init__(self) -> None:
                 super().__init__([], finish=False)
                 # The multi-worker end state: 0001 and 0003 published, a worker's claim
-                # on 0002, and 0002 itself never arriving — the caller died mid-publish
-                # and nothing will ever write under its number.
+                # on 0002, and 0002 itself never arriving.
                 self._issued = 2
                 self.files[self._request_path(1)] = json.dumps(
                     {"id": "0001", "name": "add", "arguments": {"left": 1, "right": 1}}
