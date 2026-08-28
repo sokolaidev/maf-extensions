@@ -636,8 +636,11 @@ class Sandbox(Protocol):
     :func:`~maf_sandbox.paths.refuse_symlinked_parents` rather than by writing the walk again —
     it is where the two refusals a caller must be able to tell apart are defined, and
     :mod:`maf_sandbox.conformance` is the same duty as probes, for holding a backend that
-    writes its own.  The five are :meth:`write_file`, the pull surface and :meth:`remove`;
-    :meth:`reclaim` is outside the count, for the reason its own docstring gives.
+    writes its own.  **The stat you hand it must not be answered by the guest** wherever your
+    engine offers anything else: a workload asked to describe its own filesystem can answer
+    falsely, and that answer is the one this trusts.  The five are :meth:`write_file`, the pull
+    surface and :meth:`remove`; :meth:`reclaim` is outside the count, for the reason its own
+    docstring gives.
     """
 
     async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
