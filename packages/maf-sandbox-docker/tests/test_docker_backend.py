@@ -1087,12 +1087,21 @@ class TestReclaimKeepsAFloorUnderRoot:
 
 class TestExecDiscardsATimedOutSandbox:
     def test_a_timed_out_exec_removes_the_container(self):
+        """The acquire path's identity probe answers so a sandbox comes back at all; the
+        sandbox's own exec is what times out and discards the container.
+        """
+
         def responder(args):
             if args[0] == "exec":
+                # The acquire path probes the guest identity — `id -g` when `Config.User`
+                # is a bare uid — and the probe must succeed for a sandbox to come back at
+                # all; every exec after acquire is the sandbox's own and times out.
+                if len(args) > 4 and args[4] == "id":
+                    return _DockerResult(0, b"20001\n", "")
                 raise TimeoutError
             if args[:2] == ("image", "inspect"):
                 return _DockerResult(0, b"", "")
-            if args[0] == "inspect":
+            if args[0] == "inspect" and args[-1] == _NAME:
                 return _DockerResult(0, b"true\n", "")
             return _DockerResult(0, b"", "")
 
@@ -1101,6 +1110,31 @@ class TestExecDiscardsATimedOutSandbox:
         with pytest.raises(TimeoutError):
             asyncio.run(sandbox.exec(["hang"], working_directory=_WORK, timeout=1))
         assert fake.matching("rm", "-f", _NAME) != []
+
+    def test_a_timeout_while_reading_facts_fails_the_acquire(self):
+        """The identity probe's exec removes the container on its way out; swallowing the
+        timeout here would hand `acquire` a sandbox for a container that no longer exists,
+        with fallback facts cached against it.
+        """
+
+        def responder(args):
+            if args[:1] == ("exec",):
+                # Every exec times out — ancestors_are_the_hosts swallows its failures, but
+                # the identity probe must not.
+                raise TimeoutError
+            if args[:2] == ("image", "inspect"):
+                return _DockerResult(0, b"", "")
+            if args[0] == "inspect" and args[-1] == _NAME:
+                return _DockerResult(0, b"true\n", "")
+            if args[:3] == ("inspect", "-f", "{{.Config.User}}"):
+                return _DockerResult(0, b"10001\n", "")
+            return _DockerResult(0, b"", "")
+
+        backend, fake = _backend_with(responder)
+        with pytest.raises(TimeoutError):
+            asyncio.run(backend.acquire(_KEY, _SPEC))
+        assert fake.matching("rm", "-f", _NAME) != []
+        assert not any(key[0] == _NAME for key in backend._facts)
 
 
 # ---------------------------------------------------------------------------

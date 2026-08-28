@@ -363,8 +363,11 @@ class _DockerSandbox:
         intermediate is created as ``root`` whatever the file entry's ownership says, so any
         directory docker would otherwise have to invent travels as its own explicit entry
         stamped with the container's user — that is what makes a call directory one the
-        image's user can later empty.  Entries naming directories that already exist extract
-        as no-ops, so nothing an image's build or a previous write put there is re-owned.
+        image's user can later empty.  Each candidate parent is statted first and skipped
+        when it exists: docker extracts a directory entry onto a present directory with the
+        entry's mode (measured, ``/tmp`` losing its sticky bit to a ``755`` entry), so an
+        image-built directory must not travel.  The entry naming a *missing* directory is
+        what a later reclaim relies on.
         """
         guest = await confine_guest_write_path(
             lambda p: self._stat_guest(p, p), path, working_directory
@@ -379,6 +382,12 @@ class _DockerSandbox:
                 walked = base
                 for segment in relative.split("/"):
                     walked = posixpath.join(walked, segment)
+                    # Stat before stamping: a directory that already exists gets no entry,
+                    # because docker extracts a present one with the entry's mode rather
+                    # than leaving it alone — measured, `/tmp` lost its 1777 to a 755 entry.
+                    walked_entry = await self._stat_guest(walked, walked)
+                    if walked_entry is not None:
+                        continue
                     entry = tarfile.TarInfo(walked.lstrip("/") + "/")
                     entry.type = tarfile.DIRTYPE
                     entry.mode = 0o755
@@ -855,6 +864,10 @@ class DockerSandboxBackend:
         bare ``0`` no more implies gid ``0`` than ``10001`` implies ``10001``.  A bare uid
         no ``id`` answers keeps gid ``0``, what the runtime picks when the uid has no
         passwd entry; a named user no ``id`` answers fails open to ``(0, 0)``.
+
+        A ``TimeoutError`` propagates: the timed-out probe removes the container on its way
+        out, so this is not an unreadable identity but a dying sandbox, and caching
+        fallback facts for it would serve ``acquire`` a container that no longer exists.
         """
         try:
             result = await self._docker(
@@ -896,6 +909,10 @@ class DockerSandboxBackend:
                 )
                 if u_res.exit_code == 0 and u_res.stdout.strip().isdigit():
                     return int(u_res.stdout.strip()), gid
+        except TimeoutError:
+            # The timed-out probe removed the container on its way out: not an unreadable
+            # identity but a dying sandbox, so the caller must not cache fallback facts.
+            raise
         except Exception as unreadable:  # noqa: BLE001 — an acquire must not fail over this
             logger.debug("docker: could not read %s's guest identity (%s)", name, unreadable)
         return 0, 0
@@ -915,6 +932,10 @@ class DockerSandboxBackend:
         probe = _DockerSandbox(self._docker, name, self._config.command_timeout_seconds)
         try:
             answer = await probe.ancestors_are_the_hosts(spec.work_dir)
+        except TimeoutError:
+            # The timed-out stat removed the container on its way out; treat it as the
+            # identity probe treats one — a dying sandbox, not an unreadable ancestor.
+            raise
         except Exception as unreadable:  # noqa: BLE001 — an acquire must not fail over this
             logger.debug("docker: could not read %s's work dir ancestors (%s)", name, unreadable)
             answer = False
@@ -925,7 +946,15 @@ class DockerSandboxBackend:
                 name,
                 spec.work_dir,
             )
-        guest_uid, guest_gid = await self._guest_identity(name, probe)
+        try:
+            guest_uid, guest_gid = await self._guest_identity(name, probe)
+        except TimeoutError:
+            # The probe's exec removed the container on its way out; caching fallback facts
+            # against a container that no longer exists would hand `acquire` a dead sandbox.
+            raise
+        except Exception as unreadable:  # noqa: BLE001 — an acquire must not fail over this
+            logger.debug("docker: could not read %s's guest identity (%s)", name, unreadable)
+            guest_uid, guest_gid = 0, 0
         facts = _ContainerFacts(
             host_owned_ancestors=answer,
             capabilities_dropped=await self._capabilities_dropped(name),
