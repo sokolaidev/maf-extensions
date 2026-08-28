@@ -43,9 +43,9 @@ The one-time registration notice is printed rather than suppressed. It says out 
 | `requires_approval` | `True` | one `USER` tool is enough: a single host-tool call may exercise the user's delegated authority |
 | `has_undeclared` | `False` | the gate refused the fourth function |
 
-**Taking the aggregate seals the registry.** A later `register` is refused, and the sample shows that refusal. It matters because this is the moment a host turns the surface into a spec and a classification — widening it afterwards would call something no policy ever saw. It is also why `agent.py` carries `identities` forward from the aggregate instead of asking the registry twice: `HostToolAggregate.identities` is the only way to read it, precisely so that reading it has to seal.
+**Taking the aggregate seals the registry.** A later `register` is refused, and the sample shows that refusal. It matters because this is the moment a host turns the surface into a spec and a classification — widening it afterwards would call something no policy ever saw. It is also why `agent.py` carries the aggregate itself forward instead of asking the registry twice: taking it is the only way to read what it carries, precisely so that reading it has to seal.
 
-**3. A host that permits it.** The aggregate's `identities` becomes `SandboxSpec.identities`, the spec requires `HOST_TOOLS`, and `router.ensure_can_serve(spec)` returns. That one call is the whole of a host's wiring test.
+**3. A host that permits it.** The aggregate is attached as `SandboxSpec.host_tools`, which is where `SandboxSpec.identities` reads from, the spec requires `HOST_TOOLS`, and `router.ensure_can_serve(spec)` returns. That one call is the whole of a host's wiring test.
 
 **4. The two refusals.** Two axes, two settings, both answered **at attach** — before any sandbox is acquired, so neither costs anything to demonstrate:
 
