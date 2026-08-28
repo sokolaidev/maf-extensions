@@ -361,22 +361,19 @@ class _DockerSandbox:
     async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
         """Write ``content`` to ``path`` inside the container, parents included.
 
-        Sent as a tar on stdin.  A ``cp`` destination must already exist and ``/`` is the only
-        path that always does, so the entries carry the whole path and docker creates the
-        missing directories from them.  The load-bearing constraint: an **implicit**
-        intermediate is created as ``root`` whatever the file entry's ownership says, so
-        every directory from ``working_directory`` itself down to the entry's parent
-        travels as its own explicit entry stamped with the container's user when missing —
-        that is what makes a call directory one the image's user can later empty, on every
-        image shape including one whose ``work_dir`` is absent.  The entries cover
-        ``working_directory`` and its descendants only: an ancestor above it that is absent
-        is docker's to create implicitly as root, because the acquire-time facts judged
-        that chain host-safe and a guest-owned entry here would turn it into a redirect
-        the reach rule never cleared — and the filesystem root is the cp destination, so
-        it never needs an entry.  An entry naming a directory that already exists extracts
-        with the entry's mode (measured, ``/tmp`` losing its sticky bit to a ``755``
-        entry), which is why existing parents are skipped rather than re-stamped — read
-        from the confinement walk this call already paid for, not statted a second time.
+        Sent as a tar on stdin, the entries carrying the whole path, because a ``cp``
+        destination must already exist and ``/`` is the only one that always does.
+
+        Two constraints decide which directories get an entry.  Docker creates an
+        **implicit** intermediate as ``root`` whatever the file entry's ownership says, so
+        a missing directory has to travel as its own explicit entry under the container's
+        user; and an entry naming a directory that already exists re-stamps its mode, so an
+        existing one must not.  Which is which comes from the confinement walk this call
+        already paid for, rather than a second stat.
+
+        The entries stop at ``working_directory``: an absent ancestor above it is docker's
+        to create as root, since a guest-owned entry there would be a redirect the reach
+        rule never cleared, and ``/`` is the destination and needs none.
         """
         walked: dict[str, tuple[int, int]] = {}
         guest = await confine_guest_write_path(
@@ -893,11 +890,13 @@ class DockerSandboxBackend:
                 name,
                 timeout=self._config.command_timeout_seconds,
             )
-            raw = (
-                result.stdout.decode("utf-8", errors="replace").strip()
-                if result.returncode == 0
-                else ""
-            )
+            if result.returncode != 0:
+                # A daemon that will not answer and an image that names no user both leave
+                # an empty string, and they are opposite cases: the second is root by
+                # definition and returns silently, the first is what the warning below is
+                # for.  Branching here is what keeps them apart.
+                raise RuntimeError(result.stderr.strip() or f"exit {result.returncode}")
+            raw = result.stdout.decode("utf-8", errors="replace").strip()
             if not raw or raw == "0:0":
                 return 0, 0
             user_spec, _, group_spec = raw.partition(":")

@@ -1772,15 +1772,32 @@ class TestTheGuestIdentityIsReadFromTheContainer:
             r.message for r in caplog.records
         ]
 
-    def test_an_unreadable_user_fails_open_to_root(self):
-        """An image this backend cannot ask keeps today's behaviour: root-owned entries."""
+    def test_an_unreadable_user_fails_open_to_root_and_says_so(self, caplog):
+        """An image this backend cannot ask keeps today's behaviour: root-owned entries — and
+        is warned about, because a daemon that would not answer and an image that names no
+        user reach the same `0:0` from opposite states, and only one of them is a choice.
+        """
         overrides = {
             **_WORK_IS_A_DIRECTORY,
             ("inspect", "-f", "{{.Config.User}}"): _DockerResult(1, b"", "daemon error"),
         }
         backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
-        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        with caplog.at_level(logging.INFO):
+            facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
         assert (facts.guest_uid, facts.guest_gid) == (0, 0)
+        assert any("could not be resolved" in r.message for r in caplog.records), [
+            r.message for r in caplog.records
+        ]
+
+    def test_an_unset_user_is_root_without_a_warning(self, caplog):
+        """The other side of the same coin: `Config.User` empty *is* the answer, so it must
+        not warn — a notice on every stock image would make the real one unreadable.
+        """
+        backend, _ = _backend_with(_machine(running=[_NAME], overrides=_WORK_IS_A_DIRECTORY))
+        with caplog.at_level(logging.INFO):
+            facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        assert (facts.guest_uid, facts.guest_gid) == (0, 0)
+        assert [r.message for r in caplog.records if "could not be resolved" in r.message] == []
 
     def test_the_answer_is_read_once_per_container(self):
         backend, fake = _backend_with(_machine(running=[_NAME]))
