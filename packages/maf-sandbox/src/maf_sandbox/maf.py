@@ -465,10 +465,6 @@ class SandboxToolSession:
         try:
             sandbox = await self._router.acquire(key, self._spec)
         except ATTACH_REFUSALS as exc:
-            # First, because these classes are subclassable and one inheriting `ValueError`
-            # would otherwise take that branch and be surfaced verbatim. `error_detail` because
-            # a backend may have raised this one and its reason is what the operator needs,
-            # where `str()` on such an error often drops it.
             self._logger.warning(
                 f"{self._log_prefix}: workload refused before it ran: %s", error_detail(exc)
             )
