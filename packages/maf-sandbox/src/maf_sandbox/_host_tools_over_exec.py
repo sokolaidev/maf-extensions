@@ -1073,6 +1073,25 @@ async def _supervise(
             )
         try:
             remaining_allowance = allowance - served
+            if remaining_allowance <= 0:
+                # The allowance is spent: no probe, no read. Only the exit marker is
+                # awaited — through the same bounded read every poll uses, so a backend
+                # failure here still reaches the handler below instead of being swallowed
+                # into a timeout that would blame the guest for the transport.
+                if not spent:
+                    spent = True
+                    logger.warning(
+                        "host tools: this run has been answered %d times, which is its "
+                        "allowance; the supervisor will not read further requests",
+                        allowance,
+                    )
+                finished = await _read_if_present(
+                    sandbox, layout, layout.exit_code, cap=_MARKER_CEILING, deadline=deadline
+                )
+                if finished is not None:
+                    return await _completed(sandbox, run, layout, finished, deadline, output_limit)
+                await asyncio.sleep(min(poll_interval, max(0.0, deadline - time.monotonic())))
+                continue
             request_count = min(request_window, remaining_allowance)
             finished, request_probes = await _probe_exit_and_requests(
                 sandbox,
@@ -1093,13 +1112,11 @@ async def _supervise(
                     # The frontier moved, so any absence timing was for a number now behind us.
                     hole_since = None
                 if not full_prefix:
+                    # A genuinely absent frontier request resets the window to one and
+                    # starts the dead-claim clock. The walk cannot reach past the
+                    # allowance — `request_count` is clamped to what is left before the
+                    # probes are created — so every non-full prefix is a real miss.
                     request_window = 1
-                    # The frontier's request is absent. Time that here rather than in the probe, so
-                    # a frontier absent only for a poll or two — the ordinary not-arrived-yet case,
-                    # and every fast test — costs nothing. Only once it has stayed absent for the
-                    # whole grace, past any plausible publish, is it worth the stats to tell a
-                    # worker that died mid-publish from a guest merely slow to issue its next call
-                    # and step the dead one over (#352).
                     now = time.monotonic()
                     if hole_since is None:
                         hole_since = now
@@ -1110,13 +1127,6 @@ async def _supervise(
                         hole_since = None if skipped else now
                 elif request_count == request_window and served < allowance:
                     request_window = min(_MAX_SPECULATIVE_REQUESTS, request_window * 2)
-            elif not spent:
-                spent = True
-                logger.warning(
-                    "host tools: this run has been answered %d times, which is its allowance; "
-                    "the supervisor will not read further requests",
-                    allowance,
-                )
         except _DeadlineExpired as stalled:
             # The same last look, because the call that ran out may have been the marker's own
             # read: a stat that found it with a millisecond left proves the program finished,
@@ -1638,6 +1648,28 @@ async def _cancel_and_drain(tasks: tuple[asyncio.Task[Any], ...]) -> None:
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
+async def _stat_if_present(
+    sandbox: Sandbox, layout: GuestRunLayout, path: str, *, deadline: float
+) -> bool:
+    """Is the file there, and does it look readable — without moving any of its bytes?
+
+    The speculative half of the window. A present stat is a promise the body is read once,
+    when the identifier reaches the frontier; it is not the body itself.
+    """
+    entry = await _within(
+        deadline,
+        f"stat {posixpath.basename(path)}",
+        sandbox.stat_file(path, working_directory=layout.directory),
+    )
+    if entry is None or entry.kind is not EntryKind.FILE:
+        return False
+    if entry.size_bytes == 0:
+        return False
+    # A size the backend could not state fails open: unknown is not "not arrived", and the
+    # frontier read is what refuses an unmeasurable request as over-cap.
+    return True
+
+
 async def _probe_exit_and_requests(
     sandbox: Sandbox,
     run: HostToolRun,
@@ -1648,24 +1680,38 @@ async def _probe_exit_and_requests(
     deadline: float,
 ) -> tuple[
     str | _TooLarge | _NotText | None,
-    tuple[asyncio.Task[str | _TooLarge | _NotText | None], ...],
+    tuple[asyncio.Task[str | bool | _TooLarge | _NotText | None], ...],
 ]:
-    """Read the exit marker beside a bounded window of requests, with exit taking priority."""
+    """Read the exit marker beside a bounded window of requests, with exit taking priority.
+
+    Only the frontier's request is read; the rest of the window stats. Serving reads a
+    future request's body once, when its identifier becomes the one being served.
+    """
     marker_probe = asyncio.create_task(
         _read_if_present(sandbox, layout, layout.exit_code, cap=_MARKER_CEILING, deadline=deadline)
     )
-    request_probes = tuple(
+    frontier = asyncio.create_task(
+        _read_if_present(
+            sandbox,
+            layout,
+            posixpath.join(layout.calls, f"{served + 1:04d}.request.json"),
+            cap=_request_cap(run),
+            deadline=deadline,
+            exact=True,
+        )
+    )
+    request_probes: tuple[asyncio.Task[str | bool | _TooLarge | _NotText | None], ...] = (
+        frontier,
+    ) + tuple(
         asyncio.create_task(
-            _read_if_present(
+            _stat_if_present(
                 sandbox,
                 layout,
                 posixpath.join(layout.calls, f"{identifier:04d}.request.json"),
-                cap=_request_cap(run),
                 deadline=deadline,
-                exact=True,
             )
         )
-        for identifier in range(served + 1, served + count + 1)
+        for identifier in range(served + 2, served + count + 1)
     )
     try:
         finished = await marker_probe
@@ -1683,14 +1729,42 @@ async def _serve_request_probes(
     run: HostToolRun,
     layout: GuestRunLayout,
     served: int,
-    probes: tuple[asyncio.Task[str | _TooLarge | _NotText | None], ...],
+    probes: tuple[asyncio.Task[str | bool | _TooLarge | _NotText | None], ...],
     deadline: float,
 ) -> tuple[int, bool]:
-    """Serve the contiguous discovered prefix in identifier order."""
+    """Serve the contiguous discovered prefix in identifier order.
+
+    The frontier's slot is a body (or ``None``); the speculative ones are stat answers,
+    read as bodies in walk order as the frontier advances.
+    """
     full_prefix = True
     try:
-        for probe in probes:
-            body = await probe
+        base = served
+        for offset, probe in enumerate(probes):
+            # The walk's own numbering: the slot's identifier is fixed by its position in
+            # the window, not by the live frontier — `served` advances below as slots are
+            # served, and deriving the identifier from it would skip every second number.
+            identifier = base + 1 + offset
+            outcome = await probe
+            if isinstance(outcome, bool):
+                # A stat-only probe past the frontier: present means the body is read now,
+                # at the frontier, so each request is read exactly once no matter how many
+                # polls it waits through. A present stat whose read finds nothing — the one
+                # genuine stat/read race the pull surface allows — ends the prefix like a
+                # miss; the next poll looks again.
+                outcome = (
+                    await _read_if_present(
+                        sandbox,
+                        layout,
+                        posixpath.join(layout.calls, f"{identifier:04d}.request.json"),
+                        cap=_request_cap(run),
+                        deadline=deadline,
+                        exact=True,
+                    )
+                    if outcome
+                    else None
+                )
+            body = outcome
             if body is None:
                 full_prefix = False
                 break
@@ -1699,23 +1773,23 @@ async def _serve_request_probes(
                 # replay frontier. A later run would find it again rather than skipping it.
                 full_prefix = False
                 break
-            identifier = f"{served + 1:04d}"
-            answer = await _answer(run, body, identifier)
+            id_str = f"{identifier:04d}"
+            answer = await _answer(run, body, id_str)
             if answer is None:
                 # Only the explicit marker advances a hole. A missing speculative probe does
                 # not say the guest abandoned its identifier.
                 logger.debug(
                     "host tools: request %s was abandoned by the guest, stepping over it",
-                    identifier,
+                    id_str,
                 )
                 served += 1
                 continue
-            response_path = posixpath.join(layout.calls, f"{identifier}.response.json")
+            response_path = posixpath.join(layout.calls, f"{id_str}.response.json")
             # A call may finish after the deadline by design. Its answer gets a fresh
             # write grace so the effect and its record cannot be split.
             await _within(
                 max(deadline, time.monotonic() + _RESPONSE_WRITE_GRACE),
-                f"write the answer to {identifier}",
+                f"write the answer to {id_str}",
                 sandbox.write_file(response_path, answer, working_directory=layout.directory),
             )
             served += 1

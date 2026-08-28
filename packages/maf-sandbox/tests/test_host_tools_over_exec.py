@@ -462,6 +462,7 @@ class TestTheOverlappedProbes:
 class TestSpeculativeRequestDiscovery:
     def test_a_contiguous_prefix_widens_the_bounded_window(self):
         looks: list[str] = []
+        reads: list[str] = []
         dispatched: list[int] = []
 
         @sandbox_tool(source=SourceIntegrity.TRUSTED, sink=None, identity=Identity.APP)
@@ -475,6 +476,13 @@ class TestSpeculativeRequestDiscovery:
                     looks.append(posixpath.basename(path))
                 return await super().stat_file(path, working_directory=working_directory)
 
+            async def read_file(self, path: str, *, working_directory: str, max_bytes: int):
+                if path.endswith(".request.json"):
+                    reads.append(posixpath.basename(path))
+                return await super().read_file(
+                    path, working_directory=working_directory, max_bytes=max_bytes
+                )
+
         registry = HostToolRegistry()
         registry.register(record)
         guest = _RecordsRequests([("record", {"value": value}) for value in range(6)])
@@ -487,12 +495,18 @@ class TestSpeculativeRequestDiscovery:
             "0001.request.json",
             "0002.request.json",
             "0003.request.json",
+            # 0003 twice: once as the speculative tail of the 2-window, once as the
+            # frontier read's own stat when it becomes the frontier — discovery is by
+            # stat, never by read.
+            "0003.request.json",
             "0004.request.json",
             "0005.request.json",
             "0006.request.json",
-            "0007.request.json",
         ]
         assert not any(name >= "0008.request.json" for name in looks)
+        # The fold budgets one read per served request, so a speculative stat that says
+        # present must not become a read until the identifier is the one being served (#659).
+        assert sorted(reads) == [f"{n:04d}.request.json" for n in range(1, 7)]
 
     def test_a_speculative_miss_collapses_the_next_window(self):
         looks: list[str] = []
@@ -515,7 +529,129 @@ class TestSpeculativeRequestDiscovery:
             "0005.request.json",
         ]
 
-    def test_a_future_probe_error_waits_for_the_replay_frontier(self):
+    def test_a_request_waiting_behind_a_gap_is_never_read_twice(self):
+        """The #659 budget: a request is read once — when it is served.
+
+        The fixture holds a claimed-but-unpublished frontier (0002) with 0003 published
+        behind it, and the dead-claim grace steps the frontier over the hole. Whatever
+        the interleaving, each served request is read exactly once; 0002 — a claim with
+        no request behind it — is read never.
+        """
+        reads: list[str] = []
+
+        class _GapGuest(_ConcurrentGuest):
+            def __init__(self) -> None:
+                super().__init__([], finish=False)
+                # The multi-worker end state: 0001 and 0003 published, a worker's claim
+                # on 0002, and 0002 itself never arriving.
+                self._issued = 2
+                self.files[self._request_path(1)] = json.dumps(
+                    {"id": "0001", "name": "add", "arguments": {"left": 1, "right": 1}}
+                ).encode()
+                self.files[self._request_path(3)] = json.dumps(
+                    {"id": "0003", "name": "add", "arguments": {"left": 3, "right": 0}}
+                ).encode()
+                self.files[posixpath.join(_LAYOUT.calls, "0002.claim")] = b""
+
+            async def exec(
+                self, command: str | Any, *, working_directory: str, timeout: float
+            ) -> ExecResult:
+                del command, working_directory, timeout
+                self.started = True
+                return ExecResult(stdout="", exit_code=0)
+
+            async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
+                entry = await super().stat_file(path, working_directory=working_directory)
+                # A real program finishes once its own calls are answered; it does not
+                # wait on the number whose caller died. The marker lands when 0003 —
+                # the last call the surviving worker made — has its response.
+                if (
+                    self.files.get(self._response_path(1)) is not None
+                    and self.files.get(self._response_path(3)) is not None
+                ):
+                    self.files[_LAYOUT.output] = b"done"
+                    self.files[_LAYOUT.exit_code] = b"0"
+                self._collect_answers()
+                return entry
+
+            async def read_file(self, path: str, *, working_directory: str, max_bytes: int):
+                if path.endswith(".request.json"):
+                    reads.append(posixpath.basename(path))
+                return await super().read_file(
+                    path, working_directory=working_directory, max_bytes=max_bytes
+                )
+
+        guest = _GapGuest()
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(host_tools_over_exec, "_CLAIM_HOLE_GRACE", 0.0)
+            result = _run(guest, HostToolRun(_registry()), timeout=3.0)
+
+        # Reaching exit 0 proves the hole at 0002 was stepped over: nothing else moves
+        # the frontier past a number that never publishes.
+        assert result.exit_code == 0
+        # One read each across the whole run: 0003 sat published inside a wide window
+        # for the miss poll and was read only when it reached the frontier. 0002 is
+        # read never — a claim with no request behind it is stat-only evidence.
+        assert reads == [
+            "0001.request.json",
+            "0003.request.json",
+        ]
+
+    def test_a_spent_allowance_polls_the_marker_through_the_bounded_read(self):
+        """Once the allowance is spent, the marker poll must not swallow errors.
+
+        The spent branch polls every interval, so it cannot use the one-shot final
+        look whose broad except exists to keep a diagnostic from replacing the run's
+        own reason. A backend that fails the marker stat/read after the allowance is
+        spent must reach the caller as the transport failure it is — not surface as
+        a guest timeout after retries the last look was never meant to make.
+        """
+
+        @sandbox_tool(source=SourceIntegrity.TRUSTED, sink=None, identity=Identity.APP)
+        def add(value: int) -> int:
+            return value
+
+        registry = HostToolRegistry(max_host_tool_calls_per_run=16)
+        registry.register(add)
+        failing = {"armed": False}
+
+        class _ExhaustedGuest(_ScriptedGuest):
+            def __init__(self) -> None:
+                super().__init__([("add", {"value": n}) for n in range(20)], finish=False)
+                # A claim on 0002 forces the claim-hole path once the frontier sits
+                # on it — the ordinary way a run reaches a spent allowance while the
+                # guest keeps calling.
+                self.files[posixpath.join(_LAYOUT.calls, "0002.claim")] = b""
+
+            async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
+                if failing["armed"] and path.endswith("program_exit_code"):
+                    raise RuntimeError("the marker read keeps failing at the transport")
+                entry = await super().stat_file(path, working_directory=working_directory)
+                # Once the refusal past the cap has landed, the allowance is spent and
+                # the supervisor is polling the marker — arm the transport failure now.
+                if self.files.get(self._response_path(17)) is not None:
+                    failing["armed"] = True
+                return entry
+
+            def _issue_next(self) -> None:
+                super()._issue_next()
+                if self._issued >= 3 and self._request_path(3) not in self.files:
+                    # The rest of the calls publish behind the claim on 0002: 0003+
+                    # are visible to the window while the frontier is stuck.
+                    for index in range(3, len(self.calls) + 1):
+                        payload: dict[str, Any] = {
+                            "id": f"{index:04d}",
+                            "name": "add",
+                            "arguments": {"value": index},
+                        }
+                        self.files[self._request_path(index)] = json.dumps(payload).encode()
+
+        guest = _ExhaustedGuest()
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(host_tools_over_exec, "_CLAIM_HOLE_GRACE", 0.0)
+            with pytest.raises(RuntimeError, match="marker read keeps failing"):
+                _run(guest, HostToolRun(registry), timeout=10.0)
+
         class _SecondProbeFails(_ScriptedGuest):
             async def stat_file(self, path: str, *, working_directory: str):
                 if path.endswith("0002.request.json"):
