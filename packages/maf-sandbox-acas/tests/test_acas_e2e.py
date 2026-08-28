@@ -31,8 +31,9 @@ what this package believes, and #139 and #142 were both the package believing wr
 :class:`TestFilesOutAgainstTheRealService` asserts that none of them skipped here, because a
 suite that quietly skips a third of itself is the shape of a green run that attacked nothing.
 
-**Cost discipline.** Four sandboxes for the whole module, and a fifth only where
-``MAF_SANDBOX_ACAS_E2E_NONROOT_IMAGE`` names one whose guest is not root. The probes and refusals share one,
+**Cost discipline.** Four sandboxes for the whole module, and two more only where
+``MAF_SANDBOX_ACAS_E2E_NONROOT_IMAGE`` names one whose guest is not root — the non-root class
+shares one, and the cold-refusal probe creates a second that the backend under test deletes. The probes and refusals share one,
 acquired by a module-scoped fixture and disposed at the end; the lifecycle test needs its own
 because it disposes as the thing under test; the prebuilt-image test needs its own because a
 bare catalogue name is only evidence if it boots one; the egress leg needs its own because only
@@ -44,6 +45,7 @@ build a second transport against the same sandbox.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import uuid
 from collections.abc import Coroutine
@@ -128,6 +130,11 @@ def _spec(**overrides: Any) -> SandboxSpec:
             "needs MAF_SANDBOX_ACAS_E2E_IMAGE — a repository:tag imported into the sandbox group"
         )
     return SandboxSpec(kind="e2e", image=_IMAGE, work_dir=_WORK, **overrides)
+
+
+def _logged_sandbox_id(message: str) -> str:
+    """The id out of a lifecycle line, which spells it `id=<sandbox>` before its other fields."""
+    return message.split("id=", 1)[1].split(" ", 1)[0]
 
 
 def _key(scope: str) -> SandboxKey:
@@ -890,6 +897,75 @@ class TestAnImageWhoseGuestIsNotRoot:
 
         with pytest.raises(SandboxCapabilityNotSupported, match="files_out"):
             nonroot.run(nonroot.backend.acquire(nonroot.key, collecting))
+
+    def test_a_cold_refusal_deletes_the_sandbox_it_had_to_create(self, nonroot: _Live, caplog):
+        """The half the test above cannot reach, and the one that leaked.
+
+        A backend meeting this image for the first time has to create a sandbox to learn the
+        uid, and only then refuses — and an acquire that raises is handed to nobody, so the
+        framework's per-call cleanup never sees it. Its own backend instance, because the memo
+        is per instance: the fixture's has already probed, which is exactly why its refusal
+        costs nothing and proves nothing about this path.
+
+        **Costs one billable sandbox**, created and deleted inside this test. Offline tests
+        assert that `begin_delete` was called; only the service can say it landed.
+
+        The create is asserted, not assumed. Every check below — an empty registry, an empty
+        undeleted record, a scope that lists nothing — is equally true of a run that created
+        no sandbox at all, so without the log pair this would be a test that passes by doing
+        nothing.
+        """
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        cold = AcasSandboxBackend(_config())
+        scope = f"e2e-nonroot-cold-{uuid.uuid4()}"
+        key = _key(scope)
+        collecting = SandboxSpec(
+            kind="e2e-nonroot-cold",
+            image=_NONROOT_IMAGE,
+            work_dir=_WORK,
+            requires=frozenset({Capability.EXEC, Capability.FILES_OUT}),
+        )
+
+        async def scenario() -> None:
+            with pytest.raises(SandboxCapabilityNotSupported, match="files_out"):
+                await cold.acquire(key, collecting)
+
+            # The service accepted the delete: `_undeleted` is where an id whose delete failed
+            # is kept, so an empty record is the backend saying the removal landed. Asserted
+            # before the listing because it carries no eventual-consistency race.
+            assert cold._registry == {}
+            assert cold._undeleted == {}
+
+            # And it really went away. Polled, not asserted once: `_delete` starts the deletion
+            # without awaiting the poller, so a sandbox still terminating is legitimately still
+            # listed. Read-only — a purge here would delete the very leak it is looking for.
+            gc = cold._group_client()
+            for _ in range(10):
+                left = await cold._list_thread_sandbox_ids(gc, scope, "thread-1")
+                if left == []:
+                    return
+                await asyncio.sleep(6.0)
+            raise AssertionError(f"{scope} still has sandboxes: a refused acquire leaked one")
+
+        try:
+            with caplog.at_level(logging.INFO, logger="maf_sandbox_acas"):
+                nonroot.run(scenario())
+            created = [
+                r.getMessage() for r in caplog.records if "sandbox created" in r.getMessage()
+            ]
+            released = [
+                r.getMessage() for r in caplog.records if "sandbox released" in r.getMessage()
+            ]
+            assert len(created) == 1, f"the refusal created no sandbox: {caplog.text}"
+            assert len(released) == 1, f"the sandbox it created was not released: {caplog.text}"
+            # `sandbox released` is logged only where `_delete` reported no failure, so the
+            # pair naming one id is the service agreeing that the removal landed.
+            assert _logged_sandbox_id(created[0]) == _logged_sandbox_id(released[0])
+        finally:
+            # Belt and braces: if the assertions above failed, something is still running.
+            nonroot.run(cold.dispose_scope(scope, "thread-1"))
+            nonroot.run(cold.aclose())
 
 
 @pytest.fixture(scope="module")
