@@ -469,10 +469,9 @@ class SandboxToolSession:
             self._logger.warning(f"{self._log_prefix}: %s", exc)
             return f"Error: {exc}"
         except ATTACH_REFUSALS as exc:
-            # A refusal this stack authored, at attach or from a backend that has now seen its
-            # image. The same reasoning as the ValueError above: it names the backend, the kind
-            # and what was asked, and carries no account detail. Without this branch it falls to
-            # the catch-all and the caller is told only that the sandbox is unavailable.
+            # This package's own refusals, at attach or from a backend that has now met its
+            # image: they name the backend, the kind and what was asked, and carry no account
+            # detail.
             self._logger.warning(f"{self._log_prefix}: %s", exc)
             return f"Error: {exc}"
         except SandboxUnclean as exc:

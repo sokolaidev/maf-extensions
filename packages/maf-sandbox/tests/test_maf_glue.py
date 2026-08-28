@@ -364,15 +364,28 @@ class TestSessionAcquire:
         )
         assert asyncio.run(session.acquire(_KEY)) == "Error: No disk image for 'bicep:1'"
 
+    def test_the_family_is_every_refusal_the_router_defines(self):
+        """The forgotten-member guard, and it has to derive the answer independently.
+
+        Parametrising over the tuple cannot be this check: a refusal added to ``_router`` and
+        left out of it changes no parameter, so the test below would go on passing while the
+        new refusal reached callers as an outage. Two exclusions, each because it answers with
+        a sentence of its own — the reason lives beside its branch in ``maf.py``.
+        """
+        from maf_sandbox import _router
+
+        defined = {
+            value
+            for value in vars(_router).values()
+            if isinstance(value, type)
+            and issubclass(value, Exception)
+            and value.__module__ == _router.__name__
+        }
+        assert defined - {NoSandboxBackend, SandboxUnclean} == set(ATTACH_REFUSALS)
+
     @pytest.mark.parametrize("refusal", ATTACH_REFUSALS, ids=lambda cls: cls.__name__)
     def test_every_refusal_this_stack_authors_is_surfaced_verbatim(self, refusal, caplog):
-        """Parametrised over the family itself, so a refusal added to it is surfaced or this
-        test is the thing that says it was forgotten.
-
-        The text is the whole value of refusing early: it names what was asked for and which
-        backend or posture would not serve it. Delivered to the log alone, an attach-time
-        refusal reads to the caller exactly like an outage.
-        """
+        """Each member reaches the caller with its own text, and reaches the log as well."""
         session = _session(InProcessSandboxBackend(acquire_error=refusal("wants files_out")))
         with caplog.at_level(logging.WARNING, logger="test_workload"):
             assert asyncio.run(session.acquire(_KEY)) == "Error: wants files_out"

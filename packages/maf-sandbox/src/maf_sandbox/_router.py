@@ -182,19 +182,16 @@ class SandboxTransferLimitsNotPermitted(PermissionError):
     """
 
 
-#: Every refusal this package authors before a workload runs: the ones a spec meets at attach,
-#: and the ones a backend raises out of `acquire` once it has met the image it was handed.
+#: The refusals `maf.py` may hand a caller verbatim: every one this module defines except the
+#: two that answer with a sentence of their own, `NoSandboxBackend` and `SandboxUnclean`.
 #:
-#: Their text is this stack's own — it names the backend, the kind, the capabilities asked for
-#: and the image reference, and carries no endpoint, subscription or tenant — so `maf.py` hands
-#: it to the caller verbatim instead of the fixed sentence a provider failure gets. Named without
-#: an underscore because `maf.py` reads it and this package's strict pyright refuses a private
-#: name across modules; it is not re-exported from `__init__`, so it stays internal. Living here
-#: rather than there is the point: a refusal added above is one line from the tuple that decides
-#: whether anyone but the log ever reads it.
+#: **The boundary this rests on:** their text names the backend, the kind, the capabilities
+#: asked for and the image reference, and carries no endpoint, subscription or tenant. Anything
+#: raised from outside this module may, so it gets the fixed sentence instead.
 #:
-#: `SandboxUnclean` is deliberately absent. It is a refusal, but it answers with a sentence of
-#: its own: what the model may hear is that the sandbox is closed, never whose files are in it.
+#: Public by necessity — this package's strict pyright refuses a private name across modules —
+#: and absent from `__init__`, so it stays internal. `test_maf_glue.py` derives the membership
+#: independently and fails if a refusal added above is left out.
 ATTACH_REFUSALS: tuple[type[Exception], ...] = (
     SandboxBackendNotPermitted,
     SandboxCapabilityDenied,
