@@ -904,7 +904,10 @@ class DockerSandboxBackend:
             uid: int | None = int(user_spec) if user_spec.isdigit() else None
             gid: int | None = int(group_spec) if group_spec.isdigit() else None
             group_name = group_spec if group_spec and not group_spec.isdigit() else None
-            if uid is None or gid is None:
+            # `/etc/passwd` answers a uid, and a gid only when the group half is not
+            # named; a bare uid beside a named group (`10001:devs`) is entirely
+            # `/etc/group`'s to answer, so do not pull passwd for it.
+            if uid is None or (gid is None and group_name is None):
                 passwd = await self._passwd_entry(name)
                 if passwd is not None:
                     for line in passwd.splitlines():
@@ -924,13 +927,16 @@ class DockerSandboxBackend:
                             gid = int(fields[3])
                         if uid is not None and gid is not None:
                             break
+            if gid is None and group_name is not None:
+                groups = await self._group_entry(name)
+                gid = groups.get(group_name)
+            # `id` last, and only for what the account files left open: it is the one
+            # step that runs a guest command, so an image whose `id` hangs must not cost
+            # the sandbox an acquire over a gid `/etc/group` already carries.
             if uid is None or gid is None:
                 u_res, g_res = await self._effective_ids(name, probe)
                 uid = uid if uid is not None else u_res
                 gid = gid if gid is not None else g_res
-            if gid is None and group_name is not None:
-                groups = await self._group_entry(name)
-                gid = groups.get(group_name)
             if uid is not None and gid is not None:
                 return uid, gid
             if uid is not None:

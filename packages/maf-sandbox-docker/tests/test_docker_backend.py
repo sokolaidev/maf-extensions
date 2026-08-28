@@ -1616,7 +1616,7 @@ class TestTheGuestIdentityIsReadFromTheContainer:
         facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
         assert (facts.guest_uid, facts.guest_gid) == (0, 20001)
 
-    def test_a_bare_uid_resolves_its_gid_from_id_when_passwd_is_unreadable(self):
+    def test_a_bare_uid_keeps_gid_0_when_neither_passwd_nor_id_answers(self):
         """The gid-0 fallback: with `/etc/passwd` unreadable and an `id` that answers
         nothing, a bare uid's gid stays 0 — what the runtime picks for a uid with no
         passwd entry.
@@ -1628,7 +1628,7 @@ class TestTheGuestIdentityIsReadFromTheContainer:
             ("exec", "-w", "/", _NAME, "id", "-g"),
         ]
 
-    def test_a_uid_with_a_passwd_entry_takes_the_entrys_gid(self):
+    def test_a_bare_uid_falls_back_to_id_when_passwd_is_unreadable(self):
         """The `id` fallback when the guest answers: with `/etc/passwd` unreadable, a bare
         uid's primary gid is asked from the guest — and `id` resolving both sides is what
         supplies the expected pair, since the fake carries no passwd tar for this test.
@@ -1720,6 +1720,36 @@ class TestTheGuestIdentityIsReadFromTheContainer:
         fake._responder = respond
         facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
         assert (facts.guest_uid, facts.guest_gid) == expected
+        # Both account files answer this pair, so `id` — the one step that runs a guest
+        # command — is never reached.
+        assert fake.matching("exec") == []
+
+    def test_a_named_group_is_read_before_the_guest_is_asked(self):
+        """`/etc/group` resolves the named half, so a bare uid beside it never pulls passwd
+        (which could not answer it) and never runs `id`: an image whose `id` hangs would
+        otherwise cost the acquire a gid `/etc/group` already carries.
+        """
+        group = b"root:x:0:\ndevs:x:30001:\n"
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"10001:devs\n", ""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+
+        def respond(args):
+            if args[0] == "cp" and args[1].endswith(":/etc/group"):
+                return _tar_response(group)
+            if args[0] == "exec":
+                raise TimeoutError("an image whose `id` hangs")
+            return _machine(running=[_NAME], overrides=overrides)(args)
+
+        fake._responder = respond
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        assert (facts.guest_uid, facts.guest_gid) == (10001, 30001)
+        assert fake.matching("exec") == []
+        # `_passwd_entry` swallows every exception, so the pull is asserted on the record
+        # rather than through the responder.
+        assert fake.matching("cp", f"{_NAME}:/etc/passwd") == []
 
     def test_an_unresolvable_identity_fails_open_to_root(self, caplog):
         """A named user with neither a passwd answer nor `id` keeps the pre-#680 behavior:
