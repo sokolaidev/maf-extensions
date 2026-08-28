@@ -89,9 +89,9 @@ __all__ = [
 _SDK_NOT_INSTALLED = "Error: the sandbox backend is not installed — degrading to T0"
 _NO_BACKEND_CONFIGURED = "Error: no sandbox backend is configured — degrading to T0"
 _SANDBOX_UNAVAILABLE = "Error: sandbox unavailable — degrading to T0 (LLM self-check only)"
-_SANDBOX_REFUSED_BY_THE_BACKEND = (
-    "Error: the sandbox backend refused this workload — degrading to T0 (LLM self-check only). "
-    "The backend's reason is in the host log."
+_SANDBOX_REFUSED = (
+    "Error: this workload was refused before it ran — degrading to T0 (LLM self-check only). "
+    "The reason is in the host log."
 )
 _SANDBOX_UNCLEAN = (
     "Error: the sandbox for this conversation is closed: a previous call left it unclean — data "
@@ -447,29 +447,18 @@ class SandboxToolSession:
         - a :class:`ValueError` is a message this stack authored (image resolution raises
           them), so it is surfaced verbatim — that is what makes it actionable for whoever is
           enabling the feature;
-        - a **refusal this package composed** — every member of ``_router``'s
-          ``ATTACH_REFUSALS``, raised by :meth:`~maf_sandbox.SandboxRouter.ensure_can_serve`
-          before any backend is touched — is surfaced for the same reason, and is the one a
-          caller can act on: what was asked for, and which backend or posture would not serve
-          it;
-        - a refusal of the same **type** escaping ``acquire`` is a different thing and gets a
-          fixed sentence. Those classes are public and the protocol says nothing about why a
-          backend may raise one, so the message is neither this package's to vouch for nor
-          reliably about any particular cause. The caller learns that the backend refused; the
-          reason goes to the log;
+        - a **refusal** — any member of ``_router``'s ``ATTACH_REFUSALS`` — gets a fixed
+          sentence of its own, saying the workload was refused rather than that the sandbox is
+          unavailable. Its *text* is not surfaced: those classes are public and ``acquire``
+          forwards what a backend raises, so a message may carry an SDK response, and nothing
+          about the type says who composed it. What the caller gains is the distinction
+          between a refusal and an outage, which is what decides whether retrying is pointless;
         - anything else is a provider or transport failure whose text can carry endpoint,
           subscription and tenant ids.  Tool results are persisted into the transcript, so
           that detail goes to the log — with :func:`~maf_sandbox.error_detail`, because
           ``str()`` on such an error is often just ``Operation returned an invalid status``
           — and the model gets a fixed sentence saying only that the run degraded.
         """
-        try:
-            # Not redundant with `acquire`, which runs these same checks: asking before a
-            # backend is reached is what separates a refusal composed here from one it raised.
-            self._router.ensure_can_serve(self._spec)
-        except ATTACH_REFUSALS as exc:
-            self._logger.warning(f"{self._log_prefix}: %s", exc)
-            return f"Error: {exc}"
         try:
             sandbox = await self._router.acquire(key, self._spec)
         except ImportError as exc:
@@ -485,14 +474,12 @@ class SandboxToolSession:
             self._logger.warning(f"{self._log_prefix}: %s", exc)
             return f"Error: {exc}"
         except ATTACH_REFUSALS as exc:
-            # Past the check above, so the backend was reached and this message is not this
-            # package's to vouch for — `error_detail` because the backend's own reason is what
-            # the operator needs and `str()` often drops it.
+            # `error_detail` because a backend may have raised this one and its reason is what
+            # the operator needs, where `str()` on such an error often drops it.
             self._logger.warning(
-                f"{self._log_prefix}: the sandbox backend refused this workload: %s",
-                error_detail(exc),
+                f"{self._log_prefix}: workload refused before it ran: %s", error_detail(exc)
             )
-            return _SANDBOX_REFUSED_BY_THE_BACKEND
+            return _SANDBOX_REFUSED
         except SandboxUnclean as exc:
             # The router's own refusal: a sandbox a previous call could not clean and the
             # framework could not dispose of. Safe to name and actionable for the host, but

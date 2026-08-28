@@ -187,10 +187,10 @@ class SandboxTransferLimitsNotPermitted(PermissionError):
 #:
 #: **What membership does not confer is trust in the text.** These classes are exported, and
 #: `acquire` forwards what a backend raises, so an instance may carry a message this package
-#: never wrote — an SDK response, an endpoint. `maf.py` therefore surfaces one verbatim only
-#: where `ensure_can_serve` raised it, before any backend was reached; the same type out of
-#: `acquire` gets a fixed sentence, the way `SandboxUnclean` passes a code and leaves the
-#: detail in the log.
+#: never wrote — an SDK response, an endpoint. What `maf.py` reads off the type is that the
+#: workload was *refused*, which is worth a sentence of its own beside the one for an outage;
+#: the message stays in the log, the way `SandboxUnclean` passes a code and leaves the detail
+#: behind.
 #:
 #: Public by necessity — this package's strict pyright refuses a private name across modules —
 #: and absent from `__init__`, so it stays internal. `test_maf_glue.py` derives the membership

@@ -120,6 +120,13 @@ def _context(scope="scope-a", thread_id="thread-1", lister=None):
     )
 
 
+def _sandbox_unavailable() -> str:
+    """The sentence a provider or transport failure gets, which a refusal must not share."""
+    from maf_sandbox.maf import _SANDBOX_UNAVAILABLE
+
+    return _SANDBOX_UNAVAILABLE
+
+
 def _session(
     backend=None,
     *,
@@ -382,19 +389,31 @@ class TestSessionAcquire:
         }
         assert defined - {NoSandboxBackend, SandboxUnclean} == set(ATTACH_REFUSALS)
 
-    def test_a_refusal_this_package_composed_is_surfaced_verbatim(self, caplog):
-        """The spec asks for a capability the backend does not declare, so `ensure_can_serve`
-        composes the refusal out of the spec and the backend's declarations — no backend text
-        is involved, which is what makes it safe to hand on."""
+    def test_a_refusal_is_told_apart_from_an_outage(self, caplog):
+        """The distinction the branch buys, and the only one it can: a refused workload is not
+        a sandbox that went away, and only one of the two is worth a retry.
+
+        The spec asks for a capability the backend does not declare, so the router refuses
+        inside `acquire`. `sandboxed_tool` calls `ensure_can_serve` before it builds a session,
+        so a workload wired that way is refused at attach and never reaches here — that is
+        `TestTheIsolationFloorStillApplies`' subject. This is the path of a host that builds a
+        session itself, or of declarations that changed after attach.
+        """
         session = _session(
             InProcessSandboxBackend(),
             spec=dataclasses.replace(_SPEC, requires=frozenset({Capability.RUN_CODE})),
         )
         with caplog.at_level(logging.WARNING, logger="test_workload"):
             answer = asyncio.run(session.acquire(_KEY))
-        assert isinstance(answer, str)
-        assert answer.startswith("Error: sandbox backend")
-        assert "run_code" in answer
+
+        assert answer == (
+            "Error: this workload was refused before it ran — degrading to T0 (LLM self-check "
+            "only). The reason is in the host log."
+        )
+        assert answer != _sandbox_unavailable()
+        # The detail an operator needs is in the log, and only there.
+        assert "run_code" in caplog.text
+        assert "run_code" not in answer
 
     def test_a_backends_own_refusal_text_never_reaches_the_caller(self, caplog):
         """A backend can raise one of these with anything in its message.
@@ -415,7 +434,7 @@ class TestSessionAcquire:
         assert isinstance(answer, str)
         for leaked in ("management.westus", "subscriptions", "prod-group", "admin@example.com"):
             assert leaked not in answer, answer
-        assert answer.startswith("Error: the sandbox backend refused this workload")
+        assert answer.startswith("Error: this workload was refused before it ran")
         assert "prod-group" in caplog.text
 
     def test_an_unclean_sandbox_keeps_its_own_sentence(self):
