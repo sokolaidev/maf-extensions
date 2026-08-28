@@ -323,17 +323,14 @@ jobs:
             fi
           done
 
-      # The same question asked of `samples/`, where nothing asked it (#725). A sample declares
-      # its dependencies in a PEP 723 block rather than a range, so no gate above reaches it:
-      # `test_sample_metadata.py` reads the floor's shape and window without the imports, and
-      # `test_sample_modules_import.py` imports the samples against the *workspace* core. A
-      # sample naming a floor that does not carry what it uses was green in both.
+      # The same question asked of `samples/`, which declares a PEP 723 block rather than a
+      # range and so is reached by no gate above (#725).
       #
-      # `--local-core` on the same terms as the step above — it fires only when nothing
-      # published satisfies a floor, the window between a Release PR merging and the upload —
-      # except that it substitutes every wheel `dist/` holds, not the core alone. A published
-      # backend cannot implement a protocol it predates, and pairing one with an unreleased core
-      # reports a packaging cause as a sample error.
+      # `--local-core` on the same terms as the step above, and it substitutes every wheel
+      # `dist/` holds rather than the core alone. Passing it unconditionally means the second
+      # refusal — a floor no published core satisfies — is not reachable here; a Release PR
+      # merged and never published is `report_stuck_releases.py`'s signal, not this one's.
+      # docs/release-compatibility.md carries both, and `poe sample-floors` is the flagless run.
       - name: Each sample against the core its own block names
         if: needs.changes.outputs.code == 'true'
         run: |

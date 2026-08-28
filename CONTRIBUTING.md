@@ -20,6 +20,7 @@ uv run python scripts/install_hooks.py # the commit, message and push hooks: lin
 uv sync            # one workspace, one lock, every package editable
 uv run poe gate    # pytest -q, ruff check, ruff format --check, both pyright passes
 uv run poe md-blocks   # optional: lint the markdown's python blocks (report-only in CI too)
+uv run poe sample-floors   # optional: type-check each sample against the core its block names
 ```
 
 `poe` runs each task through `uv run` itself — it detects the workspace's `uv.lock`. `poe types-packages` enumerates every `packages/*/` carrying its own `[tool.pyright]`, so a new package is covered on the commit that adds it; `poe types` is the bare pass over `scripts/`, `tests/` and `samples/`.

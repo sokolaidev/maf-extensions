@@ -33,12 +33,12 @@ from pathlib import Path, PurePath
 import pytest
 
 _ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_ROOT / "scripts"))  # the shared PEP 723 reader lives beside the checks
+
+import sample_blocks  # noqa: E402
+
 _SAMPLES = _ROOT / "samples"
 _SAMPLE_DIRS = sorted(path for path in _SAMPLES.glob("[0-9][0-9]_*") if path.is_dir())
-
-#: PEP 723, as the spec writes it. The same shape `test_sample_metadata.py` parses — that suite
-#: owns validating the block against the imports, and this one only reads what it declares.
-_BLOCK = re.compile(r"(?m)^# /// script\s*$\s(?P<body>(?:^#(?:| .*)$\s)+)^# ///\s*$")
 
 
 def test_the_sample_directories_were_found():
@@ -48,15 +48,12 @@ def test_the_sample_directories_were_found():
 
 def _declared(sample: Path) -> list[str]:
     """The distribution names a sample's PEP 723 block asks for, version specifiers stripped."""
-    match = _BLOCK.search((sample / "agent.py").read_text(encoding="utf-8"))
-    assert match, f"{sample.name}/agent.py has no PEP 723 block"
-    body = "".join(
-        line[2:] if line.startswith("# ") else line[1:]
-        for line in match.group("body").splitlines(keepends=True)
-    )
+    block = sample_blocks.declared(sample / "agent.py")
+    assert block is not None, f"{sample.name}/agent.py has no PEP 723 block"
     return [
-        re.match(r"[A-Za-z0-9._-]+", dep).group(0)
-        for dep in tomllib.loads(body).get("dependencies", [])
+        name
+        for dep in block.get("dependencies", [])
+        if (name := sample_blocks.distribution(dep)) is not None
     ]
 
 
