@@ -112,9 +112,13 @@ async def refuse_symlinked_parents(
     directory was expected is the guest tripping rather than escaping.  A component that is not
     there ends the walk — there is nothing below it to reach.
 
-    Two things ``stat`` must be, or this answers about the wrong filesystem: **unconfined**,
-    since the chain covers the working directory's own ancestors, and **no-follow**, since a
-    stat that resolves a link describes its target and hides the escape.  ``include_self``
+    Three things ``stat`` must be, or this answers about the wrong filesystem: **unconfined**,
+    since the chain covers the working directory's own ancestors; **no-follow**, since a stat
+    that resolves a link describes its target and hides the escape; and **not answered by the
+    guest** wherever the backend has any other mechanism, since a workload asked to describe
+    its own filesystem can answer falsely — a root guest replaces ``test`` in its own image.
+    A backend with no other mechanism says so in its README, and the repository's own
+    ``tests/test_confinement_stat_source.py`` is what holds it to that.  ``include_self``
     extends the walk to ``guest_path`` itself, which an enumeration needs — a listing passes
     through a link as readily as a read does.
     """
