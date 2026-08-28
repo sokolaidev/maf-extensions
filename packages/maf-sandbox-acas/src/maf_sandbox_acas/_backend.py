@@ -174,8 +174,14 @@ def _image_identity(spec: SandboxSpec) -> tuple[str, str]:
 
 
 def _image_label(spec: SandboxSpec) -> str:
-    """How a message names the image :func:`_image_identity` keys on."""
-    return spec.image or spec.image_id or "the configured image"
+    """How a message names the image :func:`_image_identity` keys on.
+
+    ``image_id`` first, and both when both are set: an id wins at create, so naming ``image``
+    alone would point a refusal at an artefact that never booted.
+    """
+    if spec.image_id and spec.image:
+        return f"{spec.image_id} (pinned over {spec.image})"
+    return spec.image_id or spec.image or "the configured image"
 
 
 #: So the ceilings below read as sizes rather than as eight-digit literals.
@@ -902,24 +908,13 @@ class AcasSandboxBackend:
         """Refuse a spec whose guest could not create the files it collects; warn one that only
         runs commands.
 
-        The two planes act as two principals: the file plane writes as root, so every directory
-        it creates lands ``0:0 0755``, while ``exec`` runs as the image's ``USER`` and the SDK
-        exposes no selector to raise it.  On an image whose guest is not root, a guest program
-        can therefore create nothing inside a directory the file plane made — neither a declared
-        output beside the files it was given nor the host-tool transport's own markers, which go
-        into a call directory the launcher's own upload created.
+        The file plane writes as root and ``exec`` runs as the image's ``USER``, so on a
+        non-root image a guest program can create nothing inside a directory the file plane
+        made.  ``sandbox`` is optional because the memo can answer before one exists.
 
-        Called twice by :meth:`_get_or_create`: once with no sandbox, which answers only from
-        what an earlier acquire measured and so refuses before paying for a create, and once
-        with the sandbox the probe runs in — where a refused **create** is deleted by the caller
-        and a refused **reuse** stays registered for the key's own disposal.  The warning is
-        emitted once per image and kind rather than on both of those calls, and rather than on
-        every acquire — this method runs on every tool call.
-
-        An image whose uid cannot be read is **served**, and asked only once.  Refusing on an
-        unreadable probe would take a working root image off a deployment, where serving it
-        costs no more than the failure that happens today; re-probing one would put an `exec`
-        round trip, and its timeout, in front of every tool call.
+        An image whose uid cannot be read is **served**, and asked only once: refusing on an
+        unreadable probe would take a working root image off a deployment, and re-probing would
+        put an ``exec`` round trip in front of every tool call.
 
         Raises:
             SandboxCapabilityNotSupported: when the spec requires a capability only a guest that
@@ -976,11 +971,9 @@ class AcasSandboxBackend:
         asked again on every acquire, including the warm reuse the probe used to skip, and each
         ask is a round trip bounded by :data:`_PROBE_TIMEOUT_S`.
 
-        **A failure never displaces an answer.**  Two cold acquires for one image can be in
-        flight together — different keys, one backend — so a probe that fails late would
-        otherwise overwrite the uid the other established, and ``None`` is served rather than
-        refused.  Both failure paths record through ``setdefault`` and return what the memo
-        holds, so a late failure yields to the measurement instead of disabling the gate.
+        **A failure never displaces an answer.**  Concurrent cold acquires for one image race
+        here, and ``None`` is served rather than refused, so both failure paths record through
+        ``setdefault`` and return what the memo holds.
         """
         image = _image_label(spec)
         try:

@@ -726,6 +726,32 @@ class TestAnImageWhoseGuestCannotWrite:
         assert "python-nonroot:3.13" in message
         assert "USER is root" in message
 
+    def test_a_refusal_names_the_artefact_that_booted(self):
+        """`image_id` wins at create, so a message naming `image` alone sends an operator to
+        an artefact that was never run."""
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        client = _GuestGroupClient(_guest_reporting(10001))
+        backend = _backend_with(client)
+
+        with pytest.raises(SandboxCapabilityNotSupported) as refusal:
+            asyncio.run(
+                backend.acquire(self._key(), _spec_requiring(Capability.EXEC, Capability.FILES_OUT))
+            )
+
+        assert "pinned-id" in str(refusal.value), str(refusal.value)
+
+    def test_only_the_configured_field_is_named_when_one_is_set(self):
+        """The common shape: no id pinned, so there is nothing to prefer over the reference."""
+        from maf_sandbox import SandboxSpec
+
+        from maf_sandbox_acas._backend import _image_label
+
+        spec = SandboxSpec(kind="codeact", image="python-nonroot:3.13")
+
+        assert _image_label(spec) == "python-nonroot:3.13"
+        assert _image_label(SandboxSpec(kind="codeact", image_id="only-an-id")) == "only-an-id"
+
     def test_host_tools_are_refused_on_their_own(self):
         """The transport's launcher writes its markers into a directory the file plane made,
         so the pair is refused together even where a kind asks for only one of them."""

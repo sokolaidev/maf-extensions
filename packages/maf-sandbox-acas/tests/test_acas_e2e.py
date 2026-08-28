@@ -901,21 +901,11 @@ class TestAnImageWhoseGuestIsNotRoot:
             nonroot.run(nonroot.backend.acquire(nonroot.key, collecting))
 
     def test_a_cold_refusal_deletes_the_sandbox_it_had_to_create(self, nonroot: _Live, caplog):
-        """The half the test above cannot reach, and the one that leaked.
+        """A refusal that had to create a sandbox to reach its verdict still deletes it.
 
-        A backend meeting this image for the first time has to create a sandbox to learn the
-        uid, and only then refuses — and an acquire that raises is handed to nobody, so the
-        framework's per-call cleanup never sees it. Its own backend instance, because the memo
-        is per instance: the fixture's has already probed, which is exactly why its refusal
-        costs nothing and proves nothing about this path.
-
-        **Costs one billable sandbox**, created and deleted inside this test. Offline tests
-        assert that `begin_delete` was called; only the service can say it landed.
-
-        The create is asserted, not assumed. Every check below — an empty registry, an empty
-        undeleted record, a scope that lists nothing — is equally true of a run that created
-        no sandbox at all, so without the log pair this would be a test that passes by doing
-        nothing.
+        Needs a backend of its own: the memo is per instance, so the fixture's has already
+        probed and could not reach the cold path. The create is asserted rather than assumed —
+        every other check here is equally true of a run that created nothing.
         """
         from maf_sandbox import SandboxCapabilityNotSupported
 
