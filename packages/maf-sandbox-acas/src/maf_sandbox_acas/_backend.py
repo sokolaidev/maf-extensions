@@ -29,6 +29,7 @@ from maf_sandbox import (
     Isolation,
     Sandbox,
     SandboxBackend,
+    SandboxCapabilityNotSupported,
     SandboxEntry,
     SandboxKey,
     SandboxLimits,
@@ -140,6 +141,32 @@ _LABEL_KIND = "kind"
 # cold create instead — slower for the user and more expensive, with nothing in the logs
 # saying why. Waiting longer costs only the wait.
 _RESUME_TIMEOUT_S = 120
+
+#: What no guest that cannot write is able to back. `FILES_OUT` because a declared output is
+#: created by the program that ran, `HOST_TOOLS` because the transport's launcher writes its own
+#: pid, exit and session markers into a directory the file plane made.
+_NEEDS_A_WRITING_GUEST = frozenset({Capability.FILES_OUT, Capability.HOST_TOOLS})
+
+#: What makes the guest's uid worth reading at all. `EXEC` earns a warning rather than a
+#: refusal: a command whose whole result is its stdout runs fine as any user.
+_PROBE_WHEN_REQUIRED = _NEEDS_A_WRITING_GUEST | {Capability.EXEC}
+
+#: How the guest's uid is read, once per image on a cold acquire.
+_GUEST_UID_COMMAND = "id -u"
+
+#: Where that runs. Never `spec.work_dir`, which nothing has created yet at acquire: an exec
+#: into a directory that does not exist fails for a reason unrelated to the answer.
+_PROBE_WORKING_DIRECTORY = "/"
+
+
+def _image_identity(spec: SandboxSpec) -> tuple[str, str]:
+    """What a spec names its image by — the key the guest's uid is remembered under.
+
+    Both fields, because ``image_id`` skips resolution entirely: two specs sharing an ``image``
+    can still boot different artefacts.
+    """
+    return (spec.image_id or "", spec.image or "")
+
 
 #: So the ceilings below read as sizes rather than as eight-digit literals.
 _MIB = 1024 * 1024
@@ -594,6 +621,12 @@ class AcasSandboxBackend:
         # loop, so one shared client would be a cross-loop hazard; one per call would leak a
         # connection pool per tool invocation.
         self._clients: dict[asyncio.AbstractEventLoop, tuple[Any, Any]] = {}
+        #: The uid `exec` runs as, per image a spec named. A property of the image rather
+        #: than of the sandbox booted from it, so one probe answers for every sandbox after.
+        self._guest_uids: dict[tuple[str, str], int] = {}
+        #: Which (image, kind) pairs have already been warned about. `acquire` runs on every
+        #: tool call, and a warning per call is noise rather than a signal.
+        self._warned_about_the_guest: set[tuple[tuple[str, str], str]] = set()
         # One get-or-create lock per (loop, registry key) — see `_acquire_lock`.
         self._acquire_locks: dict[
             tuple[asyncio.AbstractEventLoop, tuple[str, str, str, str]], asyncio.Lock
@@ -636,6 +669,10 @@ class AcasSandboxBackend:
         # none of which this backend chooses, since `spec.image` does. That gap is #111's axis,
         # and it is the same gap `EXEC` already has: a kind execing `python3` against an image
         # without Python fails inside the sandbox today.
+        #
+        # The image does narrow one thing, and `acquire` is where it lands rather than here: a
+        # guest that is not root can create nothing inside a directory the file plane made, so
+        # this pair is refused there for such an image (#722).
         return frozenset(
             {
                 Capability.EXEC,
@@ -706,6 +743,11 @@ class AcasSandboxBackend:
         assistant message are executed concurrently, so two acquires for one key can be in
         flight at once; unserialised, both miss the registry and each is handed a running,
         billable sandbox, of which only one stays registered.
+
+        Raises:
+            SandboxCapabilityNotSupported: when the spec requires ``FILES_OUT`` or
+                ``HOST_TOOLS`` and the image's guest is not root, which
+                :meth:`_refuse_or_warn_where_the_guest_cannot_write` explains.
         """
         async with self._acquire_lock((key.scope, key.thread_id, key.agent_dir, spec.kind)):
             return await self._get_or_create(key, spec)
@@ -728,6 +770,9 @@ class AcasSandboxBackend:
         """:meth:`acquire`'s body, run under that key's lock."""
         gc = self._group_client()
         registry_key = (key.scope, key.thread_id, key.agent_dir, spec.kind)
+        # From what an earlier acquire measured, so the second workload to meet a refused image
+        # is refused before this one pays for a create.
+        await self._refuse_or_warn_where_the_guest_cannot_write(spec)
 
         sandbox_id = self._registry.get(registry_key)
         if sandbox_id is not None:
@@ -741,7 +786,7 @@ class AcasSandboxBackend:
                     key.thread_id,
                     key.agent_dir,
                 )
-                return _AcasSandbox(sc, self._config.read_timeout_seconds)
+                reused = _AcasSandbox(sc, self._config.read_timeout_seconds)
             except Exception as exc:  # noqa: BLE001 - a dead sandbox is replaced, not reported
                 # Not a warning: a sandbox reclaimed by its auto-delete timer between rounds
                 # is the expected path, not a fault. But it does mean the next call pays for
@@ -751,6 +796,12 @@ class AcasSandboxBackend:
                     sandbox_id,
                     error_detail(exc),
                 )
+            else:
+                # Outside the `try`, because a refusal is this acquire's answer rather than a
+                # sandbox that failed to resume, and the handler above would swallow it into a
+                # replacement create.
+                await self._refuse_or_warn_where_the_guest_cannot_write(spec, reused)
+                return reused
             self._registry.pop(registry_key, None)
 
         # Two namespaces, and `image` says which by whether it carries a tag: a bare name is
@@ -795,7 +846,109 @@ class AcasSandboxBackend:
                 "it will be reclaimed by the auto-delete timer",
                 sc.sandbox_id,
             )
-        return _AcasSandbox(sc, self._config.read_timeout_seconds)
+        created = _AcasSandbox(sc, self._config.read_timeout_seconds)
+        await self._refuse_or_warn_where_the_guest_cannot_write(spec, created)
+        return created
+
+    async def _refuse_or_warn_where_the_guest_cannot_write(
+        self, spec: SandboxSpec, sandbox: _AcasSandbox | None = None
+    ) -> None:
+        """Refuse a spec whose guest could not create the files it collects; warn one that only
+        runs commands.
+
+        The two planes act as two principals: the file plane writes as root, so every directory
+        it creates lands ``0:0 0755``, while ``exec`` runs as the image's ``USER`` and the SDK
+        exposes no selector to raise it.  On an image whose guest is not root, a guest program
+        can therefore create nothing beside the files it was given — neither a declared output
+        nor the host-tool transport's own markers — however the working directory is chosen,
+        because the call's own directory is one the file plane made.
+
+        Called twice by :meth:`_get_or_create`: once with no sandbox, which answers only from
+        what an earlier acquire measured and so refuses before paying for a create, and once
+        with the sandbox the probe runs in.  A sandbox refused after its create stays
+        registered, so the disposal that ends the turn still reaches it.  The warning is emitted
+        once per image and kind rather than on both of those calls, and rather than on every
+        acquire — this method runs on every tool call.
+
+        An image whose uid cannot be read is **served**.  Refusing on an unreadable probe would
+        take a working root image off a deployment, where serving it costs no more than the
+        failure that happens today.
+
+        Raises:
+            SandboxCapabilityNotSupported: when the spec requires a capability only a guest that
+                can write is able to back.
+        """
+        if not spec.requires & _PROBE_WHEN_REQUIRED:
+            return
+        uid = self._guest_uids.get(_image_identity(spec))
+        if uid is None and sandbox is not None:
+            uid = await self._probe_guest_uid(sandbox, spec)
+        if uid is None or uid == 0:
+            return
+
+        image = spec.image or spec.image_id or "the configured image"
+        refused = spec.requires & _NEEDS_A_WRITING_GUEST
+        if refused:
+            raise SandboxCapabilityNotSupported(
+                f"sandbox backend {BACKEND_NAME!r} cannot serve "
+                f"{', '.join(sorted(refused))} to the {spec.kind!r} workload from {image}: its "
+                f"guest runs as uid {uid}, and every directory this backend's file plane creates "
+                "belongs to root and is writable by nobody else, so the guest program can create "
+                "neither a declared output beside the files it was given nor the host-tool "
+                "transport's own markers. Refused here rather than inside the tool call, where "
+                "it arrives as a shell's 'Permission denied'. Serve this workload on an image "
+                "whose USER is root, or narrow what it requires."
+            )
+        already_warned = (_image_identity(spec), spec.kind)
+        if already_warned in self._warned_about_the_guest:
+            return
+        self._warned_about_the_guest.add(already_warned)
+        logger.warning(
+            "acas: %s runs its guest as uid %s, so a program the %s workload execs can read "
+            "what write_file placed but cannot create any file of its own beside it — every "
+            "directory the file plane makes belongs to root. An exec whose whole result is its "
+            "stdout is unaffected; anything the guest has to write is not.",
+            image,
+            uid,
+            spec.kind,
+        )
+
+    async def _probe_guest_uid(self, sandbox: _AcasSandbox, spec: SandboxSpec) -> int | None:
+        """The uid ``exec`` runs as, remembered per image, ``None`` when the guest cannot say.
+
+        Remembered the way a resolved disk-image id is: the uid belongs to the artefact a
+        reference names rather than to the sandbox booted from it, so one round trip on one cold
+        acquire answers for every sandbox after it.  Only an answer is remembered, so an image
+        that did not report one is asked again on the next acquire.
+        """
+        image = spec.image or spec.image_id or "the configured image"
+        try:
+            answered = await sandbox.exec(
+                _GUEST_UID_COMMAND,
+                working_directory=_PROBE_WORKING_DIRECTORY,
+                timeout=self._config.read_timeout_seconds,
+            )
+        except Exception as unreachable:  # noqa: BLE001 - an acquire must not fail over this
+            logger.debug(
+                "acas: %s did not answer %r (%s)",
+                image,
+                _GUEST_UID_COMMAND,
+                error_detail(unreachable),
+            )
+            return None
+        reported = answered.stdout.strip()
+        if answered.exit_code != 0 or not reported.isdecimal():
+            logger.debug(
+                "acas: %s answered %r with exit %s and %r, so its guest's uid is unknown",
+                image,
+                _GUEST_UID_COMMAND,
+                answered.exit_code,
+                reported,
+            )
+            return None
+        uid = int(reported)
+        self._guest_uids[_image_identity(spec)] = uid
+        return uid
 
     async def dispose(self, key: SandboxKey) -> DisposalFailure | None:
         """Delete every kind's sandbox for ``key`` that this process knows of.

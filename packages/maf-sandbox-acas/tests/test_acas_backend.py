@@ -605,6 +605,281 @@ class TestWhichNamespaceASpecBootsFrom:
 
 
 # ---------------------------------------------------------------------------
+# The non-root gate — what an image whose guest cannot write is refused
+# ---------------------------------------------------------------------------
+
+
+class _GuestAnswer:
+    """One `exec` result, in the shape the backend reads the SDK's return value for."""
+
+    def __init__(self, stdout: str = "", stderr: str = "", exit_code: int = 0) -> None:
+        self.stdout = stdout
+        self.stderr = stderr
+        self.exit_code = exit_code
+
+
+class _GuestSandboxClient(_FakeSandboxClient):
+    """A sandbox whose `exec` answers `id -u`, which is the whole of the acquire-time probe."""
+
+    def __init__(self, sandbox_id: str, answer) -> None:
+        super().__init__(sandbox_id)
+        self._answer = answer
+        self.execs: list[tuple[str, str]] = []
+
+    async def set_lifecycle_policy(self, policy) -> None:
+        return None
+
+    async def exec(self, command: str, *, working_directory: str):
+        self.execs.append((command, working_directory))
+        if isinstance(self._answer, Exception):
+            raise self._answer
+        return self._answer
+
+
+class _GuestGroupClient:
+    """Hands out sandboxes that answer the probe, on the create path and the reuse path alike."""
+
+    def __init__(self, answer) -> None:
+        self._answer = answer
+        self.create_calls = 0
+        self.clients: list[_GuestSandboxClient] = []
+
+    def get_sandbox_client(self, sandbox_id: str) -> _GuestSandboxClient:
+        return self._client(sandbox_id)
+
+    async def begin_create_sandbox(self, *, labels, egress_policy, **source):
+        self.create_calls += 1
+        created = self._client(f"sbx-{self.create_calls}")
+
+        class _Poller:
+            async def result(self):
+                return created
+
+        return _Poller()
+
+    def _client(self, sandbox_id: str) -> _GuestSandboxClient:
+        client = _GuestSandboxClient(sandbox_id, self._answer)
+        self.clients.append(client)
+        return client
+
+    @property
+    def probes(self) -> list[tuple[str, str]]:
+        """Every command every sandbox this client handed out was asked to run."""
+        return [ran for client in self.clients for ran in client.execs]
+
+
+def _guest_reporting(uid: int) -> _GuestAnswer:
+    return _GuestAnswer(stdout=f"{uid}\n")
+
+
+def _spec_requiring(*capabilities):
+    """A spec on a non-root-looking image, requiring exactly what a test is about.
+
+    Both image fields, because the memo is keyed on the pair: `image_id` skips resolution, so
+    two specs sharing an `image` can still boot different artefacts.
+    """
+    from maf_sandbox import SandboxSpec
+
+    return SandboxSpec(
+        kind="codeact",
+        image="python-nonroot:3.13",
+        image_id="pinned-id",
+        requires=frozenset(capabilities),
+    )
+
+
+class TestAnImageWhoseGuestCannotWrite:
+    """The file plane writes as root and `exec` runs as the image's `USER`, so on a non-root
+    image a guest program can create nothing beside the files it was given (#722).
+
+    `acquire` is where that is answered rather than `ensure_can_serve`: the router matches a
+    capability set before any image is running, so nothing earlier can know the uid.
+    """
+
+    @staticmethod
+    def _key(scope: str = "scope-a") -> SandboxKey:
+        return SandboxKey(scope=scope, thread_id="thread-1", agent_dir="devops-engineer")
+
+    def test_a_workload_collecting_outputs_is_refused(self):
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        client = _GuestGroupClient(_guest_reporting(10001))
+        backend = _backend_with(client)
+
+        with pytest.raises(SandboxCapabilityNotSupported) as refusal:
+            asyncio.run(
+                backend.acquire(self._key(), _spec_requiring(Capability.EXEC, Capability.FILES_OUT))
+            )
+
+        message = str(refusal.value)
+        assert "files_out" in message
+        assert "uid 10001" in message
+        assert "python-nonroot:3.13" in message
+        assert "USER is root" in message
+
+    def test_host_tools_are_refused_on_their_own(self):
+        """The transport's launcher writes its markers into a directory the file plane made,
+        so the pair is refused together even where a kind asks for only one of them."""
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        client = _GuestGroupClient(_guest_reporting(10001))
+        backend = _backend_with(client)
+
+        with pytest.raises(SandboxCapabilityNotSupported, match="host_tools"):
+            asyncio.run(
+                backend.acquire(
+                    self._key(), _spec_requiring(Capability.EXEC, Capability.HOST_TOOLS)
+                )
+            )
+
+    def test_a_root_guest_is_served(self):
+        client = _GuestGroupClient(_guest_reporting(0))
+        backend = _backend_with(client)
+
+        sandbox = asyncio.run(
+            backend.acquire(self._key(), _spec_requiring(Capability.EXEC, Capability.FILES_OUT))
+        )
+
+        assert sandbox.sandbox_id == "sbx-1"
+        assert client.probes == [("id -u", "/")]
+
+    def test_the_probe_never_runs_in_the_working_directory(self):
+        """Nothing has created `work_dir` at acquire, so a probe run there would fail for a
+        reason that has nothing to do with the uid."""
+        client = _GuestGroupClient(_guest_reporting(0))
+        backend = _backend_with(client)
+
+        asyncio.run(backend.acquire(self._key(), _spec_requiring(Capability.EXEC)))
+
+        assert [directory for _, directory in client.probes] == ["/"]
+
+    def test_a_workload_that_only_execs_is_served_with_a_warning(self, caplog):
+        client = _GuestGroupClient(_guest_reporting(10001))
+        backend = _backend_with(client)
+
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox_acas"):
+            sandbox = asyncio.run(backend.acquire(self._key(), _spec_requiring(Capability.EXEC)))
+
+        assert sandbox.sandbox_id == "sbx-1"
+        warned = [r.getMessage() for r in caplog.records if "uid 10001" in r.getMessage()]
+        assert len(warned) == 1, caplog.text
+        assert "write_file" in warned[0]
+
+    def test_the_warning_is_said_once_rather_than_on_every_call(self, caplog):
+        """`acquire` runs on every tool call, so a warning per acquire would be noise."""
+        client = _GuestGroupClient(_guest_reporting(10001))
+        backend = _backend_with(client)
+        spec = _spec_requiring(Capability.EXEC)
+
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox_acas"):
+            asyncio.run(backend.acquire(self._key("scope-a"), spec))
+            asyncio.run(backend.acquire(self._key("scope-b"), spec))
+
+        assert len([r for r in caplog.records if "uid 10001" in r.getMessage()]) == 1
+
+    def test_a_root_guest_execing_is_not_warned_about(self, caplog):
+        client = _GuestGroupClient(_guest_reporting(0))
+        backend = _backend_with(client)
+
+        with caplog.at_level(logging.WARNING, logger="maf_sandbox_acas"):
+            asyncio.run(backend.acquire(self._key(), _spec_requiring(Capability.EXEC)))
+
+        assert caplog.records == []
+
+    def test_a_guest_that_cannot_be_asked_is_served(self):
+        """Fails open, and deliberately: refusing on an unreadable probe would take a working
+        root image off a deployment, where serving it costs no more than today's failure."""
+        client = _GuestGroupClient(RuntimeError("no shell in this image"))
+        backend = _backend_with(client)
+
+        sandbox = asyncio.run(
+            backend.acquire(self._key(), _spec_requiring(Capability.EXEC, Capability.FILES_OUT))
+        )
+
+        assert sandbox.sandbox_id == "sbx-1"
+
+    def test_a_failed_command_is_not_read_as_a_uid(self):
+        client = _GuestGroupClient(_GuestAnswer(stdout="", stderr="not found", exit_code=127))
+        backend = _backend_with(client)
+
+        assert asyncio.run(
+            backend.acquire(self._key(), _spec_requiring(Capability.EXEC, Capability.FILES_OUT))
+        )
+
+    def test_an_answer_that_is_not_a_number_is_not_read_as_a_uid(self):
+        """`int()` on a word would raise inside an acquire, and a word is not a uid anyway."""
+        client = _GuestGroupClient(_GuestAnswer(stdout="root\n"))
+        backend = _backend_with(client)
+
+        assert asyncio.run(
+            backend.acquire(self._key(), _spec_requiring(Capability.EXEC, Capability.FILES_OUT))
+        )
+
+    def test_an_unreadable_probe_is_asked_again_next_time(self):
+        """Only an answer is remembered: a transport hiccup must not decide for the process."""
+        client = _GuestGroupClient(RuntimeError("service unavailable"))
+        backend = _backend_with(client)
+        spec = _spec_requiring(Capability.EXEC, Capability.FILES_OUT)
+
+        asyncio.run(backend.acquire(self._key("scope-a"), spec))
+        asyncio.run(backend.acquire(self._key("scope-b"), spec))
+
+        assert len(client.probes) == 2
+
+    def test_the_uid_is_read_once_per_image(self):
+        """A property of the image, not of the sandbox: a second key pays no round trip."""
+        client = _GuestGroupClient(_guest_reporting(0))
+        backend = _backend_with(client)
+        spec = _spec_requiring(Capability.EXEC, Capability.FILES_OUT)
+
+        asyncio.run(backend.acquire(self._key("scope-a"), spec))
+        asyncio.run(backend.acquire(self._key("scope-b"), spec))
+
+        assert len(client.probes) == 1
+
+    def test_the_second_workload_is_refused_without_a_sandbox_of_its_own(self):
+        """What the memo buys: the first acquire pays a create to learn the uid, and no acquire
+        after it does."""
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        client = _GuestGroupClient(_guest_reporting(10001))
+        backend = _backend_with(client)
+        spec = _spec_requiring(Capability.EXEC, Capability.FILES_OUT)
+
+        for scope in ("scope-a", "scope-b"):
+            with pytest.raises(SandboxCapabilityNotSupported):
+                asyncio.run(backend.acquire(self._key(scope), spec))
+
+        assert client.create_calls == 1
+
+    def test_a_warm_sandbox_is_gated_too(self):
+        """The reuse path returns through the gate, not around it — and the refusal is not
+        swallowed by the handler that replaces a sandbox which failed to resume."""
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        client = _GuestGroupClient(_guest_reporting(10001))
+        backend = _backend_with(client)
+        key = self._key()
+        backend._registry[(key.scope, key.thread_id, key.agent_dir, "codeact")] = "sbx-warm"
+
+        with pytest.raises(SandboxCapabilityNotSupported):
+            asyncio.run(
+                backend.acquire(key, _spec_requiring(Capability.EXEC, Capability.FILES_OUT))
+            )
+
+        assert client.create_calls == 0
+
+    def test_a_workload_that_neither_execs_nor_collects_is_never_probed(self):
+        """A spec asking for nothing the uid could refuse pays nothing to find it out."""
+        client = _GuestGroupClient(_guest_reporting(10001))
+        backend = _backend_with(client)
+
+        asyncio.run(backend.acquire(self._key(), _spec_requiring(Capability.FILES_IN)))
+
+        assert client.probes == []
+
+
+# ---------------------------------------------------------------------------
 # dispose_scope — cross-replica purge
 # ---------------------------------------------------------------------------
 

@@ -31,7 +31,8 @@ what this package believes, and #139 and #142 were both the package believing wr
 :class:`TestFilesOutAgainstTheRealService` asserts that none of them skipped here, because a
 suite that quietly skips a third of itself is the shape of a green run that attacked nothing.
 
-**Cost discipline.** Four sandboxes for the whole module. The probes and refusals share one,
+**Cost discipline.** Four sandboxes for the whole module, and a fifth only where
+``MAF_SANDBOX_ACAS_E2E_NONROOT_IMAGE`` names one whose guest is not root. The probes and refusals share one,
 acquired by a module-scoped fixture and disposed at the end; the lifecycle test needs its own
 because it disposes as the thing under test; the prebuilt-image test needs its own because a
 bare catalogue name is only evidence if it boots one; the egress leg needs its own because only
@@ -800,6 +801,95 @@ class TestBootingAnImageTheServiceProvides:
         )
         assert result.exit_code == 0, result.stderr
         assert result.stdout.strip().startswith("Python 3."), result.stdout
+
+
+# ---------------------------------------------------------------------------
+# The image nothing else in this suite runs — one whose guest is not root
+# ---------------------------------------------------------------------------
+
+#: A `repository:tag` imported into the group whose `USER` is not root. Unset for almost every
+#: deployment, and the leg skips: every sample and every other sandbox in this module runs a
+#: root image, which is why nothing surfaced #722 until a probe went looking for it.
+_NONROOT_IMAGE = os.environ.get("MAF_SANDBOX_ACAS_E2E_NONROOT_IMAGE")
+
+
+class TestAnImageWhoseGuestIsNotRoot:
+    """The acquire-time gate, and the wall it rests on, against the service (#722).
+
+    Costs **one more billable sandbox** when the environment names such an image, and nothing
+    otherwise. The refusal itself pays for no sandbox at all: the uid is remembered per image,
+    so the acquire that is refused never reaches a create.
+    """
+
+    @pytest.fixture(scope="class")
+    def nonroot(self, loop):
+        if not _NONROOT_IMAGE:
+            pytest.skip(
+                "needs MAF_SANDBOX_ACAS_E2E_NONROOT_IMAGE — a repository:tag imported into the "
+                "sandbox group whose USER is not root"
+            )
+        backend = AcasSandboxBackend(_config())
+        scope = f"e2e-nonroot-{uuid.uuid4()}"
+        key = _key(scope)
+        spec = SandboxSpec(
+            kind="e2e-nonroot",
+            image=_NONROOT_IMAGE,
+            work_dir=_WORK,
+            requires=frozenset({Capability.EXEC, Capability.FILES_IN}),
+        )
+        try:
+            # Inside the guard for the reason the shared fixture gives.
+            sandbox = loop.run_until_complete(backend.acquire(key, spec))
+            yield _Live(loop, backend, key, sandbox)
+        finally:
+            loop.run_until_complete(backend.dispose_scope(scope, "thread-1"))
+            loop.run_until_complete(backend.aclose())
+
+    def test_the_image_this_leg_names_really_is_someone_elses(self, nonroot: _Live):
+        """The control. Pointed at a root image, everything below would pass for free."""
+        answered = nonroot.run(
+            nonroot.sandbox.exec("id -u", working_directory="/", timeout=_EXEC_TIMEOUT)
+        )
+        assert answered.exit_code == 0, answered.stderr
+        assert answered.stdout.strip() != "0", (
+            "MAF_SANDBOX_ACAS_E2E_NONROOT_IMAGE names an image whose guest is root, so this "
+            "leg would assert nothing"
+        )
+
+    def test_the_guest_cannot_create_anything_inside_what_the_file_plane_made(self, nonroot: _Live):
+        """The wall itself, measured rather than quoted: one host write, one guest `mkdir`.
+
+        This is the launcher's own first two steps, which is why the transport cannot start
+        here — the call directory arrives root-owned and the run's work directory goes inside it.
+        """
+        call = f"{_WORK}/{uuid.uuid4().hex[:12]}"
+        nonroot.run(
+            nonroot.sandbox.write_file(f"{call}/given.txt", "in\n", working_directory=_WORK)
+        )
+
+        refused = nonroot.run(
+            nonroot.sandbox.exec(
+                ["mkdir", f"{call}/work"], working_directory="/", timeout=_EXEC_TIMEOUT
+            )
+        )
+
+        assert refused.exit_code != 0, "the guest created a directory the file plane owns"
+        assert "denied" in refused.stderr.lower(), refused.stderr
+
+    def test_a_workload_collecting_outputs_is_refused_at_acquire(self, nonroot: _Live):
+        """And refused without a second sandbox: the uid the fixture's acquire read is what
+        answers here, before any create."""
+        from maf_sandbox import SandboxCapabilityNotSupported
+
+        collecting = SandboxSpec(
+            kind="e2e-nonroot-outputs",
+            image=_NONROOT_IMAGE,
+            work_dir=_WORK,
+            requires=frozenset({Capability.EXEC, Capability.FILES_OUT}),
+        )
+
+        with pytest.raises(SandboxCapabilityNotSupported, match="files_out"):
+            nonroot.run(nonroot.backend.acquire(nonroot.key, collecting))
 
 
 @pytest.fixture(scope="module")
