@@ -372,11 +372,9 @@ class TestSessionAcquire:
         assert asyncio.run(session.acquire(_KEY)) == "Error: No disk image for 'bicep:1'"
 
     def test_the_family_is_every_refusal_the_router_defines(self):
-        """The membership is derived from the module, never read off the tuple: a check that
-        reads the tuple cannot fail when the tuple is the thing that is wrong.
-
-        Two exclusions, each because it answers with a sentence of its own, for a reason stated
-        beside its branch in ``maf.py``.
+        """Every refusal ``_router`` defines belongs to the family, less the two that answer
+        with sentences of their own. Derived from the module, so the tuple is checked here
+        rather than consulted.
         """
         from maf_sandbox import _router
 
@@ -414,6 +412,29 @@ class TestSessionAcquire:
         # The detail an operator needs is in the log, and only there.
         assert "run_code" in caplog.text
         assert "run_code" not in answer
+
+    def test_a_refusal_that_is_also_a_value_error_is_not_surfaced_verbatim(self, caplog):
+        """These classes are public and subclassable, so the ladder's order is the boundary.
+
+        `ValueError` is surfaced verbatim — image resolution raises it — so a refusal
+        inheriting both would take that branch and carry whatever it holds into a transcript,
+        if the refusal branch did not run first.
+        """
+
+        class BackendRefusal(SandboxCapabilityNotSupported, ValueError):
+            pass
+
+        leaky = BackendRefusal("refused: 403 from https://management.example.io for tenant-9")
+        session = _session(InProcessSandboxBackend(acquire_error=leaky))
+        with caplog.at_level(logging.WARNING, logger="test_workload"):
+            answer = asyncio.run(session.acquire(_KEY))
+
+        assert isinstance(leaky, ValueError)
+        assert isinstance(answer, str)
+        assert "management.example.io" not in answer, answer
+        assert "tenant-9" not in answer, answer
+        assert answer.startswith("Error: this workload was refused before it ran")
+        assert "tenant-9" in caplog.text
 
     def test_a_backends_own_refusal_text_never_reaches_the_caller(self, caplog):
         """A backend can raise one of these with anything in its message.

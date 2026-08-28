@@ -441,18 +441,21 @@ class SandboxToolSession:
         The ladder is this method's whole point, and the line it draws is a security one
         rather than a stylistic one:
 
+        - a **refusal** — any member of ``_router``'s ``ATTACH_REFUSALS`` — gets a fixed
+          sentence of its own, saying the workload was refused rather than that the sandbox is
+          unavailable. Its *text* is not surfaced: those classes are public and ``acquire``
+          forwards what a backend raises, so a message may carry an SDK response, and nothing
+          about the type says who composed it. What the caller gains is the distinction
+          between a refusal and an outage, which is what decides whether retrying is pointless.
+          **It is caught first**, and the order is the boundary rather than a style: these
+          classes are subclassable, and one inheriting :class:`ValueError` as well would take
+          the verbatim branch below and carry whatever it holds into the transcript;
         - a **missing SDK** is a host-side install problem, actionable and carrying no
           account detail;
         - **no backend** is a configuration state, likewise safe to name;
         - a :class:`ValueError` is a message this stack authored (image resolution raises
           them), so it is surfaced verbatim — that is what makes it actionable for whoever is
           enabling the feature;
-        - a **refusal** — any member of ``_router``'s ``ATTACH_REFUSALS`` — gets a fixed
-          sentence of its own, saying the workload was refused rather than that the sandbox is
-          unavailable. Its *text* is not surfaced: those classes are public and ``acquire``
-          forwards what a backend raises, so a message may carry an SDK response, and nothing
-          about the type says who composed it. What the caller gains is the distinction
-          between a refusal and an outage, which is what decides whether retrying is pointless;
         - anything else is a provider or transport failure whose text can carry endpoint,
           subscription and tenant ids.  Tool results are persisted into the transcript, so
           that detail goes to the log — with :func:`~maf_sandbox.error_detail`, because
@@ -461,6 +464,15 @@ class SandboxToolSession:
         """
         try:
             sandbox = await self._router.acquire(key, self._spec)
+        except ATTACH_REFUSALS as exc:
+            # First, because these classes are subclassable and one inheriting `ValueError`
+            # would otherwise take that branch and be surfaced verbatim. `error_detail` because
+            # a backend may have raised this one and its reason is what the operator needs,
+            # where `str()` on such an error often drops it.
+            self._logger.warning(
+                f"{self._log_prefix}: workload refused before it ran: %s", error_detail(exc)
+            )
+            return _SANDBOX_REFUSED
         except ImportError as exc:
             # The backend's SDK is not installed. Actionable, and carries no account detail.
             self._logger.warning(f"{self._log_prefix}: sandbox SDK unavailable: %s", exc)
@@ -473,13 +485,6 @@ class SandboxToolSession:
             # surface, and actionable for whoever is enabling the feature.
             self._logger.warning(f"{self._log_prefix}: %s", exc)
             return f"Error: {exc}"
-        except ATTACH_REFUSALS as exc:
-            # `error_detail` because a backend may have raised this one and its reason is what
-            # the operator needs, where `str()` on such an error often drops it.
-            self._logger.warning(
-                f"{self._log_prefix}: workload refused before it ran: %s", error_detail(exc)
-            )
-            return _SANDBOX_REFUSED
         except SandboxUnclean as exc:
             # The router's own refusal: a sandbox a previous call could not clean and the
             # framework could not dispose of. Safe to name and actionable for the host, but
