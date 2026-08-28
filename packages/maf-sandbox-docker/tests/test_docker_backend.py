@@ -1592,9 +1592,10 @@ class TestTheGuestIdentityIsReadFromTheContainer:
         facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
         assert (facts.guest_uid, facts.guest_gid) == (0, 20001)
 
-    def test_a_numeric_user_with_no_passwd_entry_keeps_gids_zero(self):
-        """A bare uid keeps root's gid when the guest cannot answer: with no `/etc/passwd`
-        entry the runtime itself picks gid 0, so that is the honest fallback.
+    def test_a_bare_uid_resolves_its_gid_from_id_when_passwd_is_unreadable(self):
+        """The `id` fallback: with `/etc/passwd` unreadable, a bare uid's primary gid is
+        asked from the guest, and only a guest that cannot answer leaves gid 0 — what the
+        runtime picks for a uid with no passwd entry.
         """
         facts, fake = self._facts(b"10001\n")
         assert (facts.guest_uid, facts.guest_gid) == (10001, 0)
