@@ -1243,6 +1243,33 @@ class TestWriteFile:
         with tarfile.open(fileobj=io.BytesIO(stdin)) as archive:
             assert archive.getnames() == ["maf-sandbox/work/note"]
 
+    def test_an_absent_work_dir_on_a_nonroot_image_travels_guest_owned(self):
+        """The `d == base` branch of the subtree rule: an image carrying `/maf-sandbox`
+        but no `work_dir` gets it as an explicit guest-owned entry — without it, docker
+        creates `work_dir` implicitly as root and every call directory under it leaks.
+        """
+        overrides = {
+            _cp("/maf-sandbox"): _DockerResult(
+                0, _owned_directory_tar("maf-sandbox", 0, 0o755), ""
+            ),
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"10001\n", ""),
+            ("exec", "-w", "/", _NAME, "id", "-u"): _DockerResult(0, b"10001\n", ""),
+            ("exec", "-w", "/", _NAME, "id", "-g"): _DockerResult(0, b"10001\n", ""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        asyncio.run(sandbox.write_file(f"{_WORK}/call-a1b2c3/note", "x", working_directory=_WORK))
+        stdin = fake.only("cp", "-").stdin
+        assert stdin is not None
+        with tarfile.open(fileobj=io.BytesIO(stdin)) as archive:
+            assert archive.getnames() == [
+                "maf-sandbox/work",
+                "maf-sandbox/work/call-a1b2c3",
+                "maf-sandbox/work/call-a1b2c3/note",
+            ]
+            work_dir = archive.getmember("maf-sandbox/work")
+            assert work_dir.isdir() and (work_dir.uid, work_dir.gid) == (10001, 10001)
+
     def test_a_root_working_directory_keeps_its_components_whole(self):
         """`working_directory = "/"` must not lose the first character of the leaf — a
         string-offset slice turns `/tmp` into `mp`, and docker would create `/mp` beside
@@ -1698,7 +1725,7 @@ class TestTheGuestIdentityIsReadFromTheContainer:
         facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
         assert (facts.guest_uid, facts.guest_gid) == expected
 
-    def test_an_unresolvable_identity_fails_open_to_root(self):
+    def test_an_unresolvable_identity_fails_open_to_root(self, caplog):
         """A named user with neither a passwd answer nor `id` keeps the pre-#680 behavior:
         root-owned entries, and the reach rule deciding the removals.  Guessing an
         arbitrary ownership could stamp a stranger's identity on the files.
@@ -1712,8 +1739,12 @@ class TestTheGuestIdentityIsReadFromTheContainer:
         }
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
         fake._responder = _passwd_responder([_NAME], overrides, passwd)
-        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        with caplog.at_level(logging.INFO):
+            facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
         assert (facts.guest_uid, facts.guest_gid) == (0, 0)
+        assert any("could not be resolved" in r.message for r in caplog.records), [
+            r.message for r in caplog.records
+        ]
 
     def test_an_unreadable_user_fails_open_to_root(self):
         """An image this backend cannot ask keeps today's behaviour: root-owned entries."""

@@ -766,9 +766,10 @@ class DockerSandboxBackend:
         # witness. `test_docker_e2e.py` measures it rather than assuming it.
         #
         # It is *not* a claim about the image. The shipped launcher wants `sh`, `nohup`,
-        # `printf`, `mv`, `mkdir`, `rm` and `kill` — and `setsid` where the image has it — and a
-        # run directory it can write, which a non-root guest does not have here (#680) — and a
-        # kind wants whatever interpreter it names — codeact wants
+        # `printf`, `mv`, `mkdir`, `rm` and `kill` — and `setsid` where the image has it —
+        # and a run directory it can write; #680's write half stamps the run directory
+        # with the container user, so on an image that identifies its user that half is
+        # covered, and a kind wants whatever interpreter it names — codeact wants
         # `python3` — none of which this backend chooses, since `spec.image` does. That gap is
         # #111's axis, and it is the same gap `EXEC` already has: a kind execing `python3`
         # against a distroless image fails inside the sandbox today.
@@ -935,6 +936,11 @@ class DockerSandboxBackend:
             raise
         except Exception as unreadable:  # noqa: BLE001 — an acquire must not fail over this
             logger.debug("docker: could not read %s's guest identity (%s)", name, unreadable)
+        logger.warning(
+            "docker: %s's user could not be resolved; writes stay root's (the pre-#680 "
+            "behavior) — the guest will not own what it is given",
+            name,
+        )
         return 0, 0
 
     async def _effective_ids(
