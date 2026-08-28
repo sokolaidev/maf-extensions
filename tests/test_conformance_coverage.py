@@ -339,7 +339,7 @@ def test_a_backend_that_serves_the_pull_surface_answers_the_suite(package: Path)
         f"tests imports {SUITES[0]} from {SUITE_MODULE} and calls it. Two backends written against "
         "the prose alone shipped the same confinement escape (#142); the probes are what that "
         "cost bought. Fill in a `ConformanceSubject` — `PosixGuestSubject` if the guest is Linux "
-        "and has `ln` — and await the suite against a real instance."
+        "and has `ln` and `test` — and await the suite against a real instance."
     )
 
 
