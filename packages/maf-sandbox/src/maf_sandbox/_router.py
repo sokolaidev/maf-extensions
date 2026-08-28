@@ -45,6 +45,7 @@ from ._reclaim import DEFAULT_RECLAIM_CONFIG, FailedReclaimPolicy, ReclaimConfig
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "ATTACH_REFUSALS",
     "NoSandboxBackend",
     "SandboxBackendNotPermitted",
     "SandboxCapabilityDenied",
@@ -179,6 +180,30 @@ class SandboxTransferLimitsNotPermitted(PermissionError):
     undeclared ``capabilities`` is read charitably.  Also raised for a ``limits`` this package
     cannot read at all — a declaration nobody can compare against is refused, not guessed at.
     """
+
+
+#: The refusals a spec can meet: every one this module defines except the two that answer with
+#: a sentence of their own, `NoSandboxBackend` and `SandboxUnclean`.
+#:
+#: **What membership does not confer is trust in the text.** These classes are exported, and
+#: `acquire` forwards what a backend raises, so an instance may carry a message this package
+#: never wrote — an SDK response, an endpoint. What `maf.py` reads off the type is that the
+#: workload was *refused*, which is worth a sentence of its own beside the one for an outage;
+#: the message stays in the log, the way `SandboxUnclean` passes a code and leaves the detail
+#: behind.
+#:
+#: Public by necessity — this package's strict pyright refuses a private name across modules —
+#: and absent from `__init__`, so it stays internal. `test_maf_glue.py` derives the membership
+#: independently and fails if a refusal added above is left out.
+ATTACH_REFUSALS: tuple[type[Exception], ...] = (
+    SandboxBackendNotPermitted,
+    SandboxCapabilityDenied,
+    SandboxCapabilityNotSupported,
+    SandboxEgressNotEnforced,
+    SandboxIdentityDenied,
+    SandboxOsFamilyNotSupported,
+    SandboxTransferLimitsNotPermitted,
+)
 
 
 def _coded(backend_name: str, reported: object) -> DisposalFailure:

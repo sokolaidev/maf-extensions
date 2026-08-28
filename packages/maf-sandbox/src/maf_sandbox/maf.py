@@ -60,7 +60,7 @@ from ._reclaim import (
     open_unclean_notes,
     reclaim_guest_path,
 )
-from ._router import NoSandboxBackend, SandboxRouter, SandboxUnclean
+from ._router import ATTACH_REFUSALS, NoSandboxBackend, SandboxRouter, SandboxUnclean
 
 #: Fallback for :func:`sandboxed_tool`'s ``logger`` argument. Named apart from the usual
 #: module-level ``logger`` because that argument is the whole point: a workload passes its
@@ -89,6 +89,10 @@ __all__ = [
 _SDK_NOT_INSTALLED = "Error: the sandbox backend is not installed — degrading to T0"
 _NO_BACKEND_CONFIGURED = "Error: no sandbox backend is configured — degrading to T0"
 _SANDBOX_UNAVAILABLE = "Error: sandbox unavailable — degrading to T0 (LLM self-check only)"
+_SANDBOX_REFUSED = (
+    "Error: this workload was refused before it ran — degrading to T0 (LLM self-check only). "
+    "The reason is in the host log."
+)
 _SANDBOX_UNCLEAN = (
     "Error: the sandbox for this conversation is closed: a previous call left it unclean — data "
     "that could not be removed, or a program that may still be running — and it could not be "
@@ -434,9 +438,18 @@ class SandboxToolSession:
     async def acquire(self, key: SandboxKey) -> Sandbox | str:
         """A running sandbox for ``key``, or the message to return when there is none.
 
-        The four-branch ladder is this method's whole point, and the line it draws is a
-        security one rather than a stylistic one:
+        The ladder is this method's whole point, and the line it draws is a security one
+        rather than a stylistic one:
 
+        - a **refusal** — any member of ``_router``'s ``ATTACH_REFUSALS`` — gets a fixed
+          sentence of its own, saying the workload was refused rather than that the sandbox is
+          unavailable. Its *text* is not surfaced: those classes are public and ``acquire``
+          forwards what a backend raises, so a message may carry an SDK response, and nothing
+          about the type says who composed it. What the caller gains is the distinction
+          between a refusal and an outage, which is what decides whether retrying is pointless.
+          **It is caught first**, and the order is the boundary rather than a style: these
+          classes are subclassable, and one inheriting :class:`ValueError` as well would take
+          the verbatim branch below and carry whatever it holds into the transcript;
         - a **missing SDK** is a host-side install problem, actionable and carrying no
           account detail;
         - **no backend** is a configuration state, likewise safe to name;
@@ -451,6 +464,11 @@ class SandboxToolSession:
         """
         try:
             sandbox = await self._router.acquire(key, self._spec)
+        except ATTACH_REFUSALS as exc:
+            self._logger.warning(
+                f"{self._log_prefix}: workload refused before it ran: %s", error_detail(exc)
+            )
+            return _SANDBOX_REFUSED
         except ImportError as exc:
             # The backend's SDK is not installed. Actionable, and carries no account detail.
             self._logger.warning(f"{self._log_prefix}: sandbox SDK unavailable: %s", exc)

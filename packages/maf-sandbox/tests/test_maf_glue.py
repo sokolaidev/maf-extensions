@@ -35,6 +35,7 @@ from maf_sandbox import (
     ReclaimConfig,
     ReclaimFailure,
     SandboxBackendNotPermitted,
+    SandboxCapabilityNotSupported,
     SandboxEgressNotEnforced,
     SandboxKey,
     SandboxOutputSinkRequired,
@@ -43,6 +44,7 @@ from maf_sandbox import (
     SandboxUnclean,
 )
 from maf_sandbox._reclaim import note_unclean
+from maf_sandbox._router import ATTACH_REFUSALS
 from maf_sandbox.maf import (
     SandboxPurger,
     SandboxToolSession,
@@ -116,6 +118,13 @@ def _context(scope="scope-a", thread_id="thread-1", lister=None):
         current_thread_id=lambda: thread_id,
         list_files=lister or InMemoryStore.list,
     )
+
+
+def _sandbox_unavailable() -> str:
+    """The sentence a provider or transport failure gets, which a refusal must not share."""
+    from maf_sandbox.maf import _SANDBOX_UNAVAILABLE
+
+    return _SANDBOX_UNAVAILABLE
 
 
 def _session(
@@ -361,6 +370,102 @@ class TestSessionAcquire:
             InProcessSandboxBackend(acquire_error=ValueError("No disk image for 'bicep:1'"))
         )
         assert asyncio.run(session.acquire(_KEY)) == "Error: No disk image for 'bicep:1'"
+
+    def test_the_family_is_every_refusal_the_router_defines(self):
+        """Every refusal ``_router`` defines belongs to the family, less the two that answer
+        with sentences of their own. Derived from the module, so the tuple is checked here
+        rather than consulted.
+        """
+        from maf_sandbox import _router
+
+        defined = {
+            value
+            for value in vars(_router).values()
+            if isinstance(value, type)
+            and issubclass(value, Exception)
+            and value.__module__ == _router.__name__
+        }
+        assert defined - {NoSandboxBackend, SandboxUnclean} == set(ATTACH_REFUSALS)
+
+    def test_a_refusal_is_told_apart_from_an_outage(self, caplog):
+        """The distinction the branch buys, and the only one it can: a refused workload is not
+        a sandbox that went away, and only one of the two is worth a retry.
+
+        The spec asks for a capability the backend does not declare, so the router refuses
+        inside `acquire`. `sandboxed_tool` calls `ensure_can_serve` before it builds a session,
+        so a workload wired that way is refused at attach and never reaches here — that is
+        `TestTheIsolationFloorStillApplies`' subject. This is the path of a host that builds a
+        session itself, or of declarations that changed after attach.
+        """
+        session = _session(
+            InProcessSandboxBackend(),
+            spec=dataclasses.replace(_SPEC, requires=frozenset({Capability.RUN_CODE})),
+        )
+        with caplog.at_level(logging.WARNING, logger="test_workload"):
+            answer = asyncio.run(session.acquire(_KEY))
+
+        assert answer == (
+            "Error: this workload was refused before it ran — degrading to T0 (LLM self-check "
+            "only). The reason is in the host log."
+        )
+        assert answer != _sandbox_unavailable()
+        # The detail an operator needs is in the log, and only there.
+        assert "run_code" in caplog.text
+        assert "run_code" not in answer
+
+    def test_a_refusal_that_is_also_a_value_error_is_not_surfaced_verbatim(self, caplog):
+        """These classes are public and subclassable, so the ladder's order is the boundary.
+
+        `ValueError` is surfaced verbatim — image resolution raises it — so a refusal
+        inheriting both would take that branch and carry whatever it holds into a transcript,
+        if the refusal branch did not run first.
+        """
+
+        class BackendRefusal(SandboxCapabilityNotSupported, ValueError):
+            pass
+
+        leaky = BackendRefusal("refused: 403 from https://management.example.io for tenant-9")
+        session = _session(InProcessSandboxBackend(acquire_error=leaky))
+        with caplog.at_level(logging.WARNING, logger="test_workload"):
+            answer = asyncio.run(session.acquire(_KEY))
+
+        assert isinstance(leaky, ValueError)
+        assert isinstance(answer, str)
+        assert "management.example.io" not in answer, answer
+        assert "tenant-9" not in answer, answer
+        assert answer.startswith("Error: this workload was refused before it ran")
+        assert "tenant-9" in caplog.text
+
+    def test_a_backends_own_refusal_text_never_reaches_the_caller(self, caplog):
+        """A backend can raise one of these with anything in its message.
+
+        The classes are exported and `acquire` forwards what a backend raises, so no type check
+        separates a message this package wrote from one carrying an SDK response. The reason
+        goes to the log, which is where `SandboxUnclean` already leaves a detail for the same
+        reason.
+        """
+        leaky = SandboxCapabilityNotSupported(
+            "cannot serve files_out: GET https://management.westus.example.io/subscriptions/"
+            "0000-1111/sandboxGroups/prod-group returned 403 for principal admin@example.com"
+        )
+        session = _session(InProcessSandboxBackend(acquire_error=leaky))
+        with caplog.at_level(logging.WARNING, logger="test_workload"):
+            answer = asyncio.run(session.acquire(_KEY))
+
+        assert isinstance(answer, str)
+        for leaked in ("management.westus", "subscriptions", "prod-group", "admin@example.com"):
+            assert leaked not in answer, answer
+        assert answer.startswith("Error: this workload was refused before it ran")
+        assert "prod-group" in caplog.text
+
+    def test_an_unclean_sandbox_keeps_its_own_sentence(self):
+        """Absent from the family on purpose: the caller hears that the sandbox is closed, and
+        never whose files could not be removed."""
+        assert SandboxUnclean not in ATTACH_REFUSALS
+        session = _session(InProcessSandboxBackend(acquire_error=SandboxUnclean("alice's data")))
+        answer = asyncio.run(session.acquire(_KEY))
+        assert isinstance(answer, str)
+        assert "alice" not in answer
 
     def test_a_provider_failure_reaches_the_log_and_never_the_model(self, caplog):
         """Tool results are persisted into the transcript; SDK errors carry account detail."""
