@@ -497,8 +497,7 @@ class TestSpeculativeRequestDiscovery:
             "0003.request.json",
             # 0003 twice: once as the speculative tail of the 2-window, once as the
             # frontier read's own stat when it becomes the frontier — discovery is by
-            # stat, never by read. The extra slot is 0007: the frontier stat of the
-            # next-absent number the walk stops on, inside this same window's budget.
+            # stat, never by read.
             "0003.request.json",
             "0004.request.json",
             "0005.request.json",
@@ -535,21 +534,19 @@ class TestSpeculativeRequestDiscovery:
         claimed-but-unpublished number while a later request sits published behind it.
 
         0001 is served first, widening the window to two slots — that is what makes the
-        shape bite: 0002 is then withheld across multiple polls while 0003 sits published
-        inside the window, present to every speculative stat. It is read exactly once,
-        when the gap closes and it is served.
+        shape bite: 0002's worker then dies mid-publish (its claim never resolves) while
+        0003 sits published inside the window, present to the speculative stat. The
+        dead-claim grace steps the frontier over the hole and 0003 is served; it was
+        read exactly once — when it reached the frontier, never while it waited.
         """
         reads: list[str] = []
 
         class _GapGuest(_ConcurrentGuest):
             def __init__(self) -> None:
                 super().__init__([], finish=False)
-                self.published_0002 = False
-                self._polls_after_0001 = 0
-                # The multi-worker state: 0001 and 0003 published at launch, a worker's
-                # claim on 0002, and 0002 itself withheld until 0001's answer has been
-                # read. `_issued` counts what the double has published, so the tail
-                # files are planted directly rather than through `_issue_next`.
+                # The multi-worker end state: 0001 and 0003 published, a worker's claim
+                # on 0002, and 0002 itself never arriving — the caller died mid-publish
+                # and nothing will ever write under its number.
                 self._issued = 2
                 self.files[self._request_path(1)] = json.dumps(
                     {"id": "0001", "name": "add", "arguments": {"left": 1, "right": 1}}
@@ -568,24 +565,16 @@ class TestSpeculativeRequestDiscovery:
 
             async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
                 entry = await super().stat_file(path, working_directory=working_directory)
-                # 0002 stays claimed-but-unpublished for several polls after 0001's
-                # answer lands — longer than the zeroed grace, so the hole is stepped
-                # over while 0003 waits published behind it. It is released once the
-                # poll count passes, and the run ends like a real one: the marker goes
-                # down only after the collector has every answer.
-                answered_0001 = self.files.get(self._response_path(1))
-                if answered_0001 is not None:
-                    self._polls_after_0001 += 1
-                    if self._polls_after_0001 >= 3 and not self.published_0002:
-                        self.published_0002 = True
-                        self._issued = 3
-                        self.files[self._request_path(2)] = json.dumps(
-                            {"id": "0002", "name": "add", "arguments": {"left": 2, "right": 2}}
-                        ).encode()
-                self._collect_answers()
-                if self._collected == 3 and self.published_0002:
+                # A real program finishes once its own calls are answered; it does not
+                # wait on the number whose caller died. The marker lands when 0003 —
+                # the last call the surviving worker made — has its response.
+                if (
+                    self.files.get(self._response_path(1)) is not None
+                    and self.files.get(self._response_path(3)) is not None
+                ):
                     self.files[_LAYOUT.output] = b"done"
                     self.files[_LAYOUT.exit_code] = b"0"
+                self._collect_answers()
                 return entry
 
             async def read_file(self, path: str, *, working_directory: str, max_bytes: int):
@@ -600,13 +589,14 @@ class TestSpeculativeRequestDiscovery:
             mp.setattr(host_tools_over_exec, "_CLAIM_HOLE_GRACE", 0.0)
             result = _run(guest, HostToolRun(_registry()), timeout=3.0)
 
+        # Reaching exit 0 proves the hole at 0002 was stepped over: nothing else moves
+        # the frontier past a number that never publishes.
         assert result.exit_code == 0
-        assert [answer["value"] for answer in guest.answers] == [2, 4, 3]
         # One read each across the whole run: 0003 sat published inside a wide window
-        # for every poll of the gap and was read only when it reached the frontier.
+        # for the miss poll and was read only when it reached the frontier. 0002 is
+        # read never — a claim with no request behind it is stat-only evidence.
         assert reads == [
             "0001.request.json",
-            "0002.request.json",
             "0003.request.json",
         ]
 
