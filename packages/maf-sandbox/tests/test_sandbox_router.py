@@ -844,7 +844,7 @@ class TestASpecMustAdmitTheSurfaceItCarries:
             SandboxSpec(kind="codeact", host_tools=self._surface())
 
     def test_a_surfaces_identities_are_the_specs_own(self):
-        """What the removed refusal used to catch, now unrepresentable rather than refused."""
+        """A spec's identities are its surface's, and a spec without one declares nothing."""
         surface = self._surface(frozenset({Identity.USER}))
         spec = SandboxSpec(
             kind="codeact",

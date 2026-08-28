@@ -576,10 +576,9 @@ class SandboxSpec:
             )
         if self.host_tools is None:
             return
-        # The router answers posture from `requires` and `identities`, never from the surface, so
-        # a spec carrying one that those fields do not admit would be served by a host that
-        # denies exactly it. Refused here rather than reconciled: deriving the wider set would
-        # silently grant what a host wrote a deny list to refuse.
+        # Only the capability half can disagree: `identities` is read off the surface, so a host
+        # denying one meets it whatever the spec says, while `requires` is the spec's own word
+        # and a surface it does not ask for would slip past `denied_capabilities`.
         if Capability.HOST_TOOLS not in self.requires:
             raise ValueError(
                 "host_tools carries a callable surface but requires does not include "

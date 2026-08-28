@@ -45,9 +45,11 @@ from maf_sandbox import (
 from maf_sandbox.testing import InProcessSandboxBackend
 
 #: Wide enough for the fold. Attaching a surface makes the router add the host-tool call
-#: transport's worst case to the workload's own `files_in`, and it does that whether or not the
-#: backend has a transport at all — this one runs in-process and has none, so the headroom is
-#: for an arithmetic the match performs rather than for bytes that will move.
+#: transport's worst case to *both* directions, and it does that whether or not the backend has
+#: a transport at all — this one runs in-process and has none, so the headroom is for arithmetic
+#: the match performs rather than for bytes that will move. `files_out` needs the most room: a
+#: whole run's response budget folds into its per-file cap, so trimming it back reinstates the
+#: refusal this constant exists to avoid.
 _ROOMY = SandboxLimits(
     files_in=TransferLimits(1 << 26, 1 << 31, 4096),
     files_out=TransferLimits(1 << 26, 1 << 31, 4096),

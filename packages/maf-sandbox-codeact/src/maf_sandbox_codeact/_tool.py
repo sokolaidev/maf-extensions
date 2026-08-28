@@ -183,9 +183,10 @@ def codeact_sandbox_spec(
     what keeps the attached tool honest about landing artifacts it cannot yet name.
 
     A non-empty ``host_tools`` grows ``requires`` by :data:`~maf_sandbox.Capability.HOST_TOOLS`
-    and :data:`~maf_sandbox.Capability.FILES_OUT` together, and carries the registry's
-    ``identities`` so that a router denying one refuses this spec at attach.  Reading a
-    registry **seals** it, so ask for the spec once everything is registered.
+    and :data:`~maf_sandbox.Capability.FILES_OUT` together.  The surface carries its own
+    ``identities``, which :attr:`~maf_sandbox.SandboxSpec.identities` reads, so a router denying
+    one refuses this spec at attach.  Reading a registry **seals** it, so ask for the spec once
+    everything is registered.
 
     Raises:
         ValueError: when an ``egress_allow`` entry is not a single hostname — blank, or holding
