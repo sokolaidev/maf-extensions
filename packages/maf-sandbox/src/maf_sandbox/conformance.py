@@ -5,7 +5,7 @@
 **Run it against a real instance.**  A backend's own suite fakes its provider seam, and a faked
 seam agrees with whatever its author believed; these probes plant a hostile layout through the
 public surface and attack it there, so what passes is the provider's real behaviour.
-:class:`ConformanceSubject` is the seam — a sandbox, plus the two planting operations the
+:class:`ConformanceSubject` is the seam — a sandbox, plus the planting and seeing operations the
 protocol has no word for and never will.
 
 Two things it does not do.  It does not prove the *premise*, that the provider really resolves
@@ -22,16 +22,20 @@ The same shape covers the other capabilities, each as its own suite:
 reaches a host on the allowlist and not one off it (#402).  It takes the allowed and denied URLs
 because a spec's hosts are the deployment's, not this module's, and asserts only the outcome both
 an L3-severing and an L7-proxying backend must share.  The FILES_IN probes also attack write-path
-confinement.  The FILES_IN, EXEC, FILES_DELETE and reclaim probes
-verify through :meth:`Sandbox.exec` rather than the pull surface, because a backend with no
-pull surface still owes those capabilities.  They need ``cat``, ``test``, ``printf``, ``pwd``,
-``sleep``, ``sh`` and ``mkdir`` — beyond ``PosixGuestSubject``'s own ``ln``, so the
-image has to carry the POSIX core utilities, and what those suites assert is measured against
-the guest the image ships, which for the suites that run in CI is the image the workflow
-names.
+confinement.  The FILES_IN, EXEC and FILES_DELETE probes verify through :meth:`Sandbox.exec`
+rather than the pull surface, because a backend with no pull surface still owes those
+capabilities.  They need ``cat``, ``test``, ``printf``, ``pwd``, ``sleep``, ``sh`` and
+``mkdir`` — beyond ``PosixGuestSubject``'s own ``ln`` and ``test``, which the mandatory reclaim
+suite costs even where no capability suite runs, so the image has to carry the POSIX core
+utilities, and what those suites assert is measured against the guest the image ships, which
+for the suites that run in CI is the image the workflow names.
 
 **One suite belongs to no capability.**  :func:`assert_reclaim_conformance` covers
-:meth:`Sandbox.reclaim`, which is mandatory, so it runs with no declaration gate.
+:meth:`Sandbox.reclaim`, which is mandatory, so it runs with no declaration gate.  Its probes
+verify through the subject rather than through ``exec``: they plant with
+:meth:`ConformanceSubject.plant_file` and ask :meth:`ConformanceSubject.exists` what survived.
+A mandatory suite may not require a capability nobody declared — a runtime-only backend answers
+``exec`` with ``NotImplementedError`` and still owes every probe here (#639).
 
 **The EXEC suite may not leave the sandbox alive.**  Its last probe asserts the
 ``TimeoutError`` contract, and two backends discard the whole sandbox when a call times out —
@@ -40,9 +44,10 @@ EXEC last, and a caller that wants what comes after acquires a second sandbox.
 
 **The EXEC and reclaim suites plant their own working directory.**  ``working_directory`` does
 not exist after ``acquire`` — no backend creates ``spec.work_dir`` and the protocol does not
-promise it — so they write a marker file first: the caller-creates rule, with the reasoning and
-the open question of whether ``acquire`` should owe it filed as #466.  A subject whose sandbox
-has no ``write_file`` cannot run either.
+promise it — so they plant a marker file first: the caller-creates rule, with the reasoning and
+the open question of whether ``acquire`` should owe it filed as #466.  The marker goes through
+:meth:`ConformanceSubject.plant_file`, so a subject whose sandbox has no ``write_file`` plants
+it however its guest allows.
 
 Nothing here imports a test framework: this module ships in the wheel.  A failure raises
 :class:`ConformanceFailure` naming every probe that failed rather than the first.
@@ -107,9 +112,11 @@ class ConformanceSubject(Protocol):
 
     Planting is a subject method because creating a link is the *guest's* move — a sandbox that
     offered it would hand the attacker the tool — so each backend plants however its guest
-    allows.  ``capabilities`` decides which probes run: a backend that never claimed
-    :data:`~maf_sandbox.Capability.FILES_LIST` skips the ones attacking
-    :meth:`Sandbox.list_dir` rather than failing them.
+    allows.  Seeing is one for a second reason: the reclaim suite is mandatory, so its probes
+    may not verify through an ``exec`` the backend never promised (#639).  ``capabilities``
+    decides which probes run: a backend that never claimed
+    :data:`~maf_sandbox.Capability.FILES_LIST` skips the ones attacking :meth:`Sandbox.list_dir`
+    rather than failing them.
     """
 
     @property
@@ -135,14 +142,22 @@ class ConformanceSubject(Protocol):
         """Create a link at an absolute guest ``path`` pointing at ``target``."""
         ...
 
+    async def exists(self, path: str) -> bool:
+        """Whether an absolute guest ``path`` is there at all.
+
+        The last component is not followed: a link counts even when it dangles, because the
+        probes ask whether a *name* survived a removal.
+        """
+        ...
+
 
 @dataclass(frozen=True)
 class PosixGuestSubject:
-    """A :class:`ConformanceSubject` for any backend whose guest is Linux and has ``ln``.
+    """A :class:`ConformanceSubject` for a Linux guest with ``ln`` to plant and ``test`` to see.
 
-    Both shipped backends fill the seam this way.  ``ln`` is a requirement of this harness and
-    not of the protocol — a Windows guest or a distroless image writes its own subject and runs
-    the same probes unchanged.
+    Both shipped backends fill the seam this way.  ``ln`` and ``test`` are requirements of this
+    harness and not of the protocol — a Windows guest or a distroless image writes its own
+    subject and runs the same probes unchanged.
     """
 
     sandbox: Sandbox
@@ -167,6 +182,31 @@ class PosixGuestSubject:
                 f"could not plant {path!r} -> {target!r} in the guest "
                 f"(exit {result.exit_code}): {result.stderr.strip()}"
             )
+
+    async def exists(self, path: str) -> bool:
+        """``test -e``, then ``test -L`` — a dangling link is a name that is still there.
+
+        Two calls rather than one ``test -e X -o -L X``: the ``-o`` form is obsolescent in XSI
+        and a path that looks like an operator is enough to make a shell read it wrongly.
+
+        Exit 1 is the answer "absent".  Anything above it is ``test`` failing to run at all — a
+        missing binary exits 127 — and that is raised rather than read as absence, because a
+        probe asking whether a removal happened would take the silence for success.
+        """
+        for flag in ("-e", "-L"):
+            result = await self.sandbox.exec(
+                ["test", flag, path],
+                working_directory=self.working_directory,
+                timeout=self.exec_timeout,
+            )
+            if result.exit_code == 0:
+                return True
+            if result.exit_code > 1:
+                raise RuntimeError(
+                    f"could not see whether {path!r} is there "
+                    f"(`test {flag}` exited {result.exit_code}): {result.stderr.strip()}"
+                )
+        return False
 
 
 @dataclass(frozen=True)
@@ -1133,11 +1173,9 @@ EXEC_PROBES: tuple[Probe, ...] = (
 
 
 async def _plant_nothing(subject: ConformanceSubject) -> ConformancePaths:
-    """Plant the working directory the probes exec in — see the module docstring for why."""
+    """Plant the working directory the probes resolve against — see the module docstring."""
     paths = ConformancePaths.under(subject.working_directory)
-    await subject.sandbox.write_file(
-        f"{paths.work}/.probe-cwd", b"", working_directory=subject.working_directory
-    )
+    await subject.plant_file(f"{paths.work}/.probe-cwd", b"")
     return paths
 
 
@@ -1555,15 +1593,11 @@ async def _probe_a_created_directory_is_gone(
     await subject.sandbox.reclaim(
         f"{paths.work}/reclaim-me", working_directory=subject.working_directory, timeout=60
     )
-    result = await subject.sandbox.exec(
-        ["test", "-e", "reclaim-me"], working_directory=subject.working_directory, timeout=60
-    )
-    if result.exit_code == 0:
+    if await subject.exists(f"{paths.work}/reclaim-me"):
         raise AssertionError("the reclaimed directory is still there")
     # The method promises this directory and nothing else.
-    await _assert_present(
-        subject.sandbox, "reclaim-bystander.txt", subject.working_directory, "a bystander file"
-    )
+    if not await subject.exists(f"{paths.work}/reclaim-bystander.txt"):
+        raise AssertionError("a bystander file did not survive the reclaim")
 
 
 async def _probe_nested_content_goes_with_it(
@@ -1575,10 +1609,7 @@ async def _probe_nested_content_goes_with_it(
         f"{paths.work}/reclaim-tree", working_directory=subject.working_directory, timeout=60
     )
     for path in ("reclaim-tree", "reclaim-tree/deep/nested/leaf.txt"):
-        result = await subject.sandbox.exec(
-            ["test", "-e", path], working_directory=subject.working_directory, timeout=60
-        )
-        if result.exit_code == 0:
+        if await subject.exists(f"{paths.work}/{path}"):
             raise AssertionError(f"{path!r} survived the reclaim")
 
 
@@ -1594,17 +1625,9 @@ async def _probe_a_link_inside_is_unlinked_not_followed(
     await subject.sandbox.reclaim(
         f"{paths.work}/reclaim-linked", working_directory=subject.working_directory, timeout=60
     )
-    reclaimed = await subject.sandbox.exec(
-        ["test", "-e", "reclaim-linked"], working_directory=subject.working_directory, timeout=60
-    )
-    if reclaimed.exit_code == 0:
+    if await subject.exists(f"{paths.work}/reclaim-linked"):
         raise AssertionError("the reclaimed directory is still there")
-    target = await subject.sandbox.exec(
-        ["test", "-f", paths.beyond("reclaim-target.txt")],
-        working_directory=subject.working_directory,
-        timeout=60,
-    )
-    if target.exit_code != 0:
+    if not await subject.exists(f"{paths.outside}/reclaim-target.txt"):
         raise AssertionError(
             "the target of a link inside the reclaimed directory went with it: the removal "
             "followed an interior link, deleting a file outside the working directory"

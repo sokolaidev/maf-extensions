@@ -2506,6 +2506,10 @@ class _ConformanceSubject:
             "symlinkTarget": target,
         }
 
+    async def exists(self, path: str) -> bool:
+        """The simulator's own entries, which is a stat that follows nothing."""
+        return path in self._client._entries
+
 
 class TestTheSharedConformanceSuite:
     """`maf_sandbox.conformance`, answered by this backend.

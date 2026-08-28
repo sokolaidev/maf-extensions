@@ -11,6 +11,9 @@ real data plane do, with each of the two duties on a switch.
 
 For the FILES_IN, EXEC and FILES_DELETE suites there is a third specimen, `_SimulatedGuest` —
 its class docstring carries what it is and what it is not.
+
+The reclaim suite adds a fourth, `_RuntimeOnlyGuest`: the fake with `exec` and `write_file`
+refused outright, which is the shell-less backend the subject's seams exist for (#639).
 """
 
 from __future__ import annotations
@@ -75,6 +78,13 @@ class _FakeSubject:
     async def plant_symlink(self, path: str, target: str) -> None:
         del target  # this fake refuses links rather than following them, so it stores no target
         self.sandbox.symlinks.add(path)
+
+    async def exists(self, path: str) -> bool:
+        """Through `exec`, as `PosixGuestSubject` does — and this fake's `exec` is scripted."""
+        result = await self.sandbox.exec(
+            ["test", "-e", path], working_directory=self.working_directory, timeout=60
+        )
+        return result.exit_code == 0
 
 
 class _Leaky:
@@ -1137,6 +1147,50 @@ class TestFilesDeleteConformance:
             asyncio.run(assert_files_delete_conformance(subject))
 
 
+class _RuntimeOnlyGuest(InProcessSandbox):
+    """The shipped fake with no shell and no push surface: `exec` and `write_file` refuse.
+
+    The runtime-only shape #382 and #425 name, where the guest is reached through `run_code` or
+    a store API alone. `reclaim` stays the fake's real one, because `reclaim` is mandatory
+    whatever else a backend declines to serve.
+    """
+
+    async def exec(self, command, *, working_directory, timeout):
+        del command, working_directory, timeout
+        raise NotImplementedError("this specimen declares no EXEC")
+
+    async def write_file(self, path, content, *, working_directory):
+        del path, content, working_directory
+        raise NotImplementedError("this specimen serves no push surface")
+
+
+class _RuntimeOnlySubject:
+    """Plants and sees through the guest's own store, never through `exec` or `write_file`.
+
+    What a shell-less backend's subject does with `run_code` or a store API; the fake's own
+    dicts stand in for that native mechanism here.
+    """
+
+    def __init__(self, sandbox: InProcessSandbox) -> None:
+        self.sandbox = sandbox
+        self.working_directory = _WORK
+        self.capabilities = frozenset()
+
+    async def plant_file(self, path: str, content: bytes) -> None:
+        self.sandbox.contents[path] = content
+
+    async def plant_symlink(self, path: str, target: str) -> None:
+        del target  # the fake stores no target, and `exists` answers for the name either way
+        self.sandbox.symlinks.add(path)
+
+    async def exists(self, path: str) -> bool:
+        # A directory nobody created explicitly is the one its children imply, which is how the
+        # fake itself reads its stores.
+        prefix = path.rstrip("/") + "/"
+        stored = (*self.sandbox.contents, *self.sandbox.symlinks, *self.sandbox.directories)
+        return any(held == path or held.startswith(prefix) for held in stored)
+
+
 class TestReclaimConformance:
     """No gate here, so the negatives are backends that answer without doing what they promise."""
 
@@ -1262,6 +1316,47 @@ class TestReclaimConformance:
             "an-absent-working-directory-still-succeeds"
         ]
 
+    def test_a_guest_whose_test_binary_is_missing_fails_the_absence_only_probe(self):
+        """Read 127 as "absent" and every probe asking only what *went* is vacuously green."""
+
+        class _NoTestBinary(_SimulatedGuest):
+            async def exec(self, command, *, working_directory, timeout):
+                if list(command)[0:1] == ["test"]:
+                    return ExecResult(stdout="", stderr="test: not found", exit_code=127)
+                return await super().exec(
+                    command, working_directory=working_directory, timeout=timeout
+                )
+
+        failures = self._failures(_NoTestBinary())
+        assert failures["nested-content-goes-with-it"] is not None
+        assert "exited 127" in failures["nested-content-goes-with-it"]
+
+    def test_a_backend_with_no_exec_and_no_write_file_answers_every_probe(self):
+        """The suite is mandatory, so a runtime-only backend has to be able to sit it (#639)."""
+        results = asyncio.run(assert_reclaim_conformance(_RuntimeOnlySubject(_RuntimeOnlyGuest())))
+        assert [r.probe.name for r in results] == [p.name for p in RECLAIM_PROBES]
+        assert all(r.passed for r in results)
+
+    def test_the_runtime_only_specimen_really_refuses_both_surfaces(self):
+        """Otherwise the green run above could be a specimen that quietly kept a shell."""
+        sandbox = _RuntimeOnlyGuest()
+        with pytest.raises(NotImplementedError):
+            asyncio.run(sandbox.exec(["test", "-e", "."], working_directory=_WORK, timeout=1))
+        with pytest.raises(NotImplementedError):
+            asyncio.run(sandbox.write_file("note.txt", b"", working_directory=_WORK))
+
+    def test_a_runtime_only_backend_that_reclaims_nothing_fails_the_positive_control(self):
+        """Verifying through the seam is not verifying less."""
+
+        class _Inert(_RuntimeOnlyGuest):
+            async def reclaim(self, directory, *, working_directory, timeout):
+                del directory, working_directory, timeout
+
+        results = asyncio.run(run_reclaim_probes(_RuntimeOnlySubject(_Inert())))
+        failures = {r.probe.name: r.failure for r in results}
+        assert failures["a-created-directory-is-gone"] is not None
+        assert "still there" in failures["a-created-directory-is-gone"]
+
     def test_every_probe_says_why_it_is_in_the_suite(self):
         assert all(len(probe.why) > 40 for probe in RECLAIM_PROBES)
         assert len({probe.name for probe in RECLAIM_PROBES}) == len(RECLAIM_PROBES)
@@ -1276,6 +1371,65 @@ class TestReclaimConformance:
         }
         with pytest.raises(ConformanceFailure):
             asyncio.run(assert_reclaim_conformance(_FakeSubject(InProcessSandbox(), _EVERYTHING)))
+
+
+class _ScriptedTest(InProcessSandbox):
+    """The fake with `test` scripted: exit 0 for the flags named here, 1 for the rest.
+
+    Scripted rather than simulated because no specimen in this file tells `-e` and `-L` apart —
+    `_SimulatedGuest` reads both the same way, and a dangling link is exactly where a real
+    `test` does not: `-e` is false for it and `-L` true.
+    """
+
+    def __init__(self, *true_flags: str, otherwise: int = 1) -> None:
+        super().__init__()
+        self.true_flags = frozenset(true_flags)
+        self.otherwise = otherwise
+        self.asked: list[str] = []
+
+    async def exec(self, command, *, working_directory, timeout):
+        del working_directory, timeout
+        argv = list(command)
+        self.asked.append(argv[1])
+        code = 0 if argv[1] in self.true_flags else self.otherwise
+        return ExecResult(stdout="", stderr="" if code < 2 else "test: not found", exit_code=code)
+
+
+class TestPosixGuestSubjectSees:
+    """`exists` asks `test -e`, then `test -L`. The second call is the whole no-follow claim."""
+
+    def _seeing(
+        self, *true_flags: str, otherwise: int = 1
+    ) -> tuple[PosixGuestSubject, _ScriptedTest]:
+        sandbox = _ScriptedTest(*true_flags, otherwise=otherwise)
+        subject = PosixGuestSubject(
+            sandbox=sandbox, working_directory=_WORK, capabilities=frozenset()
+        )
+        return subject, sandbox
+
+    def test_a_path_the_first_flag_answers_for_is_there_and_costs_one_call(self):
+        subject, sandbox = self._seeing("-e")
+        assert asyncio.run(subject.exists(f"{_WORK}/note.txt")) is True
+        assert sandbox.asked == ["-e"]
+
+    def test_a_dangling_link_is_there_though_only_the_second_flag_answers(self):
+        """No probe reaches this: the reclaim link points at a target planted beside it."""
+        subject, sandbox = self._seeing("-L")
+        assert asyncio.run(subject.exists(f"{_WORK}/dangling")) is True
+        assert sandbox.asked == ["-e", "-L"]
+
+    def test_a_path_neither_flag_answers_for_is_absent(self):
+        subject, sandbox = self._seeing()
+        assert asyncio.run(subject.exists(f"{_WORK}/gone")) is False
+        assert sandbox.asked == ["-e", "-L"]
+
+    def test_a_test_that_could_not_run_raises_rather_than_answering_absent(self):
+        """127 is a missing binary, and reading it as "absent" is a probe that verified nothing."""
+        subject, sandbox = self._seeing(otherwise=127)
+        with pytest.raises(RuntimeError, match="could not see whether"):
+            asyncio.run(subject.exists(f"{_WORK}/note.txt"))
+        # Raised on the first flag: a `test` that cannot run will not run for `-L` either.
+        assert sandbox.asked == ["-e"]
 
 
 def test_assert_reclaim_answers_a_conforming_subject():
@@ -1343,12 +1497,19 @@ class _CurlSandbox:
 
 
 class _EgressSubject:
-    """The three attributes the egress probes read: a scripted sandbox, a work dir, EXEC."""
+    """What the egress probes read: a scripted sandbox, a work dir, EXEC — and the planting seam.
+
+    Planting is the shared one every suite runs first, so it is here even though no egress probe
+    attacks a layout.
+    """
 
     def __init__(self, sandbox: _CurlSandbox) -> None:
         self.sandbox = sandbox
         self.working_directory = _WORK
         self.capabilities = frozenset({Capability.EXEC})
+
+    async def plant_file(self, path: str, content: bytes) -> None:
+        await self.sandbox.write_file(path, content, working_directory=self.working_directory)
 
 
 class TestEgressConformance:
