@@ -182,12 +182,15 @@ class SandboxTransferLimitsNotPermitted(PermissionError):
     """
 
 
-#: The refusals `maf.py` may hand a caller verbatim: every one this module defines except the
-#: two that answer with a sentence of their own, `NoSandboxBackend` and `SandboxUnclean`.
+#: The refusals a spec can meet: every one this module defines except the two that answer with
+#: a sentence of their own, `NoSandboxBackend` and `SandboxUnclean`.
 #:
-#: **The boundary this rests on:** their text names the backend, the kind, the capabilities
-#: asked for and the image reference, and carries no endpoint, subscription or tenant. Anything
-#: raised from outside this module may, so it gets the fixed sentence instead.
+#: **What membership does not confer is trust in the text.** These classes are exported, and
+#: `acquire` forwards what a backend raises, so an instance may carry a message this package
+#: never wrote — an SDK response, an endpoint. `maf.py` therefore surfaces one verbatim only
+#: where `ensure_can_serve` raised it, before any backend was reached; the same type out of
+#: `acquire` gets a fixed sentence, the way `SandboxUnclean` passes a code and leaves the
+#: detail in the log.
 #:
 #: Public by necessity — this package's strict pyright refuses a private name across modules —
 #: and absent from `__init__`, so it stays internal. `test_maf_glue.py` derives the membership

@@ -383,25 +383,42 @@ class TestSessionAcquire:
         }
         assert defined - {NoSandboxBackend, SandboxUnclean} == set(ATTACH_REFUSALS)
 
-    @pytest.mark.parametrize("refusal", ATTACH_REFUSALS, ids=lambda cls: cls.__name__)
-    def test_every_refusal_this_stack_authors_is_surfaced_verbatim(self, refusal, caplog):
-        """Each member reaches the caller with its own text, and reaches the log as well."""
-        session = _session(InProcessSandboxBackend(acquire_error=refusal("wants files_out")))
-        with caplog.at_level(logging.WARNING, logger="test_workload"):
-            assert asyncio.run(session.acquire(_KEY)) == "Error: wants files_out"
-        assert "wants files_out" in caplog.text
-
-    def test_a_backend_withdrawing_a_capability_at_acquire_reaches_the_caller(self):
-        """The shape that motivated the branch: a backend meets its image inside `acquire` and
-        finds it cannot serve what the router matched, which nothing earlier could know."""
-        refused = SandboxCapabilityNotSupported(
-            "sandbox backend 'acas' cannot serve files_out from 'python-nonroot:3.13': its "
-            "guest runs as uid 10001"
+    def test_a_refusal_this_package_composed_is_surfaced_verbatim(self, caplog):
+        """The spec asks for a capability the backend does not declare, so `ensure_can_serve`
+        composes the refusal out of the spec and the backend's declarations — no backend text
+        is involved, which is what makes it safe to hand on."""
+        session = _session(
+            InProcessSandboxBackend(),
+            spec=dataclasses.replace(_SPEC, requires=frozenset({Capability.RUN_CODE})),
         )
-        session = _session(InProcessSandboxBackend(acquire_error=refused))
-        answer = asyncio.run(session.acquire(_KEY))
+        with caplog.at_level(logging.WARNING, logger="test_workload"):
+            answer = asyncio.run(session.acquire(_KEY))
         assert isinstance(answer, str)
-        assert "uid 10001" in answer
+        assert answer.startswith("Error: sandbox backend")
+        assert "run_code" in answer
+
+    def test_a_backends_own_refusal_text_never_reaches_the_caller(self, caplog):
+        """A backend that has met its image can raise one of these with anything in it.
+
+        The classes are exported and `acquire` forwards what a backend raises, so no type check
+        separates a message this package wrote from one carrying an SDK response. The caller
+        learns the image is the problem; the reason goes to the log, which is where
+        `SandboxUnclean` already leaves a detail for the same reason.
+        """
+        leaky = SandboxCapabilityNotSupported(
+            "cannot serve files_out: GET https://management.westus.example.io/subscriptions/"
+            "0000-1111/sandboxGroups/prod-group returned 403 for principal admin@example.com"
+        )
+        session = _session(InProcessSandboxBackend(acquire_error=leaky))
+        with caplog.at_level(logging.WARNING, logger="test_workload"):
+            answer = asyncio.run(session.acquire(_KEY))
+
+        assert isinstance(answer, str)
+        for leaked in ("management.westus", "subscriptions", "prod-group", "admin@example.com"):
+            assert leaked not in answer, answer
+        assert answer.startswith("Error: the sandbox backend cannot serve this workload")
+        # And the operator still gets it.
+        assert "prod-group" in caplog.text
 
     def test_an_unclean_sandbox_keeps_its_own_sentence(self):
         """Absent from the family on purpose: the caller hears that the sandbox is closed, and
