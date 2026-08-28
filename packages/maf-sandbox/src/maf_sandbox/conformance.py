@@ -5,7 +5,7 @@
 **Run it against a real instance.**  A backend's own suite fakes its provider seam, and a faked
 seam agrees with whatever its author believed; these probes plant a hostile layout through the
 public surface and attack it there, so what passes is the provider's real behaviour.
-:class:`ConformanceSubject` is the seam — a sandbox, plus the two planting operations the
+:class:`ConformanceSubject` is the seam — a sandbox, plus the planting and the seeing the
 protocol has no word for and never will.
 
 Two things it does not do.  It does not prove the *premise*, that the provider really resolves
@@ -25,9 +25,10 @@ an L3-severing and an L7-proxying backend must share.  The FILES_IN probes also 
 confinement.  The FILES_IN, EXEC and FILES_DELETE probes verify through :meth:`Sandbox.exec`
 rather than the pull surface, because a backend with no pull surface still owes those
 capabilities.  They need ``cat``, ``test``, ``printf``, ``pwd``, ``sleep``, ``sh`` and
-``mkdir`` — beyond ``PosixGuestSubject``'s own ``ln``, so the image has to carry the POSIX
-core utilities, and what those suites assert is measured against the guest the image ships,
-which for the suites that run in CI is the image the workflow names.
+``mkdir`` — beyond ``PosixGuestSubject``'s own ``ln`` and ``test``, which the mandatory reclaim
+suite costs even where no capability suite runs, so the image has to carry the POSIX core
+utilities, and what those suites assert is measured against the guest the image ships, which
+for the suites that run in CI is the image the workflow names.
 
 **One suite belongs to no capability.**  :func:`assert_reclaim_conformance` covers
 :meth:`Sandbox.reclaim`, which is mandatory, so it runs with no declaration gate.  Its probes
@@ -152,11 +153,11 @@ class ConformanceSubject(Protocol):
 
 @dataclass(frozen=True)
 class PosixGuestSubject:
-    """A :class:`ConformanceSubject` for any backend whose guest is Linux and has ``ln``.
+    """A :class:`ConformanceSubject` for a Linux guest with ``ln`` to plant and ``test`` to see.
 
-    Both shipped backends fill the seam this way.  ``ln`` is a requirement of this harness and
-    not of the protocol — a Windows guest or a distroless image writes its own subject and runs
-    the same probes unchanged.
+    Both shipped backends fill the seam this way.  ``ln`` and ``test`` are requirements of this
+    harness and not of the protocol — a Windows guest or a distroless image writes its own
+    subject and runs the same probes unchanged.
     """
 
     sandbox: Sandbox
