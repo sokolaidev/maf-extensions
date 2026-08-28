@@ -29,6 +29,7 @@ from host_tools import (
 from maf_sandbox import (
     DEFAULT_CAPABILITIES,
     Capability,
+    HostToolAggregate,
     HostToolIdentityNotAllowed,
     HostToolNotDeclared,
     HostToolRegistry,
@@ -36,10 +37,21 @@ from maf_sandbox import (
     MafSandboxHostToolsWarning,
     SandboxCapabilityDenied,
     SandboxIdentityDenied,
+    SandboxLimits,
     SandboxRouter,
     SandboxSpec,
+    TransferLimits,
 )
 from maf_sandbox.testing import InProcessSandboxBackend
+
+#: Wide enough for the fold. Attaching a surface makes the router add the host-tool call
+#: transport's worst case to the workload's own `files_in`, and it does that whether or not the
+#: backend has a transport at all — this one runs in-process and has none, so the headroom is
+#: for an arithmetic the match performs rather than for bytes that will move.
+_ROOMY = SandboxLimits(
+    files_in=TransferLimits(1 << 26, 1 << 31, 4096),
+    files_out=TransferLimits(1 << 26, 1 << 31, 4096),
+)
 
 #: The kind this host would be attaching. Named once; every act below builds a spec for it.
 KIND = "release-notes"
@@ -93,7 +105,7 @@ def act_one_registration() -> HostToolRegistry:
     return registry
 
 
-def act_two_aggregate(registry: HostToolRegistry) -> frozenset[Identity]:
+def act_two_aggregate(registry: HostToolRegistry) -> HostToolAggregate:
     """Ask the registry what its contents mean for the one model-facing tool.
 
     Per leg, over the relevant subset — not a summary of the three declarations but a
@@ -124,15 +136,15 @@ def act_two_aggregate(registry: HostToolRegistry) -> frozenset[Identity]:
         print(f"\n  sealed:     {refusal}")
 
     print()
-    return aggregate.identities
+    return aggregate
 
 
-def act_three_permitted(identities: frozenset[Identity]) -> InProcessSandboxBackend:
+def act_three_permitted(surface: HostToolAggregate) -> InProcessSandboxBackend:
     """A router that permits this, and the spec the aggregate feeds.
 
-    `identities` is not re-derived from the registry here — it is carried from the aggregate,
-    which is the only way to read it, and that is deliberate: taking the policy view is what
-    seals the surface it describes.
+    The surface is carried from act two rather than re-derived, and that is deliberate: taking
+    the policy view is what seals it. The spec's `identities` are read straight off it, so a
+    host cannot be shown one posture while the surface carries another.
     """
     print("== 3. A host that permits it ==\n")
 
@@ -143,12 +155,13 @@ def act_three_permitted(identities: frozenset[Identity]) -> InProcessSandboxBack
     backend = InProcessSandboxBackend(
         name="in-process (host tools declared by hand)",
         capabilities=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
+        limits=_ROOMY,
     )
     router = SandboxRouter([backend], min_isolation=backend.isolation)
     spec = SandboxSpec(
         kind=KIND,
         requires=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
-        identities=identities,
+        host_tools=surface,
     )
 
     router.ensure_can_serve(spec)
@@ -162,17 +175,18 @@ def act_three_permitted(identities: frozenset[Identity]) -> InProcessSandboxBack
     return backend
 
 
-def act_four_refused(identities: frozenset[Identity]) -> InProcessSandboxBackend:
+def act_four_refused(surface: HostToolAggregate) -> InProcessSandboxBackend:
     """The two ways a host says no, on the two axes, both before a sandbox exists."""
     print("== 4. The two refusals ==\n")
 
     backend = InProcessSandboxBackend(
         capabilities=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
+        limits=_ROOMY,
     )
     spec = SandboxSpec(
         kind=KIND,
         requires=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
-        identities=identities,
+        host_tools=surface,
     )
 
     # The capability axis: this deployment does not want the outward channel at all.
@@ -217,7 +231,7 @@ def act_four_refused(identities: frozenset[Identity]) -> InProcessSandboxBackend
         SandboxSpec(
             kind=KIND,
             requires=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
-            identities=narrowed.identities,
+            host_tools=narrowed,
         )
     )
     print("  The way past the second refusal is a different registry, not a different call:")
@@ -243,11 +257,11 @@ def main() -> int:
 
     registry = act_one_registration()
     done.append("registration")
-    identities = act_two_aggregate(registry)
+    surface = act_two_aggregate(registry)
     done.append("aggregate")
-    backends.append(act_three_permitted(identities))
+    backends.append(act_three_permitted(surface))
     done.append("permitted")
-    backends.append(act_four_refused(identities))
+    backends.append(act_four_refused(surface))
     done.append("refused")
 
     print("== What is not here ==\n")

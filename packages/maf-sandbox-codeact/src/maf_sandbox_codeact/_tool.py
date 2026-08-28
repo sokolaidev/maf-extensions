@@ -501,7 +501,6 @@ def _codeact_spec(
         outputs_named_at_call_time=collects,
         files_in=files_in,
         files_out=files_out,
-        identities=surface.identities if surface is not None else frozenset(),
         # The router folds the transport's own traffic into the transfer-limit match off this
         # field, so a backend that cannot serve it is refused at attach rather than overrun.
         host_tools=surface,

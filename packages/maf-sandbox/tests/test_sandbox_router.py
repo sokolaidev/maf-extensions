@@ -430,6 +430,22 @@ class TestCapabilityMatch:
             )
 
 
+def _a_surface(identities: frozenset[Identity] = frozenset()) -> HostToolAggregate:
+    """A sealed surface carrying `identities` and nothing else of interest."""
+    return HostToolAggregate(
+        result_integrity=None,
+        outbound_caps=frozenset(),
+        identities=identities,
+        requires_approval=False,
+        has_undeclared=False,
+        # Deliberately tiny: attaching a surface folds its transport into the transfer-limit
+        # match, and a default-sized one would refuse these specs for a reason none of them
+        # is about.
+        response_limits=TransferLimits(1024, 1024, 1),
+        max_host_tool_calls_per_run=1,
+    )
+
+
 class TestRouterDenials:
     """The hard stop: capabilities and identities a host refuses whatever the backend can do.
 
@@ -439,8 +455,13 @@ class TestRouterDenials:
     """
 
     def _router(self, **kwargs) -> SandboxRouter:
+        # Room for the fold: a spec can only carry identities by carrying a surface, and the
+        # router adds that surface's transport to the transfer-limit match. Denials are what
+        # these tests are about, so the ceiling must not refuse first.
+        roomy = TransferLimits(1 << 26, 1 << 31, 4096)
         backend = InProcessSandboxBackend(
-            capabilities=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS}
+            capabilities=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
+            limits=SandboxLimits(files_in=roomy, files_out=roomy),
         )
         return SandboxRouter([backend], min_isolation=Isolation.NONE, **kwargs)
 
@@ -466,13 +487,23 @@ class TestRouterDenials:
         """`denied_identities={USER}` is the one-statement ban on model-orchestrated user
         authority the identity leg exists to make possible."""
         router = self._router(denied_identities={Identity.USER})
-        spec = SandboxSpec(kind="codeact", identities=frozenset({Identity.USER}))
+        spec = SandboxSpec(
+            kind="codeact",
+            requires=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
+            host_tools=_a_surface(frozenset({Identity.USER})),
+        )
         with pytest.raises(SandboxIdentityDenied, match="user"):
             router.ensure_can_serve(spec)
 
     def test_an_undenied_identity_is_served(self):
         router = self._router(denied_identities={Identity.USER})
-        router.ensure_can_serve(SandboxSpec(kind="codeact", identities=frozenset({Identity.APP})))
+        router.ensure_can_serve(
+            SandboxSpec(
+                kind="codeact",
+                requires=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
+                host_tools=_a_surface(frozenset({Identity.APP})),
+            )
+        )
 
     def test_an_unknown_denied_capability_is_refused_at_construction(self):
         """A deny list that silently never matched would read as protection and provide none."""
@@ -718,12 +749,11 @@ class TestTheRouterFoldsADispatchSurface:
 
     def _dispatching(self, surface: HostToolAggregate, **kw: object) -> SandboxSpec:
         """A spec whose declarations admit the surface it carries, which `SandboxSpec` requires:
-        the router answers posture from `requires`/`identities`, so a surface those do not admit
-        would slip past a host's deny list."""
+        the router answers posture from `requires` and the surface's own identities, so a spec
+        that carries one without asking for the capability would slip past a deny list."""
         return SandboxSpec(
             kind="codeact",
             requires=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
-            identities=surface.identities,
             host_tools=surface,
             **{"files_in": self._SMALL, "files_out": self._SMALL, **kw},  # type: ignore[arg-type]
         )
@@ -802,39 +832,33 @@ class TestTheRouterFoldsADispatchSurface:
 
 
 class TestASpecMustAdmitTheSurfaceItCarries:
-    """The router answers posture from `requires` and `identities`, never from the surface — so a
-    spec carrying one those fields do not admit would be served by the very host that denies it.
-    Refused where the spec is built, which is the only place both halves are visible."""
+    """`identities` comes off the surface, so only the capability half can still disagree: a
+    spec carrying a callable surface without asking for `HOST_TOOLS` would be served by a host
+    that denies exactly it. Refused where the spec is built."""
 
     def _surface(self, identities: frozenset[Identity] = frozenset()) -> HostToolAggregate:
-        return HostToolAggregate(
-            result_integrity=None,
-            outbound_caps=frozenset(),
-            identities=identities,
-            requires_approval=False,
-            has_undeclared=False,
-            response_limits=DEFAULT_TRANSFER_LIMITS,
-            max_host_tool_calls_per_run=1,
-        )
+        return _a_surface(identities)
 
     def test_a_surface_without_the_capability_is_refused(self):
         with pytest.raises(ValueError, match="denied_capabilities"):
             SandboxSpec(kind="codeact", host_tools=self._surface())
 
-    def test_a_surface_whose_identity_the_spec_does_not_claim_is_refused(self):
-        with pytest.raises(ValueError, match="denied_identities"):
-            SandboxSpec(
-                kind="codeact",
-                requires=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
-                host_tools=self._surface(frozenset({Identity.USER})),
-            )
-
-    def test_a_spec_that_declares_both_is_accepted(self):
+    def test_a_surfaces_identities_are_the_specs_own(self):
+        """What the removed refusal used to catch, now unrepresentable rather than refused."""
         surface = self._surface(frozenset({Identity.USER}))
         spec = SandboxSpec(
             kind="codeact",
             requires=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
-            identities=surface.identities,
+            host_tools=surface,
+        )
+        assert spec.identities == frozenset({Identity.USER})
+        assert SandboxSpec(kind="codeact").identities == frozenset()
+
+    def test_a_spec_that_asks_for_the_capability_is_accepted(self):
+        surface = self._surface(frozenset({Identity.USER}))
+        spec = SandboxSpec(
+            kind="codeact",
+            requires=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
             host_tools=surface,
         )
         assert spec.host_tools is surface
@@ -856,7 +880,6 @@ class TestASpecMustAdmitTheSurfaceItCarries:
         spec = SandboxSpec(
             kind="codeact",
             requires=DEFAULT_CAPABILITIES | {Capability.HOST_TOOLS},
-            identities=surface.identities,
             host_tools=surface,
         )
         with pytest.raises(SandboxIdentityDenied):
@@ -1933,7 +1956,6 @@ class TestSpecDefaults:
             "files_in",
             "files_out",
             "outputs_named_at_call_time",
-            "identities",
             "egress",
             "requires_os_family",
             "host_tools",

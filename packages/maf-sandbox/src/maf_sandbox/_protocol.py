@@ -514,21 +514,18 @@ class SandboxSpec:
     what ``collect_outputs(..., outputs=...)`` refuses to run without.  It composes with
     ``declared_outputs`` rather than replacing it, and ``files_out`` caps the union.
 
-    ``identities`` names whose authority the workload's host tools exercise —
-    derived from its registry (:attr:`~maf_sandbox.HostToolAggregate.identities`, which seals
-    that registry as it answers), never invented.  Declared on the spec so the router can
-    refuse it at attach
+    ``identities`` names whose authority the workload's host tools exercise, read off
+    ``host_tools`` (:attr:`~maf_sandbox.HostToolAggregate.identities`, which seals that registry
+    as it answers) and settable nowhere.  The router refuses a denied one at attach
     (``denied_identities``), the same moment every other posture question is answered; a
-    workload that calls nothing declares nothing.
+    workload that wires nothing declares nothing.
 
     ``host_tools`` is the sealed surface a wired registry answers with
     (:meth:`~maf_sandbox.HostToolRegistry.aggregate`), or ``None`` when nothing is callable.
     The router folds its ceilings into the transfer-limit match transiently, mutating nothing
-    here.  It rides alongside ``identities`` rather than replacing it, so a spec may declare an
-    identity set without wiring a registry — but a spec that wires one must also declare what it
-    carries, :data:`Capability.HOST_TOOLS` in ``requires`` and the surface's identities in
-    ``identities``, and is refused below otherwise: the router reads posture from those two
-    fields, so a surface they do not admit would pass a host's deny list.
+    here.  It is where ``identities`` comes from, so those two cannot disagree; what a spec
+    still owes is :data:`Capability.HOST_TOOLS` in ``requires``, refused below otherwise,
+    because the router reads that half of its posture from the field rather than the surface.
     """
 
     kind: str
@@ -550,7 +547,6 @@ class SandboxSpec:
     # public dataclass and is not keyword-only, so inserting a field rebinds every positional
     # argument after it — a caller's `files_in` would silently become this flag.
     outputs_named_at_call_time: bool = False
-    identities: frozenset[Identity] = frozenset()
     # Appended, like the two above, so it cannot rebind a positional caller's argument.
     egress: Egress = Egress.CLOSED
     # Appended for the same reason, and *after* ``egress`` because that field was here first.
@@ -560,6 +556,15 @@ class SandboxSpec:
     # Appended last, like the defaulted fields above, so it cannot rebind a positional caller's
     # argument.
     host_tools: HostToolAggregate | None = None
+
+    @property
+    def identities(self) -> frozenset[Identity]:
+        """Whose authority this workload's host tools exercise — the surface's own, or none.
+
+        Derived rather than declared, so a spec cannot name a posture its surface does not
+        carry: that disagreement is what ``denied_identities`` would have been read past.
+        """
+        return self.host_tools.identities if self.host_tools is not None else frozenset()
 
     def __post_init__(self) -> None:
         if self.egress_allow and self.egress is not Egress.ALLOWLIST:
@@ -580,14 +585,6 @@ class SandboxSpec:
                 "host_tools carries a callable surface but requires does not include "
                 f"{str(Capability.HOST_TOOLS)!r}, so a host denying that capability "
                 "(denied_capabilities) would serve this workload anyway. Add it to requires."
-            )
-        unclaimed = self.host_tools.identities - self.identities
-        if unclaimed:
-            named = ", ".join(sorted(str(identity) for identity in unclaimed))
-            raise ValueError(
-                f"host_tools carries tools exercising {named} authority, which identities does "
-                "not declare, so a host denying it (denied_identities) would serve this workload "
-                "anyway. Set identities to the surface's own."
             )
 
 
