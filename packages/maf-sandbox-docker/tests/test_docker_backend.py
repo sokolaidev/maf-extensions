@@ -1167,30 +1167,53 @@ class TestWriteFile:
         assert fake.matching("cp", "-") == []
 
     def test_the_entry_carries_the_container_user(self):
-        """A non-root image gets tar entries under its own uid, so `docker cp` creates the
-        file *and* every missing parent directory as the user that will run the program.
+        """A non-root image gets tar entries under its own uid, and the call-directory
+        parents arrive as explicit guest-owned directory entries: docker creates an implicit
+        intermediate as root whatever the file entry says (measured), so the ownership has to
+        be spelled entry by entry.  Ancestors above the work directory stay out of the tar.
         """
         overrides = {
             ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"10001\n", ""),
         }
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
         sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/f", "x", working_directory=_WORK))
+        asyncio.run(sandbox.write_file(f"{_WORK}/call-a1b2c3/note", "x", working_directory=_WORK))
         stdin = fake.only("cp", "-").stdin
         assert stdin is not None
         with tarfile.open(fileobj=io.BytesIO(stdin)) as archive:
-            member = archive.getmember("maf-sandbox/work/f")
-            assert (member.uid, member.gid) == (10001, 10001)
+            assert archive.getnames() == [
+                "maf-sandbox/work/call-a1b2c3",
+                "maf-sandbox/work/call-a1b2c3/note",
+            ]
+            file_entry = archive.getmember("maf-sandbox/work/call-a1b2c3/note")
+            assert (file_entry.uid, file_entry.gid) == (10001, 10001)
+            call_dir = archive.getmember("maf-sandbox/work/call-a1b2c3")
+            assert call_dir.isdir() and (call_dir.uid, call_dir.gid) == (10001, 10001)
+
+    def test_a_write_directly_in_the_work_dir_adds_no_call_directory(self):
+        """A file beside the calls, not under one: the tar carries the file alone."""
+        overrides = {
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"10001\n", ""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+        sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
+        asyncio.run(sandbox.write_file(f"{_WORK}/note", "x", working_directory=_WORK))
+        stdin = fake.only("cp", "-").stdin
+        assert stdin is not None
+        with tarfile.open(fileobj=io.BytesIO(stdin)) as archive:
+            assert archive.getnames() == ["maf-sandbox/work/note"]
 
     def test_a_root_image_keeps_the_default_ownership(self):
         """`Config.User` unset means root: the tar entries stay uid 0, as they always were."""
         backend, fake = _backend_with(_machine(running=[_NAME]))
         sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
-        asyncio.run(sandbox.write_file("/maf-sandbox/work/f", "x", working_directory=_WORK))
+        asyncio.run(sandbox.write_file(f"{_WORK}/call-a1b2c3/note", "x", working_directory=_WORK))
         stdin = fake.only("cp", "-").stdin
         assert stdin is not None
         with tarfile.open(fileobj=io.BytesIO(stdin)) as archive:
-            member = archive.getmember("maf-sandbox/work/f")
+            call_dir = archive.getmember("maf-sandbox/work/call-a1b2c3")
+            assert call_dir.isdir() and (call_dir.uid, call_dir.gid) == (0, 0)
+            member = archive.getmember("maf-sandbox/work/call-a1b2c3/note")
             assert (member.uid, member.gid) == (0, 0)
 
 

@@ -107,6 +107,32 @@ def _names_on_the_machine(name: str) -> list[str]:
 
 
 @pytest.mark.skipif(
+    shutil.which("docker") is None or not _IMAGE,
+    reason="needs the docker client on PATH and MAF_SANDBOX_DOCKER_E2E_IMAGE naming a root image",
+)
+class TestARootGuest:
+    """Controls on a root guest.  Before #680's write half landed this carried the
+    "guest cannot rewrite the transport shim" negative; that shape no longer exists — a
+    root guest can by definition rewrite anything, and a non-root guest now *owns* what
+    the host wrote in.  The security argument never rested on it: the shim is not a
+    control (`_host_tools_over_exec.py` is explicit), every gate is host-side, and the
+    launcher creates `host_tools/` itself.  The class stays as the home for root-guest
+    controls should one appear.
+    """
+
+    def _as_root(self, container: str, script: str) -> str:
+        """One command in the container with root's authority, from outside the backend."""
+        done = subprocess.run(
+            ["docker", "exec", "--user", "0", container, "sh", "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert done.returncode == 0, done.stderr
+        return done.stdout.strip()
+
+
+@pytest.mark.skipif(
     not _NONROOT_IMAGE,
     reason="needs MAF_SANDBOX_DOCKER_E2E_NONROOT_IMAGE naming an image whose USER is not root",
 )
@@ -216,36 +242,6 @@ class TestAGuestThatIsNotRoot:
         finally:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
-    def test_the_guest_cannot_rewrite_or_delete_what_the_host_wrote(self):
-        """A root image: what the host wrote stays beyond the guest, so the transport shim,
-        the request and response files and the inputs cannot be rewritten by it.
-        """
-        scope = f"e2e-{uuid.uuid4()}"
-        backend = DockerSandboxBackend(DockerSandboxConfig())
-
-        async def scenario() -> None:
-            sandbox = await backend.acquire(_key(scope), self._spec())
-            shim = f"{_WORK}/run0001/host_tools/maf_host_tools.py"
-            await sandbox.write_file(shim, "# the real shim\n", working_directory=_WORK)
-
-            rewritten = await sandbox.exec(
-                ["sh", "-c", f"echo '# tampered' > {shim}"], working_directory="/", timeout=60
-            )
-            assert rewritten.exit_code != 0
-
-            deleted = await sandbox.exec(
-                ["sh", "-c", f"rm -f {shim}"], working_directory="/", timeout=60
-            )
-            assert deleted.exit_code != 0
-
-            intact = await sandbox.read_file(shim, working_directory=_WORK, max_bytes=4096)
-            assert intact == b"# the real shim\n"
-
-        try:
-            asyncio.run(scenario())
-        finally:
-            asyncio.run(backend.dispose_scope(scope, "thread-1"))
-
     def test_a_nonroot_guest_can_rewrite_and_delete_what_the_host_wrote(self):
         """The other half of #680: on a non-root image the tar entries carry the image's user,
         so what the host writes in is the guest program's to modify — the way it is on a
@@ -267,12 +263,19 @@ class TestAGuestThatIsNotRoot:
             read_back = await sandbox.read_file(shared, working_directory=_WORK, max_bytes=4096)
             assert read_back == b"a,b\n1,2\n3,4\n"
 
+            # `inputs/` itself is the guest's now, so the program can create beside what
+            # the host put there — inside a directory the host wrote, not the root-owned
+            # `work` above it.
             created = await sandbox.exec(
-                ["sh", "-c", f"echo mine > {_WORK}/abc123def456/mine.txt"],
+                ["sh", "-c", f"echo mine > {_WORK}/inputs/mine.txt"],
                 working_directory="/",
                 timeout=60,
             )
             assert created.exit_code == 0, created.stderr
+            mine = await sandbox.read_file(
+                f"{_WORK}/inputs/mine.txt", working_directory=_WORK, max_bytes=4096
+            )
+            assert mine == b"mine\n"
 
         try:
             asyncio.run(scenario())
@@ -363,8 +366,10 @@ class TestAWorkDirTheImageGaveItsOwnUser:
             asyncio.run(backend.dispose_scope(scope, "thread-1"))
 
     def test_remove_refuses_to_raise_authority_under_a_directory_the_guest_could_swap(self):
-        """The rule's price, pinned rather than left implicit: a host-written subdirectory
-        under a guest-owned `work_dir` stays at the guest's authority, which cannot empty it.
+        """The rule's price, pinned rather than left implicit: a subdirectory under a
+        guest-owned `work_dir` stays at the guest's authority.  With the write half of #680
+        landed the subdirectory is the guest's, so the removal succeeds there — what the
+        walk pins is that root was never asked, not that anything leaks.
         """
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig())
@@ -373,8 +378,9 @@ class TestAWorkDirTheImageGaveItsOwnUser:
             sandbox = await backend.acquire(_key(scope), self._spec())
             await sandbox.write_file(f"{_WORK}/sub/doomed.txt", "x", working_directory=_WORK)
 
-            with pytest.raises(OSError):
-                await sandbox.remove("sub/doomed.txt", working_directory=_WORK)
+            await sandbox.remove("sub/doomed.txt", working_directory=_WORK)
+
+            assert await sandbox.stat_file("doomed.txt", working_directory=_WORK) is None
 
         try:
             asyncio.run(scenario())
@@ -396,8 +402,12 @@ class TestAnImageThatGivesAwayADirectoryAboveWorkDir:
         return SandboxSpec(kind="e2e-loose", image=_LOOSE_PARENT_IMAGE, work_dir=_WORK)
 
     def test_reclaim_drops_to_the_guest_authority_and_leaks_rather_than_reaching(self):
-        """The price on this image shape: the call directory is root's, the guest cannot empty
-        it and root is not allowed to, so it stays. See `docs/sandbox/backends/docker.md`.
+        """The price on this image shape: a root removal a guest can redirect is refused, so
+        root is never asked and the removal is the guest's.  With the write half of #680
+        fixed, that removal now *succeeds* — the call directory and its contents are the
+        image user's, so the guest can take its own tree away — which is the point of the
+        fix rather than a regression of the check.  The check itself is pinned by the swap
+        test below: a redirected root removal is still never attempted.
         """
         scope = f"e2e-{uuid.uuid4()}"
         backend = DockerSandboxBackend(DockerSandboxConfig())
@@ -409,12 +419,11 @@ class TestAnImageThatGivesAwayADirectoryAboveWorkDir:
                 f"{call_directory}/note", "left behind\n", working_directory=_WORK
             )
 
-            with pytest.raises(OSError):
-                await sandbox.reclaim(call_directory, working_directory=_WORK, timeout=60)
+            await sandbox.reclaim(call_directory, working_directory=_WORK, timeout=60)
 
             left = await sandbox.exec(["ls", "-A", _WORK], working_directory="/", timeout=60)
             assert left.exit_code == 0, left.stderr
-            assert sorted(left.stdout.split()) == sorted([_CARRIED, "abc123def456"])
+            assert left.stdout.split() == [_CARRIED]
 
         try:
             asyncio.run(scenario())

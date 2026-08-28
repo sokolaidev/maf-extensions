@@ -356,16 +356,39 @@ class _DockerSandbox:
     async def write_file(self, path: str, content: str | bytes, *, working_directory: str) -> None:
         """Write ``content`` to ``path`` inside the container, parents included.
 
-        Sent as a one-entry tar on stdin.  A ``cp`` destination must already exist and ``/`` is
-        the only path that always does, so the entry name carries the whole path and docker
-        creates the missing directories from it.
+        Sent as a tar on stdin.  A ``cp`` destination must already exist and ``/`` is the only
+        path that always does, so the entries carry the whole path and docker creates the
+        missing directories from them — *as explicit directory entries* rather than leaving
+        them implicit, because docker creates an implicit intermediate as ``root`` regardless
+        of the file entry's ownership (measured: a file entry alone lands ``uid=0`` parents)
+        while an explicit entry's uid is honoured.  A directory docker would otherwise create
+        root-owned is stamped with the container's user, so a call directory the framework
+        later reclaims is one the image's user can empty; the ancestor chain above
+        ``working_directory`` stays out of the tar, and an entry naming a directory that
+        already exists is extracted as a no-op rather than a re-own, so nothing an image's
+        build or a previous write put there is touched.  The removal authority rules read the
+        container's real ownership through the walk and the acquire-time facts, so they keep
+        deciding as before.
         """
         guest = await confine_guest_write_path(
             lambda p: self._stat_guest(p, p), path, working_directory
         )
         data = content.encode("utf-8") if isinstance(content, str) else content
+        base = posixpath.normpath(working_directory)
+        leaf = posixpath.dirname(guest)
         buffer = io.BytesIO()
         with tarfile.open(fileobj=buffer, mode="w") as archive:
+            if posixpath.normpath(leaf) != base:
+                relative = posixpath.normpath(leaf)[len(base) + 1 :]
+                walked = base
+                for segment in relative.split("/"):
+                    walked = posixpath.join(walked, segment)
+                    entry = tarfile.TarInfo(walked.lstrip("/") + "/")
+                    entry.type = tarfile.DIRTYPE
+                    entry.mode = 0o755
+                    entry.uid = self._guest_uid
+                    entry.gid = self._guest_gid
+                    archive.addfile(entry)
             entry = tarfile.TarInfo(guest.lstrip("/"))
             entry.size = len(data)
             entry.mode = 0o644
