@@ -1106,14 +1106,13 @@ async def _supervise(
                 if served != before:
                     # The frontier moved, so any absence timing was for a number now behind us.
                     hole_since = None
-                if not full_prefix:
+                if not full_prefix and served + len(request_probes) <= allowance:
+                    # A genuinely absent frontier request resets the window to one and
+                    # starts the dead-claim clock. When the serving bound clamped the walk
+                    # instead — the window reached past the allowance — the frontier is
+                    # served and there is no hole to time; resetting here would re-probe
+                    # past-bound numbers every poll for the rest of the run.
                     request_window = 1
-                    # The frontier's request is absent. Time that here rather than in the probe, so
-                    # a frontier absent only for a poll or two — the ordinary not-arrived-yet case,
-                    # and every fast test — costs nothing. Only once it has stayed absent for the
-                    # whole grace, past any plausible publish, is it worth the stats to tell a
-                    # worker that died mid-publish from a guest merely slow to issue its next call
-                    # and step the dead one over (#352).
                     now = time.monotonic()
                     if hole_since is None:
                         hole_since = now
@@ -1658,7 +1657,13 @@ async def _stat_if_present(
         f"stat {posixpath.basename(path)}",
         sandbox.stat_file(path, working_directory=layout.directory),
     )
-    return entry is not None and entry.kind is EntryKind.FILE and bool(entry.size_bytes)
+    if entry is None or entry.kind is not EntryKind.FILE:
+        return False
+    if entry.size_bytes == 0:
+        return False
+    # A size the backend could not state fails open: unknown is not "not arrived", and the
+    # frontier read is what refuses an unmeasurable request as over-cap.
+    return True
 
 
 async def _probe_exit_and_requests(
@@ -1675,10 +1680,8 @@ async def _probe_exit_and_requests(
 ]:
     """Read the exit marker beside a bounded window of requests, with exit taking priority.
 
-    Only the frontier's request is read. The rest of the window stats, and each body is read
-    when its identifier reaches the frontier on a later poll — a probe that read past a gap
-    would spend a read the fold never budgets for, and repeat it every poll the gap holds
-    (#659). A stat says the file is there without moving its bytes.
+    Only the frontier's request is read; the rest of the window stats. Serving reads a
+    future request's body once, when its identifier becomes the one being served.
     """
     marker_probe = asyncio.create_task(
         _read_if_present(sandbox, layout, layout.exit_code, cap=_MARKER_CEILING, deadline=deadline)
@@ -1740,6 +1743,12 @@ async def _serve_request_probes(
             # the window, not by the live frontier — `served` advances below as slots are
             # served, and deriving the identifier from it would skip every second number.
             identifier = base + 1 + offset
+            if identifier > _serving_bound(run):
+                # `_serving_bound` counts readable requests and identifiers start at 1: the
+                # bound-th request is the refusal past the cap, and anything beyond it is
+                # neither read nor answered. The exit-marker poll is all that is still owed.
+                full_prefix = False
+                break
             outcome = await probe
             if isinstance(outcome, bool):
                 # A stat-only probe past the frontier: present means the body is read now,

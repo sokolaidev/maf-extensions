@@ -495,8 +495,10 @@ class TestSpeculativeRequestDiscovery:
             "0001.request.json",
             "0002.request.json",
             "0003.request.json",
-            # 0003 is looked at twice: served as the frontier of a 2-window, then probed
-            # again as the tail of the next one — discovery is by stat, never by read.
+            # 0003 twice: once as the speculative tail of the 2-window, once as the
+            # frontier read's own stat when it becomes the frontier — discovery is by
+            # stat, never by read. The extra slot is 0007: the frontier stat of the
+            # next-absent number the walk stops on, inside this same window's budget.
             "0003.request.json",
             "0004.request.json",
             "0005.request.json",
@@ -529,16 +531,46 @@ class TestSpeculativeRequestDiscovery:
         ]
 
     def test_a_request_waiting_behind_a_gap_is_never_read_twice(self):
-        """The #659 budget: a request is read once — when it is served.
+        """The #659 budget over the shape that names the issue: a frontier held by a
+        claimed-but-unpublished number while a later request sits published behind it.
 
-        Whatever interleaving a run takes, each served request is read exactly once —
-        stat-only discovery never turns a present stat into a read until the identifier is
-        the one being served. The window is already at its widest when every request is
-        present from launch, which is the most reading a legal window can be tempted into.
+        0002 is published before supervision begins; 0001 arrives only after 0002's
+        answer has landed, the way a multi-worker guest's blocked caller catches up.
+        The gap lasts long enough for the dead-claim grace to step the frontier over
+        it, and 0002 still costs exactly one read — when it is served.
         """
         reads: list[str] = []
 
-        class _RecordingReads(_ConcurrentGuest):
+        class _GapGuest(_ScriptedGuest):
+            def __init__(self) -> None:
+                super().__init__([], finish=False)
+                self.published_0001 = False
+                # The multi-worker state: 0002 published at launch, a worker's claim on
+                # 0001, and 0001 itself withheld until 0002's answer has landed.
+                self.files[self._request_path(2)] = json.dumps(
+                    {"id": "0002", "name": "add", "arguments": {"left": 2, "right": 2}}
+                ).encode()
+                self.files[posixpath.join(_LAYOUT.calls, "0001.claim")] = b""
+
+            async def exec(
+                self, command: str | Any, *, working_directory: str, timeout: float
+            ) -> ExecResult:
+                del command, working_directory, timeout
+                self.started = True
+                return ExecResult(stdout="", exit_code=0)
+
+            async def stat_file(self, path: str, *, working_directory: str) -> SandboxEntry | None:
+                entry = await super().stat_file(path, working_directory=working_directory)
+                # The worker that took 0001 publishes it once 0002's answer proves the
+                # sequence moved on — but too late for the grace, which has stepped over.
+                if self._collected >= 1 and not self.published_0001:
+                    self.published_0001 = True
+                    self.files[self._request_path(1)] = json.dumps(
+                        {"id": "0001", "name": "add", "arguments": {"left": 1, "right": 1}}
+                    ).encode()
+                self._collect_answers()
+                return entry
+
             async def read_file(self, path: str, *, working_directory: str, max_bytes: int):
                 if path.endswith(".request.json"):
                     reads.append(posixpath.basename(path))
@@ -546,12 +578,16 @@ class TestSpeculativeRequestDiscovery:
                     path, working_directory=working_directory, max_bytes=max_bytes
                 )
 
-        guest = _RecordingReads([("add", {"left": value, "right": 1}) for value in range(6)])
-        result = _run(guest, HostToolRun(_registry()))
+        guest = _GapGuest()
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(host_tools_over_exec, "_CLAIM_HOLE_GRACE", 0.0)
+            with pytest.raises(SandboxProgramTimeout):
+                _run(guest, HostToolRun(_registry()), timeout=3.0)
 
-        assert result.exit_code == 0
-        assert len(guest.answers) == 6
-        assert sorted(reads) == [f"{n:04d}.request.json" for n in range(1, 7)]
+        # 0001 was published after the grace had stepped over it, so the replay order is
+        # gone — the run stalls with 0002 answered and the stale 0001 unanswered. What the
+        # budget pins: the whole stall read 0002 exactly once, on the poll that served it.
+        assert reads == ["0002.request.json"]
 
     def test_a_future_probe_error_waits_for_the_replay_frontier(self):
         class _SecondProbeFails(_ScriptedGuest):
