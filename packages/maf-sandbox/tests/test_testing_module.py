@@ -169,6 +169,30 @@ class TestInProcessSandboxBackend:
         declared = BackendDeclarations(capabilities=frozenset({Capability.RUN_CODE}))
         assert InProcessSandboxBackend(declarations=declared).declarations == declared
 
+    def test_egress_modes_are_configurable(self):
+        """The field a test of the attach refusal narrows, and the one this fake departs from
+        the router's silence rule on — so it is the leg most worth pinning here."""
+        backend = InProcessSandboxBackend(
+            declarations=BackendDeclarations(egress_modes=frozenset({Egress.UNRESTRICTED}))
+        )
+        assert backend.declarations.egress_modes == frozenset({Egress.UNRESTRICTED})
+
+    def test_constructing_a_bare_declarations_drops_this_fake_egress_default(self):
+        """The trap the `declarations` docstring names: overriding one field with a bare
+        `BackendDeclarations` resets `egress_modes` to the rule that enforces nothing, and the
+        attach then fails about a field the test never named. `dataclasses.replace` is the way
+        to state one field and keep the rest."""
+        bare = InProcessSandboxBackend(
+            declarations=BackendDeclarations(capabilities=frozenset({Capability.RUN_CODE}))
+        )
+        assert bare.declarations.egress_modes == frozenset()
+        kept = InProcessSandboxBackend(
+            declarations=dataclasses.replace(
+                FAKE_BACKEND_DECLARATIONS, capabilities=frozenset({Capability.RUN_CODE})
+            )
+        )
+        assert kept.declarations.egress_modes == frozenset({Egress.ALLOWLIST, Egress.CLOSED})
+
     def test_capabilities_default_to_what_every_sandbox_owes(self):
         """`write_file` and `exec` — the two the `Sandbox` protocol already obligates."""
         assert InProcessSandboxBackend().declarations.capabilities == DEFAULT_CAPABILITIES

@@ -124,7 +124,8 @@ class Egress(StrEnum):
     ``CLOSED``.
 
     It is both what a **workload runs in** (:attr:`SandboxSpec.egress`, one mode, default
-    ``CLOSED``) and what a **backend can enforce** (:attr:`SandboxBackend.egress_modes`, a set).
+    ``CLOSED``) and what a **backend can enforce** (:attr:`BackendDeclarations.egress_modes`, a
+    set).
     The router serves a workload iff its mode is in the backend's set, and refuses otherwise —
     never substituting a different mode.  Confining **less** than asked silently widens what the
     workload reaches; confining **more** hands it a posture it was not built for; so neither is

@@ -51,8 +51,8 @@ router = SandboxRouter([backend])  # microVM isolation meets the router's defaul
 | `dispose_scope(scope, thread)` | delete every sandbox for a conversation — **from the service, by label**, not from process memory |
 | `stat_file` / `read_file` / `list_dir` | the pull surface — reads confined to the call's `working_directory`, symlinks and directories refused, a size over the caller's cap refused rather than truncated. Regularity itself cannot be proven here — see below |
 | `isolation` | `microvm` — the router's default floor, so a host that configures nothing already permits this backend |
-| `capabilities` | `EXEC, FILES_IN, FILES_OUT, FILES_LIST, FILES_DELETE, HOST_TOOLS` — declares only what it implements today, and `FILES_OUT` and `HOST_TOOLS` are a ceiling `acquire` withdraws on an image whose guest is not root |
-| `limits` | the transfer ceilings a spec may not exceed, per direction |
+| `declarations.capabilities` | `EXEC, FILES_IN, FILES_OUT, FILES_LIST, FILES_DELETE, HOST_TOOLS` — declares only what it implements today, and `FILES_OUT` and `HOST_TOOLS` are a ceiling `acquire` withdraws on an image whose guest is not root |
+| `declarations.limits` | the transfer ceilings a spec may not exceed, per direction |
 
 **Two image namespaces, and `spec.image` says which by whether it carries a tag.** The service prebuilds images and keeps them Ready for every sandbox group — `python-3.13`, `node-22`, `ubuntu` and a dozen more — and a spec reaches them by naming one, with **no registry and no tag**, because the version is part of the name. Anything else is the `repository:tag` the rest of this package is written around: qualified by the configured `registry` and resolved against the disk images this deployment imported with `scripts/import_disk_image.py`.
 
@@ -82,6 +82,18 @@ Microsoft's docs call these *public images*, glossed as "prebuilt images availab
 That `dispose_scope` detail is the one worth reading twice. A multi-replica host serves a conversation delete wherever it lands, so the replica that created a sandbox is usually not the one deleting it. A backend that consults only its own registry leaves billable sandboxes running, and the bug is invisible on a single-replica dev box. Sandboxes are labelled at create time so the service can answer the question instead.
 
 Egress comes from the **spec**, not from configuration: `default_action: Deny` plus one `Allow` rule per host the kind declares. A deployment that could widen a kind's egress could undo the containment its design rests on.
+
+## Upgrading to 0.15
+
+**The four optional declarations moved into one `BackendDeclarations`.** `maf-sandbox` 0.26 replaced `capabilities`, `limits`, `egress_modes` and `os_families` as backend attributes with one `declarations` object holding them as fields, and this backend follows it. A host that read them off the backend gets an `AttributeError`:
+
+| Was | Is |
+| --- | --- |
+| `backend.capabilities` | `backend.declarations.capabilities` |
+| `backend.limits` | `backend.declarations.limits` |
+| `backend.egress_modes` | `backend.declarations.egress_modes` |
+
+Nothing about what this backend declares changed — the values, and how they are derived from the config, are exactly as they were. `maf-sandbox`'s own README carries the reasoning and what a backend author has to do.
 
 ## Extracting this package
 

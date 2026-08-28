@@ -378,6 +378,12 @@ class InProcessSandboxBackend:
             them explicitly serve one spec identically — which is why ``capabilities`` still
             defaults to :data:`~maf_sandbox.DEFAULT_CAPABILITIES` even though this sandbox
             genuinely implements the pull surface: a test that wants it asks for it.
+
+            **Override with** ``dataclasses.replace(FAKE_BACKEND_DECLARATIONS, ...)``, never
+            with a bare :class:`~maf_sandbox.BackendDeclarations`: constructing one resets
+            ``egress_modes`` to the router's silence rule, which enforces nothing, and every
+            attach then fails with :class:`~maf_sandbox.SandboxEgressNotEnforced` about a field
+            the test never named.
         acquire_error: When set, ``acquire`` raises this instead of returning the sandbox —
             for exercising a kind's "sandbox unavailable" degrade path.
         dispose_error: When set, ``dispose`` records the key and then raises this — for

@@ -90,11 +90,20 @@ class NoSandboxBackend(LookupError):
 
 
 class SandboxBackendNotPermitted(PermissionError):
-    """The selected backend's boundary is below the floor the host — or a spec — requires.
+    """The selected backend may not serve: its boundary is below the floor, or it declares
+    itself in a way this package cannot read.
 
-    Raised rather than degraded on purpose.  Silently falling back to a stronger backend
+    Two families, both a misconfiguration a person fixes in code rather than something a
+    caller recovers from. The **boundary** one is the original: the rung the backend claims is
+    below the floor the host — or a spec — requires, or is not on the ladder at all. Raised
+    rather than degraded on purpose — silently falling back to a stronger backend
     would hide a misconfiguration, and silently proceeding with the weaker one would break
     the boundary every claim about the execution surface rests on.
+
+    The **declaration** one is raised at construction and again per spec: a backend still
+    carrying one of the attributes :class:`~maf_sandbox.BackendDeclarations` replaced, a
+    ``declarations`` that is not one, or a ``capabilities`` / ``egress_modes`` that is not a
+    set.
     """
 
 
@@ -251,10 +260,8 @@ def _declared_isolation(backend: SandboxBackend) -> Isolation:
         ) from exc
 
 
-#: The attributes :class:`~maf_sandbox.BackendDeclarations` replaced. A backend still carrying
-#: one is refused rather than read as silent: nothing in the type system marks the migration —
-#: none of the four was ever a Protocol member, so ``isinstance`` holds either way — and a
-#: missed ``egress_modes`` reads as "enforces nothing", which refuses every spec.
+#: The attributes :class:`~maf_sandbox.BackendDeclarations` replaced. Transitional: it exists to
+#: name the 0.26 migration while backends are still moving, and can go once none are.
 _SUPERSEDED_DECLARATIONS = ("capabilities", "limits", "egress_modes", "os_families")
 
 
@@ -262,29 +269,60 @@ def _declarations(backend: SandboxBackend) -> BackendDeclarations:
     """The one object every optional declaration is read from: one ``getattr``, four fields.
 
     Not a Protocol member, so declaring nothing is legal and reads as
-    :data:`~maf_sandbox.DEFAULT_BACKEND_DECLARATIONS`.  Declaring nothing *while still carrying*
-    one of the attributes this object replaced is a half-migrated backend rather than an old
-    one, and is refused with the attribute named.
+    :data:`~maf_sandbox.DEFAULT_BACKEND_DECLARATIONS`.
+
+    A backend still carrying one of the attributes this object replaced is refused, **whether or
+    not it also declares the object** — moving three fields and leaving the fourth behind is the
+    likelier mistake, and it is the silent one: nothing reads the stray attribute, so its value
+    is replaced by that field's default. On ``limits`` that *widens* a ceiling the backend
+    declared to be narrow. Nothing in the type system marks any of this, because none of the
+    four was ever a Protocol member and ``isinstance`` holds either way.
     """
-    declared: object = getattr(backend, "declarations", None)
-    if isinstance(declared, BackendDeclarations):
-        return declared
-    if declared is not None:
-        raise SandboxBackendNotPermitted(
-            f"sandbox backend {backend.name!r} declares declarations as "
-            f"{type(declared).__name__}, and only {BackendDeclarations.__name__} can be read "
-            "as one. Declare nothing at all to accept every default."
-        )
     superseded = [name for name in _SUPERSEDED_DECLARATIONS if hasattr(backend, name)]
     if superseded:
         raise SandboxBackendNotPermitted(
             f"sandbox backend {backend.name!r} declares {', '.join(superseded)} directly, "
             f"which {BackendDeclarations.__name__} replaced. Move each value into a "
-            "`declarations` attribute holding one, under the same field name. Refused rather "
-            "than ignored: nothing reads those attributes now, so the backend would be served "
-            "as if it had declared nothing and would refuse every workload."
+            "`declarations` attribute holding one, under the same field name, and delete the "
+            "attribute. Refused rather than ignored: nothing reads those attributes now, so "
+            "each one left behind is silently replaced by that field's default."
         )
-    return DEFAULT_BACKEND_DECLARATIONS
+    declared: object = getattr(backend, "declarations", None)
+    if declared is None:
+        return DEFAULT_BACKEND_DECLARATIONS
+    if isinstance(declared, BackendDeclarations):
+        return declared
+    kind = type(declared)
+    raise SandboxBackendNotPermitted(
+        f"sandbox backend {backend.name!r} declares declarations as "
+        f"{kind.__module__}.{kind.__qualname__}, and only "
+        f"{BackendDeclarations.__module__}.{BackendDeclarations.__qualname__} can be read as "
+        "one. Both module paths are named because they are the same when this is an ordinary "
+        "type error, and differ when two copies of maf_sandbox are on the path — a vendored "
+        "one, or two versions resolved into one environment. Declare nothing at all to accept "
+        "every default."
+    )
+
+
+def _declared_set(backend: SandboxBackend, declared: object, field: str) -> frozenset[object]:
+    """A set-valued declaration, refusing any other shape.
+
+    ``capabilities`` and ``egress_modes`` are consumed by set arithmetic and by ``in``; handed
+    a string or a list they raise ``TypeError`` out of a host's agent factory, or match nothing
+    and read as an honest refusal. Refused here instead, on :func:`_declared_limits`'s policy:
+    a declaration this package cannot read is refused rather than guessed at.
+
+    The members are not checked. :class:`~maf_sandbox.Egress` and
+    :class:`~maf_sandbox.Capability` are ``StrEnum``, so a backend declaring plain strings
+    matches exactly as the members would, and that tolerance is deliberate.
+    """
+    if isinstance(declared, frozenset | set):
+        return frozenset(cast("Iterable[object]", declared))
+    raise SandboxBackendNotPermitted(
+        f"sandbox backend {backend.name!r} declares {field} as {type(declared).__name__}, and "
+        "only a set can be read as one — the router subtracts it, tests membership in it and "
+        "sorts it for the refusal message. Declare nothing at all to accept the default."
+    )
 
 
 def _declared_os_families(declared: BackendDeclarations) -> frozenset[OsFamily]:
@@ -354,7 +392,10 @@ class SandboxRouter:
 
     Raises:
         SandboxBackendNotPermitted: at construction, when the selected backend declares a
-            rung below ``min_isolation`` or one this package does not recognise. Failing
+            rung below ``min_isolation`` or one this package does not recognise, or when its
+            declarations cannot be read — an attribute
+            :class:`~maf_sandbox.BackendDeclarations` replaced, or a ``declarations`` that is
+            not one. Failing
             here rather than at first use means a misconfigured deployment cannot start with
             the feature apparently enabled and quietly unsafe.
         ValueError: at construction, when ``min_isolation`` is not a rung this package
@@ -502,13 +543,16 @@ class SandboxRouter:
                 "boundary it was written not to trust."
             )
 
-        capabilities = declarations.capabilities
+        capabilities = _declared_set(
+            self._backend, cast("object", declarations.capabilities), "capabilities"
+        )
         missing = spec.requires - capabilities
         if missing:
             raise SandboxCapabilityNotSupported(
                 f"sandbox backend {self._backend.name!r} does not support "
                 f"{', '.join(sorted(missing))}, which the {spec.kind!r} workload requires "
-                f"(it declares {', '.join(sorted(capabilities)) or 'nothing'}). Refused "
+                f"(it declares "
+                f"{', '.join(sorted(str(c) for c in capabilities)) or 'nothing'}). Refused "
                 "rather than attempted: a workload that reaches for a capability the backend "
                 "never implemented fails inside the sandbox, where the reason is hardest to "
                 "see."
@@ -570,9 +614,11 @@ class SandboxRouter:
         # backend must be able to enforce it. Refuse, never degrade — no more-open substitute
         # (a silent widening) and no more-isolated one (a quietly different posture). See
         # docs/sandbox/research/egress-resolution.md.
-        modes = declarations.egress_modes
+        modes = _declared_set(
+            self._backend, cast("object", declarations.egress_modes), "egress_modes"
+        )
         if spec.egress not in modes:
-            enforced = ", ".join(sorted(modes)) or "nothing"
+            enforced = ", ".join(sorted(str(mode) for mode in modes)) or "nothing"
             raise SandboxEgressNotEnforced(
                 f"sandbox backend {self._backend.name!r} cannot enforce the {str(spec.egress)!r} "
                 f"egress the {spec.kind!r} workload runs in (it enforces {enforced}). A workload "
@@ -597,8 +643,8 @@ class SandboxRouter:
         Raises:
             SandboxCapabilityDenied: when the spec requires a capability this host denies.
             SandboxIdentityDenied: when the spec's ``identities`` carry one this host denies.
-            SandboxBackendNotPermitted: when the spec raises the floor above what the backend
-                declares.
+            SandboxBackendNotPermitted: when the backend's declarations cannot be read, or
+                when the spec raises the floor above what the backend declares.
             SandboxCapabilityNotSupported: when the backend cannot do what the spec requires.
             SandboxOsFamilyNotSupported: when the spec asks for a guest shape the backend
                 does not hand out.
@@ -672,8 +718,8 @@ class SandboxRouter:
                 this call was creating its sandbox too, and that sandbox is disposed first.
             SandboxCapabilityDenied: when the spec requires a capability this host denies.
             SandboxIdentityDenied: when the spec's ``identities`` carry one this host denies.
-            SandboxBackendNotPermitted: when the spec raises the floor above what the backend
-                declares.
+            SandboxBackendNotPermitted: when the backend's declarations cannot be read, or
+                when the spec raises the floor above what the backend declares.
             SandboxCapabilityNotSupported: when the backend cannot do what the spec requires.
             SandboxOsFamilyNotSupported: when the spec asks for a guest shape the backend
                 does not hand out.

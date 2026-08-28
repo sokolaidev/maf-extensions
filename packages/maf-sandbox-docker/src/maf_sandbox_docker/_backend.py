@@ -755,6 +755,18 @@ class DockerSandboxBackend:
 
     def __init__(self, config: DockerSandboxConfig) -> None:
         self._config = config
+        # Built once: every input is fixed here, and the router reads the object on each
+        # `ensure_can_serve` and each `acquire`. Only `egress_modes` reads the config at all —
+        # with a proxy image this backend can allowlist named hosts or deny all, and without
+        # one it can only run `--network none`. Never UNRESTRICTED: a container backend always
+        # cuts or proxies, so it cannot offer a workload that asked to run open.
+        self._declarations = BackendDeclarations(
+            capabilities=_CAPABILITIES,
+            limits=_LIMITS,
+            egress_modes=frozenset({Egress.ALLOWLIST, Egress.CLOSED})
+            if config.egress_proxy_image
+            else frozenset({Egress.CLOSED}),
+        )
         # (scope, thread_id, agent_dir, kind) -> name: a purge fallback for when the listing
         # fails, never the truth. Holds the last name acquired per key and kind.
         self._registry: dict[tuple[str, str, str, str], str] = {}
@@ -790,18 +802,7 @@ class DockerSandboxBackend:
 
     @property
     def declarations(self) -> BackendDeclarations:
-        # Only `egress_modes` reads the config: with a proxy image this backend can allowlist
-        # named hosts or deny all, and without one it can only run `--network none`. Never
-        # UNRESTRICTED — a container backend always cuts or proxies, so it cannot offer a
-        # workload that asked to run open.
-        egress_modes = (
-            frozenset({Egress.ALLOWLIST, Egress.CLOSED})
-            if self._config.egress_proxy_image
-            else frozenset({Egress.CLOSED})
-        )
-        return BackendDeclarations(
-            capabilities=_CAPABILITIES, limits=_LIMITS, egress_modes=egress_modes
-        )
+        return self._declarations
 
     # -- SandboxBackend -----------------------------------------------------------
 

@@ -451,6 +451,53 @@ class TestTheDeclarationsObject:
         with pytest.raises(SandboxBackendNotPermitted, match=superseded):
             SandboxRouter([backend])
 
+    @pytest.mark.parametrize(
+        "superseded", ["capabilities", "limits", "egress_modes", "os_families"]
+    )
+    def test_one_left_behind_beside_a_declared_object_is_refused_too(self, superseded):
+        """The likelier half-migration, and the silent one: three fields moved and the fourth
+        left as an attribute, which nothing reads, so that field falls back to its default. On
+        `limits` that *widens* a ceiling the backend declared to be narrow."""
+        backend = InProcessSandboxBackend(isolation=Isolation.MICROVM)
+        setattr(backend, superseded, frozenset())
+        with pytest.raises(SandboxBackendNotPermitted, match=superseded):
+            SandboxRouter([backend])
+
+    def test_a_left_behind_limits_would_otherwise_widen_the_ceiling(self):
+        """The consequence spelled out, so the guard is not read as tidiness."""
+        tight = TransferLimits(max_bytes_per_file=1, max_total_bytes=1, max_files=1)
+        backend = InProcessSandboxBackend(isolation=Isolation.MICROVM)
+        setattr(backend, "limits", SandboxLimits(files_in=tight, files_out=tight))
+        with pytest.raises(SandboxBackendNotPermitted, match="limits"):
+            SandboxRouter([backend]).ensure_can_serve(_SPEC)
+        # Without the guard the stray attribute is ignored and `_SPEC` is served at the
+        # default ceilings, which is what the backend's own declaration refuses.
+        assert backend.declarations.limits == DEFAULT_SANDBOX_LIMITS
+
+    @pytest.mark.parametrize("field", ["capabilities", "egress_modes"])
+    @pytest.mark.parametrize("declared", ["exec", ["closed"], None], ids=["str", "list", "None"])
+    def test_a_set_valued_declaration_of_another_shape_is_refused_and_named(self, field, declared):
+        """`spec.requires - x` and `spec.egress in x` need a set; handed a string these used to
+        raise a bare TypeError out of a host's agent factory."""
+        backend = InProcessSandboxBackend(
+            isolation=Isolation.MICROVM,
+            declarations=dataclasses.replace(FAKE_BACKEND_DECLARATIONS, **{field: declared}),
+        )
+        with pytest.raises(SandboxBackendNotPermitted, match=field):
+            SandboxRouter([backend]).ensure_can_serve(_SPEC)
+
+    def test_a_set_of_plain_strings_is_still_served(self):
+        """The shape is checked and the members are not: `Capability` and `Egress` are StrEnum,
+        so a backend declaring strings matches exactly as the members would."""
+        backend = InProcessSandboxBackend(
+            isolation=Isolation.MICROVM,
+            declarations=BackendDeclarations(
+                capabilities=frozenset({"exec", "files_in"}),  # type: ignore[arg-type]
+                egress_modes=frozenset({"closed"}),  # type: ignore[arg-type]
+            ),
+        )
+        SandboxRouter([backend]).ensure_can_serve(_SPEC)
+
     def test_the_refusal_lands_at_construction_not_at_the_first_workload(self):
         """A half-migrated deployment fails at startup, where a misconfiguration belongs."""
         backend = _BackendDeclaringNothing()
