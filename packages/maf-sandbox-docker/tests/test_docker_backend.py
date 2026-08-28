@@ -1162,7 +1162,7 @@ class TestWriteFile:
         stdin = fake.only("cp", "-").stdin
         assert stdin is not None
         with tarfile.open(fileobj=io.BytesIO(stdin)) as archive:
-            assert archive.getnames() == ["maf-sandbox/work/main.bicep"]
+            assert archive.getnames()[-1] == "maf-sandbox/work/main.bicep"
 
     def test_str_content_round_trips_as_utf8(self):
         sandbox, fake = self._sandbox()
@@ -1207,7 +1207,9 @@ class TestWriteFile:
         be spelled entry by entry.  Ancestors above the work directory stay out of the tar.
         """
         overrides = {
+            **_WORK_IS_A_DIRECTORY,
             ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"10001\n", ""),
+            ("exec", "-w", "/", _NAME, "id", "-u"): _DockerResult(0, b"10001\n", ""),
             ("exec", "-w", "/", _NAME, "id", "-g"): _DockerResult(0, b"10001\n", ""),
         }
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
@@ -1228,7 +1230,10 @@ class TestWriteFile:
     def test_a_write_directly_in_the_work_dir_adds_no_call_directory(self):
         """A file beside the calls, not under one: the tar carries the file alone."""
         overrides = {
+            **_WORK_IS_A_DIRECTORY,
             ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"10001\n", ""),
+            ("exec", "-w", "/", _NAME, "id", "-u"): _DockerResult(0, b"10001\n", ""),
+            ("exec", "-w", "/", _NAME, "id", "-g"): _DockerResult(0, b"10001\n", ""),
         }
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
         sandbox = asyncio.run(backend.acquire(_KEY, _SPEC))
@@ -1245,6 +1250,7 @@ class TestWriteFile:
         """
         overrides = {
             ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"10001\n", ""),
+            ("exec", "-w", "/", _NAME, "id", "-u"): _DockerResult(0, b"10001\n", ""),
             ("exec", "-w", "/", _NAME, "id", "-g"): _DockerResult(0, b"10001\n", ""),
         }
         backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
@@ -1535,17 +1541,22 @@ def _passwd_responder(
 
     def respond(args):
         if args[0] == "cp" and args[1].endswith(":/etc/passwd"):
-            buffer = io.BytesIO()
-            with tarfile.open(fileobj=buffer, mode="w") as archive:
-                entry = tarfile.TarInfo("passwd")
-                entry.size = len(passwd)
-                entry.mode = 0o644
-                archive.addfile(entry, io.BytesIO(passwd))
-            return _DockerResult(0, buffer.getvalue(), "")
+            return _tar_response(passwd)
         machine = _machine(running=running, overrides=overrides)
         return machine(args)
 
     return respond
+
+
+def _tar_response(body: bytes) -> _DockerResult:
+    """A `docker cp` stdout shaped as a one-entry tar carrying ``body``."""
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as archive:
+        entry = tarfile.TarInfo("entry")
+        entry.size = len(body)
+        entry.mode = 0o644
+        archive.addfile(entry, io.BytesIO(body))
+    return _DockerResult(0, buffer.getvalue(), "")
 
 
 class TestTheGuestIdentityIsReadFromTheContainer:
@@ -1574,6 +1585,7 @@ class TestTheGuestIdentityIsReadFromTheContainer:
         overrides = {
             **_WORK_IS_A_DIRECTORY,
             ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"0\n", ""),
+            ("exec", "-w", "/", _NAME, "id", "-u"): _DockerResult(0, b"0\n", ""),
             ("exec", "-w", "/", _NAME, "id", "-g"): _DockerResult(0, b"20001\n", ""),
         }
         backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
@@ -1586,7 +1598,10 @@ class TestTheGuestIdentityIsReadFromTheContainer:
         """
         facts, fake = self._facts(b"10001\n")
         assert (facts.guest_uid, facts.guest_gid) == (10001, 0)
-        assert [c.args for c in fake.matching("exec")] == [("exec", "-w", "/", _NAME, "id", "-g")]
+        assert [c.args for c in fake.matching("exec")] == [
+            ("exec", "-w", "/", _NAME, "id", "-u"),
+            ("exec", "-w", "/", _NAME, "id", "-g"),
+        ]
 
     def test_a_uid_with_a_passwd_entry_takes_the_entrys_gid(self):
         """A uid-only `Config.User` does not imply `gid == uid`: the primary gid comes from
@@ -1595,6 +1610,7 @@ class TestTheGuestIdentityIsReadFromTheContainer:
         overrides = {
             **_WORK_IS_A_DIRECTORY,
             ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, b"10001\n", ""),
+            ("exec", "-w", "/", _NAME, "id", "-u"): _DockerResult(0, b"10001\n", ""),
             ("exec", "-w", "/", _NAME, "id", "-g"): _DockerResult(0, b"20001\n", ""),
         }
         backend, _ = _backend_with(_machine(running=[_NAME], overrides=overrides))
@@ -1646,6 +1662,38 @@ class TestTheGuestIdentityIsReadFromTheContainer:
         facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
         assert (facts.guest_uid, facts.guest_gid) == (10001, 20001)
         assert fake.matching("exec") == []
+
+    @pytest.mark.parametrize(
+        ("user", "expected"),
+        [
+            ("app:20001", (10001, 20001)),
+            ("10001:devs", (10001, 30001)),
+            ("app:devs", (10001, 30001)),
+        ],
+    )
+    def test_a_mixed_user_group_pair_resolves_each_side(self, user, expected):
+        """`Config.User` accepts `user:group` with either side numeric or named; each half
+        resolves from its own account file, and an unparsed pair used to fall back to
+        `0:0` with both sides resolvable.
+        """
+        passwd = b"root:x:0:0:root:/root:/bin/bash\napp:x:10001:20001::/home/app:/bin/sh\n"
+        group = b"root:x:0:\ndevs:x:30001:\n"
+        overrides = {
+            **_WORK_IS_A_DIRECTORY,
+            ("inspect", "-f", "{{.Config.User}}"): _DockerResult(0, user.encode(), ""),
+        }
+        backend, fake = _backend_with(_machine(running=[_NAME], overrides=overrides))
+
+        def respond(args):
+            if args[0] == "cp" and args[1].endswith(":/etc/passwd"):
+                return _tar_response(passwd)
+            if args[0] == "cp" and args[1].endswith(":/etc/group"):
+                return _tar_response(group)
+            return _machine(running=[_NAME], overrides=overrides)(args)
+
+        fake._responder = respond
+        facts = asyncio.run(backend._container_facts(_NAME, _SPEC))
+        assert (facts.guest_uid, facts.guest_gid) == expected
 
     def test_an_unresolvable_identity_fails_open_to_root(self):
         """A named user with neither a passwd answer nor `id` keeps the pre-#680 behavior:

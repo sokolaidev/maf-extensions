@@ -365,14 +365,16 @@ class _DockerSandbox:
         Sent as a tar on stdin.  A ``cp`` destination must already exist and ``/`` is the only
         path that always does, so the entries carry the whole path and docker creates the
         missing directories from them.  The load-bearing constraint: an **implicit**
-        intermediate is created as ``root`` whatever the file entry's ownership says, so any
-        directory docker would otherwise have to invent travels as its own explicit entry
-        stamped with the container's user — that is what makes a call directory one the
-        image's user can later empty.  Each candidate parent is statted first and skipped
-        when it exists: docker extracts a directory entry onto a present directory with the
-        entry's mode (measured, ``/tmp`` losing its sticky bit to a ``755`` entry), so an
-        image-built directory must not travel.  The entry naming a *missing* directory is
-        what a later reclaim relies on.
+        intermediate is created as ``root`` whatever the file entry's ownership says, so
+        every directory from ``working_directory`` itself down to the entry's parent is
+        statted first and travels as its own explicit entry stamped with the container's
+        user when missing — that is what makes a call directory one the image's user can
+        later empty, on every image shape including one whose ``work_dir`` is absent.
+        Ancestors above ``working_directory`` stay out of the tar: the reach rule lets a
+        root removal through exactly there, and stamping them would hand the guest what
+        only the host may hold.  An entry naming a directory that already exists extracts
+        with the entry's mode (measured, ``/tmp`` losing its sticky bit to a ``755``
+        entry), which is why existing parents are skipped rather than re-stamped.
         """
         guest = await confine_guest_write_path(
             lambda p: self._stat_guest(p, p), path, working_directory
@@ -383,18 +385,26 @@ class _DockerSandbox:
         buffer = io.BytesIO()
         with tarfile.open(fileobj=buffer, mode="w") as archive:
             relative = guest_path_relative_to(leaf, base)
-            if relative:
-                walked = base
-                for segment in relative.split("/"):
-                    walked = posixpath.join(walked, segment)
-                    if await self._stat_guest(walked, walked) is not None:
-                        continue
+            walked = base
+            while True:
+                # The walk starts at `base` itself: an absent work_dir is also created
+                # implicitly as root by docker, and its ancestors are the only directories
+                # the reach rule lets a root reclaim through — a root-owned work_dir under
+                # a guest-writable parent is the leak the missing entry would leave.  The
+                # filesystem root needs no entry — it is the cp destination — so the walk
+                # never emits one for it.
+                if walked != "/" and await self._stat_guest(walked, walked) is None:
                     entry = tarfile.TarInfo(walked.lstrip("/") + "/")
                     entry.type = tarfile.DIRTYPE
                     entry.mode = 0o755
                     entry.uid = self._guest_uid
                     entry.gid = self._guest_gid
                     archive.addfile(entry)
+                if not relative:
+                    break
+                first, _, rest = relative.partition("/")
+                walked = posixpath.join(walked, first)
+                relative = rest or None
             entry = tarfile.TarInfo(guest.lstrip("/"))
             entry.size = len(data)
             entry.mode = 0o644
@@ -859,15 +869,15 @@ class DockerSandboxBackend:
     async def _guest_identity(self, name: str, probe: _DockerSandbox) -> tuple[int, int]:
         """Read the container's default user's uid and gid.
 
-        An unset user is root by definition, and an explicit ``0:0`` pair is taken as-is;
-        anything else is resolved against the container's own ``/etc/passwd``, read over
-        the same ``docker cp`` pull surface every other fact uses, because the primary gid
-        comes from that file and is not the uid's to guess — a bare ``0`` no more implies
-        gid ``0`` than ``10001`` implies ``10001``.  ``id`` inside the container answers a
-        named user when the passwd file cannot be read, and the gid for a bare uid.  When
-        neither answers, the write falls back to root's ``0:0`` — the pre-#680 behavior
-        for an image that positively identifies nothing, rather than a guess that could
-        stamp a stranger's ownership.
+        An unset user is root by definition, and an explicit ``uid:gid`` pair — both
+        numeric — is taken as-is; anything else is resolved against the container's own
+        account files, read over the same ``docker cp`` pull surface every other fact
+        uses, because the primary gid comes from ``/etc/passwd`` (or a named group from
+        ``/etc/group``) and is not the uid's to guess — a bare ``0`` no more implies gid
+        ``0`` than ``10001`` implies ``10001``.  ``id`` inside the container answers when
+        the account files cannot be read.  When nothing answers, the write falls back to
+        root's ``0:0`` — the pre-#680 behavior for an image that positively identifies
+        nothing, rather than a guess that could stamp a stranger's ownership.
 
         A ``TimeoutError`` propagates: the timed-out probe removes the container on its way
         out, so this is not an unreadable identity but a dying sandbox, and caching
@@ -888,58 +898,68 @@ class DockerSandboxBackend:
             )
             if not raw or raw == "0:0":
                 return 0, 0
-            if ":" in raw:
-                u, _, g = raw.partition(":")
-                if u.isdigit() and g.isdigit():
-                    return int(u), int(g)
-            uid = int(raw) if raw.isdigit() else None
-            user_name = None if uid is not None else raw
-            gid: int | None = None
-            passwd = await self._passwd_entry(name)
-            if passwd is not None:
-                for line in passwd.splitlines():
-                    fields = line.strip().split(":")
-                    if len(fields) < 4:
-                        continue
-                    if user_name is not None and fields[0] == user_name:
-                        uid, gid = int(fields[2]), int(fields[3])
-                        break
-                    if uid is not None and fields[2] == str(uid) and fields[3].isdigit():
-                        gid = int(fields[3])
-                        break
+            user_spec, _, group_spec = raw.partition(":")
+            uid: int | None = int(user_spec) if user_spec.isdigit() else None
+            gid: int | None = int(group_spec) if group_spec.isdigit() else None
+            group_name = group_spec if group_spec and not group_spec.isdigit() else None
+            if uid is None or gid is None:
+                passwd = await self._passwd_entry(name)
+                if passwd is not None:
+                    for line in passwd.splitlines():
+                        fields = line.strip().split(":")
+                        if len(fields) < 4 or not fields[2].isdigit() or not fields[3].isdigit():
+                            continue
+                        if uid is None and fields[0] == user_spec:
+                            uid = int(fields[2])
+                        # The named-group case must not inherit the passwd line's gid:
+                        # `app:devs` means gid comes from `/etc/group`, not app's own.
+                        if (
+                            gid is None
+                            and group_name is None
+                            and uid is not None
+                            and fields[2] == str(uid)
+                        ):
+                            gid = int(fields[3])
+                        if uid is not None and gid is not None:
+                            break
+            if uid is None or gid is None:
+                u_res, g_res = await self._effective_ids(name, probe)
+                uid = uid if uid is not None else u_res
+                gid = gid if gid is not None else g_res
+            if gid is None and group_name is not None:
+                groups = await self._group_entry(name)
+                gid = groups.get(group_name)
+            if uid is not None and gid is not None:
+                return uid, gid
             if uid is not None:
-                if gid is not None:
-                    return uid, gid
-                g_res = await probe.exec(
-                    ["id", "-g"],
-                    working_directory="/",
-                    timeout=self._config.command_timeout_seconds,
-                )
-                if g_res.exit_code == 0 and g_res.stdout.strip().isdigit():
-                    return uid, int(g_res.stdout.strip())
+                # A positively-known uid with no gid answer: the runtime picks 0 for a
+                # uid with no passwd entry, so that is the honest remainder.
                 return uid, 0
-            g_res = await probe.exec(
-                ["id", "-g"],
-                working_directory="/",
-                timeout=self._config.command_timeout_seconds,
-            )
-            u_res = await probe.exec(
-                ["id", "-u"],
-                working_directory="/",
-                timeout=self._config.command_timeout_seconds,
-            )
-            if (
-                g_res.exit_code == 0
-                and u_res.exit_code == 0
-                and g_res.stdout.strip().isdigit()
-                and u_res.stdout.strip().isdigit()
-            ):
-                return int(u_res.stdout.strip()), int(g_res.stdout.strip())
         except TimeoutError:
             raise
         except Exception as unreadable:  # noqa: BLE001 — an acquire must not fail over this
             logger.debug("docker: could not read %s's guest identity (%s)", name, unreadable)
         return 0, 0
+
+    async def _effective_ids(
+        self, name: str, probe: _DockerSandbox
+    ) -> tuple[int | None, int | None]:
+        """The container process's effective uid and gid from ``id``, or ``(None, None)``."""
+        u_res = await probe.exec(
+            ["id", "-u"],
+            working_directory="/",
+            timeout=self._config.command_timeout_seconds,
+        )
+        g_res = await probe.exec(
+            ["id", "-g"],
+            working_directory="/",
+            timeout=self._config.command_timeout_seconds,
+        )
+        if u_res.exit_code == 0 and g_res.exit_code == 0:
+            u, g = u_res.stdout.strip(), g_res.stdout.strip()
+            if u.isdigit() and g.isdigit():
+                return int(u), int(g)
+        return None, None
 
     async def _passwd_entry(self, name: str) -> str | None:
         """The container's ``/etc/passwd``, over the pull surface, or ``None`` when unreadable.
@@ -974,6 +994,43 @@ class DockerSandboxBackend:
         if len(body) < info.size:
             return None
         return body.decode("utf-8", errors="replace")
+
+    async def _group_entry(self, name: str) -> dict[str, int]:
+        """The container's ``/etc/group`` as ``{group name: gid}``, or ``{}`` when unreadable.
+
+        The named-group half of `Config.User` (`app:devs`) resolves here, by the same
+        ``docker cp`` pull the passwd half uses.
+        """
+        try:
+            result = await self._docker(
+                "cp",
+                f"{name}:/etc/group",
+                "-",
+                timeout=self._config.command_timeout_seconds,
+                read_limit=_PASSWD_READ_LIMIT,
+            )
+        except Exception as unreadable:  # noqa: BLE001 — an acquire must not fail over this
+            logger.debug("docker: could not read %s's /etc/group (%s)", name, unreadable)
+            return {}
+        if result.returncode != 0 or not result.stdout or len(result.stdout) < _TAR_BLOCK:
+            return {}
+        try:
+            info = tarfile.TarInfo.frombuf(
+                result.stdout[:_TAR_BLOCK], encoding="utf-8", errors="surrogateescape"
+            )
+        except (tarfile.TarError, EOFError, ValueError):
+            return {}
+        if not info.isreg():
+            return {}
+        body = result.stdout[_TAR_BLOCK : _TAR_BLOCK + info.size]
+        if len(body) < info.size:
+            return {}
+        groups: dict[str, int] = {}
+        for line in body.decode("utf-8", errors="replace").splitlines():
+            fields = line.strip().split(":")
+            if len(fields) >= 3 and fields[2].isdigit():
+                groups[fields[0]] = int(fields[2])
+        return groups
 
     async def _container_facts(self, name: str, spec: SandboxSpec) -> _ContainerFacts:
         """Read what ``name`` says about itself, once per container.
