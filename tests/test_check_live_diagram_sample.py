@@ -36,6 +36,10 @@ _scaffold_spec.loader.exec_module(scaffold)
 #: returned, tagged as the sample tags it.
 _DISPOSAL_LINE = f"{scaffold.MEASURED}Disposed 1 sandbox(es)."
 
+#: The other measured line, from the handler the sample wires on the router. Nought is what a
+#: healthy run reports, and it is the framework's own count rather than a probe of the guest.
+_RECLAIM_LINE = f"{scaffold.MEASURED}Reclaim failures this turn: 0"
+
 #: A healthy run: the model's own words about what it drew, then that line. Nothing in the
 #: reply is matched — it is prose, and it is deliberately not the prose a checker could be
 #: tuned to.
@@ -43,6 +47,7 @@ _HEALTHY = f"""\
 I wrote the DOT for a three-node pipeline and called render_diagram. It saved the image as
 diagram.png under out/. I have not seen the image itself.
 
+{_RECLAIM_LINE}
 {_DISPOSAL_LINE}
 """
 
@@ -68,8 +73,39 @@ class TestAHealthyRun:
         assert check.assess(_HEALTHY, _png(640, 480)) == []
 
     def test_it_passes_whatever_the_model_said(self):
-        output = f"Here is a lovely diagram.\n\n{scaffold.MEASURED}Disposed 2 sandbox(es).\n"
+        output = (
+            f"Here is a lovely diagram.\n\n{_RECLAIM_LINE}\n"
+            f"{scaffold.MEASURED}Disposed 2 sandbox(es).\n"
+        )
         assert check.assess(output, _png(1, 1)) == []
+
+
+class TestTheReclaimHalf:
+    """What the sample vouches for about the call directories it made.
+
+    Sample 07 wires `ReclaimConfig.on_failure` and counts what it was told, so this line is the
+    framework's own answer rather than a probe of the guest.
+    """
+
+    def test_a_missing_line_fails(self):
+        """The `finally` not reached at all: nothing vouches for the directories."""
+        output = _HEALTHY.replace(f"{_RECLAIM_LINE}\n", "")
+        failures = check.assess(output, _png(640, 480))
+        assert any("nothing vouches for the call directories" in reason for reason in failures)
+
+    def test_a_directory_left_behind_fails(self):
+        """The failure this exists for: the call's files stayed where the next call reads."""
+        output = _HEALTHY.replace(
+            _RECLAIM_LINE, f"{scaffold.MEASURED}Reclaim failures this turn: 1"
+        )
+        failures = check.assess(output, _png(640, 480))
+        assert any("could not be reclaimed" in reason for reason in failures)
+
+    def test_the_tag_is_what_makes_it_the_frameworks(self):
+        """An untagged line is the model's prose, and answers for nothing."""
+        untagged = _HEALTHY.replace(_RECLAIM_LINE, "Reclaim failures this turn: 0")
+        failures = check.assess(untagged, _png(640, 480))
+        assert any("nothing vouches for the call directories" in reason for reason in failures)
 
 
 class TestTheSandboxHalf:
@@ -173,7 +209,14 @@ class TestDimensions:
 
 
 class TestEveryReasonIsReported:
-    def test_a_run_that_failed_twice_says_so_twice(self):
-        """A checker that stops at the first reason makes a red run take two live runs to read."""
+    def test_a_run_that_failed_three_ways_says_so_three_times(self):
+        """A checker that stops at the first reason makes a red run take three live runs to read.
+
+        Keyed on what each reason is about rather than on the count, so a fourth independent
+        check does not turn this red for the wrong reason.
+        """
         failures = check.assess("nothing here", b"<svg/>")
-        assert len(failures) == 2
+        assert len(failures) == 3
+        assert any("did not run to completion" in reason for reason in failures)
+        assert any("call directories" in reason for reason in failures)
+        assert any("not a readable PNG" in reason for reason in failures)

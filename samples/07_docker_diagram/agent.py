@@ -50,7 +50,10 @@ from agent_framework.openai import OpenAIChatClient
 from azure.identity.aio import DefaultAzureCredential
 from diagram_kind import make_diagram_tools
 from maf_sandbox import (
+    FailedReclaimPolicy,
     Isolation,
+    ReclaimConfig,
+    ReclaimFailure,
     SandboxRouter,
     make_file_system_sink,
 )
@@ -99,8 +102,40 @@ async def run() -> int:
 
     backend = DockerSandboxBackend(DockerSandboxConfig())
 
+    # What this host does about a call whose directory could not be removed. Both halves are
+    # decisions rather than plumbing, and a host that leaves them at their defaults has still
+    # made them:
+    #
+    # `failed_reclaim_policy` is the one with a blast radius. `DISPOSE` — the default, stated
+    # here rather than inherited — ends the sandbox, so the conversation's next call starts
+    # cold; `KEEP` leaves it warm with the unremovable data still in it. A directory nobody
+    # could remove stays readable by every later call in the conversation, because `acquire`
+    # is get-or-create, so disposal is the only thing that actually removes it.
+    #
+    # `on_failure` is *not* where that is decided. It runs after the framework has already
+    # acted, and `ReclaimFailure.disposal` says which of `disposed`, `failed` or `kept` it
+    # did. This is where a host logs, counts and pages — nothing more, and a handler that
+    # raises is caught and logged rather than replacing the call's own answer.
+    reclaim_failures: list[ReclaimFailure] = []
+
+    async def note_reclaim_failure(failure: ReclaimFailure) -> None:
+        # `failure.path` is a guest path — host-side detail, and never model-facing.
+        print(
+            f"\n{MEASURED}a call directory was left behind: {failure.path} "
+            f"({failure.reason}); the framework {failure.disposal} the sandbox",
+            file=sys.stderr,
+        )
+        reclaim_failures.append(failure)
+
     # Below the router's default `microvm` floor; opted down explicitly.
-    router = SandboxRouter([backend], min_isolation=Isolation.CONTAINER)
+    router = SandboxRouter(
+        [backend],
+        min_isolation=Isolation.CONTAINER,
+        reclaim=ReclaimConfig(
+            failed_reclaim_policy=FailedReclaimPolicy.DISPOSE,
+            on_failure=note_reclaim_failure,
+        ),
+    )
 
     context = make_caller_context(
         list_no_files,
@@ -149,8 +184,12 @@ async def run() -> int:
         # check trusts the `[measured]` tag completely (#314).
         print(quoted(response.text))
     finally:
+        # The framework's own answer about the call directories this turn made, rather
+        # than a probe of the guest: the handler above is called once per reclaim that
+        # did not land, so nought is the whole of the claim that every one of them did.
+        print(f"\n{MEASURED}Reclaim failures this turn: {len(reclaim_failures)}")
         purge = await router.dispose_scope(SCOPE, THREAD_ID)
-        print(f"\n{MEASURED}Disposed {purge.disposed} sandbox(es).")
+        print(f"{MEASURED}Disposed {purge.disposed} sandbox(es).")
         if purge.undisposed is not None:
             print(f"{MEASURED}Not fully disposed: {purge.undisposed}")
         await credential.close()

@@ -642,9 +642,10 @@ jobs:
           # half without this run having rendered anything.
           rm -rf samples/07_docker_diagram/out
           uv run --no-project samples/07_docker_diagram/agent.py | tee /tmp/sample07-out.txt
-          # The model's prose is not evidence a renderer ran, so the assertion is the disposal
-          # line and the PNG itself. What the sandbox still holds is not read here — that is
-          # `tests/test_sample_07_diagram_kind.py`, in process, against the fake's own store.
+          # The model's prose is not evidence a renderer ran, so the assertions are the
+          # disposal line, the reclaim-failure count and the PNG itself. What the sandbox
+          # still holds is not read here — that is `tests/test_sample_07_diagram_kind.py`,
+          # in process, against the fake's own store.
           python3 "$HARNESS"/scripts/check_live_diagram_sample.py \
             /tmp/sample07-out.txt samples/07_docker_diagram/out/diagram.png
 

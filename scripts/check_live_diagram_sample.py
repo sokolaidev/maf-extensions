@@ -33,6 +33,14 @@ _DISPOSED = re.compile(
     r"^  (?-i:\[measured\]) Disposed\s+(\d+)\s+sandbox", re.MULTILINE | re.IGNORECASE
 )
 
+#: The framework's own count of call directories it could not remove, from the handler the
+#: sample wires on the router. Nought is the claim; anything else means a call left its files
+#: in a sandbox the next call in that conversation can read. Tagged like the line above, so a
+#: model writing "no reclaim failures" into its reply cannot answer for the framework.
+_RECLAIM_FAILURES = re.compile(
+    r"^  (?-i:\[measured\]) Reclaim failures this turn:\s+(\d+)", re.MULTILINE | re.IGNORECASE
+)
+
 #: The 8-byte PNG signature, and the fixed layout that must follow it: a 4-byte chunk length,
 #: the chunk type `IHDR`, then width and height as big-endian uint32. The header chunk is first
 #: in every PNG, so these offsets need no chunk walk.
@@ -73,6 +81,18 @@ def assess(output: str, image: bytes | None) -> list[str]:
         failures.append(
             "'Disposed 0 sandbox(es)' — no sandbox was ever created, so the model answered "
             "without calling render_diagram"
+        )
+
+    left_behind = _RECLAIM_FAILURES.search(output)
+    if left_behind is None:
+        failures.append(
+            "no measured 'Reclaim failures this turn' line — the sample did not reach its "
+            "`finally`, so nothing vouches for the call directories it made"
+        )
+    elif int(left_behind.group(1)) > 0:
+        failures.append(
+            f"{left_behind.group(1)} call director(ies) could not be reclaimed — the files a "
+            "call wrote stayed where the conversation's next call can read them"
         )
 
     if image is None:
