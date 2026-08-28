@@ -365,12 +365,11 @@ class TestSessionAcquire:
         assert asyncio.run(session.acquire(_KEY)) == "Error: No disk image for 'bicep:1'"
 
     def test_the_family_is_every_refusal_the_router_defines(self):
-        """The forgotten-member guard, and it has to derive the answer independently.
+        """The membership is derived from the module, never read off the tuple: a check that
+        reads the tuple cannot fail when the tuple is the thing that is wrong.
 
-        Parametrising over the tuple cannot be this check: a refusal added to ``_router`` and
-        left out of it changes no parameter, so the test below would go on passing while the
-        new refusal reached callers as an outage. Two exclusions, each because it answers with
-        a sentence of its own — the reason lives beside its branch in ``maf.py``.
+        Two exclusions, each because it answers with a sentence of its own, for a reason stated
+        beside its branch in ``maf.py``.
         """
         from maf_sandbox import _router
 
@@ -398,12 +397,12 @@ class TestSessionAcquire:
         assert "run_code" in answer
 
     def test_a_backends_own_refusal_text_never_reaches_the_caller(self, caplog):
-        """A backend that has met its image can raise one of these with anything in it.
+        """A backend can raise one of these with anything in its message.
 
         The classes are exported and `acquire` forwards what a backend raises, so no type check
-        separates a message this package wrote from one carrying an SDK response. The caller
-        learns the image is the problem; the reason goes to the log, which is where
-        `SandboxUnclean` already leaves a detail for the same reason.
+        separates a message this package wrote from one carrying an SDK response. The reason
+        goes to the log, which is where `SandboxUnclean` already leaves a detail for the same
+        reason.
         """
         leaky = SandboxCapabilityNotSupported(
             "cannot serve files_out: GET https://management.westus.example.io/subscriptions/"
@@ -416,8 +415,7 @@ class TestSessionAcquire:
         assert isinstance(answer, str)
         for leaked in ("management.westus", "subscriptions", "prod-group", "admin@example.com"):
             assert leaked not in answer, answer
-        assert answer.startswith("Error: the sandbox backend cannot serve this workload")
-        # And the operator still gets it.
+        assert answer.startswith("Error: the sandbox backend refused this workload")
         assert "prod-group" in caplog.text
 
     def test_an_unclean_sandbox_keeps_its_own_sentence(self):

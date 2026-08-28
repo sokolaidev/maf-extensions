@@ -89,10 +89,9 @@ __all__ = [
 _SDK_NOT_INSTALLED = "Error: the sandbox backend is not installed — degrading to T0"
 _NO_BACKEND_CONFIGURED = "Error: no sandbox backend is configured — degrading to T0"
 _SANDBOX_UNAVAILABLE = "Error: sandbox unavailable — degrading to T0 (LLM self-check only)"
-_SANDBOX_REFUSED_FOR_ITS_IMAGE = (
-    "Error: the sandbox backend cannot serve this workload with the image it was configured "
-    "with, and could not know that until the image was running — degrading to T0 (LLM "
-    "self-check only). The backend's reason is in the host log."
+_SANDBOX_REFUSED_BY_THE_BACKEND = (
+    "Error: the sandbox backend refused this workload — degrading to T0 (LLM self-check only). "
+    "The backend's reason is in the host log."
 )
 _SANDBOX_UNCLEAN = (
     "Error: the sandbox for this conversation is closed: a previous call left it unclean — data "
@@ -454,10 +453,10 @@ class SandboxToolSession:
           caller can act on: what was asked for, and which backend or posture would not serve
           it;
         - a refusal of the same **type** escaping ``acquire`` is a different thing and gets a
-          fixed sentence. Those classes are public, so a backend that has met its image can
-          raise one with an SDK response or an endpoint in its message, and no type check can
-          tell that apart from a message this package wrote. The caller learns that the image
-          is the problem; the backend's own reason goes to the log;
+          fixed sentence. Those classes are public and the protocol says nothing about why a
+          backend may raise one, so the message is neither this package's to vouch for nor
+          reliably about any particular cause. The caller learns that the backend refused; the
+          reason goes to the log;
         - anything else is a provider or transport failure whose text can carry endpoint,
           subscription and tenant ids.  Tool results are persisted into the transcript, so
           that detail goes to the log — with :func:`~maf_sandbox.error_detail`, because
@@ -465,10 +464,8 @@ class SandboxToolSession:
           — and the model gets a fixed sentence saying only that the run degraded.
         """
         try:
-            # Before the backend is reached, and this is what makes the branch below safe to
-            # surface: `ensure_can_serve` touches no backend, so every refusal it raises was
-            # composed here, out of the spec and the backend's declarations. `acquire` runs the
-            # same checks again, so nothing is lost by asking twice.
+            # Not redundant with `acquire`, which runs these same checks: asking before a
+            # backend is reached is what separates a refusal composed here from one it raised.
             self._router.ensure_can_serve(self._spec)
         except ATTACH_REFUSALS as exc:
             self._logger.warning(f"{self._log_prefix}: %s", exc)
@@ -488,13 +485,14 @@ class SandboxToolSession:
             self._logger.warning(f"{self._log_prefix}: %s", exc)
             return f"Error: {exc}"
         except ATTACH_REFUSALS as exc:
-            # Past the check above, so this one was raised after the backend was reached and
-            # its message is not this package's to vouch for — `error_detail` because a
-            # backend's own reason is what the operator needs and `str()` often drops it.
+            # Past the check above, so the backend was reached and this message is not this
+            # package's to vouch for — `error_detail` because the backend's own reason is what
+            # the operator needs and `str()` often drops it.
             self._logger.warning(
-                f"{self._log_prefix}: sandbox refused for its image: %s", error_detail(exc)
+                f"{self._log_prefix}: the sandbox backend refused this workload: %s",
+                error_detail(exc),
             )
-            return _SANDBOX_REFUSED_FOR_ITS_IMAGE
+            return _SANDBOX_REFUSED_BY_THE_BACKEND
         except SandboxUnclean as exc:
             # The router's own refusal: a sandbox a previous call could not clean and the
             # framework could not dispose of. Safe to name and actionable for the host, but
