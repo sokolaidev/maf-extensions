@@ -387,11 +387,12 @@ class _DockerSandbox:
         with tarfile.open(fileobj=buffer, mode="w") as archive:
             # The confinement walk has already statted every component from the root down
             # and stopped at the first absent one, so what exists is known here without a
-            # second round of `docker cp` per component: the entries run from the first
-            # missing directory — `working_directory` itself when the image carries none —
-            # to the entry's parent, each stamped with the container's user.  Ancestors
-            # above `working_directory` stay out of the tar, and an existing directory
-            # never travels: docker extracts a present one with the entry's mode.
+            # second round of `docker cp` per component.  The entries cover
+            # `working_directory` and its descendants only: a missing ancestor above it is
+            # docker's to create implicitly as root, because the acquire-time facts judged
+            # that chain host-safe and a guest-owned entry here would turn it into a
+            # redirect the reach rule never cleared.  An existing directory never travels
+            # either — docker extracts a present one with the entry's mode.
             missing = [d for d in guest_directory_chain(leaf, base) if d not in walked and d != "/"]
             for directory in missing:
                 entry = tarfile.TarInfo(directory.lstrip("/") + "/")
